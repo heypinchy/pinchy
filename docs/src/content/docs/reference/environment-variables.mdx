@@ -86,7 +86,7 @@ Once it's set, Pinchy also writes the value into `.audit_hmac_secret` in the `pi
 
 `ENCRYPTION_KEY` and `AUDIT_HMAC_SECRET` have to be exactly 64 hex characters, the output of `openssl rand -hex 32`. A value that isn't is ignored, see [When Pinchy ignores a key variable](#when-pinchy-ignores-a-key-variable).
 
-The one thing that cannot be recovered is a key you delete. Keep the `pinchy-secrets` volume in your backups even after pinning the value in `.env`. [Backing up the keys](/concepts/audit-trail-verification/#backing-up-the-keys) has a command that saves the volume and `.env` together. Run it again after every key change: a pair from before the change doesn't hold the keys you have now.
+The one thing that cannot be recovered is a key you delete. Keep the `pinchy-secrets` volume in your backups even after pinning the value in `.env`. [Backing up the keys](/concepts/audit-trail-verification/#backing-up-the-keys) has a command that saves the volume and `.env` together. Run it again after every key change, see [Which backup to restore](/concepts/audit-trail-verification/#which-backup-to-restore).
 
 :::caution
 Losing `ENCRYPTION_KEY` means losing every stored provider API key — they cannot be recovered, only re-entered. If you back up anything, back up the `pinchy-secrets` volume.
@@ -96,7 +96,7 @@ Losing `ENCRYPTION_KEY` means losing every stored provider API key — they cann
 
 A value that isn't 64 hex characters, for example one with a `0x` prefix, a character lost when copying, or a space inside it, is ignored. Quotes around the value and a Windows line ending aren't a problem: Compose removes them before Pinchy sees the value. Pinchy uses the key file in the `pinchy-secrets` volume instead, creating one there if there is none, and logs a warning on every start: `ENCRYPTION_KEY is set but is not a valid key` or `AUDIT_HMAC_SECRET is set but is not a valid key`.
 
-Don't just correct the value. While the variable is ignored, the key file is the key in use, so a corrected value is a different key, and for `ENCRYPTION_KEY` that costs you every stored credential. Whatever you change, [back up the keys](/concepts/audit-trail-verification/#backing-up-the-keys) first.
+Don't just correct the value. While the variable is ignored, the key file is the key in use, so a corrected value is a different key, and for `ENCRYPTION_KEY` that costs you every stored credential. Whatever you change, for either variable, [back up the keys](/concepts/audit-trail-verification/#backing-up-the-keys) first, and [back up again](/concepts/audit-trail-verification/#which-backup-to-restore) once the warning is gone.
 
 **`ENCRYPTION_KEY`.** Everything Pinchy encrypted while the warning showed, provider API keys and integration credentials, is encrypted with `.encryption_key` in the `pinchy-secrets` volume (`/app/secrets/.encryption_key` inside the container). There are two safe fixes:
 

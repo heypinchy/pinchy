@@ -463,19 +463,13 @@ This is the sequence for restoring Pinchy onto a brand-new host — a full disas
      alpine sh -c "cp -a /source/. /target/"
    ```
 
-   If your key backup is a `pinchy-secrets-<stamp>.tar` from [`backup_pinchy_keys`](/concepts/audit-trail-verification/#backing-up-the-keys), take the newest pair taken after your last key change, and use its `env-<stamp>.backup` as the `.env` from step 1, or check that the `.env` you restored has the same `AUDIT_HMAC_SECRET` and `ENCRYPTION_KEY` lines. An earlier pair holds the keys from before that change. Restore the archive into the volume instead of the first `docker run` line, in the directory that holds your `docker-compose.yml` and before the first `docker compose up -d`:
+   If your key backup is a `pinchy-secrets-<stamp>.tar` from [`backup_pinchy_keys`](/concepts/audit-trail-verification/#backing-up-the-keys), restore it instead of the first `docker run` line, in the directory that holds your `docker-compose.yml`, and use its `env-<stamp>.backup` as the `.env` from step 1:
 
    ```bash
    docker compose run --rm --no-deps -T --entrypoint tar pinchy -C /app/secrets -xpf - < pinchy-secrets-<stamp>.tar
    ```
 
-   If the newest pair you have is older than your last key change, it holds the keys from before it. After a switch, set `AUDIT_HMAC_SECRET` in `.env` to the copy of the new key you kept. After retiring a key, remove the key file from the volume as well, still before the first start:
-
-   ```bash
-   docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
-   ```
-
-   Otherwise the archive puts the retired key back as the earlier key, and verification accepts entries signed with it again. With the file gone, Pinchy writes the `AUDIT_HMAC_SECRET` value from `.env` into a new key file on its first start and logs `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`. After that start, the log should show the notice `AUDIT_HMAC_SECRET is set and differs from the audit signing key` only if you switched the key and haven't retired the earlier one. If it shows it and you did retire it, the key file is the retired key: stop Pinchy, remove the file with the command above, and start it again with `docker compose up -d`.
+   Whichever way you restore them, the `.env` from step 1 and `pinchy-secrets` have to be from after your last change to `AUDIT_HMAC_SECRET` or `ENCRYPTION_KEY`. If yours are older, correct them now, before the first `docker compose up -d`. [Which backup to restore](/concepts/audit-trail-verification/#which-backup-to-restore) says how, and what the log should show afterwards.
 
    If you always pin all four secrets in `.env` (see above) and have never changed `AUDIT_HMAC_SECRET`, you can skip restoring `pinchy-secrets` — Pinchy reads the values from the environment instead. If you did change it, restore the volume anyway: the key it replaced exists only there, and without it every entry signed before the change fails verification for good, with nothing in the logs to say so (see [Switching the key](/concepts/audit-trail-verification/#switching-the-key)). `openclaw-config` is safe to skip; Pinchy regenerates it from the restored database on boot, at the cost of a fresh gateway bootstrap token.
 
