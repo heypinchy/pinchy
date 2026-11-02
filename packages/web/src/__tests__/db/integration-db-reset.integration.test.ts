@@ -101,6 +101,65 @@ async function rowCounts(): Promise<Record<string, number>> {
   return Object.fromEntries(counts);
 }
 
+interface StartedReset {
+  /** True once the reset has finished, either way. */
+  isSettled(): boolean;
+  /** Never rejects, so a test that throws before awaiting the reset leaves no unhandled rejection behind. */
+  settled: Promise<{ error?: unknown }>;
+  /** Waits for the reset and rethrows its error, if any. */
+  done(): Promise<void>;
+}
+
+function startReset(): StartedReset {
+  let isSettled = false;
+  const settled = resetIntegrationDatabase().then(
+    (): { error?: unknown } => {
+      isSettled = true;
+      return {};
+    },
+    (error: unknown) => {
+      isSettled = true;
+      return { error };
+    }
+  );
+  return {
+    isSettled: () => isSettled,
+    settled,
+    async done() {
+      const { error } = await settled;
+      if (error !== undefined) throw error;
+    },
+  };
+}
+
+/**
+ * Polls, from inside the open transaction `tx`, until the reset is provably
+ * queued behind it — or has already finished, which is the failure the
+ * callers test for. Returns whether it had finished.
+ *
+ * Reads pg_locks, not pg_stat_activity: pg_stat_activity is snapshotted once
+ * per transaction, so a backend that connects after the first poll (the
+ * reset's, from a fresh pool connection) would never show up in it.
+ */
+async function waitUntilQueuedBehind(
+  tx: postgres.TransactionSql,
+  reset: StartedReset
+): Promise<boolean> {
+  const [{ pid }] = await tx<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const [{ blocked }] = await tx<{ blocked: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_locks l
+        WHERE NOT l.granted AND ${pid}::int = ANY (pg_blocking_pids(l.pid))
+      ) AS blocked`;
+    if (reset.isSettled()) return true;
+    if (blocked) return false;
+    if (Date.now() > deadline) throw new Error("reset neither blocked nor finished in 10s");
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 describe("integration database reset", () => {
   it("empties every tracked table", async () => {
     await seedRows();
@@ -159,39 +218,53 @@ describe("integration database reset", () => {
     // into the NEXT test. That is exactly what an un-awaited background write
     // from the previous test looks like.
     const writer = postgres(process.env.DATABASE_URL!, { max: 1 });
+    let reset: StartedReset | undefined;
     try {
-      let resetSettled = false;
-      let reset: Promise<void> | undefined;
-      let settledBeforeCommit: boolean | undefined;
-
+      let finishedFirst: boolean | undefined;
       await writer.begin(async (tx) => {
         await tx`INSERT INTO settings (key, value) VALUES ('reset-race', 'leaked')`;
-        const [{ pid }] = await tx<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
-
-        reset = resetIntegrationDatabase().finally(() => {
-          resetSettled = true;
-        });
-
-        // Commit only once the reset is provably queued behind this writer —
-        // or has already finished, which is the failure being tested for.
-        const deadline = Date.now() + 10_000;
-        for (;;) {
-          const [{ blocked }] = await tx<{ blocked: boolean }[]>`
-            SELECT EXISTS (
-              SELECT 1 FROM pg_stat_activity a
-              WHERE ${pid}::int = ANY (pg_blocking_pids(a.pid))
-            ) AS blocked`;
-          if (blocked || resetSettled) break;
-          if (Date.now() > deadline) throw new Error("reset neither blocked nor finished in 10s");
-          await new Promise((r) => setTimeout(r, 20));
-        }
-        settledBeforeCommit = resetSettled;
+        reset = startReset();
+        finishedFirst = await waitUntilQueuedBehind(tx, reset);
       });
-      await reset;
+      await reset!.done();
 
-      expect(settledBeforeCommit, "the reset must wait for the open writer").toBe(false);
+      expect(finishedFirst, "the reset must wait for the open writer").toBe(false);
       expect(await rowCounts()).toEqual(Object.fromEntries(APPLICATION_TABLES.map((t) => [t, 0])));
     } finally {
+      await reset?.settled;
+      await writer.end();
+    }
+  });
+
+  it("waits for a writer that has only read so far, so its write cannot land after the reset", async () => {
+    // appendAuditLog's shape: inside one transaction it reads the last row's
+    // row_hmac and only then inserts the row chained to it. Until the INSERT,
+    // the transaction holds nothing but the ACCESS SHARE a SELECT takes. A
+    // reset that waits only for writers lets that through: it empties the
+    // table, and the INSERT then lands in the next test with a prev_hmac
+    // pointing at a row that no longer exists.
+    const writer = postgres(process.env.DATABASE_URL!, { max: 1 });
+    let reset: StartedReset | undefined;
+    try {
+      await db.execute(sql`
+        INSERT INTO audit_log (actor_type, actor_id, event_type, row_hmac)
+        VALUES ('system', 'system', 'test.previous', 'previous-hmac')`);
+      let finishedFirst: boolean | undefined;
+      await writer.begin(async (tx) => {
+        const [prev] = await tx<{ row_hmac: string }[]>`
+          SELECT row_hmac FROM audit_log ORDER BY id DESC LIMIT 1`;
+        reset = startReset();
+        finishedFirst = await waitUntilQueuedBehind(tx, reset);
+        await tx`
+          INSERT INTO audit_log (actor_type, actor_id, event_type, row_hmac, prev_hmac)
+          VALUES ('system', 'system', 'test.background', 'background-hmac', ${prev.row_hmac})`;
+      });
+      await reset!.done();
+
+      expect(finishedFirst, "the reset must wait for the open reader").toBe(false);
+      expect(await rowCounts()).toEqual(Object.fromEntries(APPLICATION_TABLES.map((t) => [t, 0])));
+    } finally {
+      await reset?.settled;
       await writer.end();
     }
   });

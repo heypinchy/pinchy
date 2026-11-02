@@ -23,7 +23,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import postgres from "postgres";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -78,6 +78,27 @@ async function sweepStaleProbeRoles(admin: postgres.Sql): Promise<void> {
     }
     await admin`DROP ROLE IF EXISTS ${admin(rolname)}`;
   }
+}
+
+/**
+ * The SCRAM-SHA-256 verifier Postgres would store for `password` — the
+ * `pg_authid.rolpassword` format (RFC 5802 / 7677): PBKDF2-SHA256 over a random
+ * salt, then StoredKey = SHA256(HMAC(salted, "Client Key")) and
+ * ServerKey = HMAC(salted, "Server Key"). CREATE ROLE stores a value already in
+ * this format as-is, so the server never receives the password itself and
+ * cannot log it: not as statement text, not as a bind parameter, not as the
+ * CONTEXT of a failing EXECUTE. SASLprep is skipped, which is exact for the
+ * ASCII hex passwords this file generates.
+ */
+function scramSha256Verifier(password: string): string {
+  const iterations = 4096;
+  const salt = randomBytes(16);
+  const salted = pbkdf2Sync(password, salt, iterations, 32, "sha256");
+  const storedKey = createHash("sha256")
+    .update(createHmac("sha256", salted).update("Client Key").digest())
+    .digest();
+  const serverKey = createHmac("sha256", salted).update("Server Key").digest();
+  return `SCRAM-SHA-256$${iterations}:${salt.toString("base64")}$${storedKey.toString("base64")}:${serverKey.toString("base64")}`;
 }
 
 function withDbName(url: string, name: string): string {
@@ -152,30 +173,23 @@ describe("db:migrate runner", () => {
       // The expiry is computed by the server, whose clock is the one that
       // checks it: a host clock running an hour behind would otherwise create
       // a role that is already dead, and the sweep could pull it out from
-      // under this very run. CREATE ROLE takes no bind parameters, so the
-      // values reach the DO block as transaction-local settings, the password
-      // as a bind parameter: it never appears in a statement's text, which is
-      // what Postgres writes to its log when a statement fails and what
-      // postgres.js attaches to the error it throws. The EXCEPTION clause
-      // closes the one remaining hole: a failing EXECUTE reports the statement
-      // it ran — password included — as CONTEXT, in the server log and in the
-      // error's `where`. Re-raising keeps the SQLSTATE and message and drops
-      // that context.
-      await admin.begin(async (tx) => {
-        await tx`SELECT set_config('pinchy_probe.role', ${PROBE_ROLE}, true),
-                        set_config('pinchy_probe.password', ${PROBE_PASSWORD}, true)`;
-        await tx.unsafe(`
-          DO $$ BEGIN
-            EXECUTE format(
-              'CREATE ROLE %I LOGIN SUPERUSER PASSWORD %L VALID UNTIL %L',
-              current_setting('pinchy_probe.role'),
-              current_setting('pinchy_probe.password'),
-              now() + make_interval(secs => ${PROBE_ROLE_LIFETIME_SECONDS})
-            );
-          EXCEPTION WHEN OTHERS THEN
-            RAISE EXCEPTION USING ERRCODE = SQLSTATE, MESSAGE = SQLERRM;
-          END $$`);
-      });
+      // under this very run. VALID UNTIL takes only a literal, hence the DO
+      // block. The password goes in as its SCRAM verifier, never as itself:
+      // with log_statement=all or log_min_duration_statement=0 the server logs
+      // every statement's text AND its bind parameters, so the plaintext must
+      // not reach it in any form (scramSha256Verifier). The role name and the
+      // verifier are safe inside the dollar-quoted body: neither can contain a
+      // quote or `$probe$`.
+      const verifier = scramSha256Verifier(PROBE_PASSWORD);
+      await admin.unsafe(`
+        DO $probe$ BEGIN
+          EXECUTE format(
+            'CREATE ROLE %I LOGIN SUPERUSER PASSWORD %L VALID UNTIL %L',
+            '${PROBE_ROLE}',
+            '${verifier}',
+            now() + make_interval(secs => ${PROBE_ROLE_LIFETIME_SECONDS})
+          );
+        END $probe$`);
       await admin.unsafe(`CREATE DATABASE ${OK_DB}`);
       await admin.unsafe(`CREATE DATABASE ${FAIL_DB} OWNER ${PROBE_ROLE}`);
     } finally {

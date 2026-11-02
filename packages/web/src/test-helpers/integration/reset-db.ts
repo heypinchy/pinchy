@@ -116,18 +116,29 @@ const findAnnTables = annTableLookup(db);
  * truncated, has zero pages and costs nothing.
  *
  * What DELETE did NOT inherit from TRUNCATE by itself is the wait. TRUNCATE's
- * ACCESS EXCLUSIVE lock queued behind every open writer; a bare DELETE does
- * not, because a row from a transaction that has not committed yet is simply
- * invisible to its snapshot. An un-awaited background write from the previous
- * test then commits AFTER the reset and leaks into the next one. So the
- * transaction first takes `LOCK TABLE ... IN EXCLUSIVE MODE` on every table:
- * that conflicts with the ROW EXCLUSIVE lock every INSERT/UPDATE/DELETE holds,
- * so the reset waits for in-flight writers, and in READ COMMITTED the DELETE
- * that follows takes a fresh snapshot and sees what they committed. Plain
- * SELECTs (ACCESS SHARE) still pass, and a lock writes no file, so the
- * relfilenode debt above stays at zero. A test that leaves writers running
- * into the next test's reset can still deadlock against it, exactly as it
- * could against TRUNCATE; Postgres then aborts one side and says so.
+ * ACCESS EXCLUSIVE lock queued behind every open transaction that had touched
+ * a table; a bare DELETE does not, because a row from a transaction that has
+ * not committed yet is simply invisible to its snapshot. An un-awaited
+ * background write from the previous test then commits AFTER the reset and
+ * leaks into the next one. So the transaction first takes TRUNCATE's lock
+ * itself: `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` on every table. A lock
+ * writes no file, so the relfilenode debt above stays at zero.
+ *
+ * It has to be ACCESS EXCLUSIVE, not EXCLUSIVE. EXCLUSIVE waits for writers
+ * but is granted beside a plain SELECT's ACCESS SHARE — and a background write
+ * is often a read first: appendAuditLog reads the last row_hmac and only then
+ * INSERTs the row chained to it. Under EXCLUSIVE that transaction slips past:
+ * the reset empties audit_log while it still holds only ACCESS SHARE, and its
+ * INSERT lands in the next test with a prev_hmac pointing at a row that no
+ * longer exists. A variant that wrote one table before reading audit_log
+ * deadlocked the reset outright. ACCESS EXCLUSIVE conflicts with every mode,
+ * so the reset waits for any transaction that has touched any table, exactly
+ * as TRUNCATE did; in READ COMMITTED the DELETE that follows takes a fresh
+ * snapshot and sees what those transactions committed. It also covers the ANN
+ * tables' TRUNCATE below, so no lock is ever upgraded inside this transaction.
+ * A test that leaves transactions running into the next test's reset can
+ * still deadlock against it, exactly as it could against TRUNCATE; Postgres
+ * then aborts one side and says so.
  *
  * What this gives up: TRUNCATE handed every test brand-new, physically empty
  * heaps and fresh planner statistics. DELETE leaves dead tuples behind for
@@ -144,18 +155,10 @@ export async function resetIntegrationDatabase(): Promise<void> {
   // One transaction: no other session ever sees audit_log's triggers disabled,
   // and a failure part-way leaves nothing half-reset.
   await db.transaction(async (tx) => {
-    // Lock first, everything, each table in the strongest mode it will need,
-    // strongest first. The ANN tables may be TRUNCATEd below, which needs
-    // ACCESS EXCLUSIVE; taking it up front means no table is ever upgraded
-    // from EXCLUSIVE inside this transaction. An upgrade is the classic
-    // deadlock: a reader that slipped in under EXCLUSIVE holds the table the
-    // upgrade waits for, then blocks on a table we already hold. The second
-    // LOCK re-lists the ANN tables; a session never conflicts with its own
-    // locks, so that costs nothing.
-    if (ann.length > 0) {
-      await tx.execute(sql.raw(`LOCK TABLE ${ann.join(", ")} IN ACCESS EXCLUSIVE MODE`));
-    }
-    await tx.execute(sql.raw(`LOCK TABLE ${APPLICATION_TABLES.join(", ")} IN EXCLUSIVE MODE`));
+    // Lock first, everything, in TRUNCATE's mode (see the docblock).
+    await tx.execute(
+      sql.raw(`LOCK TABLE ${APPLICATION_TABLES.join(", ")} IN ACCESS EXCLUSIVE MODE`)
+    );
 
     // Checked under the lock, so a writer committing in between cannot give
     // an ANN table storage this reset then only DELETEs from.
