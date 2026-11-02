@@ -73,6 +73,21 @@ export interface ReindexAuditArgs {
   refusedFiles?: number;
 }
 
+type ReindexDetail = Extract<AuditLogEntry, { eventType: "knowledge.reindex" }>["detail"];
+
+/**
+ * The detail, unchanged — typed so that every key it is built with must be
+ * declared on the audit type in `audit.ts`. The optional fields below are
+ * conditional spreads, and a spread escapes TypeScript's excess-property
+ * check: a key written that way reached the signed row without a declaration
+ * once. Through this, an undeclared key is a compile error.
+ */
+export function reindexDetail<T extends ReindexDetail>(
+  detail: T & Record<Exclude<keyof T, keyof ReindexDetail>, never>
+): ReindexDetail {
+  return detail;
+}
+
 export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
   return {
     actorType: args.actorType,
@@ -80,7 +95,7 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
     eventType: "knowledge.reindex",
     resource: `agent:${args.agent.id}`,
     outcome: args.outcome,
-    detail: {
+    detail: reindexDetail({
       agent: args.agent,
       pathCount: args.pathCount,
       ...(args.jobId !== undefined ? { jobId: args.jobId } : {}),
@@ -120,6 +135,6 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
         : {}),
       ...(args.refusedFiles !== undefined ? { refusedFiles: args.refusedFiles } : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
-    },
+    }),
   };
 }
