@@ -16,7 +16,15 @@
 # Only when every mirror attempt has failed do we pull from docker.io itself.
 # That spends rate-limit quota, which is what the mirror exists to avoid — but
 # a likely success beats a certain job failure, and the ::warning:: keeps the
-# fallback visible instead of letting it become the quiet normal.
+# fallback visible instead of letting it become the quiet normal. Whether that
+# pull is authenticated depends on the calling job: ci.yml jobs that log in to
+# Docker Hub do so before this action, every other caller pulls anonymously
+# and gets the tighter anonymous limit — so the fallback can be rate-limited
+# too.
+#
+# Retries are plain log lines, not annotations. GitHub keeps only ~10
+# annotations per step, and in a mirror outage per-attempt warnings would use
+# that budget up and drop the fallback warning — the one that matters.
 #
 # MIRROR_PULL_BACKOFF_SECONDS lists the sleeps between attempts (one more
 # attempt than entries); tests set it to "0 0" so they don't sleep.
@@ -47,7 +55,7 @@ for image in "$@"; do
     fi
     if [ "$attempt" -lt "$max_attempts" ]; then
       delay="${backoff[$((attempt - 1))]}"
-      echo "::warning::docker pull ${mirror_ref} failed (attempt ${attempt}/${max_attempts}). Retrying in ${delay}s..."
+      echo "docker pull ${mirror_ref} failed (attempt ${attempt}/${max_attempts}). Retrying in ${delay}s..."
       sleep "$delay"
     fi
   done
@@ -57,7 +65,7 @@ for image in "$@"; do
     continue
   fi
 
-  echo "::warning::mirror.gcr.io failed ${max_attempts} times for ${image} — falling back to docker.io, which consumes Docker Hub rate-limit quota."
+  echo "::warning::mirror.gcr.io failed ${max_attempts} times for ${image} — falling back to docker.io. This pull is anonymous unless the job logged in to Docker Hub before this action, and it can itself hit Docker Hub's rate limit."
   if ! docker pull "$image"; then
     echo "::error::Could not pull ${image} from mirror.gcr.io (${max_attempts} attempts) or from docker.io. Both registries are failing — re-run the job once they recover."
     exit 1

@@ -1,7 +1,8 @@
 name: Configure Docker Hub mirror
 description: >
-  Sidesteps Docker Hub's 200 pulls/6h authenticated rate limit (which CI hit
-  consistently as of 2026-05-01) by pulling the Docker Hub library images
+  Sidesteps Docker Hub's pull rate limit (CI hit it consistently as of
+  2026-05-01 even when authenticated, at 200 pulls/6h; anonymous pulls get
+  less) by pulling the Docker Hub library images
   Pinchy depends on directly from mirror.gcr.io and re-tagging them locally.
   After this action runs, `docker compose pull` / `up` finds the images in
   the local cache and never touches docker.io.
@@ -17,8 +18,12 @@ description: >
   descriptor sha256:… from remote: not found" — three CI runs lost in one
   afternoon), so pull-via-mirror.sh retries each mirror pull with backoff and
   only then, as a last resort, pulls that one image from docker.io with a
-  ::warning::. Spending some rate-limit quota on a rare fallback beats failing
-  the job on a mirror blip; the warning keeps it from becoming the quiet norm.
+  ::warning::. That fallback is authenticated only if the job logged in to
+  Docker Hub BEFORE this action (the ci.yml jobs that log in do); otherwise it
+  is anonymous, with Docker Hub's tighter anonymous limit, and can itself be
+  rate-limited. A likely success still beats failing the job on a mirror
+  blip; the warning keeps it from becoming the quiet norm. Retries are plain
+  log lines, so the ~10-annotations-per-step cap cannot drop that warning.
 runs:
   using: composite
   steps:
