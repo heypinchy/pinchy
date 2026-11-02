@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  compositeMirrorProblems,
   mirrorLoginProblems,
   mirrorReferenceMismatch,
   parseMirrorJobs,
@@ -35,6 +36,7 @@ const ACTION_DIR = join(ROOT, ".github", "actions", "docker-mirror");
 const SCRIPT = join(ACTION_DIR, "pull-via-mirror.sh");
 const ACTION_YML = join(ACTION_DIR, "action.yml");
 const WORKFLOWS_DIR = join(ROOT, ".github", "workflows");
+const ACTIONS_DIR = join(ROOT, ".github", "actions");
 
 // The exact shape of the observed failure. It says "not found", which is
 // why the mirror path must NOT reuse pull-ci-images' "not found means
@@ -462,20 +464,111 @@ test("anonymous-by-design entries are honoured and must not go stale", () => {
 });
 
 test("a mirror reference the parser cannot account for fails the check", () => {
-  // A reusable-action path with a trailing slash, and a run: script that
-  // names the action: neither is a `uses: ./.github/actions/docker-mirror`
-  // step, so the raw-text cross-check must say so rather than pass.
+  // A run: script that names the action, a value that names it, a `#` inside
+  // a quoted string (which a line-based "skip after #" count read as a
+  // comment), and a local path outside the repo's actions: none is a mirror
+  // step, so the cross-check must say so rather than pass.
   for (const step of [
-    "      - uses: ./.github/actions/docker-mirror/\n",
     "      - run: cat ./.github/actions/docker-mirror/action.yml\n",
+    "      - run: true\n        env:\n          ACTION: ./.github/actions/docker-mirror\n",
+    "      - run: \"echo '# see ./.github/actions/docker-mirror'\"\n",
+    "      - uses: ../elsewhere/.github/actions/docker-mirror\n",
   ]) {
     const problems = check(wf("  b:\n    steps:\n" + LOGIN + step));
-    assert.equal(problems.length, 1, JSON.stringify(problems));
+    assert.equal(problems.length, 1, `${step}: ${JSON.stringify(problems)}`);
     assert.match(
       problems[0],
-      /^c\.yml mentions \.\/\.github\/actions\/docker-mirror 1 time\(s\) outside comments, but 0 step\(s\)/,
+      /^c\.yml mentions docker-mirror 1 time\(s\) outside comments, but 0 step\(s\) use/,
+      step,
     );
   }
+});
+
+test("other spellings of the mirror path are recognised as mirror steps and checked", () => {
+  const cases = {
+    // `#` inside a quoted flow-style name used to swallow the reference on
+    // both sides, so the job silently dropped out of the check.
+    "flow-style step, # in a quoted name, trailing-slash uses": wf(
+      '  b:\n    runs-on: x\n    steps:\n      - { name: "Mirror #1", uses: ./.github/actions/docker-mirror/ }\n',
+    ),
+    "path through ..": wf(
+      "  b:\n    runs-on: x\n    steps:\n      - uses: ./.github/actions/../actions/docker-mirror\n",
+    ),
+  };
+  for (const [label, text] of Object.entries(cases))
+    assertOneProblem(label, text, NO_LOGIN);
+});
+
+// Anchors defined in job a and reused through aliases in job b. The parser
+// resolves the aliases, so job b has real mirror and login steps; the
+// reference count must see the alias too, or the two sides disagree.
+const ANCHORED = (second) =>
+  wf(
+    "  a:\n    runs-on: x\n    steps:\n      - &login\n        uses: docker/login-action@v4\n      - &mirror\n        uses: ./.github/actions/docker-mirror\n  b:\n    runs-on: x\n    steps:\n" +
+      second,
+  );
+
+test("steps reused through YAML aliases are counted and checked", () => {
+  assert.deepEqual(
+    check(ANCHORED("      - *login\n      - *mirror\n")),
+    [],
+    "aliased login before aliased mirror",
+  );
+  assert.deepEqual(
+    check(
+      wf(
+        "  a:\n    steps:\n" +
+          LOGIN +
+          "      - uses: &m ./.github/actions/docker-mirror\n  b:\n    steps:\n" +
+          LOGIN +
+          "      - uses: *m\n",
+      ),
+    ),
+    [],
+    "aliased uses scalar",
+  );
+  assertOneProblem(
+    "aliased mirror before aliased login",
+    ANCHORED("      - *mirror\n      - *login\n"),
+    AFTER,
+  );
+});
+
+test("no composite action other than docker-mirror wraps docker-mirror", () => {
+  const actions = readdirSync(ACTIONS_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((entry) =>
+      ["action.yml", "action.yaml"]
+        .map((file) => join(ACTIONS_DIR, entry.name, file))
+        .filter((path) => existsSync(path))
+        .map((path) => ({
+          file: path.slice(ROOT.length + 1),
+          text: readFileSync(path, "utf8"),
+        })),
+    );
+  assert.ok(actions.length > 1, "expected several composite actions");
+  assert.deepEqual(compositeMirrorProblems(actions), []);
+});
+
+test("a composite action that references docker-mirror fails the check", () => {
+  const wrapper = {
+    file: ".github/actions/pull-all/action.yml",
+    text: "name: x\n# docker-mirror is mentioned in a comment, which is fine\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/actions/docker-mirror\n",
+  };
+  const itself = {
+    file: ".github/actions/docker-mirror/action.yml",
+    text: "name: docker-mirror\nruns:\n  using: composite\n  steps: []\n",
+  };
+  const commentOnly = {
+    file: ".github/actions/other/action.yml",
+    text: "name: x # unlike docker-mirror\nruns:\n  using: composite\n  steps: []\n",
+  };
+  const problems = compositeMirrorProblems([wrapper, itself, commentOnly]);
+  assert.equal(problems.length, 1, JSON.stringify(problems));
+  assert.match(
+    problems[0],
+    /^\.github\/actions\/pull-all\/action\.yml references docker-mirror 1 time\(s\).*extend docker-mirror-guard\.mjs/,
+  );
 });
 
 test("a workflow that does not parse fails with the file name", () => {

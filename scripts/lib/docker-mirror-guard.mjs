@@ -1,4 +1,5 @@
-import { parse } from "yaml";
+import { posix } from "node:path";
+import { parse, parseDocument, visit } from "yaml";
 
 // Ordering guard for the docker-mirror action. A docker.io fallback inside
 // the action can only use the authenticated pull limit if the job has already
@@ -10,8 +11,18 @@ import { parse } from "yaml";
 // column-0 comment inside `jobs:`, a 4-space indent, a quoted key or path, a
 // flow-style step — and each miss was silent: the job simply dropped out of
 // the check. As a second line of defence, `mirrorReferenceMismatch` compares
-// the parser's count of mirror steps against the raw text, so a shape the
-// parser does not model fails loudly instead of disappearing.
+// the parser's count of mirror steps against every scalar in the YAML AST
+// that names docker-mirror, so a shape the parser does not model fails
+// loudly instead of disappearing. The count reads the AST, not lines of
+// text: comments are not scalars, so they drop out by construction, and a
+// `#` inside a quoted string no longer hides what follows it.
+//
+// Composite actions are a second way around the guard: a composite under
+// .github/actions/ that uses docker-mirror would put the mirror step one
+// level below the workflow, where this check does not look.
+// `compositeMirrorProblems` fails on any such reference rather than
+// following it, because following it means deciding where the wrapper's
+// login has to sit — a guard extension, not a parsing detail.
 //
 // Only `docker/login-action` counts as a Docker Hub login. A CLI
 // `docker login` in a `run:` script is deliberately NOT recognised: telling
@@ -46,8 +57,19 @@ function isDockerHubLogin(step) {
   );
 }
 
+const MIRROR_PATH = posix.normalize(MIRROR_ACTION);
+
+/**
+ * A step that uses the docker-mirror action, however its local path is
+ * spelled: `./.github/actions/docker-mirror/` and
+ * `./.github/actions/../actions/docker-mirror` both resolve to it. Only `./`
+ * paths count — that is how GitHub recognises a local action.
+ */
 function isMirrorStep(step) {
-  return typeof step.uses === "string" && step.uses.trim() === MIRROR_ACTION;
+  if (typeof step.uses !== "string") return false;
+  const uses = step.uses.trim();
+  if (!uses.startsWith("./")) return false;
+  return posix.normalize(uses).replace(/\/$/, "") === MIRROR_PATH;
 }
 
 /**
@@ -83,35 +105,69 @@ export function parseMirrorJobs(file, text) {
   return result;
 }
 
+const MIRROR_NAME = "docker-mirror";
+
 /**
- * Occurrences of the mirror action's path in the raw text, ignoring
- * occurrences that sit after a `#` on their line (YAML comments).
+ * Scalars in the YAML AST that name docker-mirror — keys and values alike.
+ * An alias counts as whatever it resolves to, so a step reused through
+ * `*mirror` is counted here exactly as the parser's resolved copy is counted
+ * as a step. Throws, naming the file, if the YAML does not parse.
  */
-export function countMirrorReferences(text) {
-  const needle = ".github/actions/docker-mirror";
+export function countMirrorReferences(text, file = "<input>") {
+  const doc = parseDocument(text);
+  if (doc.errors.length > 0)
+    throw new Error(`${file}: YAML does not parse: ${doc.errors[0].message}`);
+  return countIn(doc, doc.contents, new Set());
+}
+
+function countIn(doc, node, resolving) {
   let count = 0;
-  for (const line of text.split("\n")) {
-    let from = 0;
-    for (;;) {
-      const at = line.indexOf(needle, from);
-      if (at === -1) break;
-      if (!line.slice(0, at).includes("#")) count++;
-      from = at + needle.length;
-    }
-  }
+  visit(node, {
+    Scalar(_key, scalar) {
+      if (
+        typeof scalar.value === "string" &&
+        scalar.value.includes(MIRROR_NAME)
+      )
+        count++;
+    },
+    Alias(_key, alias) {
+      const target = alias.resolve(doc);
+      if (!target || resolving.has(target)) return;
+      resolving.add(target);
+      count += countIn(doc, target, resolving);
+      resolving.delete(target);
+    },
+  });
   return count;
 }
 
 /**
  * A problem string if the parser found fewer (or more) mirror steps in a file
- * than the raw text mentions the action, else null. This is what keeps a
- * shape the parser does not model from silently leaving the check.
+ * than the YAML names docker-mirror, else null. This is what keeps a shape
+ * the parser does not model from silently leaving the check.
  */
 export function mirrorReferenceMismatch(file, text, jobs) {
-  const raw = countMirrorReferences(text);
+  const raw = countMirrorReferences(text, file);
   const parsed = jobs.reduce((sum, job) => sum + job.mirrorSteps, 0);
   if (raw === parsed) return null;
-  return `${file} mentions ${MIRROR_ACTION} ${raw} time(s) outside comments, but ${parsed} step(s) use it as \`uses: ${MIRROR_ACTION}\` — the guard cannot read the rest`;
+  return `${file} mentions ${MIRROR_NAME} ${raw} time(s) outside comments, but ${parsed} step(s) use ${MIRROR_ACTION} — the guard cannot read the rest`;
+}
+
+/**
+ * Problems for composite actions (`{ file, text }`, `file` relative to the
+ * repo root) that reference docker-mirror, other than docker-mirror itself.
+ */
+export function compositeMirrorProblems(actions) {
+  const problems = [];
+  for (const { file, text } of actions) {
+    if (posix.basename(posix.dirname(file)) === MIRROR_NAME) continue;
+    const count = countMirrorReferences(text, file);
+    if (count > 0)
+      problems.push(
+        `${file} references ${MIRROR_NAME} ${count} time(s) — a composite action that wraps it takes its mirror step out of the login-order guard; extend docker-mirror-guard.mjs to follow the wrapper before using it`,
+      );
+  }
+  return problems;
 }
 
 /** Problems with the login order, and stale anonymous-by-design entries. */
