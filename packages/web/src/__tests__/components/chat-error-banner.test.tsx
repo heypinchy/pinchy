@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { ChatErrorBanner } from "@/components/chat-error-banner";
-import { holdResult, trackDataApplied } from "@/test-helpers/data-applied";
+import { holdResults } from "@/test-helpers/hold-results";
 
 const mockApiGet = vi.fn();
 const mockApiDelete = vi.fn();
@@ -55,12 +55,12 @@ beforeEach(() => {
 describe("ChatErrorBanner", () => {
   it("renders nothing when the session has no active error", async () => {
     // `{ error: null }` matches the initial state, so it commits nothing and
-    // there is no render to wait for: the answer is released inside act().
-    const activeError = holdResult<{ error: null }>();
-    mockApiGet.mockReturnValue(activeError.promise);
+    // there is no render to wait for: the release itself is the signal.
+    const activeError = holdResults();
+    mockApiGet.mockImplementation(() => activeError.resolveWith({ error: null }));
     const { container } = render(<ChatErrorBanner agentId="agent-1" onRetry={vi.fn()} />);
     expect(mockApiGet).toHaveBeenCalled();
-    await activeError.resolve({ error: null });
+    await activeError.release();
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -92,14 +92,12 @@ describe("ChatErrorBanner", () => {
     // duplicate the same failure. With the thread's inline error present, the
     // banner renders nothing even though an active error exists server-side.
     mockHasInlineError = true;
-    const load = trackDataApplied();
-    mockApiGet.mockImplementation(() => load.deliver({ error: transientRow }));
-    const { container } = render(
-      load.wrap(<ChatErrorBanner agentId="agent-1" onRetry={vi.fn()} />)
-    );
+    const load = holdResults();
+    mockApiGet.mockImplementation(() => load.resolveWith({ error: transientRow }));
+    const { container } = render(<ChatErrorBanner agentId="agent-1" onRetry={vi.fn()} />);
 
-    // Wait until the fetched error has been rendered; the banner must still be empty.
-    await load.waitForApplied();
+    // Wait until the fetched error has been applied; the banner must still be empty.
+    await load.release();
     expect(screen.queryByText("Penny paused")).not.toBeInTheDocument();
     expect(container).toBeEmptyDOMElement();
   });
@@ -135,20 +133,20 @@ describe("ChatErrorBanner", () => {
     const onRetry = vi.fn();
     // Two different endpoints now: the banner's own fetch, and the retry gate
     // re-asked at click time (#1013). Answer each for what it is.
-    const gate = trackDataApplied();
+    const gate = holdResults();
     mockApiGet.mockImplementation((url: string) =>
       url.includes("/retry-gate")
-        ? gate.deliver({ sideEffects: false })
+        ? gate.resolveWith({ sideEffects: false })
         : Promise.resolve({ error: { ...transientRow, sideEffects: false } })
     );
-    render(gate.wrap(<ChatErrorBanner agentId="agent-1" onRetry={onRetry} />));
+    render(<ChatErrorBanner agentId="agent-1" onRetry={onRetry} />);
     await waitFor(() => expect(screen.getByText("Penny paused")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
 
     // onRetry fires inside the gate's handler, before React has committed what
-    // that handler set — so wait for the commit that applied the gate's answer.
-    await gate.waitForApplied();
+    // that handler set — so wait until the gate's answer is fully applied.
+    await gate.release();
     expect(onRetry).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });

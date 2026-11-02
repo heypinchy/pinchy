@@ -8,7 +8,7 @@ const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
 import { EnterpriseBanner } from "@/components/enterprise-banner";
-import { trackDataApplied } from "@/test-helpers/data-applied";
+import { holdResults } from "@/test-helpers/hold-results";
 
 const DAY = 86400000;
 
@@ -45,17 +45,18 @@ function mockStatusResponse(data: object) {
  *
  * Nor is "any update commit": a mount-time state update added to the
  * component later would satisfy it before the status arrived and bring the
- * race back. The wait is tied to the data — the first commit after the mocked
- * body was handed over by `json()`. That serves both kinds of test here: the
- * positive ones could wait on the banner itself, but the negative ones commit
- * `null`, so there is no DOM change to wait for, and without this wait
- * "renders nothing" passes before the status has arrived.
+ * race back. The wait is tied to the data: `json()` holds the body until the
+ * test releases it inside act(), which returns only once everything the body
+ * caused is committed. That serves both kinds of test here: the positive ones
+ * could wait on the banner itself, but the negative ones commit `null`, so
+ * there is no DOM change to wait for, and without this wait "renders nothing"
+ * passes before the status has arrived.
  */
 async function renderWithStatus(data: object) {
-  const load = trackDataApplied();
-  mockFetch.mockResolvedValue({ ok: true, json: () => load.deliver(data) } as Response);
-  render(load.wrap(<EnterpriseBanner isAdmin={true} />));
-  await load.waitForApplied();
+  const load = holdResults();
+  mockFetch.mockResolvedValue({ ok: true, json: () => load.resolveWith(data) } as Response);
+  render(<EnterpriseBanner isAdmin={true} />);
+  await load.release();
 }
 
 describe("EnterpriseBanner", () => {

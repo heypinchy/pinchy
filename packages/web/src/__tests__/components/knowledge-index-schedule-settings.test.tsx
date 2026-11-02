@@ -7,7 +7,7 @@ import "@testing-library/jest-dom";
 import { KnowledgeIndexScheduleSettings } from "@/components/knowledge-index-schedule-settings";
 import { apiGet, apiPut, ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
-import { holdResult } from "@/test-helpers/data-applied";
+import { holdResults } from "@/test-helpers/hold-results";
 
 vi.mock("@/lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api-client")>();
@@ -167,14 +167,14 @@ describe("KnowledgeIndexScheduleSettings", () => {
 
   it("stays out of the way if the status cannot be read", async () => {
     // A swallowed rejection commits nothing, so there is no render to wait
-    // for: the failure is released inside act() instead.
-    const read = holdResult<never>();
-    mockGet.mockReturnValue(read.promise);
+    // for: the release itself is the signal.
+    const read = holdResults();
+    mockGet.mockImplementation(() => read.rejectWith(new Error("network down")));
 
     const { container } = render(<KnowledgeIndexScheduleSettings />);
 
     expect(mockGet).toHaveBeenCalled();
-    await read.reject(new Error("network down"));
+    await read.release();
     expect(container).toBeEmptyDOMElement();
   });
 });
