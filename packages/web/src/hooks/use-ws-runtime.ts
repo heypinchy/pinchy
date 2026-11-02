@@ -10,6 +10,7 @@ import {
   stripTrailingPlaceholder,
 } from "@/hooks/in-flight-placeholder";
 import { DELAY_HINT_MS } from "@/lib/chat-liveness";
+import { ACCOUNT_DEACTIVATED_CLOSE_CODE, leaveDeactivatedAccount } from "@/lib/account-deactivated";
 import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
 import { attachDeliveredFile } from "@/hooks/attach-delivered-file";
 import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
@@ -1086,6 +1087,18 @@ export function useWsRuntime(
         if (delayTimerRef.current) {
           clearTimeout(delayTimerRef.current);
           delayTimerRef.current = null;
+        }
+
+        // Close-code 4403: the account was deactivated (server/user-sockets.ts).
+        // Its sessions are gone, so every reconnect would fail the upgrade —
+        // ten tries behind a "reconnecting" status for something no retry can
+        // fix. Leave for the login page instead, where an expired session ends
+        // up too and where a deactivated account is told it can't sign in.
+        if (event?.code === ACCOUNT_DEACTIVATED_CLOSE_CODE) {
+          isRunningRef.current = false;
+          setIsRunning(false);
+          leaveDeactivatedAccount();
+          return;
         }
 
         if (lifecycleSuspendedRef.current) {

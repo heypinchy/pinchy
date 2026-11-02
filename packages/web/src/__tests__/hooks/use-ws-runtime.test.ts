@@ -39,6 +39,14 @@ vi.mock("@/lib/image-compression", () => ({
   })),
 }));
 
+// A deactivated account leaves for /login (full page load). jsdom cannot
+// navigate, so the one function that does is replaced and observed.
+const mockLeaveDeactivatedAccount = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/account-deactivated", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/account-deactivated")>()),
+  leaveDeactivatedAccount: mockLeaveDeactivatedAccount,
+}));
+
 // Track all created WebSocket instances
 let wsInstances: MockWebSocket[] = [];
 
@@ -3080,6 +3088,84 @@ describe("useWsRuntime", () => {
     // Waiting on would end in the history timeout, which reads as a network
     // fault instead of the explanation the bubble carries.
     expect(result.current.isHistoryLoaded).toBe(true);
+  });
+
+  it("treats the deactivation refusal as final: no Retry, and the history wait ends", () => {
+    // A tab that reconnects in the moment the account is deactivated gets the
+    // refusal instead of history — the upgrade passed, then the registry
+    // closed the socket on registration (server/user-sockets.ts).
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+    act(() => {
+      ws.simulateMessage({
+        type: "error",
+        code: "policy_account_deactivated",
+        message: "Your account has been deactivated.",
+      });
+    });
+
+    expect(result.current.isHistoryLoaded).toBe(true);
+    const errorMsg = store(result.current.runtime).messages.find(
+      (m: any) => m.role === "assistant" && m.metadata?.custom?.error
+    );
+    expect(errorMsg!.metadata!.custom.error).toEqual({
+      message: "Your account has been deactivated.",
+    });
+    expect(errorMsg!.metadata!.custom.retryable).toBeUndefined();
+  });
+
+  it("does not reconnect after close code 4403 and leaves for the login page", () => {
+    // The account is deactivated and its sessions are gone: every reconnect
+    // would fail the upgrade, ten times over, behind a "reconnecting" status.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+      ws.simulateMessage({ type: "history", messages: [] });
+    });
+    act(() => {
+      store(result.current.runtime).onNew({
+        content: [{ type: "text", text: "Send the invoices" }],
+        parentId: "root",
+      });
+    });
+    act(() => {
+      ws.simulateMessage({
+        type: "error",
+        code: "policy_account_deactivated",
+        message: "Your account has been deactivated.",
+      });
+      ws.simulateClose(4403);
+    });
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(wsInstances).toHaveLength(1);
+    expect(mockLeaveDeactivatedAccount).toHaveBeenCalledTimes(1);
+    expect(result.current.isRunning).toBe(false);
+  });
+
+  it("still reconnects after an ordinary close and stays on the page", () => {
+    renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+      ws.simulateMessage({ type: "history", messages: [] });
+      ws.simulateClose(1006);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(wsInstances.length).toBeGreaterThan(1);
+    expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();
   });
 
   // ── status reducer ───────────────────────────────────────────────────────────

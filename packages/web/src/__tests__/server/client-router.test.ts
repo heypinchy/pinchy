@@ -2887,7 +2887,11 @@ describe("ClientRouter", () => {
         expect(mockSessionsHistory).not.toHaveBeenCalled();
         expect(mockFindFirst).not.toHaveBeenCalled();
         expect(clientWs.sent.map((s) => JSON.parse(s))).toEqual([
-          { type: "error", message: "Your account has been deactivated." },
+          {
+            type: "error",
+            code: "policy_account_deactivated",
+            message: "Your account has been deactivated.",
+          },
         ]);
         expect(clientWs.close).toHaveBeenCalledWith(
           ACCOUNT_DEACTIVATED_CLOSE_CODE,

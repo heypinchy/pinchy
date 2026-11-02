@@ -73,8 +73,11 @@ describe("UserSocketRegistry", () => {
         code: ACCOUNT_DEACTIVATED_CLOSE_CODE,
         reason: "Account deactivated",
       });
+      // `policy_` makes the tab treat it as final: no Retry button, and the
+      // wait for a history frame that is not coming ends (use-ws-runtime).
       expect(c.frames).toContainEqual({
         type: "error",
+        code: "policy_account_deactivated",
         message: "Your account has been deactivated.",
       });
     }

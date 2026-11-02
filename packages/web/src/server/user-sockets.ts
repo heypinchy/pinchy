@@ -1,4 +1,10 @@
 import type { WebSocket } from "ws";
+import {
+  ACCOUNT_DEACTIVATED_CLOSE_CODE,
+  ACCOUNT_DEACTIVATED_ERROR_CODE,
+} from "@/lib/account-deactivated";
+
+export { ACCOUNT_DEACTIVATED_CLOSE_CODE };
 
 /**
  * Open browser sockets per user, so deactivating an account reaches the chats
@@ -17,11 +23,10 @@ import type { WebSocket } from "ws";
  * the deactivation already emptied. Reactivation (`restore()`) clears it.
  */
 
-/** Application close code (RFC 6455 reserves 4000–4999 for these). */
-export const ACCOUNT_DEACTIVATED_CLOSE_CODE = 4403;
 const CLOSE_REASON = "Account deactivated";
 const ERROR_FRAME = JSON.stringify({
   type: "error",
+  code: ACCOUNT_DEACTIVATED_ERROR_CODE,
   message: "Your account has been deactivated.",
 });
 
