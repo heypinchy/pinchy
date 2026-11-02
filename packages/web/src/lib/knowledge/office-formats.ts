@@ -143,6 +143,20 @@ export class OfficeFileRejectedError extends Error {
 }
 
 /**
+ * The checked copy of an Office file could not be written where the converter
+ * reads it: a full, read-only or failing artifact volume. Thrown for the
+ * DESTINATION only — a source that cannot be read is about the document —
+ * because nothing here is a verdict on the file: the converter books it as
+ * infrastructure, retried next run, and the index keeps what it had.
+ */
+export class StagedCopyWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StagedCopyWriteError";
+  }
+}
+
+/**
  * One word-splitting rule for both sides of the conversion's comparison — two
  * rules would make the bound meaningless. Here, in the import-free module,
  * because the word-count reader's child counts with it too.

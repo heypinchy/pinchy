@@ -71,7 +71,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 
-import { OfficeFileRejectedError } from "./office-formats";
+import { OfficeFileRejectedError, StagedCopyWriteError } from "./office-formats";
 import type { StagedSource } from "./office-preflight";
 import {
   XlsxExtractionError,
@@ -124,6 +124,8 @@ function readerName(request: SheetReaderRequest): string {
 export type SheetReaderFailure =
   | { kind: "rejected"; code: OfficeFileRejectedError["code"]; message: string }
   | { kind: "unreadable"; sourcePath: string; reason: string }
+  /** The checked copy could not be written: about the volume, not the file. */
+  | { kind: "staged-copy-write"; message: string }
   | { kind: "error"; message: string };
 
 /** Every message the child sends. */
@@ -267,6 +269,8 @@ function failureToError(failure: SheetReaderFailure, name: string): Error {
       return new OfficeFileRejectedError(failure.code, failure.message);
     case "unreadable":
       return new XlsxExtractionError(failure.sourcePath, failure.reason);
+    case "staged-copy-write":
+      return new StagedCopyWriteError(failure.message);
     default:
       return new Error(`${name} failed: ${failure.message}`);
   }
@@ -462,8 +466,9 @@ export async function countDocxWordsIsolated(
  * read, checked and written to `dest` there, and only what was done comes
  * back. Refusals — the preflight's own, or a check that ran out of heap —
  * are `OfficeFileRejectedError`; a child that stopped any other way is a
- * `SheetReaderStoppedError`; a file the child could not read or write
- * (vanished, unreadable) is a plain error.
+ * `SheetReaderStoppedError`; a copy the child could not write to `dest` (a
+ * full or read-only volume) is a `StagedCopyWriteError`; a file the child
+ * could not read (vanished, unreadable) is a plain error.
  */
 export async function stageOfficeSourceIsolated(
   absPath: string,

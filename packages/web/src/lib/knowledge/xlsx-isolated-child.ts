@@ -11,7 +11,7 @@ import { writeFileSync } from "node:fs";
 
 import mammoth from "mammoth";
 
-import { countWords, OfficeFileRejectedError } from "./office-formats";
+import { countWords, OfficeFileRejectedError, StagedCopyWriteError } from "./office-formats";
 import { readGuardedDocx, stageOfficeSource } from "./office-preflight";
 import { extractXlsx, readSheetRange, XlsxExtractionError } from "./xlsx-extract";
 import type { SheetReaderFailure, SheetReaderMessage, SheetReaderRequest } from "./xlsx-isolated";
@@ -37,6 +37,9 @@ function toFailure(err: unknown): SheetReaderFailure {
   }
   if (err instanceof XlsxExtractionError) {
     return { kind: "unreadable", sourcePath: err.sourcePath, reason: err.reason };
+  }
+  if (err instanceof StagedCopyWriteError) {
+    return { kind: "staged-copy-write", message: err.message };
   }
   return { kind: "error", message: err instanceof Error ? err.message : String(err) };
 }

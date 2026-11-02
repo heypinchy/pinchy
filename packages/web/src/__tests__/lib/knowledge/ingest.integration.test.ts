@@ -8,7 +8,7 @@
  * real PDF parsing — and exercises the orchestration + idempotency/staleness
  * logic that Task 6 owns.
  */
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Every path this process reads WHOLE (`readFile`). A pass-through: nothing
@@ -33,7 +33,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmod } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { and, eq } from "drizzle-orm";
 
@@ -50,9 +51,16 @@ import {
   type IngestProgress,
   type IngestResult,
 } from "@/lib/knowledge/ingest";
-import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
+import { OfficeFileRejectedError, StagedCopyWriteError } from "@/lib/knowledge/office-formats";
 import type { XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
-import type { ConversionOutcome } from "@/lib/knowledge/office-convert";
+import {
+  convertOfficeFiles,
+  type ConversionOutcome,
+  type OfficeSource,
+  type PrepareSource,
+} from "@/lib/knowledge/office-convert";
+import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
+import { stageOfficeSourceIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 
 const ORG_ID = "org-kb-ingest-test";
@@ -1746,6 +1754,87 @@ it("keeps the last indexed version when a re-conversion of a changed file fails 
   expect(after.id).toBe(before.id);
   expect((await chunksFor(after.id)).map((c) => c.id).sort()).toEqual(
     chunksBefore.map((c) => c.id).sort()
+  );
+});
+
+describe("a staged copy that cannot be written (eighth review, PR #1243)", () => {
+  // The reader child writes each checked copy onto the artifact volume. A
+  // full or read-only volume there is a squeeze on the machine, not a verdict
+  // on the document: a CHANGED file must keep the version the index holds and
+  // be read again next run, not be replaced by a row with no chunks.
+  const runningAsRoot = process.getuid?.() === 0;
+  let storeRoot: string;
+
+  beforeEach(() => {
+    storeRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-store-"));
+  });
+
+  afterEach(() => {
+    rmSync(storeRoot, { recursive: true, force: true });
+  });
+
+  /** The real converter, with `prepareSource` swapped and LibreOffice never reached. */
+  function realConverterDeps(prepareSource: PrepareSource) {
+    const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05)));
+    return {
+      embed,
+      extractPdf: vi.fn(async () => WORD_PAGES),
+      extractXlsx: neverCalledXlsx,
+      convertOffice: (sources: readonly OfficeSource[]) =>
+        convertOfficeFiles(sources, {
+          store: new OfficeArtifactStore(storeRoot),
+          prepareSource,
+          runConverter: async () => {
+            throw new Error("the converter must not run when nothing could be staged");
+          },
+        }),
+      ocrModel: null,
+    } as IngestDeps;
+  }
+
+  async function expectOldVersionKept(prepareSource: PrepareSource) {
+    const docPath = join(tmpRoot, "Angebot.doc");
+    writeFileSync(docPath, "{\\rtf1 version one}");
+    const good = officeDeps(convertedTo("/artifacts/v1.pdf"), () => WORD_PAGES);
+    expect(await ingestDirectory(ORG_ID, tmpRoot, good.deps)).toEqual(counts({ indexed: 1 }));
+    const [before] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+    const chunksBefore = await chunksFor(before.id);
+    expect(chunksBefore.length).toBeGreaterThan(0);
+
+    writeFileSync(docPath, "{\\rtf1 version two}");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, realConverterDeps(prepareSource))).toEqual(
+        counts({ failed: 1 })
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    const [after] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+    expect(after.id).toBe(before.id);
+    expect(after.contentHash).toBe(before.contentHash);
+    expect((await chunksFor(after.id)).map((c) => c.id).sort()).toEqual(
+      chunksBefore.map((c) => c.id).sort()
+    );
+  }
+
+  it("keeps the last indexed version when the volume is full", async () => {
+    await expectOldVersionKept(async () => {
+      throw new StagedCopyWriteError("ENOSPC: no space left on device, write");
+    });
+  });
+
+  it.skipIf(runningAsRoot)(
+    "keeps the last indexed version when the staging directory may not be written to",
+    async () => {
+      // Through the real reader child. Skipped as root, which the mode bits
+      // do not stop.
+      await expectOldVersionKept(async (absPath, staged) => {
+        await chmod(dirname(staged), 0o500);
+        return stageOfficeSourceIsolated(absPath, staged);
+      });
+    }
   );
 });
 

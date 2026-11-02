@@ -61,6 +61,7 @@ import {
   OFFICE_CONVERT_BATCH_SIZE,
   OFFICE_EXTENSIONS,
   OfficeFileRejectedError,
+  StagedCopyWriteError,
   isOfficeFile,
 } from "./office-formats";
 import type { StagedSource } from "./office-preflight";
@@ -190,8 +191,9 @@ export interface ConvertProgress {
  * Vets one source and writes the bytes to convert to `staged`, answering with
  * what it did — or `null` to convert the file in place, through a link (what
  * the tests that fake the converter use). Throws `OfficeFileRejectedError` for
- * a file that must not reach a reader, and `SheetReaderStoppedError` when the
- * process doing the vetting stopped without a verdict.
+ * a file that must not reach a reader, `StagedCopyWriteError` when `staged`
+ * cannot be written, and `SheetReaderStoppedError` when the process doing the
+ * vetting stopped without a verdict.
  */
 export type PrepareSource = (absPath: string, staged: string) => Promise<StagedSource | null>;
 
@@ -386,6 +388,14 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
           outcomes[i] = infrastructureFailure(
             item.absPath,
             `could not check the source: ${err.message}`
+          );
+        } else if (err instanceof StagedCopyWriteError) {
+          // The source was read and checked; only the volume refused the
+          // copy — full, read-only, failing. Like a staging directory that
+          // cannot be created, that is the machine, not this document.
+          outcomes[i] = infrastructureFailure(
+            item.absPath,
+            `could not write the staged copy: ${err.message}`
           );
         } else {
           outcomes[i] = documentFailure(item.absPath, `could not stage source: ${reasonOf(err)}`);

@@ -17,7 +17,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { constants as fsConstants, mkdtempSync, rmSync } from "node:fs";
-import { mkdir, open, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
@@ -37,7 +37,7 @@ import {
 } from "@/lib/knowledge/office-convert";
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
 import { MAX_DOCX_MARKUP_BYTES } from "../../../../../plugins/pinchy-files/docx-zip-guard";
-import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
+import { OfficeFileRejectedError, StagedCopyWriteError } from "@/lib/knowledge/office-formats";
 import { countDocxWordsIsolated, stageOfficeSourceIsolated } from "@/lib/knowledge/xlsx-isolated";
 import {
   declaredBomb,
@@ -931,6 +931,97 @@ describe("preflight before conversion (release review v0.10.0)", () => {
       expect(await countSourceWordsWithOracle(path)).toBeNull();
       expect(await rejection(countDocxWordsIsolated(path))).toBeInstanceOf(OfficeFileRejectedError);
     }
+  });
+});
+
+describe("a staged copy that cannot be written is infrastructure, not a verdict (eighth review, PR #1243)", () => {
+  // The reader child writes the checked copy onto the artifact volume, up to
+  // 20 copies of up to 200 MB per batch. A full or read-only volume there says
+  // nothing about the document — exactly like a staging directory that cannot
+  // be created, or a store that refuses the PDF — so it must be retryable.
+  // Booked as a document failure, a CHANGED file would lose the version the
+  // index already held to a chunkless row.
+  const RTF = "{\\rtf1 checked words}";
+  const runningAsRoot = process.getuid?.() === 0;
+
+  it("books a full volume under the staged copy as infrastructure, and converts its neighbours", async () => {
+    const [full, good] = [await corpusFile("full.doc", "x"), await corpusFile("good.doc", "y")];
+    const converter = fakeConverter({ outputs: { "good.doc": "converted words" } });
+
+    const outcomes = await convertOfficeFiles(
+      [full, good],
+      deps(converter, {
+        prepareSource: async (absPath) => {
+          if (absPath === full.absPath) {
+            throw new StagedCopyWriteError("ENOSPC: no space left on device, write");
+          }
+          return null;
+        },
+      })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "converted"]);
+    expect(outcomes[0].reason).toMatch(/could not write the staged copy: .*ENOSPC/);
+  });
+
+  it("with the real reader child, books a destination it cannot write to as infrastructure", async () => {
+    // ENOENT on purpose: the same errno a vanished SOURCE gives, so what is
+    // pinned is which side of the copy failed, not which errno came back.
+    const source = await corpusFile("a.doc", RTF);
+    const converter = fakeConverter({ outputs: {} });
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(converter, {
+        prepareSource: (absPath, staged) =>
+          stageOfficeSourceIsolated(absPath, join(dirname(staged), "missing", basename(staged))),
+      })
+    );
+
+    expect(outcomes[0].status).toBe("infrastructure");
+    expect(outcomes[0].reason).toMatch(/could not write the staged copy: .*ENOENT/);
+    expect(converter.calls).toHaveLength(0);
+  });
+
+  it.skipIf(runningAsRoot)(
+    "with the real reader child, books a staging directory it may not write to as infrastructure",
+    async () => {
+      // Skipped as root: the kernel ignores the mode bits for root, so the
+      // write would succeed and the test would prove nothing.
+      const source = await corpusFile("a.doc", RTF);
+
+      const outcomes = await convertOfficeFiles(
+        [source],
+        deps(fakeConverter({ outputs: {} }), {
+          prepareSource: async (absPath, staged) => {
+            await chmod(dirname(staged), 0o500);
+            return stageOfficeSourceIsolated(absPath, staged);
+          },
+        })
+      );
+
+      expect(outcomes[0].status).toBe("infrastructure");
+      expect(outcomes[0].reason).toMatch(/could not write the staged copy: .*EACCES/);
+    }
+  );
+
+  it("with the real reader child, still books a source that vanished as a document failure", async () => {
+    // The other side of the line: the copy failed because of the document,
+    // not because of where it was going.
+    const source = await corpusFile("gone.doc", RTF);
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(fakeConverter({ outputs: {} }), {
+        prepareSource: async (absPath, staged) => {
+          await rm(absPath);
+          return stageOfficeSourceIsolated(absPath, staged);
+        },
+      })
+    );
+
+    expect(outcomes[0].status).toBe("failed");
+    expect(outcomes[0].reason).toMatch(/could not stage source: .*ENOENT/);
   });
 });
 

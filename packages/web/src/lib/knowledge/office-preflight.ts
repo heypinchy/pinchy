@@ -97,7 +97,11 @@ import {
   type ZipLimits,
 } from "../../../../plugins/pinchy-files/docx-zip-guard";
 
-import { OfficeFileRejectedError, isPresentationFile } from "./office-formats";
+import {
+  OfficeFileRejectedError,
+  StagedCopyWriteError,
+  isPresentationFile,
+} from "./office-formats";
 import {
   assembleZip,
   deflatedPart,
@@ -1741,6 +1745,8 @@ export async function prepareOfficeSource(
  * by piece out of it, never assembled into a third.
  *
  * @throws OfficeFileRejectedError when the file must not be handed to a reader.
+ * @throws StagedCopyWriteError when `dest` cannot be written — about the
+ *   volume, not the document.
  */
 export async function stageOfficeSource(
   absPath: string,
@@ -1748,7 +1754,11 @@ export async function stageOfficeSource(
   opts: PreflightOptions = {}
 ): Promise<StagedSource> {
   const { chunks, staged } = await checkedChunks(absPath, opts);
-  await writeFile(dest, chunks, { flag: "wx" });
+  try {
+    await writeFile(dest, chunks, { flag: "wx" });
+  } catch (err) {
+    throw new StagedCopyWriteError(err instanceof Error ? err.message : String(err));
+  }
   return staged;
 }
 
