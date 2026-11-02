@@ -1018,7 +1018,7 @@ An update is saved only if the provider still has the base URL and key it was ch
 **Errors:**
 
 - `400` — invalid body, e.g. a `baseUrl` that is not an http(s) URL or longer than 2048 characters
-- `404` — no provider with that `id`
+- `404` — no provider with that `id`, or it was deleted while this update was being saved
 - `409` — the provider changed while this update was being saved; reload and try again
 - `422` — the base URL is not allowed, the update changes `baseUrl` without a fresh `apiKey`, or a new provider's endpoint lists no models and no `manualModelIds` were given
 
@@ -1518,7 +1518,7 @@ A stored secret never follows the connection to a new destination. If the update
 | Odoo | `url` (trailing slash ignored), `db`                       | `apiKey`          |
 | IMAP | `imapHost`, `imapPort`, `smtpHost`, `smtpPort`, `security` | `password`        |
 
-Without it the request is rejected with `422` and a field error on the secret, before anything is sent to the new destination, and the refusal is written to the audit trail as a failed `integration.credentials_updated` row. Changing only the login, username, or sender name keeps the stored secret.
+Without it the request is rejected with `422` and a field error on the secret, before anything is sent to the new destination, and the refusal is written to the audit trail as a failed `integration.credentials_updated` row. Changing only the login, username, or sender name keeps the stored secret. A credential update that the service rejects (`400`) or that loses a race against another save (`409`) changes nothing, and is written to the audit trail as a failed `integration.credentials_updated` row too.
 
 **Errors:**
 

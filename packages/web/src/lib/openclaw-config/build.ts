@@ -1743,6 +1743,10 @@ async function regenerateOpenClawConfigOnce(): Promise<void> {
   // early returns for exactly that reason. It costs no `config.apply` rate-limit
   // slot, so the no-op guard keeps doing the job it exists for.
   //
+  // (OpenAI-compatible providers are the deliberate exception: their key slot
+  // is versioned, so a rotation re-points the SecretRef in openclaw.json and
+  // travels with the config apply below — no reload. See writeSecretsFile.)
+  //
   // The flag is "a value was added or rotated", NOT "the file changed": a pure
   // removal must stay silent here, because OpenClaw would re-resolve the config
   // it is still running — which points at the key this regenerate just took

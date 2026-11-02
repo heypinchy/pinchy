@@ -174,12 +174,21 @@ function hasNewOrRotatedValue(previousContent: string | undefined, next: Secrets
  * holding a stale credential.
  *
  * The return value is load-bearing, not a convenience: a rotation on an
- * already-configured provider changes THIS FILE AND NOTHING ELSE. The emitted
- * `openclaw.json` carries a SecretRef, not the value, so it stays byte-identical
- * and every config-level change detector correctly concludes "no change" — after
- * which nothing tells the running OpenClaw that the credential it resolved at
- * process start is now stale (#943). Callers use this flag to push a
- * `secrets.reload` that no config diff would ever trigger.
+ * already-configured built-in provider (or any other unversioned slot) changes
+ * THIS FILE AND NOTHING ELSE. The emitted `openclaw.json` carries a SecretRef,
+ * not the value, so it stays byte-identical and every config-level change
+ * detector correctly concludes "no change" — after which nothing tells the
+ * running OpenClaw that the credential it resolved is now stale (#943). Callers
+ * use this flag to push a `secrets.reload` that no config diff would ever
+ * trigger.
+ *
+ * An OpenAI-compatible provider is the exception, on purpose. Its key lives in
+ * a versioned slot (`providers.<slug>@<keyVersion>`, see versionedSecretName),
+ * so a rotation DOES change `openclaw.json` — the SecretRef names the new slot —
+ * and the new key reaches OpenClaw with that config apply. A versioned slot
+ * therefore never sets this flag (see hasNewOrRotatedValue): a reload would
+ * re-resolve the config OpenClaw is still running, which points at the old
+ * slot, and must not be the route by which a key meets an address.
  *
  * A pure REMOVAL returns false even though the file did change. OpenClaw
  * re-resolves the config it is currently running, and that config still points

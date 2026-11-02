@@ -44,9 +44,11 @@ At startup — and every time you change a provider or integration — Pinchy ca
 1. Reads all relevant rows from PostgreSQL
 2. Decrypts each value in memory
 3. Writes the decrypted keys to `/openclaw-secrets/secrets.json`
-4. Tells OpenClaw to re-read that file whenever its contents changed
+4. Tells OpenClaw to re-read that file whenever a key in it was added or changed in place
 
-Step 4 is what makes rotation immediate. OpenClaw resolves each pointer once and holds the value for the life of the process, and `openclaw.json` is unchanged by a rotation — it carries the pointer, not the key. So a new key would otherwise sit in the file unread until the container restarted, with every agent still presenting the old one.
+Step 4 is what makes rotation immediate for the built-in providers and the integrations. OpenClaw resolves each pointer when it loads a configuration and keeps the value until the next config apply or re-read, and for these keys `openclaw.json` is unchanged by a rotation — it carries the pointer, not the key. So a new key would otherwise sit in the file unread until the container restarted, with every agent still presenting the old one.
+
+OpenAI-compatible providers are the exception. Each newly entered key gets a slot of its own, so a rotation does change `openclaw.json`: its pointer now names the new slot. Pinchy deliberately skips the re-read for these keys — the new key reaches OpenClaw with the config apply that carries the new pointer, and never on its own (see below).
 
 The `/openclaw-secrets/` directory is a Docker `tmpfs` mount. tmpfs is RAM-based storage — it's never written to disk, never included in Docker volume exports, and disappears on container restart.
 
@@ -67,7 +69,7 @@ The directory is owned by uid/gid 999 (the `pinchy` system user inside the Pinch
 OpenAI-compatible providers take a stricter route than the built-in ones, because their address is set by you rather than fixed by Pinchy. A key must only ever reach the address it was entered for, and Pinchy holds to that at three points:
 
 - **Saving.** Changing a provider's base URL needs the key typed again. And a save only lands if the stored address and key are still the ones Pinchy checked it against when the request arrived. If another save changed either in the meantime, nothing is written and the request is answered with `409`.
-- **Reading.** Step 1 above reads each provider's address, models and key in a single query, so everything written for a provider comes from one saved state of it. A save that lands while the files are being written is picked up by the next regenerate, which that save triggers itself — it is never mixed into the current one. The model list Pinchy fetches during the regenerate uses that same address and key.
+- **Reading.** Step 1 above reads each provider's address, models and key in a single query, so everything written for a provider comes from one saved state of it. Regenerates run one at a time: the regenerate a save triggers starts only after any regenerate already running has finished, so a save is never mixed into a regenerate that read the provider before it, and a regenerate that read the older state can never write after the one that read the newer. The model list Pinchy fetches during the regenerate uses that same address and key; a list fetched earlier for a different address or key is never reused.
 - **Applying.** Each provider's key sits under a slot named for the key itself — `/providers/<slug>@<version>/apiKey`, where the version is a fingerprint of the stored ciphertext — so every newly entered key gives `openclaw.json` a new pointer. The base URL and the key entered for it then reach OpenClaw together, in one config apply: OpenClaw never sends the new key to the old address, or the old key to a new one. A configuration still pointing at the previous version resolves nothing, and OpenClaw stays on its last working configuration until the new one arrives.
 
 ## What this protects against
@@ -104,7 +106,7 @@ The defense-in-depth scan that runs at config-write time recognises known provid
 
 ## Key rotation
 
-If you suspect an API key has been exposed, rotate it at the provider and update it in Pinchy via **Settings → AI Provider**. Pinchy writes the new encrypted value to PostgreSQL, regenerates the secrets file, and tells OpenClaw to re-resolve it — so your agents stop presenting the exposed key within seconds, without a restart. See [Rotate an API key](/guides/llm-providers/#rotate-an-api-key) for the operator's view.
+If you suspect an API key has been exposed, rotate it at the provider and update it in Pinchy via **Settings → AI Provider**. Pinchy writes the new encrypted value to PostgreSQL, regenerates the secrets file, and tells OpenClaw to re-resolve it — for an OpenAI-compatible provider, by applying a configuration that points at the new key's slot — so your agents stop presenting the exposed key within seconds, without a restart. See [Rotate an API key](/guides/llm-providers/#rotate-an-api-key) for the operator's view.
 
 ## Reporting a vulnerability
 
