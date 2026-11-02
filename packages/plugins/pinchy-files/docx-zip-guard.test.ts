@@ -563,6 +563,27 @@ describe("verifiedZipCopy — a ceiling per entry", () => {
     const copy = await verifiedZipCopy(zip, { ...LIMITS, maxEntryBytes: 1000 });
     expect(contentsOf(copy).get("a.xml")!.length).toBe(1000);
   });
+
+  it("holds the entries a reader parses to a tighter ceiling, and only those (fifth review, PR #1243)", async () => {
+    const limits = {
+      ...LIMITS,
+      maxEntryBytes: 4000,
+      maxParsedEntryBytes: { bytes: 1000, parses: (name: string) => !name.startsWith("media/") },
+    };
+    const picture = rawZip([honest("a.xml", "x"), honest("media/p.png", "p".repeat(3000))]);
+    expect(contentsOf(await verifiedZipCopy(picture, limits)).get("media/p.png")!.length).toBe(
+      3000
+    );
+
+    const sheet = rawZip([honest("a.xml", "x".repeat(1001))]);
+    const parsedErr = await refusal(verifiedZipCopy(sheet, limits));
+    expect(parsedErr).toBeInstanceOf(ZipLimitError);
+    expect(parsedErr.message).toMatch(/a\.xml.*1000-byte limit/);
+
+    const hugePicture = rawZip([honest("media/p.png", "p".repeat(4001))]);
+    const generalErr = await refusal(verifiedZipCopy(hugePicture, limits));
+    expect(generalErr.message).toMatch(/media\/p\.png.*4000-byte limit/);
+  });
 });
 
 // ---------------------------------------------------------------------------

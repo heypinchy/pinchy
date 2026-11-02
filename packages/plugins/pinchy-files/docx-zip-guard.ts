@@ -249,6 +249,14 @@ export interface ZipLimits {
    */
   maxEntryBytes?: number;
   /**
+   * A tighter `maxEntryBytes` for the entries a reader PARSES — `parses(name)`
+   * says which — while every other entry keeps `maxEntryBytes`. exceljs builds
+   * a model at ~20x the XML it parses but only copies a picture, so one
+   * ceiling for both refused a two-row price list over its product photo
+   * (fifth review, PR #1243).
+   */
+  maxParsedEntryBytes?: { bytes: number; parses: (name: string) => boolean };
+  /**
    * Ceiling on the MARKUP a reader may parse: the summed size of every part it
    * could read as XML. A DOM-building reader (mammoth) pays for that, many
    * times over, while a picture costs it nothing — so a per-entry ceiling low
@@ -277,11 +285,15 @@ export function assertZipWithinLimits(buffer: Buffer, limits: ZipLimits): void {
 }
 
 function assertDeclaredWithinLimits(buffer: Buffer, entries: ZipEntryInfo[], limits: ZipLimits) {
-  if (limits.maxEntryBytes !== undefined) {
-    const oversized = entries.find((entry) => entry.uncompressedSize > limits.maxEntryBytes!);
-    if (oversized) {
+  for (const entry of entries) {
+    const parsed = limits.maxParsedEntryBytes;
+    const limit =
+      parsed && entry.uncompressedSize > parsed.bytes && parsed.parses(entry.name)
+        ? parsed.bytes
+        : limits.maxEntryBytes;
+    if (limit !== undefined && entry.uncompressedSize > limit) {
       throw new ZipLimitError(
-        `Archive entry "${oversized.name}" declares ${oversized.uncompressedSize} bytes, past the ${limits.maxEntryBytes}-byte limit for one entry.`
+        `Archive entry "${entry.name}" declares ${entry.uncompressedSize} bytes, past the ${limit}-byte limit for one entry.`
       );
     }
   }

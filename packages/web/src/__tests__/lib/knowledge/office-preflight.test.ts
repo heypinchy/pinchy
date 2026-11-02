@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
@@ -23,11 +24,19 @@ import {
   readWorkbookBuffer,
   sanitizeOoxmlPackage,
   stripExternalRelationships,
+  XLSX_MAX_ENTRY_BYTES,
   XLSX_MAX_FILE_BYTES,
   XLSX_MAX_PART_BYTES,
 } from "@/lib/knowledge/office-preflight";
 import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
-import { deflatedPart, inflatePart, readZipEntries } from "@/lib/knowledge/office-zip";
+import {
+  assembleZip,
+  deflatedPart,
+  inflatePart,
+  rawPart,
+  readZipEntries,
+  type ZipPart,
+} from "@/lib/knowledge/office-zip";
 import {
   declaredBomb,
   docxWith,
@@ -560,6 +569,71 @@ describe("readWorkbookBuffer — one sheet part is capped (fourth review, PR #12
   it("reads a sheet part just under the cap", async () => {
     const xlsx = await workbookWithSheet(sheetOf(XLSX_MAX_PART_BYTES - 64 * 1024));
     await expect(readWorkbookBuffer(file("big.xlsx", xlsx))).resolves.toBeInstanceOf(Buffer);
+  });
+
+  // Fifth review (PR #1243): the cap is for what exceljs PARSES. It copies a
+  // picture under `xl/media/` as a Buffer and builds nothing from it, so a
+  // two-row price list with one 17 MB product photo is an ordinary workbook.
+  // Every other part it decodes to a string first — including parts it then
+  // ignores — so those keep the cap, wherever they sit.
+  /** `bytes` that do not compress, behind a PNG signature: a photo, as far as the archive can tell. */
+  const photo = (bytes: number) =>
+    Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), randomBytes(bytes - 8)]);
+
+  async function workbookWith(extra: ZipPart): Promise<Buffer> {
+    const wb = new ExcelJS.Workbook();
+    wb.addWorksheet("Prices").addRows([
+      ["Item", "Price"],
+      ["Widget", 3],
+    ]);
+    const base = Buffer.from(await wb.xlsx.writeBuffer());
+    return assembleZip([...readZipEntries(base).map((entry) => rawPart(base, entry)), extra]);
+  }
+
+  it("reads a workbook whose picture is past the part cap: exceljs copies a picture, it does not parse it", async () => {
+    const wb = new ExcelJS.Workbook();
+    const sheet = wb.addWorksheet("Prices");
+    sheet.addRows([
+      ["Item", "Price"],
+      ["Widget", 3],
+    ]);
+    const image = wb.addImage({
+      buffer: photo(XLSX_MAX_PART_BYTES + MiB) as unknown as ExcelJS.Buffer,
+      extension: "png",
+    });
+    sheet.addImage(image, "D2:H10");
+    const xlsx = Buffer.from(await wb.xlsx.writeBuffer());
+
+    await expect(readWorkbookBuffer(file("photo.xlsx", xlsx))).resolves.toBeInstanceOf(Buffer);
+  });
+
+  it.each([
+    [
+      "a part outside xl/media, which exceljs decodes to a string",
+      "xl/printerSettings/printerSettings1.bin",
+    ],
+    [
+      "a part under xl/media whose name an exceljs parser also matches",
+      "xl/media/xl/drawings/drawing9.xml",
+    ],
+  ])("still caps %s", async (_, name) => {
+    const xlsx = await workbookWith(deflatedPart(name, photo(XLSX_MAX_PART_BYTES + MiB)));
+    const err = await rejection(readWorkbookBuffer(file("odd.xlsx", xlsx)));
+    expect(err.code).toBe("too_large");
+    expect(err.message).toContain(name);
+    expect(err.message).toContain(`${XLSX_MAX_PART_BYTES}-byte limit`);
+  });
+
+  it("caps a picture at the ceiling every workbook entry has", async () => {
+    // Declared, not built: refused from the central directory alone.
+    const xlsx = await workbookWith({
+      ...deflatedPart("xl/media/image9.png", Buffer.alloc(64)),
+      uncompressedSize: XLSX_MAX_ENTRY_BYTES + 1,
+    });
+    const err = await rejection(readWorkbookBuffer(file("huge-photo.xlsx", xlsx)));
+    expect(err.code).toBe("too_large");
+    expect(err.message).toContain("xl/media/image9.png");
+    expect(err.message).toContain(`${XLSX_MAX_ENTRY_BYTES}-byte limit for one entry`);
   });
 });
 

@@ -148,10 +148,46 @@ const OOXML_LIMITS: ZipLimits = { maxDecompressedBytes: 500 * MiB, ...RATIO_RULE
  */
 export const XLSX_MAX_PART_BYTES = 16 * MiB;
 
+/**
+ * Does exceljs (4.4) PARSE this entry — or at least decode it to a string?
+ * Its loader walks EVERY entry: one whose name contains `xl/media/` is
+ * copied as a Buffer and becomes a picture; every other one is decoded to a
+ * string first and only then matched against what it knows, so even a part
+ * it ignores (printer settings, an embedded object) costs a string the size
+ * of the part. Its name tests are unanchored, so a `xl/media/` name that
+ * also contains `.xml` or `.vml` can reach a parser all the same: those
+ * count as parsed. Counting too much costs a refused oddity; counting too
+ * little costs the reader its heap.
+ */
+function exceljsParses(name: string): boolean {
+  return !/xl\/media\//.test(name) || /[.](?:xml|vml)/i.test(name);
+}
+
+/**
+ * The largest single entry of a workbook at all — in practice a picture,
+ * since every part exceljs parses is held to `XLSX_MAX_PART_BYTES`. exceljs
+ * copies a picture into Buffers, which the reader's heap cap does not bound.
+ * Measured in the shipped image under a 1 GB container limit, one picture of
+ * incompressible bytes beside two rows (fifth review, PR #1243):
+ *
+ *   picture     peak RSS of the reader
+ *   1 MiB       110 MB
+ *   17 MiB      188 MB
+ *   32 MiB      270 MB
+ *   64 MiB      427 MB
+ *
+ * 32 MiB keeps a single picture below what a sheet at the part cap costs
+ * (350 MB), and many of them do not add up: seven 32 MiB pictures peaked at
+ * 432 MB, fifteen of 16 MiB — what the old cap let through — at 438 MB. A
+ * phone photo is a few MB; a workbook past this is refused by its size.
+ */
+export const XLSX_MAX_ENTRY_BYTES = 32 * MiB;
+
 /** Workbooks: tighter, because the model exceljs builds is heavier than the XML it reads. */
 const XLSX_LIMITS: ZipLimits = {
   maxDecompressedBytes: 256 * MiB,
-  maxEntryBytes: XLSX_MAX_PART_BYTES,
+  maxEntryBytes: XLSX_MAX_ENTRY_BYTES,
+  maxParsedEntryBytes: { bytes: XLSX_MAX_PART_BYTES, parses: exceljsParses },
   ...RATIO_RULE,
 };
 
