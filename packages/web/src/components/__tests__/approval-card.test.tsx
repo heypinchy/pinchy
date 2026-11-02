@@ -404,6 +404,29 @@ describe("ApprovalCard shows what will actually run", () => {
       expect(screen.queryByRole("button", { name: /show next part/i })).not.toBeInTheDocument();
     });
 
+    // One character can cost more than a part — a letter under 9,000 accents
+    // — and is then split. Its two pieces draw differently than the whole
+    // character, so the card says where that happens.
+    it("says when a part ends or starts inside a character too long for one part", async () => {
+      const body = summarizeArgs({ body: `a${"\u0301".repeat(9_000)} ok` }).body as string;
+      renderCard({ body });
+      await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
+      expect(
+        screen.getByText(/the last character shown may go on in the next part/)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/may begin in the previous part/)).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /show next part/i }));
+      expect(
+        screen.getByText(/the first character shown may begin in the previous part/)
+      ).toBeInTheDocument();
+    });
+
+    it("says nothing about characters where a part ends between two of them", async () => {
+      renderCard({ body: `${"a".repeat(WHOLE_MAX)}SECOND-PART` });
+      await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
+      expect(screen.queryByText(/may go on in the next part/)).not.toBeInTheDocument();
+    });
+
     it("offers no parts for a text that fits in one", async () => {
       renderCard({ body: "a".repeat(WHOLE_MAX) });
       await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
@@ -630,6 +653,15 @@ describe("ApprovalCard shows what will actually run", () => {
       expect(copy.tagName).toBe("BDO");
       expect(copy).toHaveAttribute("dir", "ltr");
       expect(copy.children).toHaveLength(0);
+    });
+
+    // Cut by code point, the preview of "Café" ended "Cafe": a letter the
+    // value does not contain there.
+    it("previews a text up to a character boundary, and counts what it hides from there", () => {
+      const { container } = renderCard({ body: `${"x".repeat(199)}e\u0301${"y".repeat(100)}` });
+      const spoken = spokenText(container);
+      expect(spoken).toContain(`"${"x".repeat(199)}"…`);
+      expect(spoken).toContain("(102 more characters hidden)");
     });
 
     it("reads only the preview of a collapsed text, quoted, and says the rest is hidden", () => {

@@ -272,12 +272,28 @@ export function drawCost(text: string): number {
 
 /**
  * What the collapsed card draws of `text` — a value, or a display name beside
- * one: the whole text as `displayScalar` shows it, or its first PREVIEW_LEN
- * characters where the card previews it (`previewed`).
+ * one: the whole text as `displayScalar` shows it, or its preview where the
+ * card previews it (`previewed`).
  */
 export function drawnText(text: string, full: boolean): string {
   const shown = displayScalar(text);
-  return previewed(text, full) ? [...shown].slice(0, PREVIEW_LEN).join("") : shown;
+  return previewed(text, full) ? previewOf(shown) : shown;
+}
+
+/**
+ * The preview of `text`: its first PREVIEW_LEN characters (code points), cut
+ * back to a boundary between two characters as a person reads them, and never
+ * inside a `⟨…⟩` marker (`partEnd`). Cut by code point, the preview of `Café`
+ * ended `Cafe`, and of a flag in a lone regional indicator: a letter or a sign
+ * the value does not contain there.
+ */
+export function previewOf(text: string): string {
+  let limit = 0;
+  for (let count = 0; count < PREVIEW_LEN && limit < text.length; count++) {
+    limit += text.codePointAt(limit)! > 0xffff ? 2 : 1;
+  }
+  if (limit >= text.length) return text;
+  return text.slice(0, partEnd(text, 0, limit, characters(text), false));
 }
 
 /**
@@ -286,6 +302,9 @@ export function drawnText(text: string, full: boolean): string {
  * stretch of it as `displayScalar` draws it (escaped, and with the opening or
  * closing quote on the first or last part, where the text is drawn quoted);
  * `first`, `last` and `total` count characters as drawn, from 1.
+ * `startsInside` and `endsInside` say that the cut before or after the part
+ * may fall inside one character as a person reads it (`textWindow`), which
+ * then draws differently on either side of it.
  */
 export interface TextWindow {
   start: number;
@@ -294,6 +313,8 @@ export interface TextWindow {
   first: number;
   last: number;
   total: number;
+  startsInside: boolean;
+  endsInside: boolean;
 }
 
 /** A text as `displayScalar` draws it, without the quotes around it. */
@@ -301,11 +322,134 @@ function escaped(text: string, literal: boolean): string {
   return literal ? JSON.stringify(text).slice(1, -1) : text;
 }
 
-/** Absent before Firefox 125: a part then ends between code points, never inside one. */
+/** Absent before Firefox 125 (`characters`). */
 const GRAPHEMES =
   typeof Intl.Segmenter === "function"
     ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
     : null;
+
+/** Nothing is drawn across these: no letter joins, no mark or flag reaches over one. */
+const SPACING = new Set([" ", "\t", "\n"]);
+/**
+ * What belongs to the character in front of it, whatever that is (UAX #29
+ * GB9, GB9a): marks, joiners, skin tones, and Thai and Lao AM.
+ */
+const CLINGS = /^[\p{M}\p{Grapheme_Extend}\p{Emoji_Modifier}\u200C\u200D\u0E33\u0EB3]/u;
+/** Printable ASCII: nothing after one belongs to it but what CLINGS. */
+const ASCII = /^[\x20-\x7E]$/;
+
+/** Where the characters of a text, as a person reads them, begin. */
+interface Characters {
+  /** Does a character begin at offset `at` (0 < at < length)? */
+  startsAt(at: number): boolean;
+  /** The last offset after `floor` and at or before `at` where one begins, or -1. */
+  lastStart(at: number, floor: number): number;
+}
+
+/**
+ * The characters of `text` as a person reads them: its grapheme clusters
+ * (UAX #29), read with the WHOLE text — never with a part of it. Whether two
+ * regional indicators are one flag depends on how many stand before them in
+ * their run, wherever before the part it began.
+ *
+ * Without Intl.Segmenter (Firefox before 125) a character is known to begin
+ * only where the text around it shows it: after or before a line break or
+ * tab, and after a printable ASCII character — a space included — unless what
+ * follows CLINGS to it. Anywhere else it may or may not.
+ */
+function characters(text: string): Characters {
+  if (GRAPHEMES) {
+    const segments = GRAPHEMES.segment(text);
+    return {
+      startsAt: (at) => segments.containing(at)!.index === at,
+      lastStart(at, floor) {
+        const index = segments.containing(at)!.index;
+        return index > floor ? index : -1;
+      },
+    };
+  }
+  const startsAt = (at: number) => {
+    const before = text.charAt(at - 1);
+    const after = text.charAt(at);
+    if (before === "\n" || before === "\t" || after === "\n" || after === "\t") return true;
+    return ASCII.test(before) && !CLINGS.test(text.slice(at, at + 2));
+  };
+  return {
+    startsAt,
+    lastStart(at, floor) {
+      for (; at > floor; at--) if (startsAt(at)) return at;
+      return -1;
+    },
+  };
+}
+
+/** Is offset `at` inside a `⟨…⟩` marker? Every `⟨` opens one Pinchy wrote. */
+function insideMarker(text: string, at: number): boolean {
+  const open = text.lastIndexOf("⟨", at - 1);
+  return open !== -1 && text.slice(open, at).indexOf("⟩") === -1;
+}
+
+/** Is the code point at `at` a regional indicator — half of a flag? */
+function isIndicator(text: string, at: number): boolean {
+  const code = text.codePointAt(at)!;
+  return code >= 0x1f1e6 && code <= 0x1f1ff;
+}
+
+/**
+ * Where a stretch of `text` from `start` that may reach as far as `limit`
+ * (start < limit < text.length) ends. THE RULE: a cut changes nothing about
+ * how the text on either side of it is drawn — each side draws exactly the
+ * characters the whole text draws there, so what the parts show, one after
+ * the other, is what the whole shows, and no part shows a sign the whole does
+ * not. Cut between the two regional indicators of a flag, the next part
+ * paired every later indicator with the wrong partner: 🇦🇹🇩🇪🇺🇸 read 🇹🇩 (Chad),
+ * 🇪🇺 and a lone S. So a stretch ends:
+ *
+ * 1. with `afterSpace`, after the last space, tab or line break that fits:
+ *    nothing is drawn across one — no Arabic letter joins over it, no
+ *    conjunct, accent or flag reaches over it. A cut inside a word changes
+ *    the forms of the letters at it.
+ * 2. Else between two characters as a person reads them (`characters`): a
+ *    flag and its two indicators, a letter and its accents, a Hangul syllable
+ *    and its jamo, a conjunct, an emoji with its skin tone stay together, as
+ *    the whole text has them. Only a word longer than a part is cut here, and
+ *    letters that join across the cut, as Arabic ones do, take the forms they
+ *    have where a word ends and begins: the same letters, with the card's `…`
+ *    beside them saying the word goes on.
+ * 3. Else — one character alone costs more than a part, thousands of accents
+ *    on one letter — inside it, at the last code point that fits, and never
+ *    between the two indicators of a flag: it counts the indicators back to
+ *    the start of their run, before `start` too, so the ones after the cut
+ *    pair as they do in the whole text. Its two pieces still draw differently
+ *    from the whole character, so the card says so (`TextWindow.endsInside`).
+ *
+ * Never inside a `⟨…⟩` marker. Right-to-left words need nothing here: the
+ * card draws one part at a time, each held in stored order on its own
+ * (`inStoredOrder`), so no reordering reaches across a cut.
+ */
+function partEnd(
+  text: string,
+  start: number,
+  limit: number,
+  chars: Characters,
+  afterSpace: boolean
+): number {
+  if (afterSpace) {
+    for (let at = limit; at > start; at--) {
+      const spaced = SPACING.has(text.charAt(at - 1));
+      if (spaced && chars.startsAt(at) && !insideMarker(text, at)) return at;
+    }
+  }
+  for (let at = chars.lastStart(limit, start); at > start; at = chars.lastStart(at - 1, start)) {
+    if (!insideMarker(text, at)) return at;
+  }
+  let end = limit;
+  const open = text.lastIndexOf("⟨", end - 1);
+  if (open > start && insideMarker(text, end)) end = open;
+  let indicators = 0;
+  while (end - 2 * indicators >= 2 && isIndicator(text, end - 2 * indicators - 2)) indicators++;
+  return indicators % 2 === 1 && end - 2 > start ? end - 2 : end;
+}
 
 /**
  * The part of `text` the card draws from offset `start` (the end of the part
@@ -315,12 +459,11 @@ const GRAPHEMES =
  * again on every relayout; the preview was within DRAW_BUDGET, the text behind
  * "Show full text" was not.
  *
- * A part ends between two characters as a person reads them (grapheme
- * clusters: a flag, a letter and its accent stay whole) unless one character
- * alone costs more than a part, and never inside a `⟨…⟩` marker — every `⟨`
- * opens one Pinchy wrote — nor inside an escape of a text drawn quoted, which
- * is escaped per code point. The parts, drawn one after the other, are
- * `displayScalar(text)`.
+ * Where a part ends is `partEnd`: after a space where one fits, else between
+ * two characters as a person reads them, and inside one only where it alone
+ * costs more than a part — which the part then says. Never inside a `⟨…⟩`
+ * marker, nor inside an escape of a text drawn quoted, which is escaped per
+ * code point. The parts, drawn one after the other, are `displayScalar(text)`.
  */
 export function textWindow(text: string, start: number): TextWindow {
   const literal = displayScalar(text) !== text;
@@ -333,20 +476,8 @@ export function textWindow(text: string, start: number): TextWindow {
     budget -= cost;
     end += width;
   }
-  if (end < text.length && GRAPHEMES) {
-    // The last boundary between graphemes at or before the cut, read with the
-    // character after it, which decides whether the cut is one.
-    let boundary = 0;
-    for (const { index } of GRAPHEMES.segment(text.slice(start, end + 2))) {
-      if (index > end - start) break;
-      boundary = index;
-    }
-    if (boundary > 0) end = start + boundary;
-  }
-  if (end < text.length) {
-    const open = text.lastIndexOf("⟨", end - 1);
-    if (open > start && text.slice(open, end).indexOf("⟩") === -1) end = open;
-  }
+  const chars = characters(text);
+  if (end < text.length) end = partEnd(text, start, end, chars, true);
   const drawn = `${literal && start === 0 ? '"' : ""}${escaped(text.slice(start, end), literal)}${
     literal && end === text.length ? '"' : ""
   }`;
@@ -363,6 +494,8 @@ export function textWindow(text: string, start: number): TextWindow {
     first: before + 1,
     last: before + codePoints(drawn),
     total: codePoints(displayScalar(text)),
+    startsInside: start > 0 && !chars.startsAt(start),
+    endsInside: end < text.length && !chars.startsAt(end),
   };
 }
 

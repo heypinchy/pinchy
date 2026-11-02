@@ -5,11 +5,11 @@ import { Button } from "@/components/ui/button";
 import type { PendingApproval } from "@/lib/approvals/client";
 import {
   FULL_VIEW_KEYS,
-  PREVIEW_LEN,
   displayScalar,
   drawnText,
   inStoredOrder,
   modelText,
+  previewOf,
   previewed,
   quoted,
   readNode,
@@ -17,6 +17,7 @@ import {
   textWindow,
   type SummaryNode,
   type SummaryNote,
+  type TextWindow,
 } from "@/lib/approvals/display";
 
 /**
@@ -68,6 +69,19 @@ function Spoken({ drawn, spoken }: { drawn: ReactNode; spoken: string }) {
       </bdo>
     </>
   );
+}
+
+/**
+ * What the card says where a part is cut inside one character (`textWindow`):
+ * its two pieces draw differently than the whole character, so the approver
+ * is told they are pieces.
+ */
+function splitNote({ startsInside, endsInside }: TextWindow): string {
+  const notes = [
+    startsInside && "the first character shown may begin in the previous part",
+    endsInside && "the last character shown may go on in the next part",
+  ].filter(Boolean);
+  return notes.length > 0 ? `; ${notes.join(", and ")}` : "";
 }
 
 /**
@@ -124,20 +138,22 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
     </Button>
   );
   if (!starts) {
-    // Counted and cut by code point, so the preview never ends in half an emoji.
+    // Cut between two characters as a person reads them (`previewOf`), so the
+    // preview never ends in half a flag or a letter without its accent.
+    const preview = drawnText(text, full);
     return (
       <span className="break-words">
         <Spoken
           drawn={
             <span className="whitespace-pre-wrap">
-              <StoredOrder text={`${drawnText(text, full)}…`} />
+              <StoredOrder text={`${preview}…`} />
             </span>
           }
-          spoken={`${quoted([...text].slice(0, PREVIEW_LEN).join(""))}…`}
+          spoken={`${quoted(previewOf(text))}…`}
         />
         <span className="text-muted-foreground">
           {" "}
-          ({[...shown].length - PREVIEW_LEN} more characters hidden)
+          ({[...shown].length - [...preview].length} more characters hidden)
         </span>{" "}
         {toggle}
       </span>
@@ -174,7 +190,8 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
           <span className="text-muted-foreground">
             {" "}
             (characters {part.first.toLocaleString("en-US")}–{part.last.toLocaleString("en-US")} of{" "}
-            {part.total.toLocaleString("en-US")})
+            {part.total.toLocaleString("en-US")}
+            {splitNote(part)})
           </span>{" "}
           {step("Show previous part", !before, () => setStarts(starts.slice(0, -1)))}{" "}
           {step("Show next part", !after, () => setStarts([...starts, part.end]))}

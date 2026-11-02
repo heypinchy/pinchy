@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -6,6 +6,7 @@ import {
   WHOLE_MAX,
   displayScalar,
   drawCost,
+  drawnText,
   inStoredOrder,
   inStoredOrderPlain,
   isAddressShaped,
@@ -492,9 +493,9 @@ describe("inStoredOrder: a value is shown in the order it was sent", () => {
 });
 
 /** Every part "Show full text" reveals of `text`, in order. */
-function partsOf(text: string): TextWindow[] {
-  const parts = [textWindow(text, 0)];
-  while (parts.at(-1)!.end < text.length) parts.push(textWindow(text, parts.at(-1)!.end));
+function partsOf(text: string, window: typeof textWindow = textWindow): TextWindow[] {
+  const parts = [window(text, 0)];
+  while (parts.at(-1)!.end < text.length) parts.push(window(text, parts.at(-1)!.end));
   return parts;
 }
 
@@ -597,5 +598,237 @@ describe("textWindow: a long text revealed in parts, each one bounded", () => {
       const inner = part.drawn.slice(open.length, part.drawn.length - close.length);
       expect(JSON.parse(`"${inner}"`)).toBe(text.slice(part.start, part.end));
     });
+  });
+});
+
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** The characters `text` draws as a person reads them (grapheme clusters), drawn on its own. */
+function clustersOf(text: string): string[] {
+  return [...GRAPHEMES.segment(text)].map(({ segment }) => segment);
+}
+
+/** Where the characters of `text`, read whole, begin: and its end. */
+function boundariesOf(text: string): Set<number> {
+  return new Set([...[...GRAPHEMES.segment(text)].map(({ index }) => index), text.length]);
+}
+
+/**
+ * The flags `text` draws, drawn on its own: the regional indicators of each
+ * character as letters (`🇦🇹` is "AT"). A browser pairs them from the start of
+ * their run, so one indicator too many in front pairs every later one wrongly.
+ */
+function flagsOf(text: string): string[] {
+  return clustersOf(text)
+    .map((cluster) =>
+      [...cluster]
+        .filter((char) => /\p{Regional_Indicator}/u.test(char))
+        .map((char) => String.fromCharCode(char.codePointAt(0)! - 0x1f1e6 + 65))
+        .join("")
+    )
+    .filter(Boolean);
+}
+
+/** A stream of numbers in [0, 1) from `seed`, the same on every run (mulberry32). */
+function seeded(seed: number): () => number {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Pieces whose drawing depends on what stands beside them: regional
+ * indicators (paired from the start of their run), a ZWJ sequence, an emoji
+ * and its skin tone, a letter and its accent, a stray mark, Hangul jamo
+ * (L, V, T), a Malayalam dot reph (it prepends to what follows), a Devanagari
+ * conjunct and its halves, Arabic letters that join, and the plain text,
+ * spaces, line breaks and markers between them.
+ */
+const PIECES = [
+  "\u{1F1E6}",
+  "\u{1F1F9}",
+  "\u{1F1E9}",
+  "\u{1F1EA}",
+  "\u{1F469}‍\u{1F4BB}",
+  "\u{1F44D}\u{1F3FD}",
+  "é",
+  "̣",
+  "ᄀ",
+  "ᅡ",
+  "ᆨ",
+  "각",
+  "ൎ",
+  "क्ष",
+  "क्",
+  "ष",
+  "مرحبا",
+  " ",
+  "\n",
+  "x",
+  "⟨U+200D⟩",
+  "\u{1F600}",
+  "\u{20000}",
+];
+
+/** Runs of one piece long enough that one character alone costs more than a part. */
+const LONG_RUNS = [
+  () => `a${"́".repeat(9_000)}`,
+  () => `${"ൎ".repeat(8_100)}\u{1F1E6}\u{1F1F9}`,
+  () => `${"ᄀ".repeat(9_000)}ᅡᆨ`,
+  () => "क्".repeat(4_200),
+];
+
+/** A text of a few parts, mixing every piece above, sometimes with a long run. */
+function generatedText(next: () => number): string {
+  const length = 3_000 + Math.floor(next() * 25_000);
+  let text = "";
+  while (text.length < length) {
+    if (next() < 0.002) text += LONG_RUNS[Math.floor(next() * LONG_RUNS.length)]();
+    const piece = PIECES[Math.floor(next() * PIECES.length)];
+    text += piece.repeat(1 + Math.floor(next() * 4));
+  }
+  return text;
+}
+
+/**
+ * A part boundary changes nothing about how the text on either side of it is
+ * drawn: each part draws exactly the characters the whole text draws there.
+ * Cut between the two regional indicators of a flag, the next part paired
+ * every later indicator with the wrong partner: 🇦🇹🇩🇪🇺🇸 read 🇹🇩 (Chad), 🇪🇺,
+ * "S" — flags the value does not contain.
+ */
+describe("textWindow: a part boundary changes nothing about how either side is drawn", () => {
+  it("pairs a flag's indicators as the whole text does, after a character too long for one part", () => {
+    // A dot reph prepends to whatever follows (UAX #29 GB9b): 7,980 of them
+    // and the first flag are one character, costlier than a part.
+    const text = `Grüße an die Teams ${"ൎ".repeat(7_980)}🇦🇹🇩🇪🇺🇸`;
+    const parts = partsOf(text);
+    expect(parts.flatMap((part) => flagsOf(text.slice(part.start, part.end)))).toEqual([
+      "AT",
+      "DE",
+      "US",
+    ]);
+  });
+
+  it("ends a part after a space where one fits, so no word is shaped differently", () => {
+    // Arabic letters join: cut inside a word, its letters take the forms they
+    // have at the end and the start of one.
+    for (const text of ["مرحبا بالعالم ".repeat(1_500), "क्षत्रिय नमस्ते ".repeat(1_500)]) {
+      const parts = partsOf(text);
+      expect(parts.length).toBeGreaterThan(1);
+      for (const part of parts.slice(0, -1)) expect(text[part.end - 1]).toBe(" ");
+    }
+  });
+
+  it("splits only a character too long for one part, and says so on both sides of the cut", () => {
+    const text = `ok ${"a" + "́".repeat(9_000)} ok`;
+    const parts = partsOf(text);
+    const split = parts.findIndex((part) => part.endsInside);
+    expect(split).toBeGreaterThanOrEqual(0);
+    expect(parts[split + 1].startsInside).toBe(true);
+    expect(partsOf(`${"a".repeat(WHOLE_MAX)}SECOND`)).toEqual([
+      expect.objectContaining({ startsInside: false, endsInside: false }),
+      expect.objectContaining({ startsInside: false, endsInside: false }),
+    ]);
+  });
+
+  it("holds on generated texts of flags, joiners, marks, jamo, conjuncts and prepended runs", () => {
+    const next = seeded(1242);
+    for (let round = 0; round < 60; round++) {
+      const text = generatedText(next);
+      const whole = boundariesOf(text);
+      const parts = partsOf(text);
+      expect(parts.map((part) => part.drawn).join("")).toBe(displayScalar(text));
+      expect(parts.flatMap((part) => flagsOf(text.slice(part.start, part.end)))).toEqual(
+        flagsOf(text)
+      );
+      parts.forEach((part, index) => {
+        expect(drawCost(part.drawn)).toBeLessThanOrEqual(WHOLE_MAX + 1);
+        // Where it says it isn't, the cut is inside one character of the
+        // whole text, and only one that alone costs more than a part.
+        expect(part.startsInside).toBe(index > 0 && !whole.has(part.start));
+        expect(part.endsInside).toBe(part.end < text.length && !whole.has(part.end));
+        if (part.endsInside) {
+          const inside = [...whole].filter((at) => at > part.start && at < part.end);
+          expect(inside).toEqual([]);
+        }
+        // Every character of the whole text inside the part, the part draws
+        // whole and alone: where the whole text has a boundary, so does the
+        // part drawn on its own, and nowhere else.
+        const own = boundariesOf(text.slice(part.start, part.end));
+        const edges = [...whole].filter((at) => at >= part.start && at <= part.end);
+        const differ: number[] = [];
+        for (let at = Math.min(...edges); at <= Math.max(...edges); at++) {
+          if (own.has(at - part.start) !== whole.has(at)) differ.push(at);
+        }
+        expect(differ).toEqual([]);
+      });
+    }
+  });
+});
+
+describe("drawnText: a preview ends between two characters as read", () => {
+  it.each([
+    ["a letter and its accent", `${"x".repeat(199)}é und mehr ${"y".repeat(300)}`],
+    ["a flag", `${"x".repeat(199)}🇦🇹 ${"y".repeat(300)}`],
+    ["a marker", `${"x".repeat(197)}⟨U+200D⟩ ${"y".repeat(300)}`],
+  ])("never ends inside %s", (_name, text) => {
+    expect(drawnText(text, false)).toBe(text.slice(0, text.search(/[^x]/u)));
+  });
+});
+
+/** `display.ts` as a browser without Intl.Segmenter (Firefox before 125) loads it. */
+async function withoutSegmenter(): Promise<typeof import("./display")> {
+  vi.resetModules();
+  vi.stubGlobal("Intl", Object.create(Intl, { Segmenter: { value: undefined } }));
+  try {
+    return await import("./display");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
+
+describe("textWindow without Intl.Segmenter", () => {
+  afterEach(() => vi.resetModules());
+
+  it("pairs every flag's indicators as the whole text does", async () => {
+    const { textWindow: window } = await withoutSegmenter();
+    for (const text of [
+      `a${"🇦🇹🇩🇪🇺🇸".repeat(400)}`,
+      `Grüße an die Teams ${"ൎ".repeat(7_980)}🇦🇹🇩🇪🇺🇸`,
+    ]) {
+      const parts = partsOf(text, window);
+      expect(parts.length).toBeGreaterThan(1);
+      expect(parts.flatMap((part) => flagsOf(text.slice(part.start, part.end)))).toEqual(
+        flagsOf(text)
+      );
+    }
+  });
+
+  it("says where it cannot tell that a cut falls between two characters", async () => {
+    const { textWindow: window } = await withoutSegmenter();
+    const next = seeded(125);
+    for (let round = 0; round < 20; round++) {
+      const text = generatedText(next);
+      const whole = boundariesOf(text);
+      const parts = partsOf(text, window);
+      expect(parts.map((part) => part.drawn).join("")).toBe(displayScalar(text));
+      expect(parts.flatMap((part) => flagsOf(text.slice(part.start, part.end)))).toEqual(
+        flagsOf(text)
+      );
+      parts.forEach((part, index) => {
+        if (!part.endsInside) expect(part.end === text.length || whole.has(part.end)).toBe(true);
+        if (index > 0) expect(part.startsInside).toBe(parts[index - 1].endsInside);
+      });
+    }
+  });
+
+  it("cuts a preview between two characters as read", async () => {
+    const { drawnText: preview } = await withoutSegmenter();
+    expect(preview(`${"x".repeat(199)}é und mehr ${"y".repeat(300)}`, false)).toBe("x".repeat(199));
+    expect(preview(`${"x".repeat(199)}🇦🇹 ${"y".repeat(300)}`, false)).toBe("x".repeat(199));
   });
 });
