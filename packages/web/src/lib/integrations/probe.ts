@@ -10,6 +10,7 @@ import {
 } from "@/lib/integrations/imap-probe";
 import { imapTestSchema } from "@/lib/schemas/imap";
 import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
+import { checkStoredDestination } from "@/lib/integrations/stored-destination";
 
 /**
  * Verify that credentials work for the given integration type.
@@ -21,7 +22,8 @@ import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-bas
  * credentials — the connection needs a reconnect) from a temporary provider
  * hiccup (5xx, 429, network error — the credentials are still fine, retry
  * later). Callers must not flip a connection to `auth_failed` on a transient
- * result.
+ * result. A destination the SSRF guard refuses is reported as transient too:
+ * it says nothing about the credentials, so it must not flag them either.
  */
 export type ProbeResult =
   | { success: true; freshCredentials?: Record<string, unknown> }
@@ -34,6 +36,15 @@ export async function probeIntegrationCredentials(
   if (type === "odoo") {
     const parsed = odooCredentialsSchema.safeParse(credentials);
     if (!parsed.success) return { success: false, reason: "Invalid credentials format" };
+
+    // The URL may come from the database rather than the request (a PATCH
+    // that only changes the API key merges it with the stored URL), so it is
+    // checked here, before authenticate sends the key to it. The imap branch
+    // gets the same from testImapLogin/testSmtpVerify, which run the guard.
+    const destination = await checkStoredDestination("odoo", credentials);
+    if (!destination.allowed) {
+      return { success: false, transient: true, reason: destination.message };
+    }
 
     // Re-authenticate so we (a) verify the login/apiKey actually work and
     // (b) refresh the stored uid in case the login changed. Without this
