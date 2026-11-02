@@ -17,7 +17,7 @@
 import { describe, it, expect } from "vitest";
 import {
   keylessBridge,
-  pinchySecretRefIds,
+  rekeyedBridge,
   unresolvedSecretRefs,
 } from "@/lib/openclaw-config/keyless-bridge";
 
@@ -53,15 +53,18 @@ const acme = {
 };
 const bundleWithoutAcme = { providers: { anthropic: { apiKey: "sk-ant" } } };
 
-describe("pinchySecretRefIds", () => {
-  it("collects every pinchy file SecretRef id anywhere in the config", () => {
-    const ids = pinchySecretRefIds({
-      ...config({ anthropic, acme }),
-      channels: { telegram: { accounts: { a1: { botToken: ref("/telegram/a1/botToken") } } } },
-      // Not ours: another secrets provider, and an env template.
-      other: { apiKey: { source: "env", provider: "default", id: "X" } },
-    });
-    expect([...ids].sort()).toEqual([
+describe("unresolvedSecretRefs", () => {
+  it("looks at every pinchy file SecretRef anywhere in the config, and at no other kind", () => {
+    const unresolved = unresolvedSecretRefs(
+      {
+        ...config({ anthropic, acme }),
+        channels: { telegram: { accounts: { a1: { botToken: ref("/telegram/a1/botToken") } } } },
+        // Not ours: another secrets provider, and an env template.
+        other: { apiKey: { source: "env", provider: "default", id: "X" } },
+      },
+      {}
+    );
+    expect(unresolved.sort()).toEqual([
       "/providers/acme-llm/apiKey",
       "/providers/anthropic/apiKey",
       "/telegram/a1/botToken",
@@ -145,5 +148,71 @@ describe("keylessBridge", () => {
     const onDisk = JSON.stringify(config({ anthropic, "acme-llm": acme }), null, 2);
     const bridge = JSON.stringify(keylessBridge(JSON.parse(onDisk), bundleWithoutAcme), null, 2);
     expect(Buffer.byteLength(bridge)).toBeGreaterThan(Buffer.byteLength(onDisk) * 0.9);
+  });
+});
+
+// A re-keyed OpenAI-compatible provider: its key slot is versioned
+// (`<slug>@<version>`), so a new key is a new slot, and the old one leaves the
+// bundle while the on-disk file still names it. keylessBridge stubs it like a
+// deleted provider; rekeyedBridge — written once secrets.json holds the new
+// slot — gives it back, as the TARGET has it.
+describe("rekeyedBridge", () => {
+  const OLD = "/providers/acme-llm@0000000000000001/apiKey";
+  const NEW = "/providers/acme-llm@0000000000000002/apiKey";
+  const acmeOld = { ...acme, apiKey: ref(OLD) };
+  const acmeTarget = {
+    // The key was re-entered for a new address (#1238 requires it).
+    baseUrl: "https://new-gateway.example/v1",
+    api: "openai-completions",
+    apiKey: ref(NEW),
+    models: [{ id: "acme-next" }],
+  };
+  const rekeyedBundle = {
+    providers: {
+      anthropic: { apiKey: "sk-ant" },
+      "acme-llm@0000000000000002": { apiKey: "sk-acme-new" },
+    },
+  };
+
+  it("gives a re-keyed provider the target's whole entry: its new slot never meets the old address", () => {
+    const onDisk = config({ anthropic, "acme-llm": acmeOld });
+    const target = config({ anthropic, "acme-llm": acmeTarget });
+    const keyless = keylessBridge(onDisk, rekeyedBundle)!;
+    expect(unresolvedSecretRefs(keyless, {}), "the stub resolves against any file").toEqual([
+      "/providers/anthropic/apiKey",
+    ]);
+
+    const rekeyed = rekeyedBridge(keyless, onDisk, target, rekeyedBundle);
+
+    const providers = (rekeyed as { models: { providers: Record<string, unknown> } }).models
+      .providers;
+    expect(providers["acme-llm"]).toEqual(acmeTarget);
+    expect(providers.anthropic).toEqual(anthropic);
+    expect(unresolvedSecretRefs(rekeyed, rekeyedBundle)).toEqual([]);
+    // Everything outside the provider is the bridge as it was, not the target.
+    expect({ ...rekeyed, models: undefined }).toEqual({ ...keyless, models: undefined });
+  });
+
+  it("takes the upgrade from an unversioned slot the same way", () => {
+    const onDisk = config({ anthropic, "acme-llm": acme });
+    const target = config({ anthropic, "acme-llm": acmeTarget });
+    const keyless = keylessBridge(onDisk, rekeyedBundle)!;
+    const rekeyed = rekeyedBridge(keyless, onDisk, target, rekeyedBundle);
+    expect(
+      (rekeyed as { models: { providers: Record<string, unknown> } }).models.providers["acme-llm"]
+    ).toEqual(acmeTarget);
+  });
+
+  it("is null for a deleted provider — its stub stays until the push removes it", () => {
+    const onDisk = config({ anthropic, "acme-llm": acme });
+    const keyless = keylessBridge(onDisk, bundleWithoutAcme)!;
+    expect(rekeyedBridge(keyless, onDisk, config({ anthropic }), bundleWithoutAcme)).toBeNull();
+  });
+
+  it("keeps the stub when the target's entry would not resolve either", () => {
+    const onDisk = config({ anthropic, "acme-llm": acmeOld });
+    const target = config({ anthropic, "acme-llm": acmeTarget });
+    const keyless = keylessBridge(onDisk, bundleWithoutAcme)!;
+    expect(rekeyedBridge(keyless, onDisk, target, bundleWithoutAcme)).toBeNull();
   });
 });

@@ -22,11 +22,24 @@
 // stepped hand-over then continues from it (the steps re-add from OpenClaw's
 // file, so they are key-less too).
 //
+// A provider can also name a key the bundle lacks while staying in the target:
+// an OpenAI-compatible provider that was re-keyed. Its key lives in a
+// versioned slot (`providers.<slug>@<version>`, see versionedSecretName), so a
+// new key is a new slot and the old one leaves the bundle. Stubbing it until
+// the push lands would leave every agent on it without a key, so once
+// secrets.json holds the new slot, a second write gives it the TARGET's entry
+// (rekeyedBridge) — the base URL, the slot and the models of one saved state of
+// the provider, so the new key never meets the old address. Two writes, because
+// no single order works with one: the old slot is in the old secrets.json only,
+// the new slot in the new one only, and the key-less stub in between resolves
+// against both.
+//
 // The decision needs only openclaw.json (0666) and the bundle Pinchy just
 // built — never secrets.json, which Pinchy cannot read in production
-// (fix-config-permissions.sh chowns it to root:root 0600 every 50 ms). An
-// earlier design kept the old key in secrets.json instead; it read the old
-// value from that file, so in production it silently retained nothing.
+// (fix-config-permissions.sh chowns it to root:root 0600 every 50 ms). Earlier
+// designs kept the old key in secrets.json instead, while the file still named
+// it; they read the old value from that file, so in production they silently
+// retained nothing.
 //
 // What OpenClaw (2026.7.1) does with the bridge, verified against its code
 // (integration/openclaw-config-size-drop-against-oc.test.ts):
@@ -42,36 +55,12 @@
 //   - the stubbed provider keeps its models, so nothing that still names one
 //     becomes an "Unknown model" before the deletion lands.
 import { providerStub } from "./size-drop";
-import type { SecretsBundle } from "@/lib/openclaw-secrets";
+import { referencedSecretIds, type SecretsBundle } from "@/lib/openclaw-secrets";
 
 type Json = Record<string, unknown>;
 
 function isRecord(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** The `{ source: "file", provider: "pinchy", id }` SecretRefs Pinchy emits. */
-function isPinchySecretRef(value: unknown): value is { id: string } {
-  return (
-    isRecord(value) &&
-    value.source === "file" &&
-    value.provider === "pinchy" &&
-    typeof value.id === "string"
-  );
-}
-
-/** Every pinchy SecretRef id (a JSON pointer into secrets.json) anywhere in a config. */
-export function pinchySecretRefIds(config: unknown, out = new Set<string>()): Set<string> {
-  if (isPinchySecretRef(config)) {
-    out.add(config.id);
-    return out;
-  }
-  if (Array.isArray(config)) {
-    for (const item of config) pinchySecretRefIds(item, out);
-  } else if (isRecord(config)) {
-    for (const child of Object.values(config)) pinchySecretRefIds(child, out);
-  }
-  return out;
 }
 
 const FORBIDDEN_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
@@ -101,7 +90,7 @@ function getAt(root: unknown, segments: string[]): unknown {
 
 /** The pinchy SecretRef ids in `config` that `bundle` cannot resolve to a string. */
 export function unresolvedSecretRefs(config: unknown, bundle: SecretsBundle): string[] {
-  return [...pinchySecretRefIds(config)].filter((id) => {
+  return [...referencedSecretIds(config)].filter((id) => {
     const segments = pointerSegments(id);
     return !segments || typeof getAt(bundle, segments) !== "string";
   });
@@ -128,4 +117,43 @@ export function keylessBridge(onDisk: Json, bundle: SecretsBundle): Json | null 
     )
   );
   return { ...onDisk, models: { ...models, providers: bridged } };
+}
+
+/**
+ * The file to write AFTER `bundle` replaced secrets.json: `keyless` (from
+ * {@link keylessBridge}) with every provider it stubbed that `target` still has
+ * given `target`'s entry for it — when every SecretRef in that entry resolves
+ * against `bundle`. That is a re-keyed provider (a new versioned key slot), or
+ * one upgraded from an unversioned slot. The whole entry, not just the
+ * SecretRef: the key was entered for the target's base URL, and must not be
+ * paired with the one on disk. Null when no provider qualifies: a deleted one
+ * stays a stub until the push removes it.
+ */
+export function rekeyedBridge(
+  keyless: Json,
+  onDisk: Json,
+  target: Json,
+  bundle: SecretsBundle
+): Json | null {
+  const providersOf = (config: Json): Json => {
+    const models = isRecord(config.models) ? config.models : {};
+    return isRecord(models.providers) ? models.providers : {};
+  };
+  const onDiskProviders = providersOf(onDisk);
+  const targetProviders = providersOf(target);
+  const rekeyed = Object.keys(providersOf(keyless)).filter((key) => {
+    const was = onDiskProviders[key];
+    const next = targetProviders[key];
+    return (
+      isRecord(was) &&
+      unresolvedSecretRefs(was, bundle).length > 0 &&
+      isRecord(next) &&
+      unresolvedSecretRefs(next, bundle).length === 0
+    );
+  });
+  if (rekeyed.length === 0) return null;
+  const models = isRecord(keyless.models) ? keyless.models : {};
+  const providers = { ...providersOf(keyless) };
+  for (const key of rekeyed) providers[key] = targetProviders[key];
+  return { ...keyless, models: { ...models, providers } };
 }

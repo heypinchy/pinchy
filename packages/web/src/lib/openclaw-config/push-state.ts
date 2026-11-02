@@ -45,6 +45,11 @@ interface ConfigPushState {
   shrinkResumeSeq: number;
   /** Last start sequence handed out by nextRegenerateSequence. */
   regenerateSeq: number;
+  /**
+   * Calls to regenerateOpenClawConfig not yet served by a run, and whether all
+   * of them were shrink follow-ups (see noteRegenerateCall).
+   */
+  unservedCalls: { followUpOnly: boolean } | undefined;
 }
 
 declare global {
@@ -73,6 +78,7 @@ function state(): ConfigPushState {
       shrinkResume: undefined,
       shrinkResumeSeq: 0,
       regenerateSeq: 0,
+      unservedCalls: undefined,
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -133,6 +139,30 @@ export function getCurrentConfigPushGeneration(): number {
  */
 export function nextRegenerateSequence(): number {
   return ++state().regenerateSeq;
+}
+
+/**
+ * Record a call to regenerateOpenClawConfig before it joins the regenerate
+ * queue (regenerate-queue.ts). Calls made while a run is in flight share the
+ * next run, which takes them all with takeRegenerateRunIsFollowUpOnly when it
+ * starts — synchronously, so no call is counted towards the wrong run.
+ */
+export function noteRegenerateCall({ shrinkFollowUp }: { shrinkFollowUp: boolean }): void {
+  const s = state();
+  s.unservedCalls = { followUpOnly: (s.unservedCalls?.followUpOnly ?? true) && shrinkFollowUp };
+}
+
+/**
+ * Called by a regenerate run as it starts: true only when every call it serves
+ * was a shrink follow-up. Then its push queues no follow-up of its own, so the
+ * hand-off cannot recurse; a real change that shares the run keeps its right to
+ * one.
+ */
+export function takeRegenerateRunIsFollowUpOnly(): boolean {
+  const s = state();
+  const followUpOnly = s.unservedCalls?.followUpOnly ?? false;
+  s.unservedCalls = undefined;
+  return followUpOnly;
 }
 
 /**
@@ -214,6 +244,7 @@ export function scheduleShrinkResume(resume: () => void, strandedSeq: number): v
 export function _resetConfigPushState(): void {
   const s = state();
   s.pending = 0;
+  s.unservedCalls = undefined;
   clearShrinkResume(s);
 }
 

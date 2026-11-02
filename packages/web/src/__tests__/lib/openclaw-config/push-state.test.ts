@@ -22,6 +22,8 @@ import {
   getPendingConfigPushCount,
   nextConfigPushGeneration,
   getCurrentConfigPushGeneration,
+  noteRegenerateCall,
+  takeRegenerateRunIsFollowUpOnly,
   _resetConfigPushState,
 } from "@/lib/openclaw-config/push-state";
 
@@ -127,5 +129,33 @@ describe("config push pending-state tracker", () => {
     trackConfigPushSettled();
     expect(getPendingConfigPushCount()).toBe(0);
     expect(getCurrentConfigPushGeneration()).toBe(4);
+  });
+});
+
+// regenerateOpenClawConfig is serialized: calls made while a run is in flight
+// share the next run (regenerate-queue.ts). A stranded provider deletion's
+// follow-up regenerate must not queue a follow-up of its own (no loop) — but a
+// real change that shares a run with it keeps its right to one.
+describe("which regenerate run counts as a shrink follow-up", () => {
+  beforeEach(() => {
+    _resetConfigPushState();
+  });
+
+  it("is a follow-up only when every call it serves is one", () => {
+    noteRegenerateCall({ shrinkFollowUp: true });
+    expect(takeRegenerateRunIsFollowUpOnly()).toBe(true);
+
+    noteRegenerateCall({ shrinkFollowUp: true });
+    noteRegenerateCall({ shrinkFollowUp: false });
+    noteRegenerateCall({ shrinkFollowUp: true });
+    expect(takeRegenerateRunIsFollowUpOnly()).toBe(false);
+  });
+
+  it("starts every run from scratch, and a run no call recorded is no follow-up", () => {
+    noteRegenerateCall({ shrinkFollowUp: false });
+    expect(takeRegenerateRunIsFollowUpOnly()).toBe(false);
+    noteRegenerateCall({ shrinkFollowUp: true });
+    expect(takeRegenerateRunIsFollowUpOnly()).toBe(true);
+    expect(takeRegenerateRunIsFollowUpOnly()).toBe(false);
   });
 });

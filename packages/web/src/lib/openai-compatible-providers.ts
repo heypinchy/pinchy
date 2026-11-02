@@ -6,13 +6,14 @@
 // last-4 `keyHint` shown in the admin UI). The list path never returns the
 // decrypted key.
 
+import { secretVersion } from "@/lib/openclaw-secrets";
 import { db } from "@/db";
 import { openaiCompatibleProviders } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/encryption";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 import { deriveProviderSlug } from "@/lib/openai-compatible-slug";
 import type { UpsertOpenAiCompatibleProviderInput } from "@/lib/schemas/openai-compatible-provider";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 /**
  * A provider row WITHOUT any key material — safe for the many internal callers
@@ -96,15 +97,52 @@ export async function listOpenAiCompatibleProvidersForAdmin(): Promise<
 }
 
 /**
- * Every provider's `{ slug, apiKey }` with the key decrypted, in one query and
- * one decrypt per row. Purpose-built for the secrets bundle (`collectProviderSecrets`)
- * so it never pays the `listOpenAiCompatibleProviders` keyHint-decrypt tax nor a
- * per-slug round trip (the old 1+N / 2N-decrypt path). The decrypted key never
- * leaves the secrets pipeline — do not use this for anything exposed to the client.
+ * Everything config emission needs about one provider, taken from ONE row read:
+ * where it points, which models it serves, and the key entered for that
+ * address. See {@link listProvidersWithApiKeys}.
  */
-export async function listProvidersWithApiKeys(): Promise<{ slug: string; apiKey: string }[]> {
-  const rows = await db.select().from(openaiCompatibleProviders);
-  return rows.map((r) => ({ slug: r.slug, apiKey: decrypt(r.apiKey) }));
+export interface CustomProviderConfigSource {
+  slug: string;
+  displayName: string;
+  baseUrl: string;
+  models: OpenClawModelDefinition[];
+  apiKey: string;
+  keyVersion: string;
+}
+
+/**
+ * Every provider's identity, base URL, models and decrypted key + version, in
+ * one query and one decrypt per row. Purpose-built for `regenerateOpenClawConfig`
+ * (via `collectProviderSecrets`), and the single read it takes of this table:
+ * the secrets-bundle slot, the `models.providers` entry and the discovery call
+ * are all derived from these rows. Reading the key and the base URL separately
+ * would let an update that commits in between pair a new address with the old
+ * key (or the old address with the new one). The decrypted key never leaves the
+ * secrets pipeline — do not use this for anything exposed to the client.
+ */
+export async function listProvidersWithApiKeys(): Promise<CustomProviderConfigSource[]> {
+  // The column holds AES-GCM ciphertext, never the plaintext key; naming it
+  // that way here keeps the fingerprint below honest about what it hashes.
+  const rows = await db
+    .select({
+      slug: openaiCompatibleProviders.slug,
+      displayName: openaiCompatibleProviders.displayName,
+      baseUrl: openaiCompatibleProviders.baseUrl,
+      models: openaiCompatibleProviders.models,
+      encryptedApiKey: openaiCompatibleProviders.apiKey,
+    })
+    .from(openaiCompatibleProviders);
+  return rows.map((r) => ({
+    slug: r.slug,
+    displayName: r.displayName,
+    baseUrl: r.baseUrl,
+    models: r.models,
+    apiKey: decrypt(r.encryptedApiKey),
+    // Versions the secrets-bundle slot, so every newly entered key gets a new
+    // SecretRef pointer (see versionedSecretName). Taken from the ciphertext:
+    // it changes on every save of a key, and says nothing about the key.
+    keyVersion: secretVersion(r.encryptedApiKey),
+  }));
 }
 
 /**
@@ -121,34 +159,101 @@ export interface ProviderModelFetchSource {
   displayName: string;
   baseUrl: string;
   apiKey: string;
+  /** Same fingerprint as {@link CustomProviderConfigSource.keyVersion}; keys the model cache. */
+  keyVersion: string;
   models: OpenClawModelDefinition[];
 }
 
 export async function listProvidersForModelFetch(): Promise<ProviderModelFetchSource[]> {
-  const rows = await db.select().from(openaiCompatibleProviders);
+  // The key column is AES-GCM ciphertext; select it under that name (see
+  // listProvidersWithApiKeys) so the fingerprint says what it hashes.
+  const rows = await db
+    .select({
+      id: openaiCompatibleProviders.id,
+      slug: openaiCompatibleProviders.slug,
+      displayName: openaiCompatibleProviders.displayName,
+      baseUrl: openaiCompatibleProviders.baseUrl,
+      encryptedApiKey: openaiCompatibleProviders.apiKey,
+      models: openaiCompatibleProviders.models,
+    })
+    .from(openaiCompatibleProviders);
   return rows.map((r) => ({
     id: r.id,
     slug: r.slug,
     displayName: r.displayName,
     baseUrl: r.baseUrl,
-    apiKey: decrypt(r.apiKey),
+    apiKey: decrypt(r.encryptedApiKey),
+    keyVersion: secretVersion(r.encryptedApiKey),
     models: r.models,
   }));
 }
 
 /**
- * Decrypted apiKey for a single provider row, by id. Purpose-built for the
- * POST route's "no apiKey supplied on update" discovery path: the client
- * never round-trips a key it can't read back, but live model discovery still
- * needs to hit the endpoint with the STORED credential when the admin didn't
- * rotate it. Returns `undefined` if the row doesn't exist.
+ * The stored state an update is checked against: identity, where the key may
+ * go, and the key itself — still encrypted, so nothing is decrypted before the
+ * caller has decided the key may be used. Read in ONE query, so the base URL
+ * and the key always belong to the same moment of the row.
  */
-export async function getDecryptedKeyById(id: string): Promise<string | undefined> {
+export interface StoredProviderSnapshot {
+  id: string;
+  slug: string;
+  displayName: string;
+  baseUrl: string;
+  /** AES-GCM ciphertext as stored; compared, never logged. */
+  encryptedApiKey: string;
+}
+
+/**
+ * One provider's {@link StoredProviderSnapshot}, or `undefined` if the row
+ * doesn't exist. The POST route compares the submitted base URL against this
+ * snapshot's before it lets the stored key be reused, and hands the same
+ * snapshot to the write as its condition (see {@link createOrUpdateProvider}).
+ */
+export async function getProviderSnapshotById(
+  id: string
+): Promise<StoredProviderSnapshot | undefined> {
   const [row] = await db
-    .select({ apiKey: openaiCompatibleProviders.apiKey })
+    .select({
+      id: openaiCompatibleProviders.id,
+      slug: openaiCompatibleProviders.slug,
+      displayName: openaiCompatibleProviders.displayName,
+      baseUrl: openaiCompatibleProviders.baseUrl,
+      encryptedApiKey: openaiCompatibleProviders.apiKey,
+    })
     .from(openaiCompatibleProviders)
     .where(eq(openaiCompatibleProviders.id, id));
-  return row ? decrypt(row.apiKey) : undefined;
+  return row;
+}
+
+/**
+ * The plaintext of a snapshot's stored key. For the POST route's keyless
+ * update only, once it has established that the base URL did not move: live
+ * model discovery still has to authenticate against the endpoint.
+ */
+export function decryptStoredKey(snapshot: StoredProviderSnapshot): string {
+  return decrypt(snapshot.encryptedApiKey);
+}
+
+/**
+ * The row no longer holds the base URL or the key an update was checked
+ * against — someone saved it in between. The update wrote nothing.
+ */
+export class ProviderChangedError extends Error {
+  constructor(id: string) {
+    super(`OpenAI-compatible provider changed while saving: ${id}`);
+    this.name = "ProviderChangedError";
+  }
+}
+
+/**
+ * The row an update was checked against no longer exists — it was deleted
+ * after the check. The update wrote nothing.
+ */
+export class ProviderNotFoundError extends Error {
+  constructor(id: string) {
+    super(`OpenAI-compatible provider not found: ${id}`);
+    this.name = "ProviderNotFoundError";
+  }
 }
 
 /**
@@ -179,13 +284,23 @@ export async function getModelsById(id: string): Promise<OpenClawModelDefinition
  * `fetchOpenAiCompatibleModels`/`manualModelIds` BEFORE calling this), so this
  * is the last-known-good snapshot the route computed — not a client-supplied
  * list. See the `models` column doc-comment in db/schema.ts.
+ *
+ * An update must pass `checked`, the {@link StoredProviderSnapshot} its caller
+ * validated the destination against: the write only lands while the row still
+ * holds that base URL and that key ciphertext, and otherwise throws
+ * {@link ProviderChangedError} (or {@link ProviderNotFoundError}, if the row is
+ * gone) having written nothing.
  */
 export async function createOrUpdateProvider(
   input: UpsertOpenAiCompatibleProviderInput,
-  models: OpenClawModelDefinition[]
+  models: OpenClawModelDefinition[],
+  checked?: Pick<StoredProviderSnapshot, "baseUrl" | "encryptedApiKey">
 ): Promise<OpenAiCompatibleProviderListItem> {
   if (input.id) {
-    return updateProvider(input.id, input, models);
+    if (!checked) {
+      throw new Error("An update must name the stored state it was checked against.");
+    }
+    return updateProvider(input.id, input, models, checked);
   }
   return createProvider(input, models);
 }
@@ -224,7 +339,8 @@ async function createProvider(
 async function updateProvider(
   id: string,
   input: UpsertOpenAiCompatibleProviderInput,
-  models: OpenClawModelDefinition[]
+  models: OpenClawModelDefinition[],
+  checked: Pick<StoredProviderSnapshot, "baseUrl" | "encryptedApiKey">
 ): Promise<OpenAiCompatibleProviderListItem> {
   // Slug is immutable — never recomputed on update.
   const set: Partial<typeof openaiCompatibleProviders.$inferInsert> = {
@@ -238,14 +354,32 @@ async function updateProvider(
     set.apiKey = encrypt(input.apiKey);
   }
 
+  // Compare-and-swap on (base_url, api_key). Between the caller's check and
+  // this write sits a discovery request to a caller-chosen host, which that
+  // host can hold open for ~10s. A keyless save landing after an admin had
+  // re-entered the real key would otherwise keep THAT key under the caller's
+  // URL. A save that brings a key is conditioned the same way: the key it
+  // replaces, and the address it replaces it at, must still be what was checked.
   const [row] = await db
     .update(openaiCompatibleProviders)
     .set(set)
-    .where(eq(openaiCompatibleProviders.id, id))
+    .where(
+      and(
+        eq(openaiCompatibleProviders.id, id),
+        eq(openaiCompatibleProviders.baseUrl, checked.baseUrl),
+        eq(openaiCompatibleProviders.apiKey, checked.encryptedApiKey)
+      )
+    )
     .returning();
 
   if (!row) {
-    throw new Error(`OpenAI-compatible provider not found: ${id}`);
+    // Tell "gone" apart from "changed" — only the latter is worth a retry.
+    const [stillThere] = await db
+      .select({ id: openaiCompatibleProviders.id })
+      .from(openaiCompatibleProviders)
+      .where(eq(openaiCompatibleProviders.id, id));
+    if (stillThere) throw new ProviderChangedError(id);
+    throw new ProviderNotFoundError(id);
   }
 
   return toListItem(row);

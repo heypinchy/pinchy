@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { mailHostSchema } from "@/lib/schemas/imap";
 import { senderNameSchema } from "@/lib/schemas/sender-name";
 
 // `PATCH /api/integrations/[connectionId]` — the connection envelope itself
@@ -39,9 +40,9 @@ export const webSearchEditSchema = z.object({
 // can carry prefilled string values, and `.strict()` rejects stray keys.
 export const imapEditSchema = z
   .object({
-    imapHost: z.string().min(1).optional(),
+    imapHost: mailHostSchema.optional(),
     imapPort: z.coerce.number().int().min(1).max(65535).optional(),
-    smtpHost: z.string().min(1).optional(),
+    smtpHost: mailHostSchema.optional(),
     smtpPort: z.coerce.number().int().min(1).max(65535).optional(),
     username: z.string().min(1).optional(),
     password: z.string().min(1).optional(),

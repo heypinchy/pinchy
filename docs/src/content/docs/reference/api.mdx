@@ -1003,13 +1003,24 @@ Add or update an OpenAI-compatible provider. See [OpenAI-compatible providers](/
 
 **Request body:**
 
-| Field            | Type     | Required | Description                                                                               |
-| ---------------- | -------- | -------- | ----------------------------------------------------------------------------------------- |
-| `id`             | uuid     | No       | Omit to create, pass to update                                                            |
-| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                           |
-| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API. Rejected if it resolves to a private-network address |
-| `apiKey`         | string   | No       | Omit on update to keep the stored key                                                     |
-| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                 |
+| Field            | Type     | Required | Description                                                                                                      |
+| ---------------- | -------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `id`             | uuid     | No       | Omit to create, pass to update                                                                                   |
+| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                                                  |
+| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API, up to 2048 characters. Rejected if it resolves to a private-network address |
+| `apiKey`         | string   | No       | Omit on update to keep the stored key. Required when the update changes `baseUrl`                                |
+| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                                        |
+
+The stored key is bound to the base URL it was entered for — scheme, host, port **and path**, because a shared gateway host routes by path. Only a trailing slash and the letter case of the host are ignored. An update that changes `baseUrl` without a fresh `apiKey` is rejected with `422` and an `apiKey` field error before any request is made, and the refusal is written to the audit trail as a failed `config.changed` row — the stored key is never sent to a new address.
+
+An update is saved only if the provider still has the base URL and key it was checked against when the request arrived. Live model discovery runs in between, against the address you submitted, and can take a few seconds; if another save changed the base URL or the key in that time, nothing is written and the request answers `409`.
+
+**Errors:**
+
+- `400` — invalid body, e.g. a `baseUrl` that is not an http(s) URL or longer than 2048 characters
+- `404` — no provider with that `id`, or it was deleted while this update was being saved
+- `409` — the provider changed while this update was being saved; reload and try again
+- `422` — the base URL is not allowed, the update changes `baseUrl` without a fresh `apiKey`, or a new provider's endpoint lists no models and no `manualModelIds` were given
 
 The key is encrypted at rest and never written into the OpenClaw configuration in plaintext — see [Secret handling](/security/secrets/).
 
@@ -1458,7 +1469,7 @@ Remove Telegram from every agent at once. **Admin only.** This is the backend fo
 
 External system integrations — **Odoo**, **email** (Gmail and Microsoft 365 via OAuth), and **Web Search**. See [Integrations](/concepts/integrations/) for the conceptual overview, [Connect Odoo](/guides/connect-odoo/) for the Odoo setup guide, and [Connect Email](/guides/connect-email/) for the email setup guide.
 
-Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `ALLOW_PRIVATE_URLS=1` turns the check off for an on-premise Odoo; see [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network).
+Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `ALLOW_PRIVATE_URLS=1` turns the check off for an on-premise Odoo; see [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
 
 ### `GET /api/integrations`
 
@@ -1498,7 +1509,23 @@ Get a single connection (credentials masked).
 
 ### `PATCH /api/integrations/:connectionId`
 
-Update a connection's name, description, or credentials.
+Update a connection's name, description, or credentials. Credential fields you leave out keep their stored values, and the merged credentials are tested against the service before they are saved.
+
+A stored secret never follows the connection to a new destination. If the update changes where the secret would be sent, the secret has to come in the same request:
+
+| Type | Destination fields                                              | Secret to re-send |
+| ---- | --------------------------------------------------------------- | ----------------- |
+| Odoo | `url` (trailing slash ignored), `db` (exact, whitespace counts) | `apiKey`          |
+| IMAP | `imapHost`, `imapPort`, `smtpHost`, `smtpPort`, `security`      | `password`        |
+
+Without it the request is rejected with `422` and a field error on the secret, before anything is sent to the new destination, and the refusal is written to the audit trail as a failed `integration.credentials_updated` row. Changing only the login, username, or sender name keeps the stored secret. A credential update that the service rejects (`400`) or that loses a race against another save (`409`) changes nothing, and is written to the audit trail as a failed `integration.credentials_updated` row too.
+
+**Errors:**
+
+- `400` — invalid credentials, an invalid Odoo URL, or the test against the service failed
+- `404` — connection not found
+- `409` — the credentials were changed concurrently; retry
+- `422` — the destination changed but the secret was not re-entered
 
 ### `DELETE /api/integrations/:connectionId`
 
@@ -1612,12 +1639,12 @@ Try the settings without saving them. Both halves are exercised: an IMAP login a
 
 **Request body:**
 
-| Field                  | Type   | Required | Description                  |
-| ---------------------- | ------ | -------- | ---------------------------- |
-| `imapHost`, `imapPort` |        | Yes      | IMAP server and port         |
-| `smtpHost`, `smtpPort` |        | Yes      | SMTP server and port         |
-| `username`, `password` | string | Yes      | Mailbox credentials          |
-| `security`             | string | Yes      | `tls`, `starttls`, or `none` |
+| Field                  | Type   | Required | Description                                 |
+| ---------------------- | ------ | -------- | ------------------------------------------- |
+| `imapHost`, `imapPort` |        | Yes      | IMAP server (up to 253 characters) and port |
+| `smtpHost`, `smtpPort` |        | Yes      | SMTP server (up to 253 characters) and port |
+| `username`, `password` | string | Yes      | Mailbox credentials                         |
+| `security`             | string | Yes      | `tls`, `starttls`, or `none`                |
 
 **Response:** `200 OK` whether the probe passed or failed — a rejected login is a result, not a request error. Read `ok`, not the status code.
 

@@ -3,6 +3,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { isOpenClawLocalBaseUrl } from "@/lib/openclaw-local-url";
 import { computeAllowedTools } from "@/lib/tool-registry";
 
+// The capability cache is process-wide and starts cold in every test (the
+// shared setup resets it). Loading it is one more `db.select()`, which would
+// shift every call-order-keyed db mock below. `@/lib/model-vision` is mocked
+// right after this, so the cache's contents never matter here — only that
+// loading it reads nothing. (Eight tests used to pass only because an earlier
+// test had warmed the cache; each failed when run alone.)
+vi.mock("@/lib/model-capabilities/cache", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/model-capabilities/cache")>()),
+  ensureModelCapabilityCacheLoaded: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/model-vision", () => ({
   isModelVisionCapable: vi.fn((modelId: string) => {
     const provider = modelId.split("/")[0];
@@ -109,11 +120,13 @@ vi.mock("@/server/restart-state", () => ({
   restartState: { notifyRestart: vi.fn() },
 }));
 
-// Generic "OpenAI-compatible" providers (#894). Both entry points live in one
-// module: `listOpenAiCompatibleProviders` (model-provider emission in build.ts)
-// and `getDecryptedApiKey` (secrets bundle in secrets-bundle.ts). Default to an
-// empty list / no-key so every existing test in this file (which configures no
-// custom instances) is unaffected. Individual tests below override these.
+// Generic "OpenAI-compatible" providers (#894). Regenerate reads every custom
+// provider ONCE, through `listProvidersWithApiKeys` (identity, base URL, models
+// and the decrypted key + version from one SELECT); the secrets bundle, the
+// models.providers emission and the default-model guard all use that read.
+// `listOpenAiCompatibleProviders` is mocked so a test can prove regenerate
+// never consults a second read. Default to empty lists so every existing test
+// in this file (which configures no custom instances) is unaffected.
 const { mockListOpenAiCompatibleProviders, mockListProvidersWithApiKeys, mockGetDecryptedApiKey } =
   vi.hoisted(() => ({
     mockListOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
@@ -314,6 +327,11 @@ beforeEach(() => {
   // does not reach it — left alone it fires a regenerate into a later test.
   _resetConfigPushState();
 });
+
+// The regenerate queue is reset after every test by the shared setup
+// (src/test-setup.ts): a test that fails while it holds a run open (the
+// "overlapping regenerates" block does, on purpose) would otherwise leave that
+// run in flight, and every later regenerate in this file would wait behind it.
 
 // Drift guard: re-export the shared `isOpenClawLocalBaseUrl` (see
 // @/lib/openclaw-local-url) under the local name used by the assertions in
@@ -1552,9 +1570,10 @@ describe("regenerateOpenClawConfig", () => {
       if (key === "default_provider") return "acme-llm";
       return null;
     });
-    mockListOpenAiCompatibleProviders.mockResolvedValueOnce([
+    // Regenerate reads custom providers once, keys included (see
+    // listProvidersWithApiKeys); the default-model guard uses that same read.
+    mockListProvidersWithApiKeys.mockResolvedValueOnce([
       {
-        id: "row-1",
         slug: "acme-llm",
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
@@ -1570,9 +1589,8 @@ describe("regenerateOpenClawConfig", () => {
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           },
         ],
-        keyHint: "7Z8x",
-        createdAt: new Date("2026-01-01T00:00:00.000Z"),
-        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        apiKey: "acme-key",
+        keyVersion: "0123456789abcdef",
       },
     ]);
     vi.mocked(getDefaultModel).mockResolvedValueOnce("acme-llm/acme-large");
@@ -8648,6 +8666,15 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     };
   }
 
+  const ACME_KEY_VERSION = "00000000000000ac";
+  const ACME_SLOT = `acme-llm@${ACME_KEY_VERSION}`;
+
+  /** The one row regenerate reads for a custom provider (listProvidersWithApiKeys). */
+  function keyedRow(provider: ReturnType<typeof makeLargeCustomProvider>) {
+    const { slug, displayName, baseUrl, models } = provider;
+    return { slug, displayName, baseUrl, models, apiKey: "acme-key", keyVersion: ACME_KEY_VERSION };
+  }
+
   /** Regenerate with the given DB state and return the openclaw.json it wrote. */
   async function regenerateAndCapture(): Promise<string> {
     mockedWriteFileSync.mockClear();
@@ -8742,7 +8769,7 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       key === "anthropic_api_key" ? "sk-ant-test" : null
     );
     mockListOpenAiCompatibleProviders.mockResolvedValue([makeLargeCustomProvider()]);
-    mockListProvidersWithApiKeys.mockResolvedValue([{ slug: "acme-llm", apiKey: "acme-key" }]);
+    mockListProvidersWithApiKeys.mockResolvedValue([keyedRow(makeLargeCustomProvider())]);
     const existing = await regenerateAndCapture();
     expect(JSON.parse(existing).models.providers).toHaveProperty("acme-llm");
     return existing;
@@ -9001,7 +9028,7 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
     });
     let secretsOnDisk: Record<string, unknown> = {
-      providers: { anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "acme-key" } },
+      providers: { anthropic: { apiKey: "sk-ant-test" }, [ACME_SLOT]: { apiKey: "acme-key" } },
     };
     // The invariant, after every write of either file: openclaw.json never
     // names a key secrets.json lacks — a file OpenClaw can neither start on
@@ -9130,7 +9157,7 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       await regenerateOpenClawConfig();
 
       // Precondition: the file named a key the new bundle lacks.
-      expect(unresolvable(existing, secrets)).toEqual(["/providers/acme-llm/apiKey"]);
+      expect(unresolvable(existing, secrets)).toEqual([`/providers/${ACME_SLOT}/apiKey`]);
       // One write — the bridge, never the shrink — and before secrets.json.
       const [bridge] = keylessBridgesWritten(existing);
       expect(order).toEqual(["openclaw.json", "secrets.json"]);
@@ -9166,7 +9193,7 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       })),
     };
     mockListOpenAiCompatibleProviders.mockResolvedValue([cjk]);
-    mockListProvidersWithApiKeys.mockResolvedValue([{ slug: "acme-llm", apiKey: "acme-key" }]);
+    mockListProvidersWithApiKeys.mockResolvedValue([keyedRow(cjk)]);
     const existing = await regenerateAndCapture();
     mockedReadFileSync.mockReturnValue(existing);
     const apply = vi.fn(async (raw: string): Promise<void> => {
@@ -9447,6 +9474,19 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     };
   }
 
+  // One row of the single read regenerate takes per custom provider: identity,
+  // base URL, models AND the decrypted key + its version, all from the same
+  // SELECT (see listProvidersWithApiKeys). A base URL and a key can only ever
+  // be emitted together if they came from the same row read.
+  function keyed(
+    provider: ReturnType<typeof makeProvider>,
+    apiKey: string,
+    keyVersion = "0123456789abcdef"
+  ) {
+    const { slug, displayName, baseUrl, models } = provider;
+    return { slug, displayName, baseUrl, models, apiKey, keyVersion };
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockedGetOrCreateGatewayToken.mockResolvedValue("test-gateway-token");
@@ -9459,8 +9499,8 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     mockedGetSetting.mockResolvedValue(null);
     // Reset custom-provider mocks to their empty defaults (clearAllMocks clears
     // call history but not implementations set by earlier tests in this block).
-    // build.ts emission reads `listOpenAiCompatibleProviders`; the secrets bundle
-    // reads `listProvidersWithApiKeys` (single-query accessor).
+    // Regenerate reads `listProvidersWithApiKeys` once for everything; the
+    // key-free `listOpenAiCompatibleProviders` must stay unconsulted.
     mockListOpenAiCompatibleProviders.mockResolvedValue([]);
     mockListProvidersWithApiKeys.mockResolvedValue([]);
     mockGetDecryptedApiKey.mockResolvedValue(null);
@@ -9469,8 +9509,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
   });
 
   it("emits a models.providers entry mirroring the ollama-cloud shape (SecretRef, api, compat)", async () => {
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
-    mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
+    mockListProvidersWithApiKeys.mockResolvedValue([keyed(makeProvider(), "swiss-plaintext-key")]);
 
     await regenerateOpenClawConfig();
 
@@ -9482,7 +9521,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
       apiKey: {
         source: "file",
         provider: "pinchy",
-        id: "/providers/swisscom-ai/apiKey",
+        id: "/providers/swisscom-ai@0123456789abcdef/apiKey",
       },
       models: [
         {
@@ -9508,17 +9547,20 @@ describe("OpenAI-compatible custom providers (#894)", () => {
   });
 
   it("emits two coexisting provider keys when two instances are seeded", async () => {
-    mockListOpenAiCompatibleProviders.mockResolvedValue([
-      makeProvider(),
-      makeProvider({
-        id: "prov-2",
-        slug: "acme-llm",
-        displayName: "Acme LLM",
-        baseUrl: "https://acme.example/v1",
-        models: [makeModel({ id: "acme-1", name: "Acme 1", vision: false, input: ["text"] })],
-      }),
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      keyed(makeProvider(), "some-key"),
+      keyed(
+        makeProvider({
+          id: "prov-2",
+          slug: "acme-llm",
+          displayName: "Acme LLM",
+          baseUrl: "https://acme.example/v1",
+          models: [makeModel({ id: "acme-1", name: "Acme 1", vision: false, input: ["text"] })],
+        }),
+        "some-key",
+        "fedcba9876543210"
+      ),
     ]);
-    mockGetDecryptedApiKey.mockResolvedValue("some-key");
 
     await regenerateOpenClawConfig();
 
@@ -9533,20 +9575,22 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(config.models.providers["acme-llm"].models[0]).not.toHaveProperty("vision");
   });
 
-  it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/snapshot", async () => {
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
+  it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/keyVersion/snapshot", async () => {
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      keyed(makeProvider(), "swiss-plaintext-key", "0123456789abcdef"),
     ]);
-    mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
 
     await regenerateOpenClawConfig();
 
+    // keyVersion is part of the live-model cache key (with the base URL), so a
+    // re-pointed or re-keyed provider never reuses a list cached for another
+    // destination or key.
     expect(mockResolveCustomProviderModels).toHaveBeenCalledWith(
       expect.objectContaining({
         slug: "swisscom-ai",
         baseUrl: "https://api.swisscom.example/v1",
         apiKey: "swiss-plaintext-key",
+        keyVersion: "0123456789abcdef",
         models: [makeModel()],
       })
     );
@@ -9556,9 +9600,8 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // The snapshot (makeProvider().models) and the live result are
     // deliberately different models, proving the emission reads the live
     // result rather than `p.models` directly.
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      keyed(makeProvider(), "swiss-plaintext-key", "0123456789abcdef"),
     ]);
     mockResolveCustomProviderModels.mockResolvedValueOnce([
       makeModel({
@@ -9590,18 +9633,235 @@ describe("OpenAI-compatible custom providers (#894)", () => {
   });
 
   it("carries each instance's decrypted key into the secrets bundle (never the config)", async () => {
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     // The secrets bundle sources keys from the single-query accessor.
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      keyed(makeProvider(), "swiss-plaintext-key", "0123456789abcdef"),
     ]);
 
     await regenerateOpenClawConfig();
 
     expect(mockWriteSecretsFile).toHaveBeenCalled();
     const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
-    expect(secretsArg.providers?.["swisscom-ai"]).toEqual({ apiKey: "swiss-plaintext-key" });
+    expect(secretsArg.providers?.["swisscom-ai@0123456789abcdef"]).toEqual({
+      apiKey: "swiss-plaintext-key",
+    });
     expect(mockListProvidersWithApiKeys).toHaveBeenCalled();
+  });
+
+  // Snapshot pairing (second review finding on #1238). The key + version and
+  // the base URL used to come from two separate reads, so an update committing
+  // between them paired the NEW base URL with the OLD key version — and
+  // resolveCustomProviderModels sent the old key to the new host. Regenerate
+  // now derives the slot, the config entry and the discovery call from one
+  // read; a second, divergent read is never consulted.
+  it("pairs each provider's base URL with the key from the same read, never a second one", async () => {
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      keyed(
+        makeProvider({ baseUrl: "https://moved.swisscom.example/v1" }),
+        "new-key",
+        "2222222222222222"
+      ),
+    ]);
+    // What a second read would see had the row changed again in between.
+    mockListOpenAiCompatibleProviders.mockResolvedValue([
+      makeProvider({ baseUrl: "https://elsewhere.example/v1" }),
+    ]);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(config.models.providers["swisscom-ai"]).toMatchObject({
+      baseUrl: "https://moved.swisscom.example/v1",
+      apiKey: { id: "/providers/swisscom-ai@2222222222222222/apiKey" },
+    });
+    expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1);
+    expect(mockResolveCustomProviderModels).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: "https://moved.swisscom.example/v1", apiKey: "new-key" })
+    );
+    expect(mockListOpenAiCompatibleProviders).not.toHaveBeenCalled();
+    expect(JSON.stringify(config)).not.toContain("elsewhere.example");
+  });
+
+  // Runtime pairing (review finding on #1238). OpenClaw learns a new baseUrl by
+  // config apply, and the key by re-resolving SecretRefs. If the pointer stayed
+  // `/providers/<slug>/apiKey` while both changed, a `secrets.reload` against
+  // the still-running config could put the NEW key on the OLD address, and a
+  // failed reload could leave the address and key from different saves. With
+  // the slot versioned by the key, the config that carries the new baseUrl is
+  // the only one whose pointer resolves the new key, and the previous slot is
+  // gone — a config still pointing at it fails closed.
+  it("re-points the SecretRef whenever the key changes, so a new baseUrl only ever resolves its own key", async () => {
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      keyed(makeProvider(), "old-key", "1111111111111111"),
+    ]);
+    await regenerateOpenClawConfig();
+    const before = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+    mockedWriteFileSync.mockClear();
+    mockWriteSecretsFile.mockClear();
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      keyed(
+        makeProvider({ baseUrl: "https://moved.swisscom.example/v1" }),
+        "new-key",
+        "2222222222222222"
+      ),
+    ]);
+    await regenerateOpenClawConfig();
+    const after = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const secretsAfter = mockWriteSecretsFile.mock.calls[0][0];
+
+    expect(before.models.providers["swisscom-ai"].apiKey.id).toBe(
+      "/providers/swisscom-ai@1111111111111111/apiKey"
+    );
+    expect(after.models.providers["swisscom-ai"]).toMatchObject({
+      baseUrl: "https://moved.swisscom.example/v1",
+      apiKey: { id: "/providers/swisscom-ai@2222222222222222/apiKey" },
+    });
+    expect(secretsAfter.providers["swisscom-ai@2222222222222222"]).toEqual({ apiKey: "new-key" });
+    // The old pointer resolves nothing any more: a runtime still on the old
+    // config cannot pick up the new key, and the new config cannot resolve the old.
+    expect(secretsAfter.providers).not.toHaveProperty("swisscom-ai@1111111111111111");
+    expect(secretsAfter.providers).not.toHaveProperty("swisscom-ai");
+  });
+
+  // Regenerates are serialized (third review finding on #1238). Two run
+  // concurrently, a slow one that read the OLD row could finish after a newer
+  // one and write last — stale base URL live, and with versioned slots
+  // openclaw.json and secrets.json on different key versions. Now a call made
+  // during a run waits for a run that starts after it, so the newer state is
+  // always what lands last. The queue's own rules are unit-tested in
+  // openclaw-config-regenerate-queue.test.ts.
+  describe("overlapping regenerates", () => {
+    function configWrites() {
+      return mockedWriteFileSync.mock.calls
+        .filter(isOpenClawConfigWrite)
+        .map((c) => JSON.parse(c[1] as string));
+    }
+
+    // The held run reaches discovery only after the real 300 ms cold-start
+    // retry sleep, so vi.waitFor's 1 s default leaves little slack on a loaded
+    // machine. Generous, and still well inside the 20 s test timeout.
+    const HELD_RUN_WAIT = { timeout: 10_000 };
+
+    /** Hold the first run inside its discovery call until released. Release it in a `finally`. */
+    function holdFirstDiscovery() {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      mockResolveCustomProviderModels.mockImplementationOnce(async (p: { models: unknown }) => {
+        await gate;
+        return p.models;
+      });
+      return release;
+    }
+
+    const oldState = () => [keyed(makeProvider(), "old-key", "1111111111111111")];
+    const newState = () => [
+      keyed(
+        makeProvider({ baseUrl: "https://moved.swisscom.example/v1" }),
+        "new-key",
+        "2222222222222222"
+      ),
+    ];
+
+    it("writes the second caller's state last, from a run that started after its call", async () => {
+      mockListProvidersWithApiKeys.mockResolvedValue(oldState());
+      const release = holdFirstDiscovery();
+
+      try {
+        const first = regenerateOpenClawConfig();
+        await vi.waitFor(
+          () => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1),
+          HELD_RUN_WAIT
+        );
+
+        // A save commits while the first regenerate is still in flight…
+        mockListProvidersWithApiKeys.mockResolvedValue(newState());
+        const second = regenerateOpenClawConfig();
+        // …and its regenerate does not start alongside the stale one. A bounded
+        // negative window: past the 300 ms cold-start retry every regenerate in
+        // this block takes (no openclaw.json on disk), a concurrent run would
+        // have read the table AND written its config by now — and the held
+        // first run would then overwrite it with the stale row.
+        await new Promise((r) => setTimeout(r, 450));
+        expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(1);
+        expect(configWrites()).toHaveLength(0);
+
+        release();
+        await Promise.all([first, second]);
+      } finally {
+        release();
+      }
+
+      expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(2);
+      const writes = configWrites();
+      expect(writes.at(-1).models.providers["swisscom-ai"]).toMatchObject({
+        baseUrl: "https://moved.swisscom.example/v1",
+        apiKey: { id: "/providers/swisscom-ai@2222222222222222/apiKey" },
+      });
+      // secrets.json ends on the same version openclaw.json points at.
+      const lastSecrets = mockWriteSecretsFile.mock.calls.at(-1)![0];
+      expect(lastSecrets.providers).toEqual(
+        expect.objectContaining({ "swisscom-ai@2222222222222222": { apiKey: "new-key" } })
+      );
+      expect(lastSecrets.providers).not.toHaveProperty("swisscom-ai@1111111111111111");
+    });
+
+    it("runs exactly one more regenerate for any number of calls made during a run", async () => {
+      mockListProvidersWithApiKeys.mockResolvedValue(oldState());
+      const release = holdFirstDiscovery();
+
+      try {
+        const first = regenerateOpenClawConfig();
+        await vi.waitFor(
+          () => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1),
+          HELD_RUN_WAIT
+        );
+        mockListProvidersWithApiKeys.mockResolvedValue(newState());
+        const during = [
+          regenerateOpenClawConfig(),
+          regenerateOpenClawConfig(),
+          regenerateOpenClawConfig(),
+        ];
+
+        release();
+        await Promise.all([first, ...during]);
+        await drainBackgroundCoroutine();
+      } finally {
+        release();
+      }
+
+      expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects the caller whose run failed, and still applies the next caller's change", async () => {
+      mockListProvidersWithApiKeys.mockResolvedValue(oldState());
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      mockResolveCustomProviderModels.mockImplementationOnce(async () => {
+        await gate;
+        throw new Error("first regenerate failed");
+      });
+
+      try {
+        const first = regenerateOpenClawConfig();
+        await vi.waitFor(
+          () => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1),
+          HELD_RUN_WAIT
+        );
+        mockListProvidersWithApiKeys.mockResolvedValue(newState());
+        const second = regenerateOpenClawConfig();
+
+        release();
+        await expect(first).rejects.toThrow("first regenerate failed");
+        await expect(second).resolves.toBeUndefined();
+      } finally {
+        release();
+      }
+
+      expect(configWrites().at(-1).models.providers["swisscom-ai"].baseUrl).toBe(
+        "https://moved.swisscom.example/v1"
+      );
+    });
   });
 
   it("never writes the raw key into the emitted config tree (assertNoPlaintextSecrets passes)", async () => {
@@ -9609,9 +9869,8 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // Use an OpenAI-shaped key so the scanner's `openai-generic` pattern would
     // catch a leak if the raw key ever reached the config tree. The key flows
     // through the secrets bundle (listProvidersWithApiKeys), never the config.
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "sk-proj-abcdef0123456789abcdef" },
+      keyed(makeProvider(), "sk-proj-abcdef0123456789abcdef"),
     ]);
 
     await regenerateOpenClawConfig();
@@ -9622,7 +9881,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(config.models.providers["swisscom-ai"].apiKey).toEqual({
       source: "file",
       provider: "pinchy",
-      id: "/providers/swisscom-ai/apiKey",
+      id: "/providers/swisscom-ai@0123456789abcdef/apiKey",
     });
   });
 
@@ -9666,19 +9925,19 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // config carries a SecretRef, so neither can surface in the config tree.
     const skKey = "sk-proj-Zx9Qm2Kd7Lp4Rt8Wv1Nb6Yc3Hj5Fg0Aa";
     const jwtKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzd2lzc2NvbSJ9.7bQe2mVnKpA0";
-    mockListOpenAiCompatibleProviders.mockResolvedValue([
-      makeProvider(),
-      makeProvider({
-        id: "prov-2",
-        slug: "acme-llm",
-        displayName: "Acme LLM",
-        baseUrl: "https://acme.example/v1",
-        models: [makeModel({ id: "acme-1", name: "Acme 1", vision: false, input: ["text"] })],
-      }),
-    ]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: skKey },
-      { slug: "acme-llm", apiKey: jwtKey },
+      keyed(makeProvider(), skKey, "0123456789abcdef"),
+      keyed(
+        makeProvider({
+          id: "prov-2",
+          slug: "acme-llm",
+          displayName: "Acme LLM",
+          baseUrl: "https://acme.example/v1",
+          models: [makeModel({ id: "acme-1", name: "Acme 1", vision: false, input: ["text"] })],
+        }),
+        jwtKey,
+        "fedcba9876543210"
+      ),
     ]);
 
     await regenerateOpenClawConfig();
@@ -9695,21 +9954,21 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(config.models.providers["swisscom-ai"].apiKey).toEqual({
       source: "file",
       provider: "pinchy",
-      id: "/providers/swisscom-ai/apiKey",
+      id: "/providers/swisscom-ai@0123456789abcdef/apiKey",
     });
     expect(config.models.providers["acme-llm"].apiKey).toEqual({
       source: "file",
       provider: "pinchy",
-      id: "/providers/acme-llm/apiKey",
+      id: "/providers/acme-llm@fedcba9876543210/apiKey",
     });
   });
 
-  it("emits a scanner-clean SecretRef-only config even when no key is seeded (no false positive)", async () => {
+  it("emits a scanner-clean SecretRef-only config for a key with no recognizable prefix (no false positive)", async () => {
     const { findPlaintextSecrets } = await import("@/lib/openclaw-plaintext-scanner");
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
-    // Deliberately leave listProvidersWithApiKeys unseeded: the config tree is
-    // what the scanner reads, and it must be clean with only the SecretRef.
-    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    // A provider row always carries a key (it comes from the same read as the
+    // base URL), here one with no known prefix: the config tree is what the
+    // scanner reads, and it must be clean with only the SecretRef.
+    mockListProvidersWithApiKeys.mockResolvedValue([keyed(makeProvider(), "plain-arbitrary-key")]);
 
     await regenerateOpenClawConfig();
 
@@ -9766,11 +10025,9 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // perturbs built-in emission — the empty-table path is inert by comparison.
     mockedWriteFileSync.mockClear();
     mockWriteSecretsFile.mockClear();
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      keyed(makeProvider(), "swiss-plaintext-key", "0123456789abcdef"),
     ]);
-    mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
 
     await regenerateOpenClawConfig();
 

@@ -445,4 +445,117 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     expect(Object.keys(started.models.providers).sort()).toEqual(["acme-llm", "anthropic"]);
     expect(started.models.providers["acme-llm"]).not.toHaveProperty("apiKey");
   }, 60_000);
+
+  // #1238 versions an OpenAI-compatible provider's key slot
+  // (`/providers/<slug>@<version>/apiKey`), so re-keying it puts a NEW slot in
+  // secrets.json and takes the old one out — while openclaw.json still names
+  // the old one. An earlier fix kept the old slot in secrets.json for that
+  // window, reading its value back from the file; Pinchy cannot read it in
+  // production (see the mock at the top), so it kept nothing. Here, in
+  // regenerate's order (superseded-secret-slot.test.ts pins it): the key-less
+  // bridge, secrets.json, then the provider's entry from the target. After
+  // every one of those writes OpenClaw starts, and accepts a targeted writer's
+  // copy of its file; the new key is only ever paired with the new address.
+  it("re-keys a provider with secrets.json unreadable to Pinchy, the file resolvable after every write", async () => {
+    process.env.OPENCLAW_CONFIG_PATH = pinchyConfigPath;
+    process.env.OPENCLAW_SECRETS_PATH = secretsPath;
+    const { pushConfigInBackground } = await import("@/lib/openclaw-config/write");
+    const { getPendingConfigPushCount } = await import("@/lib/openclaw-config/push-state");
+    const { keylessBridge, rekeyedBridge } = await import("@/lib/openclaw-config/keyless-bridge");
+    const { writeSecretsFile } = await import("@/lib/openclaw-secrets");
+    process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
+    const { writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
+    type OcConfig = Parameters<typeof writeConfigFile>[0];
+    const handlers = await loadConfigHandlers();
+    const get = () => request(handlers["config.get"], {});
+    const apply = (raw: string, baseHash?: string, options: Json = {}) =>
+      request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}), ...options });
+    const OLD_SLOT = "acme-llm@0000000000000001";
+    const NEW_SLOT = "acme-llm@0000000000000002";
+    const acmeOld = {
+      baseUrl: "https://old.acme.example/v1",
+      api: "openai-completions",
+      apiKey: ref(`/providers/${OLD_SLOT}/apiKey`),
+      models: Array.from({ length: 40 }, (_, i) => model(i)),
+    };
+    const acmeNew = {
+      baseUrl: "https://new-gateway.example/v1",
+      api: "openai-completions",
+      apiKey: ref(`/providers/${NEW_SLOT}/apiKey`),
+      models: Array.from({ length: 40 }, (_, i) => model(i)),
+    };
+    try {
+      writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, [OLD_SLOT]: { apiKey: "sk-acme-old" } });
+      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig);
+      await promoteToLastKnownGood();
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const target = config({ "acme-llm": acmeNew });
+      // What regenerate builds after the re-key: the new slot, not the old one.
+      const authoritative = {
+        providers: { anthropic: { apiKey: "sk-ant-test" }, [NEW_SLOT]: { apiKey: "sk-acme-new" } },
+      };
+      const onDisk = () => JSON.parse(readFileSync(ocConfigPath, "utf-8")) as Json;
+      const targeted = () => {
+        const file = onDisk();
+        delete file.meta;
+        return JSON.stringify({ ...file, agents: { list: [{ id: "smithers", name: "S" }] } });
+      };
+      /** OpenClaw starts on the file, and accepts a targeted writer's copy of it. */
+      const usable = async () => {
+        const started = (await startOpenClaw()) as { models: { providers: Record<string, Json> } };
+        await apply(targeted(), (await get()).hash as string);
+        await promoteToLastKnownGood();
+        const acme = started.models.providers["acme-llm"];
+        if (JSON.stringify(acme.apiKey ?? null).includes(NEW_SLOT)) {
+          expect(acme.baseUrl, "the new key goes to the new address only").toBe(
+            "https://new-gateway.example/v1"
+          );
+        }
+        return acme;
+      };
+      const write = (file: Json) =>
+        writeFileSync(ocConfigPath, JSON.stringify(file, null, 2).trimEnd() + "\n", {
+          mode: 0o666,
+        });
+
+      // The bug: secrets.json written from the database, next to a file that
+      // still names the old slot. OpenClaw cannot start, and refuses a copy.
+      writeSecretsFile(authoritative);
+      await expect(startOpenClaw()).rejects.toThrow(/required secrets are unavailable/);
+      await expect(apply(targeted(), (await get()).hash as string)).rejects.toThrow(/SecretRef/);
+
+      // The fix, from the same starting point.
+      writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, [OLD_SLOT]: { apiKey: "sk-acme-old" } });
+      const before = onDisk();
+      const keyless = keylessBridge(before, authoritative)!;
+      expect(keyless, "the file names a slot the bundle lacks").not.toBeNull();
+      write(keyless);
+      expect(await usable()).not.toHaveProperty("apiKey");
+      writeSecretsFile(authoritative);
+      expect(await usable()).not.toHaveProperty("apiKey");
+      const rekeyed = rekeyedBridge(keyless, before, target, authoritative);
+      expect(rekeyed, "the provider is kept, so it gets its key back").not.toBeNull();
+      write(rekeyed!);
+      const acme = await usable();
+      expect(acme.apiKey).toEqual(ref(`/providers/${NEW_SLOT}/apiKey`));
+      expect(acme.models).toHaveLength(40);
+
+      // The push then finds the provider in place and delivers the rest.
+      mockGetClient.mockReturnValue({ config: { get, apply } });
+      pushConfigInBackground(JSON.stringify(target, null, 2), { fullRegenerate: true });
+      for (let i = 0; i < 2000 && getPendingConfigPushCount() > 0; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(getPendingConfigPushCount()).toBe(0);
+      expect(errorSpy.mock.calls.flat().join(" ")).toBe("");
+      expect(await usable()).toMatchObject({ baseUrl: "https://new-gateway.example/v1" });
+      expect(JSON.parse(readFileSync(secretsPath, "utf-8"))).toEqual(authoritative);
+      expect(existsSync(pinchyConfigPath), "the push wrote no file itself").toBe(false);
+    } finally {
+      delete process.env.OPENCLAW_SECRETS_PATH;
+    }
+  }, 60_000);
 });
