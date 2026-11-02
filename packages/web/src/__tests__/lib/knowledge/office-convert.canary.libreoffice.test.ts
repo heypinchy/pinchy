@@ -92,10 +92,13 @@ import {
   EMF_RECTANGLE,
   emf,
   emfPlusComment,
+  emfPlusDualComment,
   emfPlusImageObject,
+  emfText,
   paddingComment,
   wmf,
   wmfEmbeddedEmf,
+  wmfText,
   WMF_RECTANGLE,
 } from "@/test-helpers/metafile";
 
@@ -140,6 +143,9 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
 
   /** Planted in every local-file vector; it must never reach a PDF's text. */
   const SECRET = "SVGSECRETMARKER";
+  /** Words drawn by a metafile's own records: they must survive the preflight (fourth review). */
+  const EMF_WORDS = "EMFWORDSMARKER";
+  const WMF_WORDS = "WMFWORDSMARKER";
   /** The altChunk's own text: present in a PDF only if this LibreOffice imported the chunk at all. */
   const ALT_CHUNK_BODY = "ALTCHUNKBODYMARKER";
 
@@ -469,9 +475,32 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       preflight: "sanitizes",
     });
     // The same EMF carried whole inside a WMF (the "WMFC" comment Office uses).
+    // Since the fourth review the EMF is dropped and the WMF's own records —
+    // its words among them — are drawn instead of the picture being cut.
     planted(
       "wmf-embedded-emf.docx",
-      metafilePicture("media/image1.wmf", wmf(wmfEmbeddedEmf(emfPlusSvg), WMF_RECTANGLE)),
+      metafilePicture(
+        "media/image1.wmf",
+        wmf(wmfEmbeddedEmf(emfPlusSvg), WMF_RECTANGLE, wmfText(WMF_WORDS))
+      ),
+      { profile: false, preflight: "sanitizes" }
+    );
+    // Fourth review: an "EMF+ Dual" EMF — what Office and LibreOffice write —
+    // draws everything twice. When only its EMF+ layer carries the picture,
+    // that layer is dropped and the EMF records stay: the same drawing, its
+    // words included, which a cut used to take out of the index.
+    planted(
+      "emfplus-dual-svg.docx",
+      metafilePicture(
+        "media/image1.emf",
+        emf(
+          paddingComment(4400),
+          emfPlusDualComment(emfPlusImageObject(Buffer.from(reachingSvg)), EMF_PLUS_DRAW_IMAGE),
+          EMF_RECTANGLE,
+          emfText(EMF_WORDS),
+          emfPlusDualComment()
+        )
+      ),
       { profile: false, preflight: "sanitizes" }
     );
     // `\bin` with 2^31: the sanitizer skipped to the end of the file, while
@@ -614,7 +643,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       expect(await textOf(join(outDir, `${name}.pdf`)), name).toContain(SECRET);
     }
     // ...and through a metafile's own picture, the local file's PIXELS.
-    for (const name of ["emfplus-svg", "wmf-embedded-emf"]) {
+    for (const name of ["emfplus-svg", "wmf-embedded-emf", "emfplus-dual-svg"]) {
       expect(localPixelsIn(join(outDir, `${name}.pdf`)), name).toBe(true);
     }
 
@@ -665,6 +694,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       "rtf-picture.doc",
       "emfplus-svg.docx",
       "wmf-embedded-emf.docx",
+      "emfplus-dual-svg.docx",
       "legacy-linked-http.doc",
       "legacy-linked-file.doc",
     ]) {
@@ -682,6 +712,13 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     expect(await textOf(byName.get("rtf-picture.doc")!.artifactPath!)).toContain(
       "Body words for the RTF canary"
     );
+    // A metafile with a second drawing keeps it, words and all (fourth review).
+    // Glyph by glyph, as a metafile positions them, so pdfjs may split a word:
+    // compared without whitespace.
+    const glyphs = async (name: string) =>
+      (await textOf(byName.get(name)!.artifactPath!)).replace(/\s+/g, "");
+    expect(await glyphs("emfplus-dual-svg.docx")).toContain(EMF_WORDS);
+    expect(await glyphs("wmf-embedded-emf.docx")).toContain(WMF_WORDS);
   }, 240_000);
 
   it("KNOWN GAP of the profile-only layer: a legacy .doc whose embedded picture is an SVG still draws a local file", async () => {

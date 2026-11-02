@@ -64,6 +64,42 @@ export function emfPlusComment(...records: Buffer[]): Buffer {
 }
 
 /**
+ * The same, with the header's "EMF+ Dual" flag set: the EMF records around it
+ * draw the whole picture again, for readers without EMF+. Office and
+ * LibreOffice write every EMF+ file this way ([MS-EMFPLUS] 2.3.3.3).
+ */
+export function emfPlusDualComment(...records: Buffer[]): Buffer {
+  const header = Buffer.from(EMF_PLUS_HEADER);
+  header.writeUInt16LE(0x0001, 2);
+  return emfComment(EMF_PLUS_ID, Buffer.concat([header, ...records, EMF_PLUS_EOF]));
+}
+
+/** EMR_EXTTEXTOUTW drawing `text` at (20, 40): the GDI way a metafile carries words. */
+export function emfText(text: string): Buffer {
+  const chars = Buffer.from(text, "utf16le");
+  const dx = Buffer.concat(Array.from(text, () => u32(12)));
+  const fixed = 8 + 16 + 4 + 4 + 4 + 8 + 4 + 4 + 4 + 16 + 4; // through offDx
+  const offString = fixed;
+  const offDx = offString + pad4(chars).length;
+  const payload = Buffer.concat([
+    ...[0, 0, 400, 200].map(i32), // bounds
+    u32(1), // GM_COMPATIBLE
+    u32(0),
+    u32(0), // scales
+    i32(20),
+    i32(40), // reference point
+    u32(text.length),
+    u32(offString),
+    u32(0), // options
+    ...[0, 0, -1, -1].map(i32), // rectangle
+    u32(offDx),
+    pad4(chars),
+    dx,
+  ]);
+  return emfRecord(84, payload);
+}
+
+/**
  * An EMF+ Object record holding an Image: a COMPRESSED bitmap (bytes in any
  * format a graphic filter detects) or an embedded METAFILE.
  */
@@ -190,7 +226,7 @@ export function wmf(...records: Buffer[]): Buffer {
     u16(9),
     u16(0x0300),
     u32((18 + body.length) / 2),
-    u16(0),
+    u16(1), // NumberOfObjects: room for the font `wmfText` creates
     u32(3),
     u16(0),
   ]);
@@ -204,6 +240,26 @@ export function wmf(...records: Buffer[]): Buffer {
   let checksum = 0;
   for (let i = 0; i < 20; i += 2) checksum ^= placeable.readUInt16LE(i);
   return Buffer.concat([placeable, u16(checksum), header, body]);
+}
+
+/**
+ * META_TEXTOUT drawing `text` at (10, 60) in a 20-unit Arial: the WMF way a
+ * metafile carries words. The font is created and selected first — without
+ * one, the default is so large next to a 400-unit picture that all but the
+ * first two letters fall outside it.
+ */
+export function wmfText(text: string): Buffer {
+  const face = Buffer.alloc(32);
+  face.write("Arial", "latin1");
+  const font = wmfRecord(
+    0x02fb, // META_CREATEFONTINDIRECT
+    Buffer.concat([u16(20), u16(0), u16(0), u16(0), u16(400), Buffer.alloc(8), face])
+  );
+  const select = wmfRecord(0x012d, u16(0)); // META_SELECTOBJECT, object 0
+  const chars = Buffer.from(text, "latin1");
+  const even = chars.length % 2 ? Buffer.concat([chars, Buffer.alloc(1)]) : chars;
+  const textOut = wmfRecord(0x0521, Buffer.concat([u16(chars.length), even, u16(60), u16(10)]));
+  return Buffer.concat([font, select, textOut]);
 }
 
 /** A rectangle: something for a plain metafile to draw. */

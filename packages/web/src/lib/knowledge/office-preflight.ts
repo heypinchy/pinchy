@@ -59,7 +59,10 @@
  * The same is true one level down: a metafile picture (EMF, WMF) passes on
  * its magic bytes, but its records can carry a picture of their own, which
  * LibreOffice again detects by ITS bytes. So a metafile is walked record by
- * record and cut if it carries one (third review, PR #1243).
+ * record (third review, PR #1243). One that carries a picture keeps its
+ * second, plain drawing where it has one — the EMF records of an "EMF+ Dual"
+ * file, the WMF records around an embedded EMF — words included; one that
+ * has none is cut, and its words with it (fourth review).
  *
  * RTF (accepted under a `.doc` name, because Word writes those) has its
  * picture, object and field-instruction groups cut (`sanitizeRtf`), and is
@@ -1094,8 +1097,12 @@ export function sanitizeOoxmlPackage(buffer: Buffer): {
     let verdict: boolean;
     if (!entry) verdict = false;
     else if (kind === "xml") verdict = vetXmlPart(entry);
-    else if (kind === "image") verdict = vetImagePart(buffer, entry);
-    else {
+    else if (kind === "image") {
+      const kept = vetImagePart(buffer, entry);
+      verdict = kept !== null;
+      // A metafile kept without the layer that reached for a picture.
+      if (kept instanceof Buffer) rewritten.set(entry, kept);
+    } else {
       // A font is drawn as a picture when an `r:embed` names it, and then by
       // what its bytes are: a metafile carrying a picture is one (third
       // review). An obfuscated font's first 32 bytes are scrambled, so none of
@@ -1148,23 +1155,28 @@ function inflateHead(archive: Buffer, entry: ZipEntryInfo): Buffer {
 }
 
 /**
- * A picture we will let LibreOffice draw; anything else is cut (the picture
- * is not drawn). Whatever would be taken for SVG is held to the SVG rule —
- * raster magic up front does not excuse SVG markup behind it — and SVGZ is
- * never kept: what it reaches for cannot be read without inflating it whole.
- * A metafile is walked record by record (`metafileCarriesNoPicture`).
+ * A picture we will let LibreOffice draw: `true` to keep it as it is, a
+ * Buffer to keep THAT instead (a metafile without the layer that reached for
+ * a picture), `null` to cut it (the picture is not drawn). Whatever would be
+ * taken for SVG is held to the SVG rule — raster magic up front does not
+ * excuse SVG markup behind it — and SVGZ is never kept: what it reaches for
+ * cannot be read without inflating it whole. A metafile is walked record by
+ * record (`keptMetafile`).
  */
-function vetImagePart(archive: Buffer, entry: ZipEntryInfo): boolean {
+function vetImagePart(archive: Buffer, entry: ZipEntryInfo): true | Buffer | null {
+  const keepIf = (ok: boolean) => (ok ? true : null);
   const head = inflateHead(archive, entry);
   if (!looksLikeSvg(head)) {
-    if (!isMetafile(head)) return isPixelPicture(head);
-    if (entry.uncompressedSize > MAX_METAFILE_BYTES) return false;
-    return metafileCarriesNoPicture(inflatePart(archive, entry, MAX_METAFILE_BYTES));
+    if (!isMetafile(head)) return keepIf(isPixelPicture(head));
+    if (entry.uncompressedSize > MAX_METAFILE_BYTES) return null;
+    const bytes = inflatePart(archive, entry, MAX_METAFILE_BYTES);
+    const kept = keptMetafile(bytes);
+    return kept === bytes ? true : kept;
   }
-  if (head[0] === 0x1f && head[1] === 0x8b) return false;
-  if (entry.uncompressedSize > MAX_SVG_BYTES) return false;
+  if (head[0] === 0x1f && head[1] === 0x8b) return null;
+  if (entry.uncompressedSize > MAX_SVG_BYTES) return null;
   const svg = inflatePart(archive, entry, entry.uncompressedSize);
-  return !svg.includes(0) && isSelfContainedSvg(svg.toString("latin1"));
+  return keepIf(!svg.includes(0) && isSelfContainedSvg(svg.toString("latin1")));
 }
 
 // --- Metafiles ------------------------------------------------------------
@@ -1208,6 +1220,122 @@ const EMF_PLUS_OBJECT_IMAGE = 5;
 const EMF_PLUS_BRUSH_TEXTURE = 2;
 const EMF_PLUS_CONTINUED = 0x8000;
 
+/** The EmfPlusHeader record, and its flag for "EMF+ Dual" ([MS-EMFPLUS] 2.3.3.3). */
+const EMF_PLUS_HEADER = 0x4001;
+const EMF_PLUS_DUAL = 0x0001;
+
+/**
+ * What to keep of a metafile picture: the bytes themselves when they carry
+ * no picture of their own (`metafileCarriesNoPicture`); a copy without the
+ * layer that does, when the rest still draws the whole picture; or null, to
+ * cut it.
+ *
+ * Cutting costs words. A metafile's text is GDI text records, LibreOffice
+ * draws them into the PDF's text layer, and the index reads that layer — so
+ * a cut chart lost its labels from search (fourth review, PR #1243). Two
+ * shapes have a second, complete drawing to fall back to:
+ *
+ *  - An "EMF+ Dual" EMF — what Office and LibreOffice write whenever they
+ *    write EMF+ — draws everything twice: once in EMF+ records (inside
+ *    comments), once in ordinary EMF records for readers without EMF+. When
+ *    the EMF+ layer is what carries a picture, EVERY EMF+ comment goes and
+ *    the EMF records stay: LibreOffice then draws the file as the plain EMF
+ *    it also is. Partial removal is not attempted — one comment batches many
+ *    EMF+ records, and a half-present EMF+ layer is a drawing nobody wrote.
+ *  - A WMF that carries an EMF ("WMFC" comments, Office's and LibreOffice's
+ *    habit): LibreOffice draws the EMF instead of the WMF records around it.
+ *    When the EMF is what carries a picture (or is not all there), the WMFC
+ *    records go and the WMF's own records — the same drawing — stay.
+ *
+ * The rewrite drops whole records and fixes the counts the header keeps
+ * (an EMF's byte and record count, a WMF's size and largest record); nothing
+ * else in either format points at a record's position. The result is walked
+ * again like any metafile and cut if it is not plain. An EMF+ file that is
+ * NOT dual has no second drawing, and is cut as before — with its words.
+ */
+function keptMetafile(bytes: Buffer): Buffer | null {
+  if (metafileCarriesNoPicture(bytes)) return bytes;
+  try {
+    const fallback = isEmf(bytes) ? emfWithoutEmfPlus(bytes) : wmfWithoutEmbeddedEmf(bytes);
+    return fallback && metafileCarriesNoPicture(fallback) ? fallback : null;
+  } catch {
+    return null; // Read past the end: a record lied about its size.
+  }
+}
+
+const isEmfPlusComment = (record: Buffer) =>
+  record.readUInt32LE(0) === EMR_COMMENT &&
+  record.length >= 16 &&
+  record.readUInt32LE(8) >= 4 &&
+  record.readUInt32LE(12) === COMMENT_EMF_PLUS;
+
+/**
+ * This EMF without any of its EMF+ comments — only if it is "EMF+ Dual" (the
+ * flag on the EMF+ header, the first EMF+ record of the first EMF+ comment),
+ * and with the header's byte and record counts set to what is left. Null for
+ * anything else.
+ */
+function emfWithoutEmfPlus(emf: Buffer): Buffer | null {
+  const kept: Buffer[] = [];
+  let dual: boolean | null = null;
+  for (let at = 0; at < emf.length;) {
+    const size = emf.readUInt32LE(at + 4);
+    if (size < 8 || size % 4 !== 0 || at + size > emf.length) return null;
+    const record = emf.subarray(at, at + size);
+    at += size;
+    if (!isEmfPlusComment(record)) {
+      kept.push(record);
+      continue;
+    }
+    if (dual === null) {
+      if (record.length < 28 || record.readUInt16LE(16) !== EMF_PLUS_HEADER) return null;
+      dual = (record.readUInt16LE(18) & EMF_PLUS_DUAL) !== 0;
+    }
+  }
+  // The header record carries nBytes at 48 and nRecords at 52.
+  if (!dual || kept.length === 0 || kept[0].length < 56) return null;
+  const out = Buffer.concat(kept);
+  out.writeUInt32LE(out.length, 48);
+  out.writeUInt32LE(kept.length, 52);
+  return out;
+}
+
+/**
+ * This WMF without its "WMFC" records (the EMF it carries), with its header's
+ * size and largest-record fields set to what is left. Null when there were
+ * none, or the records cannot be walked.
+ */
+function wmfWithoutEmbeddedEmf(wmf: Buffer): Buffer | null {
+  const start = startsWith(wmf, "d7cdc69a") ? 22 : 0;
+  if (start + 18 > wmf.length || wmf.readUInt16LE(start + 2) !== 9) return null;
+  const kept: Buffer[] = [];
+  let dropped = 0;
+  let largest = 0;
+  for (let at = start + 18; at < wmf.length;) {
+    const size = wmf.readUInt32LE(at) * 2;
+    if (size < 6 || at + size > wmf.length) return null;
+    const record = wmf.subarray(at, at + size);
+    at += size;
+    const embedsEmf =
+      record.readUInt16LE(4) === META_ESCAPE &&
+      size >= 14 &&
+      record.readUInt16LE(6) === MFCOMMENT &&
+      record.readUInt32LE(10) === WMF_EMBEDDED_EMF;
+    if (embedsEmf) {
+      dropped++;
+      continue;
+    }
+    kept.push(record);
+    largest = Math.max(largest, size / 2);
+  }
+  if (dropped === 0) return null;
+  const header = Buffer.from(wmf.subarray(start, start + 18));
+  const body = Buffer.concat(kept);
+  header.writeUInt32LE((18 + body.length) / 2, 6); // Size, in 16-bit words
+  header.writeUInt32LE(largest, 12); // MaxRecord, in 16-bit words
+  return Buffer.concat([wmf.subarray(0, start), header, body]);
+}
+
 /**
  * Does this EMF or WMF carry nothing LibreOffice would hand to ANOTHER import
  * filter? A metafile passes the picture check on its magic bytes, but its
@@ -1224,14 +1352,17 @@ const EMF_PLUS_CONTINUED = 0x8000;
  * carries another picture, or when the walk cannot be finished cleanly
  * (a record running past the end, a size of zero, no end-of-file record):
  * a reader that disagrees with this walk about where a record starts could
- * find a picture this walk never saw. A cut costs the picture, never text.
+ * find a picture this walk never saw. A cut costs the picture AND the words
+ * drawn in it, which is why `keptMetafile` first looks for a second drawing
+ * it can keep instead.
  *
  * Not covered, stated plainly: a bitmap in an ordinary EMF/WMF bitmap record
  * (a DIB) is kept. LibreOffice decodes a DIB as pixels; one that declares
  * PNG or JPEG compression and holds an SVG drew nothing at all (26.2,
  * measured), so no format detector saw it. Real Office EMFs with EMF+ image
- * objects (a photo pasted into a chart) lose that picture to this rule — a
- * picture, never text.
+ * objects (a photo pasted into a chart) are "EMF+ Dual", and `keptMetafile`
+ * keeps their EMF drawing instead — the photo is drawn from the EMF records
+ * if they hold it, the words always.
  */
 function metafileCarriesNoPicture(bytes: Buffer): boolean {
   try {
