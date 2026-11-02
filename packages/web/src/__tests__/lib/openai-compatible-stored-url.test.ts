@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { withoutRefusedBaseUrls } from "@/lib/openai-compatible-stored-url";
+import { refusedBaseUrlReason, withoutRefusedBaseUrls } from "@/lib/openai-compatible-stored-url";
 import type { HostResolver } from "@/lib/provider-url-guard";
 
 /**
@@ -86,5 +86,49 @@ describe("withoutRefusedBaseUrls", () => {
 
     expect(await withoutRefusedBaseUrls(providers, unresolvable)).toEqual(providers);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("refusedBaseUrlReason", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // The settings page shows this next to the provider, so the admin can see
+  // why it is left out of the config. Same verdict as the emission filter.
+  it("is null for a base URL the guard allows", async () => {
+    expect(await refusedBaseUrlReason("https://93.184.216.34/v1", unresolvable)).toBeNull();
+  });
+
+  it("is the guard's reason, without the address, for a refused one", async () => {
+    const reason = await refusedBaseUrlReason(
+      "https://llm.acme.example/v1",
+      resolveTo("100.100.100.200")
+    );
+
+    expect(reason).toContain("reserved or internal address");
+    expect(reason).not.toContain("100.100.100.200");
+  });
+
+  it("follows PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS", async () => {
+    vi.stubEnv("PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS", "1");
+
+    expect(await refusedBaseUrlReason("http://10.0.0.5:8000/v1", unresolvable)).toContain(
+      "private network"
+    );
+  });
+
+  it("is null for a name that does not resolve right now (fail open)", async () => {
+    expect(await refusedBaseUrlReason("https://llm.acme.example/v1", unresolvable)).toBeNull();
+  });
+
+  it("does not log: the emission filter owns the log line", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await refusedBaseUrlReason("http://169.254.169.254/v1", unresolvable);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

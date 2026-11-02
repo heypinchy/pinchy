@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel } from "@/components/ui/form";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Lock,
   ChevronDown,
@@ -22,6 +23,7 @@ import {
   Server,
   Check,
   Star,
+  AlertTriangle,
 } from "lucide-react";
 import { ProviderLogo } from "@/components/provider-logo";
 import { useRestart } from "@/components/restart-provider";
@@ -679,6 +681,12 @@ export function ProviderKeyForm({
                     <Server className="size-3.5" />
                   </span>
                   <span className="truncate max-w-full">{tile.row.displayName}</span>
+                  {tile.row.refusedReason && (
+                    <span className="flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-400">
+                      <AlertTriangle aria-hidden="true" className="size-3" />
+                      Not in use
+                    </span>
+                  )}
                 </button>
               )
             )}
@@ -768,6 +776,20 @@ export function ProviderKeyForm({
 
         {manageCustomProviders && selectedCustomProvider && (
           <div className="space-y-4">
+            {/* Persistent, not a toast: the provider stays out of the runtime
+                config until the URL changes, so the notice stays as long. */}
+            {selectedCustomProvider.refusedReason && (
+              <Alert>
+                <AlertTriangle className="text-amber-600 dark:text-amber-400" />
+                <AlertTitle>Not in use</AlertTitle>
+                <AlertDescription>
+                  <p>
+                    Its base URL is now refused. {selectedCustomProvider.refusedReason} Change the
+                    URL to use it again.
+                  </p>
+                </AlertDescription>
+              </Alert>
+            )}
             <OpenAiCompatibleProviderForm
               key={selectedCustomProvider.id}
               provider={selectedCustomProvider}

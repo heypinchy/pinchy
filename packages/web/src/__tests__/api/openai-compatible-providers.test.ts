@@ -706,6 +706,41 @@ describe("GET /api/settings/providers/openai-compatible", () => {
     expect(JSON.stringify(data)).not.toContain(SECRET_KEY);
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
+
+  it("flags a provider whose saved base URL is now refused, with the reason and no address", async () => {
+    // Config emission leaves such a provider out (withoutRefusedBaseUrls), so
+    // the settings page has to say so — otherwise the admin only sees agents
+    // failing. Same guard, same verdict.
+    vi.mocked(listOpenAiCompatibleProvidersForAdmin).mockResolvedValue([
+      listItem({ id: "row-ok", slug: "acme-llm", baseUrl: "https://acme.example.com/v1" }),
+      listItem({ id: "row-imds", slug: "imds", baseUrl: "http://100.100.100.200/v1" }),
+    ]);
+    vi.mocked(assertAllowedProviderUrl).mockImplementation(async (url: string) => {
+      if (url.includes("100.100.100.200")) {
+        throw new ProviderUrlBlockedError(
+          "blocked_address",
+          "That host resolves to a reserved or internal address that isn't allowed."
+        );
+      }
+    });
+
+    let data: Array<{ refusedReason: string | null }>;
+    try {
+      const res = await GET(makeNextRequest(), routeCtx);
+      expect(res.status).toBe(200);
+      data = await res.json();
+    } finally {
+      // clearAllMocks keeps implementations; don't leak this one.
+      vi.mocked(assertAllowedProviderUrl).mockResolvedValue(undefined);
+    }
+    expect(data[0].refusedReason).toBeNull();
+    expect(data[1].refusedReason).toBe(
+      "That host resolves to a reserved or internal address that isn't allowed."
+    );
+    expect(data[1].refusedReason).not.toContain("100.100.100.200");
+    // Reading the list is not a state change: no audit row, on any GET.
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/settings/providers/openai-compatible/discover", () => {

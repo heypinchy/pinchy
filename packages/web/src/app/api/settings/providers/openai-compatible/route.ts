@@ -4,6 +4,7 @@ import { parseRequestBody } from "@/lib/api-validation";
 import {
   upsertOpenAiCompatibleProviderSchema,
   deleteOpenAiCompatibleSchema,
+  type OpenAiCompatibleProviderRow,
 } from "@/lib/schemas/openai-compatible-provider";
 import {
   createOrUpdateProvider,
@@ -24,6 +25,7 @@ import {
   capMigratedAgents,
 } from "@/lib/provider-deletion";
 import { assertAllowedProviderUrl, ProviderUrlBlockedError } from "@/lib/provider-url-guard";
+import { refusedBaseUrlReason } from "@/lib/openai-compatible-stored-url";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
@@ -247,7 +249,9 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
 /**
  * List every configured OpenAI-compatible provider. Each row carries a
- * `keyHint` (last 4 chars) and NEVER the decrypted key.
+ * `keyHint` (last 4 chars) and NEVER the decrypted key, plus `refusedReason`:
+ * why the SSRF guard now refuses the saved base URL (config emission leaves
+ * such a provider out — see openai-compatible-stored-url.ts), or `null`.
  */
 export const GET = withAdmin(async () => {
   // Read-only list, no state change — GET is outside require-audit-log's scope
@@ -255,7 +259,10 @@ export const GET = withAdmin(async () => {
   // Uses the admin accessor so each row carries a keyHint (the one decrypt
   // path — see the module).
   const providers = await listOpenAiCompatibleProvidersForAdmin();
-  return NextResponse.json(providers);
+  const rows: OpenAiCompatibleProviderRow[] = await Promise.all(
+    providers.map(async (p) => ({ ...p, refusedReason: await refusedBaseUrlReason(p.baseUrl) }))
+  );
+  return NextResponse.json(rows);
 });
 
 /**

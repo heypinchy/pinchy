@@ -1180,6 +1180,65 @@ describe("ProviderKeyForm", () => {
       expect((screen.getByLabelText(/^name$/i) as HTMLInputElement).value).toBe("Acme LLM");
     });
 
+    it("marks a provider whose saved base URL is now refused, and says why once it's selected", async () => {
+      // Config emission leaves such a provider out, so its agents fail. The
+      // notice is the admin's only sign of it in the UI, so it must not be a
+      // toast that's gone in a few seconds.
+      const refusedReason =
+        "That host resolves to a reserved or internal address that isn't allowed.";
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([
+            { ...acmeRow, refusedReason: null },
+            {
+              ...acmeRow,
+              id: "row-id-2",
+              slug: "rebound",
+              displayName: "Rebound",
+              baseUrl: "https://rebound.example.com/v1",
+              refusedReason,
+            },
+          ]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      const reboundTile = await screen.findByRole("button", { name: /rebound/i });
+      expect(reboundTile).toHaveTextContent(/not in use/i);
+      expect(screen.getByRole("button", { name: /acme llm/i })).not.toHaveTextContent(
+        /not in use/i
+      );
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      fireEvent.click(reboundTile);
+
+      const notice = screen.getByRole("alert");
+      expect(notice).toHaveTextContent(/not in use/i);
+      expect(notice).toHaveTextContent(/its base url is now refused/i);
+      expect(notice).toHaveTextContent(refusedReason);
+      expect(notice).toHaveTextContent(/change the url to use it again/i);
+      expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it("shows no refusal notice on a selected provider that's in use", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([{ ...acmeRow, refusedReason: null }]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      fireEvent.click(await screen.findByRole("button", { name: /acme llm/i }));
+
+      expect(screen.queryByText(/not in use/i)).not.toBeInTheDocument();
+    });
+
     it("shows a configured check on a custom tile, and 'Default' when it's the default", async () => {
       vi.mocked(global.fetch).mockImplementation(async (input) => {
         const url = String(input);

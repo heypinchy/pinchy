@@ -995,7 +995,7 @@ Make a configured provider the default for new agents.
 
 ### `GET /api/settings/providers/openai-compatible`
 
-List the OpenAI-compatible providers that have been added. Keys are never returned.
+List the OpenAI-compatible providers that have been added. Keys are never returned: each row carries `keyHint`, the key's last four characters. `refusedReason` is `null` for a provider in use, or says why the address check now refuses its saved base URL — such a provider is left out of the agent runtime until the URL changes (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)). The reason never names the address.
 
 ### `POST /api/settings/providers/openai-compatible`
 
