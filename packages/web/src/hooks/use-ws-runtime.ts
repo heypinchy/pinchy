@@ -10,6 +10,12 @@ import {
   stripTrailingPlaceholder,
 } from "@/hooks/in-flight-placeholder";
 import { DELAY_HINT_MS } from "@/lib/chat-liveness";
+import {
+  ACCOUNT_DEACTIVATED_CLOSE_CODE,
+  SESSION_CHECK_AFTER_FAILED_RECONNECTS,
+  leaveDeactivatedAccount,
+  sessionIsGone,
+} from "@/lib/account-deactivated";
 import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
 import { attachDeliveredFile } from "@/hooks/attach-delivered-file";
 import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
@@ -490,6 +496,11 @@ export function useWsRuntime(
   const mountedRef = useRef(true);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Session check after repeated failed reconnects (see
+  // SESSION_CHECK_AFTER_FAILED_RECONNECTS): one request at a time, and once
+  // the tab is leaving for /login nothing reconnects or asks again.
+  const sessionCheckInFlightRef = useRef(false);
+  const leavingForLoginRef = useRef(false);
   // #895: armed on every `visibilitychange` → hidden, cleared on visible or on
   // firing. Fires `suspendForPageLifecycle()` (the same deliberate-close path
   // pagehide/offline already use) once the tab has been hidden continuously
@@ -1029,7 +1040,37 @@ export function useWsRuntime(
       recoverFromPageLifecycle();
     }
 
+    /** Stop everything and go to /login: this tab's account can't sign in any more. */
+    function leaveForLogin() {
+      if (leavingForLoginRef.current) return;
+      leavingForLoginRef.current = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      isRunningRef.current = false;
+      setIsRunning(false);
+      leaveDeactivatedAccount();
+    }
+
+    /**
+     * A tab whose socket was already closed when the account was deactivated
+     * never got the 4403 — and its reconnects fail as a bare 1006, the same
+     * as a server that is down. So after a few failed reconnects in a row,
+     * ask: a positive "no session" leaves for /login; anything else keeps
+     * the ordinary backoff running alongside.
+     */
+    function checkSessionAfterFailedReconnects() {
+      if (sessionCheckInFlightRef.current || leavingForLoginRef.current) return;
+      sessionCheckInFlightRef.current = true;
+      void sessionIsGone().then((gone) => {
+        sessionCheckInFlightRef.current = false;
+        if (gone && mountedRef.current) leaveForLogin();
+      });
+    }
+
     function connect() {
+      if (leavingForLoginRef.current) return;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?agentId=${agentId}`);
       // Snapshot the agentId at connection time. Handlers compare this against
@@ -1088,6 +1129,17 @@ export function useWsRuntime(
           delayTimerRef.current = null;
         }
 
+        // Close-code 4403: the account was deactivated (server/user-sockets.ts).
+        // Its sessions are gone, so every reconnect would fail the upgrade —
+        // ten tries behind a "reconnecting" status for something no retry can
+        // fix. Leave for the login page instead, where an expired session ends
+        // up too and where a deactivated account is told it can't sign in.
+        if (event?.code === ACCOUNT_DEACTIVATED_CLOSE_CODE) {
+          leaveForLogin();
+          return;
+        }
+        if (leavingForLoginRef.current) return;
+
         if (lifecycleSuspendedRef.current) {
           isRunningRef.current = false;
           setIsRunning(false);
@@ -1144,6 +1196,13 @@ export function useWsRuntime(
         setIsHistoryLoaded(false);
         setKnownEmptyHistory(false);
         setPayloadRejected(false);
+
+        if (
+          mountedRef.current &&
+          reconnectAttemptRef.current >= SESSION_CHECK_AFTER_FAILED_RECONNECTS
+        ) {
+          checkSessionAfterFailedReconnects();
+        }
 
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
           shouldRecoverFromHistoryRef.current = true;

@@ -47,6 +47,10 @@ vi.mock("@/lib/telegram-allow-store", () => ({
   recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/user-provenance", () => ({
+  findUnknownOriginUsers: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => {
   const db: Record<string, unknown> = {
     query: {
@@ -83,6 +87,7 @@ import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
+import { findUnknownOriginUsers } from "@/lib/user-provenance";
 import { db } from "@/db";
 import { users, sessions, agents } from "@/db/schema";
 
@@ -118,6 +123,57 @@ describe("GET /api/users", () => {
 
     const body = await response.json();
     expect(body.error).toBe("Forbidden");
+    // Provenance is admin-only information: a member must not even trigger
+    // the lookup.
+    expect(findUnknownOriginUsers).not.toHaveBeenCalled();
+  });
+
+  it("flags the accounts that neither the setup wizard nor a claimed invite created", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+    vi.mocked(db.query.users.findMany).mockResolvedValueOnce([
+      {
+        id: "admin-1",
+        name: "Bob",
+        email: "bob@test.com",
+        role: "admin",
+        banned: false,
+        userGroups: [],
+      },
+      {
+        id: "user-1",
+        name: "Alice",
+        email: "alice@test.com",
+        role: "member",
+        banned: false,
+        userGroups: [],
+      },
+      {
+        id: "user-2",
+        name: "Mallory",
+        email: "m@test.com",
+        role: "member",
+        banned: false,
+        userGroups: [],
+      },
+    ] as never);
+    vi.mocked(findUnknownOriginUsers).mockResolvedValueOnce([
+      { id: "user-2", name: "Mallory", role: "member", banned: false, createdAt: new Date() },
+    ]);
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(
+      body.users.map((u: { id: string; unknownOrigin: boolean }) => [u.id, u.unknownOrigin])
+    ).toEqual([
+      ["admin-1", false],
+      ["user-1", false],
+      ["user-2", true],
+    ]);
   });
 
   it("returns only selected user fields", async () => {
@@ -163,6 +219,7 @@ describe("GET /api/users", () => {
       "id",
       "name",
       "role",
+      "unknownOrigin",
     ]);
   });
 
