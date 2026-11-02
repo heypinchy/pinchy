@@ -71,6 +71,28 @@ So once nothing signed with the earlier key still needs verifying, or as soon as
 
 Two limits worth stating plainly. Pinchy checks against one earlier key, and that's always the key file, never an earlier value of the variable. Change the variable a second time without retiring the earlier key first, and the value you replaced is gone: the rows signed with it, between the first change and the second, verify under no key, and the background check records a failure for the ones it hadn't reached yet (see [Retiring the earlier key](#retiring-the-earlier-key)). And if you overwrite the key file yourself, the key it held is gone and the rows it signed can no longer be verified by anyone. [Switching the key](#switching-the-key) avoids both.
 
+#### Backing up the keys
+
+Every procedure below backs up the same way: the whole `pinchy-secrets` volume and your `.env`, together. Don't back up single key files. Which key sits in the file and which one in `.env` changes with every switch, and right after a switch the key Pinchy signs with is often only in `.env`.
+
+Run this once in the shell you'll use for the procedure. It only defines a command, `backup_pinchy_keys`, and doesn't run anything yet:
+
+```bash
+backup_pinchy_keys() (
+  umask 077
+  stamp=$(date +%Y%m%d-%H%M%S)
+  docker compose run --rm --no-deps -T --entrypoint tar pinchy -C /app/secrets -cf - . \
+    > "pinchy-secrets-$stamp.tar" &&
+    [ -s "pinchy-secrets-$stamp.tar" ] &&
+    cp .env "env-$stamp.backup" &&
+    echo "Backed up to pinchy-secrets-$stamp.tar and env-$stamp.backup"
+)
+```
+
+Run `backup_pinchy_keys` in the directory that holds your `docker-compose.yml`. It writes the two files there, readable by you alone, and prints `Backed up to …`. It reads the volume from a throwaway container, so it works whether Pinchy is running or stopped. If any part fails, it stops without that line and returns an error, so a removal joined to it with `&&` doesn't run. The same goes for a new shell where the command isn't defined yet. If you need `sudo` for Docker, run the whole procedure from a root shell (`sudo -s`) instead of putting `sudo` in front of single commands.
+
+Keep both files offline, not next to the install. Together they hold every key Pinchy has, whichever one is active.
+
 #### Switching the key
 
 This is the procedure for changing `AUDIT_HMAC_SECRET`, whether you just want to hold the key yourself or the old one leaked. The other pages that mention a key switch link here.
@@ -82,13 +104,20 @@ All of this holds only as long as `/app/secrets` is persistent storage you back 
 Four cases need a step first:
 
 - **The variable is set, and the instance hasn't started on a Pinchy version that writes the file yet.** Upgrade and start it once on the current value before you switch. If it logs `Could not write the AUDIT_HMAC_SECRET value` instead, fix what the code in brackets names and start it again: `EACCES` is the volume's permissions (Pinchy runs as uid 999), `ENOSPC` a full disk, `EROFS` a read-only mount. A volume without hard links, such as exFAT or some network shares, isn't one of them: Pinchy then creates the file directly.
-- **Pinchy logs `.audit_hmac_secret in the secrets volume is not a valid key`.** The file is there but doesn't hold a key (it's empty, or not 64 hex characters), and Pinchy never overwrites it, so the current value isn't saved anywhere. Move the file out of the volume, keeping it in case it's what's left of a key you still need, and restart Pinchy. It writes the current value into a new file and logs `Wrote the AUDIT_HMAC_SECRET value`.
+- **Pinchy logs `.audit_hmac_secret in the secrets volume is not a valid key`.** The file is there but doesn't hold a key (it's empty, or not 64 hex characters), and Pinchy never overwrites it, so the current value isn't saved anywhere. [Back up the keys](#backing-up-the-keys), which keeps the file in case it's what's left of a key you still need, then remove it and restart Pinchy:
+
+  ```bash
+  backup_pinchy_keys && docker compose exec -T pinchy rm /app/secrets/.audit_hmac_secret && docker compose restart pinchy
+  ```
+
+  Pinchy writes the current value into a new file and logs `Wrote the AUDIT_HMAC_SECRET value`.
+
 - **Pinchy logs `Could not read .audit_hmac_secret in the secrets volume`.** The file is there, but Pinchy can't open it, and the code in brackets says why. Don't move this one aside: it may be the earlier key, for example one restored from a backup as root. With `EACCES`, check the file's owner and permissions: Pinchy runs as uid 999 and has to be able to read it, so give it to that user with `docker compose exec -u root pinchy chown 999:999 /app/secrets/.audit_hmac_secret`. With `EISDIR`, there's a directory where the file should be. Then restart Pinchy. Once it can read the file, it either holds the current value and there's nothing more to do, or it holds an earlier key, the next case.
 - **The key file holds an even older key from an earlier switch.** Pinchy says so on every start (`AUDIT_HMAC_SECRET is set and differs from the audit signing key`). It keeps one earlier key, so the value you're about to replace would have nowhere to go. Retire the older key first. The earlier switch already was step 1 of [Retiring the earlier key](#retiring-the-earlier-key), so start there at step 2; its last step writes the current value into the file.
 
 Then switch:
 
-1. Back up the `pinchy-secrets` volume.
+1. [Back up the keys](#backing-up-the-keys) with `backup_pinchy_keys`.
 2. Generate the new key with `openssl rand -hex 32`, set it as `AUDIT_HMAC_SECRET` in `.env`, and keep a copy somewhere safe.
 3. Restart Pinchy with `docker compose up -d`, which recreates the container so it reads `.env` again. `docker compose restart` and `docker compose start` don't: they keep the environment the container was created with, and nothing switches. From now on Pinchy logs a notice on every start saying the variable differs from the key file. That's expected: the file is now the earlier key. If it logs `AUDIT_HMAC_SECRET is set but is not a valid key` instead, the new value isn't 64 hex characters, so Pinchy ignores it and keeps signing with the key file. Correct it in `.env` and run `docker compose up -d` again: nothing was signed with the broken value, so this is still the same switch.
 
@@ -96,14 +125,20 @@ Several instances against one database have to switch together, see [Switching t
 
 #### Retiring the earlier key
 
-Once the key file is gone, Pinchy has no earlier key to check against, so every row signed with it reports in `invalidIds` and `valid` stays false. That is the price of closing the door: those rows can't be told apart from tampered ones any more. Keep the file in an offline backup first if you want to be able to re-verify the old history later.
+Once the key file is gone, Pinchy has no earlier key to check against, so every row signed with it reports in `invalidIds` and `valid` stays false. That is the price of closing the door: those rows can't be told apart from tampered ones any more. Step 4 backs the key up before it removes the file, so you can still re-verify the old history later.
 
 When you remove it matters. Each background run verifies the rows written since the run before it. Until the first run under the new key has gone through, some of those were signed with the earlier key: everything written between the last run and the restart, up to 6 hours of entries. If the file is gone by the time the run reaches them, they verify under no key and the run records a failure. So retire the key in this order:
 
 1. If you haven't switched yet, [switch to the new key](#switching-the-key) with the key file still in place. If you already have, that switch was this step: go on with step 2.
 2. Right after the restart, or now if you switched earlier, do something that writes an audit entry, for example sign out and back in, and note its id: the sign-in is the first entry in `GET /api/audit?eventType=auth.login&limit=1`. Then wait until `GET /api/audit/verify/status` (see [Checking the job's own health](#checking-the-jobs-own-health)) shows a `lastVerifiedId` at least that id, with `lastStatus` `"ok"`. That's the background check saying it has verified everything up to your entry. The first background run starts about 60 seconds after the start and usually covers it. It doesn't if your entry lands while that run is still working: the run then stops short of everything written in the meantime, and your entry waits for the next run, up to 6 hours later. Go by the id, not by `lastRunAt`. A run that stops short like that still moves `lastRunAt` past your entry, a run that finds no new rows leaves it where it is, and a run that failed leaves it unchanged too. If Pinchy's logs show `[audit-verify-job] sweep failed`, stop here and keep the key file until a run goes through.
 3. Make sure the variable is the key Pinchy signs with. In Pinchy's log from its latest start (`docker compose logs pinchy`), look for the notice `AUDIT_HMAC_SECRET is set and differs from the audit signing key`, and make sure there's no warning `AUDIT_HMAC_SECRET is set but is not a valid key`. The notice is Pinchy saying the variable is in effect and the file holds the earlier key. If it's missing, don't remove the file. Either the variable isn't in effect, and then the file is the key Pinchy signs with: remove it and the next audit entry makes Pinchy generate a new random key in its place. Or the file already holds the current value, and there's no earlier key to retire. If the warning is there, correct the value in `.env`, run `docker compose up -d`, and check again.
-4. Back up the key file, remove it from the volume (`docker compose exec pinchy rm /app/secrets/.audit_hmac_secret`), and restart Pinchy (`docker compose restart pinchy`; `.env` hasn't changed, so the container's environment is still right). On that start Pinchy writes the current `AUDIT_HMAC_SECRET` value into a new key file and logs `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`, so it's in place as the earlier key for the next switch.
+4. [Back up the keys](#backing-up-the-keys), remove the key file and restart Pinchy, in one line, so the file is only removed once the backup exists. `.env` hasn't changed, so `restart` keeps the right environment:
+
+   ```bash
+   backup_pinchy_keys && docker compose exec -T pinchy rm /app/secrets/.audit_hmac_secret && docker compose restart pinchy
+   ```
+
+   On that start Pinchy writes the current `AUDIT_HMAC_SECRET` value into a new key file and logs `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`, so it's in place as the earlier key for the next switch.
 
 On several instances, do steps 3 and 4 on each of them. They all sign with the new key by then, so one after another is fine.
 
@@ -117,26 +152,25 @@ As with a rolling restart (below), there's no reset, on purpose. Write down what
 **After a leak, the order is a trade-off.** Until a background run has gone through rows written after the switch, the leaked key is still accepted for them: someone holding it, with write access to your database, could re-sign those rows and get them past both the background check and a full verification. So write the audit entry from step 2 right after the restart, within the first minute: the first run starts about 60 seconds after Pinchy starts, and an entry written before then is usually covered by it, which closes the window. Usually, not always, so don't assume it. Only step 2's check tells you the window is closed: until `lastVerifiedId` reaches your entry with `lastStatus` `"ok"`, it's still open. An entry written after the first run has started, or one the run stopped short of, waits for the next run, and so does the window: the leaked key stays accepted for rows written after the switch until a run finds them, up to one interval later (6 hours by default, `AUDIT_VERIFY_INTERVAL_MS`). Retiring the key in the same stop as the switch leaves no window at all. Run these in the directory that holds your `docker-compose.yml`:
 
 1. Stop Pinchy: `docker compose stop pinchy`.
-2. Back up the key file and remove it. Pinchy is stopped, so run each command in a throwaway container that mounts the same volume:
+2. [Back up the keys](#backing-up-the-keys) and remove the key file, in one line, so the file is only removed once the backup exists. Pinchy is stopped, so the removal runs in a throwaway container that mounts the same volume:
 
    ```bash
-   docker compose run --rm --no-deps -T --entrypoint cat pinchy /app/secrets/.audit_hmac_secret > audit_hmac_secret.backup
-   docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
+   backup_pinchy_keys && docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
    ```
 
-   The backup is the leaked key: keep it offline, not next to the install.
+   The backup holds the leaked key, whether it was in the key file or only in `.env`, so keep it offline. If Pinchy logged `AUDIT_HMAC_SECRET is set and differs from the audit signing key` before you stopped it, the key file held a key older than the leaked one, and the entries signed with that one become unverifiable too. The backup keeps that key as well.
 
-3. Set the new value as `AUDIT_HMAC_SECRET` in `.env`, without quotes.
+3. Generate the new key with `openssl rand -hex 32` and set it as `AUDIT_HMAC_SECRET` in `.env`.
 4. Start Pinchy with `docker compose up -d`. Not `docker compose start` or `restart`: those keep the old environment, so Pinchy would write the **leaked** value into the new key file and keep signing with it.
 5. Check that start's log (`docker compose logs pinchy`) for `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`. If it shows `AUDIT_HMAC_SECRET is set but is not a valid key` instead, the new value isn't in effect and Pinchy is signing with a key it just generated: correct it in `.env` and run `docker compose up -d` again before anything else.
 6. Check that the file holds the new value, not the leaked one. These two commands print a hash each, never the key, and the hashes have to match:
 
    ```bash
    docker compose exec -T pinchy cat /app/secrets/.audit_hmac_secret | sha256sum
-   sed -n 's/^AUDIT_HMAC_SECRET=//p' .env | tr -d '\r\n' | sha256sum
+   sed -n 's/^AUDIT_HMAC_SECRET=//p' .env | tr -dc '0-9a-fA-F' | tr 'A-F' 'a-f' | sha256sum
    ```
 
-   If they differ, the container is running on a different value than the one in `.env`: stop and look before anything signs more entries.
+   The second command keeps only the hex digits of the `.env` line and lowercases them, because Pinchy writes the key in lowercase and Compose drops quotes and line endings before Pinchy sees the value. If they differ, the container is running on a different value than the one in `.env`: stop and look before anything signs more entries.
 
 Retiring in the same stop costs you the failure entry above for the rows signed with the leaked key since the last background run. The key alone does nothing without write access to the database, so for most leaks the short window is the smaller risk. If you have reason to think someone holds both right now, retire it in the same stop and document why.
 
@@ -146,14 +180,14 @@ If the key changed by accident, for example because an `AUDIT_HMAC_SECRET` line 
 
 Switching forward again later makes it worse. Pin the same value again and the log reads: earlier key, new key, earlier key, new key. The rows in the third stretch are earlier-key rows after a new-key row, which is exactly what a forgery looks like, so a full verification reports them as invalid on every run, on a single instance too.
 
-So keeping the new key is usually the safer choice: back it up and treat it as yours from then on. If you do switch back, remove the line from `.env`, apply it with `docker compose up -d` (`restart` keeps the variable in the container's environment), and stay on the key in the file for good. The clean moment is before the restart that would switch the key, when nothing has been signed with the new value yet. Removing the line only switches anything while the file holds a different key: once Pinchy has written the variable's value into the file, the key stays the same without the variable.
+So keeping the new key is usually the safer choice: back it up and treat it as yours from then on. If you do switch back, [back up the keys](#backing-up-the-keys) first, then remove the line from `.env`, apply it with `docker compose up -d` (`restart` keeps the variable in the container's environment), and stay on the key in the file for good. The clean moment is before the restart that would switch the key, when nothing has been signed with the new value yet. Removing the line only switches anything while the file holds a different key: once Pinchy has written the variable's value into the file, the key stays the same without the variable.
 
 #### Switching the key on several instances
 
 If several Pinchy instances share one database, switch the key on all of them at once. Each instance checks against the key file it sees, usually the one in its own `pinchy-secrets` volume, so [the check before a switch](#switching-the-key) applies to every one of them.
 
 1. Make sure every instance has the current key in its key file.
-2. Back up every instance's `pinchy-secrets` volume.
+2. [Back up the keys](#backing-up-the-keys) on every instance with `backup_pinchy_keys`.
 3. Stop every instance (`docker compose stop pinchy`).
 4. Set the new `AUDIT_HMAC_SECRET` on each.
 5. Start them again with `docker compose up -d`, so each one reads its `.env` again. `docker compose start` or `restart` would bring them back on the old key.

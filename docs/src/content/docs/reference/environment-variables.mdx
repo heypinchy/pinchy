@@ -86,7 +86,7 @@ Once it's set, Pinchy also writes the value into `.audit_hmac_secret` in the `pi
 
 `ENCRYPTION_KEY` and `AUDIT_HMAC_SECRET` have to be exactly 64 hex characters, the output of `openssl rand -hex 32`. A value that isn't is ignored, see [When Pinchy ignores a key variable](#when-pinchy-ignores-a-key-variable).
 
-The one thing that cannot be recovered is a key you delete. Keep the `pinchy-secrets` volume in your backups even after pinning the value in `.env`.
+The one thing that cannot be recovered is a key you delete. Keep the `pinchy-secrets` volume in your backups even after pinning the value in `.env`. [Backing up the keys](/concepts/audit-trail-verification/#backing-up-the-keys) has a command that saves the volume and `.env` together.
 
 :::caution
 Losing `ENCRYPTION_KEY` means losing every stored provider API key — they cannot be recovered, only re-entered. If you back up anything, back up the `pinchy-secrets` volume.
@@ -94,9 +94,9 @@ Losing `ENCRYPTION_KEY` means losing every stored provider API key — they cann
 
 ### When Pinchy ignores a key variable
 
-A value that isn't 64 hex characters, for example one with a `0x` prefix, quotes, or a character missing, is ignored. Pinchy uses the key file in the `pinchy-secrets` volume instead, creating one there if there is none, and logs a warning on every start: `ENCRYPTION_KEY is set but is not a valid key` or `AUDIT_HMAC_SECRET is set but is not a valid key`.
+A value that isn't 64 hex characters, for example one with a `0x` prefix, a character lost when copying, or a space inside it, is ignored. Quotes around the value and a Windows line ending aren't a problem: Compose removes them before Pinchy sees the value. Pinchy uses the key file in the `pinchy-secrets` volume instead, creating one there if there is none, and logs a warning on every start: `ENCRYPTION_KEY is set but is not a valid key` or `AUDIT_HMAC_SECRET is set but is not a valid key`.
 
-Don't just correct the value. While the variable is ignored, the key file is the key in use, so a corrected value is a different key, and for `ENCRYPTION_KEY` that costs you every stored credential.
+Don't just correct the value. While the variable is ignored, the key file is the key in use, so a corrected value is a different key, and for `ENCRYPTION_KEY` that costs you every stored credential. Whatever you change, [back up the keys](/concepts/audit-trail-verification/#backing-up-the-keys) first.
 
 **`ENCRYPTION_KEY`.** Everything Pinchy encrypted while the warning showed, provider API keys and integration credentials, is encrypted with `.encryption_key` in the `pinchy-secrets` volume (`/app/secrets/.encryption_key` inside the container). There are two safe fixes:
 
@@ -111,9 +111,15 @@ Don't just correct the value. While the variable is ignored, the key file is the
 
 Either way, apply it with `docker compose up -d`. `docker compose restart` and `docker compose start` reuse the environment the container was created with and don't read `.env` again; `up -d` recreates the container when `.env` changed. Afterwards the warning is gone from the start's log (`docker compose logs pinchy`), and **Settings → Integrations** shows no "can't be read" card.
 
-Any other value, including a fresh one from `openssl rand -hex 32`, makes everything encrypted with the key file unreadable. Provider API keys and integration credentials then have to be re-entered, see [When the ENCRYPTION_KEY changed](/concepts/integrations/#when-the-encryption_key-changed). One case needs a closer look: if the variable held a working key before and only broke later, say quotes added or a character lost when copying, the credentials saved before that are encrypted with the original value, and only the ones saved since use the key file. Each key reads only its own share. Pick the key that keeps what you'd least like to re-enter, and re-enter the rest.
+Any other value, including a fresh one from `openssl rand -hex 32`, makes everything encrypted with the key file unreadable. Provider API keys and integration credentials then have to be re-entered, see [When the ENCRYPTION_KEY changed](/concepts/integrations/#when-the-encryption_key-changed). One case needs a closer look: if the variable held a working key before and only broke later, say a character lost when `.env` was edited, the credentials saved before that are encrypted with the original value, and only the ones saved since use the key file. Each key reads only its own share. Pick the key that keeps what you'd least like to re-enter, and re-enter the rest.
 
-**`AUDIT_HMAC_SECRET`.** Until the value is valid, `.audit_hmac_secret` in the volume is the audit signing key, so don't remove it. Removing the line from `.env` changes nothing: Pinchy keeps signing with the key file. Setting a valid value switches the signing key, so follow [Switching the key](/concepts/audit-trail-verification/#switching-the-key). Several instances against one database have to stop together first, see [Switching the key on several instances](/concepts/audit-trail-verification/#switching-the-key-on-several-instances).
+**`AUDIT_HMAC_SECRET`.** Until the value is valid, `.audit_hmac_secret` in the volume is the audit signing key, so don't remove it. Removing the line from `.env` changes nothing: Pinchy keeps signing with the key file. Setting a new valid value switches the signing key, so follow [Switching the key](/concepts/audit-trail-verification/#switching-the-key). Several instances against one database have to stop together first, see [Switching the key on several instances](/concepts/audit-trail-verification/#switching-the-key-on-several-instances).
+
+Here too, one case needs a closer look: the variable held a working key and only broke later. Set it back to the exact original value, not a new one, from your `.env` backup if need be, and apply it with `docker compose up -d`.
+
+If the key file holds that same value, that's all: Pinchy signed with the same key throughout. It does unless you switched keys earlier and haven't retired the earlier key yet, in which case Pinchy logged `AUDIT_HMAC_SECRET is set and differs from the audit signing key` on every start before the variable broke. Then breaking it switched Pinchy back to the key file, just like [switching back to the earlier key](/concepts/audit-trail-verification/#switching-back-to-the-earlier-key): while it's broken, the entries signed with the original value verify under no key, and new entries are signed with the key file. Setting it back brings back everything signed with the original value. A new value would leave all of it unverifiable.
+
+In that case, the entries written while the variable was broken can't be saved. They're signed with the key file after entries signed with the original value, which is what a forgery looks like, so a full verification reports them in `invalidIds` on every run, and the background check may record a failure that can't be cleared. Write down when the variable broke and when you fixed it, wherever you keep records for auditors, as described in [Retiring the earlier key](/concepts/audit-trail-verification/#retiring-the-earlier-key). Every flagged entry should fall between those two points.
 
 ## Licence
 
