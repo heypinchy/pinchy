@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { isOpenClawLocalBaseUrl } from "@/lib/openclaw-local-url";
 import { computeAllowedTools } from "@/lib/tool-registry";
+import { _resetRegenerateQueue } from "@/lib/openclaw-config/regenerate-queue";
 
 vi.mock("@/lib/model-vision", () => ({
   isModelVisionCapable: vi.fn((modelId: string) => {
@@ -311,6 +312,15 @@ beforeEach(() => {
   // one gets past the supersede check at all. See `_supersedePendingPushes`
   // in write.ts.
   _supersedePendingPushes();
+});
+
+// Regenerates are serialized by one process-wide queue. A test that fails while
+// it holds a run open (the "overlapping regenerates" block does, on purpose)
+// would otherwise leave that run in flight, and every later regenerate in this
+// file would wait behind it until its own timeout — one red test reported as a
+// dozen. Each test starts from an idle queue instead.
+afterEach(() => {
+  _resetRegenerateQueue();
 });
 
 // Drift guard: re-export the shared `isOpenClawLocalBaseUrl` (see
@@ -9081,7 +9091,12 @@ describe("OpenAI-compatible custom providers (#894)", () => {
         .map((c) => JSON.parse(c[1] as string));
     }
 
-    /** Hold the first run inside its discovery call until released. */
+    // The held run reaches discovery only after the real 300 ms cold-start
+    // retry sleep, so vi.waitFor's 1 s default leaves little slack on a loaded
+    // machine. Generous, and still well inside the 20 s test timeout.
+    const HELD_RUN_WAIT = { timeout: 10_000 };
+
+    /** Hold the first run inside its discovery call until released. Release it in a `finally`. */
     function holdFirstDiscovery() {
       let release!: () => void;
       const gate = new Promise<void>((r) => (release = r));
@@ -9105,23 +9120,30 @@ describe("OpenAI-compatible custom providers (#894)", () => {
       mockListProvidersWithApiKeys.mockResolvedValue(oldState());
       const release = holdFirstDiscovery();
 
-      const first = regenerateOpenClawConfig();
-      await vi.waitFor(() => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1));
+      try {
+        const first = regenerateOpenClawConfig();
+        await vi.waitFor(
+          () => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1),
+          HELD_RUN_WAIT
+        );
 
-      // A save commits while the first regenerate is still in flight…
-      mockListProvidersWithApiKeys.mockResolvedValue(newState());
-      const second = regenerateOpenClawConfig();
-      // …and its regenerate does not start alongside the stale one. A bounded
-      // negative window: past the 300 ms cold-start retry every regenerate in
-      // this block takes (no openclaw.json on disk), a concurrent run would
-      // have read the table AND written its config by now — and the held
-      // first run would then overwrite it with the stale row.
-      await new Promise((r) => setTimeout(r, 450));
-      expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(1);
-      expect(configWrites()).toHaveLength(0);
+        // A save commits while the first regenerate is still in flight…
+        mockListProvidersWithApiKeys.mockResolvedValue(newState());
+        const second = regenerateOpenClawConfig();
+        // …and its regenerate does not start alongside the stale one. A bounded
+        // negative window: past the 300 ms cold-start retry every regenerate in
+        // this block takes (no openclaw.json on disk), a concurrent run would
+        // have read the table AND written its config by now — and the held
+        // first run would then overwrite it with the stale row.
+        await new Promise((r) => setTimeout(r, 450));
+        expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(1);
+        expect(configWrites()).toHaveLength(0);
 
-      release();
-      await Promise.all([first, second]);
+        release();
+        await Promise.all([first, second]);
+      } finally {
+        release();
+      }
 
       expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(2);
       const writes = configWrites();
@@ -9141,18 +9163,25 @@ describe("OpenAI-compatible custom providers (#894)", () => {
       mockListProvidersWithApiKeys.mockResolvedValue(oldState());
       const release = holdFirstDiscovery();
 
-      const first = regenerateOpenClawConfig();
-      await vi.waitFor(() => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1));
-      mockListProvidersWithApiKeys.mockResolvedValue(newState());
-      const during = [
-        regenerateOpenClawConfig(),
-        regenerateOpenClawConfig(),
-        regenerateOpenClawConfig(),
-      ];
+      try {
+        const first = regenerateOpenClawConfig();
+        await vi.waitFor(
+          () => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1),
+          HELD_RUN_WAIT
+        );
+        mockListProvidersWithApiKeys.mockResolvedValue(newState());
+        const during = [
+          regenerateOpenClawConfig(),
+          regenerateOpenClawConfig(),
+          regenerateOpenClawConfig(),
+        ];
 
-      release();
-      await Promise.all([first, ...during]);
-      await drainBackgroundCoroutine();
+        release();
+        await Promise.all([first, ...during]);
+        await drainBackgroundCoroutine();
+      } finally {
+        release();
+      }
 
       expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(2);
     });
@@ -9166,14 +9195,21 @@ describe("OpenAI-compatible custom providers (#894)", () => {
         throw new Error("first regenerate failed");
       });
 
-      const first = regenerateOpenClawConfig();
-      await vi.waitFor(() => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1));
-      mockListProvidersWithApiKeys.mockResolvedValue(newState());
-      const second = regenerateOpenClawConfig();
+      try {
+        const first = regenerateOpenClawConfig();
+        await vi.waitFor(
+          () => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1),
+          HELD_RUN_WAIT
+        );
+        mockListProvidersWithApiKeys.mockResolvedValue(newState());
+        const second = regenerateOpenClawConfig();
 
-      release();
-      await expect(first).rejects.toThrow("first regenerate failed");
-      await expect(second).resolves.toBeUndefined();
+        release();
+        await expect(first).rejects.toThrow("first regenerate failed");
+        await expect(second).resolves.toBeUndefined();
+      } finally {
+        release();
+      }
 
       expect(configWrites().at(-1).models.providers["swisscom-ai"].baseUrl).toBe(
         "https://moved.swisscom.example/v1"

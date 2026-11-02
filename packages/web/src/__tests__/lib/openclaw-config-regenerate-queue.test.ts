@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  _resetRegenerateQueue,
   serializeRegenerates,
   type RegenerateQueueState,
 } from "@/lib/openclaw-config/regenerate-queue";
@@ -199,5 +200,30 @@ describe("serializeRegenerates", () => {
     await expect(regenerate()).rejects.toThrow("sync boom");
     await expect(regenerate()).resolves.toBeUndefined();
     expect(calls).toBe(2);
+  });
+
+  it("_resetRegenerateQueue lets the next regenerate start while an abandoned run is still held", async () => {
+    _resetRegenerateQueue();
+    const held = deferred();
+    let runs = 0;
+    // Production state (globalThis), not an injected one: that is what the
+    // reset is for.
+    const regenerate = serializeRegenerates(() => {
+      runs++;
+      return runs === 1 ? held.promise : Promise.resolve();
+    });
+
+    void regenerate();
+    expect(runs).toBe(1);
+
+    _resetRegenerateQueue();
+    await regenerate();
+    expect(runs).toBe(2);
+
+    // The abandoned run settling late must not touch the fresh queue.
+    held.resolve();
+    await flush();
+    expect(globalThis.__pinchyRegenerateQueue).toEqual({ running: null, rerun: null });
+    expect(runs).toBe(2);
   });
 });

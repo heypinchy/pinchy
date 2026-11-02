@@ -42,6 +42,17 @@ declare global {
   var __pinchyRegenerateQueue: RegenerateQueueState | undefined;
 }
 
+/**
+ * Test-only: start the next regenerate from an idle queue. A test that fails
+ * while it holds a run open would otherwise leave that run "in flight" for the
+ * rest of the file, and every later regenerate would queue behind it until it
+ * timed out. A run still settling keeps its reference to the old state, so it
+ * cannot reach the fresh one. Do not call in app code.
+ */
+export function _resetRegenerateQueue(): void {
+  globalThis.__pinchyRegenerateQueue = { running: null, rerun: null };
+}
+
 function globalQueueState(): RegenerateQueueState {
   globalThis.__pinchyRegenerateQueue ??= { running: null, rerun: null };
   return globalThis.__pinchyRegenerateQueue;
