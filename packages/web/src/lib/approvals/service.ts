@@ -29,6 +29,20 @@ export const DEFAULT_CONFIRM_TTL_MS = 10 * 60 * 1000;
  */
 export const MAX_PENDING_PER_REQUESTER = 20;
 
+/**
+ * What a confirmation's stored summary becomes once it leaves `pending`.
+ *
+ * The summary exists for one reader, the pending list behind the card
+ * (`GET /api/approvals`, which lists `status = pending` only), and may be
+ * 0.5–1.5 MB. Settled rows are kept for TERMINAL_RETENTION_DAYS
+ * (`server/approval-sweep.ts`), and nothing reads their summary — the audit
+ * trail records the digest, never the arguments. So every transition out of
+ * `pending` — the user's decision, the runtime's resolution, the sweep's
+ * expiry, and the gate spending an approved grant — drops it in the same
+ * statement (fifth review of #1242).
+ */
+const SETTLED_SUMMARY = null;
+
 export type GateDecision = {
   decision: "allow" | "block";
   requestId: string;
@@ -76,7 +90,7 @@ export async function decideGate(input: DecideGateInput): Promise<GateDecision> 
   const nowIso = now.toISOString();
   const consumed = (await db.execute(sql`
     UPDATE tool_approval
-    SET status = 'consumed', consumed_at = ${nowIso}::timestamptz
+    SET status = 'consumed', consumed_at = ${nowIso}::timestamptz, args_summary = NULL
     WHERE id = (
       SELECT id FROM tool_approval
       WHERE agent_id = ${input.agentId}
@@ -331,6 +345,7 @@ export async function recordResolution(input: {
     .update(toolApproval)
     .set({
       status: next,
+      argsSummary: SETTLED_SUMMARY,
       ...(allowed ? { consumedAt: now } : {}),
       ...(input.decision === "deny" ? { decidedAt: now } : {}),
     })
@@ -388,6 +403,7 @@ export async function resolveDecision(input: ResolveDecisionInput): Promise<Reso
     .update(toolApproval)
     .set({
       status: input.decision === "approve" ? "approved" : "denied",
+      argsSummary: SETTLED_SUMMARY,
       approverId: input.approverId,
       decisionReason: input.reason ?? null,
       decidedAt: now,
@@ -413,7 +429,7 @@ export async function expireStale(now?: Date): Promise<ExpiredApproval[]> {
   const at = now ?? new Date();
   return await db
     .update(toolApproval)
-    .set({ status: "expired" })
+    .set({ status: "expired", argsSummary: SETTLED_SUMMARY })
     .where(and(eq(toolApproval.status, "pending"), lt(toolApproval.expiresAt, at)))
     .returning({
       id: toolApproval.id,
