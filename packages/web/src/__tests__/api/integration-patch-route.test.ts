@@ -435,6 +435,9 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
           id: "conn-1",
           name: "Test Odoo",
           reason: "secret_required_for_new_destination",
+          // The submitted field names, like every other row of this event —
+          // never their values.
+          fields: ["url"],
           destinationChange: {
             url: { from: "https://odoo.example.com", to: "https://attacker.example" },
           },
@@ -729,6 +732,7 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
             id: "conn-imap-1",
             name: "<email-redacted>",
             reason: "secret_required_for_new_destination",
+            fields: ["imapHost"],
             destinationChange: {
               imapHost: { from: "imap.example.com", to: "imap.attacker.example" },
             },

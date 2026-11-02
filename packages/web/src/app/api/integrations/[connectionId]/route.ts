@@ -157,6 +157,9 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
         id: connectionId,
         name: scrubEmails(existing.name),
         reason: SECRET_REQUIRED_FOR_NEW_DESTINATION,
+        // The submitted field names (never values), as on every other row of
+        // this event.
+        fields: Object.keys(parsedCredentials ?? {}),
         destinationChange: scrubDestinationChanges(destinationChange.changes),
       },
       outcome: "failure",
