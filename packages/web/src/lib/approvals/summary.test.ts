@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { domainToASCII } from "node:url";
-import { describeRefusal, summarizeArgs, summarizeCall } from "./summary";
+import { describeRefusal, markScripts, summarizeArgs, summarizeCall } from "./summary";
 import { makeRefResolver } from "./call-models";
+import { inStoredOrder } from "./display";
 // The pinchy-odoo encoder, so the ref rendering is tested against real refs —
 // see call-models.test.ts for why this crosses the package boundary.
 import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
@@ -524,7 +525,9 @@ describe("summarizeArgs", () => {
       ["a ZWNJ after a right-joining letter", "محمد‌رضا", "محمد⟨U+200C⟩رضا"],
       ["a ZWJ between Arabic letters", "ش‍ه", "ش⟨U+200D⟩ه"],
       ["a ZWNJ after a virama at the end", "जगत्‌.md", "जगत्⟨U+200C⟩.md"],
-      ["a ZWNJ after a virama on a Latin letter", "a्‌b.md", "a्⟨U+200C⟩b.md"],
+      // The virama is Devanagari and draws on no Latin letter, so it is a
+      // marker too (thirteenth review of #1242).
+      ["a ZWNJ after a virama on a Latin letter", "a्‌b.md", "a⟨U+094D⟩⟨U+200C⟩b.md"],
       // Tenth review of #1242 (the reviewer's probe names): mid-word, after a
       // virama, before a letter of the same script.
       ["a ZWNJ inside a Tamil word", "க்‌ம", "க்⟨U+200C⟩ம"],
@@ -631,6 +634,170 @@ describe("summarizeArgs", () => {
         }
       }
       expect(stray).toEqual([]);
+    });
+  });
+
+  // Thirteenth review of #1242: a combining mark draws on the glyph in front
+  // of it. With no letter there — at the start, after a space, a `/`,
+  // punctuation or a marker — or with a letter of another script there, it
+  // was drawn onto the neighbouring word, exactly like the same mark on that
+  // word's letter: `\u05BCבא` and `בא\u05BC` were pixel-identical in Chromium
+  // and WebKit, `a\u05BCع` and `aع\u05BC` in Chromium. Such a mark is shown as
+  // a marker; a mark on a letter of its own script (or on a mark that sits on
+  // one) stays as it is.
+  describe("a combining mark with no letter to sit on", () => {
+    const shown = (path: string) => summarizeArgs({ path }).path as string;
+
+    it.each([
+      ["a dagesh before a word and on its last letter", "\u05BCבא", "בא\u05BC"],
+      ["a dagesh alone and on a letter", "\u05BCא", "א\u05BC"],
+      ["a dagesh on either side of a maqaf", "\u05BE\u05BC/", "\u05BC\u05BE/"],
+      ["a fatha before an Arabic word and on its last letter", "\u064Eعب", "عب\u064E"],
+    ])("shows %s apart", (_label, a, b) => {
+      // The glyphs left to right, as the card draws them: pieces in stored
+      // order, each right-to-left word reversed. A mark lands next to whatever
+      // glyph it ends up beside — which, for both texts, was the same one.
+      const drawn = (text: string) =>
+        (inStoredOrder(text) ?? [[{ text, word: false }]])
+          .map((line) =>
+            line.map((p) => (p.word ? [...p.text].reverse().join("") : p.text)).join("")
+          )
+          .join("\n");
+      expect(drawn(a)).toBe(drawn(b));
+      expect(drawn(shown(a))).not.toBe(drawn(shown(b)));
+    });
+
+    it.each([
+      ["at the start", "\u05BCבא", "⟨U+05BC⟩בא"],
+      ["after a slash", "/data/\u05BCבא.md", "/data/⟨U+05BC⟩בא.md"],
+      ["after a space", "a \u0301b", "a ⟨U+0301⟩b"],
+      ["after a maqaf", "\u05BE\u05BC/", "\u05BE⟨U+05BC⟩/"],
+      ["after a digit", "1\u05BC", "1⟨U+05BC⟩"],
+      ["after punctuation", "a.\u0301", "a.⟨U+0301⟩"],
+      ["after a marker", "a\u200D\u0301", "a⟨U+200D⟩⟨U+0301⟩"],
+      ["after a marker bracket", "⟨\u0301", "⟨U+27E8⟩⟨U+0301⟩"],
+      ["after a run of spaces", "a    \u0301", "a⟨4 spaces⟩⟨U+0301⟩"],
+      ["after a line break", "a\n\u064E", "a\n⟨U+064E⟩"],
+      ["two of them", "\u0301\u0301", "⟨U+0301⟩⟨U+0301⟩"],
+      ["a keycap after its selector", "1\uFE0F\u20E3", "1⟨U+FE0F⟩⟨U+20E3⟩"],
+      ["a keycap on a bare digit", "1\u20E3", "1⟨U+20E3⟩"],
+      ["on a letter of another script", "a\u05BCع", "a⟨U+05BC⟩ع"],
+      ["of Arabic on a Hebrew letter", "א\u064E", "א⟨U+064E⟩"],
+      ["of Devanagari on a Latin letter", "a\u093F", "a⟨U+093F⟩"],
+      ["of Latin on a modifier letter of no script", "ʹ\u0301", "ʹ⟨U+0301⟩"],
+      ["after another script's mark on a letter", "a\u05BC\u0301", "a⟨U+05BC⟩⟨U+0301⟩"],
+    ])("marks one %s", (_label, text, expected) => {
+      expect(shown(text)).toBe(expected);
+    });
+
+    it.each([
+      ["Hebrew with niqqud", "/data/שָׁלוֹם.md"],
+      ["a Hebrew letter with dagesh, shin dot and vowel", "שּׁוּק"],
+      ["Arabic with harakat", "مَرْحَبًا"],
+      ["harakat on a tatweel", "ـَ"],
+      ["Devanagari vowel signs and a virama", "नमस्ते हिंदी"],
+      ["Thai vowel and tone marks", "น้ำใจ ภาษาไทย"],
+      ["Tamil vowel signs and a pulli", "தமிழ் கோப்பு"],
+      ["Latin letters with NFD accents", "Cafe\u0301 Zu\u0308rich"],
+      ["a Latin letter with two stacked accents", "e\u0323\u0302"],
+      ["Cyrillic with a stress accent", "мо\u0301ре"],
+      ["a Japanese voicing mark", "か\u3099"],
+      ["a strike-through, a mark of every script, on any letter", "א\u0336ب\u0336a\u0336"],
+    ])("keeps %s as it is", (_label, text) => {
+      expect(shown(text)).toBe(text);
+    });
+
+    it("marks it in a display name, and in a key", () => {
+      expect(summarizeArgs({ to: '"\u0301Ada" <ada@example.com>' }).to).toBe(
+        'ada@example.com (name: "⟨U+0301⟩Ada")'
+      );
+      expect(Object.keys(summarizeArgs({ ["\u05BCא"]: 1 }))).toEqual(['"⟨U+05BC⟩⟨U+05D0⟩"']);
+    });
+
+    // The drift guard: whatever a value holds, every combining mark left raw
+    // in its rendering sits on a letter it is written with, directly or
+    // through other marks; any other mark is a marker. And none is lost.
+    it("never leaves a mark raw without a letter of its own under it", () => {
+      const alphabet = [
+        "\u05BC",
+        "\u064E",
+        "\u0301",
+        "\u0336",
+        "\u20E3",
+        "\u093F",
+        "א",
+        "ب",
+        "a",
+        "क",
+        "1",
+        "/",
+        " ",
+        "\n",
+        "\u05BE",
+        "'",
+        "\u200D",
+        "\uFE0F",
+        "⟨",
+        "\u00A0",
+      ];
+      // Which letters each mark of the alphabet may stay raw on, by hand.
+      const ownLetters: Record<string, RegExp> = {
+        "\u05BC": /\p{scx=Hebr}/u,
+        "\u064E": /\p{scx=Arab}/u,
+        "\u093F": /\p{scx=Deva}/u,
+        "\u0301": /\p{scx=Latn}|\p{scx=Cyrl}|\p{scx=Grek}/u,
+        "\u0336": /\p{L}/u,
+        "\u20E3": /\p{L}/u,
+      };
+      let seed = 1242;
+      const random = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+      const MARK = /\p{M}/u;
+      const bad: string[] = [];
+      for (let n = 0; n < 3000; n++) {
+        const length = 1 + Math.floor(random() * 10);
+        const text = Array.from(
+          { length },
+          () => alphabet[Math.floor(random() * alphabet.length)]
+        ).join("");
+        const out = [...shown(text)];
+        out.forEach((char, i) => {
+          if (!MARK.test(char)) return;
+          let j = i - 1;
+          while (j >= 0 && MARK.test(out[j])) j--;
+          if (j < 0 || !out.slice(j + 1, i + 1).every((m) => ownLetters[m].test(out[j]))) {
+            bad.push(JSON.stringify(text));
+          }
+        });
+        // Every mark of the text, in order, either raw or as its marker (the
+        // presentation selector is a hidden character, marked as one).
+        const visibleMark = (c: string) => MARK.test(c) && c !== "\uFE0F";
+        const sent = [...text].filter(visibleMark);
+        const kept = [...shown(text).matchAll(/⟨U\+([0-9A-F]{4,6})⟩|\p{M}/gu)]
+          .map((m) => (m[1] ? String.fromCodePoint(parseInt(m[1], 16)) : m[0]))
+          .filter(visibleMark);
+        if (kept.join() !== sent.join()) bad.push(`lost: ${JSON.stringify(text)}`);
+      }
+      expect([...new Set(bad)]).toEqual([]);
+    });
+
+    // The scripts a mark may sit on are listed by name. A mark of a script
+    // the list lacks would never be kept — safe, but Hindi or Hebrew would
+    // read as a row of markers — so every mark that is not of every script
+    // must belong to a listed one.
+    it("knows the script of every mark that is not of every script", () => {
+      const unlisted: string[] = [];
+      const used = new Set<string>();
+      for (let cp = 0; cp <= 0x10ffff; cp++) {
+        const char = String.fromCodePoint(cp);
+        if (!/\p{M}/u.test(char) || /\p{scx=Zinh}/u.test(char)) continue;
+        // Common-script marks (musical symbols) sit on no letter: marked.
+        if (/\p{scx=Zyyy}/u.test(char)) continue;
+        const scripts = markScripts(char);
+        if (scripts.length === 0) unlisted.push(cp.toString(16));
+        for (const name of scripts) used.add(name);
+      }
+      expect(unlisted).toEqual([]);
+      expect(used.size).toBeGreaterThan(100);
     });
   });
 
@@ -795,8 +962,10 @@ describe("summarizeArgs", () => {
       ["a skin-toned technologist", "/data/notes/\u{1F469}\u{1F3FD}‍\u{1F4BB} Dev.md"],
       ["a heart on fire", "/data/notes/❤️‍\u{1F525} Team.md"],
     ])("marks the format characters of %s, which the approver's font may not join", (_l, path) => {
+      // …and the keycap's U+20E3, which follows the marked U+FE0F and so has
+      // no letter to sit on (thirteenth review of #1242).
       const marked = path.replace(
-        /[\u200D\uFE0F]/g,
+        /[\u200D\uFE0F\u20E3]/g,
         (char) => `⟨U+${char.codePointAt(0)!.toString(16).toUpperCase()}⟩`
       );
       expect(marked).not.toBe(path);

@@ -223,6 +223,65 @@ export function isEscapedChar(char: string): boolean {
  */
 const MARKER_BRACKET = new Set(["\u27E8", "\u27E9"]);
 
+/**
+ * A combining mark draws on the glyph in front of it. Where it has none to
+ * draw on, it lands on whatever stands beside it: `\u05BCבא` (a dagesh in
+ * front of a right-to-left word) was pixel-identical to `בא\u05BC` (the
+ * dagesh on the word's last letter) in Chromium and WebKit, and `a\u05BCع` to
+ * `aع\u05BC` in Chromium — a Hebrew dagesh draws on neither a Latin nor an
+ * Arabic letter (thirteenth review of #1242). So a mark is kept only where it
+ * sits on a letter it is written with — a letter of one of its scripts
+ * (Script_Extensions: the dagesh on a Hebrew letter, U+0301 on a Latin,
+ * Greek or Cyrillic one), or any letter for a mark of every script (`Zinh`:
+ * U+0336, U+20E3, …) — directly or through marks that do (`ש\u05BC\u05C1`,
+ * `e\u0323\u0302`). Every other mark is shown as a marker: at the start,
+ * after a space, a digit, a `/`, punctuation or a marker the summary wrote,
+ * and on another script's letter.
+ *
+ * The scripts that have marks of their own, as Node 22's engine (Unicode 17)
+ * knows them; `summary.test.ts` checks that every mark not of every script
+ * belongs to one. A name the engine does not know is skipped rather than
+ * failing at load: an engine that old has none of that script's characters.
+ */
+const MARK_SCRIPTS = `Adlm Aghb Ahom Arab Armn Bali Bamu Bass Batk Beng Bhks Bopo Brah Bugi Buhd
+  Cakm Cham Cher Copt Cyrl Deva Diak Dogr Dupl Egyp Elba Ethi Gara Glag Gong Gonm Goth Gran Grek
+  Gujr Gukh Guru Hang Hani Hano Hebr Hira Hmng Hmnp Java Kali Kana Kawi Khar Khmr Khoj Kits Knda
+  Kthi Lana Laoo Latn Lepc Limb Mahj Maka Mand Mani Marc Mend Miao Mlym Modi Mong Mtei Mymr Nagm
+  Nand Newa Nkoo Onao Orya Osge Ougr Perm Plrd Rjng Rohg Samr Saur Sgnw Shrd Sidd Sind Sinh Sogd
+  Soyo Sund Sunu Sylo Syrc Tagb Takr Tale Taml Tavt Tayo Telu Tfng Tglg Thaa Thai Tibt Tirh Todr
+  Toto Tutg Wcho Yezi Zanb`;
+const MARK_SCRIPT_CHARS = new Map(
+  MARK_SCRIPTS.split(/\s+/).flatMap((name): [string, RegExp][] => {
+    try {
+      return [[name, new RegExp(`\\p{scx=${name}}`, "u")]];
+    } catch {
+      return [];
+    }
+  })
+);
+const MARK = /\p{M}/u;
+const LETTER = /\p{L}/u;
+const OF_EVERY_SCRIPT = /\p{scx=Zinh}/u;
+const scriptsOfMark = new Map<string, string[]>();
+
+/** The names in MARK_SCRIPTS of the scripts `mark` is written with. */
+export function markScripts(mark: string): string[] {
+  let names = scriptsOfMark.get(mark);
+  if (!names) {
+    names = [...MARK_SCRIPT_CHARS].filter(([, chars]) => chars.test(mark)).map(([name]) => name);
+    scriptsOfMark.set(mark, names);
+  }
+  return names;
+}
+
+/** Does `mark` draw on `letter` — is it of every script, or of one of the letter's? */
+function sitsOn(mark: string, letter: string): boolean {
+  return (
+    OF_EVERY_SCRIPT.test(mark) ||
+    markScripts(mark).some((name) => MARK_SCRIPT_CHARS.get(name)!.test(letter))
+  );
+}
+
 function codePoint(char: string): string {
   return `U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
 }
@@ -264,13 +323,18 @@ function escapeText(
   }
   let out = "";
   let run: string[] = [];
+  /** The letter the last character written is, or sits on as a kept mark. */
+  let base: string | null = null;
   for (let i = 0; i < chars.length; i++) {
     const char = chars[i];
+    const under: string | null = base;
+    base = null;
     if (isEscapedChar(char)) {
       run.push(char);
       continue;
     }
-    if (MARKER_BRACKET.has(char)) {
+    const mark = MARK.test(char);
+    if (MARKER_BRACKET.has(char) || (mark && !(under && sitsOn(char, under)))) {
       if (run.length > 0) out += escapeRun(run);
       run = [];
       out += `⟨${codePoint(char)}⟩`;
@@ -298,6 +362,7 @@ function escapeText(
       continue;
     }
     out += visible(char);
+    base = mark ? under : LETTER.test(char) ? char : null;
   }
   if (run.length > 0) out += escapeRun(run);
   return out;

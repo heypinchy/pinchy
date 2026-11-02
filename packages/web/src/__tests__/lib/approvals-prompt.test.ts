@@ -286,6 +286,15 @@ describe("buildApprovalPrompt", () => {
     );
   });
 
+  // Thirteenth review of #1242: a dagesh with no letter under it, in front of
+  // a right-to-left word, drew exactly like the dagesh on the word's last
+  // letter. The prompt is built from the same escaping as the card.
+  it("marks a combining mark that has no letter to sit on", () => {
+    const shown = (path: string) => buildApprovalPrompt("pinchy_write", { path }).description;
+    expect(shown("/data/\u05BCבא.md")).toContain("/data/⟨U+05BC⟩\u2066בא\u2069.md");
+    expect(shown("/data/בא\u05BC.md")).toContain("/data/\u2066בא\u05BC\u2069.md");
+  });
+
   it("adds no control characters to a call without right-to-left text", () => {
     const { description } = buildApprovalPrompt("pinchy_write", { path: "/data/2024/x.md" });
     expect(description).not.toMatch(/[\u2066-\u2069\u202A-\u202E]/);

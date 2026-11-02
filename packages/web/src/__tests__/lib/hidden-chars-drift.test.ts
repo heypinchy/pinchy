@@ -257,6 +257,27 @@ describe("hidden-chars drift guard", () => {
       }
     });
 
+    // Thirteenth review of #1242: a combining mark with no letter under it
+    // drew onto the neighbouring word (`ּבא` like `באּ`). It is not hidden — it
+    // draws — so the tools take it like any character the card marks, and the
+    // card marks it, in a path and a display name alike.
+    it("a path and a display name may carry a mark with no letter, and the card marks it", () => {
+      for (const [text, marker] of [
+        ["\u05BCבא", "⟨U+05BC⟩בא"],
+        ["\u064Eعب", "⟨U+064E⟩عب"],
+        ["x \u0301y", "x ⟨U+0301⟩y"],
+      ]) {
+        const path = `/data/${text}.md`;
+        expect(() => assertPlainPath(path, "path")).not.toThrow();
+        expect(summarizeCall({ path }).summary.path).toBe(`/data/${marker}.md`);
+        const recipient = `"${text}" <ada@example.com>`;
+        expect(parseSingleRecipient(recipient).ok, text).toBe(true);
+        expect(summarizeCall({ to: recipient }).summary.to).toBe(
+          `ada@example.com (name: "${marker}")`
+        );
+      }
+    });
+
     it("a path may carry exactly the space separators, and the card marks every one", () => {
       const allowed = every(isSpaceSeparator);
       expect(allowed).toEqual(every((char) => char !== " " && /^\p{Zs}$/u.test(char)));
