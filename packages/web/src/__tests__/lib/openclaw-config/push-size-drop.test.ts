@@ -37,7 +37,11 @@ vi.mock("fs", () => ({
 }));
 
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
-import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
+import {
+  getPendingConfigPushCount,
+  _resetConfigPushState,
+  nextRegenerateSequence,
+} from "@/lib/openclaw-config/push-state";
 
 type Json = Record<string, unknown>;
 const bytes = (s: string) => Buffer.byteLength(s, "utf-8");
@@ -478,6 +482,31 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
     expect(resume).toHaveBeenCalledTimes(1);
   });
 
+  it("never writes the file for a provider deletion when Pinchy has no OpenClaw client yet (boot)", async () => {
+    // bootInits regenerates before the client exists. Writing the shrunken
+    // file there bypasses OpenClaw's guard just like any other fallback — and
+    // OpenClaw's read path restores `.bak` over it, which still names the
+    // deleted provider's key. The first-connect regenerate delivers it in steps.
+    mockGetClient.mockImplementation(() => {
+      throw new Error("OpenClaw client not initialized");
+    });
+    const onChangeApplied = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      onChangeApplied,
+      fullRegenerate: true,
+      expectsProviderShrink: true,
+    });
+    await settle();
+
+    expect(configFileWrites()).toHaveLength(0);
+    expect(onChangeApplied).not.toHaveBeenCalled();
+    expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/NOT writing openclaw.json/);
+  });
+
   it("queues a follow-up when OpenClaw calibrated the shrink but rate-limited every step (none landed)", async () => {
     // The refusal arrived, so the push knows the shrink — but OpenClaw then
     // rate-limits every step until the budget runs out. Nothing was stepped,
@@ -504,6 +533,59 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
     expect(oc.accepted, "precondition: no step landed").toHaveLength(0);
     expect(configFileWrites()).toHaveLength(0);
     expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a queued follow-up when a full regenerate that STARTED before the stranded one delivers after it", async () => {
+    // R0 started before the provider row was deleted (a slow discovery, say)
+    // and still contains the provider. R1 started after, carries the deletion,
+    // and strands: a targeted write supersedes it after one step. R0 then
+    // reaches OpenClaw last. Push order says "the newest full regenerate
+    // landed"; read order says R0 never saw the deletion. Cancelling R1's
+    // follow-up on R0's delivery would leave the deleted provider live.
+    vi.useFakeTimers();
+    const oc = new FakeOpenClaw(
+      pinchyConfig({ "acme-llm": acmeProvider }),
+      new Set([anthropicRef.id, acmeRef.id])
+    );
+    mockGetClient.mockReturnValue(oc.client);
+    const r0Seq = nextRegenerateSequence();
+    const r1Seq = nextRegenerateSequence();
+    oc.onAccepted = (n) => {
+      if (n !== 1) return;
+      pushConfigInBackground(
+        serialize({ ...(JSON.parse(oc.file) as Json), channels: { telegram: { enabled: true } } })
+      );
+    };
+    const resumeR1 = vi.fn();
+    const resumeR0 = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      fullRegenerate: true,
+      regenerateSeq: r1Seq,
+      resumeStrandedShrink: resumeR1,
+    });
+    for (let i = 0; i < 100 && getPendingConfigPushCount() > 0; i++) {
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    expect(getPendingConfigPushCount()).toBe(0);
+    expect(resumeR1, "precondition: R1's follow-up is pending").not.toHaveBeenCalled();
+    oc.onAccepted = undefined;
+
+    // R0's payload: everything as it was before the deletion.
+    pushConfigInBackground(
+      serialize({
+        ...pinchyConfig({ "acme-llm": acmeProvider }),
+        channels: { telegram: { enabled: true } },
+      }),
+      { fullRegenerate: true, regenerateSeq: r0Seq, resumeStrandedShrink: resumeR0 }
+    );
+    await drainWithFakeTimers();
+
+    expect(oc.providers(), "precondition: R0 put the provider back").toHaveProperty("acme-llm");
+    expect(resumeR1).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a queued follow-up when the full regenerate that would have finished it is superseded by a partial write", async () => {

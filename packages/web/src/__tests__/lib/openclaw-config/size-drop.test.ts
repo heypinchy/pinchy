@@ -10,6 +10,7 @@ import {
   buildProviderShrinkStep,
   planShrinkPush,
   utf8Bytes,
+  expectsSizeDropRefusal,
 } from "@/lib/openclaw-config/size-drop";
 
 type Json = Record<string, unknown>;
@@ -295,5 +296,34 @@ describe("planShrinkPush", () => {
     expect(
       planShrinkPush({ target, ocConfig: undefined, ocBaselineBytes: 50_000, offset: 0 })
     ).toBe(null);
+  });
+});
+
+describe("expectsSizeDropRefusal", () => {
+  // OpenClaw compares UTF-8 BYTES (floor(OLD * 0.5), OLD = its current file);
+  // JavaScript's `length` counts UTF-16 code units. A model name in CJK is one
+  // unit and three bytes, so a char-count comparison misses refusals OpenClaw
+  // will make — and then the push takes the file fallback for the shrink.
+  const pad = (n: number) => JSON.stringify({ models: { providers: { p: "x".repeat(n) } } });
+
+  it("compares UTF-8 bytes, not UTF-16 code units", () => {
+    const existing = JSON.stringify({ names: "模型".repeat(1000) }); // ~2k units, ~6k bytes
+    const next = pad(1500);
+    // Precondition: by `length` the payload is more than half; by bytes, far less.
+    expect(next.length).toBeGreaterThan(existing.length * 0.5);
+    expect(utf8Bytes(next)).toBeLessThan(Math.floor(utf8Bytes(existing) * 0.5));
+    expect(expectsSizeDropRefusal(existing, next)).toBe(true);
+  });
+
+  it("errs towards expecting a refusal just above OpenClaw's threshold (meta stamp, re-serialization)", () => {
+    const existing = pad(20_000);
+    const justAbove = pad(Math.floor(utf8Bytes(existing) * 0.5) + 50 - 40);
+    expect(utf8Bytes(justAbove)).toBeGreaterThanOrEqual(Math.floor(utf8Bytes(existing) * 0.5));
+    expect(expectsSizeDropRefusal(existing, justAbove)).toBe(true);
+  });
+
+  it("does not expect a refusal for a modest shrink", () => {
+    const existing = pad(20_000);
+    expect(expectsSizeDropRefusal(existing, pad(15_000))).toBe(false);
   });
 });

@@ -38,6 +38,13 @@ interface ConfigPushState {
   generation: number;
   /** Pending follow-up regenerate for a stranded shrink (see scheduleShrinkResume). */
   shrinkResume: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Start sequence of the newest full regenerate whose stranded shrink the
+   * pending follow-up stands for (see cancelShrinkResume).
+   */
+  shrinkResumeSeq: number;
+  /** Last start sequence handed out by nextRegenerateSequence. */
+  regenerateSeq: number;
 }
 
 declare global {
@@ -64,11 +71,15 @@ function state(): ConfigPushState {
       pending: 0,
       generation: 0,
       shrinkResume: undefined,
+      shrinkResumeSeq: 0,
+      regenerateSeq: 0,
     };
     return globalThis.__pinchyConfigPushState;
   }
   existing.pending ??= 0;
   existing.generation ??= 0;
+  existing.shrinkResumeSeq ??= 0;
+  existing.regenerateSeq ??= 0;
   return existing as ConfigPushState;
 }
 
@@ -114,18 +125,40 @@ export function getCurrentConfigPushGeneration(): number {
 }
 
 /**
+ * Claim a start sequence for a full regenerate, BEFORE it reads any state.
+ * Push order says when a regenerate's payload reached OpenClaw; this says what
+ * it can have seen. A regenerate that started before a provider row was
+ * deleted can still be pushing after the deletion's own regenerate — and its
+ * payload still contains the provider (see cancelShrinkResume).
+ */
+export function nextRegenerateSequence(): number {
+  return ++state().regenerateSeq;
+}
+
+/**
  * Cancel a queued follow-up regenerate (see scheduleShrinkResume). Called when
  * a full regenerate — the whole target config — has REACHED OpenClaw (applied,
- * or already in place), which makes any stranded shrink moot.
+ * or already in place), which makes a stranded shrink moot.
+ *
+ * Only a regenerate that STARTED after the stranded one: it read state after
+ * the deletion, so its payload carries it. One that started earlier — a slow
+ * regenerate that read the provider rows before the delete — can still land
+ * later, and its payload puts the deleted provider back; it cancels nothing.
  *
  * Not when one merely starts: a full regenerate can still be superseded by a
  * partial writer before it delivers anything, and a follow-up cancelled at its
  * start would then be lost with OpenClaw still on the deleted provider's stub.
  */
-export function cancelShrinkResume(): void {
+export function cancelShrinkResume(deliveredBySeq: number): void {
   const s = state();
+  if (deliveredBySeq <= s.shrinkResumeSeq) return;
+  clearShrinkResume(s);
+}
+
+function clearShrinkResume(s: ConfigPushState): void {
   if (s.shrinkResume !== undefined) clearTimeout(s.shrinkResume);
   s.shrinkResume = undefined;
+  s.shrinkResumeSeq = 0;
 }
 
 /** How long a stranded shrink waits before its follow-up regenerate runs. */
@@ -146,14 +179,18 @@ const SHRINK_RESUME_MAX_RECHECKS = 60;
  * nothing else would finish the job before the next config change.
  *
  * Debounced and coalesced process-wide: one pending follow-up at most, the
- * latest caller's `resume` wins, and a full regenerate that reaches OpenClaw
- * in the meantime cancels it (cancelShrinkResume). It waits for pushes still in
+ * latest caller's `resume` wins, and a full regenerate that started after the
+ * stranded one and reaches OpenClaw in the meantime cancels it
+ * (cancelShrinkResume). It waits for pushes still in
  * flight so it does not supersede them. Not recursive by itself: `resume` is a
  * regenerate whose own push must not pass a `resume` of its own (build.ts).
  */
-export function scheduleShrinkResume(resume: () => void): void {
+export function scheduleShrinkResume(resume: () => void, strandedSeq: number): void {
   const s = state();
   if (s.shrinkResume !== undefined) clearTimeout(s.shrinkResume);
+  // Coalesced: the follow-up stands for the newest stranded regenerate, so only
+  // a regenerate that started after that one may cancel it.
+  s.shrinkResumeSeq = Math.max(s.shrinkResumeSeq, strandedSeq);
   let rechecks = 0;
   const fire = () => {
     if (getPendingConfigPushCount() > 0 && rechecks < SHRINK_RESUME_MAX_RECHECKS) {
@@ -163,6 +200,7 @@ export function scheduleShrinkResume(resume: () => void): void {
       return;
     }
     s.shrinkResume = undefined;
+    s.shrinkResumeSeq = 0;
     resume();
   };
   s.shrinkResume = setTimeout(fire, SHRINK_RESUME_DELAY_MS);
@@ -176,7 +214,7 @@ export function scheduleShrinkResume(resume: () => void): void {
 export function _resetConfigPushState(): void {
   const s = state();
   s.pending = 0;
-  cancelShrinkResume();
+  clearShrinkResume(s);
 }
 
 // There is deliberately NO reset for `generation`. It is a cancellation token

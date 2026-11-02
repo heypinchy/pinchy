@@ -16,7 +16,10 @@ import {
   getCurrentConfigPushGeneration,
   cancelShrinkResume,
   scheduleShrinkResume,
+  nextRegenerateSequence,
 } from "./push-state";
+import { readSecretsFile } from "@/lib/openclaw-secrets";
+import { releaseRetainedSecrets, unresolvedSecretRefs } from "./secret-retention";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
 export function writeConfigAtomic(content: string) {
@@ -256,12 +259,13 @@ const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 //
 // The shrink is known in one of two ways. regenerateOpenClawConfig says so up
 // front (`expectsProviderShrink`) when its own guard discounted a deleted
-// provider and the payload is still under half the file — which matters
-// because OpenClaw checks its control-plane rate limit BEFORE its size check:
-// a push that is rate-limited, or cannot reach OpenClaw, never hears the
-// refusal, and its fallback used to write the shrunken file past OpenClaw's
-// guard. Otherwise the first size-drop refusal tells us. Either way the file
-// fallback is off for the rest of the push.
+// provider and the payload is still under half the file (UTF-8 bytes, with
+// headroom: expectsSizeDropRefusal) — which matters because OpenClaw checks its
+// control-plane rate limit BEFORE its size check: a push that is rate-limited,
+// or cannot reach OpenClaw, never hears the refusal, and its fallback used to
+// write the shrunken file past OpenClaw's guard. Otherwise the first size-drop
+// refusal tells us. Either way no file is written for the rest of the push —
+// not by the fallback, and not by the no-client path at boot either.
 //
 // A delivery that stops short of its target leaves OpenClaw on the old config
 // or on an intermediate step that still carries the deleted provider as a
@@ -272,7 +276,9 @@ const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 // OpenClaw accepted at least one step. All of these hand off to one follow-up
 // full regenerate (`resumeStrandedShrink`, debounced process-wide in
 // push-state.ts), which steps on from wherever OpenClaw stands; a full
-// regenerate that reaches OpenClaw in the meantime cancels it. A drop because
+// regenerate that STARTED after the stranded one and reaches OpenClaw in the
+// meantime cancels it (one that started before read the provider rows before
+// the delete, and cancels nothing). A drop because
 // the shrink is not a provider deletion (or a calibration that keeps missing)
 // queues nothing before a step has landed: OpenClaw is unchanged, and the same
 // regenerate would only be refused again.
@@ -305,9 +311,17 @@ export interface PushConfigOptions {
   /**
    * The payload is a full regenerate — the whole target config — rather than a
    * partial writer's edit of the on-disk file. When one reaches OpenClaw it
-   * cancels a queued follow-up for a stranded shrink (see MAX_SHRINK_STEPS).
+   * cancels a queued follow-up for a stranded shrink (see MAX_SHRINK_STEPS),
+   * provided it started after the regenerate that stranded (`regenerateSeq`).
    */
   fullRegenerate?: boolean;
+  /**
+   * The regenerate's start sequence (`nextRegenerateSequence()`, claimed
+   * before it read any state). Orders full regenerates by what they can have
+   * seen rather than by when they were pushed. Defaults to a fresh sequence
+   * claimed when the push starts.
+   */
+  regenerateSeq?: number;
   /**
    * The payload deletes a provider and is under half of the current file, so
    * OpenClaw will refuse it as a size drop. Set by regenerateOpenClawConfig
@@ -328,12 +342,19 @@ export interface PushConfigOptions {
 export function pushConfigInBackground(newContent: string, options: PushConfigOptions = {}): void {
   const { onChangeApplied, resumeStrandedShrink } = options;
   const generation = nextConfigPushGeneration();
-  // The target reached OpenClaw (applied, written, or already in place). A
-  // newest full regenerate that got there makes any queued follow-up moot.
-  const targetReached = () => {
-    if (options.fullRegenerate && generation === getCurrentConfigPushGeneration()) {
-      cancelShrinkResume();
-    }
+  const regenerateSeq = options.regenerateSeq ?? nextRegenerateSequence();
+  // The target reached OpenClaw (applied, written, or already in place) —
+  // `delivered` is what OpenClaw now holds. Only while this is the newest push:
+  // a newer one in flight may carry other content (a targeted writer's copy of
+  // the old file) and settles both questions itself when it lands.
+  //   - A full regenerate that started after a stranded one makes that one's
+  //     queued follow-up moot (cancelShrinkResume checks the start order).
+  //   - A secret retained for the old config (secret-retention.ts) can leave
+  //     secrets.json once nothing OpenClaw holds references it.
+  const targetReached = (delivered: string) => {
+    if (generation !== getCurrentConfigPushGeneration()) return;
+    if (options.fullRegenerate) cancelShrinkResume(regenerateSeq);
+    releaseRetainedSecrets(delivered);
   };
 
   // Make the in-flight push observable (health endpoint `configPushesPending`,
@@ -344,43 +365,6 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
   trackConfigPushStarted();
 
   void (async () => {
-    let client;
-    try {
-      client = getOpenClawClient();
-    } catch {
-      client = undefined;
-    }
-    if (!client) {
-      // No WS client — write directly to file so inotify picks up the change.
-      // This path runs synchronously (no await before writeConfigAtomic), so the
-      // file is on disk before regenerateOpenClawConfig() returns to its caller.
-      console.log(
-        `[openclaw-config] push gen=${String(generation)}: no WS client → file write (inotify; reload may lag)`
-      );
-      writeConfigAtomic(newContent);
-      targetReached();
-      onChangeApplied?.();
-      return;
-    }
-
-    // Security check: assertNoPlaintextSecrets is called inside writeConfigAtomic
-    // for the no-client path above. For the WS path we skip the direct file write
-    // to eliminate the inotify race with config.apply (openclaw#75534): writing
-    // the file before config.apply triggers the chokidar watcher, which updates
-    // currentCompareConfig to the raw Pinchy payload. config.apply then writes a
-    // slightly different file (OC's merge transforms it), so the reload handler
-    // detects a diff including gateway/discovery/update/canvasHost and triggers a
-    // gateway restart — causing ConfigMutationConflictError when ensureGatewayStartupAuth
-    // tries to write with a stale initialSnapshotRead hash.
-    // Without the prior file write, currentCompareConfig stays as startup_source;
-    // config.apply's output only differs in agents/plugins/secrets — no restart.
-    // Same on-disk baseline as writeConfigAtomic: `newContent` can be a
-    // targeted writer's payload, which carries the whole existing config
-    // through. Throwing here would reject the change in a background
-    // coroutine — an unhandled rejection, and the channel update lost with
-    // it (#884).
-    assertNoPlaintextSecrets(JSON.parse(newContent), readSecretBaseline);
-
     // Brief retry across transient WS disconnects. Beyond ~3.5 s the WS is
     // probably down due to the cold-start cascade, and inotify will catch
     // up; no point keeping a background coroutine alive longer.
@@ -414,7 +398,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       console.warn(
         `[openclaw-config] push gen=${String(generation)}: provider deletion stopped after ${String(shrinkSteps)} step(s) (${why}); queueing a follow-up regenerate to finish it`
       );
-      scheduleShrinkResume(resumeStrandedShrink);
+      scheduleShrinkResume(resumeStrandedShrink, regenerateSeq);
     };
     // `transient`: the drop says nothing about the payload (rate limit,
     // retries, OpenClaw unreachable) — the deletion still has to land, so a
@@ -439,14 +423,83 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     };
     // A file-write fallback for a shrink would land the target past OpenClaw's
     // guard (see MAX_SHRINK_STEPS) — refuse it instead.
+    //
+    // Nor is a file written whose SecretRefs secrets.json cannot resolve:
+    // OpenClaw refuses that config on every transport and fails to START on
+    // it ("required secrets are unavailable"), so the write would only arm the
+    // next restart. A config.apply refused for that reason (`active SecretRef
+    // resolution failed`) ends up here after its retries. An unreadable
+    // secrets.json is no evidence either way and does not block the write.
     const writeFallback = (content: string): boolean => {
       if (shrinkKnown()) {
         dropShrink("could not be delivered over config.apply", { transient: true });
         return false;
       }
+      let secrets: ReturnType<typeof readSecretsFile> | undefined;
+      try {
+        secrets = readSecretsFile();
+      } catch {
+        secrets = undefined;
+      }
+      const unresolved = secrets ? unresolvedSecretRefs(JSON.parse(content), secrets) : [];
+      if (unresolved.length > 0) {
+        console.error(
+          `[openclaw-config] push gen=${String(generation)}: NOT writing openclaw.json directly — ` +
+            `secrets.json cannot resolve its SecretRef(s) ${unresolved.join(", ")}, so OpenClaw could neither apply nor start on it. ` +
+            `The change is dropped; the next regenerate rebuilds it from current state.`
+        );
+        return false;
+      }
       writeConfigAtomic(content);
       return true;
     };
+    let client;
+    try {
+      client = getOpenClawClient();
+    } catch {
+      client = undefined;
+    }
+    if (!client) {
+      // No WS client (boot: bootInits regenerates before the client exists) —
+      // write directly to file so inotify picks up the change. This path runs
+      // synchronously (no await before writeConfigAtomic), so the file is on
+      // disk before regenerateOpenClawConfig() returns to its caller.
+      //
+      // Not for a provider-deletion shrink: that write bypasses OpenClaw's
+      // guard like any other fallback, and OpenClaw's read path restores `.bak`
+      // over it — a file that still names the deleted provider's key. The
+      // regenerate on first connect delivers it in steps.
+      if (shrinkKnown()) {
+        dropShrink("Pinchy has no OpenClaw client yet", { transient: true });
+        return;
+      }
+      console.log(
+        `[openclaw-config] push gen=${String(generation)}: no WS client → file write (inotify; reload may lag)`
+      );
+      writeConfigAtomic(newContent);
+      targetReached(newContent);
+      onChangeApplied?.();
+      return;
+    }
+
+    // Security check: assertNoPlaintextSecrets is called inside writeConfigAtomic
+    // for the no-client path above. For the WS path we skip the direct file write
+    // to eliminate the inotify race with config.apply (openclaw#75534): writing
+    // the file before config.apply triggers the chokidar watcher, which updates
+    // currentCompareConfig to the raw Pinchy payload. config.apply then writes a
+    // slightly different file (OC's merge transforms it), so the reload handler
+    // detects a diff including gateway/discovery/update/canvasHost and triggers a
+    // gateway restart — causing ConfigMutationConflictError when ensureGatewayStartupAuth
+    // tries to write with a stale initialSnapshotRead hash.
+    // Without the prior file write, currentCompareConfig stays as startup_source;
+    // config.apply's output only differs in agents/plugins/secrets — no restart.
+    // Same on-disk baseline as writeConfigAtomic: `newContent` can be a
+    // targeted writer's payload, which carries the whole existing config
+    // through. Throwing here would reject the change in a background
+    // coroutine — an unhandled rejection, and the channel update lost with
+    // it (#884).
+    assertNoPlaintextSecrets(JSON.parse(newContent), readSecretBaseline);
+
     for (let i = 0; i < backoffsMs.length; i++) {
       // Check before each attempt — a newer pushConfigInBackground call
       // may have started while we were sleeping.
@@ -536,7 +589,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             console.log(
               `[openclaw-config] push gen=${String(generation)}: no-op skip (supplemented payload ≡ OC runtime)`
             );
-            targetReached();
+            targetReached(supplemented);
             return;
           }
         }
@@ -582,7 +635,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         console.log(
           `[openclaw-config] push gen=${String(generation)}: applied via WS config.apply (in-process, synchronous runtime refresh)${rateLimitAttempts > 0 ? ` after ${String(rateLimitAttempts)} rate-limit wait(s)` : ""}`
         );
-        targetReached();
+        targetReached(payload);
         onChangeApplied?.();
         return;
       } catch (err) {
@@ -670,8 +723,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             `[openclaw-config] push gen=${String(generation)}: config.apply rate-limited past retry budget; writing file for inotify fallback (reload may lag):`,
             message
           );
-          if (writeFallback(lastSupplemented ?? supplementPayloadWithFileFields(newContent))) {
-            targetReached();
+          const fallback = lastSupplemented ?? supplementPayloadWithFileFields(newContent);
+          if (writeFallback(fallback)) {
+            targetReached(fallback);
             onChangeApplied?.();
           }
           return;
@@ -712,8 +766,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           );
           // All retries exhausted — fall back to file write so inotify picks up
           // the change. Same meta-preservation logic as the rate-limit path above.
-          if (writeFallback(lastSupplemented ?? supplementPayloadWithFileFields(newContent))) {
-            targetReached();
+          const fallback = lastSupplemented ?? supplementPayloadWithFileFields(newContent);
+          if (writeFallback(fallback)) {
+            targetReached(fallback);
             onChangeApplied?.();
           }
           return;

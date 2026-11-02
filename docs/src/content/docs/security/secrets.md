@@ -48,6 +48,8 @@ At startup — and every time you change a provider or integration — Pinchy ca
 
 Step 4 is what makes rotation immediate. OpenClaw resolves each pointer once and holds the value for the life of the process, and `openclaw.json` is unchanged by a rotation — it carries the pointer, not the key. So a new key would otherwise sit in the file unread until the container restarted, with every agent still presenting the old one.
 
+A removed key is the one exception to "the file mirrors the database". `secrets.json` is written before the new configuration reaches OpenClaw, and removing a large provider can take a few minutes to hand over (see [Remove a provider](/guides/llm-providers/#remove-a-provider)). Until it has, the `openclaw.json` OpenClaw runs and would restart from still points at the removed provider's key, so Pinchy keeps that one value in `secrets.json` while the config file still references it. It deletes the value as soon as a configuration without the reference has reached OpenClaw, and the next regenerate deletes it in any case once the file no longer mentions it. In PostgreSQL the key is gone the moment the provider is removed.
+
 That path is a Docker `tmpfs` mount. tmpfs is RAM-based storage — it's never written to disk, never included in Docker volume exports, and disappears on container restart.
 
 ```yaml

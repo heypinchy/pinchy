@@ -97,6 +97,35 @@ export function sizeGuardBaseline(existing: string, next: Json): number {
   return existing.length - Math.max(0, deletedBytes);
 }
 
+/**
+ * Headroom when PREDICTING OpenClaw's refusal before it is made, as a fraction
+ * of the current file (at least SIZE_DROP_EXPECTATION_MIN_MARGIN_BYTES).
+ * OpenClaw judges the file it would write — meta-stamped, re-serialized —
+ * against its own re-serialization of the current one; Pinchy only has its
+ * payload and the file. The two errors are not symmetric: expecting a refusal
+ * that never comes only turns the file fallback off for one push (which then
+ * hands off to a follow-up regenerate), while missing one lets that fallback
+ * write a shrink past OpenClaw's guard. So the margin errs towards expecting.
+ */
+const SIZE_DROP_EXPECTATION_MARGIN = 0.05;
+const SIZE_DROP_EXPECTATION_MIN_MARGIN_BYTES = 256;
+
+/**
+ * Whether OpenClaw will refuse replacing `existing` with `next` as a size drop
+ * (`NEW < floor(OLD * 0.5)`). Measured in UTF-8 bytes as OpenClaw measures it,
+ * never in `length`: JavaScript counts UTF-16 units, so a model name in CJK is
+ * one unit and three bytes, and a char comparison misses refusals OpenClaw
+ * makes. Errs towards true near the threshold (see the margin above).
+ */
+export function expectsSizeDropRefusal(existing: string, next: string): boolean {
+  const oldBytes = utf8Bytes(existing);
+  const margin = Math.max(
+    SIZE_DROP_EXPECTATION_MIN_MARGIN_BYTES,
+    Math.ceil(oldBytes * SIZE_DROP_EXPECTATION_MARGIN)
+  );
+  return utf8Bytes(next) < Math.floor(oldBytes * 0.5) + margin;
+}
+
 export interface SizeDropRejection {
   /** OpenClaw's baseline: the current openclaw.json, in UTF-8 bytes. */
   fromBytes: number;

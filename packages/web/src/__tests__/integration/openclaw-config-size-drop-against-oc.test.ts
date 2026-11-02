@@ -242,4 +242,95 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     }
     expect(existsSync(pinchyConfigPath), "Pinchy must not write openclaw.json itself").toBe(false);
   }, 60_000);
+
+  // secrets.json is written BEFORE the push, and the hand-over above takes
+  // minutes in production. For that whole window OpenClaw's openclaw.json still
+  // names the deleted provider's key. A targeted writer (updateTelegramChannel-
+  // Config) reads that file, changes one block and applies it — and the real
+  // handler resolves every SecretRef in it. So the key stays in secrets.json
+  // while the file references it, and leaves once OpenClaw no longer does.
+  it("keeps the old file applicable during the hand-over, and releases the deleted key once it has landed", async () => {
+    process.env.OPENCLAW_CONFIG_PATH = pinchyConfigPath;
+    process.env.OPENCLAW_SECRETS_PATH = secretsPath;
+    const { pushConfigInBackground } = await import("@/lib/openclaw-config/write");
+    const { getPendingConfigPushCount } = await import("@/lib/openclaw-config/push-state");
+    const { retainSecretsStillReferenced, setRetainedSecrets, _resetRetainedSecrets } =
+      await import("@/lib/openclaw-config/secret-retention");
+    const { readSecretsFile, writeSecretsFile } = await import("@/lib/openclaw-secrets");
+    process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
+    const { writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
+    type OcConfig = Parameters<typeof writeConfigFile>[0];
+    const handlers = await loadConfigHandlers();
+    const get = () => request(handlers["config.get"], {});
+    const apply = (raw: string, baseHash?: string, options: Json = {}) =>
+      request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}), ...options });
+    _resetRetainedSecrets();
+    try {
+      writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
+      await writeConfigFile(config({ "acme-llm": acme() }) as OcConfig);
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const target = config();
+      const authoritative = { providers: { anthropic: { apiKey: "sk-ant-test" } } };
+      // A targeted write: the on-disk file with one block changed.
+      const targeted = () => {
+        const onDisk = JSON.parse(readFileSync(ocConfigPath, "utf-8")) as Json;
+        delete onDisk.meta;
+        return JSON.stringify(
+          {
+            ...onDisk,
+            agents: {
+              list: [
+                { id: "smithers", name: "Smithers" },
+                { id: "kb", name: "KB" },
+              ],
+            },
+          },
+          null,
+          2
+        );
+      };
+
+      // The bug: with the key already gone, the real handler refuses the
+      // targeted write — and a restart would refuse the file on disk.
+      writeSecretsFile(authoritative);
+      await expect(apply(targeted(), (await get()).hash as string)).rejects.toThrow(/SecretRef/);
+
+      // The fix: what regenerateOpenClawConfig writes instead.
+      writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
+      const { bundle, retained } = retainSecretsStillReferenced({
+        next: authoritative,
+        previous: readSecretsFile(),
+        onDiskConfig: JSON.parse(readFileSync(ocConfigPath, "utf-8")),
+        nextConfig: target,
+      });
+      writeSecretsFile(bundle);
+      setRetainedSecrets(retained);
+      await apply(targeted(), (await get()).hash as string);
+      expect(
+        (JSON.parse(readFileSync(ocConfigPath, "utf-8")) as { agents: { list: Json[] } }).agents
+          .list
+      ).toHaveLength(2);
+
+      // The deletion then lands in steps…
+      mockGetClient.mockReturnValue({ config: { get, apply } });
+      pushConfigInBackground(JSON.stringify(target, null, 2), { fullRegenerate: true });
+      for (let i = 0; i < 2000 && getPendingConfigPushCount() > 0; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(getPendingConfigPushCount()).toBe(0);
+      expect(errorSpy.mock.calls.flat().join(" ")).toBe("");
+      const final = JSON.parse(readFileSync(ocConfigPath, "utf-8")) as {
+        models: { providers: Json };
+      };
+      expect(final.models.providers).not.toHaveProperty("acme-llm");
+      // …and the key leaves secrets.json with it; nothing else does.
+      expect(JSON.parse(readFileSync(secretsPath, "utf-8"))).toEqual(authoritative);
+    } finally {
+      _resetRetainedSecrets();
+      delete process.env.OPENCLAW_SECRETS_PATH;
+    }
+  }, 60_000);
 });

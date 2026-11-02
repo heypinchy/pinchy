@@ -1,7 +1,12 @@
 import { readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { isDeepStrictEqual } from "util";
-import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
+import {
+  writeSecretsFile,
+  readSecretsFile,
+  secretRef,
+  type SecretsBundle,
+} from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -41,7 +46,9 @@ import { resolveBootstrapCaps } from "./bootstrap-caps";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { readExistingConfig, pushConfigInBackground } from "./write";
-import { sizeGuardBaseline } from "./size-drop";
+import { sizeGuardBaseline, expectsSizeDropRefusal } from "./size-drop";
+import { nextRegenerateSequence } from "./push-state";
+import { retainSecretsStillReferenced, setRetainedSecrets } from "./secret-retention";
 import { reloadSecretsInBackground } from "./secrets-reload";
 import {
   buildSecretsBundle,
@@ -198,6 +205,9 @@ export interface RegenerateOptions {
 }
 
 export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) {
+  // Claimed before any state is read: orders this regenerate against others by
+  // what it can have seen, not by when its push lands (see cancelShrinkResume).
+  const regenerateSeq = nextRegenerateSequence();
   // `readExistingConfig` distinguishes two recoverable failure modes:
   //   - ENOENT / parse error → returns {} (cold start; we build the first config from scratch).
   //   - Persistent EACCES → throws (file exists but unreadable; race with OC's
@@ -1736,11 +1746,43 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
   //
   // The flag is "a value was added or rotated", NOT "the file changed": a pure
   // removal must stay silent here, because OpenClaw would re-resolve the config
-  // it is still running — which points at the key this regenerate just took
-  // away. See writeSecretsFile.
-  if (writeSecretsFile(secretsBundle)) {
+  // it is still running. See writeSecretsFile.
+  //
+  // A removal does not take effect here at all while OpenClaw still needs it.
+  // This file is written BEFORE the push, and the push of a provider deletion
+  // can take minutes (a stepped hand-over at OpenClaw's rate limit) or be
+  // dropped and resumed. Until it lands, OpenClaw's openclaw.json still names
+  // the deleted provider's key: dropping the key now would make OpenClaw refuse
+  // every config that still names it (a targeted writer's copy of the file)
+  // and fail to start if it restarts in that window. So a secret this config
+  // stops referencing is kept while the on-disk file still references it, and
+  // released once a config without the reference has reached OpenClaw (the
+  // push calls releaseRetainedSecrets) — or by the next regenerate that no
+  // longer finds it on disk. See secret-retention.ts.
+  let previousSecrets: SecretsBundle = {};
+  try {
+    previousSecrets = readSecretsFile();
+  } catch {
+    // Unreadable or corrupt: nothing to retain from.
+  }
+  // The file as it is NOW, not as this regenerate read it at the start: a push
+  // may have landed in between. Falls back to that first read.
+  let onDiskConfig: Record<string, unknown> = existing;
+  try {
+    onDiskConfig = readExistingConfig();
+  } catch {
+    // Persistent EACCES (OpenClaw's restart chmod race) — use the first read.
+  }
+  const { bundle: secretsToWrite, retained } = retainSecretsStillReferenced({
+    next: secretsBundle,
+    previous: previousSecrets,
+    onDiskConfig,
+    nextConfig: config,
+  });
+  if (writeSecretsFile(secretsToWrite)) {
     reloadSecretsInBackground();
   }
+  setRetainedSecrets(retained);
 
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts.
   // Format must match what OpenClaw's writeConfigFile produces (trimEnd + "\n")
@@ -1814,8 +1856,12 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
     // push must know before OpenClaw says so — its rate limit can keep the
     // refusal from ever arriving, and the file-write fallback must not run
     // for this payload (see MAX_SHRINK_STEPS in write.ts).
+    // Compared the way OpenClaw compares — UTF-8 bytes, not `length` (UTF-16
+    // units; a CJK model name is one unit and three bytes) — and with headroom,
+    // because missing a refusal costs a file write past OpenClaw's guard while
+    // expecting one that never comes costs nothing (expectsSizeDropRefusal).
     expectsProviderShrink =
-      sizeBaseline < existing.length && newContent.length < existing.length * 0.5;
+      sizeBaseline < existing.length && expectsSizeDropRefusal(existing, newContent);
   } catch {
     // File doesn't exist yet — write it
   }
@@ -1898,6 +1944,7 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
   // interactive save flows (Odoo "Save & Restart", UI waits for 200 OK).
   pushConfigInBackground(newContent, {
     fullRegenerate: true,
+    regenerateSeq,
     expectsProviderShrink,
     resumeStrandedShrink: options.shrinkFollowUp
       ? undefined
