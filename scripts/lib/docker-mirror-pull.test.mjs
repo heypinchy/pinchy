@@ -272,86 +272,209 @@ test("the docker-mirror action pulls only through pull-via-mirror.sh", () => {
 // Credentials live in the client's ~/.docker/config.json, so the action's
 // daemon restart does not discard them. Jobs that never log in stay
 // anonymous — the action text says so.
+// Jobs that use docker-mirror without any Docker Hub login, on purpose. Every
+// other docker-mirror job must have a recognised Docker Hub login BEFORE the
+// action. A job the parser cannot read therefore fails loudly instead of
+// silently dropping out of the check.
+const ANONYMOUS_BY_DESIGN = new Set(["screenshots.yml:capture"]);
+
+const COMMENT_TAIL = String.raw`\s*(?:#.*)?$`;
+const JOB_HEADER = new RegExp(
+  String.raw`^ {2}([A-Za-z0-9_-]+):` + COMMENT_TAIL,
+);
+const STEPS_KEY = new RegExp(String.raw`^(\s*)steps:` + COMMENT_TAIL);
+const MIRROR_USE = new RegExp(
+  String.raw`uses:\s*\.\/\.github\/actions\/docker-mirror` + COMMENT_TAIL,
+);
+const DOCKER_HUB_REGISTRY =
+  /^(docker\.io|index\.docker\.io|registry-1\.docker\.io)$/i;
+
+/**
+ * Every job in one workflow file that uses the docker-mirror action, with the
+ * line of the action and of the first Docker Hub login (-1 if none).
+ * A Docker Hub login is recognised by what it does: a `docker/login-action`
+ * step whose `registry:` is absent or a Docker Hub host, or a `run:` step that
+ * calls `docker login` without naming another registry.
+ */
+export function parseMirrorJobs(file, text) {
+  const lines = text.split("\n");
+  const jobsStart = lines.findIndex((line) =>
+    new RegExp("^jobs:" + COMMENT_TAIL).test(line),
+  );
+  if (jobsStart === -1) return [];
+  const jobs = [];
+  let job = null;
+  let step = null;
+  const closeStep = () => {
+    if (job && step && job.login === -1) {
+      const viaAction =
+        step.loginAction &&
+        (step.registry === null || DOCKER_HUB_REGISTRY.test(step.registry));
+      if (viaAction || step.cliLogin) job.login = step.line;
+    }
+    step = null;
+  };
+  for (let i = jobsStart + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\S/.test(line) && line.trim() !== "") break; // next top-level key
+    const header = line.match(JOB_HEADER);
+    if (header) {
+      closeStep();
+      job = { file, name: header[1], mirror: -1, login: -1 };
+      jobs.push(job);
+      continue;
+    }
+    if (!job) continue;
+    const stepsKey = line.match(STEPS_KEY);
+    if (stepsKey) {
+      closeStep();
+      job.stepIndent = null;
+      job.stepsKeyIndent = stepsKey[1].length;
+      continue;
+    }
+    const item = line.match(/^(\s*)-\s/);
+    if (item && job.stepsKeyIndent !== undefined) {
+      // The first list item under `steps:` fixes the step indent; only items
+      // at exactly that indent start a new step (not lines inside run: blocks).
+      if (job.stepIndent == null && item[1].length >= job.stepsKeyIndent) {
+        job.stepIndent = item[1].length;
+      }
+      if (item[1].length === job.stepIndent) {
+        closeStep();
+        step = {
+          line: i + 1,
+          loginAction: false,
+          registry: null,
+          cliLogin: false,
+        };
+      }
+    }
+    if (step && /uses:\s*docker\/login-action@/.test(line))
+      step.loginAction = true;
+    const registry = line.match(/^\s*registry:\s*['"]?([^'"\s#]+)/);
+    if (step && registry) step.registry = registry[1];
+    if (step) {
+      const cli = line.match(/\bdocker\s+login\b(.*)$/);
+      if (cli) {
+        const host = cli[1]
+          .split(/\s+/)
+          .find(
+            (arg) =>
+              arg &&
+              !arg.startsWith("-") &&
+              !arg.startsWith("$") &&
+              !arg.startsWith('"'),
+          );
+        if (!host || DOCKER_HUB_REGISTRY.test(host)) step.cliLogin = true;
+      }
+    }
+    if (job.mirror === -1 && MIRROR_USE.test(line)) job.mirror = i + 1;
+  }
+  closeStep();
+  return jobs.filter((j) => j.mirror !== -1);
+}
+
+/** Problems with the login order, and stale ANONYMOUS_BY_DESIGN entries. */
+export function mirrorLoginProblems(jobs, anonymousByDesign) {
+  const problems = [];
+  for (const job of jobs) {
+    const key = `${job.file}:${job.name}`;
+    if (anonymousByDesign.has(key)) {
+      if (job.login !== -1)
+        problems.push(
+          `${key} is listed as anonymous but logs in to Docker Hub`,
+        );
+      continue;
+    }
+    if (job.login === -1) {
+      problems.push(
+        `${key} uses docker-mirror (line ${job.mirror}) but no Docker Hub login was recognised before it — add one before the action, or list the job in ANONYMOUS_BY_DESIGN`,
+      );
+    } else if (job.login > job.mirror) {
+      problems.push(
+        `${key} logs in to Docker Hub (line ${job.login}) after docker-mirror (line ${job.mirror})`,
+      );
+    }
+  }
+  const seen = new Set(jobs.map((job) => `${job.file}:${job.name}`));
+  for (const key of anonymousByDesign) {
+    if (!seen.has(key))
+      problems.push(
+        `ANONYMOUS_BY_DESIGN lists ${key}, which no longer uses docker-mirror`,
+      );
+  }
+  return problems;
+}
+
 function dockerMirrorJobs() {
   const jobs = [];
   for (const file of readdirSync(WORKFLOWS_DIR)) {
     if (!/\.ya?ml$/.test(file)) continue;
-    const lines = readFileSync(join(WORKFLOWS_DIR, file), "utf8").split("\n");
-    const jobsStart = lines.findIndex((line) => /^jobs:\s*$/.test(line));
-    if (jobsStart === -1) continue;
-    let job = null;
-    // A Docker Hub login is recognised by what it does, not by its step name:
-    // any `docker/login-action` step whose `registry:` is absent or docker.io.
-    let step = null;
-    const closeStep = () => {
-      if (job && step && step.loginAction && job.login === -1) {
-        const registry = step.registry;
-        if (
-          registry === null ||
-          /^(docker\.io|registry-1\.docker\.io)$/i.test(registry)
-        ) {
-          job.login = step.line;
-        }
-      }
-      step = null;
-    };
-    for (let i = jobsStart + 1; i < lines.length; i++) {
-      // Jobs are the two-space-indented keys under `jobs:`.
-      const header = lines[i].match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
-      if (header) {
-        closeStep();
-        job = { file, name: header[1], mirror: -1, login: -1 };
-        jobs.push(job);
-        continue;
-      }
-      if (!job) continue;
-      const stepsKey = lines[i].match(/^(\s*)steps:\s*$/);
-      if (stepsKey) {
-        closeStep();
-        job.stepIndent = null;
-        job.stepsKeyIndent = stepsKey[1].length;
-        continue;
-      }
-      const item = lines[i].match(/^(\s*)-\s/);
-      if (item && job.stepsKeyIndent !== undefined) {
-        // The first list item under `steps:` fixes the step indent; only items
-        // at exactly that indent start a new step (not lines inside run: blocks).
-        if (job.stepIndent == null && item[1].length >= job.stepsKeyIndent) {
-          job.stepIndent = item[1].length;
-        }
-        if (item[1].length === job.stepIndent) {
-          closeStep();
-          step = { line: i + 1, loginAction: false, registry: null };
-        }
-      }
-      if (step && /uses:\s*docker\/login-action@/.test(lines[i])) {
-        step.loginAction = true;
-      }
-      const registry = lines[i].match(/^\s*registry:\s*['"]?([^'"\s#]+)/);
-      if (step && registry) step.registry = registry[1];
-      if (
-        job.mirror === -1 &&
-        /uses:\s*\.\/\.github\/actions\/docker-mirror\s*$/.test(lines[i])
-      ) {
-        job.mirror = i + 1;
-      }
-    }
-    closeStep();
+    jobs.push(
+      ...parseMirrorJobs(file, readFileSync(join(WORKFLOWS_DIR, file), "utf8")),
+    );
   }
-  return jobs.filter((job) => job.mirror !== -1);
+  return jobs;
 }
 
-test("every job that logs in to Docker Hub does so before the docker-mirror action", () => {
-  const loggingIn = dockerMirrorJobs().filter((job) => job.login !== -1);
+test("every docker-mirror job logs in to Docker Hub before the action, or is anonymous by design", () => {
+  const jobs = dockerMirrorJobs();
   assert.ok(
-    loggingIn.length > 0,
-    "expected jobs that both use docker-mirror and log in to Docker Hub — did the login step stop using docker/login-action?",
+    jobs.length > 1,
+    "expected several workflow jobs that use docker-mirror",
   );
-  const offenders = loggingIn
-    .filter((job) => job.login > job.mirror)
-    .map(
-      (job) =>
-        `${job.file}: job "${job.name}" logs in to Docker Hub (line ${job.login}) after docker-mirror (line ${job.mirror})`,
+  assert.deepEqual(mirrorLoginProblems(jobs, ANONYMOUS_BY_DESIGN), []);
+});
+
+test("the login-order guard reports misordered and unreadable shapes instead of skipping them", () => {
+  const wf = (body) => `name: x\non: workflow_dispatch\njobs:\n${body}`;
+  const cases = {
+    "comment on job header": wf(
+      "  first:\n    runs-on: x\n    steps:\n      - uses: docker/login-action@v4\n      - uses: ./.github/actions/docker-mirror\n  second: # required check\n    runs-on: x\n    steps:\n      - uses: ./.github/actions/docker-mirror\n      - uses: docker/login-action@v4\n",
+    ),
+    "comment on steps:": wf(
+      "  only:\n    runs-on: x\n    steps: # all of them\n      - uses: ./.github/actions/docker-mirror\n      - uses: docker/login-action@v4\n",
+    ),
+    "comment on the mirror step": wf(
+      "  only:\n    runs-on: x\n    steps:\n      - uses: ./.github/actions/docker-mirror # pre-pull\n      - uses: docker/login-action@v4\n",
+    ),
+    "index.docker.io registry": wf(
+      "  only:\n    runs-on: x\n    steps:\n      - uses: ./.github/actions/docker-mirror\n      - uses: docker/login-action@v4\n        with:\n          registry: index.docker.io\n",
+    ),
+    "docker login via run": wf(
+      '  only:\n    runs-on: x\n    steps:\n      - uses: ./.github/actions/docker-mirror\n      - run: echo "$T" | docker login -u me --password-stdin\n',
+    ),
+    "renamed login": wf(
+      "  only:\n    runs-on: x\n    steps:\n      - uses: ./.github/actions/docker-mirror\n      - name: Login to Docker Hub\n        uses: docker/login-action@v4\n",
+    ),
+    "no login at all": wf(
+      "  only:\n    runs-on: x\n    steps:\n      - uses: ./.github/actions/docker-mirror\n",
+    ),
+  };
+  for (const [label, text] of Object.entries(cases)) {
+    const problems = mirrorLoginProblems(
+      parseMirrorJobs("canary.yml", text),
+      new Set(),
     );
-  assert.deepEqual(offenders, []);
+    assert.ok(problems.length > 0, `guard missed: ${label}`);
+  }
+  // A GHCR-only login after the action is not a Docker Hub login, so a job
+  // with only that must still be reported (as having no Docker Hub login).
+  const ghcrOnly = wf(
+    "  only:\n    runs-on: x\n    steps:\n      - uses: docker/login-action@v4\n        with:\n          registry: ghcr.io\n      - uses: ./.github/actions/docker-mirror\n",
+  );
+  assert.equal(
+    mirrorLoginProblems(parseMirrorJobs("c.yml", ghcrOnly), new Set()).length,
+    1,
+  );
+  // The correct order passes.
+  const good = wf(
+    "  only: # fine\n    runs-on: x\n    steps:\n      - name: Log in\n        uses: docker/login-action@v4\n      - uses: ./.github/actions/docker-mirror # pre-pull\n",
+  );
+  assert.deepEqual(
+    mirrorLoginProblems(parseMirrorJobs("c.yml", good), new Set()),
+    [],
+  );
+  // A stale anonymous entry is reported.
+  assert.equal(mirrorLoginProblems([], new Set(["gone.yml:job"])).length, 1);
 });
