@@ -14,12 +14,15 @@
  * recipient, which is also what the schema ("Recipient email address") says.
  */
 
+import { hiddenCharIn } from "./hidden-chars.js";
+
 export type ParsedRecipient = { ok: true; address: string } | { ok: false; error: string };
 
-// Control characters, invisible format characters (zero-width, bidi overrides),
-// and line/paragraph separators. None belongs in an address, and bidi
-// overrides can make one address read as another.
-const FORBIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+/**
+ * Longest display name accepted. A name is there to be recognised at a glance;
+ * a long one is how a familiar name pushes the real address out of view.
+ */
+const MAX_NAME_LENGTH = 64;
 
 // Characters that separate, group or comment an address in RFC 5322 syntax. If
 // one is present the string is not one plain address.
@@ -53,10 +56,26 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
   if (text.length === 0 || text.length > 420) {
     return { ok: false, error: `Invalid recipient: ${ONLY_ONE}` };
   }
-  if (FORBIDDEN.test(text)) {
+  // Controls, zero-width and bidi characters, and everything that renders as
+  // blank space without being a plain space — the braille blank U+2800, Hangul
+  // fillers, no-break and ideographic spaces. A run of them reads as empty
+  // space and pushed the real address out of view on the confirmation card
+  // (second review of #1242); bidi overrides make one address read as another.
+  const hidden = hiddenCharIn(text);
+  if (hidden) {
     return {
       ok: false,
-      error: `Invalid recipient: it contains a control or invisible character. ${ONLY_ONE}`,
+      error:
+        `Invalid recipient: it contains an invisible or blank-rendering character (${hidden}), ` +
+        `which would hide part of the address from the person confirming it. ${ONLY_ONE}`,
+    };
+  }
+  if (/ {2}/.test(text)) {
+    return {
+      ok: false,
+      error:
+        "Invalid recipient: it contains a run of spaces, which would push part of the " +
+        `address out of view. Use single spaces in a display name. ${ONLY_ONE}`,
     };
   }
   if (structure(text.normalize("NFKC")) !== structure(text)) {
@@ -71,8 +90,31 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
 
   const named = NAMED_ADDRESS.exec(text);
   if (named) {
-    const name = named[1].replace(/\s+/g, " ").trim();
+    const name = named[1].trim();
+    if ([...name].length > MAX_NAME_LENGTH) {
+      return {
+        ok: false,
+        error:
+          `Invalid recipient: the display name is longer than ${MAX_NAME_LENGTH} characters. ` +
+          `Shorten it, or send to the bare address. ${ONLY_ONE}`,
+      };
+    }
     return { ok: true, address: name ? `${name} <${named[2]}>` : named[2] };
   }
   return { ok: false, error: `Invalid recipient: it is not a single plain address. ${ONLY_ONE}` };
+}
+
+/**
+ * Splits a recipient `parseSingleRecipient` accepted into its display name and
+ * address. The adapters hand the two to their mail API separately (Graph's
+ * `emailAddress.{name,address}`, nodemailer's `{ name, address }`, an RFC 2047
+ * encoded-word for Gmail's raw header) rather than passing `Name <address>` on
+ * as one string for each library to re-parse its own way.
+ */
+export function splitMailbox(recipient: string): { name?: string; address: string } {
+  const named = /^([^<>]*)<([^<>]+)>$/.exec(recipient.trim());
+  if (!named) return { address: recipient.trim() };
+  const name = named[1].trim();
+  const address = named[2].trim();
+  return name ? { name, address } : { address };
 }

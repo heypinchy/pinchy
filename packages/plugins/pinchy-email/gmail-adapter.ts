@@ -15,6 +15,7 @@ import type {
   EmailSummary,
   EmailFull,
 } from "./email-adapter.js";
+import { splitMailbox } from "./recipient.js";
 
 export type { EmailSummary, EmailFull };
 
@@ -361,9 +362,46 @@ function sanitizeHeader(value: string): string {
   return value.replace(/[\r\n\0]/g, "");
 }
 
+/** Longest RFC 2047 encoded-word payload in bytes: 75 characters minus the
+ * 12 of `=?UTF-8?B?…?=` leave 63 base64 characters, i.e. 45 bytes. */
+const ENCODED_WORD_BYTES = 45;
+
+/**
+ * A non-ASCII display name as RFC 2047 encoded-words. Split on code-point
+ * boundaries, so no word ends inside a UTF-8 sequence, and joined by a space,
+ * which a decoder drops between adjacent encoded-words.
+ */
+function encodeDisplayName(name: string): string {
+  const words: string[] = [];
+  let chunk = "";
+  for (const char of name) {
+    if (Buffer.byteLength(chunk + char, "utf8") > ENCODED_WORD_BYTES) {
+      words.push(chunk);
+      chunk = "";
+    }
+    chunk += char;
+  }
+  if (chunk) words.push(chunk);
+  return words
+    .map((word) => `=?UTF-8?B?${Buffer.from(word, "utf8").toString("base64")}?=`)
+    .join(" ");
+}
+
+/**
+ * The `To:` header value. A raw header is parsed by Gmail as an address LIST,
+ * so the display name is never left for it to read as syntax: an ASCII name
+ * is quoted, a non-ASCII one is encoded (RFC 2047).
+ */
+function formatRecipientHeader(to: string): string {
+  const { name, address } = splitMailbox(sanitizeHeader(to));
+  if (!name) return address;
+  if (/^[\x20-\x7E]*$/.test(name)) return `"${name.replace(/[\\"]/g, "\\$&")}" <${address}>`;
+  return `${encodeDisplayName(name)} <${address}>`;
+}
+
 function buildRawMessage(opts: ComposeOptions): string {
   const lines: string[] = [
-    `To: ${sanitizeHeader(opts.to)}`,
+    `To: ${formatRecipientHeader(opts.to)}`,
     `Subject: ${sanitizeHeader(opts.subject)}`,
     `Content-Type: text/plain; charset="UTF-8"`,
   ];

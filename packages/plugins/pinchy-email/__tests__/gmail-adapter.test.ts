@@ -1070,6 +1070,42 @@ describe("GmailAdapter", () => {
     });
   });
 
+  // SKILL.md tells the model to write `Name <address>`. A raw `To:` header
+  // must carry a non-ASCII display name as an RFC 2047 encoded-word, and an
+  // ASCII one quoted, so no character of the name is read as address syntax.
+  describe("named recipients", () => {
+    function rawOf(mockFn: ReturnType<typeof vi.fn>): string {
+      const call = mockFn.mock.calls[0][0];
+      const raw = call.requestBody.raw ?? call.requestBody.message.raw;
+      return Buffer.from(raw, "base64url").toString("utf-8");
+    }
+
+    it("quotes an ASCII display name", async () => {
+      mockSend.mockResolvedValue({ data: { id: "s1" } });
+      await adapter.send({ to: "Dr. Ada Lovelace <ada@example.com>", subject: "S", body: "B" });
+      expect(rawOf(mockSend)).toContain('To: "Dr. Ada Lovelace" <ada@example.com>\r\n');
+    });
+
+    it("encodes a non-ASCII display name per RFC 2047", async () => {
+      mockDraftsCreate.mockResolvedValue({ data: { id: "d1" } });
+      await adapter.draft({
+        to: "Jos\u00E9 M\u00FCller <jose@example.com>",
+        subject: "S",
+        body: "B",
+      });
+      const encoded = Buffer.from("Jos\u00E9 M\u00FCller", "utf8").toString("base64");
+      expect(rawOf(mockDraftsCreate)).toContain(
+        `To: =?UTF-8?B?${encoded}?= <jose@example.com>\r\n`
+      );
+    });
+
+    it("keeps a bare address bare", async () => {
+      mockSend.mockResolvedValue({ data: { id: "s1" } });
+      await adapter.send({ to: "ada@example.com", subject: "S", body: "B" });
+      expect(rawOf(mockSend)).toContain("To: ada@example.com\r\n");
+    });
+  });
+
   describe("MIME header injection prevention", () => {
     beforeEach(() => {
       mockDraftsCreate.mockResolvedValue({ data: { id: "draft-safe" } });

@@ -1204,6 +1204,46 @@ const SERVER_MAILBOXES_WITH_DRAFTS = [
   { path: "Drafts", specialUse: "\\Drafts", flags: new Set(["\\Drafts"]) },
 ];
 
+// SKILL.md tells the model to write `Name <address>`. nodemailer is handed
+// the name and the address as an object, so it encodes the name (RFC 2047)
+// instead of re-parsing a string that is not ours to re-parse.
+describe("ImapAdapter named recipients", () => {
+  it("passes Name <address> to nodemailer as { name, address } on send", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({
+      to: "Jos\u00E9 M\u00FCller <jose@example.com>",
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: { name: "Jos\u00E9 M\u00FCller", address: "jose@example.com" },
+      })
+    );
+  });
+
+  it("passes a bare address through unchanged", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "bob@example.com" })
+    );
+  });
+
+  it("writes an RFC 2047 encoded display name into a draft's To header", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const adapter = new ImapAdapter(opts);
+    await adapter.draft({
+      to: "Jos\u00E9 M\u00FCller <jose@example.com>",
+      subject: "S",
+      body: "B",
+    });
+    const raw = mockClient.append.mock.calls[0][1];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    expect(rawStr).toMatch(/^To: =\?UTF-8\?[BQ]\?[^\r\n]+\?= <jose@example\.com>\r$/m);
+  });
+});
+
 describe("ImapAdapter#draft", () => {
   it("appends a raw RFC822 message to the resolved DRAFTS path with the \\Draft flag", async () => {
     mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);

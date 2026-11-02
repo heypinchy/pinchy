@@ -1139,6 +1139,39 @@ describe("GraphAdapter.send", () => {
   });
 });
 
+// SKILL.md tells the model to write `Name <address>`, and email_send accepts
+// it. Graph takes the name and the address as two fields; putting the whole
+// string into `address` makes Graph reject (or mangle) the recipient.
+describe("GraphAdapter named recipients", () => {
+  beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  const sentRecipients = (callIndex: number) =>
+    JSON.parse(((fetch as Mock).mock.calls[callIndex][1] as RequestInit).body as string);
+
+  it("splits Name <address> into Graph's name and address fields on send", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await adapter.send({ to: "Jos\u00E9 M\u00FCller <jose@example.com>", subject: "S", body: "B" });
+    expect(sentRecipients(0).message.toRecipients).toEqual([
+      { emailAddress: { name: "Jos\u00E9 M\u00FCller", address: "jose@example.com" } },
+    ]);
+  });
+
+  it("does the same for a new draft and a reply draft", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "d1" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "r1" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await adapter.draft({ to: "Ada <ada@example.com>", subject: "S", body: "B" });
+    await adapter.draft({ to: "Ada <ada@example.com>", subject: "S", body: "B", replyTo: "m1" });
+    const expected = [{ emailAddress: { name: "Ada", address: "ada@example.com" } }];
+    expect(sentRecipients(0).toRecipients).toEqual(expected);
+    expect(sentRecipients(2).toRecipients).toEqual(expected);
+  });
+});
+
 describe("GraphAdapter request bounds", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());

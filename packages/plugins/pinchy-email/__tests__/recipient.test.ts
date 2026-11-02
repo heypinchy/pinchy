@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
-import { parseSingleRecipient } from "../recipient";
+import { parseSingleRecipient, splitMailbox } from "../recipient";
 
 /**
  * `email_send` / `email_draft` take ONE recipient. The mail libraries behind
@@ -68,9 +68,55 @@ describe("parseSingleRecipient", () => {
     });
   });
 
+  // Second review of #1242: a familiar name padded with characters that render
+  // blank (braille U+2800, Hangul fillers) pushed the real address out of view.
+  it.each([
+    ["braille pattern blanks", `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`],
+    ["a hangul filler", "Raimund\u3164Korber <attacker@evil.com>"],
+    ["a hangul choseong filler", "Raimund\u115FKorber <attacker@evil.com>"],
+    ["a hangul jungseong filler", "Raimund\u1160Korber <attacker@evil.com>"],
+    ["a halfwidth hangul filler", "Raimund\uFFA0Korber <attacker@evil.com>"],
+    ["a no-break space", "Raimund\u00A0Korber <attacker@evil.com>"],
+    ["an ideographic space", "Raimund\u3000Korber <attacker@evil.com>"],
+    ["a zero-width joiner", "Raimund\u200DKorber <attacker@evil.com>"],
+  ])("rejects a display name with %s, and says why", (_label, input) => {
+    const result = parseSingleRecipient(input);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/invisible|blank/i);
+  });
+
+  it("rejects a run of spaces, and says why", () => {
+    for (const input of ["Raimund   Korber <a@x.at>", "Raimund Korber      <a@x.at>"]) {
+      const result = parseSingleRecipient(input);
+      expect(result.ok, input).toBe(false);
+      if (!result.ok) expect(result.error).toMatch(/run of spaces/i);
+    }
+  });
+
+  it("caps the display name at 64 characters, and says so", () => {
+    expect(parseSingleRecipient(`${"a".repeat(64)} <a@x.at>`).ok).toBe(true);
+    const result = parseSingleRecipient(`${"a".repeat(65)} <a@x.at>`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/64 characters/);
+  });
+
   it("tells the model to call once per recipient when it sent a list", () => {
     const result = parseSingleRecipient("a@x.at, b@y.at");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/one recipient per call/i);
+  });
+});
+
+describe("splitMailbox", () => {
+  it("splits a named address into its name and address", () => {
+    expect(splitMailbox("Ada Lovelace <ada@example.com>")).toEqual({
+      name: "Ada Lovelace",
+      address: "ada@example.com",
+    });
+  });
+
+  it("returns a bare address without a name", () => {
+    expect(splitMailbox("ada@example.com")).toEqual({ address: "ada@example.com" });
+    expect(splitMailbox("<ada@example.com>")).toEqual({ address: "ada@example.com" });
   });
 });
