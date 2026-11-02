@@ -265,6 +265,36 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     expect(mockUpdateSet).not.toHaveBeenCalled();
   });
 
+  it("audits a failed probe of new credentials, without the upstream reason or any secret", async () => {
+    mockProbeIntegrationCredentials.mockResolvedValue({
+      success: false,
+      reason: "Access denied for admin@odoo.example.com",
+    });
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    await PATCH(
+      makeRequest("/api/integrations/conn-1", {
+        method: "PATCH",
+        body: JSON.stringify({ credentials: { apiKey: "rotated-key" } }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-1" }) }
+    );
+
+    expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = mockAppendAuditLog.mock.calls[0]![0];
+    expect(entry).toMatchObject({
+      eventType: "integration.credentials_updated",
+      outcome: "failure",
+      detail: { id: "conn-1", name: "Test Odoo", reason: "probe_failed", fields: ["apiKey"] },
+    });
+    // The destination did not move, so there is no diff to record.
+    expect(entry.detail).not.toHaveProperty("destinationChange");
+    // The upstream reason is the provider's text (it can name the login); the
+    // response carries it, the immutable row does not.
+    expect(JSON.stringify(entry)).not.toContain("admin@odoo.example.com");
+    expect(JSON.stringify(entry)).not.toContain("rotated-key");
+  });
+
   it("PATCH on google connection rejects credentials field", async () => {
     const googleConnection = {
       ...mockOdooConnection,
@@ -527,6 +557,51 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
         url: { from: "https://odoo.example.com", to: "https://odoo2.example.com" },
       });
       expect(JSON.stringify(entry)).not.toContain("fresh-key");
+    });
+
+    // A fresh key sent to a new destination that then rejected it: the secret
+    // DID leave the building, so the attempt belongs in the trail as much as
+    // the refusal above does.
+    it("audits a probe that failed against a new destination, naming where the key went", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({
+        success: false,
+        reason: "Authentication failed. Please verify your login and API key.",
+      });
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-1", {
+          method: "PATCH",
+          body: JSON.stringify({
+            credentials: { url: "https://odoo2.example.com", apiKey: "fresh-key" },
+          }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+
+      expect(response.status).toBe(400);
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+      expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+      const entry = mockAppendAuditLog.mock.calls[0]![0];
+      expect(entry).toMatchObject({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "integration.credentials_updated",
+        resource: "integration:conn-1",
+        outcome: "failure",
+        error: { message: "The new credentials could not be verified." },
+        detail: {
+          id: "conn-1",
+          name: "Test Odoo",
+          reason: "probe_failed",
+          fields: ["url", "apiKey"],
+          destinationChange: {
+            url: { from: "https://odoo.example.com", to: "https://odoo2.example.com" },
+          },
+        },
+      });
+      expect(JSON.stringify(entry)).not.toContain("fresh-key");
+      expect(JSON.stringify(entry)).not.toContain("secret-key");
     });
   });
 
@@ -851,5 +926,49 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     expect(body.error).toMatch(/concurrent/i);
     // Probe still ran before the write
     expect(mockProbeIntegrationCredentials).toHaveBeenCalled();
+  });
+
+  it("audits a credential update that lost the compare-and-swap as a failure", async () => {
+    mockUpdateSet.mockReturnValueOnce({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([]),
+      }),
+    });
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await PATCH(
+      makeRequest("/api/integrations/conn-1", {
+        method: "PATCH",
+        body: JSON.stringify({
+          credentials: { url: "https://odoo2.example.com", apiKey: "fresh-key" },
+        }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-1" }) }
+    );
+
+    expect(response.status).toBe(409);
+    // Nothing was written: no success row, and the auth error stays as it was.
+    expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = mockAppendAuditLog.mock.calls[0]![0];
+    expect(entry).toMatchObject({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "integration.credentials_updated",
+      resource: "integration:conn-1",
+      outcome: "failure",
+      error: { message: "Credentials were updated concurrently, please try again" },
+      detail: {
+        id: "conn-1",
+        name: "Test Odoo",
+        reason: "credentials_changed_during_save",
+        fields: ["url", "apiKey"],
+        destinationChange: {
+          url: { from: "https://odoo.example.com", to: "https://odoo2.example.com" },
+        },
+      },
+    });
+    expect(JSON.stringify(entry)).not.toContain("fresh-key");
+    expect(JSON.stringify(entry)).not.toContain("secret-key");
   });
 });

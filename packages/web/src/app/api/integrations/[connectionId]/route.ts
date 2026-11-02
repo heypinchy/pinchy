@@ -50,6 +50,12 @@ const credentialSchemas: Record<string, z.ZodType> = {
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
+/** Audit `error.message` for a credential edit whose probe failed. Fixed text:
+ * the probe's own reason is the upstream service's wording, which can name the
+ * login — the response carries it, the immutable audit row does not. */
+const PROBE_FAILED_MESSAGE = "The new credentials could not be verified.";
+const CREDENTIALS_CHANGED_MESSAGE = "Credentials were updated concurrently, please try again";
+
 export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
   const { connectionId } = await params;
   const [connection] = await db
@@ -165,6 +171,29 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     );
   }
 
+  // A credential edit that got past the destination check but changed nothing.
+  // Same shape as the refusal above and the success row below — the stored
+  // name, the submitted field names (never values), and where the secret was
+  // headed when the update moved it — so one filter finds every attempt.
+  const appendCredentialFailure = (message: string, reason: string) =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "integration.credentials_updated",
+      resource: `integration:${connectionId}`,
+      detail: {
+        id: connectionId,
+        name: scrubEmails(existing.name),
+        reason,
+        fields: Object.keys(parsedCredentials ?? {}),
+        ...(destinationChange
+          ? { destinationChange: scrubDestinationChanges(destinationChange.changes) }
+          : {}),
+      },
+      outcome: "failure",
+      error: { message },
+    });
+
   const updateData: Record<string, unknown> = { updatedAt: new Date() };
   const changes: Record<string, { from: unknown; to: unknown }> = {};
 
@@ -193,6 +222,10 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     // Probe before persisting.
     const probe = await probeIntegrationCredentials(existing.type, merged);
     if (!probe.success) {
+      // The submitted secret was sent and refused. Nothing changed, but a
+      // failed credential edit — above all one aimed at a new destination — is
+      // exactly what a CISO filters the trail for.
+      await appendCredentialFailure(PROBE_FAILED_MESSAGE, "probe_failed");
       return NextResponse.json({ error: probe.reason }, { status: 400 });
     }
 
@@ -223,15 +256,13 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     .returning();
 
   if (!updated) {
-    return NextResponse.json(
-      {
-        error:
-          parsedCredentials !== undefined
-            ? "Credentials were updated concurrently, please try again"
-            : "Connection not found",
-      },
-      { status: parsedCredentials !== undefined ? 409 : 404 }
-    );
+    if (parsedCredentials !== undefined) {
+      // Lost the compare-and-swap: another save changed the stored credentials
+      // after this request read them. Nothing was written.
+      await appendCredentialFailure(CREDENTIALS_CHANGED_MESSAGE, "credentials_changed_during_save");
+      return NextResponse.json({ error: CREDENTIALS_CHANGED_MESSAGE }, { status: 409 });
+    }
+    return NextResponse.json({ error: "Connection not found" }, { status: 404 });
   }
 
   if (Object.keys(changes).length > 0) {
