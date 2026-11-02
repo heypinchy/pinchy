@@ -237,21 +237,25 @@ docker compose pull && docker compose up -d && docker image prune -f
 
 #### Security: open self-registration is closed — review your user list
 
-Earlier releases, v0.9.1 included, left the authentication library's sign-up endpoint reachable. Anyone who could reach your Pinchy URL could create their own account with the `member` role, bypassing invites and your seat cap. That account saw what any member sees: every shared agent set to **All users** — and, on an install without an Enterprise licence, every shared agent, since **Restricted** only takes effect with one. It got no personal agent and no groups. This release closes it: `POST /api/auth/sign-up/*` now answers `404` to every client. Accounts are created only by the setup wizard and by claiming an invite.
+Earlier releases, v0.9.1 included, left the authentication library's sign-up endpoint reachable. Anyone who could reach your Pinchy URL could create their own account with the `member` role, bypassing invites and your seat cap. That account could do what any member can: open and **chat with** every shared agent set to **All users**, and have it run its tools with your organisation's credentials — Odoo reads and writes, sending email, web search, whatever that agent was granted. On an install with no licence key, that was every shared agent, because **Restricted** only takes effect with one; an expired or refused key keeps **Restricted** enforced. The account got no personal agent and no groups. This release closes it: `POST /api/auth/sign-up/*` now answers `404` to every client. Accounts are created only by the setup wizard and by claiming an invite.
 
 The same release goes further and turns the library's endpoints into an allowlist. A client — admin or not — now reaches exactly three of them: sign-in, sign-out and the session lookup. Everything else answers `404`, including the user-administration and profile endpoints (`/api/auth/admin/*`, `/update-user`, `/change-password`, `/change-email`, `/delete-user`), which bypassed Pinchy's audit trail and, for admins, the rule that personal agents stay private, and `/verify-password`, which let anyone holding a stolen session test password guesses outside the sign-in limit. Everything the Pinchy UI does is unchanged — it never used them.
 
-What to do: check for accounts you didn't create. Every legitimate account is either the admin who ran the setup wizard or someone who claimed an invite, so an account that is neither came in through the open endpoint. In **Settings → Users**, look for names you don't recognise. To check precisely, list the users that no claimed invite points to:
+Closing the endpoint doesn't touch accounts that already used it: they keep signing in. So this release looks for them. Every legitimate account is either the admin who ran the setup wizard or someone who claimed an invite; an account that is neither most likely signed itself up. On its first start, Pinchy writes one `user.unknown_origin_detected` row per such account to the [audit trail](/concepts/audit-trail/), and **Settings → Users** lists the ones still active in a banner at the top. **Review** opens the account; if you don't recognise it, **Deactivate** it. Deactivating bans the account, ends all its sessions at once and removes its personal agents (`DELETE /api/users/:id`). Pinchy has no hard delete — a deactivated account stays on record and can be reactivated.
+
+The check treats the earliest-created admin as the setup admin. If you demoted the admin who ran setup, they appear in the banner too; that one you can leave. To run the same check yourself, list the users that no claimed invite points to:
 
 ```bash
 docker compose exec -T db psql -U pinchy pinchy -c "
-  SELECT u.email, u.role, u.created_at FROM \"user\" u
+  SELECT u.id, u.email, u.role, u.banned, u.created_at FROM \"user\" u
   WHERE NOT EXISTS (SELECT 1 FROM invites i
                     WHERE i.claimed_by_user_id = u.id AND i.type = 'invite')
   ORDER BY u.created_at;"
 ```
 
-The first row is normally your setup admin; anything after it deserves a look. Remove the accounts you don't recognise. Don't expect the audit trail to show the sign-up itself: registering wrote no audit row, and neither did the session it opened — only later sign-ins of such an account appear, as `auth.login`. What the account did is recorded like any member's activity, so check the [audit trail](/concepts/audit-trail/) for what it touched. If your instance was reachable from the internet, treat unknown members as a possible exposure of shared-agent content.
+Apart from your setup admin, every row deserves a look; `banned = t` means it is already deactivated.
+
+Then find out what each account did. Its sign-up left no trace — registering wrote no audit row, and neither did the session it opened — but everything after it is recorded like any member's activity, with the account as the actor: its later sign-ins as `auth.login`, and every tool call an agent made in its chats as `tool.<name>` (`tool.odoo_write`, `tool.email_send`, …). The audit trail filters by account through the API — the user id is in the SQL output above, and in the `resource` of each `user.unknown_origin_detected` row: `GET /api/audit?actorId=<user id>`, or `GET /api/audit/export?actorId=<user id>` for a CSV of everything. If your instance was reachable from the internet, treat what those agents could read and do as possibly exposed.
 
 The API-key list in **Settings → API Keys** also now flags keys created by an admin who has since been demoted, not just one who was banned or deleted — consider rotating those.
 
