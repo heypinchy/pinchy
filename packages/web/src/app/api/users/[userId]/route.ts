@@ -12,7 +12,7 @@ import { updateUserSchema } from "@/lib/schemas/users";
 import { getUserSocketRegistry } from "@/server/user-sockets";
 import { getActiveRunsSingleton } from "@/server/active-runs-singleton";
 import { getOpenClawClient } from "@/server/openclaw-client";
-import { abortRunsOfUser } from "@/server/abort-runs";
+import { abortRunsOfUser, followUpDepsFor } from "@/server/abort-runs";
 import { deferAuditLog } from "@/lib/audit-deferred";
 
 export async function PATCH(
@@ -155,10 +155,14 @@ export async function DELETE(
   // until it ends on its own. Stop every chat run of theirs the way the stop
   // button does. Awaited, so the admin's "done" means the aborts went out.
   // A gateway that can't be reached shows up as a `failure` row, not as a
-  // failed deactivation: the account is deactivated either way.
+  // failed deactivation: the account is deactivated either way. An abort that
+  // stopped nothing is followed up after the response, as this admin
+  // (`abort-runs.ts`): a run OpenClaw had not accepted yet can still start.
   const abortedRuns = await abortRunsOfUser(userId, {
     activeRuns: getActiveRunsSingleton(),
     chatAbort: (sessionKey, runId) => getOpenClawClient().chatAbort(sessionKey, runId),
+    requestedBy: session.user.id!,
+    followUp: followUpDepsFor(() => getOpenClawClient()),
   });
   for (const aborted of abortedRuns) {
     deferAuditLog({

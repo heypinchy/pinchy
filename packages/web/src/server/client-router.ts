@@ -60,7 +60,7 @@ import { attachmentIdsSchema } from "@/lib/schemas/uploads";
 import { chatIdSchema } from "@/lib/schemas/sessions";
 import { StreamPipe, GENERIC_RUN_FAILURE_MESSAGE } from "@/server/stream-pipe";
 import { getUserSocketRegistry, refuseDeactivatedSocket } from "@/server/user-sockets";
-import { abortSessionRun } from "@/server/abort-runs";
+import { abortSessionRun, followUpDepsFor } from "@/server/abort-runs";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -226,6 +226,10 @@ export class ClientRouter {
    * silent no-op) but is deliberately not audited — there is no run to
    * attribute it to, and an unbounded "aborted nothing" write is just noise a
    * buggy or hostile client could spam.
+   *
+   * An abort that stopped nothing is followed up by runId after this returns
+   * (`abort-runs.ts`), and a follow-up that takes effect writes its own row as
+   * this user.
    */
   private async handleAbort(
     agent: { id: string; name: string },
@@ -235,7 +239,11 @@ export class ClientRouter {
     const { run, runId, outcome } = await abortSessionRun(
       this.activeRuns,
       (key, id) => this.openclawClient.chatAbort(key, id),
-      sessionKey
+      sessionKey,
+      {
+        request: { actorId: this.userId, reason: "user_request" },
+        followUp: followUpDepsFor(() => this.openclawClient),
+      }
     );
 
     if (!run) return;

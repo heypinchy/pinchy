@@ -1,4 +1,5 @@
 import type { WebSocket } from "ws";
+import type { AbortRequest } from "@/server/abort-runs";
 
 /**
  * A server-side record of an in-flight chat run.
@@ -113,6 +114,17 @@ export interface ActiveRun {
   abortConfirmed?: boolean;
   /** Settles once every abort sent for this run so far has been answered. */
   abortSettled?: Promise<void>;
+  /**
+   * Who stopped this run and why — the actor and reason of the follow-up
+   * `chat.run_aborted` rows, which are written long after the request that
+   * stopped it has returned. Set by the first stop.
+   */
+  abortRequest?: AbortRequest;
+  /**
+   * The follow-up of an abort that stopped nothing (`abort-runs.ts`
+   * `pursueAbort`): at most one per run, detached from the stream.
+   */
+  abortFollowUp?: Promise<void>;
   listeners: Set<WebSocket>;
 }
 

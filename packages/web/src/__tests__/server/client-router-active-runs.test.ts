@@ -98,10 +98,16 @@ vi.mock("@/server/model-unavailable-throttle", () => ({
   shouldEmitSilentStreamAudit: vi.fn().mockReturnValue(false),
 }));
 
-import { ActiveRuns } from "@/server/active-runs";
-import { abortRunsOfUser } from "@/server/abort-runs";
+import type { OpenClawClient } from "openclaw-node";
+import { ActiveRuns, type ActiveRun } from "@/server/active-runs";
+import { abortRunsOfUser, followUpDepsFor } from "@/server/abort-runs";
 import { ClientRouter } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
+import {
+  startFakeGateway,
+  type FakeGateway,
+  type FakeRun,
+} from "@/test-helpers/fake-openclaw-gateway";
 
 // ── Fakes ────────────────────────────────────────────────────────────────
 
@@ -561,6 +567,25 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
       expect(activeRuns.get(sessionKey)).toBeUndefined();
     });
 
+    it("leaves the registry as soon as its stream ends, while the abort is still unanswered", async () => {
+      // A reopened tab asks the registry whether a run is still going. Holding
+      // the entry (and its heartbeat) until OpenClaw answers the abort — up to
+      // the RPC timeout — would show it a spinner for a run that is over.
+      mockChatAbort.mockReturnValueOnce(new Promise(() => {}));
+      const { router, ws, handling, releaseDone } = await startGatedRun();
+
+      void router.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never);
+      await vi.waitFor(() => expect(mockChatAbort).toHaveBeenCalledTimes(1));
+      releaseDone();
+      const ended = await Promise.race([
+        handling.then(() => "ended"),
+        new Promise((r) => setTimeout(() => r("still waiting"), 2_000)),
+      ]);
+
+      expect(ended).toBe("ended");
+      expect(activeRuns.get(sessionKey)).toBeUndefined();
+    });
+
     it("is not recorded as completed when the user stopped it and closed the tab", async () => {
       const { router, ws, handling, releaseDone, closeTab } = await startGatedRun();
 
@@ -582,11 +607,10 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
       mockChatAbort.mockReset().mockResolvedValue(undefined);
     });
 
-    // `chat.run_completed_after_disconnect` is skipped for a stopped run only
-    // because a stopped run did not complete. When the abort itself failed —
-    // the RPC threw, or OpenClaw answered that it stopped nothing — and the
-    // reply then finished, it DID complete, for nobody, and the trail has to
-    // say so next to the `chat.run_aborted` failure row.
+    // The `done` that ends a stopped run's stream is Pinchy's own: the
+    // client ends the local stream the moment it sends `chat.abort`. Whether
+    // the reply then completed anyway is the follow-up's question (see "on a
+    // real openclaw-node client" below), never the stream's.
     const sessionKey = "agent:agent-1:direct:user-1";
 
     async function startGatedRun() {
@@ -629,51 +653,10 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
       );
     }
 
-    const failures: Array<[string, () => void]> = [
-      ["the abort RPC threw", () => mockChatAbort.mockRejectedValueOnce(new Error("gateway down"))],
-      [
-        "OpenClaw answered aborted: false",
-        () => mockChatAbort.mockResolvedValueOnce({ ok: true, aborted: false, runIds: [] }),
-      ],
-    ];
-
-    it.each(failures)(
-      "is recorded as completed after deactivation when %s and the reply finished",
-      async (_label, failAbort) => {
-        failAbort();
-        const { handling, releaseDone, closeTab } = await startGatedRun();
-
-        closeTab();
-        const aborted = await abortRunsOfUser("user-1", { activeRuns, chatAbort: mockChatAbort });
-        expect(aborted.map((a) => a.outcome)).toEqual(["failure"]);
-        releaseDone();
-        await handling;
-
-        const rows = completedAfterDisconnectRows();
-        expect(rows).toHaveLength(1);
-        expect((rows[0][0] as { detail: { runId: string } }).detail.runId).toBe("run-unstopped");
-      }
-    );
-
-    it.each(failures)(
-      "is recorded as completed after a stop click when %s and the reply finished",
-      async (_label, failAbort) => {
-        failAbort();
-        const { router, ws, handling, releaseDone, closeTab } = await startGatedRun();
-
-        await router.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never);
-        closeTab();
-        releaseDone();
-        await handling;
-
-        expect(completedAfterDisconnectRows()).toHaveLength(1);
-      }
-    );
-
     it("is not recorded as completed when the abort succeeded, even if OpenClaw answered after the stream ended", async () => {
       // OpenClaw ends the aborted run's stream and answers the abort RPC
-      // independently; the `done` can win. The pipe must wait for the verdict
-      // rather than read "not confirmed yet" as "failed".
+      // independently; the `done` can win. "Not confirmed yet" is not
+      // "failed" — and a stopped run's `done` is no completion either way.
       let answerAbort!: (res: unknown) => void;
       mockChatAbort.mockReturnValueOnce(new Promise((r) => (answerAbort = r)));
       const { handling, releaseDone, closeTab } = await startGatedRun();
@@ -713,7 +696,15 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
         "the stop button",
         (router, ws) => router.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never),
       ],
-      ["deactivation", () => abortRunsOfUser("user-1", { activeRuns, chatAbort: mockChatAbort })],
+      [
+        "deactivation",
+        () =>
+          abortRunsOfUser("user-1", {
+            activeRuns,
+            chatAbort: mockChatAbort,
+            requestedBy: "admin-1",
+          }),
+      ],
     ];
 
     it.each(stoppers)(
@@ -764,81 +755,263 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
         expect(activeRuns.get(sessionKey)).toBeUndefined();
       }
     );
+  });
 
-    async function startPendingRun() {
-      let releaseStart!: () => void;
-      const startGate = new Promise<void>((r) => (releaseStart = r));
-      let releaseDone!: () => void;
-      const doneGate = new Promise<void>((r) => (releaseDone = r));
-      mockChat.mockReturnValueOnce(
-        (async function* (): AsyncGenerator<ChatChunk> {
-          await startGate; // OpenClaw has not started the run yet
-          yield { type: "text", text: "Booking", runId: "run-late" };
-          await doneGate;
-          yield { type: "done", text: "", runId: "run-late" };
-        })()
-      );
-      const router = new ClientRouter(
-        buildClient() as never,
-        "user-1",
-        "member",
-        sessionCache,
-        activeRuns
-      );
+  describe("on a real openclaw-node client", () => {
+    // Driven through the real client against a fake gateway
+    // (`test-helpers/fake-openclaw-gateway.ts`), because the client's own
+    // behaviour is what these depend on: `chatAbort` ends the local stream at
+    // once, and that stream then yields a plain `done` carrying the run's id —
+    // before OpenClaw answered, whether or not OpenClaw stopped anything. For a
+    // run OpenClaw has not accepted yet, that `done` is the first chunk Pinchy
+    // sees, and both early aborts (by session, then by that runId) find
+    // nothing. OpenClaw then accepts the run and executes it, tools included.
+    const sessionKey = "agent:agent-1:direct:user-1";
+    let gw: FakeGateway;
+    let client: OpenClawClient;
+    // Every run a test started, so each one's follow-up can be awaited before
+    // the gateway goes away.
+    let started: ActiveRun[];
+
+    beforeEach(async () => {
+      gw = await startFakeGateway();
+      client = await gw.connectClient();
+      started = [];
+      const register = activeRuns.registerPending.bind(activeRuns);
+      vi.spyOn(activeRuns, "registerPending").mockImplementation((input) => {
+        const run = register(input);
+        started.push(run);
+        return run;
+      });
+    });
+
+    afterEach(async () => {
+      // Let a follow-up still waiting for acceptance end: accept, so its next
+      // abort is confirmed.
+      for (const r of gw.runs.values()) if (r.state === "received") gw.accept(r.runId);
+      for (const run of started) await run.abortFollowUp;
+      await gw.close();
+    });
+
+    function router() {
+      return new ClientRouter(client as never, "user-1", "member", sessionCache, activeRuns);
+    }
+
+    async function send(r: ClientRouter, index: number) {
       const ws = createMockWs();
-      const handling = router.handleMessage(ws, {
+      const handling = r.handleMessage(ws, {
         type: "message",
-        content: "Book this month's invoices",
+        content: index === 0 ? "Book this month's invoices" : "Actually, just list them",
         agentId: "agent-1",
       });
-      await vi.waitFor(() => expect(activeRuns.get(sessionKey)?.firstChunkAt).toBeNull());
-      return { router, ws, handling, releaseStart, releaseDone };
+      await vi.waitFor(() => expect(gw.runAt(index)).toBeDefined());
+      return { ws, handling, gwRun: gw.runAt(index)!, run: started.at(index)! };
+    }
+
+    const stoppers: Array<[string, (r: ClientRouter, ws: MockWs) => Promise<unknown>]> = [
+      [
+        "the stop button",
+        (r, ws) => r.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never),
+      ],
+      [
+        "deactivation",
+        () =>
+          abortRunsOfUser("user-1", {
+            activeRuns,
+            chatAbort: (key, id) => client.chatAbort(key, id),
+            requestedBy: "admin-1",
+            followUp: followUpDepsFor(() => client),
+          }),
+      ],
+    ];
+
+    function auditRows(eventType: string) {
+      return mockAppendAuditLog.mock.calls
+        .map(
+          (c) =>
+            c[0] as {
+              eventType: string;
+              actorId: string;
+              detail: Record<string, unknown>;
+              outcome: string;
+            }
+        )
+        .filter((row) => row.eventType === eventType);
     }
 
     it.each(stoppers)(
       "is aborted again by its real runId when its first chunk arrives after %s",
       async (_label, stop) => {
-        mockChatAbort
-          .mockResolvedValueOnce({ ok: true, aborted: false, runIds: [] })
-          .mockResolvedValueOnce({ ok: true, aborted: true, runIds: ["run-late"] });
-        const { router, ws, handling, releaseStart, releaseDone } = await startPendingRun();
+        const r = router();
+        const { ws, handling, gwRun } = await send(r, 0);
 
-        await stop(router, ws);
-        expect(mockChatAbort).toHaveBeenNthCalledWith(1, sessionKey, undefined);
-        releaseStart();
-        await vi.waitFor(() =>
-          expect(mockChatAbort).toHaveBeenNthCalledWith(2, sessionKey, "run-late")
-        );
-        releaseDone();
+        await stop(r, ws);
         await handling;
+        await vi.waitFor(() => expect(gw.aborts).toHaveLength(2));
 
-        // Once: the follow-up is tied to the first chunk, not to every chunk.
-        expect(mockChatAbort).toHaveBeenCalledTimes(2);
+        expect(gw.aborts).toEqual([
+          { sessionKey, runId: undefined, aborted: false },
+          { sessionKey, runId: gwRun.runId, aborted: false },
+        ]);
       }
     );
 
+    it.each(stoppers)(
+      "is still aborted when OpenClaw accepts it only after both early aborts (%s)",
+      async (_label, stop) => {
+        const r = router();
+        const { ws, handling, gwRun, run } = await send(r, 0);
+
+        await stop(r, ws);
+        await handling;
+        await vi.waitFor(() => expect(gw.aborts).toHaveLength(2));
+        expect(gw.aborts.every((a) => !a.aborted)).toBe(true);
+
+        // OpenClaw finishes preparing the run and starts it.
+        gw.accept(gwRun.runId);
+        await vi.waitFor(() => expect(gwRun.state).toBe("aborted"), { timeout: 5_000 });
+        // The model gets to its tool — on a run that is no longer running.
+        expect(gw.runTool(gwRun.runId, "odoo_write")).toBe(false);
+        await run.abortFollowUp;
+
+        expect(gwRun.toolsRun).toEqual([]);
+        expect(ws.sent.some((f) => f.includes("odoo_write"))).toBe(false);
+        expect(auditRows("chat.run_completed_after_disconnect")).toEqual([]);
+        // The trail ends on the abort that took effect, by the real runId.
+        expect(auditRows("chat.run_aborted").at(-1)).toEqual(
+          expect.objectContaining({
+            outcome: "success",
+            detail: expect.objectContaining({
+              runId: gwRun.runId,
+              followUp: "aborted_by_run_id",
+            }),
+          })
+        );
+      }
+    );
+
+    it("never cuts off the user's next turn on the same session while it follows up", async () => {
+      const r = router();
+      const first = await send(r, 0);
+      await r.handleMessage(first.ws, { type: "abort", agentId: "agent-1" } as never);
+      await first.handling;
+      await vi.waitFor(() => expect(gw.aborts).toHaveLength(2));
+
+      // The user asks again while OpenClaw is still preparing the stopped run.
+      const second = await send(r, 1);
+      gw.accept(second.gwRun.runId);
+      // At least one follow-up for the first run goes out during the new turn…
+      await vi.waitFor(() => expect(gw.aborts.length).toBeGreaterThanOrEqual(3), {
+        timeout: 5_000,
+      });
+      // …and the new turn's stream still delivers what comes after it.
+      gw.emitText(second.gwRun.runId, "Here they are.");
+      gw.finish(second.gwRun.runId);
+      await second.handling;
+
+      expect(gw.aborts.every((a) => a.runId !== second.gwRun.runId)).toBe(true);
+      expect(second.gwRun.state).toBe("ended");
+      expect(second.ws.sent.some((f) => f.includes("Here they are."))).toBe(true);
+    });
+
     it("is not aborted a second time when OpenClaw already confirmed the first abort", async () => {
-      mockChatAbort.mockResolvedValueOnce({ ok: true, aborted: true, runIds: ["run-late"] });
-      const { router, ws, handling, releaseStart, releaseDone } = await startPendingRun();
+      const r = router();
+      const { ws, handling, gwRun } = await send(r, 0);
+      // Running on OpenClaw, but nothing of it has reached Pinchy yet.
+      gw.accept(gwRun.runId, { silent: true });
 
-      await router.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never);
-      releaseStart();
-      await vi.waitFor(() => expect(activeRuns.get(sessionKey)?.runId).toBe("run-late"));
-      releaseDone();
+      await r.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never);
       await handling;
+      await started[0].abortFollowUp;
 
-      expect(mockChatAbort).toHaveBeenCalledTimes(1);
+      expect(gw.aborts).toEqual([{ sessionKey, runId: undefined, aborted: true }]);
     });
 
     it("is not aborted at all when nobody stopped it", async () => {
-      const { handling, releaseStart, releaseDone } = await startPendingRun();
+      const r = router();
+      const { handling, gwRun } = await send(r, 0);
 
-      releaseStart();
-      await vi.waitFor(() => expect(activeRuns.get(sessionKey)?.runId).toBe("run-late"));
-      releaseDone();
+      gw.accept(gwRun.runId);
+      gw.emitText(gwRun.runId, "Booked.");
+      gw.finish(gwRun.runId);
       await handling;
 
-      expect(mockChatAbort).not.toHaveBeenCalled();
+      expect(gw.aborts).toEqual([]);
+    });
+
+    describe("when the abort did not stop the reply and it finished", () => {
+      // The stopped run's stream ended with the client's own `done` the moment
+      // the abort went out, so the stream knows nothing about how the reply
+      // ended. The follow-up asks OpenClaw (`agent.wait`): a reply that
+      // finished anyway completed for nobody, and the trail says so next to
+      // the `chat.run_aborted` failure row.
+      const failures: Array<
+        [string, (gwRun: FakeRun) => { before: () => void; after: () => void }]
+      > = [
+        [
+          "the abort RPC threw",
+          (gwRun) => ({ before: () => gw.failNextAbort(), after: () => gw.finish(gwRun.runId) }),
+        ],
+        [
+          "OpenClaw answered aborted: false",
+          // It had just finished; its last frames were still on the way.
+          (gwRun) => ({ before: () => gw.finish(gwRun.runId, { silent: true }), after: () => {} }),
+        ],
+      ];
+
+      async function startedRun() {
+        const r = router();
+        const sent = await send(r, 0);
+        gw.accept(sent.gwRun.runId);
+        gw.emitText(sent.gwRun.runId, "Booking the invoices…");
+        await vi.waitFor(() =>
+          expect(activeRuns.get(sessionKey)?.firstChunkAt).toEqual(expect.any(Number))
+        );
+        const closeTab = () => {
+          (sent.ws as unknown as { readyState: number }).readyState = 3; // CLOSED
+          activeRuns.removeListenerFromAll(sent.ws);
+        };
+        return { r, ...sent, closeTab };
+      }
+
+      it.each(failures)(
+        "is recorded as completed after deactivation when %s and the reply finished",
+        async (_label, failure) => {
+          const { handling, gwRun, run, closeTab } = await startedRun();
+          const { before, after } = failure(gwRun);
+
+          before();
+          closeTab();
+          const aborted = await stoppers[1][1](router(), createMockWs());
+          expect((aborted as Array<{ outcome: string }>).map((a) => a.outcome)).toEqual([
+            "failure",
+          ]);
+          after();
+          await handling;
+          await run.abortFollowUp;
+
+          const rows = auditRows("chat.run_completed_after_disconnect");
+          expect(rows).toHaveLength(1);
+          expect(rows[0].detail.runId).toBe(gwRun.runId);
+        }
+      );
+
+      it.each(failures)(
+        "is recorded as completed after a stop click when %s and the reply finished",
+        async (_label, failure) => {
+          const { r, ws, handling, gwRun, run, closeTab } = await startedRun();
+          const { before, after } = failure(gwRun);
+
+          before();
+          await r.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never);
+          closeTab();
+          after();
+          await handling;
+          await run.abortFollowUp;
+
+          expect(auditRows("chat.run_completed_after_disconnect")).toHaveLength(1);
+        }
+      );
     });
   });
 

@@ -260,6 +260,89 @@ describe("DELETE /api/users/:id with the user's chat open", () => {
     }
   });
 
+  it("keeps aborting, as the admin, a reply its first abort did not stop", async () => {
+    // OpenClaw answers `aborted: false` for a run it has not registered yet —
+    // or is just registering — and leaves no tombstone, so the run can start
+    // after that answer. Deactivation keeps asking by the runId after the
+    // response has gone out, and records the abort that took effect.
+    const admin = await insertUser("Admin", "admin");
+    const member = await insertUser("Leaving Member", "member");
+    asAdmin(admin);
+    await openChat(member.id);
+
+    const runs = getActiveRunsSingleton();
+    const leaving = directSessionKey("agent-late", member.id);
+    runs.registerPending({
+      runId: "provisional-3",
+      sessionKey: leaving,
+      agentId: "agent-late",
+      userId: member.id,
+      agentName: "Late Agent",
+      submittedAt: Date.now(),
+      currentMessageId: "msg-3",
+      ws: {} as never,
+    });
+    runs.markFirstChunk(leaving, Date.now(), "gateway-run-3");
+    const run = runs.get(leaving)!;
+    const chatAbort = vi.fn().mockResolvedValue({ ok: true, aborted: false, runIds: [] });
+    const request = vi.fn().mockResolvedValue({
+      type: "res",
+      id: "x",
+      ok: true,
+      payload: { ok: true, aborted: true, runIds: ["gateway-run-3"] },
+    });
+    const agentWait = vi.fn().mockResolvedValue({ status: "timeout" });
+    setOpenClawClient({ ...fakeOpenClaw(), chatAbort, request, agentWait } as never);
+
+    try {
+      const res = await deactivate(member.id);
+      expect(res.status).toBe(200);
+      await run.abortFollowUp;
+
+      // A bare `chat.abort` RPC — never `chatAbort`, which would also end
+      // whatever local stream is open on the session by then.
+      expect(chatAbort).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith("chat.abort", {
+        sessionKey: leaving,
+        runId: "gateway-run-3",
+      });
+
+      let rows: (typeof auditLog.$inferSelect)[] = [];
+      for (let i = 0; i < 100 && rows.length < 2; i++) {
+        rows = await db
+          .select()
+          .from(auditLog)
+          .where(
+            and(
+              eq(auditLog.eventType, "chat.run_aborted"),
+              eq(auditLog.resource, "agent:agent-late")
+            )
+          );
+        if (rows.length < 2) await new Promise((r) => setTimeout(r, 20));
+      }
+      const byOutcome = Object.fromEntries(rows.map((r) => [r.outcome, r]));
+      expect(rows).toHaveLength(2);
+      expect(byOutcome.failure.detail).toEqual({
+        agent: { id: "agent-late", name: "Late Agent" },
+        sessionKey: leaving,
+        runId: "gateway-run-3",
+        reason: "account_deactivated",
+      });
+      expect(byOutcome.success.detail).toEqual({
+        agent: { id: "agent-late", name: "Late Agent" },
+        sessionKey: leaving,
+        runId: "gateway-run-3",
+        reason: "account_deactivated",
+        followUp: "aborted_by_run_id",
+      });
+      // Same actor as the deactivation's own row: the admin, pseudonymized.
+      expect(byOutcome.success.actorId).toBe(byOutcome.failure.actorId);
+      expect(JSON.stringify(byOutcome.success.detail)).not.toContain(admin.id);
+    } finally {
+      runs.delete(leaving);
+    }
+  });
+
   it("lets a reactivated user open a chat again", async () => {
     const admin = await insertUser("Admin", "admin");
     const member = await insertUser("Returning Member", "member");
