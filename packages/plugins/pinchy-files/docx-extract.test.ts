@@ -1,11 +1,27 @@
 // @vitest-environment node
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { randomBytes } from "crypto";
-import { readFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { constants as zlibConstants, deflateRawSync } from "zlib";
+import {
+  Document,
+  ExternalHyperlink,
+  Packer,
+  Paragraph,
+  Table,
+  TableCell,
+  TableRow,
+  TextRun,
+} from "docx";
 import mammoth from "mammoth";
-import { extractDocxText } from "./docx-extract";
+import {
+  DocxReaderOutOfMemoryError,
+  extractDocxText,
+  MAX_DOCX_EXTRACTED_TEXT_BYTES,
+} from "./docx-extract";
+import { docxToMarkdown } from "./docx-markdown";
 import {
   assembleZip,
   crc32,
@@ -103,15 +119,13 @@ describe("extractDocxText", () => {
   // entry itself, capped at its declared size, and hands mammoth a copy built
   // only from entries that held up.
   it("rejects a .docx whose document inflates past its declared size, without calling mammoth", async () => {
+    // mammoth runs in the reader child (sixth review); `read` is the only way
+    // to it, so a reader that is never asked is a mammoth that never parsed.
     const fixture = readFileSync(join(FIXTURES, "simple.docx"));
     const lying = withLyingDocument(fixture, 64 * 1024 * 1024);
-    const convert = vi.spyOn(mammoth, "convertToHtml");
-    try {
-      await expect(extractDocxText(lying)).rejects.toThrow(/inflates past|declared/i);
-      expect(convert).not.toHaveBeenCalled();
-    } finally {
-      convert.mockRestore();
-    }
+    const read = vi.fn(async () => "");
+    await expect(extractDocxText(lying, { read })).rejects.toThrow(/inflates past|declared/i);
+    expect(read).not.toHaveBeenCalled();
   });
 });
 
@@ -122,13 +136,9 @@ describe("extractDocxText — one part, however honest, is capped (third review,
   it("rejects a .docx whose document part is over 32 MiB, without calling mammoth", async () => {
     const fixture = readFileSync(join(FIXTURES, "simple.docx"));
     const big = withTruthfulDocument(fixture, 33 * 1024 * 1024);
-    const convert = vi.spyOn(mammoth, "convertToHtml");
-    try {
-      await expect(extractDocxText(big)).rejects.toThrow(ZipLimitError);
-      expect(convert).not.toHaveBeenCalled();
-    } finally {
-      convert.mockRestore();
-    }
+    const read = vi.fn(async () => "");
+    await expect(extractDocxText(big, { read })).rejects.toThrow(ZipLimitError);
+    expect(read).not.toHaveBeenCalled();
   });
 });
 
@@ -142,18 +152,14 @@ describe("extractDocxText — the markup mammoth parses is capped, the pictures 
   it("refuses more than 2 MiB of markup with an error that says so, without calling mammoth", async () => {
     const fixture = readFileSync(join(FIXTURES, "simple.docx"));
     const big = withDocumentXml(fixture, paragraphs(MAX_DOCX_MARKUP_BYTES + 1));
-    const convert = vi.spyOn(mammoth, "convertToHtml");
-    try {
-      const err = await extractDocxText(big).then(
-        () => null,
-        (e: unknown) => e as Error
-      );
-      expect(err).toBeInstanceOf(ZipLimitError);
-      expect(err!.message).toMatch(/markup/);
-      expect(convert).not.toHaveBeenCalled();
-    } finally {
-      convert.mockRestore();
-    }
+    const read = vi.fn(async () => "");
+    const err = await extractDocxText(big, { read }).then(
+      () => null,
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(ZipLimitError);
+    expect(err!.message).toMatch(/markup/);
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("still reads a document whose PICTURE is bigger than the markup ceiling", async () => {
@@ -173,6 +179,260 @@ describe("extractDocxText — the markup mammoth parses is capped, the pictures 
     expect(text).toContain("[image]");
   });
 });
+
+describe("extractDocxText — the shapes the markup scan read differently are refused (sixth review, PR #1243)", () => {
+  // The reviewer's three probes, built small: each hides megabytes of
+  // paragraphs from the markup ceiling by a spelling mammoth (xmldom + JSZip)
+  // resolves and the scan did not. 13 KB of .docx, 1.2-1.5 GB RSS here.
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
+  const rels = (body: string) =>
+    `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${body}</Relationships>`;
+  const hidden = () =>
+    `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${"<w:p><w:r><w:t>a</w:t></w:r></w:p>".repeat(Math.ceil((3 * 1024 * 1024) / 34))}</w:body></w:document>`;
+  const decoy = `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello decoy</w:t></w:r></w:p></w:body></w:document>`;
+
+  it.each([
+    [
+      "a prefixed Type mammoth reads as the Type",
+      {
+        "_rels/.rels": rels(
+          `<Relationship Id="rId1" Type="${R}image" q:Type="${R}officeDocument" Target="word/document.png"/>`
+        ),
+        "word/document.png": hidden(),
+      },
+    ],
+    [
+      "a prefixed Target mammoth reads as the Target",
+      {
+        "_rels/.rels": rels(
+          `<Relationship Id="rId1" Type="${R}officeDocument" Target="word/decoy.xml" q:Target="word/document.png"/><Relationship Id="rId2" Type="${R}image" Target="word/document.png"/>`
+        ),
+        "word/decoy.xml": decoy,
+        "word/document.png": hidden(),
+      },
+    ],
+    [
+      "relationships under a name JSZip resolves to _rels/.rels",
+      {
+        "_rels/.rels/.": rels(
+          `<Relationship Id="rId1" Type="${R}officeDocument" Target="word/document.png"/>`
+        ),
+        "word/_rels/pics.rels": rels(
+          `<Relationship Id="rId1" Type="${R}image" Target="document.png"/>`
+        ),
+        "word/document.png": hidden(),
+      },
+    ],
+  ])("refuses %s, without reading it", async (_, parts) => {
+    const read = vi.fn(async () => "");
+    await expect(extractDocxText(packageOf(parts), { read })).rejects.toThrow(/markup|resolve/);
+    expect(read).not.toHaveBeenCalled();
+  });
+});
+
+describe("extractDocxText — mammoth runs in a child whose heap is capped (sixth review, PR #1243)", () => {
+  // Three rounds running, the markup ceiling was bypassed because the scan
+  // and mammoth disagreed about which parts are parsed. The scan stays as a
+  // cheap first layer; what bounds the memory now is a child process with a
+  // hard heap cap, whatever the scan missed.
+  const paragraphs = (bytes: number) =>
+    "<w:p><w:r><w:t>a</w:t></w:r></w:p>".repeat(Math.ceil(bytes / 34));
+
+  it("reads a document in a child, never in this process", async () => {
+    const convert = vi.spyOn(mammoth, "convertToHtml");
+    try {
+      const { text } = await extractDocxText(readFileSync(join(FIXTURES, "simple.docx")));
+      expect(text).toMatch(/^#\s+Customer Briefing\s*$/m);
+      expect(convert).not.toHaveBeenCalled();
+    } finally {
+      convert.mockRestore();
+    }
+  });
+
+  it("answers a document past the child's heap with an error that says so — and this process stays small", async () => {
+    // The scan is switched off here, which is exactly the case a bypass
+    // produces: 4 MiB of tiny paragraphs that, read in-process, cost ~1.1 GB.
+    const fixture = readFileSync(join(FIXTURES, "simple.docx"));
+    const big = withDocumentXml(fixture, paragraphs(4 * 1024 * 1024));
+    const baseline = process.memoryUsage().rss;
+    let peak = baseline;
+    const sampler = setInterval(() => {
+      peak = Math.max(peak, process.memoryUsage().rss);
+    }, 10);
+    try {
+      const err = await extractDocxText(big, {
+        maxMarkupBytes: Number.POSITIVE_INFINITY,
+        maxHeapMb: 64,
+      }).then(
+        () => null,
+        (e: unknown) => e as Error
+      );
+      expect(err).toBeInstanceOf(DocxReaderOutOfMemoryError);
+      expect(err!.message).toMatch(/more memory .*\(64 MB\)/);
+    } finally {
+      clearInterval(sampler);
+    }
+    peak = Math.max(peak, process.memoryUsage().rss);
+    expect(peak - baseline).toBeLessThan(200 * 1024 * 1024);
+  });
+
+  it("hands back exactly what the in-process conversion gives, tables, links and pictures included", async () => {
+    const linked = await Packer.toBuffer(
+      new Document({
+        sections: [
+          {
+            children: [
+              new Paragraph({
+                children: [
+                  new TextRun("See "),
+                  new ExternalHyperlink({
+                    link: "https://example.com/price-list",
+                    children: [new TextRun("the price list")],
+                  }),
+                  new TextRun(" — Größe, naïve, 東京."),
+                ],
+              }),
+              new Table({
+                rows: [
+                  new TableRow({
+                    children: [
+                      new TableCell({ children: [new Paragraph("SKU")] }),
+                      new TableCell({ children: [new Paragraph("Price")] }),
+                    ],
+                  }),
+                  new TableRow({
+                    children: [
+                      new TableCell({ children: [new Paragraph("A-1")] }),
+                      new TableCell({ children: [new Paragraph("EUR 4.20")] }),
+                    ],
+                  }),
+                ],
+              }),
+            ],
+          },
+        ],
+      })
+    );
+    for (const docx of [
+      readFileSync(join(FIXTURES, "simple.docx")),
+      readFileSync(join(FIXTURES, "with-image.docx")),
+      linked,
+    ]) {
+      const { text } = await extractDocxText(docx);
+      expect(text).toBe(await docxToMarkdown(docx, MAX_DOCX_EXTRACTED_TEXT_BYTES));
+    }
+    const { text } = await extractDocxText(linked);
+    expect(text).toContain("[the price list](https://example.com/price-list)");
+    expect(text).toMatch(/\|\s*A-1\s*\|\s*EUR 4\.20\s*\|/);
+  });
+
+  it("still enforces the text cap, in the child", async () => {
+    await expect(
+      extractDocxText(readFileSync(join(FIXTURES, "simple.docx")), { maxTextBytes: 10 })
+    ).rejects.toThrow(/extracted text .* exceeds/i);
+  });
+});
+
+describe("extractDocxText — a reader that dies is not a verdict on the document (sixth review, PR #1243)", () => {
+  // Only V8's own heap-limit banner says the document was too big. A child
+  // killed from outside, one that crashes, one that never got ready, and one
+  // that runs out of time are infrastructure, and say so.
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "pinchy-docx-reader-test-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const stub = (name: string, body: string) => {
+    const path = join(dir, `${name}.mjs`);
+    writeFileSync(path, body);
+    return path;
+  };
+  const docx = () => readFileSync(join(FIXTURES, "simple.docx"));
+  const failure = (promise: Promise<unknown>) =>
+    promise.then(
+      () => {
+        throw new Error("expected a rejection");
+      },
+      (err: unknown) => err as Error
+    );
+
+  it("reports a child killed without the heap banner as a reader failure, not as too much memory", async () => {
+    const childEntry = stub(
+      "killed",
+      `process.send({ type: "ready" }); process.once("message", () => process.kill(process.pid, "SIGKILL"));`
+    );
+    const err = await failure(extractDocxText(docx(), { childEntry }));
+    expect(err).not.toBeInstanceOf(DocxReaderOutOfMemoryError);
+    expect(err.message).toMatch(/killed/);
+  });
+
+  it("reports a child that exits before it is ready as a reader that could not start", async () => {
+    const childEntry = stub("broken", `process.exit(3);`);
+    const err = await failure(extractDocxText(docx(), { childEntry }));
+    expect(err).not.toBeInstanceOf(DocxReaderOutOfMemoryError);
+    expect(err.message).toMatch(/before it was ready/);
+  });
+
+  it("kills a child that takes too long, and says so", async () => {
+    const childEntry = stub(
+      "slow",
+      `process.send({ type: "ready" }); process.once("message", () => setInterval(() => {}, 1000));`
+    );
+    const err = await failure(extractDocxText(docx(), { childEntry, timeoutMs: 300 }));
+    expect(err).not.toBeInstanceOf(DocxReaderOutOfMemoryError);
+    expect(err.message).toMatch(/longer than/);
+  });
+
+  it("runs one reader at a time, so the memory one may use is the memory all of them use", async () => {
+    const log = join(dir, "log.txt");
+    const childEntry = stub(
+      "logged",
+      `import { appendFileSync } from "node:fs";
+       process.send({ type: "ready" });
+       process.once("message", () => {
+         appendFileSync(${JSON.stringify(log)}, "start\\n");
+         setTimeout(() => {
+           appendFileSync(${JSON.stringify(log)}, "end\\n");
+           process.send({ type: "result", text: "ok" }, () => process.exit(0));
+         }, 150);
+       });`
+    );
+    const results = await Promise.all([1, 2, 3].map(() => extractDocxText(docx(), { childEntry })));
+    expect(results.map((r) => r.text)).toEqual(["ok", "ok", "ok"]);
+    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual([
+      "start",
+      "end",
+      "start",
+      "end",
+      "start",
+      "end",
+    ]);
+  });
+});
+
+/** A .docx assembled from `parts` (plus a content-types part), each deflated and truthful about its size. */
+function packageOf(parts: Record<string, string>): Buffer {
+  const all: Record<string, string> = {
+    "[Content_Types].xml":
+      '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/></Types>',
+    ...parts,
+  };
+  return assembleZip(
+    Object.entries(all).map(([name, content]) => {
+      const bytes = Buffer.from(content);
+      return {
+        name,
+        method: 8,
+        flags: 0,
+        crc32: crc32(bytes),
+        uncompressedSize: bytes.length,
+        data: deflateRawSync(bytes),
+      };
+    })
+  );
+}
 
 /** `docx` with `word/document.xml` replaced by a document whose body is `body`. */
 function withDocumentXml(docx: Buffer, body: string): Buffer {
