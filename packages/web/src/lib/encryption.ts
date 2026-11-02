@@ -169,28 +169,35 @@ function writeAllAndSync(fd: number, path: string, data: string): void {
   fsyncSync(fd);
 }
 
-/** What a filesystem that cannot open or fsync a directory says (Windows, some FUSE/SMB mounts). */
-const NO_DIR_FSYNC_CODES = new Set(["EISDIR", "EINVAL", "EPERM", "EBADF"]);
-
 /**
  * Make a new name in `dir` durable. The file's own fsync covers its bytes,
  * not the directory entry: until the directory is fsynced, a power cut can
  * lose the key file while the process has already used the key it holds.
+ *
+ * Best effort, and only ever called once the key file already has its name.
+ * Any error here (EACCES on a directory the process may write but not read,
+ * EISDIR/EINVAL/EPERM/ENOTSUP/ENOSYS on Windows and some FUSE, SMB and NFS
+ * mounts) leaves the key file in place and readable; reporting it as a failed
+ * write would throw away a key that is already on disk. A plain
+ * writeFileSync, which this replaced, never fsynced the directory either.
  */
 function fsyncDirectory(dir: string): void {
   let fd: number;
   try {
     fd = openSync(dir, "r");
-  } catch (err) {
-    if (NO_DIR_FSYNC_CODES.has((err as NodeJS.ErrnoException).code ?? "")) return;
-    throw err;
+  } catch {
+    return;
   }
   try {
     fsyncSync(fd);
-  } catch (err) {
-    if (!NO_DIR_FSYNC_CODES.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
+  } catch {
+    // See above: the name is already there, only its durability is not.
   } finally {
-    closeSync(fd);
+    try {
+      closeSync(fd);
+    } catch {
+      // Nothing to recover; the descriptor is gone either way.
+    }
   }
 }
 

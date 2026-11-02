@@ -169,7 +169,7 @@ export function evaluateAuditSecretRotation(opts: {
       "the key, keeping the new one is usually the safer choice: switching back " +
       "leaves the entries signed with it unverifiable, and switching forward " +
       "again later breaks verification for everything written in between. " +
-      "Switch back only if you then stay on the generated key for good. See " +
+      "Switch back only if you then stay on the key in the file for good. See " +
       AUDIT_KEY_SWITCH_BACK_DOCS_URL,
   };
 }
@@ -199,9 +199,9 @@ export function describeAuditKeyFilePersist(
       return {
         action: "info",
         message:
-          "Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret in the secrets " +
-          "volume, so a later change of the variable keeps this key for verifying " +
-          "the entries signed with it.",
+          "Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret in /app/secrets. " +
+          "Keep that directory on a persistent volume, so a later change of the " +
+          "variable keeps this key for verifying the entries signed with it.",
       };
     case "failed":
       return {

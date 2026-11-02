@@ -232,6 +232,11 @@ describe("evaluateAuditSecretRotation", () => {
 
     expect(result.message).not.toMatch(/remove AUDIT_HMAC_SECRET from your \.env and restart\.$/);
     expect(result.message).toMatch(/for good/);
+    // The key file may hold an earlier AUDIT_HMAC_SECRET value Pinchy saved
+    // there, not a generated key; "the generated key" would send an operator
+    // who never had one looking for it.
+    expect(result.message).toMatch(/stay on the key in the file for good/);
+    expect(result.message).not.toMatch(/generated key/);
     expect(result.message).toContain(AUDIT_KEY_SWITCH_BACK_DOCS_URL);
   });
 
@@ -262,6 +267,16 @@ describe("describeAuditKeyFilePersist", () => {
     expect(result.message).toMatch(/AUDIT_HMAC_SECRET/);
     expect(result.message).toMatch(/\.audit_hmac_secret/);
     expect(result.message).not.toMatch(/[0-9a-f]{32}/i);
+  });
+
+  it("says the saved key only outlasts a change of the variable on a persistent volume", () => {
+    // The file only keeps the key if /app/secrets survives a container being
+    // recreated. Promising that "a later change keeps this key" without the
+    // condition is a promise an ephemeral directory silently breaks.
+    const result = describeAuditKeyFilePersist({ status: "written" });
+
+    expect(result.message).toMatch(/\/app\/secrets/);
+    expect(result.message).toMatch(/persistent volume/);
   });
 
   it("warns on a failed write, names the reason and the consequence, and does not stop startup", () => {

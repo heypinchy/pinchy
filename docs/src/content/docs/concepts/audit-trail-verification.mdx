@@ -77,6 +77,8 @@ This is the procedure for changing `AUDIT_HMAC_SECRET`, whether you just want to
 
 **Before you switch, make sure the current key is in the key file.** After the switch, the earlier key Pinchy checks against is the file `.audit_hmac_secret` in the `pinchy-secrets` volume (`/app/secrets/.audit_hmac_secret` inside the container). Pinchy keeps that file filled on its own: when `AUDIT_HMAC_SECRET` is set and there's no key file yet, it writes the variable's value there at start and logs `Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`. It never overwrites a file that's already there. So the current key is in the file if you never set the variable (the file is the key Pinchy generated), or if Pinchy has started on the current value at least once since the file was last removed.
 
+All of this holds only as long as `/app/secrets` is persistent storage you back up. The stock `docker-compose.yml` mounts the `pinchy-secrets` volume there. If you run Pinchy another way, mount a persistent, backed-up volume at `/app/secrets` yourself: a directory that disappears when the container is recreated takes the key file with it, and with it the earlier key your older entries verify against.
+
 Four cases need a step first:
 
 - **The variable is set, and the instance hasn't started on a Pinchy version that writes the file yet.** Upgrade and start it once on the current value before you switch. If it logs `Could not write the AUDIT_HMAC_SECRET value` instead, fix what the code in brackets names and start it again: `EACCES` is the volume's permissions (Pinchy runs as uid 999), `ENOSPC` a full disk, `EROFS` a read-only mount. A volume without hard links, such as exFAT or some network shares, isn't one of them: Pinchy then creates the file directly.

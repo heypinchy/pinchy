@@ -105,6 +105,7 @@ import {
   readdirSync,
   statSync,
   existsSync,
+  chmodSync,
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -336,6 +337,26 @@ describe("persistEnvSecretToKeyFile", () => {
 
     expect(readFileSync(keyFile, "utf-8")).toBe(KEY_A);
   });
+
+  // The directory fsync runs after the key file already has its name. A
+  // directory it cannot open or fsync (a writable-but-unreadable one, mode
+  // 0300, says EACCES) leaves the key exactly where it should be, so the write
+  // landed and must be reported as written, not as failed.
+  it.each(
+    (["open", "fsync"] as const).flatMap((at) =>
+      ["EACCES", "ENOTSUP", "ENOSYS"].map((code) => [at, code] as const)
+    )
+  )("reports the key as written when the directory %s fails with %s", (at, code) => {
+    faults.dirFsyncError = { at, code };
+    process.env.AUDIT_HMAC_SECRET = KEY_A;
+
+    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written" });
+
+    faults.dirFsyncError = null;
+    expect(readFileSync(keyFile, "utf-8")).toBe(KEY_A);
+    process.env.AUDIT_HMAC_SECRET = KEY_B;
+    expect(getPreviousSecret(NAME)?.toString("hex")).toBe(KEY_A);
+  });
 });
 
 describe("getOrCreateSecret writing a generated key", () => {
@@ -488,6 +509,51 @@ describe("getOrCreateSecret writing a generated key", () => {
 
     expect(readFileSync(keyFile, "utf-8")).toBe(generated.toString("hex"));
   });
+
+  // Any other refusal too: once the key file has its name, the directory
+  // fsync only adds power-cut durability, and failing there would throw away a
+  // key that is already on disk. EACCES is a directory the process may write
+  // but not read (mode 0300); ENOTSUP and ENOSYS are filesystems without a
+  // directory fsync.
+  it.each(
+    (["open", "fsync"] as const).flatMap((at) =>
+      ["EACCES", "ENOTSUP", "ENOSYS"].flatMap((code) =>
+        [null, "ENOTSUP"].map((linkError) => [at, code, linkError] as const)
+      )
+    )
+  )(
+    "still generates and uses the key when the directory %s fails with %s (link error: %s)",
+    (at, code, linkError) => {
+      faults.dirFsyncError = { at, code };
+      faults.linkError = linkError;
+
+      const generated = getOrCreateSecret(NAME);
+
+      faults.dirFsyncError = null;
+      faults.linkError = null;
+      expect(readFileSync(keyFile, "utf-8")).toBe(generated.toString("hex"));
+      expect(readdirSync(dir)).toEqual([`.${NAME}`]);
+      expect(getOrCreateSecret(NAME).toString("hex")).toBe(generated.toString("hex"));
+    }
+  );
+
+  // The same, without simulated faults: a real directory the process may write
+  // and enter but not list. root ignores the mode bits, so there is nothing to
+  // observe when the suite runs as root.
+  it.skipIf(process.getuid?.() === 0)(
+    "generates and uses the key in a directory it may write but not read (mode 0300)",
+    () => {
+      chmodSync(dir, 0o300);
+      try {
+        const generated = getOrCreateSecret(NAME);
+
+        expect(readFileSync(keyFile, "utf-8")).toBe(generated.toString("hex"));
+        expect(getOrCreateSecret(NAME).toString("hex")).toBe(generated.toString("hex"));
+      } finally {
+        chmodSync(dir, 0o700);
+      }
+    }
+  );
 
   it("does not fall back on a link error that is not about missing hard links", () => {
     faults.linkError = "EIO";
