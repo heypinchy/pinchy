@@ -1103,6 +1103,57 @@ function codeTokenOf(lookup: RelationLookup): string | null {
   return head || null;
 }
 
+/** The records whose `code` equals `code`, compared case-insensitively. */
+function recordsWithCode(code: string, records: OdooRecord[]): OdooRecord[] {
+  const wanted = normalizeLookupText(code);
+  return records.filter((record) => {
+    const value = recordText(record, "code");
+    return value !== null && normalizeLookupText(value) === wanted;
+  });
+}
+
+/** Case-insensitive, with every run of whitespace read as one space. */
+function normalizeNameText(value: string): string {
+  return normalizeLookupText(value).replace(/\s+/g, " ");
+}
+
+/**
+ * The record a `"<code> <name>"` lookup names, once the code is known to
+ * match (seventh review of #1242). The name after the code is a claim about
+ * the record: `"6000 Bank fees"` used to book to account 6000 whatever it is
+ * called, so the card read "Bank fees" while the effect was "Office supplies".
+ * The claim has to hold — case and spacing aside — or the lookup is refused
+ * with the name the code actually carries, so the model can send the exact
+ * name or the record's ref. Two records that share the code (the multi-company
+ * case) are told apart by the same name.
+ */
+function matchByCodeAndName(
+  field: OdooField,
+  lookup: RelationLookup,
+  code: string,
+  claimedName: string,
+  coded: OdooRecord[]
+): number {
+  const wanted = normalizeNameText(claimedName);
+  const named = coded.filter((record) => {
+    const name = recordText(record, "name");
+    return name !== null && normalizeNameText(name) === wanted;
+  });
+  const ids = uniqueIds(named);
+  if (ids.length === 1) return ids[0];
+  if (ids.length > 1) throw new Error(formatMultiMatchError(field, { ...lookup, code }, named));
+  const label = field.string ?? field.name;
+  const actual = [
+    ...new Set(coded.map((record) => recordText(record, "name")).filter((name) => name !== null)),
+  ];
+  const carries =
+    actual.length > 0 ? actual.map((name) => JSON.stringify(name)).join(" or ") : "unnamed";
+  throw new Error(
+    `Could not resolve ${field.name} from "${lookup.name}": ${label} ${code} is ${carries}, ` +
+      `not ${JSON.stringify(claimedName)}. Provide an exact ${label} name or ref.`
+  );
+}
+
 /**
  * The single record whose `code` equals `code`, or `null` when none does.
  * Compared case-insensitively, like every other text match here — the domain
@@ -1120,11 +1171,7 @@ function matchByCode(
   code: string,
   records: OdooRecord[]
 ): number | null {
-  const wanted = normalizeLookupText(code);
-  const matches = records.filter((record) => {
-    const value = recordText(record, "code");
-    return value !== null && normalizeLookupText(value) === wanted;
-  });
+  const matches = recordsWithCode(code, records);
   const ids = uniqueIds(matches);
   if (ids.length === 1) return ids[0];
   if (ids.length > 1) throw new Error(formatMultiMatchError(field, { ...lookup, code }, matches));
@@ -1144,7 +1191,8 @@ function matchByCode(
  * 3. The leading token, which is the `"<code> <name>"` form a chart of accounts
  *    prints, and a bare code. Reached only once an exact name has failed, so
  *    the composite form that carries a disambiguating name still resolves when
- *    two companies share a code.
+ *    two companies share a code. The name after the code must be the record's
+ *    name (`matchByCodeAndName`): a code never overrides a name it contradicts.
  */
 function resolveReferenceFromRecords(
   field: OdooField,
@@ -1182,6 +1230,11 @@ function resolveReferenceFromRecords(
 
   const codeToken = codeTokenOf(lookup);
   if (codeToken) {
+    const claimedName = lookup.code ? "" : lookup.name.slice(codeToken.length).trim();
+    const coded = claimedName ? recordsWithCode(codeToken, records) : [];
+    if (coded.length > 0) {
+      return matchByCodeAndName(field, lookup, codeToken, claimedName, coded);
+    }
     const byCodeToken = matchByCode(field, lookup, codeToken, records);
     if (byCodeToken !== null) return byCodeToken;
   }

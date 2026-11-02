@@ -7959,6 +7959,75 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
     expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
     expect(mockSearchRead.mock.calls.filter((c) => c[0] === "res.country")).toHaveLength(0);
   });
+
+  // Seventh review of #1242: the leading token was matched against `code` and
+  // the rest of the input ignored, so `"6000 Bank fees"` booked to account
+  // 6000 whatever it is called. The card shows "Bank fees"; the effect was
+  // "Office supplies". A name after the code is a claim about the record, and
+  // a claim the record contradicts is refused rather than overridden.
+  describe("the name after a code", () => {
+    const OFFICE = { id: 60, name: "Office supplies", code: "6000" };
+
+    it("refuses a code whose record carries a different name", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: "x", account_id: "6000 Bank fees" });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Could not resolve account_id");
+      expect(text).toContain('"Office supplies"');
+      expect(text).toContain('"Bank fees"');
+      expect(text).toMatch(/exact Account name or ref/);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("resolves when the name matches, ignoring case and spacing", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000   office  SUPPLIES " });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    it("still resolves a bare code, which makes no claim about the name", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000" });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    // Two companies share the code; the name after it says which one.
+    it("picks the record whose name matches when two share the code", async () => {
+      mockSchema({});
+      mockCandidates({
+        "account.account": [
+          { id: 40, name: "Bank Helmcraft", code: "1800" },
+          { id: 41, name: "Bank Clemens", code: "1800" },
+        ],
+      });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "1800 Bank Clemens" });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 41 })
+      );
+    });
+  });
 });
 
 // The route the resolver gained is worth nothing until the model is told about
