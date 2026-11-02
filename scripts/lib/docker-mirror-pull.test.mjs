@@ -210,9 +210,9 @@ test("falls back to docker.io only after all mirror attempts fail, with a warnin
     fallbackWarning.includes("caddy:2"),
     "the fallback warning must name the image",
   );
-  // Most jobs never log in to Docker Hub, so the fallback is usually an
-  // anonymous pull with the tighter anonymous limit. The warning must not
-  // promise more than that.
+  // Jobs that never log in to Docker Hub (screenshots.yml) make this an
+  // anonymous pull with the tighter anonymous limit, and even an
+  // authenticated one can be rate-limited. The warning must not promise more.
   assert.match(fallbackWarning, /anonymous/i);
   assert.match(fallbackWarning, /rate.limit/i);
 });
@@ -280,28 +280,63 @@ function dockerMirrorJobs() {
     const jobsStart = lines.findIndex((line) => /^jobs:\s*$/.test(line));
     if (jobsStart === -1) continue;
     let job = null;
+    // A Docker Hub login is recognised by what it does, not by its step name:
+    // any `docker/login-action` step whose `registry:` is absent or docker.io.
+    let step = null;
+    const closeStep = () => {
+      if (job && step && step.loginAction && job.login === -1) {
+        const registry = step.registry;
+        if (
+          registry === null ||
+          /^(docker\.io|registry-1\.docker\.io)$/i.test(registry)
+        ) {
+          job.login = step.line;
+        }
+      }
+      step = null;
+    };
     for (let i = jobsStart + 1; i < lines.length; i++) {
       // Jobs are the two-space-indented keys under `jobs:`.
       const header = lines[i].match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
       if (header) {
+        closeStep();
         job = { file, name: header[1], mirror: -1, login: -1 };
         jobs.push(job);
         continue;
       }
       if (!job) continue;
+      const stepsKey = lines[i].match(/^(\s*)steps:\s*$/);
+      if (stepsKey) {
+        closeStep();
+        job.stepIndent = null;
+        job.stepsKeyIndent = stepsKey[1].length;
+        continue;
+      }
+      const item = lines[i].match(/^(\s*)-\s/);
+      if (item && job.stepsKeyIndent !== undefined) {
+        // The first list item under `steps:` fixes the step indent; only items
+        // at exactly that indent start a new step (not lines inside run: blocks).
+        if (job.stepIndent == null && item[1].length >= job.stepsKeyIndent) {
+          job.stepIndent = item[1].length;
+        }
+        if (item[1].length === job.stepIndent) {
+          closeStep();
+          step = { line: i + 1, loginAction: false, registry: null };
+        }
+      }
+      if (step && /uses:\s*docker\/login-action@/.test(lines[i])) {
+        step.loginAction = true;
+      }
+      const registry = lines[i].match(/^\s*registry:\s*['"]?([^'"\s#]+)/);
+      if (step && registry) step.registry = registry[1];
       if (
         job.mirror === -1 &&
         /uses:\s*\.\/\.github\/actions\/docker-mirror\s*$/.test(lines[i])
       ) {
         job.mirror = i + 1;
       }
-      if (
-        job.login === -1 &&
-        /name:\s*Log in to Docker Hub\s*$/.test(lines[i])
-      ) {
-        job.login = i + 1;
-      }
     }
+    closeStep();
   }
   return jobs.filter((job) => job.mirror !== -1);
 }
@@ -310,7 +345,7 @@ test("every job that logs in to Docker Hub does so before the docker-mirror acti
   const loggingIn = dockerMirrorJobs().filter((job) => job.login !== -1);
   assert.ok(
     loggingIn.length > 0,
-    "expected jobs that both use docker-mirror and log in to Docker Hub — did the step name change?",
+    "expected jobs that both use docker-mirror and log in to Docker Hub — did the login step stop using docker/login-action?",
   );
   const offenders = loggingIn
     .filter((job) => job.login > job.mirror)
