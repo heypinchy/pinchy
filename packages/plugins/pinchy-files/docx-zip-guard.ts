@@ -261,8 +261,8 @@ export interface ZipLimits {
    * type other than picture, font, hyperlink or embedded object points at. A
    * picture only an image relationship points at does not. Where a
    * relationship part cannot be read unambiguously — a malformed tag, or a
-   * target spelled with an entity or escape mammoth would decode — every part
-   * counts (`markupBytes`).
+   * target spelled with an entity, an escape or a character mammoth's parser
+   * would decode or normalise — every part counts (`markupBytes`).
    */
   maxMarkupBytes?: number;
 }
@@ -599,12 +599,37 @@ function relationshipsIn(xml: string): Relationship[] | null {
 }
 
 /**
+ * Does `target` hold a character an XML parser does not hand over as written?
+ * A reference (`&`), and every character attribute-value normalisation may
+ * rewrite: a conforming parser turns a literal tab, newline or carriage
+ * return into a space (a CR LF pair into ONE space), and @xmldom/xmldom,
+ * which mammoth uses, does the same to NEL (U+0085) and LINE SEPARATOR
+ * (U+2028) (measured, xmldom 0.8). The rest of C0, C1 and U+2029 are listed
+ * because none of them belongs in a part name, and which parser rewrites
+ * which is exactly the question not to have to answer (fifth review,
+ * PR #1243).
+ */
+function parserRewrites(target: string): boolean {
+  for (let i = 0; i < target.length; i++) {
+    const c = target.charCodeAt(i);
+    if (c === 0x26 || c < 0x20 || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * The lowercased file name a relationship target resolves to, whatever path
  * it is joined to — or null when the target is spelled in a way only a
- * decoder agrees on (an entity, a percent-escape, a backslash).
+ * decoder agrees on: a reference, a character the parser normalises (see
+ * `parserRewrites`), a percent-escape, a backslash. Matching the parser's
+ * rewriting instead would be a second XML implementation to keep in step
+ * with whichever one a reader ships; giving up costs only a document whose
+ * targets no Office writer produces.
  */
 function targetFileName(target: string): string | null {
-  if (/[&%\\]/.test(target)) return null;
+  if (parserRewrites(target) || /[%\\]/.test(target)) return null;
   const normalized = posix.normalize(`/${target}`).replace(/\/+$/, "");
   return posix.basename(normalized).toLowerCase();
 }

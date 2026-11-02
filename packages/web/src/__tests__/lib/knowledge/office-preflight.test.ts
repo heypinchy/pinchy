@@ -964,6 +964,30 @@ describe("sanitizeOoxmlPackage — relationship allow-list (release review v0.10
     }
   );
 
+  it.each([
+    ["a newline", "media/x\ny.png"],
+    ["a tab", "media/x\ty.png"],
+    ["a NEL", "media/x\u0085y.png"],
+    ["a C1 control character", "media/x\u0090y.png"],
+    ["a line separator", "media/x\u2028y.png"],
+  ])(
+    "cuts a relationship whose target holds %s, even when a part of exactly that name exists: a parser may read it as another name (fifth review, PR #1243)",
+    (_, target) => {
+      // Attribute-value normalisation turns a newline into a space, and
+      // @xmldom/xmldom does the same to NEL and U+2028; the part vetted under
+      // the raw name need not be the one a reader opens. A regression pin
+      // rather than a fix: `resolveTarget` already gives up on whitespace and
+      // C0 controls, and reads a relationship part as latin1, so a non-ASCII
+      // target never names an entry and is cut as missing. The plugin's
+      // markup count had no such rule and was the hole (docx-zip-guard.ts).
+      const pkg = docxWith({
+        documentRels: relationships(rel("rId5", REL_IMAGE, target)),
+        parts: { [`word/${target}`]: PNG_1X1, "word/media/x y.png": PNG_1X1 },
+      });
+      expect(sanitizeOoxmlPackage(pkg).removed).toBe(1);
+    }
+  );
+
   it.each(["simple.docx", "with-image.docx"])(
     "leaves a real Word document's text exactly as it was (%s)",
     async (fixture) => {

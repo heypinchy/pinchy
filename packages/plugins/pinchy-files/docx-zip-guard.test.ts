@@ -669,6 +669,48 @@ describe("verifiedZipCopy — a ceiling on the markup a reader may parse", () =>
     }
   });
 
+  it("counts every part when a parsed relationship's target holds a character the XML parser rewrites", async () => {
+    // Fifth review (PR #1243): mammoth reads `.rels` with @xmldom/xmldom,
+    // which normalises a literal newline, tab or carriage return in an
+    // attribute value to a space (and so does any conforming parser) — and
+    // xmldom also turns NEL and LINE SEPARATOR into one (measured). So
+    // `Target="word/x\ny.bin"` on the main-document relationship is read as
+    // `word/x y.bin`: the very part an image relationship's `word/x y.bin`
+    // marked as a picture. Kept raw, the guard saw two different names and
+    // left 8 MiB of markup uncounted (2.18 GB RSS in extractDocxText). A
+    // character reference (`&#10;`) is decoded rather than normalised, and
+    // lands in the same place — both count everything.
+    const markupBehindPng = Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      Buffer.from(`<w:document>${"d".repeat(4000)}</w:document>`),
+    ]);
+    for (const separator of ["\n", "\t", "\r", "\r\n", "\u0085", "\u2028", "&#10;", "&#x9;"]) {
+      const zip = rawZip([
+        honest("[Content_Types].xml", "<Types/>"),
+        honest(
+          "_rels/.rels",
+          docRels(["officeDocument", `word/x${separator}y.bin`], ["image", "word/x y.bin"])
+        ),
+        honest("word/x y.bin", markupBehindPng),
+      ]);
+      const err = await refusal(verifiedZipCopy(zip, LIMITS_2K));
+      expect(err, JSON.stringify(separator)).toBeInstanceOf(ZipLimitError);
+    }
+  });
+
+  it("still leaves out a picture whose image relationship names it with a plain space", async () => {
+    // A space is not rewritten by any parser, so it is no reason to give up.
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      honest("_rels/.rels", rootRels),
+      honest("word/_rels/document.xml.rels", docRels(["image", "media/my picture.png"])),
+      honest("word/document.xml", "<w:document/>"),
+      honest("word/media/my picture.png", pictureBytes()),
+    ]);
+    const copy = await verifiedZipCopy(zip, LIMITS_2K);
+    expect(contentsOf(copy).get("word/media/my picture.png")!.length).toBe(5008);
+  });
+
   it("counts every part when a relationship part cannot be read unambiguously", async () => {
     const zip = rawZip([
       honest("[Content_Types].xml", "<Types/>"),
