@@ -23,6 +23,11 @@ describe("assertMailHostAllowed", () => {
       ["AWS/GCP/Azure IMDS", "169.254.169.254"],
       ["IPv6 IMDS", "fd00:ec2::254"],
       ["IPv6 IMDS, expanded", "fd00:ec2:0:0:0:0:0:254"],
+      ["EKS Pod Identity Agent, IPv6", "fd00:ec2::23"],
+      ["GCP metadata, IPv6", "fd20:ce::254"],
+      ["GCP metadata, IPv6 expanded", "fd20:00ce:0000:0000:0000:0000:0000:0254"],
+      ["OCI metadata, IPv6", "fd00:c1::a9fe:a9fe"],
+      ["OCI metadata, IPv6 with dotted tail", "fd00:c1::169.254.169.254"],
       ["IPv6 link-local", "fe80::1"],
       ["IPv6 link-local, upper half of fe80::/10", "feb0::1"],
       ["IPv4-mapped IPv6 loopback", "::ffff:127.0.0.1"],
@@ -30,7 +35,6 @@ describe("assertMailHostAllowed", () => {
       ["Alibaba Cloud metadata", "100.100.100.200"],
       ["IPv4-mapped Alibaba Cloud metadata", "::ffff:100.100.100.200"],
       ["NAT64-wrapped IMDS", "64:ff9b::a9fe:a9fe"],
-      ["benchmarking 198.18.0.0/15", "198.18.0.1"],
       ["TEST-NET-3", "203.0.113.50"],
       ["reserved 240.0.0.0/4", "240.0.0.1"],
       ["IPv4 multicast", "224.0.0.1"],
@@ -79,6 +83,12 @@ describe("assertMailHostAllowed", () => {
       // like RFC-1918 rather than blocked outright.
       ["CGNAT 100.64.0.0/10 (Tailscale)", "100.64.0.1"],
       ["IPv4-mapped CGNAT", "::ffff:100.64.0.1"],
+      // 198.18.0.0/15 (benchmarking) moved here from the always-blocked list:
+      // operators number internal networks from it and fake-IP DNS
+      // (Clash/Mihomo/Surge) answers with it, so an on-premise mail server
+      // can genuinely resolve there.
+      ["benchmarking 198.18.0.0/15", "198.18.0.1"],
+      ["benchmarking 198.18.0.0/15, top", "198.19.255.254"],
     ];
 
     it.each(privateAddresses)("blocks %s (%s) by default", async (_label, address) => {

@@ -19,9 +19,16 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     ["100.100.100.100", "private"],
     ["100.127.255.255", "private"],
     ["100.100.100.200", "link-local"],
+    // 198.18.0.0/15 (RFC 2544 benchmarking). Used to be "reserved" -- blocked
+    // with no opt-in -- but operators number internal lab/transit networks
+    // from it and fake-IP DNS (Clash, Mihomo, Surge) hands it out for every
+    // name, so on such a host an ordinary Odoo or mail server resolves here.
+    // That is the profile of a private network, not of a never-a-server
+    // range: corrected to "private", which web_fetch still blocks and the
+    // admin opt-ins open.
+    ["198.18.0.1", "private"],
+    ["198.19.255.255", "private"],
     // Never a real server, whatever the operator opts into.
-    ["198.18.0.1", "reserved"],
-    ["198.19.255.255", "reserved"],
     ["192.0.0.1", "reserved"],
     ["192.0.2.1", "reserved"],
     ["198.51.100.7", "reserved"],
@@ -65,7 +72,34 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     // must not open up when an operator opts into their private network.
     ["fd00:ec2::254", "link-local"],
     ["fd00:ec2:0:0:0:0:0:254", "link-local"],
+    ["FD00:EC2::254", "link-local"],
+    ["fd00:ec2::0.0.2.84", "link-local"],
     ["fd00:ec2::253", "private"],
+    // The other cloud metadata / credential endpoints that live inside ULA,
+    // each in every spelling an attacker can write: compressed, fully
+    // expanded and zero-padded, upper case, and (where the tail reads as an
+    // IPv4 address) the dotted-quad tail form. A neighbour of each stays
+    // "private", so only the one address is carved out.
+    //   EKS Pod Identity Agent (IPv6 twin of 169.254.170.23): hands out the
+    //   pod's IAM credentials.
+    ["fd00:ec2::23", "link-local"],
+    ["fd00:0ec2:0000:0000:0000:0000:0000:0023", "link-local"],
+    ["FD00:EC2::23", "link-local"],
+    ["fd00:ec2::0.0.0.35", "link-local"],
+    ["fd00:ec2::24", "private"],
+    //   Google Cloud metadata server on IPv6 (metadata.google.internal).
+    ["fd20:ce::254", "link-local"],
+    ["fd20:00ce:0000:0000:0000:0000:0000:0254", "link-local"],
+    ["FD20:CE::254", "link-local"],
+    ["fd20:ce::0.0.2.84", "link-local"],
+    ["fd20:ce::253", "private"],
+    //   Oracle Cloud (OCI) instance metadata on IPv6 -- 169.254.169.254 in the
+    //   low 32 bits, which is also how it is usually written.
+    ["fd00:c1::a9fe:a9fe", "link-local"],
+    ["fd00:00c1:0000:0000:0000:0000:a9fe:a9fe", "link-local"],
+    ["FD00:C1::A9FE:A9FE", "link-local"],
+    ["fd00:c1::169.254.169.254", "link-local"],
+    ["fd00:c1::a9fe:a9ff", "private"],
     ["ff00::1", "reserved"],
     ["ff02::1", "reserved"],
     ["ffff::1", "reserved"],
@@ -115,6 +149,11 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     expect(classifyIpAddress("[fe80::1]")).toBe("link-local");
     expect(classifyIpAddress("fe80::1%eth0")).toBe("link-local");
     expect(classifyIpAddress("[::ffff:100.64.0.1]")).toBe("private");
+    // The bracketed form is how every metadata address arrives from `URL`.
+    expect(classifyIpAddress("[fd00:ec2::254]")).toBe("link-local");
+    expect(classifyIpAddress("[fd00:ec2::23]")).toBe("link-local");
+    expect(classifyIpAddress("[fd20:ce::254]")).toBe("link-local");
+    expect(classifyIpAddress("[fd00:c1::a9fe:a9fe]")).toBe("link-local");
   });
 
   it.each([

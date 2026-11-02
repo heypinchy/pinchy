@@ -564,6 +564,8 @@ describe("webFetch", () => {
       ["100.100.100.200", "Alibaba Cloud metadata"],
       ["100.64.0.1", "CGNAT, bottom of 100.64.0.0/10"],
       ["100.127.255.255", "CGNAT, top of 100.64.0.0/10"],
+      // Private since the classifier reclassified it (admins may opt into it
+      // for Odoo/mail); web_fetch blocks the private class regardless.
       ["198.18.0.1", "benchmarking 198.18.0.0/15"],
       ["198.19.255.255", "benchmarking, top of the /15"],
       ["192.0.0.1", "IETF protocol assignments 192.0.0.0/24"],
@@ -593,6 +595,10 @@ describe("webFetch", () => {
       ["[::7f00:1]", "IPv4-compatible loopback"],
       ["[::100.100.100.200]", "IPv4-compatible Alibaba metadata"],
       ["[2002:7f00:1::1]", "6to4 wrapping 127.0.0.1"],
+      ["[fd00:ec2::254]", "EC2 IPv6 metadata"],
+      ["[fd00:ec2::23]", "EKS Pod Identity Agent"],
+      ["[fd20:ce::254]", "GCP IPv6 metadata"],
+      ["[fd00:c1::a9fe:a9fe]", "OCI IPv6 metadata"],
     ] as const;
 
     it.each(BLOCKED_LITERALS)("blocks the literal %s (%s)", async (host) => {

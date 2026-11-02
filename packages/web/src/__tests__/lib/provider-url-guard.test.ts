@@ -48,12 +48,17 @@ describe("classifyIp", () => {
     // the IPv6 forms that carry an IPv4 address were taken at face value.
     ["100.100.100.200", "blocked"], // Alibaba Cloud metadata, inside CGNAT
     ["fd00:ec2::254", "blocked"], // EC2 IPv6 metadata, inside ULA
+    ["fd00:ec2::23", "blocked"], // EKS Pod Identity Agent, inside ULA
+    ["fd20:ce::254", "blocked"], // GCP IPv6 metadata, inside ULA
+    ["fd00:c1::a9fe:a9fe", "blocked"], // OCI IPv6 metadata, inside ULA
     ["64:ff9b::a9fe:a9fe", "blocked"], // NAT64 -> 169.254.169.254
     ["64:ff9b::7f00:1", "blocked"], // NAT64 -> 127.0.0.1
     ["2002:a9fe:a9fe::1", "blocked"], // 6to4 -> 169.254.169.254
     ["2001:0:a9fe:a9fe::1", "blocked"], // Teredo
     ["::ffff:0:7f00:1", "blocked"], // SIIT IPv4-translated
-    ["198.18.0.1", "blocked"], // benchmarking
+    // benchmarking 198.18/15: private, not blocked -- operators reuse it
+    // internally and fake-IP DNS (Clash/Mihomo/Surge) hands it out.
+    ["198.18.0.1", "private"],
     ["192.0.2.1", "blocked"], // TEST-NET-1
     ["2001:db8::1", "blocked"], // documentation
     // ...while a self-hosted endpoint on the LAN or a tailnet keeps working.
@@ -171,6 +176,9 @@ describe("assertAllowedProviderUrl — address literals bypass DNS", () => {
   it.each([
     ["Alibaba Cloud metadata", "http://100.100.100.200/latest/meta-data/"],
     ["EC2 IPv6 metadata", "http://[fd00:ec2::254]/latest/meta-data/"],
+    ["EKS Pod Identity Agent", "http://[fd00:ec2::23]/v1/credentials"],
+    ["GCP IPv6 metadata", "http://[fd20:ce::254]/computeMetadata/v1/"],
+    ["OCI IPv6 metadata", "http://[fd00:c1::a9fe:a9fe]/opc/v2/instance/"],
     ["IMDS through NAT64", "http://[64:ff9b::a9fe:a9fe]/latest/"],
     ["IMDS through 6to4", "http://[2002:a9fe:a9fe::]/latest/"],
     ["IPv6 loopback", "http://[::1]/v1"],

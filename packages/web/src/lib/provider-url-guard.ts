@@ -12,7 +12,7 @@
 //   - ALWAYS hard-block the ranges that are never a legitimate model endpoint and
 //     ARE the classic SSRF prize: link-local 169.254.0.0/16 + fe80::/10 and the
 //     metadata services that sit inside private ranges (100.100.100.200,
-//     fd00:ec2::254) — IMDS credential theft — plus loopback, unspecified,
+//     and the EC2/EKS/GCP/OCI addresses inside ULA) — IMDS credential theft — plus loopback, unspecified,
 //     multicast, the reserved/documentation ranges, and every IPv6 form that
 //     carries an IPv4 address (mapped, NAT64, 6to4, Teredo, SIIT). Blocking
 //     these costs a real deployment nothing — nobody runs an LLM on
@@ -23,7 +23,7 @@
 //     `host-gateway` alias, which Docker on Linux and Docker Desktop answer
 //     with a private address (OrbStack answers 0.250.250.254, inside 0.0.0.0/8,
 //     which was blocked before the shared table too).
-//   - Private LANs (RFC1918 / ULA / CGNAT, i.e. Tailscale) are ALLOWED BY
+//   - Private LANs (RFC1918 / ULA / CGNAT, i.e. Tailscale / 198.18/15) are ALLOWED BY
 //     DEFAULT so self-hosted vLLM/TGI/LiteLLM on the local network works out of
 //     the box, but a hosted deployment can lock them down with
 //     PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1.

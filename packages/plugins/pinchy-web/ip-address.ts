@@ -29,10 +29,10 @@
  * callers weigh the categories differently:
  *
  *   - `loopback`, `unspecified`, `link-local` (cloud metadata lives there,
- *     including the two metadata addresses that sit inside private ranges),
+ *     including the metadata addresses that sit inside private ranges),
  *     `reserved`: never a real server. Every guard refuses these whatever the
  *     operator sets.
- *   - `private`: RFC-1918, ULA and CGNAT (Tailscale). An on-premise Odoo, mail
+ *   - `private`: RFC-1918, ULA, CGNAT (Tailscale) and 198.18/15. An on-premise Odoo, mail
  *     server or model endpoint legitimately lives here, so the admin-facing
  *     guards let an operator opt in (Odoo: `ALLOW_PRIVATE_URLS`, mail:
  *     `ALLOW_PRIVATE_MAIL_HOSTS`) or allow it by default and let a hosted
@@ -141,6 +141,14 @@ function classifyIPv4(octets: number[]): IpAddressClass {
   // 100.64.0.0/10 — carrier-grade NAT (RFC 6598). Tailscale hands every node a
   // 100.x address, so a self-hosted Odoo over a tailnet lives here.
   if (a === 100 && (b & 0xc0) === 64) return "private";
+  // 198.18.0.0/15 — benchmarking (RFC 2544). Not publicly routed, but not
+  // "never a server" either: operators number internal lab and transit
+  // networks from it, and fake-IP DNS (Clash, Mihomo, Surge) answers every
+  // name with an address from it — on such a host a perfectly ordinary Odoo
+  // or mail server resolves here. It used to be `reserved`, which left those
+  // installs no opt-in at all; it is private space in practice, so it gets the
+  // private class and the opt-ins that come with it.
+  if (a === 198 && (b & 0xfe) === 18) return "private";
 
   // Special-purpose blocks that are not routable on the public internet. A
   // request aimed at one is steering at an internal path, never at a server.
@@ -150,13 +158,40 @@ function classifyIPv4(octets: number[]): IpAddressClass {
   if (a === 192 && b === 0 && c === 2) return "reserved";
   if (a === 198 && b === 51 && c === 100) return "reserved";
   if (a === 203 && b === 0 && c === 113) return "reserved";
-  // 198.18.0.0/15 — benchmarking
-  if (a === 198 && (b & 0xfe) === 18) return "reserved";
   // 224.0.0.0/4 multicast, 240.0.0.0/4 reserved (includes 255.255.255.255)
   if (a >= 224) return "reserved";
 
   return "public";
 }
+
+/**
+ * Cloud metadata and credential endpoints that sit inside ULA (fc00::/7) — the
+ * IPv6 twins of 169.254.169.254. ULA is `private`, the class an operator may
+ * open, so each of these has to be named or opening the private network would
+ * open them too. Same reasoning as 100.100.100.200 inside CGNAT above.
+ *
+ *   fd00:ec2::254       AWS EC2 instance metadata (IMDS) over IPv6
+ *   fd00:ec2::23        AWS EKS Pod Identity Agent — hands a pod its IAM
+ *                       credentials (IPv6 twin of 169.254.170.23)
+ *   fd20:ce::254        Google Cloud metadata server (metadata.google.internal)
+ *   fd00:c1::a9fe:a9fe  Oracle Cloud (OCI) instance metadata — 169.254.169.254
+ *                       in the low 32 bits
+ *
+ * Exact addresses, not prefixes: the rest of each /64 is ordinary ULA as far as
+ * any provider documents. Azure's IMDS has no IPv6 address. Written as strings
+ * and parsed once, so every spelling of an address (expanded, upper case, a
+ * dotted-quad tail) matches by value.
+ */
+const IPV6_METADATA_ADDRESSES: readonly number[][] = [
+  "fd00:ec2::254",
+  "fd00:ec2::23",
+  "fd20:ce::254",
+  "fd00:c1::a9fe:a9fe",
+].map((address) => {
+  const groups = parseIPv6(address);
+  if (!groups) throw new Error(`ip-address.ts: unparseable metadata address ${address}`);
+  return groups;
+});
 
 /**
  * Rewrites an IP address literal into a single canonical spelling — dotted-quad
@@ -187,14 +222,11 @@ export function classifyIpAddress(address: string): IpAddressClass | null {
   if (!groups) return null;
 
   if (groups.every((group) => group === 0)) return "unspecified";
-  // fd00:ec2::254 — EC2's IPv6 instance-metadata endpoint. Same situation as
-  // 100.100.100.200: inside a range (ULA) an operator may open, so it is
-  // named here, before that range is matched below.
+  // Cloud metadata inside ULA — named here, before ULA is matched below.
   if (
-    groups[0] === 0xfd00 &&
-    groups[1] === 0x0ec2 &&
-    groups.slice(2, 7).every((group) => group === 0) &&
-    groups[7] === 0x0254
+    IPV6_METADATA_ADDRESSES.some((metadata) =>
+      metadata.every((group, index) => group === groups[index])
+    )
   ) {
     return "link-local";
   }

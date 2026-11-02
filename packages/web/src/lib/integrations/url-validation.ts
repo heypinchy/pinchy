@@ -74,9 +74,9 @@ const defaultUrlHostResolver: UrlHostResolver = async (host) => {
 
 // Two messages, because the two cases deserve different advice. Loopback,
 // link-local (cloud metadata), the unspecified address and the reserved
-// special-purpose ranges (multicast, benchmarking, TEST-NETs, ...) are never a real
+// special-purpose ranges (multicast, TEST-NETs, 240/4, ...) are never a real
 // Odoo server, so there is nothing to trade off and nothing to suggest. An
-// RFC-1918 / ULA / CGNAT (Tailscale) address, on the other hand, is exactly where an on-premise
+// RFC-1918 / ULA / CGNAT (Tailscale) / 198.18/15 address, on the other hand, is exactly where an on-premise
 // Odoo legitimately lives — so that one names the way to allow it. Same split
 // as `mail-host-guard.ts`; both strings keep the word "private" so a caller
 // asserting on it stays honest.
@@ -100,10 +100,11 @@ function blockMessageFor(addressClass: IpAddressClass): string {
  * Two tiers, the same as `mail-host-guard.ts`:
  *
  *   - Always refused: loopback, unspecified, link-local (cloud metadata,
- *     including 100.100.100.200 and fd00:ec2::254), and the reserved
+ *     including 100.100.100.200 and the EC2/EKS/GCP/OCI addresses inside
+ *     ULA), and the reserved
  *     special-purpose ranges. No Odoo server lives there.
  *   - Refused unless `ALLOW_PRIVATE_URLS=1`: the `private` class — RFC-1918,
- *     ULA, CGNAT (Tailscale). That is where an on-premise Odoo lives, and also
+ *     ULA, CGNAT (Tailscale), 198.18/15. That is where an on-premise Odoo lives, and also
  *     where the odoo-e2e and eval stacks reach odoo-mock on the Docker network.
  *
  * The flag opens that one class and nothing else. It used to switch the whole
