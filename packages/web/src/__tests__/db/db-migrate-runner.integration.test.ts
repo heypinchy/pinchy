@@ -23,6 +23,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import postgres from "postgres";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -35,9 +36,27 @@ const MIGRATIONS_DIR = join(WEB_ROOT, "drizzle");
 const OK_DB = `pinchy_db_migrate_ok_${process.pid}`;
 const FAIL_DB = `pinchy_db_migrate_fail_${process.pid}`;
 
+// The failing run connects as a role of its own, with a password nothing else
+// in the output could contain by accident. Asserting "the password is not in
+// the output" with the suite's own credentials proves nothing useful: the
+// usual throwaway setup is `pinchy`/`pinchy`, and `pinchy` is a substring of
+// FAIL_DB and of the worktree path, so the check failed on a runner that leaked
+// nothing — and a check that is red for the wrong reason gets loosened, after
+// which it would also stay green for a runner that DID leak. 32 hex chars of
+// fresh randomness can only appear in the output if the runner printed it.
+const PROBE_ROLE = `pinchy_db_migrate_probe_${process.pid}`;
+const PROBE_PASSWORD = randomBytes(16).toString("hex");
+
 function withDbName(url: string, name: string): string {
   const u = new URL(url);
   u.pathname = `/${name}`;
+  return u.toString();
+}
+
+function withCredentials(url: string, user: string, password: string): string {
+  const u = new URL(url);
+  u.username = user;
+  u.password = password;
   return u.toString();
 }
 
@@ -87,8 +106,15 @@ describe("db:migrate runner", () => {
     try {
       for (const name of [OK_DB, FAIL_DB]) {
         await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
-        await admin.unsafe(`CREATE DATABASE ${name}`);
       }
+      await admin.unsafe(`DROP ROLE IF EXISTS ${PROBE_ROLE}`);
+      // SUPERUSER because migration 0054 runs `CREATE EXTENSION vector`, which
+      // pgvector does not mark trusted. The role exists only for this file and
+      // is dropped in afterAll; all it adds over the suite's own user is a
+      // password that cannot collide with anything.
+      await admin.unsafe(`CREATE ROLE ${PROBE_ROLE} LOGIN SUPERUSER PASSWORD '${PROBE_PASSWORD}'`);
+      await admin.unsafe(`CREATE DATABASE ${OK_DB}`);
+      await admin.unsafe(`CREATE DATABASE ${FAIL_DB} OWNER ${PROBE_ROLE}`);
     } finally {
       await admin.end();
     }
@@ -100,6 +126,7 @@ describe("db:migrate runner", () => {
       for (const name of [OK_DB, FAIL_DB]) {
         await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
       }
+      await admin.unsafe(`DROP ROLE IF EXISTS ${PROBE_ROLE}`);
     } finally {
       await admin.end();
     }
@@ -114,7 +141,7 @@ describe("db:migrate runner", () => {
   });
 
   it("reports the migration, the statement and the PostgresError when one fails", async () => {
-    const url = withDbName(baseUrl, FAIL_DB);
+    const url = withCredentials(withDbName(baseUrl, FAIL_DB), PROBE_ROLE, PROBE_PASSWORD);
 
     // Squat on the table 0058_sudden_jubilee creates. Migrations 0000-0057
     // then apply and 0058 aborts — the shape of a real half-upgraded database.
@@ -141,9 +168,8 @@ describe("db:migrate runner", () => {
     // investigation in a minute — but never the password that gets it there.
     // stderr from this runner lands in CI logs and container logs verbatim.
     expect(run.output).toContain(FAIL_DB);
-    const password = new URL(url).password;
-    expect(password.length).toBeGreaterThan(0);
-    expect(run.output).not.toContain(password);
+    expect(new URL(url).password).toBe(PROBE_PASSWORD); // the run really used it
+    expect(run.output).not.toContain(PROBE_PASSWORD);
 
     // The report claims nothing was applied. Prove that claim is true rather
     // than merely reassuring: drizzle wraps all pending migrations in one
