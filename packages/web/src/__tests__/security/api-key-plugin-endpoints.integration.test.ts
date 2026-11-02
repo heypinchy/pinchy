@@ -36,8 +36,8 @@
 // 404, while leaving Pinchy's own server-side `auth.api.createApiKey({body})`
 // call (no headers/request) untouched.
 //
-// Provisioned by global-setup.ts (fresh migrated DB), truncated between
-// tests (setup.ts). audit-exempt: test-only.
+// Provisioned by global-setup.ts (fresh migrated DB), emptied between
+// tests by the integration reset (setup.ts). audit-exempt: test-only.
 
 import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";

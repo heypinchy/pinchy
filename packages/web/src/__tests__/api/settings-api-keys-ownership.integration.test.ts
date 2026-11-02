@@ -18,9 +18,9 @@
 // `users` would be a category error AND would cascade-delete live automation
 // credentials the moment someone offboards.
 //
-// Provisioned by global-setup.ts and truncated between tests (setup.ts). Only
-// the session and `after()` are faked; the DB, the key plugin, and the audit
-// chain run for real.
+// Provisioned by global-setup.ts and emptied between tests by the integration
+// reset (setup.ts). Only the session and `after()` are faked; the DB, the key
+// plugin, and the audit chain run for real.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";

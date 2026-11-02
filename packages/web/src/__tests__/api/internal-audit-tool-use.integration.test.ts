@@ -18,7 +18,7 @@
 // pseudonym — which this test's first case asserts against.
 //
 // Uses a real PostgreSQL test database (provisioned by global-setup.ts and
-// truncated between tests by setup.ts). Only the gateway-token check is stubbed;
+// emptied between tests by the integration reset). Only the gateway-token check is stubbed;
 // the db lookup and appendAuditLog write run for real.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
