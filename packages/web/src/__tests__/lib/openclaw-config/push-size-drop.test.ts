@@ -92,6 +92,8 @@ class FakeOpenClaw {
   accepted: string[] = [];
   /** Runs after every accepted write — lets a test interleave another writer. */
   onAccepted?: (acceptedCount: number) => void;
+  /** Rate-limits the n-th apply (1-based) when it returns true. */
+  rateLimitWhen?: (applyCount: number) => boolean;
   private writes = 0;
   constructor(
     initial: Json,
@@ -115,7 +117,10 @@ class FakeOpenClaw {
       get: vi.fn(async () => ({ hash: `h${this.writes}`, config: JSON.parse(this.file) as Json })),
       apply: vi.fn(async (raw: string) => {
         this.applies.push(raw);
-        if (this.rateLimitEvery && this.applies.length % this.rateLimitEvery === 0) {
+        if (
+          (this.rateLimitEvery && this.applies.length % this.rateLimitEvery === 0) ||
+          this.rateLimitWhen?.(this.applies.length)
+        ) {
           throw new Error("rate limit exceeded for config.apply; retry after 1s");
         }
         const parsed = JSON.parse(raw) as Json;
@@ -378,7 +383,7 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
     expect(resume).toHaveBeenCalledTimes(1);
   });
 
-  it("queues no follow-up when a full regenerate supersedes the stepped delivery — it carries the target itself", async () => {
+  it("runs no follow-up when a full regenerate supersedes the stepped delivery and delivers the target itself", async () => {
     vi.useFakeTimers();
     const oc = new FakeOpenClaw(
       pinchyConfig({ "acme-llm": acmeProvider }),
@@ -407,5 +412,145 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
     expect(oc.providers()).not.toHaveProperty("acme-llm");
     expect(firstResume).not.toHaveBeenCalled();
     expect(secondResume).not.toHaveBeenCalled();
+  });
+
+  // OpenClaw checks its control-plane rate limit (~3 applies per window) BEFORE
+  // the size check. A deletion whose every apply is rate-limited never sees
+  // the size-drop refusal that used to be the only shrink signal, ran out its
+  // rate-limit budget and fell back to writing the shrunken file directly —
+  // past OpenClaw's guard, and restored from .bak on OpenClaw's next start.
+  // regenerateOpenClawConfig knows the shrink up front (its own guard just
+  // discounted the deleted provider), and says so.
+  it("never writes the file when a provider deletion is rate-limited before OpenClaw's first refusal, and queues one follow-up", async () => {
+    vi.useFakeTimers();
+    const oc = new FakeOpenClaw(
+      pinchyConfig({ "acme-llm": acmeProvider }),
+      new Set([anthropicRef.id])
+    );
+    oc.rateLimitWhen = () => true;
+    mockGetClient.mockReturnValue(oc.client);
+    const before = oc.file;
+    const onChangeApplied = vi.fn();
+    const resume = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      onChangeApplied,
+      fullRegenerate: true,
+      expectsProviderShrink: true,
+      resumeStrandedShrink: resume,
+    });
+    await drainWithFakeTimers();
+
+    expect(oc.applies.length, "precondition: the push did try").toBeGreaterThan(0);
+    expect(oc.rejections, "precondition: OpenClaw never got to its size check").toHaveLength(0);
+    expect(configFileWrites()).toHaveLength(0);
+    expect(oc.file).toBe(before);
+    expect(onChangeApplied).not.toHaveBeenCalled();
+    // OpenClaw is unchanged, but the drop was transient — try once more.
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("never writes the file when a provider deletion cannot reach a connected OpenClaw, and queues one follow-up", async () => {
+    vi.useFakeTimers();
+    const notConnected = () => Promise.reject(new Error("Not connected to OpenClaw Gateway"));
+    const client = { config: { get: vi.fn(notConnected), apply: vi.fn(notConnected) } };
+    mockGetClient.mockReturnValue(client);
+    const onChangeApplied = vi.fn();
+    const resume = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      onChangeApplied,
+      fullRegenerate: true,
+      expectsProviderShrink: true,
+      resumeStrandedShrink: resume,
+    });
+    await drainWithFakeTimers();
+
+    expect(client.config.get, "precondition: the push did retry").toHaveBeenCalled();
+    expect(configFileWrites()).toHaveLength(0);
+    expect(onChangeApplied).not.toHaveBeenCalled();
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues a follow-up when OpenClaw calibrated the shrink but rate-limited every step (none landed)", async () => {
+    // The refusal arrived, so the push knows the shrink — but OpenClaw then
+    // rate-limits every step until the budget runs out. Nothing was stepped,
+    // and the drop is transient: the deletion still has to reach OpenClaw.
+    vi.useFakeTimers();
+    const oc = new FakeOpenClaw(
+      pinchyConfig({ "acme-llm": acmeProvider }),
+      new Set([anthropicRef.id])
+    );
+    oc.rateLimitWhen = (n) => n > 1;
+    mockGetClient.mockReturnValue(oc.client);
+    const resume = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      fullRegenerate: true,
+      resumeStrandedShrink: resume,
+    });
+    await drainWithFakeTimers();
+
+    expect(oc.rejections, "precondition: calibrated from one refusal").toHaveLength(1);
+    expect(oc.accepted, "precondition: no step landed").toHaveLength(0);
+    expect(configFileWrites()).toHaveLength(0);
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a queued follow-up when the full regenerate that would have finished it is superseded by a partial write", async () => {
+    // A strands (a targeted write supersedes it after step 1) and queues a
+    // follow-up. Then a full regenerate B starts — and a targeted write
+    // supersedes B before B delivers anything. B starting must not have
+    // cancelled A's follow-up: only a full regenerate that REACHES OpenClaw
+    // makes it moot. Otherwise the stub is stranded for good.
+    vi.useFakeTimers();
+    const oc = new FakeOpenClaw(
+      pinchyConfig({ "acme-llm": acmeProvider }),
+      new Set([anthropicRef.id])
+    );
+    mockGetClient.mockReturnValue(oc.client);
+    const withTelegram = (enabled: boolean) =>
+      serialize({ ...(JSON.parse(oc.file) as Json), channels: { telegram: { enabled } } });
+    oc.onAccepted = (n) => {
+      if (n === 1) pushConfigInBackground(withTelegram(true));
+    };
+    const resumeA = vi.fn();
+    const resumeB = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      fullRegenerate: true,
+      resumeStrandedShrink: resumeA,
+    });
+    // Settle A and the targeted write, well inside the follow-up's debounce.
+    for (let i = 0; i < 100 && getPendingConfigPushCount() > 0; i++) {
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    expect(getPendingConfigPushCount()).toBe(0);
+    expect(resumeA, "precondition: the follow-up is still pending").not.toHaveBeenCalled();
+    oc.onAccepted = undefined;
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      fullRegenerate: true,
+      resumeStrandedShrink: resumeB,
+    });
+    pushConfigInBackground(withTelegram(false));
+    await drainWithFakeTimers();
+
+    expect(oc.providers(), "precondition: OpenClaw is still on the stub").toHaveProperty(
+      "acme-llm"
+    );
+    expect(resumeA.mock.calls.length + resumeB.mock.calls.length).toBe(1);
   });
 });

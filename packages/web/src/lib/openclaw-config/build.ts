@@ -1751,6 +1751,8 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
   // hashes diverge and chokidar fires a redundant reload that diffs against
   // a stale `currentCompareConfig` — see #193 / openclaw#75534.
   const newContent = JSON.stringify(config, null, 2).trimEnd() + "\n";
+  // Set below when the guard lets a deletion through that OpenClaw will refuse.
+  let expectsProviderShrink = false;
   try {
     const existing = readFileSync(CONFIG_PATH, "utf-8");
     if (existing === newContent) return;
@@ -1807,6 +1809,13 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
       );
       return;
     }
+    // Past this guard only because deleted providers were discounted, and
+    // still under half the file: OpenClaw will refuse it as a size drop. The
+    // push must know before OpenClaw says so — its rate limit can keep the
+    // refusal from ever arriving, and the file-write fallback must not run
+    // for this payload (see MAX_SHRINK_STEPS in write.ts).
+    expectsProviderShrink =
+      sizeBaseline < existing.length && newContent.length < existing.length * 0.5;
   } catch {
     // File doesn't exist yet — write it
   }
@@ -1889,6 +1898,7 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
   // interactive save flows (Odoo "Save & Restart", UI waits for 200 OK).
   pushConfigInBackground(newContent, {
     fullRegenerate: true,
+    expectsProviderShrink,
     resumeStrandedShrink: options.shrinkFollowUp
       ? undefined
       : () => {

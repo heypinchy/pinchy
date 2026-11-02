@@ -309,6 +309,10 @@ beforeEach(() => {
   // one gets past the supersede check at all. See `_supersedePendingPushes`
   // in write.ts.
   _supersedePendingPushes();
+  // And the process-wide follow-up a stranded provider deletion queues
+  // (scheduleShrinkResume): it is a timer, not a coroutine, so superseding
+  // does not reach it — left alone it fires a regenerate into a later test.
+  _resetConfigPushState();
 });
 
 // Drift guard: re-export the shared `isOpenClawLocalBaseUrl` (see
@@ -8848,6 +8852,53 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
         logs.flatMap((line) => [...line.matchAll(/push gen=(\d+)/g)].map((m) => m[1]))
       );
       // The original regenerate's push, and one follow-up — never a third.
+      expect(generations.size).toBe(2);
+      expect(logs.filter((l) => l.includes("queueing a follow-up regenerate"))).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  }, 60_000);
+
+  it("never writes a deletion's shrunken file when OpenClaw rate-limits it before its first size-drop refusal", async () => {
+    // OpenClaw checks its rate limit before its size check, so a push that is
+    // rate-limited throughout never hears the refusal. The regenerate already
+    // knows the payload is a provider deletion that more than halves the file,
+    // and must tell the push — otherwise its rate-limit fallback writes the
+    // file past OpenClaw's guard. One follow-up regenerate, which queues none.
+    const existing = await installWithLargeCustomProvider();
+    mockedReadFileSync.mockReturnValue(existing);
+    const apply = vi.fn(async () => {
+      throw new Error("rate limit exceeded for config.apply; retry after 1s");
+    });
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => ({
+          hash: "h",
+          config: JSON.parse(existing),
+          parsed: JSON.parse(existing),
+        })),
+        apply,
+      },
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const logs: string[] = [];
+    const capture = (...args: unknown[]) => void logs.push(args.map(String).join(" "));
+    vi.spyOn(console, "log").mockImplementation(capture);
+    vi.spyOn(console, "warn").mockImplementation(capture);
+    vi.spyOn(console, "error").mockImplementation(capture);
+    vi.useFakeTimers();
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+      for (let i = 0; i < 400; i++) await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(apply, "precondition: the push did try").toHaveBeenCalled();
+      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      const generations = new Set(
+        logs.flatMap((line) => [...line.matchAll(/push gen=(\d+)/g)].map((m) => m[1]))
+      );
       expect(generations.size).toBe(2);
       expect(logs.filter((l) => l.includes("queueing a follow-up regenerate"))).toHaveLength(1);
     } finally {

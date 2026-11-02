@@ -36,8 +36,6 @@
 interface ConfigPushState {
   pending: number;
   generation: number;
-  /** Whether the newest push carries a full regenerate (see markLatestPushKind). */
-  latestIsFullRegenerate: boolean;
   /** Pending follow-up regenerate for a stranded shrink (see scheduleShrinkResume). */
   shrinkResume: ReturnType<typeof setTimeout> | undefined;
 }
@@ -65,14 +63,12 @@ function state(): ConfigPushState {
     globalThis.__pinchyConfigPushState = {
       pending: 0,
       generation: 0,
-      latestIsFullRegenerate: false,
       shrinkResume: undefined,
     };
     return globalThis.__pinchyConfigPushState;
   }
   existing.pending ??= 0;
   existing.generation ??= 0;
-  existing.latestIsFullRegenerate ??= false;
   return existing as ConfigPushState;
 }
 
@@ -118,24 +114,18 @@ export function getCurrentConfigPushGeneration(): number {
 }
 
 /**
- * Record what the push that just claimed the newest generation carries. A full
- * regenerate is the whole target config: it supersedes a stranded shrink
- * completely (it steps on from wherever OpenClaw stands), so any follow-up
- * already queued for one is moot. A partial writer — a targeted channel update
- * that reads the on-disk file and changes one block — is not.
+ * Cancel a queued follow-up regenerate (see scheduleShrinkResume). Called when
+ * a full regenerate — the whole target config — has REACHED OpenClaw (applied,
+ * or already in place), which makes any stranded shrink moot.
+ *
+ * Not when one merely starts: a full regenerate can still be superseded by a
+ * partial writer before it delivers anything, and a follow-up cancelled at its
+ * start would then be lost with OpenClaw still on the deleted provider's stub.
  */
-export function markLatestPushKind(fullRegenerate: boolean): void {
+export function cancelShrinkResume(): void {
   const s = state();
-  s.latestIsFullRegenerate = fullRegenerate;
-  if (fullRegenerate && s.shrinkResume !== undefined) {
-    clearTimeout(s.shrinkResume);
-    s.shrinkResume = undefined;
-  }
-}
-
-/** Whether the newest push is a full regenerate. */
-export function isLatestPushFullRegenerate(): boolean {
-  return state().latestIsFullRegenerate;
+  if (s.shrinkResume !== undefined) clearTimeout(s.shrinkResume);
+  s.shrinkResume = undefined;
 }
 
 /** How long a stranded shrink waits before its follow-up regenerate runs. */
@@ -148,15 +138,16 @@ export const SHRINK_RESUME_DELAY_MS = 2_000;
 const SHRINK_RESUME_MAX_RECHECKS = 60;
 
 /**
- * Queue one follow-up full regenerate for a stepped provider deletion that
- * stopped short of its target — superseded by a partial writer, or dropped
- * after OpenClaw had already accepted a step. OpenClaw then sits on an
- * intermediate config carrying the deleted provider's stub, and nothing else
- * would ever finish the job.
+ * Queue one follow-up full regenerate for a provider deletion that stopped
+ * short of its target — superseded before it finished, or dropped for a
+ * transient reason (rate limit, retries exhausted, OpenClaw unreachable) or
+ * after OpenClaw had already accepted a step. OpenClaw then sits on the old
+ * config or on an intermediate one carrying the deleted provider's stub, and
+ * nothing else would finish the job before the next config change.
  *
  * Debounced and coalesced process-wide: one pending follow-up at most, the
- * latest caller's `resume` wins, and a full regenerate starting in the
- * meantime cancels it (markLatestPushKind). It waits for pushes still in
+ * latest caller's `resume` wins, and a full regenerate that reaches OpenClaw
+ * in the meantime cancels it (cancelShrinkResume). It waits for pushes still in
  * flight so it does not supersede them. Not recursive by itself: `resume` is a
  * regenerate whose own push must not pass a `resume` of its own (build.ts).
  */
@@ -178,13 +169,14 @@ export function scheduleShrinkResume(resume: () => void): void {
   s.shrinkResume.unref?.();
 }
 
-/** Test-only: reset the pending counter between tests. Do not call in app code. */
+/**
+ * Test-only: reset the pending counter and drop a queued follow-up regenerate
+ * between tests. Do not call in app code.
+ */
 export function _resetConfigPushState(): void {
   const s = state();
   s.pending = 0;
-  s.latestIsFullRegenerate = false;
-  if (s.shrinkResume !== undefined) clearTimeout(s.shrinkResume);
-  s.shrinkResume = undefined;
+  cancelShrinkResume();
 }
 
 // There is deliberately NO reset for `generation`. It is a cancellation token
