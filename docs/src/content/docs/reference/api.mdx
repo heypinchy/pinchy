@@ -2002,9 +2002,9 @@ Your own pending confirmations, newest first — the source for the in-app confi
 
 **Query parameters:**
 
-| Parameter | Description                                                                                                                                                                                                                                                                                                                                      |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `known`   | Optional. Comma-separated ids of confirmations you already hold. They are listed as usual but **without** `argsSummary`, which never changes once stored and can be large (up to roughly half a megabyte), so a client that polls this list receives each summary only once. Anything that is not an id is ignored, and at most 50 ids are read. |
+| Parameter | Description                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `known`   | Optional. Comma-separated ids of confirmations you already hold. They are listed as usual but **without** `argsSummary`, which never changes once stored and can be large (0.5–1.5 MB of JSON in the worst case, the upper end for non-Latin text), so a client that polls this list receives each summary only once. Anything that is not an id is ignored, and at most 200 ids are read; a confirmation past that is listed with its summary again. |
 
 **Response:**
 

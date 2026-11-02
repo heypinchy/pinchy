@@ -1,5 +1,5 @@
 import { apiGet, apiPost } from "@/lib/api-client";
-import type { DecisionBody } from "@/lib/schemas/approvals";
+import { MAX_KNOWN_APPROVALS, type DecisionBody } from "@/lib/schemas/approvals";
 
 export interface PendingApproval {
   id: string;
@@ -20,7 +20,10 @@ export type ListedApproval = Omit<PendingApproval, "argsSummary"> &
 export function fetchPendingApprovals(
   known: readonly string[] = []
 ): Promise<{ approvals: ListedApproval[] }> {
-  const query = known.length > 0 ? `?known=${known.map(encodeURIComponent).join(",")}` : "";
+  // Bounded like the route's read of it: an unbounded list could grow the
+  // request line past what a proxy accepts, and fail the poll outright.
+  const named = known.slice(0, MAX_KNOWN_APPROVALS);
+  const query = named.length > 0 ? `?known=${named.map(encodeURIComponent).join(",")}` : "";
   return apiGet<{ approvals: ListedApproval[] }>(`/api/approvals${query}`);
 }
 

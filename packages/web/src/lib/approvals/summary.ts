@@ -105,9 +105,10 @@ const RECIPIENT_KEY = /^(to|cc|bcc)$/i;
  * about twice MAX_TOTAL_CHARS (one-digit numbers, `"`-heavy text) and close to
  * it for ordinary text, i.e. a jsonb row of 0.5–1 MB in the worst case, and
  * up to ~1.5 MB of UTF-8 for non-Latin text. The inbox poll lists every
- * pending card, at most MAX_PENDING_PER_REQUESTER (20) for one person, but
- * sends each summary once: a poll names the cards it already holds (`known`)
- * and gets those back without their summary.
+ * pending card — MAX_PENDING_PER_REQUESTER (20) per agent, so a person using
+ * several agents may have more — but sends each summary once: a poll names the
+ * cards it already holds (`known`, up to MAX_KNOWN_APPROVALS) and gets those
+ * back without their summary.
  */
 /** Longest string stored whole, in characters as sent (code points): a
  * report of ~60 pages, or a long mail body with room to spare. */

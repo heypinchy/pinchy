@@ -63,6 +63,7 @@ import { POST as reportResolution } from "@/app/api/internal/approvals/resolutio
 import { MAX_PENDING_PER_REQUESTER, linkApproval } from "@/lib/approvals/service";
 import { setInstancePolicy } from "@/lib/instance-policy";
 import { computeArgsDigest } from "@/lib/approvals/digest";
+import { MAX_KNOWN_APPROVALS } from "@/lib/schemas/approvals";
 import { getOrCreatePluginSecret } from "@/lib/plugin-secrets-source";
 // pinchy-odoo's own encoder, so the refs below are real ones minted under the
 // key the gate reads from the settings DB.
@@ -336,7 +337,7 @@ describe("approval routes (integration, real DB)", () => {
     expect(list.approvals[0].argsSummary).toEqual({ recordId: 5 });
   });
 
-  // A summary may be half a megabyte, and the list is polled every five
+  // A summary may be 0.5–1.5 MB, and the list is polled every five
   // seconds. It never changes once stored, so a poll that names the cards it
   // already holds gets those back without their summary.
   it("leaves out the summary of a card the poll says it already holds", async () => {
@@ -359,6 +360,59 @@ describe("approval routes (integration, real DB)", () => {
     expect(polled.approvals[0].argsSummary).toEqual(newest.argsSummary);
     expect(polled.approvals[1]).not.toHaveProperty("argsSummary");
     expect(polled.approvals[1].toolName).toBe("odoo_write");
+  });
+
+  // Fifth review of #1242: `known` was capped at 50 on the grounds that a
+  // requester has at most 20 pending — but that cap is per agent, so a person
+  // working with several agents passed 50 and had the oldest summaries re-sent
+  // on every five-second poll.
+  it("honours `known` for a person with more pending cards than one agent allows", async () => {
+    const agentsUsed = [agent, await seedAgent(user.id), await seedAgent(user.id)];
+    for (const a of agentsUsed) {
+      for (let i = 0; i < MAX_PENDING_PER_REQUESTER; i++) {
+        await gateCheck(
+          gateReq({
+            agentId: a.id,
+            sessionKey: `agent:${a.id}:direct:${user.id}`,
+            toolName: "odoo_write",
+            params: { recordId: i },
+          })
+        );
+      }
+    }
+    setSession(user);
+    const all = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(all.approvals).toHaveLength(3 * MAX_PENDING_PER_REQUESTER);
+
+    const ids = all.approvals.map((a: { id: string }) => a.id).join(",");
+    const polled = await (
+      await listApprovals(new NextRequest(`http://localhost/api/approvals?known=${ids}`), {})
+    ).json();
+    expect(polled.approvals).toHaveLength(3 * MAX_PENDING_PER_REQUESTER);
+    expect(polled.approvals.filter((a: object) => "argsSummary" in a)).toEqual([]);
+  });
+
+  // Past the bound the route stops reading ids, so a held card beyond it is
+  // simply sent again — wasteful, never wrong.
+  it("ignores ids past MAX_KNOWN_APPROVALS, which at worst re-sends a summary", async () => {
+    await gateCheck(gateReq(gateBody()));
+    setSession(user);
+    const [card] = (
+      await (await listApprovals(new NextRequest("http://localhost/api/approvals"), {})).json()
+    ).approvals;
+    const filler = Array.from(
+      { length: MAX_KNOWN_APPROVALS },
+      (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`
+    );
+    const polled = await (
+      await listApprovals(
+        new NextRequest(`http://localhost/api/approvals?known=${[...filler, card.id].join(",")}`),
+        {}
+      )
+    ).json();
+    expect(polled.approvals[0].argsSummary).toEqual({ recordId: 5 });
   });
 
   it("stores what will actually run: a smuggled second recipient and the full odoo values stay visible", async () => {

@@ -3,17 +3,18 @@ import { and, desc, eq, gt, inArray } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { toolApproval, agents } from "@/db/schema";
+import { MAX_KNOWN_APPROVALS } from "@/lib/schemas/approvals";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** More than a requester can have pending (MAX_PENDING_PER_REQUESTER is 20). */
-const MAX_KNOWN = 50;
 
 /**
  * The ids in `?known=`, the cards the poller already holds. A stored summary
- * never changes, and one may be half a megabyte (a long report written to a
- * file), so a card the caller already holds comes back without it — the list
- * is polled every five seconds for as long as a card waits. Anything that is
- * not an id is ignored, which at worst sends a summary twice.
+ * never changes, and one may be 0.5–1.5 MB as JSON (a long report written to a
+ * file; see the bounds in `approvals/summary.ts`), so a card the caller
+ * already holds comes back without it — the list is polled every five seconds
+ * for as long as a card waits. Read up to MAX_KNOWN_APPROVALS ids (why that
+ * number: see its definition); anything past it, or not an id, is ignored,
+ * which at worst sends a summary again.
  */
 function knownIds(params: URLSearchParams): Set<string> {
   const raw = params.get("known") ?? "";
@@ -21,7 +22,7 @@ function knownIds(params: URLSearchParams): Set<string> {
     raw
       .split(",")
       .filter((id) => UUID.test(id))
-      .slice(0, MAX_KNOWN)
+      .slice(0, MAX_KNOWN_APPROVALS)
   );
 }
 

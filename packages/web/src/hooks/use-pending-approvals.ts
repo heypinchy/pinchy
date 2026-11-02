@@ -38,7 +38,7 @@ async function poll(): Promise<void> {
   // so skip the request and catch up on the visibility flip.
   if (document.visibilityState === "hidden") return;
   try {
-    // A stored summary never changes and may be half a megabyte, so the poll
+    // A stored summary never changes and may be 0.5–1.5 MB, so the poll
     // names the cards it holds and gets those back without one. The map is
     // taken BEFORE the request: a card decided meanwhile leaves the snapshot,
     // but its summary must still be at hand if the answer lists it again.
