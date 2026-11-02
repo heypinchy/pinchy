@@ -80,12 +80,7 @@ function readSecretBaseline(): Record<string, unknown> | undefined {
 }
 
 export function readExistingConfig(): Record<string, unknown> {
-  // Retry briefly on EACCES. OpenClaw rewrites openclaw.json as root:0600 on
-  // every internal SIGUSR1 restart; start-openclaw.sh's 3s chmod loop opens
-  // it back up to 0666, but Pinchy (uid 999) can hit a small window where
-  // the file is unreadable.
-  //
-  // Two outcomes after this loop:
+  // Two outcomes besides a parsed config:
   //   - ENOENT or parse error: returns {} (file genuinely missing or invalid
   //     — callers treat as cold-start).
   //   - Persistent EACCES: THROWS so callers can distinguish "file doesn't
@@ -96,20 +91,37 @@ export function readExistingConfig(): Record<string, unknown> {
   //     OC fields) and emitting a thin payload that triggers the inotify
   //     cascade documented in #314. Targeted writes already throw on
   //     empty `existing.gateway.mode`; this just surfaces the same race
-  //     loudly one layer up. 5 × 100ms covers two chmod-loop ticks worst case.
+  //     loudly one layer up.
+  const content = readConfigContent();
+  if (content === undefined) return {};
+  try {
+    return JSON.parse(content);
+  } catch {
+    // A parse failure is a bug we can't paper over here.
+    return {};
+  }
+}
+
+/**
+ * openclaw.json as it is on disk, or undefined when there is none.
+ *
+ * Retries briefly on EACCES. OpenClaw rewrites openclaw.json as root:0600 on
+ * every internal SIGUSR1 restart; start-openclaw.sh's chmod loop opens it back
+ * up to 0666, but Pinchy (uid 999) can hit a small window where the file is
+ * unreadable. 5 × 100ms covers two chmod-loop ticks worst case. A persistent
+ * EACCES THROWS: an unreadable file is not a missing one, and a caller that
+ * took it for one would judge its write against nothing. Any other read error
+ * counts as "no file", as it always has (ENOENT on a cold start).
+ */
+export function readConfigContent(): string | undefined {
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      return JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+      return readFileSync(CONFIG_PATH, "utf-8");
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code !== "EACCES") {
-        // ENOENT (file not yet written) is a normal cold-start case; other
-        // errors (parse failures, etc.) are bugs we can't paper over here.
-        return {};
-      }
+      if ((err as NodeJS.ErrnoException)?.code !== "EACCES") return undefined;
       if (attempt === 4) {
         console.warn(
-          "[openclaw-config] readExistingConfig: persistent EACCES on",
+          "[openclaw-config] persistent EACCES on",
           CONFIG_PATH,
           "— propagating to caller (must skip-and-retry the regenerate)"
         );
@@ -123,7 +135,7 @@ export function readExistingConfig(): Record<string, unknown> {
     }
   }
   // Unreachable — every branch of the loop either returns or throws.
-  throw new Error("[openclaw-config] readExistingConfig: unreachable");
+  throw new Error("[openclaw-config] readConfigContent: unreachable");
 }
 
 // Monotonically-increasing counter that lets each pushConfigInBackground call

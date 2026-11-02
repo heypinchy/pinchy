@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "fs";
+import { writeFileSync } from "fs";
 import { dirname } from "path";
 import { isDeepStrictEqual } from "util";
 import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
@@ -39,7 +39,12 @@ import { getSkillBody, isKnownSkill } from "@/lib/skills";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
-import { readExistingConfig, pushConfigInBackground, writeConfigAtomic } from "./write";
+import {
+  readConfigContent,
+  readExistingConfig,
+  pushConfigInBackground,
+  writeConfigAtomic,
+} from "./write";
 import { sizeGuardBaseline, expectsSizeDropRefusal } from "./size-drop";
 import {
   nextRegenerateSequence,
@@ -1776,11 +1781,22 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   const newContent = JSON.stringify(config, null, 2).trimEnd() + "\n";
   // The file as it is NOW, not as this regenerate read it at the start: a push
   // may have landed in between.
+  // Unreadable (OpenClaw's root:0600 restart write, before the chmod loop
+  // reopens it) is not "missing": the size guard, the key-less bridge and the
+  // shrink expectation below all judge against this file, and secrets.json
+  // must not lose a key a file we could not read may still name. So a
+  // persistent EACCES skips the regenerate, writing neither file — like the
+  // first read above.
   let onDiskContent: string | undefined;
   try {
-    onDiskContent = readFileSync(CONFIG_PATH, "utf-8");
-  } catch {
-    // File doesn't exist yet — write it
+    onDiskContent = readConfigContent();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "EACCES") throw err;
+    console.error(
+      "[openclaw-config] regenerate skipped: openclaw.json became unreadable " +
+        "(EACCES) before the write. See #314. No write performed."
+    );
+    return;
   }
   let onDiskConfig: Record<string, unknown> | undefined;
   try {

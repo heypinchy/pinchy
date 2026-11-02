@@ -8952,6 +8952,48 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     }
   });
 
+  // OpenClaw rewrites openclaw.json as root 0600 on every internal restart, and
+  // fix-config-permissions.sh reopens it on its next tick. If the read just
+  // before the write lands in that window, the file is unreadable — not
+  // missing. Taken for missing, the guard, the key-less bridge and the shrink
+  // expectation all saw nothing, and secrets.json was written without a
+  // deleted provider's key that the file still names.
+  it("skips the regenerate when openclaw.json turns unreadable just before the write — never mistaking it for no file", async () => {
+    const existing = await installWithLargeCustomProvider();
+    let unreadable = false;
+    mockedReadFileSync.mockImplementation(() => {
+      if (unreadable) {
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      }
+      return existing;
+    });
+    // The last thing regenerate does before it re-reads the file.
+    mockValidateBuiltConfig.mockImplementation(() => {
+      unreadable = true;
+      return { ok: true };
+    });
+    mockGetClient.mockReturnValue(undefined);
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      mockWriteSecretsFile.mockClear();
+      await regenerateOpenClawConfig();
+
+      expect(mockValidateBuiltConfig, "precondition: regenerate got that far").toHaveBeenCalled();
+      expect(mockWriteSecretsFile).not.toHaveBeenCalled();
+      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/EACCES/);
+    } finally {
+      vi.restoreAllMocks();
+      mockValidateBuiltConfig.mockReset();
+      mockValidateBuiltConfig.mockReturnValue({ ok: true });
+    }
+  });
+
   it("finishes a stranded deletion with exactly one follow-up regenerate, which queues none", async () => {
     // After each size-drop refusal OpenClaw accepts exactly one deletion step
     // and then rate-limits every apply past Pinchy's retry budget: each push
