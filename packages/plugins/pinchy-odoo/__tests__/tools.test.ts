@@ -8123,6 +8123,43 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
       );
     });
 
+    // Ninth review of #1242: a code no record carries fell through to the
+    // exact-name branch, so `{code: "6000", name: "Bank fees"}` booked to
+    // whichever account is called "Bank fees" — 6100 — while the card read
+    // 6000. The string form "6000 Bank fees" was refused for the same input.
+    // A code is a claim too: when it names no record, the lookup is refused.
+    it("refuses an explicit code no record carries, even when the name exists", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [{ id: 61, name: "Bank fees", code: "6100" }] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000", name: "Bank fees" } },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Could not resolve account_id");
+      expect(text).toContain("no Account has code 6000");
+      expect(text).toContain('"Bank fees" is 6100');
+      expect(text).toMatch(/exact Account name or ref/);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("refuses an explicit code no record carries when the name is unknown too", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000x", name: "Bank fees" } },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("no Account has code 6000x");
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
     // Two companies share the code; the name after it says which one.
     it("picks the record whose name matches when two share the code", async () => {
       mockSchema({});

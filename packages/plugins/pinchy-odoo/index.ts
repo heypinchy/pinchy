@@ -1169,6 +1169,38 @@ function matchByCodeAndName(
 }
 
 /**
+ * The refusal for an explicit code that no candidate carries, naming the code
+ * of the record the name beside it does name, if any — so the model can send
+ * a code and a name of the same record, or its ref.
+ */
+function unknownCodeError(
+  field: OdooField,
+  code: string,
+  claimedName: string,
+  records: OdooRecord[]
+): string {
+  const label = field.string ?? field.name;
+  const wanted = normalizeNameText(claimedName);
+  const namedCodes = [
+    ...new Set(
+      records
+        .filter((record) => {
+          const name = recordText(record, "name");
+          return name !== null && normalizeNameText(name) === wanted;
+        })
+        .map((record) => recordText(record, "code"))
+        .filter((value): value is string => value !== null)
+    ),
+  ];
+  const named =
+    namedCodes.length > 0 ? ` (${JSON.stringify(claimedName)} is ${namedCodes.join(" or ")})` : "";
+  return (
+    `Could not resolve ${field.name} from code "${code}": no ${label} has code ${code}${named}. ` +
+    `Provide an exact ${label} name or ref.`
+  );
+}
+
+/**
  * The single record whose `code` equals `code`, or `null` when none does.
  * Compared case-insensitively, like every other text match here — the domain
  * leaf that fetched these candidates is a case-sensitive `=`, but a record
@@ -1198,7 +1230,8 @@ function matchByCode(
  *
  * 1. An explicit `{lookup: {code}}` names the column it means. Nothing beats it
  *    — but a `name` beside it must be the record's name too
- *    (`matchByCodeAndName`), or the lookup is refused.
+ *    (`matchByCodeAndName`), or the lookup is refused; so is a code beside a
+ *    name that no record carries, except on `res.country` (`unknownCodeError`).
  * 2. An exact `name`/`display_name` match. This sits ABOVE the derived code
  *    token on purpose: the token is a guess about the input's shape, an exact
  *    name is not. With the order reversed, `"IT Infrastructure"` resolves to
@@ -1228,6 +1261,17 @@ function resolveReferenceFromRecords(
     }
     const byExplicitCode = matchByCode(field, lookup, lookup.code, records);
     if (byExplicitCode !== null) return byExplicitCode;
+    // A code no record carries is a claim the records contradict, just as a
+    // name is (ninth review of #1242): `{code: "6000", name: "Bank fees"}`
+    // fell through to the exact-name branch and booked to 6100 "Bank fees"
+    // while the card read 6000 — and the string "6000 Bank fees" was refused.
+    // `res.country` alone keeps the fall-through: a country is identified by
+    // its name, its code is an ISO 3166-1 alpha-2 key models misremember in
+    // well-known ways ("UK" for GB, "EL" for GR), and a code that names no
+    // country points at no other record the name could be confused with.
+    if (claimedName && field.relation !== "res.country") {
+      throw new Error(unknownCodeError(field, lookup.code, claimedName, records));
+    }
   }
 
   if (!lookup.name) {
@@ -1667,9 +1711,12 @@ async function searchRelationByName(
  *   `res.country` (`_rec_name` is `name`) it would match nothing `name`
  *   doesn't. The client-side matcher still compares both.
  * - BOTH are OR-ed rather than letting `code` win, because
- *   `resolveReferenceFromRecords` falls through from a failed code match to
- *   its exact-name branch. A code-only domain never fetches the records that
- *   fallback needs, so a wrong code would make a correct name unresolvable.
+ *   `resolveReferenceFromRecords` reads the name leg's records after a failed
+ *   code match: it falls through to its exact-name branch for a code token
+ *   (only a guess about the input's shape) and for an explicit `res.country`
+ *   code, and an explicit code elsewhere is refused naming the code the name
+ *   does carry (`unknownCodeError`). A code-only domain never fetches those
+ *   records, so a wrong code would make a correct name unresolvable.
  *
  * `null` is the neither case (`{lookup: {}}`, or a non-string `name` that
  * `parseLookup` drops). An `ilike ""` there is `LIKE '%%'`, i.e. every row —
