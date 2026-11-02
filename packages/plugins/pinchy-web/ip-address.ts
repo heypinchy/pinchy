@@ -208,6 +208,9 @@ export function classifyIpAddress(address: string): IpAddressClass | null {
   if ((groups[0] & 0xfe00) === 0xfc00) return "private";
   // fe80::/10 — link-local (spans fe80 through febf)
   if ((groups[0] & 0xffc0) === 0xfe80) return "link-local";
+  // fec0::/10 — deprecated site-local (RFC 3879). Withdrawn, but still routed
+  // inside many networks, so treat it like ULA rather than as public.
+  if ((groups[0] & 0xffc0) === 0xfec0) return "private";
   // ff00::/8 — multicast
   if ((groups[0] & 0xff00) === 0xff00) return "reserved";
   // 2001:db8::/32 — documentation

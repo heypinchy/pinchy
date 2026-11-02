@@ -578,6 +578,8 @@ describe("webFetch", () => {
       ["[fe90::1]", "link-local fe80::/10, second block"],
       ["[febf::1]", "link-local fe80::/10, last block"],
       ["[fe80:abcd::1]", "link-local with a non-zero second hextet"],
+      ["[fec0::1]", "deprecated site-local fec0::/10"],
+      ["[feff::1]", "site-local, top of fec0::/10"],
       ["[ff02::1]", "IPv6 multicast"],
       ["[ff00::1]", "IPv6 multicast, bottom of ff00::/8"],
       ["[::1]", "loopback"],

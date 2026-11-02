@@ -56,6 +56,9 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     ["feb0::1", "link-local"],
     ["febf:ffff::1", "link-local"],
     ["fc00::1", "private"],
+    // fec0::/10 deprecated site-local: fec0 through feff.
+    ["fec0::1", "private"],
+    ["feff:ffff::1", "private"],
     ["fd12:3456:789a::1", "private"],
     ["fd00:ec2::254", "private"],
     ["ff00::1", "reserved"],

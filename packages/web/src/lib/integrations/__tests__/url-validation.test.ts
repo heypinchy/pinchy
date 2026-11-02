@@ -158,7 +158,10 @@ describe("classifyIpAddress", () => {
     ["fd12:3456:789a::1", "private"],
     ["fd00:ec2::254", "private"],
     ["2606:4700:4700::1111", "public"],
-    ["fec0::1", "public"],
+    // fec0::/10 -- deprecated site-local (RFC 3879), still routed inside many
+    // networks. Used to be pinned "public", which asserted the bypass.
+    ["fec0::1", "private"],
+    ["feff::1", "private"],
     ["fe90::1", "link-local"],
     ["ff02::1", "reserved"],
     ["64:ff9b::7f00:1", "loopback"],
