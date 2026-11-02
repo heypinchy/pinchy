@@ -61,6 +61,11 @@ interface ConfigPushState {
    * hear about, 0 when none (see noteUndeliveredConfigChange).
    */
   undeliveredSeq: number;
+  /**
+   * Start sequence of the newest full regenerate whose config reached
+   * OpenClaw, 0 before any (see noteFullRegenerateDelivered).
+   */
+  deliveredSeq: number;
 }
 
 /**
@@ -103,6 +108,7 @@ function state(): ConfigPushState {
       writtenSecretsShape: undefined,
       lastGoodBound: undefined,
       undeliveredSeq: 0,
+      deliveredSeq: 0,
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -111,6 +117,7 @@ function state(): ConfigPushState {
   existing.shrinkResumeSeq ??= 0;
   existing.regenerateSeq ??= 0;
   existing.undeliveredSeq ??= 0;
+  existing.deliveredSeq ??= 0;
   return existing as ConfigPushState;
 }
 
@@ -299,6 +306,31 @@ export function settleUndeliveredConfigChange(deliveredBySeq: number): void {
   if (deliveredBySeq > s.undeliveredSeq) s.undeliveredSeq = 0;
 }
 
+/**
+ * A full regenerate's config reached OpenClaw: pushed (applied, or already in
+ * OpenClaw's runtime), or found already in openclaw.json by the regenerate
+ * itself (build.ts). Cancels a follow-up and settles a debt that a regenerate
+ * started before this one left (cancelShrinkResume,
+ * settleUndeliveredConfigChange), and remembers the sequence so a push that
+ * started earlier and gives up only afterwards owes nothing
+ * (fullRegenerateDeliveredSince).
+ */
+export function noteFullRegenerateDelivered(seq: number): void {
+  const s = state();
+  s.deliveredSeq = Math.max(s.deliveredSeq, seq);
+  cancelShrinkResume(seq);
+  settleUndeliveredConfigChange(seq);
+}
+
+/**
+ * Whether a full regenerate that started after `seq` has reached OpenClaw
+ * (noteFullRegenerateDelivered). It read the state the push with sequence
+ * `seq` carried, so that push stopping short leaves nothing to resend.
+ */
+export function fullRegenerateDeliveredSince(seq: number): boolean {
+  return state().deliveredSeq > seq;
+}
+
 /** `value` with every string replaced by "": which SecretRefs it resolves, and nothing else. */
 function shapeOf<T>(value: T): T {
   if (typeof value === "string") return "" as T;
@@ -340,13 +372,14 @@ export function setLastGoodBound(bound: LastGoodBound): void {
 /**
  * Test-only: reset the pending counter, the recorded secrets shape, the
  * last-known-good bound (reloaded from disk on next use), an undelivered
- * change, and drop a queued follow-up regenerate between tests. Do not call in
- * app code.
+ * change and the newest delivered regenerate, and drop a queued follow-up
+ * regenerate between tests. Do not call in app code.
  */
 export function _resetConfigPushState(): void {
   const s = state();
   s.pending = 0;
   s.undeliveredSeq = 0;
+  s.deliveredSeq = 0;
   s.unservedCalls = undefined;
   s.writtenSecretsShape = undefined;
   s.lastGoodBound = undefined;

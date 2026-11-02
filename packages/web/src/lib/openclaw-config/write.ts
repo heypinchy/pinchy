@@ -16,12 +16,12 @@ import {
   trackConfigPushSettled,
   nextConfigPushGeneration,
   getCurrentConfigPushGeneration,
-  cancelShrinkResume,
   scheduleShrinkResume,
   nextRegenerateSequence,
   writtenSecretsShape,
   noteUndeliveredConfigChange,
-  settleUndeliveredConfigChange,
+  noteFullRegenerateDelivered,
+  fullRegenerateDeliveredSince,
 } from "./push-state";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
@@ -377,14 +377,14 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
   // full regenerate that started after a stranded one makes that one's queued
   // follow-up moot (cancelShrinkResume checks the start order), and likewise
   // pays a change owed to OpenClaw's next connect (settleUndeliveredConfig-
-  // Change) — but only while this is the newest push: a newer one in flight
-  // may carry other content (a targeted writer's copy of the old file) and
-  // settles that itself.
+  // Change), and keeps an older push that gives up later from owing it again
+  // (noteFullRegenerateDelivered) — but only while this is the newest push: a
+  // newer one in flight may carry other content (a targeted writer's copy of
+  // the old file) and settles that itself.
   const targetReached = () => {
     if (generation !== getCurrentConfigPushGeneration()) return;
     if (!options.fullRegenerate) return;
-    cancelShrinkResume(regenerateSeq);
-    settleUndeliveredConfigChange(regenerateSeq);
+    noteFullRegenerateDelivered(regenerateSeq);
   };
 
   // Make the in-flight push observable (health endpoint `configPushesPending`,
@@ -426,7 +426,16 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // too, to the regenerate OpenClaw's next connect runs
     // (noteUndeliveredConfigChange). The follow-up passes no follow-up of its
     // own, so for it the connect is the only one.
+    //
+    // Nothing is handed off once a full regenerate that started after this
+    // push has reached OpenClaw — a push parked in a rate-limit wait can
+    // notice it was superseded long after that one landed. That regenerate
+    // read the state this push carried, so nothing is owed: a debt recorded
+    // now would outlive the delivery it is about (the follow-up finds its
+    // target in place and pushes nothing), and every later reconnect would
+    // regenerate.
     const resumeShrink = (why: string) => {
+      if (fullRegenerateDeliveredSince(regenerateSeq)) return;
       noteUndeliveredConfigChange(regenerateSeq);
       if (!resumeStrandedShrink) return;
       console.warn(

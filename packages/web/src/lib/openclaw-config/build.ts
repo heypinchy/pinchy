@@ -47,8 +47,10 @@ import {
 } from "./write";
 import { sizeGuardBaseline, expectsSizeDropRefusal, keepsAProvider } from "./size-drop";
 import {
+  getPendingConfigPushCount,
   nextConfigPushGeneration,
   nextRegenerateSequence,
+  noteFullRegenerateDelivered,
   noteRegenerateCall,
   recordWrittenSecrets,
   takeRegenerateRunIsFollowUpOnly,
@@ -1997,7 +1999,30 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     if (bridge) nextConfigPushGeneration();
     return;
   }
-  if (unchanged) return;
+  if (unchanged) {
+    // Nothing to push — so no push settles a change owed to OpenClaw's next
+    // connect, or cancels a stranded deletion's follow-up, the way one that
+    // reaches its target does. Without this, a debt whose change arrived some
+    // other way stayed owed — a deletion's push that gave up only after a
+    // newer regenerate had landed the same change — and every later reconnect
+    // regenerated until Pinchy restarted.
+    //
+    // This regenerate settles it itself: openclaw.json already holds its
+    // target, and the file is what OpenClaw runs or will run. A running
+    // OpenClaw wrote it (config.apply persists what it applies) or hot-reloads
+    // it, as it does a push's file fallback; a stopped one starts on it.
+    // Pinchy writes nothing under OpenClaw's read-side line
+    // (last-good-bound.ts), and should OpenClaw's startup restore `.bak` all
+    // the same, that rewrites the file, so it still holds what OpenClaw runs.
+    // A deletion in the file was applied by OpenClaw: Pinchy never file-writes
+    // one (MAX_SHRINK_STEPS in write.ts).
+    //
+    // Only with no push in flight, for the reason a push settles only as the
+    // newest one: a push in flight may still land other content (a targeted
+    // writer's copy of an older file), and settles or records for itself.
+    if (getPendingConfigPushCount() === 0) noteFullRegenerateDelivered(regenerateSeq);
+    return;
+  }
 
   // Write per-agent auth-profiles.json for agents that use API-key-based
   // providers. Required by OpenClaw ≥ 4.15: each agent directory must

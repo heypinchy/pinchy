@@ -37,6 +37,7 @@ vi.mock("fs", () => ({
 }));
 
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
+import { regenerateOnConnect } from "@/server/openclaw-connect-regenerate";
 import {
   getPendingConfigPushCount,
   _resetConfigPushState,
@@ -509,6 +510,57 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
 
     expect(configFileWrites()).toHaveLength(0);
     expect(undeliveredConfigChange()).toBe(true);
+  });
+
+  it("owes nothing to OpenClaw's reconnect when a newer regenerate delivered the deletion before the stranded push noticed", async () => {
+    // A deletion's push D is parked (a slow config.get, a rate-limit wait).
+    // Meanwhile a regenerate R that started after it carries the same deletion
+    // and lands it, which settles every debt. D then wakes up superseded.
+    // Recording a debt (and queueing a follow-up) for D's older sequence then
+    // would outlive the delivery it is about: D's follow-up finds the target
+    // already in place and pushes nothing, so nothing settles it, and every
+    // later OpenClaw reconnect regenerates.
+    let releaseFirstGet!: () => void;
+    const firstGet = new Promise<void>((resolve) => (releaseFirstGet = resolve));
+    let gets = 0;
+    const running = { a: 1 };
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => {
+          if (gets++ === 0) await firstGet;
+          return { hash: "h", config: running, parsed: running };
+        }),
+        apply: vi.fn(async () => ({})),
+      },
+    });
+    const target = '{"target":"deletion","x":1}';
+    const resume = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    pushConfigInBackground(target, {
+      fullRegenerate: true,
+      regenerateSeq: nextRegenerateSequence(),
+      expectsProviderShrink: true,
+      resumeStrandedShrink: resume,
+    });
+    await new Promise((r) => setImmediate(r));
+    pushConfigInBackground(target, {
+      fullRegenerate: true,
+      regenerateSeq: nextRegenerateSequence(),
+    });
+    await vi.waitFor(() => expect(getPendingConfigPushCount()).toBe(1));
+    expect(undeliveredConfigChange(), "precondition: R delivered").toBe(false);
+
+    releaseFirstGet();
+    await settle();
+
+    expect(undeliveredConfigChange()).toBe(false);
+    expect(globalThis.__pinchyConfigPushState?.shrinkResume, "no follow-up queued").toBe(undefined);
+    const regenerate = vi.fn(async () => {});
+    regenerateOnConnect({ firstConnect: false }, regenerate);
+    expect(regenerate).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
   });
 
   it("never writes the file for a provider deletion when Pinchy has no OpenClaw client yet (boot)", async () => {

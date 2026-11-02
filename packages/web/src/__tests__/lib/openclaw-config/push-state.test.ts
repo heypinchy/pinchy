@@ -29,6 +29,8 @@ import {
   noteUndeliveredConfigChange,
   undeliveredConfigChange,
   settleUndeliveredConfigChange,
+  noteFullRegenerateDelivered,
+  fullRegenerateDeliveredSince,
   _resetConfigPushState,
 } from "@/lib/openclaw-config/push-state";
 
@@ -215,6 +217,21 @@ describe("a config change Pinchy could not deliver", () => {
     expect(undeliveredConfigChange()).toBe(true);
     settleUndeliveredConfigChange(8);
     expect(undeliveredConfigChange()).toBe(false);
+  });
+
+  it("is settled by a delivered regenerate, which a push that started before it no longer owes", () => {
+    noteUndeliveredConfigChange(5);
+    noteFullRegenerateDelivered(7);
+    expect(undeliveredConfigChange()).toBe(false);
+    // A push that started before the delivered regenerate and gives up only
+    // now: that regenerate read the state it carried.
+    expect(fullRegenerateDeliveredSince(6)).toBe(true);
+    // One that started after it carries something that regenerate never saw.
+    expect(fullRegenerateDeliveredSince(7)).toBe(false);
+    expect(fullRegenerateDeliveredSince(8)).toBe(false);
+    // An older regenerate delivering later does not move the line back.
+    noteFullRegenerateDelivered(3);
+    expect(fullRegenerateDeliveredSince(6)).toBe(true);
   });
 
   it("is shared by every module instance in the process", async () => {

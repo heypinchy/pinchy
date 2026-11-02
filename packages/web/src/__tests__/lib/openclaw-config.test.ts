@@ -252,7 +252,16 @@ import {
 } from "@/lib/openclaw-config";
 import { MAX_EFFECTIVE_CONTEXT_TOKENS } from "@/lib/openclaw-config/effective-context";
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
-import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
+import {
+  getPendingConfigPushCount,
+  _resetConfigPushState,
+  nextRegenerateSequence,
+  noteUndeliveredConfigChange,
+  undeliveredConfigChange,
+  trackConfigPushStarted,
+  trackConfigPushSettled,
+  scheduleShrinkResume,
+} from "@/lib/openclaw-config/push-state";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
 import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
@@ -5006,6 +5015,58 @@ describe("regenerateOpenClawConfig", () => {
         errorSpy.mockRestore();
         process.off("unhandledRejection", onUnhandled);
       }
+    });
+  });
+
+  // A change a push gave up on is owed to OpenClaw's next connect
+  // (noteUndeliveredConfigChange). Only a push used to settle it, so a
+  // regenerate that found its target already in openclaw.json — and therefore
+  // pushed nothing — left it owed, and every later reconnect ran a regenerate,
+  // a secrets.json write and a reload request, until Pinchy restarted.
+  describe("a config change owed to OpenClaw's next connect", () => {
+    /** Regenerate once from no file, and return the openclaw.json that wrote. */
+    async function settleOnDiskTarget(): Promise<string> {
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+      const onDisk = writtenOpenClawConfig(mockedWriteFileSync);
+      mockedWriteFileSync.mockClear();
+      mockedReadFileSync.mockReturnValue(onDisk);
+      return onDisk;
+    }
+
+    it("is settled by a regenerate that finds its target already in openclaw.json", async () => {
+      await settleOnDiskTarget();
+      // A push that started before the next regenerate gave up on a change —
+      // a provider deletion, which also queued its follow-up regenerate.
+      const strandedSeq = nextRegenerateSequence();
+      noteUndeliveredConfigChange(strandedSeq);
+      scheduleShrinkResume(vi.fn(), strandedSeq);
+
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+
+      expect(findOpenClawConfigWrite(mockedWriteFileSync), "precondition: unchanged").toBe(
+        undefined
+      );
+      expect(undeliveredConfigChange()).toBe(false);
+      expect(globalThis.__pinchyConfigPushState?.shrinkResume, "follow-up cancelled").toBe(
+        undefined
+      );
+    });
+
+    it("stays owed while a push is still in flight, which may still land other content", async () => {
+      await settleOnDiskTarget();
+      noteUndeliveredConfigChange(nextRegenerateSequence());
+      trackConfigPushStarted();
+
+      try {
+        await regenerateOpenClawConfig();
+        await drainBackgroundCoroutine();
+      } finally {
+        trackConfigPushSettled();
+      }
+
+      expect(undeliveredConfigChange()).toBe(true);
     });
   });
 });

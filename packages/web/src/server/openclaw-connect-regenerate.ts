@@ -16,7 +16,8 @@ import { undeliveredConfigChange } from "@/lib/openclaw-config/push-state";
  * not reach it. Nothing else resends that change — a Telegram bot removed for
  * everyone would otherwise resume polling the moment OpenClaw came back. The
  * regenerate rebuilds everything from the database, and the debt is settled
- * once its config reaches OpenClaw.
+ * once its config reaches OpenClaw — pushed, or found already in openclaw.json
+ * (noteFullRegenerateDelivered).
  *
  * Every other reconnect runs none, to prevent a cascade: if a push triggers an
  * OC restart (large diff on fresh install), the reconnect after it must not
