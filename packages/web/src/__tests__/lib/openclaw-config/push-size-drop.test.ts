@@ -41,6 +41,7 @@ import {
   getPendingConfigPushCount,
   _resetConfigPushState,
   nextRegenerateSequence,
+  undeliveredConfigChange,
 } from "@/lib/openclaw-config/push-state";
 
 type Json = Record<string, unknown>;
@@ -385,6 +386,8 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
       telegram: { enabled: true, dmPolicy: "pairing" },
     });
     expect(resume).toHaveBeenCalledTimes(1);
+    // Owed to OpenClaw's next connect too, should the follow-up be stranded.
+    expect(undeliveredConfigChange()).toBe(true);
   });
 
   it("runs no follow-up when a full regenerate supersedes the stepped delivery and delivers the target itself", async () => {
@@ -416,6 +419,7 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
     expect(oc.providers()).not.toHaveProperty("acme-llm");
     expect(firstResume).not.toHaveBeenCalled();
     expect(secondResume).not.toHaveBeenCalled();
+    expect(undeliveredConfigChange(), "the later regenerate delivered it").toBe(false);
   });
 
   // OpenClaw checks its control-plane rate limit (~3 applies per window) BEFORE
@@ -480,6 +484,31 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
     expect(configFileWrites()).toHaveLength(0);
     expect(onChangeApplied).not.toHaveBeenCalled();
     expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("owes a provider deletion that cannot reach OpenClaw to its reconnect, even from the follow-up", async () => {
+    // The follow-up regenerate passes no follow-up of its own, so when OpenClaw
+    // stays down past it, nothing else in the push would retry. OpenClaw's
+    // reconnect does (regenerateOnConnect), because the push records that it
+    // gave up.
+    vi.useFakeTimers();
+    const notConnected = () => Promise.reject(new Error("Not connected to OpenClaw Gateway"));
+    mockGetClient.mockReturnValue({
+      config: { get: vi.fn(notConnected), apply: vi.fn(notConnected) },
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      fullRegenerate: true,
+      regenerateSeq: nextRegenerateSequence(),
+      expectsProviderShrink: true,
+    });
+    await drainWithFakeTimers();
+
+    expect(configFileWrites()).toHaveLength(0);
+    expect(undeliveredConfigChange()).toBe(true);
   });
 
   it("never writes the file for a provider deletion when Pinchy has no OpenClaw client yet (boot)", async () => {

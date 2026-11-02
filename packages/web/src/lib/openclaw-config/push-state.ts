@@ -56,6 +56,11 @@ interface ConfigPushState {
   writtenSecretsShape: SecretsBundle | undefined;
   /** See last-good-bound.ts. Undefined until this process loaded it. */
   lastGoodBound: LastGoodBound | undefined;
+  /**
+   * Start sequence of the newest push that gave up on a change OpenClaw has to
+   * hear about, 0 when none (see noteUndeliveredConfigChange).
+   */
+  undeliveredSeq: number;
 }
 
 /**
@@ -97,6 +102,7 @@ function state(): ConfigPushState {
       unservedCalls: undefined,
       writtenSecretsShape: undefined,
       lastGoodBound: undefined,
+      undeliveredSeq: 0,
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -104,6 +110,7 @@ function state(): ConfigPushState {
   existing.generation ??= 0;
   existing.shrinkResumeSeq ??= 0;
   existing.regenerateSeq ??= 0;
+  existing.undeliveredSeq ??= 0;
   return existing as ConfigPushState;
 }
 
@@ -255,6 +262,43 @@ export function scheduleShrinkResume(resume: () => void, strandedSeq: number): v
   s.shrinkResume.unref?.();
 }
 
+/**
+ * Record that a push gave up on a change OpenClaw has to hear about, because
+ * OpenClaw could not be reached: its file write fell under OpenClaw's
+ * read-side line (last-good-bound.ts), or its provider deletion could not
+ * reach a running OpenClaw. Nothing in the push resends it — a targeted
+ * writer's push queues no follow-up, and a follow-up regenerate none of its
+ * own — so OpenClaw's next connect owes a full regenerate
+ * (server/openclaw-connect-regenerate.ts), which rebuilds every change from
+ * the database.
+ *
+ * `seq` is the push's start sequence (`regenerateSeq` in write.ts): claimed
+ * after the change it carries was made. Coalesced like scheduleShrinkResume:
+ * the debt stands for the newest change that gave up.
+ *
+ * Process-wide only, not persisted: after a Pinchy restart the first connect
+ * regenerates anyway, which is everything this would have asked for.
+ */
+export function noteUndeliveredConfigChange(seq: number): void {
+  const s = state();
+  s.undeliveredSeq = Math.max(s.undeliveredSeq, seq);
+}
+
+/** Whether OpenClaw's next connect owes a regenerate (noteUndeliveredConfigChange). */
+export function undeliveredConfigChange(): boolean {
+  return state().undeliveredSeq !== 0;
+}
+
+/**
+ * A full regenerate's config reached OpenClaw (applied, written, or already
+ * in place). It settles the debt only when it STARTED after the newest push
+ * that gave up — only then did it read the state that push carried.
+ */
+export function settleUndeliveredConfigChange(deliveredBySeq: number): void {
+  const s = state();
+  if (deliveredBySeq > s.undeliveredSeq) s.undeliveredSeq = 0;
+}
+
 /** `value` with every string replaced by "": which SecretRefs it resolves, and nothing else. */
 function shapeOf<T>(value: T): T {
   if (typeof value === "string") return "" as T;
@@ -295,12 +339,14 @@ export function setLastGoodBound(bound: LastGoodBound): void {
 
 /**
  * Test-only: reset the pending counter, the recorded secrets shape, the
- * last-known-good bound (reloaded from disk on next use), and drop a queued
- * follow-up regenerate between tests. Do not call in app code.
+ * last-known-good bound (reloaded from disk on next use), an undelivered
+ * change, and drop a queued follow-up regenerate between tests. Do not call in
+ * app code.
  */
 export function _resetConfigPushState(): void {
   const s = state();
   s.pending = 0;
+  s.undeliveredSeq = 0;
   s.unservedCalls = undefined;
   s.writtenSecretsShape = undefined;
   s.lastGoodBound = undefined;

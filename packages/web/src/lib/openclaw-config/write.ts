@@ -20,6 +20,8 @@ import {
   scheduleShrinkResume,
   nextRegenerateSequence,
   writtenSecretsShape,
+  noteUndeliveredConfigChange,
+  settleUndeliveredConfigChange,
 } from "./push-state";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
@@ -304,7 +306,9 @@ const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 // push-state.ts), which steps on from wherever OpenClaw stands; a full
 // regenerate that STARTED after the stranded one and reaches OpenClaw in the
 // meantime cancels it (one that started before read the provider rows before
-// the delete, and cancels nothing). A drop because
+// the delete, and cancels nothing). If the follow-up is stranded as well, the
+// regenerate OpenClaw's next connect runs takes over (noteUndeliveredConfig-
+// Change in push-state.ts). A drop because
 // the shrink is not a provider deletion (or a calibration that keeps missing)
 // queues nothing before a step has landed: OpenClaw is unchanged, and the same
 // regenerate would only be refused again.
@@ -371,12 +375,16 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
   const regenerateSeq = options.regenerateSeq ?? nextRegenerateSequence();
   // The target reached OpenClaw (applied, written, or already in place). A
   // full regenerate that started after a stranded one makes that one's queued
-  // follow-up moot (cancelShrinkResume checks the start order) — but only while
-  // this is the newest push: a newer one in flight may carry other content (a
-  // targeted writer's copy of the old file) and settles that itself.
+  // follow-up moot (cancelShrinkResume checks the start order), and likewise
+  // pays a change owed to OpenClaw's next connect (settleUndeliveredConfig-
+  // Change) — but only while this is the newest push: a newer one in flight
+  // may carry other content (a targeted writer's copy of the old file) and
+  // settles that itself.
   const targetReached = () => {
     if (generation !== getCurrentConfigPushGeneration()) return;
-    if (options.fullRegenerate) cancelShrinkResume(regenerateSeq);
+    if (!options.fullRegenerate) return;
+    cancelShrinkResume(regenerateSeq);
+    settleUndeliveredConfigChange(regenerateSeq);
   };
 
   // Make the in-flight push observable (health endpoint `configPushesPending`,
@@ -414,8 +422,12 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     let lastSizeDrop = "";
     const shrinkKnown = () => options.expectsProviderShrink === true || shrink !== undefined;
     // Hand a shrink that stopped short of its target to one follow-up full
-    // regenerate (see MAX_SHRINK_STEPS).
+    // regenerate (see MAX_SHRINK_STEPS) — and, should that one be stranded
+    // too, to the regenerate OpenClaw's next connect runs
+    // (noteUndeliveredConfigChange). The follow-up passes no follow-up of its
+    // own, so for it the connect is the only one.
     const resumeShrink = (why: string) => {
+      noteUndeliveredConfigChange(regenerateSeq);
       if (!resumeStrandedShrink) return;
       console.warn(
         `[openclaw-config] push gen=${String(generation)}: provider deletion stopped after ${String(shrinkSteps)} step(s) (${why}); queueing a follow-up regenerate to finish it`
@@ -468,8 +480,13 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // writeConfigAtomic refuses a file under half of what OpenClaw may still
     // hold as last-known-good (last-good-bound.ts): its next start would
     // restore `.bak` over it. The file stays as it is, and config.apply
-    // delivers the change once OpenClaw is up — the first connect's
-    // regenerate, or the follow-up queued here.
+    // delivers the change once OpenClaw is up: every push that gets here —
+    // a targeted writer's too, which queues no follow-up — records that
+    // OpenClaw's next connect owes a full regenerate (noteUndelivered-
+    // ConfigChange), which rebuilds the change from the database. A
+    // regenerate's push also queues its follow-up, for an OpenClaw that is up
+    // but refused this push's applies (rate limit, retries) and so has no
+    // reconnect coming.
     const writeFile = (content: string): boolean => {
       try {
         writeConfigAtomic(content);
@@ -477,6 +494,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       } catch (err) {
         if (!(err instanceof UnderReadSideLineError)) throw err;
         console.error(`[openclaw-config] push gen=${String(generation)}: ${err.message}`);
+        noteUndeliveredConfigChange(regenerateSeq);
         if (resumeStrandedShrink) scheduleShrinkResume(resumeStrandedShrink, regenerateSeq);
         return false;
       }

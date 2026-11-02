@@ -941,6 +941,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
         ...(await import("@/lib/openclaw-config/push-state")),
         ...(await import("@/lib/openclaw-config/last-good-bound")),
         ...(await import("@/lib/openclaw-secrets")),
+        ...(await import("@/server/openclaw-connect-regenerate")),
       };
     }
     type Pinchy = Awaited<ReturnType<typeof startPinchy>>;
@@ -1023,8 +1024,17 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       expect(started.acme.apiKey).toEqual(ref(`/providers/${slot}/apiKey`));
     }
 
-    /** OpenClaw comes up on the file; the first connect's regenerate delivers `target`. */
-    async function openClawComesUp(pinchy: Pinchy, target: Json) {
+    /**
+     * OpenClaw comes up on the file and Pinchy connects — for the first time
+     * since Pinchy started, or again — and the regenerate that connect runs
+     * (regenerateOnConnect) delivers `target`, the config rebuilt from the
+     * database.
+     */
+    async function openClawComesUp(
+      pinchy: Pinchy,
+      target: Json,
+      { firstConnect }: { firstConnect: boolean }
+    ) {
       await startOpenClaw();
       await promoteToLastKnownGood();
       const handlers = await loadConfigHandlers();
@@ -1033,9 +1043,18 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
         request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}) });
       mockGetClient.mockReturnValue({ config: { get, apply } });
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      pinchy.pushConfigInBackground(serialize(target), { fullRegenerate: true });
+      const regenerate = vi.fn(() => {
+        pinchy.pushConfigInBackground(serialize(target), {
+          fullRegenerate: true,
+          regenerateSeq: pinchy.nextRegenerateSequence(),
+        });
+        return Promise.resolve();
+      });
+      pinchy.regenerateOnConnect({ firstConnect }, regenerate);
+      expect(regenerate, "the connect regenerates").toHaveBeenCalledTimes(1);
       await settle(pinchy);
       expect(errorSpy.mock.calls.flat().join(" "), "the push lands").toBe("");
+      expect(pinchy.undeliveredConfigChange(), "nothing is owed any more").toBe(false);
       const landed = (await startOpenClaw()) as { models: { providers: Record<string, Json> } };
       return landed.models.providers["acme-llm"];
     }
@@ -1050,37 +1069,46 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       (globalThis as { __pinchyConfigPushState?: unknown }).__pinchyConfigPushState = undefined;
     });
 
-    it("keeps a file OpenClaw starts on through a refused re-key, a Pinchy restart and the next regenerate", async () => {
-      let pinchy = await startPinchy();
-      const installed = await installOld();
-      const target = (n: number) =>
-        config({
-          "acme-llm": acmeAt(NEW_SLOT, "https://new-gateway.example/v1", catalogue("new", n)),
-        });
-      // A catalogue the #311 guard refuses against the installed file, but
-      // passes against the re-keyed file that refusal leaves behind — and
-      // that is under half of OpenClaw's last-known-good.
+    const rekeyTarget = (n: number) =>
+      config({
+        "acme-llm": acmeAt(NEW_SLOT, "https://new-gateway.example/v1", catalogue("new", n)),
+      });
+
+    /**
+     * A catalogue size the #311 guard refuses against the installed file, but
+     * passes against the re-keyed file that refusal leaves behind — and that
+     * is under half of OpenClaw's last-known-good.
+     */
+    function catalogueUnderTheLine(pinchy: Pinchy, installed: string): number {
       const keyless = pinchy.keylessBridge(JSON.parse(installed) as Json, bundleFor(NEW_SLOT))!;
       const n = Array.from({ length: 39 }, (_, i) => i + 1).find((k) => {
-        const payload = serialize(target(k));
+        const payload = serialize(rekeyTarget(k));
         const reKeyed = serialize(
           pinchy.rekeyedBridge(
             keyless,
             JSON.parse(installed) as Json,
-            target(k),
+            rekeyTarget(k),
             bundleFor(NEW_SLOT)
           )!
         );
         return (
-          payload.length < pinchy.sizeGuardBaseline(installed, target(k)) * 0.5 &&
-          payload.length >= pinchy.sizeGuardBaseline(reKeyed, target(k)) * 0.5 &&
+          payload.length < pinchy.sizeGuardBaseline(installed, rekeyTarget(k)) * 0.5 &&
+          payload.length >= pinchy.sizeGuardBaseline(reKeyed, rekeyTarget(k)) * 0.5 &&
           bytes(payload) < Math.floor(bytes(installed) * 0.5)
         );
       });
       expect(n, "precondition: such a catalogue exists").toBeDefined();
+      return n!;
+    }
+
+    it("keeps a file OpenClaw starts on through a refused re-key, a Pinchy restart and the next regenerate", async () => {
+      let pinchy = await startPinchy();
+      const installed = await installOld();
+      const target = rekeyTarget;
+      const n = catalogueUnderTheLine(pinchy, installed);
 
       // Regenerate 1, refused by the #311 guard; OpenClaw is down.
-      await rekeyWrites(pinchy, target(n!), NEW_SLOT);
+      await rekeyWrites(pinchy, target(n), NEW_SLOT);
 
       // Pinchy restarts. Its boot regenerate (no client yet) passes the #311
       // guard against the re-keyed file and deletes no provider, so nothing
@@ -1090,7 +1118,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       mockGetClient.mockReturnValue(undefined);
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const reKeyedFile = readFileSync(ocConfigPath, "utf-8");
-      pinchy.pushConfigInBackground(serialize(target(n!)), { fullRegenerate: true });
+      pinchy.pushConfigInBackground(serialize(target(n)), { fullRegenerate: true });
       await settle(pinchy);
       const started = await startsOnCopy();
       expect(started.file, "OpenClaw starts on the file Pinchy left").toBe(
@@ -1104,9 +1132,39 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       errorSpy.mockRestore();
 
       // OpenClaw comes up on it, and the target lands over config.apply.
-      const acme = await openClawComesUp(pinchy, target(n!));
+      const acme = await openClawComesUp(pinchy, target(n), { firstConnect: true });
       expect((acme.models as Json[]).map((m) => m.id)).toEqual(
-        catalogue("new", n!).map((m) => m.id)
+        catalogue("new", n).map((m) => m.id)
+      );
+      expect(acme.apiKey).toEqual(ref(`/providers/${NEW_SLOT}/apiKey`));
+    }, 120_000);
+
+    // The same refused re-key and the same next regenerate, with no Pinchy
+    // restart in between: Pinchy connected to OpenClaw before it stopped, so
+    // its return is a reconnect, and a reconnect regenerates only when a
+    // change is owed. The refused file write owes one.
+    it("delivers a regenerate refused while OpenClaw is down when OpenClaw reconnects", async () => {
+      const pinchy = await startPinchy();
+      const installed = await installOld();
+      const n = catalogueUnderTheLine(pinchy, installed);
+      await rekeyWrites(pinchy, rekeyTarget(n), NEW_SLOT);
+
+      // The next regenerate's push, with OpenClaw still down.
+      mockGetClient.mockReturnValue(undefined);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const reKeyedFile = readFileSync(ocConfigPath, "utf-8");
+      pinchy.pushConfigInBackground(serialize(rekeyTarget(n)), {
+        fullRegenerate: true,
+        regenerateSeq: pinchy.nextRegenerateSequence(),
+      });
+      await settle(pinchy);
+      expect(readFileSync(ocConfigPath, "utf-8"), "precondition: refused").toBe(reKeyedFile);
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/last-known-good/);
+      errorSpy.mockRestore();
+
+      const acme = await openClawComesUp(pinchy, rekeyTarget(n), { firstConnect: false });
+      expect((acme.models as Json[]).map((m) => m.id)).toEqual(
+        catalogue("new", n).map((m) => m.id)
       );
       expect(acme.apiKey).toEqual(ref(`/providers/${NEW_SLOT}/apiKey`));
     }, 120_000);
@@ -1137,7 +1195,9 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       expect(started.acme.apiKey).toEqual(ref(`/providers/${NEWER_SLOT}/apiKey`));
       vi.mocked(console.error).mockRestore();
 
-      const acme = await openClawComesUp(pinchy, small(NEWER_SLOT, "newer"));
+      const acme = await openClawComesUp(pinchy, small(NEWER_SLOT, "newer"), {
+        firstConnect: true,
+      });
       expect((acme.models as Json[]).map((m) => m.id)).toEqual(
         catalogue("newer", 10).map((m) => m.id)
       );

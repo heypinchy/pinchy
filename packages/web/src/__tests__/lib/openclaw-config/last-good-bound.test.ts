@@ -13,6 +13,8 @@ const mockGetClient = vi.fn();
 vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => mockGetClient(),
 }));
+vi.mock("@/server/restart-state", () => ({ restartState: { notifyRestart: vi.fn() } }));
+vi.mock("@/lib/gateway-token-source", () => ({ getOrCreateGatewayToken: vi.fn() }));
 
 type Json = Record<string, unknown>;
 
@@ -31,6 +33,26 @@ function configOf(kb: number): string {
 
 const bytes = (s: string) => Buffer.byteLength(s, "utf-8");
 
+/** configOf(kb) with `bots` Telegram bots connected, the way Pinchy writes them. */
+function withBots(kb: number, bots: number): string {
+  const config = JSON.parse(configOf(kb)) as Json;
+  const ids = Array.from({ length: bots }, (_, i) => `agent-${i}-0000-0000-0000-000000000000`);
+  config.channels = {
+    telegram: {
+      enabled: true,
+      dmPolicy: "pairing",
+      accounts: Object.fromEntries(
+        ids.map((id) => [id, { botToken: `12345678${String(bots)}:AAH${"x".repeat(32)}` }])
+      ),
+    },
+  };
+  config.bindings = ids.map((id) => ({
+    agentId: id,
+    match: { channel: "telegram", accountId: id },
+  }));
+  return JSON.stringify(config, null, 2).trimEnd() + "\n";
+}
+
 describe("Pinchy's file writes against OpenClaw's last-known-good", () => {
   let dir: string;
   let configPath: string;
@@ -43,7 +65,17 @@ describe("Pinchy's file writes against OpenClaw's last-known-good", () => {
       ...(await import("@/lib/openclaw-config/write")),
       ...(await import("@/lib/openclaw-config/last-good-bound")),
       ...(await import("@/lib/openclaw-config/push-state")),
+      ...(await import("@/lib/openclaw-config/targeted")),
+      ...(await import("@/server/openclaw-connect-regenerate")),
     };
+  }
+  type Pinchy = Awaited<ReturnType<typeof startPinchy>>;
+
+  async function settle(pinchy: Pinchy) {
+    for (let i = 0; i < 200 && pinchy.getPendingConfigPushCount() > 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(pinchy.getPendingConfigPushCount()).toBe(0);
   }
 
   beforeEach(() => {
@@ -123,6 +155,67 @@ describe("Pinchy's file writes against OpenClaw's last-known-good", () => {
     expect(existsSync(pinchy.LAST_GOOD_BOUND_PATH)).toBe(false);
     pinchy = await startPinchy();
     expect(() => pinchy.writeConfigAtomic(configOf(8))).not.toThrow();
+  });
+
+  // "Remove Telegram for everyone" while OpenClaw is down, on a file an
+  // earlier write left just above OpenClaw's read-side line (a refused
+  // re-key does that). The bots' block is what keeps it above: the targeted
+  // write is refused, and the database no longer has the tokens. Before this
+  // was owed to the reconnect, nothing resent it — a reconnect ran no
+  // regenerate — and the bots resumed polling as soon as OpenClaw came back.
+  it("delivers a Telegram removal refused under the line with the regenerate OpenClaw's reconnect runs", async () => {
+    const pinchy = await startPinchy();
+    const installed = withBots(20, 6);
+    const line = Math.floor(bytes(installed) * 0.5);
+    const kb = Array.from({ length: 100 }, (_, i) => 20 - i * 0.2).find(
+      (k) => bytes(withBots(k, 6)) >= line && bytes(configOf(k)) < line
+    );
+    expect(kb, "precondition: a file the bots keep above the line").toBeDefined();
+    writeFileSync(configPath, installed);
+    pinchy.writeConfigAtomic(withBots(kb!, 6));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // OpenClaw is down.
+    mockGetClient.mockReturnValue(undefined);
+    expect(pinchy.updateTelegramChannelConfig(null, null)).toBe("applied");
+    await settle(pinchy);
+    expect(readFileSync(configPath, "utf-8"), "precondition: refused").toBe(withBots(kb!, 6));
+    expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/last-known-good/);
+
+    // OpenClaw comes back. Pinchy connected before it went down, so this is
+    // a reconnect, not a first connect.
+    const apply = vi.fn(async (raw: string) => writeFileSync(configPath, raw));
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => ({
+          hash: "h",
+          config: JSON.parse(readFileSync(configPath, "utf-8")) as Json,
+        })),
+        apply,
+      },
+    });
+    // What regenerateOpenClawConfig pushes: the whole config rebuilt from the
+    // database, where the bots are gone.
+    const regenerate = vi.fn(() => {
+      pinchy.pushConfigInBackground(configOf(kb!), {
+        fullRegenerate: true,
+        regenerateSeq: pinchy.nextRegenerateSequence(),
+      });
+      return Promise.resolve();
+    });
+    pinchy.regenerateOnConnect({ firstConnect: false }, regenerate);
+    await settle(pinchy);
+
+    expect(regenerate).toHaveBeenCalledTimes(1);
+    expect(apply).toHaveBeenCalledTimes(1);
+    const landed = JSON.parse(readFileSync(configPath, "utf-8")) as Json;
+    expect(landed.channels).toBeUndefined();
+    expect(landed.bindings).toBeUndefined();
+
+    // Delivered: the next reconnect owes nothing.
+    pinchy.regenerateOnConnect({ firstConnect: false }, regenerate);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+    pinchy._resetConfigPushState();
   });
 
   it("leaves the file to config.apply when a push without a client would write under the line", async () => {

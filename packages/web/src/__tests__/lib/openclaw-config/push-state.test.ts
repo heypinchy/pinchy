@@ -15,7 +15,7 @@
 // the custom server (which also triggers regenerates) can load SEPARATE module
 // instances — same reason as server/openclaw-client.ts.
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   trackConfigPushStarted,
   trackConfigPushSettled,
@@ -26,6 +26,9 @@ import {
   takeRegenerateRunIsFollowUpOnly,
   recordWrittenSecrets,
   writtenSecretsShape,
+  noteUndeliveredConfigChange,
+  undeliveredConfigChange,
+  settleUndeliveredConfigChange,
   _resetConfigPushState,
 } from "@/lib/openclaw-config/push-state";
 
@@ -181,5 +184,47 @@ describe("the recorded secrets shape", () => {
       providers: { anthropic: { apiKey: "" } },
     });
     expect(JSON.stringify(globalThis.__pinchyConfigPushState)).not.toMatch(/secret/);
+  });
+});
+
+// A config change a push could not deliver while OpenClaw was unreachable is
+// owed to OpenClaw's next connect (regenerateOnConnect). Only a full
+// regenerate that STARTED after the push gave up has read the state that push
+// carried, so only such a one settles the debt when its config reaches
+// OpenClaw — the same start-order rule cancelShrinkResume follows.
+describe("a config change Pinchy could not deliver", () => {
+  beforeEach(() => _resetConfigPushState());
+
+  it("is owed until a regenerate that started after it lands", () => {
+    expect(undeliveredConfigChange()).toBe(false);
+    noteUndeliveredConfigChange(5);
+    expect(undeliveredConfigChange()).toBe(true);
+
+    settleUndeliveredConfigChange(4);
+    settleUndeliveredConfigChange(5);
+    expect(undeliveredConfigChange(), "a regenerate that started before it").toBe(true);
+
+    settleUndeliveredConfigChange(6);
+    expect(undeliveredConfigChange()).toBe(false);
+  });
+
+  it("stands for the newest change that gave up", () => {
+    noteUndeliveredConfigChange(7);
+    noteUndeliveredConfigChange(3);
+    settleUndeliveredConfigChange(6);
+    expect(undeliveredConfigChange()).toBe(true);
+    settleUndeliveredConfigChange(8);
+    expect(undeliveredConfigChange()).toBe(false);
+  });
+
+  it("is shared by every module instance in the process", async () => {
+    // The push that gives up can run in a route bundle; the connected handler
+    // that pays the debt runs in the custom server's instance.
+    noteUndeliveredConfigChange(2);
+    vi.resetModules();
+    const other = await import("@/lib/openclaw-config/push-state");
+    expect(other.undeliveredConfigChange()).toBe(true);
+    other.settleUndeliveredConfigChange(3);
+    expect(undeliveredConfigChange()).toBe(false);
   });
 });

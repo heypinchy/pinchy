@@ -54,7 +54,7 @@ export class UnderReadSideLineError extends Error {
       `[openclaw-config] NOT writing openclaw.json: ${String(nextBytes)} bytes is under half of ` +
         `${String(baselineBytes)}, the largest file OpenClaw may still hold as last-known-good ` +
         `(it promotes only while it runs). Its next start would restore .bak over this one; ` +
-        `config.apply delivers the change once OpenClaw is up.`
+        `Pinchy regenerates the config when OpenClaw next connects and delivers it over config.apply.`
     );
     this.name = "UnderReadSideLineError";
   }
