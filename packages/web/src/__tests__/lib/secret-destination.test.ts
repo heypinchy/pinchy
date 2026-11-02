@@ -87,6 +87,19 @@ describe("integrationDestinationChange", () => {
     });
   });
 
+  // The route merges the submitted `db` verbatim and that is what OdooClient
+  // logs in to — nothing trims it on the way. So the comparison must not trim
+  // either: "prod " is not the database the key was entered for.
+  it.each([["prod "], [" prod"], ["prod\t"]])(
+    "odoo: a database name differing only by whitespace (%j) is a new destination",
+    (db) => {
+      expect(integrationDestinationChange("odoo", odoo, { db })).toEqual({
+        secretField: "apiKey",
+        changes: { db: { from: "prod", to: db } },
+      });
+    }
+  );
+
   const imap = {
     imapHost: "imap.example.com",
     imapPort: 993,

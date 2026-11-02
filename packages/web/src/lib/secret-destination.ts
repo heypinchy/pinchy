@@ -105,7 +105,11 @@ const portRule: FieldRule = {
   normalize: (v) => String(Number(v)),
   audit: (v) => Number(v),
 };
-const exactRule: FieldRule = { normalize: text, audit: text };
+// Byte-for-byte: not even whitespace is trimmed. The routes merge these values
+// verbatim and send them on as submitted, so a value that differs only by
+// whitespace (an Odoo database "prod ") reaches a different destination.
+const verbatim = (value: unknown) => String(value ?? "");
+const exactRule: FieldRule = { normalize: verbatim, audit: verbatim };
 const urlRule: FieldRule = {
   normalize: (v) => canonicalDestinationUrl(text(v)) ?? `unparseable:${text(v)}`,
   audit: (v) => auditableDestinationUrl(text(v)),
@@ -116,7 +120,8 @@ const urlRule: FieldRule = {
  *
  * - Odoo: the `url`, and the `db` — the database picks whose user table checks
  *   the key and whose code handles the login, and on a multi-database server
- *   that can be a different party than the one the key was entered for.
+ *   that can be a different party than the one the key was entered for. The
+ *   `db` compares exactly: it is stored and sent untrimmed.
  *   `login` is not a destination: the key still goes to the same server.
  * - IMAP: both hosts, both ports, and `security` — `none` would send the
  *   password in clear text to anyone on the path. `username` is not a
