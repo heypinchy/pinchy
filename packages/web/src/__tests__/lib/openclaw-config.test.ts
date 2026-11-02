@@ -8903,6 +8903,55 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     }
   });
 
+  // The refusal above must not leave OpenClaw without secrets.json. The keys
+  // come from settings and provider rows, not from discovery, and the secrets
+  // volume is a tmpfs: after a host reboot it is empty. An offline install
+  // whose Ollama is not up yet when Pinchy boots trips the guard on every
+  // regenerate — and if that skipped secrets.json, OpenClaw would start on the
+  // old openclaw.json naming `/providers/anthropic/apiKey` with nothing to
+  // resolve it against ("required secrets are unavailable"), and stay down.
+  it("still writes secrets.json when it refuses an Ollama collapse, because the bundle resolves every key the file names", async () => {
+    const ollamaModels = Array.from({ length: 80 }, (_, i) => ({
+      id: `ollama/qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M`,
+      name: `qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M (32B)`,
+      parameterSize: "32B",
+      compatible: true,
+      capabilities: { tools: true, vision: false, completion: true, thinking: false },
+    }));
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue(ollamaModels);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+    const existing = await regenerateAndCapture();
+    expect(JSON.parse(existing).models.providers.anthropic.apiKey.id).toBe(
+      "/providers/anthropic/apiKey"
+    );
+    mockedReadFileSync.mockReturnValue(existing);
+
+    // Boot after a host reboot: secrets.json is gone, Ollama is not up yet.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      mockWriteSecretsFile.mockClear();
+      await regenerateOpenClawConfig();
+
+      // Precondition: the guard refused the collapse.
+      expect(rejectedDumps()).toHaveLength(1);
+      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      // …and secrets.json is written all the same, with every key the file names.
+      expect(mockWriteSecretsFile).toHaveBeenCalledTimes(1);
+      const written = mockWriteSecretsFile.mock.calls[0][0] as Record<string, unknown>;
+      expect(unresolvable(existing, written)).toEqual([]);
+      expect(written).toMatchObject({ providers: { anthropic: { apiKey: "sk-ant-test" } } });
+    } finally {
+      errorSpy.mockRestore();
+      vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+    }
+  });
+
   it("finishes a stranded deletion with exactly one follow-up regenerate, which queues none", async () => {
     // After each size-drop refusal OpenClaw accepts exactly one deletion step
     // and then rate-limits every apply past Pinchy's retry budget: each push

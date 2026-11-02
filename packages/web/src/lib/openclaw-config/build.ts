@@ -1820,11 +1820,19 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // content. The bad payload is saved alongside the config for postmortem —
     // silent skip would hide the underlying race forever (#314).
     //
-    // secrets.json is not written either: it comes from the same read. Written
-    // without keys the on-disk file still names (an empty provider read), it
-    // would leave OpenClaw a file it can neither restart on nor accept a copy
-    // of — and the key-less bridge below must never be built from a payload
-    // this guard refused.
+    // secrets.json is still written when it resolves every SecretRef the
+    // on-disk file names — the file OpenClaw keeps running, and restarts on.
+    // The keys come from settings and provider rows, not from the discovery
+    // that most often trips this guard (Ollama unreachable at boot answers
+    // `[]`), and the secrets volume is a tmpfs: after a host reboot it is
+    // empty, and skipping the write would leave OpenClaw nothing to resolve
+    // `/providers/anthropic/apiKey` against — "required secrets are
+    // unavailable", and no first-connect regenerate to repair it. A key
+    // rotation saved meanwhile reaches OpenClaw the same way. It is NOT
+    // written when it would drop a key the file still names (an empty
+    // provider read): that would leave OpenClaw a file it can neither restart
+    // on nor accept a copy of — and the key-less bridge below must never be
+    // built from a payload this guard refused.
     //
     // Measured against the existing file MINUS the bytes of every provider the
     // payload deleted, as long as a provider survives (see size-drop.ts).
@@ -1855,6 +1863,15 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
           `Likely a DB-state-loading race; see #311. ` +
           `Rejected payload saved to ${rejectedPath}.`
       );
+      const dropped = onDiskConfig ? unresolvedSecretRefs(onDiskConfig, secretsBundle) : [];
+      if (dropped.length === 0) {
+        writeSecretsAndReload(secretsBundle);
+      } else {
+        console.error(
+          `[openclaw-config] secrets.json not written either: it would drop ${dropped.join(", ")}, ` +
+            `which openclaw.json still names.`
+        );
+      }
       return;
     }
     // Past this guard only because deleted providers were discounted, and
