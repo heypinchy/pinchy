@@ -44,7 +44,25 @@ export async function abortSessionRun(
   // for. Same gate as `livenessRunId` in `handleHistory`.
   const runId = run && run.firstChunkAt !== null ? run.runId : undefined;
 
-  let outcome: "success" | "failure" = "success";
+  // With nothing in flight, "stopped nothing" is the right answer, not a
+  // failed abort — the stop button sends it anyway so it is never a silent
+  // no-op, and an unreachable gateway is still a failure.
+  const answer = requestAbort(chatAbort, sessionKey, runId, { inFlight: run !== undefined });
+  if (run) recordAbortAttempt(run, answer);
+  return { run, runId, outcome: await answer };
+}
+
+/**
+ * Send one `chat.abort` and read the gateway's answer as an outcome. Never
+ * throws: an unreachable gateway is a `failure`, like any abort that did not
+ * stop anything.
+ */
+async function requestAbort(
+  chatAbort: ChatAbort,
+  sessionKey: string,
+  runId: string | undefined,
+  { inFlight, quiet = false }: { inFlight: boolean; quiet?: boolean }
+): Promise<"success" | "failure"> {
   try {
     const res = (await chatAbort(sessionKey, runId)) as { aborted?: unknown } | undefined;
     // The gateway answers `{ ok, aborted, runIds }`. `ok: true` only means it
@@ -55,25 +73,81 @@ export async function abortSessionRun(
     // indistinguishable from a working one in the trail.
     // A gateway that reports no payload (older builds) stays `success`: we
     // cannot tell, and a made-up failure is as dishonest as a made-up success.
-    // Gated on `run`: a stop click with nothing in flight answers
+    // Gated on `inFlight`: a stop click with nothing in flight answers
     // `aborted: false` too, and the stop button deliberately neither audits
     // nor logs that — warning here would reopen exactly the "aborted nothing"
     // spam vector a buggy or hostile client could exploit.
-    if (run && res?.aborted === false) {
-      outcome = "failure";
-      console.warn(
-        `[abort-runs] gateway reported no run aborted for ${sessionKey} (runId=${runId ?? "none"})`
-      );
+    if (inFlight && res?.aborted === false) {
+      if (!quiet) {
+        console.warn(
+          `[abort-runs] gateway reported no run aborted for ${sessionKey} (runId=${runId ?? "none"})`
+        );
+      }
+      return "failure";
     }
+    return "success";
   } catch (err) {
-    outcome = "failure";
     console.warn(
       `[abort-runs] chatAbort failed for ${sessionKey}:`,
       err instanceof Error ? err.message : err
     );
+    return "failure";
   }
+}
 
-  return { run, runId, outcome };
+/**
+ * Note an abort sent for `run` on the run itself, so the stream pipe can ask
+ * whether it took effect (`abortTookEffect`) even when the stream ends before
+ * the gateway answers — OpenClaw ends an aborted run's stream and answers the
+ * RPC independently, and the `done` can win. Any confirmed attempt confirms
+ * the run: two answers can cross, and a later "stopped nothing" for a run an
+ * earlier abort already stopped is not news.
+ */
+function recordAbortAttempt(run: ActiveRun, answer: Promise<"success" | "failure">): void {
+  const settled = answer.then((outcome) => {
+    if (outcome === "success") run.abortConfirmed = true;
+  });
+  const earlier = run.abortSettled;
+  run.abortSettled = earlier ? Promise.all([earlier, settled]).then(() => undefined) : settled;
+}
+
+/**
+ * Did stopping `run` work? False for a run nobody stopped, and for one whose
+ * every abort failed — that run may well have finished, and saying otherwise
+ * hides it. Waits for aborts still in flight.
+ */
+export async function abortTookEffect(run: ActiveRun): Promise<boolean> {
+  if (!run.abortedByUser) return false;
+  await run.abortSettled;
+  return run.abortConfirmed === true;
+}
+
+/**
+ * Abort a run again by its real runId, once its first chunk has named it.
+ *
+ * A PENDING run is aborted by session only (see `abortSessionRun`). When
+ * OpenClaw has not started it yet — the dispatch is still on its way — that
+ * abort finds nothing and answers `aborted: false`, and the run then starts
+ * anyway. The stream pipe calls this when the first chunk reconciles a run
+ * that was already stopped. Skipped when an earlier abort is already known to
+ * have worked; otherwise sent at once rather than after the first answer, so
+ * no tool gets the time to start. Not audited: the `chat.run_aborted` row for
+ * the stop belongs to whoever asked for it, and a reply that finishes anyway
+ * still surfaces as `chat.run_completed_after_disconnect` when nobody watched.
+ */
+export function reAbortStartedRun(
+  run: ActiveRun,
+  chatAbort: ChatAbort,
+  sessionKey: string,
+  runId: string
+): void {
+  if (run.abortConfirmed) return;
+  // Quiet on `aborted: false`: the usual reason is that the first abort got
+  // there after all and its answer has not come back yet.
+  recordAbortAttempt(
+    run,
+    requestAbort(chatAbort, sessionKey, runId, { inFlight: true, quiet: true })
+  );
 }
 
 export interface AbortedRun {

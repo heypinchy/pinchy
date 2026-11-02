@@ -102,6 +102,17 @@ export interface ActiveRun {
    * entry, which is exactly the lifetime this flag should have.
    */
   abortedByUser: boolean;
+  /**
+   * Did an abort of this run actually stop it? `abortedByUser` only says one
+   * was asked for. The RPC can throw, or OpenClaw can answer `aborted: false`
+   * (it was not running the run yet, or no longer), and then the reply may
+   * still finish. Set to true by the first abort OpenClaw confirms
+   * (`abort-runs.ts`); never set back. Read through `abortTookEffect`, not
+   * directly: the answer may still be on its way when the stream ends.
+   */
+  abortConfirmed?: boolean;
+  /** Settles once every abort sent for this run so far has been answered. */
+  abortSettled?: Promise<void>;
   listeners: Set<WebSocket>;
 }
 

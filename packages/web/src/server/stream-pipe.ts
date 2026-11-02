@@ -9,6 +9,7 @@ import {
 } from "@/server/model-unavailable-throttle";
 import type { SessionCache } from "@/server/session-cache";
 import type { ActiveRuns } from "@/server/active-runs";
+import { abortTookEffect, reAbortStartedRun } from "@/server/abort-runs";
 import { getErrorHint, presentProviderError, cannedProviderMessage } from "@/server/error-hints";
 import { classifyModelError } from "@/server/model-error-classifier";
 import {
@@ -249,6 +250,21 @@ export class StreamPipe {
           }
           activeRunRegistered = true;
           activeRunId = chunk.runId;
+          // Stopped while still pending — by the stop button or by
+          // deactivation. That abort named the session only, and if OpenClaw
+          // had not started this run yet it stopped nothing; the run is now
+          // starting regardless. Its first chunk names it, so abort it again by
+          // that runId, now, before it gets to a tool. Once per run: this
+          // branch runs on the reconciling chunk only.
+          const reconciledRun = activeRuns.get(sessionKey);
+          if (reconciledRun?.abortedByUser) {
+            reAbortStartedRun(
+              reconciledRun,
+              (key, id) => openclawClient.chatAbort(key, id),
+              sessionKey,
+              chunk.runId
+            );
+          }
           // Authoritative liveness: the run has actually started streaming.
           // Additive to the existing chunk/done frames — the client switchover
           // is a later task. Emitted exactly once per run (gated by
@@ -745,16 +761,20 @@ export class StreamPipe {
         // socket did NOT complete, so it must not be logged as
         // `run_completed_after_disconnect` (that event means the browser left
         // but the reply still finished server-side).
-        // `!run.abortedByUser`: neither did a run that was stopped — by the
-        // stop button or by deactivation (`abort-runs.ts`). `chat.abort` ends
-        // the local stream with a plain `done`, so without this check a
-        // stopped run whose tab had already gone read as "completed".
+        // `abortTookEffect`: neither did a run that was stopped — by the stop
+        // button or by deactivation (`abort-runs.ts`). `chat.abort` ends the
+        // local stream with a plain `done`, so without this check a stopped
+        // run whose tab had already gone read as "completed". Only a stop
+        // OpenClaw confirmed counts: when the abort threw or stopped nothing
+        // and the reply then finished, it did complete, for nobody, and the
+        // trail says so next to the failed `chat.run_aborted`. Awaited because
+        // the abort's answer can arrive after this `done`.
         if (
           run &&
           run.listeners.size === 0 &&
           !sawTerminalError &&
           !openclawDisconnected &&
-          !run.abortedByUser
+          !(await abortTookEffect(run))
         ) {
           const auditEntry = {
             actorType: "user" as const,

@@ -8,7 +8,7 @@
  * states), and keeping its tests in their own file makes the contract
  * easy to find and protect from drift.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "events";
 import type { WebSocket } from "ws";
 import type { ChatChunk } from "openclaw-node";
@@ -571,6 +571,274 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
 
       expect(mockChatAbort).toHaveBeenCalledWith(sessionKey, "run-stopped");
       expect(completedAfterDisconnectRows()).toEqual([]);
+    });
+  });
+
+  describe("an abort that did not stop the run", () => {
+    // These tests queue one-shot answers (`mockReturnValueOnce`); one a test
+    // did not consume must not answer the next test's call.
+    afterEach(() => {
+      mockChat.mockReset();
+      mockChatAbort.mockReset().mockResolvedValue(undefined);
+    });
+
+    // `chat.run_completed_after_disconnect` is skipped for a stopped run only
+    // because a stopped run did not complete. When the abort itself failed —
+    // the RPC threw, or OpenClaw answered that it stopped nothing — and the
+    // reply then finished, it DID complete, for nobody, and the trail has to
+    // say so next to the `chat.run_aborted` failure row.
+    const sessionKey = "agent:agent-1:direct:user-1";
+
+    async function startGatedRun() {
+      let releaseDone!: () => void;
+      const doneGate = new Promise<void>((r) => (releaseDone = r));
+      mockChat.mockReturnValue(
+        (async function* (): AsyncGenerator<ChatChunk> {
+          yield { type: "text", text: "Booking the invoices…", runId: "run-unstopped" };
+          await doneGate;
+          yield { type: "text", text: " Done.", runId: "run-unstopped" };
+          yield { type: "done", text: "", runId: "run-unstopped" };
+        })()
+      );
+      const router = new ClientRouter(
+        buildClient() as never,
+        "user-1",
+        "member",
+        sessionCache,
+        activeRuns
+      );
+      const ws = createMockWs();
+      const handling = router.handleMessage(ws, {
+        type: "message",
+        content: "Book this month's invoices",
+        agentId: "agent-1",
+      });
+      await vi.waitFor(() =>
+        expect(activeRuns.get(sessionKey)?.firstChunkAt).toEqual(expect.any(Number))
+      );
+      const closeTab = () => {
+        (ws as unknown as { readyState: number }).readyState = 3; // CLOSED
+        activeRuns.removeListenerFromAll(ws);
+      };
+      return { router, ws, handling, releaseDone, closeTab };
+    }
+
+    function completedAfterDisconnectRows() {
+      return mockAppendAuditLog.mock.calls.filter(
+        (c) => (c[0] as { eventType: string }).eventType === "chat.run_completed_after_disconnect"
+      );
+    }
+
+    const failures: Array<[string, () => void]> = [
+      ["the abort RPC threw", () => mockChatAbort.mockRejectedValueOnce(new Error("gateway down"))],
+      [
+        "OpenClaw answered aborted: false",
+        () => mockChatAbort.mockResolvedValueOnce({ ok: true, aborted: false, runIds: [] }),
+      ],
+    ];
+
+    it.each(failures)(
+      "is recorded as completed after deactivation when %s and the reply finished",
+      async (_label, failAbort) => {
+        failAbort();
+        const { handling, releaseDone, closeTab } = await startGatedRun();
+
+        closeTab();
+        const aborted = await abortRunsOfUser("user-1", { activeRuns, chatAbort: mockChatAbort });
+        expect(aborted.map((a) => a.outcome)).toEqual(["failure"]);
+        releaseDone();
+        await handling;
+
+        const rows = completedAfterDisconnectRows();
+        expect(rows).toHaveLength(1);
+        expect((rows[0][0] as { detail: { runId: string } }).detail.runId).toBe("run-unstopped");
+      }
+    );
+
+    it.each(failures)(
+      "is recorded as completed after a stop click when %s and the reply finished",
+      async (_label, failAbort) => {
+        failAbort();
+        const { router, ws, handling, releaseDone, closeTab } = await startGatedRun();
+
+        await router.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never);
+        closeTab();
+        releaseDone();
+        await handling;
+
+        expect(completedAfterDisconnectRows()).toHaveLength(1);
+      }
+    );
+
+    it("is not recorded as completed when the abort succeeded, even if OpenClaw answered after the stream ended", async () => {
+      // OpenClaw ends the aborted run's stream and answers the abort RPC
+      // independently; the `done` can win. The pipe must wait for the verdict
+      // rather than read "not confirmed yet" as "failed".
+      let answerAbort!: (res: unknown) => void;
+      mockChatAbort.mockReturnValueOnce(new Promise((r) => (answerAbort = r)));
+      const { handling, releaseDone, closeTab } = await startGatedRun();
+
+      closeTab();
+      const aborting = abortRunsOfUser("user-1", { activeRuns, chatAbort: mockChatAbort });
+      releaseDone();
+      await new Promise<void>((r) => setTimeout(r, 20));
+      answerAbort({ ok: true, aborted: true, runIds: ["run-unstopped"] });
+      await aborting;
+      await handling;
+
+      expect(completedAfterDisconnectRows()).toEqual([]);
+    });
+  });
+
+  describe("a run stopped before OpenClaw started it", () => {
+    // These tests queue one-shot answers (`mockReturnValueOnce`); one a test
+    // did not consume must not answer the next test's call.
+    afterEach(() => {
+      mockChat.mockReset();
+      mockChatAbort.mockReset().mockResolvedValue(undefined);
+    });
+
+    // A pending run is aborted by session only. If OpenClaw has not started it
+    // yet — the dispatch-race retry is between attempts, or the dispatch is
+    // still on its way — that abort answers `aborted: false` and stops nothing.
+    const sessionKey = "agent:agent-1:direct:user-1";
+
+    function clientWithoutAgentsList() {
+      // No `agents.list` RPC: the dispatch-race retry falls back to backoff.
+      return Object.assign(buildClient(), { hasMethod: () => false });
+    }
+
+    const stoppers: Array<[string, (router: ClientRouter, ws: MockWs) => Promise<unknown>]> = [
+      [
+        "the stop button",
+        (router, ws) => router.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never),
+      ],
+      ["deactivation", () => abortRunsOfUser("user-1", { activeRuns, chatAbort: mockChatAbort })],
+    ];
+
+    it.each(stoppers)(
+      "is not dispatched again by the dispatch-race retry after %s",
+      async (_label, stop) => {
+        let releaseRace!: () => void;
+        const raceGate = new Promise<void>((r) => (releaseRace = r));
+        mockChat
+          .mockReturnValueOnce(
+            (async function* (): AsyncGenerator<ChatChunk> {
+              await raceGate;
+              yield {
+                type: "error",
+                text: 'invalid agent params: unknown agent id "agent-1"',
+                runId: "r0",
+              };
+            })()
+          )
+          .mockReturnValueOnce(
+            makeChunkStream([
+              { type: "text", text: "Booked.", runId: "run-redispatched" },
+              { type: "done", text: "", runId: "run-redispatched" },
+            ])
+          );
+        mockChatAbort.mockResolvedValueOnce({ ok: true, aborted: false, runIds: [] });
+        const router = new ClientRouter(
+          clientWithoutAgentsList() as never,
+          "user-1",
+          "member",
+          sessionCache,
+          activeRuns
+        );
+        const ws = createMockWs();
+        const handling = router.handleMessage(ws, {
+          type: "message",
+          content: "Book this month's invoices",
+          agentId: "agent-1",
+        });
+        await vi.waitFor(() => expect(mockChat).toHaveBeenCalledTimes(1));
+        expect(activeRuns.get(sessionKey)?.firstChunkAt).toBeNull();
+
+        await stop(router, ws);
+        expect(mockChatAbort).toHaveBeenCalledWith(sessionKey, undefined);
+        releaseRace();
+        await handling;
+
+        expect(mockChat).toHaveBeenCalledTimes(1);
+        expect(activeRuns.get(sessionKey)).toBeUndefined();
+      }
+    );
+
+    async function startPendingRun() {
+      let releaseStart!: () => void;
+      const startGate = new Promise<void>((r) => (releaseStart = r));
+      let releaseDone!: () => void;
+      const doneGate = new Promise<void>((r) => (releaseDone = r));
+      mockChat.mockReturnValueOnce(
+        (async function* (): AsyncGenerator<ChatChunk> {
+          await startGate; // OpenClaw has not started the run yet
+          yield { type: "text", text: "Booking", runId: "run-late" };
+          await doneGate;
+          yield { type: "done", text: "", runId: "run-late" };
+        })()
+      );
+      const router = new ClientRouter(
+        buildClient() as never,
+        "user-1",
+        "member",
+        sessionCache,
+        activeRuns
+      );
+      const ws = createMockWs();
+      const handling = router.handleMessage(ws, {
+        type: "message",
+        content: "Book this month's invoices",
+        agentId: "agent-1",
+      });
+      await vi.waitFor(() => expect(activeRuns.get(sessionKey)?.firstChunkAt).toBeNull());
+      return { router, ws, handling, releaseStart, releaseDone };
+    }
+
+    it.each(stoppers)(
+      "is aborted again by its real runId when its first chunk arrives after %s",
+      async (_label, stop) => {
+        mockChatAbort
+          .mockResolvedValueOnce({ ok: true, aborted: false, runIds: [] })
+          .mockResolvedValueOnce({ ok: true, aborted: true, runIds: ["run-late"] });
+        const { router, ws, handling, releaseStart, releaseDone } = await startPendingRun();
+
+        await stop(router, ws);
+        expect(mockChatAbort).toHaveBeenNthCalledWith(1, sessionKey, undefined);
+        releaseStart();
+        await vi.waitFor(() =>
+          expect(mockChatAbort).toHaveBeenNthCalledWith(2, sessionKey, "run-late")
+        );
+        releaseDone();
+        await handling;
+
+        // Once: the follow-up is tied to the first chunk, not to every chunk.
+        expect(mockChatAbort).toHaveBeenCalledTimes(2);
+      }
+    );
+
+    it("is not aborted a second time when OpenClaw already confirmed the first abort", async () => {
+      mockChatAbort.mockResolvedValueOnce({ ok: true, aborted: true, runIds: ["run-late"] });
+      const { router, ws, handling, releaseStart, releaseDone } = await startPendingRun();
+
+      await router.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never);
+      releaseStart();
+      await vi.waitFor(() => expect(activeRuns.get(sessionKey)?.runId).toBe("run-late"));
+      releaseDone();
+      await handling;
+
+      expect(mockChatAbort).toHaveBeenCalledTimes(1);
+    });
+
+    it("is not aborted at all when nobody stopped it", async () => {
+      const { handling, releaseStart, releaseDone } = await startPendingRun();
+
+      releaseStart();
+      await vi.waitFor(() => expect(activeRuns.get(sessionKey)?.runId).toBe("run-late"));
+      releaseDone();
+      await handling;
+
+      expect(mockChatAbort).not.toHaveBeenCalled();
     });
   });
 

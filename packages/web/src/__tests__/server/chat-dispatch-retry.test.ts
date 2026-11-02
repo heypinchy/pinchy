@@ -487,6 +487,120 @@ describe("chatWithDispatchRaceRetry", () => {
     });
   });
 
+  describe("a run stopped while it waits out the race (shouldStop)", () => {
+    // The stop button and deactivation both abort a PENDING run by session
+    // only. While the loop is between attempts nothing is running on OpenClaw,
+    // so that abort answers `aborted: false` and stops nothing — the next
+    // re-dispatch would start the reply the user (or the admin) just stopped.
+    const successful: ChatChunk[] = [
+      { type: "text", text: "Booked.", runId: "r1" },
+      { type: "done", text: "", runId: "r1" },
+    ];
+
+    it("does not dispatch again when the run is stopped during the backoff", async () => {
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      let stopped = false;
+      const clock = fakeClock();
+      clock.delay.mockImplementation(async () => {
+        stopped = true; // the abort lands while the loop sleeps
+      });
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, shouldStop: () => stopped },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(clock.delay).toHaveBeenCalledTimes(1);
+      // Ends cleanly: no race error surfaced as if the agent had failed.
+      expect(got).toEqual([]);
+    });
+
+    it("does not dispatch again when the run is stopped while the readiness gate waits", async () => {
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      let stopped = false;
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn(async () => {
+        stopped = true;
+        return true; // ready — which would re-dispatch at once
+      });
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          {
+            chat: chat as never,
+            delay: clock.delay,
+            now: clock.now,
+            awaitAgentReady,
+            shouldStop: () => stopped,
+          },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(got).toEqual([]);
+    });
+
+    it("neither waits nor dispatches again when the run was stopped before the race error arrived", async () => {
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn(async () => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          {
+            chat: chat as never,
+            delay: clock.delay,
+            now: clock.now,
+            awaitAgentReady,
+            shouldStop: () => true,
+          },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(awaitAgentReady).not.toHaveBeenCalled();
+      expect(clock.delay).not.toHaveBeenCalled();
+      expect(got).toEqual([]);
+    });
+
+    it("does not consult shouldStop for a run that never raced", async () => {
+      const chat = vi.fn().mockImplementationOnce(makeStream(successful));
+      const shouldStop = vi.fn(() => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry("hello", { agentId: "a" } as ChatOptions, {
+          chat: chat as never,
+          shouldStop,
+        })
+      );
+
+      // A stop on a run that is actually streaming is OpenClaw's to end — the
+      // wrapper passes the stream through untouched.
+      expect(got).toEqual(successful);
+      expect(shouldStop).not.toHaveBeenCalled();
+    });
+  });
+
   it("MODEL_DISPATCH_RACE_PATTERN matches the OC FailoverError shape, not unrelated model errors", () => {
     expect(MODEL_DISPATCH_RACE_PATTERN.test("Unknown model: google/gemini-2.5-pro")).toBe(true);
     expect(MODEL_DISPATCH_RACE_PATTERN.test("FailoverError: Unknown model: openai/gpt-5.5")).toBe(

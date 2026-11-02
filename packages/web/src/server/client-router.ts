@@ -21,7 +21,7 @@ import { budgetExhaustedMessage, getExhaustedBlockingBudget } from "@/lib/budget
 import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
-import { ActiveRuns } from "@/server/active-runs";
+import { ActiveRuns, type ActiveRun } from "@/server/active-runs";
 import { NEVER_DISCONNECTS, type DisconnectSignal } from "@/server/openclaw-disconnect-signal";
 import type { SessionPokeBridge } from "@/server/session-poke-bridge";
 import {
@@ -699,9 +699,19 @@ export class ClientRouter {
       // "no heartbeats before first chunk" contract (let the client stuck-timer
       // surface real OC hangs) is preserved for the hang case.
       let dispatchRaceKeepAlive: ReturnType<typeof setInterval> | null = null;
+      // This turn's registry entry, filled in by `registerPending` below.
+      // `stream` is lazy, so the retry reads it only after it is set. Held by
+      // identity, not looked up by sessionKey: a newer turn on the same session
+      // replaces the entry, and its stop must not end this one's retry (or the
+      // reverse).
+      const thisTurn: { run?: ActiveRun } = {};
 
       const stream = chatWithDispatchRaceRetry(text, chatOptions as ChatOptions, {
         chat: (m, o) => this.openclawClient.chat(m, o),
+        // Stopped (stop button or deactivation) while the dispatch race keeps
+        // it pending: the session-only abort found nothing running, so the
+        // retry must not dispatch it again.
+        shouldStop: () => thisTurn.run?.abortedByUser === true,
         // Deterministic readiness gate: on a dispatch-race, poll OC's RUNTIME
         // `agents.list` (the same `getRuntimeConfig()` view the dispatch handler
         // checks) until this agent is present, instead of blind-sleeping a
@@ -789,7 +799,7 @@ export class ClientRouter {
         refuseDeactivatedSocket(clientWs);
         return;
       }
-      this.activeRuns.registerPending({
+      thisTurn.run = this.activeRuns.registerPending({
         runId: messageId,
         sessionKey,
         agentId: agent.id,
