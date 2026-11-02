@@ -1,7 +1,7 @@
 // Real-DB integration test for POST /api/agents/[agentId]/uploads.
 //
 // Uses a real PostgreSQL test database (provisioned by global-setup.ts and
-// truncated between tests by setup.ts). File system I/O is redirected to a
+// emptied between tests by the integration reset). File system I/O is redirected to a
 // per-test temp directory via WORKSPACE_BASE_PATH env stubbing so no real
 // openclaw-config directories are touched.
 //

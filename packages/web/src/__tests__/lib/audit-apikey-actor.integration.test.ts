@@ -8,8 +8,8 @@
 // would throw ("invalid input value for enum actor_type"); if the union were
 // too narrow, this file wouldn't type-check under `tsc`/`lint`.
 //
-// Provisioned by global-setup.ts (fresh migrated DB) and truncated between
-// tests (setup.ts, audit_log is already in APPLICATION_TABLES). No mocks.
+// Provisioned by global-setup.ts (fresh migrated DB) and emptied between
+// tests by the integration reset (setup.ts, audit_log is already in APPLICATION_TABLES). No mocks.
 
 import { describe, it, expect } from "vitest";
 import { eq } from "drizzle-orm";

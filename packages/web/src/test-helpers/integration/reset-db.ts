@@ -4,7 +4,7 @@
 // (src/__tests__/db/integration-db-reset.integration.test.ts): setup.ts is a
 // vitest setupFile and cannot be imported without registering its hooks again.
 
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 
 // Tables that hold user/test state. Schema-only objects (drizzle migrations
@@ -52,24 +52,44 @@ export const APPLICATION_TABLES = [
 const quoted = (tables: readonly string[]) =>
   `ARRAY[${tables.map((t) => `'${t}'`).join(", ")}]::regclass[]`;
 
-// Tables carrying an approximate-nearest-neighbour index (pgvector hnsw /
-// ivfflat). Looked up once per test file: the schema does not change mid-run.
-let annTables: Promise<string[]> | undefined;
+/** The one method of a drizzle client the ANN lookup needs. */
+export interface SqlExecutor {
+  execute(query: SQL): PromiseLike<unknown>;
+}
 
-function findAnnTables(): Promise<string[]> {
-  annTables ??= db
-    .execute<{ rel: string }>(
-      sql.raw(`
+/**
+ * Lookup of the tables carrying an approximate-nearest-neighbour index
+ * (pgvector hnsw / ivfflat), memoised for the rest of the test file: the
+ * schema does not change mid-run.
+ *
+ * Only a SUCCESS is memoised. A cached rejection would turn one transient DB
+ * error into a failure of every later `beforeEach` in the file, all of them
+ * blaming the reset rather than the blip.
+ */
+export function annTableLookup(client: SqlExecutor): () => Promise<string[]> {
+  let cached: Promise<string[]> | undefined;
+  return () => {
+    cached ??= Promise.resolve(
+      client.execute(
+        sql.raw(`
         SELECT DISTINCT i.indrelid::regclass::text AS rel
         FROM pg_index i
         JOIN pg_class ic ON ic.oid = i.indexrelid
         JOIN pg_am am ON am.oid = ic.relam
         WHERE am.amname IN ('hnsw', 'ivfflat')
           AND i.indrelid = ANY (${quoted(APPLICATION_TABLES)})`)
+      )
     )
-    .then((rows) => (rows as unknown as { rel: string }[]).map((r) => r.rel));
-  return annTables;
+      .then((rows) => (rows as { rel: string }[]).map((r) => r.rel))
+      .catch((err: unknown) => {
+        cached = undefined;
+        throw err;
+      });
+    return cached;
+  };
 }
+
+const findAnnTables = annTableLookup(db);
 
 /**
  * Empty every application table and restart the sequences they own — what

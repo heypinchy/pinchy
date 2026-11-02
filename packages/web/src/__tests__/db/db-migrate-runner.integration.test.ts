@@ -44,8 +44,41 @@ const FAIL_DB = `pinchy_db_migrate_fail_${process.pid}`;
 // nothing — and a check that is red for the wrong reason gets loosened, after
 // which it would also stay green for a runner that DID leak. 32 hex chars of
 // fresh randomness can only appear in the output if the runner printed it.
-const PROBE_ROLE = `pinchy_db_migrate_probe_${process.pid}`;
+const PROBE_ROLE_PREFIX = "pinchy_db_migrate_probe_";
+const PROBE_ROLE = `${PROBE_ROLE_PREFIX}${process.pid}`;
 const PROBE_PASSWORD = randomBytes(16).toString("hex");
+// Far beyond any run of this file, short enough that a stranded role is dead
+// the same afternoon.
+const PROBE_ROLE_LIFETIME_MS = 60 * 60 * 1000;
+
+/**
+ * Remove probe roles that earlier runs failed to drop, together with the
+ * databases they own (a role cannot be dropped while it owns one).
+ *
+ * Stale means: past its VALID UNTIL, or with none at all (created before the
+ * role carried one), AND no session connected as it. Expiry rather than mere
+ * idleness, because a concurrent run's role is idle between its own tests —
+ * sweeping on "no session" alone would pull a live run's role out from under
+ * it. The prefix's `_` is escaped: in LIKE it matches any character.
+ */
+async function sweepStaleProbeRoles(admin: postgres.Sql): Promise<void> {
+  const stale = await admin<{ rolname: string; oid: number }[]>`
+    SELECT r.rolname, r.oid::int AS oid
+    FROM pg_roles r
+    WHERE r.rolname LIKE ${PROBE_ROLE_PREFIX.replace(/_/g, "\\_") + "%"}
+      AND (r.rolvaliduntil IS NULL OR r.rolvaliduntil < now())
+      AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.usename = r.rolname)
+  `;
+  for (const { rolname, oid } of stale) {
+    const owned = await admin<{ datname: string }[]>`
+      SELECT datname FROM pg_database WHERE datdba = ${oid}
+    `;
+    for (const { datname } of owned) {
+      await admin.unsafe(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`);
+    }
+    await admin.unsafe(`DROP ROLE IF EXISTS "${rolname}"`);
+  }
+}
 
 function withDbName(url: string, name: string): string {
   const u = new URL(url);
@@ -104,15 +137,21 @@ describe("db:migrate runner", () => {
 
     const admin = postgres(adminUrl, { max: 1 });
     try {
+      await sweepStaleProbeRoles(admin);
       for (const name of [OK_DB, FAIL_DB]) {
         await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
       }
       await admin.unsafe(`DROP ROLE IF EXISTS ${PROBE_ROLE}`);
       // SUPERUSER because migration 0054 runs `CREATE EXTENSION vector`, which
-      // pgvector does not mark trusted. The role exists only for this file and
-      // is dropped in afterAll; all it adds over the suite's own user is a
-      // password that cannot collide with anything.
-      await admin.unsafe(`CREATE ROLE ${PROBE_ROLE} LOGIN SUPERUSER PASSWORD '${PROBE_PASSWORD}'`);
+      // pgvector does not mark trusted. All it adds over the suite's own user is
+      // a password that cannot collide with anything. A login superuser must not
+      // outlive the run, though, and afterAll is not guaranteed to run (a hook
+      // timeout, a killed process): VALID UNTIL makes a leftover unable to log
+      // in after the hour, and the sweep above removes it on the next run.
+      const validUntil = new Date(Date.now() + PROBE_ROLE_LIFETIME_MS).toISOString();
+      await admin.unsafe(
+        `CREATE ROLE ${PROBE_ROLE} LOGIN SUPERUSER PASSWORD '${PROBE_PASSWORD}' VALID UNTIL '${validUntil}'`
+      );
       await admin.unsafe(`CREATE DATABASE ${OK_DB}`);
       await admin.unsafe(`CREATE DATABASE ${FAIL_DB} OWNER ${PROBE_ROLE}`);
     } finally {
@@ -121,14 +160,30 @@ describe("db:migrate runner", () => {
   });
 
   afterAll(async () => {
+    // Each drop in its own attempt: a database that will not go (a slow
+    // checkpoint, a lingering session) must not also strand the login role.
+    // The errors are still thrown afterwards, so a broken teardown stays red.
     const admin = postgres(adminUrl, { max: 1 });
+    const errors: unknown[] = [];
+    const attempt = async (statement: string) => {
+      try {
+        await admin.unsafe(statement);
+      } catch (err) {
+        errors.push(err);
+      }
+    };
     try {
       for (const name of [OK_DB, FAIL_DB]) {
-        await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+        await attempt(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
       }
-      await admin.unsafe(`DROP ROLE IF EXISTS ${PROBE_ROLE}`);
+      // Fails while FAIL_DB still exists (the role owns it). The role then
+      // expires on its own and the next run's sweep collects both.
+      await attempt(`DROP ROLE IF EXISTS ${PROBE_ROLE}`);
     } finally {
       await admin.end();
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `db:migrate runner teardown failed (${errors.length})`);
     }
   });
 
