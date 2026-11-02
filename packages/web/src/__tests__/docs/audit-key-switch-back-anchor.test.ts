@@ -6,7 +6,7 @@ import {
   AUDIT_KEY_SWITCH_DOCS_URL,
   describeAuditKeyFilePersist,
   describeIgnoredSecretEnv,
-  ENCRYPTION_KEY_IGNORED_DOCS_URL,
+  KEY_VARIABLE_IGNORED_DOCS_URL,
   evaluateAuditSecretRotation,
 } from "@/lib/secret-source";
 
@@ -57,11 +57,13 @@ describe("the audit-key startup notices link to sections that exist", () => {
     expectExistingSection(AUDIT_KEY_SWITCH_DOCS_URL);
   });
 
-  it("points the ignored-ENCRYPTION_KEY warning at the safe steps", () => {
-    // Printed on every start while ENCRYPTION_KEY is malformed. The obvious
-    // "fix" makes every stored credential unreadable, so the section it links
-    // to is the only place the safe steps are spelled out.
-    expectExistingSection(ENCRYPTION_KEY_IGNORED_DOCS_URL, {
+  it("points the ignored-key-variable warnings at the safe steps", () => {
+    // Printed on every start while ENCRYPTION_KEY or AUDIT_HMAC_SECRET is
+    // malformed. The obvious "fix" makes every stored credential unreadable,
+    // or, for a variable that used to work, leaves everything it signed
+    // unverifiable, so the section it links to is the only place the safe
+    // steps are spelled out.
+    expectExistingSection(KEY_VARIABLE_IGNORED_DOCS_URL, {
       pathname: "/reference/environment-variables/",
       path: envVarsPagePath,
     });

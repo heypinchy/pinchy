@@ -31,7 +31,7 @@ import {
   AUDIT_KEY_SWITCH_DOCS_URL,
   describeAuditKeyFilePersist,
   describeIgnoredSecretEnv,
-  ENCRYPTION_KEY_IGNORED_DOCS_URL,
+  KEY_VARIABLE_IGNORED_DOCS_URL,
 } from "@/lib/secret-source";
 
 const mockedExistsSync = vi.mocked(existsSync);
@@ -142,6 +142,25 @@ describe("describeIgnoredSecretEnv", () => {
     }
   });
 
+  it("doesn't name quotes as something that makes a value invalid", () => {
+    // Compose strips surrounding quotes (and a trailing CR or spaces) from a
+    // .env value before Pinchy sees it, so quotes never make a key invalid.
+    // Naming them sends the operator after a cause that isn't theirs.
+    for (const envVar of ["ENCRYPTION_KEY", "AUDIT_HMAC_SECRET"] as const) {
+      expect(describeIgnoredSecretEnv({ envVar, ignored: true }).message).not.toMatch(/quote/i);
+    }
+  });
+
+  it("tells the audit operator whose variable used to work to set it back, not to make a new key", () => {
+    // A variable that was a working key and broke later has silently switched
+    // Pinchy back to the key file. A fresh key would leave everything the
+    // original value signed unverifiable; the original value brings it back.
+    const result = describeIgnoredSecretEnv({ envVar: "AUDIT_HMAC_SECRET", ignored: true });
+    expect(result.message).toMatch(/held a working key/);
+    expect(result.message).toMatch(/set it back to that exact value/);
+    expect(result.message).toContain(KEY_VARIABLE_IGNORED_DOCS_URL);
+  });
+
   it("tells the audit operator how to make a fresh key, and that a valid value is a key switch", () => {
     // A valid value replaces the key file as the signing key. That is the
     // supported key switch, but it has a procedure (current key in the file
@@ -194,7 +213,7 @@ describe("describeIgnoredSecretEnv", () => {
     });
 
     it("links to the docs section with the safe steps", () => {
-      expect(message()).toContain(ENCRYPTION_KEY_IGNORED_DOCS_URL);
+      expect(message()).toContain(KEY_VARIABLE_IGNORED_DOCS_URL);
     });
   });
 

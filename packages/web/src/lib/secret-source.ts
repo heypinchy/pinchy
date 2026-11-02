@@ -180,11 +180,12 @@ export interface IgnoredSecretEnvLog {
 }
 
 /**
- * Where the ignored-`ENCRYPTION_KEY` warning sends an operator: the steps that
- * keep their stored credentials readable. Exported for the same docs test as
- * the audit links above.
+ * Where the ignored-key-variable warnings send an operator: the steps that keep
+ * their stored credentials readable, and the case of an `AUDIT_HMAC_SECRET`
+ * that worked and broke later. Exported for the same docs test as the audit
+ * links above.
  */
-export const ENCRYPTION_KEY_IGNORED_DOCS_URL =
+export const KEY_VARIABLE_IGNORED_DOCS_URL =
   "https://docs.heypinchy.com/reference/environment-variables/#when-pinchy-ignores-a-key-variable";
 
 /**
@@ -205,7 +206,13 @@ export const ENCRYPTION_KEY_IGNORED_DOCS_URL =
  *   - `AUDIT_HMAC_SECRET`: a corrected value switches the signing key, which is
  *     supported but has a procedure (current key in the file first, several
  *     instances stop together). Until then the file is the signing key, and the
- *     retire-the-earlier-key steps remove that file.
+ *     retire-the-earlier-key steps remove that file. The exception is a value
+ *     that worked and broke later: breaking it already switched Pinchy back to
+ *     the key file, and only the original value brings back what it signed.
+ *
+ * Quotes are deliberately not named as a cause: Compose strips surrounding
+ * quotes, a trailing CR and trailing spaces from a `.env` value before Pinchy
+ * sees it.
  *
  * Takes a boolean, never the value, for the reason
  * {@link evaluateAuditSecretRotation} does. The message says only "not 64 hex
@@ -221,7 +228,7 @@ export function describeIgnoredSecretEnv(opts: {
     `WARNING: ${opts.envVar} is set but is not a valid key, so Pinchy ignores it ` +
     "and uses the key file in the secrets volume instead (creating one there if " +
     "there is none). A valid key is 64 hex characters (0-9, a-f), with no 0x " +
-    "prefix, quotes or spaces.";
+    "prefix or spaces.";
 
   if (opts.envVar === "ENCRYPTION_KEY") {
     return {
@@ -233,7 +240,7 @@ export function describeIgnoredSecretEnv(opts: {
         "docker compose up -d. Any other value, even a valid one, makes everything " +
         "encrypted with the key file unreadable, and those credentials can only be " +
         "re-entered. See " +
-        ENCRYPTION_KEY_IGNORED_DOCS_URL,
+        KEY_VARIABLE_IGNORED_DOCS_URL,
     };
   }
 
@@ -241,7 +248,10 @@ export function describeIgnoredSecretEnv(opts: {
     action: "warn",
     message:
       `${ignored} Until it is, the key file is the audit signing key, so don't ` +
-      "remove .audit_hmac_secret from the volume. Setting a valid value, such as " +
+      "remove .audit_hmac_secret from the volume. If the variable held a working " +
+      "key before and only broke later, set it back to that exact value, not a new " +
+      "one: Pinchy switched back to the key file when it broke, see " +
+      `${KEY_VARIABLE_IGNORED_DOCS_URL}. Otherwise, setting a valid value, such as ` +
       "the output of openssl rand -hex 32, switches the signing key: follow " +
       `${AUDIT_KEY_SWITCH_DOCS_URL} (on several instances against one database, ` +
       "stop them all first).",
