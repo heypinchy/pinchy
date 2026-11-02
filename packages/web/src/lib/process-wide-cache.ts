@@ -37,7 +37,34 @@ export function processWideCache<T>(
   if (existing !== undefined && isCurrent(existing)) return existing as T;
   const fresh = create();
   store[key] = fresh;
+  cacheKeys().add(key);
   return fresh;
+}
+
+/**
+ * Every key this helper has stored a cache under — itself process-wide, so a
+ * reset through one module instance reaches the caches the other created.
+ */
+function cacheKeys(): Set<string> {
+  const store = globalThis as unknown as Record<string, unknown>;
+  const keys = store.__pinchyProcessWideCacheKeys;
+  if (keys instanceof Set) return keys as Set<string>;
+  const fresh = new Set<string>();
+  store.__pinchyProcessWideCacheKeys = fresh;
+  return fresh;
+}
+
+/**
+ * Test-only: drop every cache created through {@link processWideCache}; the
+ * next read creates it afresh. `vi.resetModules()` cannot do this — the caches
+ * outlive the module instance by design — so the shared vitest setup calls it
+ * after every test. Do not call in app code.
+ */
+export function _resetProcessWideCaches(): void {
+  const store = globalThis as unknown as Record<string, unknown>;
+  const keys = cacheKeys();
+  for (const key of keys) delete store[key];
+  keys.clear();
 }
 
 /** `isCurrent` for a cache stored as a Map. */

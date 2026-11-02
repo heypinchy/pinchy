@@ -2,7 +2,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { isOpenClawLocalBaseUrl } from "@/lib/openclaw-local-url";
 import { computeAllowedTools } from "@/lib/tool-registry";
-import { _resetRegenerateQueue } from "@/lib/openclaw-config/regenerate-queue";
+
+// The capability cache is process-wide and starts cold in every test (the
+// shared setup resets it). Loading it is one more `db.select()`, which would
+// shift every call-order-keyed db mock below. `@/lib/model-vision` is mocked
+// right after this, so the cache's contents never matter here — only that
+// loading it reads nothing. (Eight tests used to pass only because an earlier
+// test had warmed the cache; each failed when run alone.)
+vi.mock("@/lib/model-capabilities/cache", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/model-capabilities/cache")>()),
+  ensureModelCapabilityCacheLoaded: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock("@/lib/model-vision", () => ({
   isModelVisionCapable: vi.fn((modelId: string) => {
@@ -314,14 +324,10 @@ beforeEach(() => {
   _supersedePendingPushes();
 });
 
-// Regenerates are serialized by one process-wide queue. A test that fails while
-// it holds a run open (the "overlapping regenerates" block does, on purpose)
-// would otherwise leave that run in flight, and every later regenerate in this
-// file would wait behind it until its own timeout — one red test reported as a
-// dozen. Each test starts from an idle queue instead.
-afterEach(() => {
-  _resetRegenerateQueue();
-});
+// The regenerate queue is reset after every test by the shared setup
+// (src/test-setup.ts): a test that fails while it holds a run open (the
+// "overlapping regenerates" block does, on purpose) would otherwise leave that
+// run in flight, and every later regenerate in this file would wait behind it.
 
 // Drift guard: re-export the shared `isOpenClawLocalBaseUrl` (see
 // @/lib/openclaw-local-url) under the local name used by the assertions in

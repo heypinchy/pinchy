@@ -1,5 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { hasFields, isMap, processWideCache } from "@/lib/process-wide-cache";
+import {
+  _resetProcessWideCaches,
+  hasFields,
+  isMap,
+  processWideCache,
+} from "@/lib/process-wide-cache";
 
 const KEY = "__pinchyProcessWideCacheTest" as const;
 const store = globalThis as unknown as Record<string, unknown>;
@@ -35,5 +40,26 @@ describe("processWideCache", () => {
     const value = processWideCache(KEY, () => new Map(), isMap);
 
     expect(value).toBeInstanceOf(Map);
+  });
+});
+
+describe("_resetProcessWideCaches", () => {
+  it("drops every cache created through processWideCache, so the next read starts empty", () => {
+    processWideCache(KEY, () => new Map<string, number>(), isMap).set("a", 1);
+
+    _resetProcessWideCaches();
+
+    expect(store[KEY]).toBeUndefined();
+    expect(processWideCache(KEY, () => new Map<string, number>(), isMap).size).toBe(0);
+  });
+
+  it("leaves globalThis keys it did not create alone", () => {
+    store.__pinchyNotACache = 42;
+    try {
+      _resetProcessWideCaches();
+      expect(store.__pinchyNotACache).toBe(42);
+    } finally {
+      delete store.__pinchyNotACache;
+    }
   });
 });
