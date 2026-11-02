@@ -1,7 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 import {
   readFileSync,
-  writeFileSync,
   existsSync,
   openSync,
   fstatSync,
@@ -10,8 +9,9 @@ import {
   fsyncSync,
   linkSync,
   unlinkSync,
+  readdirSync,
 } from "fs";
-import { join } from "path";
+import { basename, dirname, join } from "path";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
@@ -134,8 +134,90 @@ export function getPreviousSecret(name: string): Buffer | null {
 export type EnvSecretPersistOutcome =
   | { status: "written" }
   | { status: "file-exists" }
+  | { status: "file-invalid" }
   | { status: "not-envvar" }
   | { status: "failed"; reason: string };
+
+/**
+ * Write a key to its key file without ever leaving a partial file or replacing
+ * an existing one: written and fsynced to a temporary file in the same
+ * directory, then hard-linked to the final name. `link` fails with EEXIST
+ * instead of replacing, so a file that appeared in between (another process,
+ * another instance on a shared volume) is never touched, and a full disk or a
+ * crash mid-write leaves at most a temp file, never a 0-byte key file that
+ * every later read would trip over.
+ *
+ * Returns "exists" when another file got there first. Throws on any other
+ * error; fs errors name the code and the path, never the content.
+ */
+function writeKeyFileExclusive(keyFilePath: string, keyHex: string): "written" | "exists" {
+  const tmpPath = `${keyFilePath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  const fd = openSync(tmpPath, "wx", 0o600);
+  try {
+    try {
+      writeSync(fd, keyHex);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    try {
+      linkSync(tmpPath, keyFilePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+      throw err;
+    }
+    return "written";
+  } finally {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // Left for removeStaleKeyTempFiles on the next start.
+    }
+  }
+}
+
+// `<pid>.<8 hex>`, the middle of the temp names writeKeyFileExclusive creates.
+const TEMP_SUFFIX = /^\d+\.[0-9a-f]{8}$/;
+
+/**
+ * Remove the temp files a crash between writing and unlinking left next to a
+ * key file. Each one holds a copy of the key, and nothing else would ever
+ * clean it up. Only names of exactly the form writeKeyFileExclusive creates,
+ * only in the key file's own directory.
+ *
+ * Called once at startup. An instance starting at the very same moment on a
+ * shared volume could lose its in-flight temp file to this; its write then
+ * fails and is reported, and the other instance's write still lands.
+ */
+function removeStaleKeyTempFiles(keyFilePath: string): void {
+  const dir = dirname(keyFilePath);
+  const prefix = `${basename(keyFilePath)}.`;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return; // No directory, nothing to clean; the write reports the real problem.
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(".tmp")) continue;
+    if (!TEMP_SUFFIX.test(entry.slice(prefix.length, -".tmp".length))) continue;
+    try {
+      unlinkSync(join(dir, entry));
+    } catch {
+      // Best effort: a file we cannot remove is no worse than before.
+    }
+  }
+}
+
+/** An existing key file: a key we can read, or something that is not one. */
+function existingKeyFileOutcome(keyFilePath: string): EnvSecretPersistOutcome {
+  try {
+    readSecretFile(keyFilePath);
+    return { status: "file-exists" };
+  } catch {
+    return { status: "file-invalid" };
+  }
+}
 
 /**
  * When the environment variable is the active secret and no key file exists,
@@ -151,56 +233,34 @@ export type EnvSecretPersistOutcome =
  *
  * Never overwrites: an existing file is either the same key or the earlier
  * one, and the earlier one is the only thing that can verify the entries
- * signed with it. Even a corrupt file is left for the operator to look at.
+ * signed with it. Even a corrupt file is left for the operator to look at,
+ * but reported as "file-invalid": it is not a key anything can verify
+ * against, so the current value is not saved, and saying nothing would read
+ * exactly like a healthy file.
  *
- * Atomic and non-clobbering: the key is written and fsynced to a temporary
- * file in the same directory, then hard-linked to the final name. `link`
- * fails with EEXIST instead of replacing, so a file that appeared in between
- * is never touched, and a crash mid-write leaves at most a temp file, never a
- * truncated key file that a later boot would trip over.
+ * Written through {@link writeKeyFileExclusive}, after removing temp files an
+ * earlier crash left behind.
  *
  * Never throws: a failed write is reported, and the caller logs it and starts
  * anyway.
  */
 export function persistEnvSecretToKeyFile(name: string): EnvSecretPersistOutcome {
-  if (getSecretSource(name) !== "envvar") return { status: "not-envvar" };
-
   const { keyFilePath } = secretPaths(name);
-  if (existsSync(keyFilePath)) return { status: "file-exists" };
+  removeStaleKeyTempFiles(keyFilePath);
+
+  if (getSecretSource(name) !== "envvar") return { status: "not-envvar" };
+  if (existsSync(keyFilePath)) return existingKeyFileOutcome(keyFilePath);
 
   // Same format as the file getOrCreateSecret generates: lowercase hex, no
   // trailing newline.
   const key = Buffer.from(process.env[name.toUpperCase()]!, "hex").toString("hex");
-  const tmpPath = `${keyFilePath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-
-  let tmpCreated = false;
   try {
-    const fd = openSync(tmpPath, "wx", 0o600);
-    tmpCreated = true;
-    try {
-      writeSync(fd, key);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    try {
-      linkSync(tmpPath, keyFilePath);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") return { status: "file-exists" };
-      throw err;
-    }
-    return { status: "written" };
+    return writeKeyFileExclusive(keyFilePath, key) === "written"
+      ? { status: "written" }
+      : existingKeyFileOutcome(keyFilePath);
   } catch (err) {
     // fs errors name the code and the path, never the content written.
     return { status: "failed", reason: err instanceof Error ? err.message : String(err) };
-  } finally {
-    if (tmpCreated) {
-      try {
-        unlinkSync(tmpPath);
-      } catch {
-        // A leftover temp file is harmless: nothing reads *.tmp.
-      }
-    }
   }
 }
 
@@ -219,7 +279,11 @@ export function getOrCreateSecret(name: string): Buffer {
       // Auto-generate and persist
       if (existsSync(keyFileDir)) {
         const newKey = randomBytes(32).toString("hex");
-        writeFileSync(keyFilePath, newKey, { mode: 0o600 });
+        // Another process may have generated the key first; then that one is
+        // the key, and replacing it would orphan whatever it already signed.
+        if (writeKeyFileExclusive(keyFilePath, newKey) === "exists") {
+          return readSecretFile(keyFilePath);
+        }
         return Buffer.from(newKey, "hex");
       }
       throw new Error(

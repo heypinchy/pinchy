@@ -185,7 +185,9 @@ export interface AuditKeyFilePersistLog {
  * is never a mystery; a warning when it could not, because the write is what
  * lets a later switch of the variable keep the old key, and an operator who
  * does not know it failed would switch and lose verification of everything
- * signed so far. Silent otherwise. Never the key.
+ * signed so far. The same warning, with the remedy, when an existing key file
+ * is not a valid key: Pinchy never overwrites it, so the value is not saved
+ * either. Silent otherwise. Never the key, never the file's content.
  */
 export function describeAuditKeyFilePersist(
   outcome: EnvSecretPersistOutcome
@@ -208,6 +210,20 @@ export function describeAuditKeyFilePersist(
           "entries are signed as usual, but if you switch AUDIT_HMAC_SECRET to a " +
           "new value before this works, the entries signed with the current value " +
           "can't be verified any more. See " +
+          AUDIT_KEY_SWITCH_DOCS_URL,
+      };
+    case "file-invalid":
+      // Never overwritten, so this stays until someone looks at it. Named, not
+      // printed: whatever is in the file might be the remains of a key.
+      return {
+        action: "warn",
+        message:
+          "WARNING: .audit_hmac_secret in the secrets volume is not a valid key " +
+          "(expected 64 hex characters), so the current AUDIT_HMAC_SECRET value is " +
+          "not saved in it. Pinchy leaves the file as it is and signs audit entries " +
+          "as usual, but if you switch AUDIT_HMAC_SECRET to a new value, the entries " +
+          "signed with the current value can't be verified any more. Move it aside " +
+          "and restart Pinchy; it then writes the current value there. See " +
           AUDIT_KEY_SWITCH_DOCS_URL,
       };
     default:

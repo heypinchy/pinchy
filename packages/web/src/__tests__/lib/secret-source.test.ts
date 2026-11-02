@@ -28,6 +28,7 @@ import {
   evaluateDbPasswordPolicy,
   evaluateAuditSecretRotation,
   AUDIT_KEY_SWITCH_BACK_DOCS_URL,
+  AUDIT_KEY_SWITCH_DOCS_URL,
   describeAuditKeyFilePersist,
 } from "@/lib/secret-source";
 
@@ -274,6 +275,20 @@ describe("describeAuditKeyFilePersist", () => {
     expect(result.message).toMatch(/continu/i);
     // What a later switch of the variable then loses.
     expect(result.message).toMatch(/switch/i);
+  });
+
+  it("warns when the existing key file is not a valid key, says what that costs, and never prints it", () => {
+    // The file is left alone (never overwrite), so the current value is not
+    // saved anywhere. Silent, that reads exactly like a healthy key file.
+    const result = describeAuditKeyFilePersist({ status: "file-invalid" });
+
+    expect(result.action).toBe("warn");
+    expect(result.message).toMatch(/\.audit_hmac_secret/);
+    expect(result.message).toMatch(/not a valid key/);
+    expect(result.message).toMatch(/not saved/);
+    expect(result.message).toMatch(/move it aside/i);
+    expect(result.message).toMatch(/restart Pinchy/);
+    expect(result.message).toContain(AUDIT_KEY_SWITCH_DOCS_URL);
   });
 
   it("is silent when the file already exists or the variable is not in use", () => {
