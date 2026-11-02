@@ -1,13 +1,13 @@
 /**
  * Drift guard for "which characters render as nothing or as blank space".
  *
- * Three places answer that question (second review of #1242): pinchy-email
- * refuses such characters in a recipient, pinchy-files refuses them in a path,
- * and the approval summary escapes them as `⟨U+XXXX⟩` so the card shows them.
- * Plugins cannot import each other or the web package, so the plugin rule is
- * duplicated (`hidden-chars.ts`, pinned byte-identical here), and the summary
- * keeps its own regex — pinned here to the plugin rule over every code point,
- * so a character one side treats as hidden cannot pass the other unseen.
+ * Three places answer that question: pinchy-email refuses such characters in a
+ * recipient, pinchy-files refuses them in a path, and the approval summary
+ * escapes them as `⟨U+XXXX⟩` so the card shows them. Plugins cannot import each
+ * other or the web package, so the plugin rule is duplicated (`hidden-chars.ts`,
+ * pinned byte-identical here), and the summary keeps its own regex — pinned here
+ * to the plugin rule over every code point, so a character one side treats as
+ * hidden cannot pass the other unseen.
  */
 import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
@@ -38,7 +38,7 @@ function shownName(to: unknown): string {
 
 /** Kept readable by the summary on purpose: layout (tab, line break). The
  * four format characters of emoji are marked like everything else, inside an
- * emoji too (eleventh review of #1242). */
+ * emoji too. */
 const SUMMARY_KEEPS = new Set([0x09, 0x0a]);
 
 describe("hidden-chars drift guard", () => {
@@ -48,11 +48,11 @@ describe("hidden-chars drift guard", () => {
     for (const copy of rest) expect(copy).toBe(first);
   });
 
-  // Seventh review of #1242 gave pinchy-email a copy of the joiner rule, the
-  // tenth left one copy in pinchy-files for the path check and the card. The
-  // eleventh removed the rule: which sequences are one emoji is the server's
-  // Unicode data, and whether one is DRAWN as one is the approver's font. So
-  // neither the card nor a tool asks any more, and nothing may bring it back.
+  // A copy of the joiner rule once lived in pinchy-email and in pinchy-files (for
+  // the path check and the card). It is gone: which sequences are one emoji is
+  // the server's Unicode data, and whether one is DRAWN as one is the approver's
+  // font. So neither the card nor a tool asks any more, and nothing may bring it
+  // back.
   it("neither the card nor a tool asks whether a format character is part of an emoji", () => {
     for (const copy of copiesOf("emoji-sequence.ts")) expect(existsSync(copy)).toBe(false);
     const sources = [
@@ -64,8 +64,8 @@ describe("hidden-chars drift guard", () => {
     for (const file of sources) expect(readFileSync(file, "utf8"), file).not.toMatch(/RGI_Emoji/);
   });
 
-  // Lone surrogates included (third review of #1242): the summary escapes them
-  // — Postgres refuses one inside jsonb — and the tools refuse them.
+  // Lone surrogates included: the summary escapes them — Postgres refuses one
+  // inside jsonb — and the tools refuse them.
   it("the summary escapes exactly what the tools refuse, minus layout", () => {
     const mismatches: string[] = [];
     for (let cp = 0; cp <= 0x10ffff; cp++) {
@@ -77,7 +77,7 @@ describe("hidden-chars drift guard", () => {
     expect(mismatches).toEqual([]);
   });
 
-  it("covers the blank-rendering characters of the review", () => {
+  it("covers the blank-rendering characters", () => {
     for (const char of ["⠀", "ㅤ", "ᅟ", "ᅠ", "ﾠ", " ", "　"]) {
       expect(hiddenCharIn(`a${char}b`)).toBe(
         `U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`
@@ -85,8 +85,8 @@ describe("hidden-chars drift guard", () => {
     }
     expect(hiddenCharIn("plain text with spaces")).toBeNull();
   });
-  // Third review of #1242: each tool now allows one group the default refuses,
-  // and each allowance is only safe because of what the card does with it.
+  // Each tool now allows one group the default refuses, and each allowance is
+  // only safe because of what the card does with it.
   describe("the deliberate allowances", () => {
     const every = (pick: (char: string) => boolean) => {
       const found: number[] = [];
@@ -107,10 +107,10 @@ describe("hidden-chars drift guard", () => {
       }
     });
 
-    // Fifth review of #1242: ordinary emoji file names (⚠️, 👨‍👩‍👧) could not be
-    // written. Eleventh review: the card marks these characters everywhere, an
-    // emoji's included, so a path may carry them anywhere — `report⟨U+FE0F⟩.md`
-    // reads apart from `report.md` the way `a⟨U+200D⟩b.md` does.
+    // Ordinary emoji file names (⚠️, 👨‍👩‍👧) must be writable. The card marks
+    // these characters everywhere, an emoji's included, so a path may carry them
+    // anywhere — `report⟨U+FE0F⟩.md` reads apart from `report.md` the way
+    // `a⟨U+200D⟩b.md` does.
     it("a path may carry the emoji format characters anywhere", () => {
       for (const cp of every(isEmojiFormatChar)) {
         const char = String.fromCodePoint(cp);
@@ -122,10 +122,10 @@ describe("hidden-chars drift guard", () => {
       ).not.toThrow();
     });
 
-    // Sixth review of #1242: the card kept the joiner and the presentation
-    // selectors raw everywhere, so a stray one read as nothing on the card.
-    // Eleventh: the path rule accepts every selector, so the card must mark
-    // every one — pinned here so the two cannot drift.
+    // The card once kept the joiner and the presentation selectors raw
+    // everywhere, so a stray one read as nothing on the card. The path rule
+    // accepts every selector, so the card must mark every one — pinned here so
+    // the two cannot drift.
     it("the card marks every selector in a path the path rule accepts", () => {
       const names = [
         "⚠️ offen",
@@ -166,13 +166,12 @@ describe("hidden-chars drift guard", () => {
       expect(names.some((name) => !/[\uFE0E\uFE0F]/.test(name))).toBe(true);
     });
 
-    // Seventh to ninth review of #1242 kept a joiner raw where a per-script
-    // rule said it shapes the text; the tenth found the rule let through
-    // joiners that draw nothing (Tamil க்‌ம, Thai กฺ‍ม, Myanmar က်‍မ, Sinhala
-    // ක්‍ම, Gurmukhi ਕ੍‍ਮ, and 📄‍📄). One rule now: the path check and the
-    // recipient check accept a joiner anywhere, and the card — for a path and
-    // a recipient alike — marks every one, an emoji's included (eleventh
-    // review: whether ❤️‍🔥 is drawn as one glyph is the approver's font).
+    // A per-script rule once kept a joiner raw where it was said to shape the
+    // text, and let through joiners that draw nothing (Tamil க்‌ம, Thai กฺ‍ม,
+    // Myanmar က်‍မ, Sinhala ක්‍ම, Gurmukhi ਕ੍‍ਮ, and 📄‍📄). One rule now: the path
+    // check and the recipient check accept a joiner anywhere, and the card — for
+    // a path and a recipient alike — marks every one, an emoji's included
+    // (whether ❤️‍🔥 is drawn as one glyph is the approver's font).
     it("the card marks every joiner in a path and a recipient, an emoji's included", () => {
       const emoji = [
         "\u{1F468}‍\u{1F469}‍\u{1F467}",
@@ -204,9 +203,8 @@ describe("hidden-chars drift guard", () => {
         "র‍্যাংকিং",
         "ৰ‍্য",
         "ক‍্য",
-        // Tenth review of #1242: mid-word, after a virama and before a letter
-        // of its own script — each pixel-identical to the name without the
-        // joiner in a shipping font.
+        // Mid-word, after a virama and before a letter of its own script — each
+        // pixel-identical to the name without the joiner in a shipping font.
         "க்‌ம",
         "க்‍ம",
         "กฺ‍ม",
@@ -265,10 +263,10 @@ describe("hidden-chars drift guard", () => {
       }
     });
 
-    // Thirteenth review of #1242: a combining mark with no letter under it
-    // drew onto the neighbouring word (`ּבא` like `באּ`). It is not hidden — it
-    // draws — so the tools take it like any character the card marks, and the
-    // card marks it, in a path and a display name alike.
+    // A combining mark with no letter under it drew onto the neighbouring word
+    // (`ּבא` like `באּ`). It is not hidden — it draws — so the tools take it like
+    // any character the card marks, and the card marks it, in a path and a
+    // display name alike.
     it("a path and a display name may carry a mark with no letter, and the card marks it", () => {
       for (const [text, marker] of [
         ["\u05BCבא", "⟨U+05BC⟩בא"],
@@ -302,10 +300,10 @@ describe("hidden-chars drift guard", () => {
       }
     });
 
-    // Ninth review of #1242: a display name refused every space separator, so
-    // a Japanese name written with an ideographic space could not be mailed.
-    // One is allowed now, as in a path, because the card marks it; a run of
-    // them is still blank space, and still refused.
+    // A display name refused every space separator, so a Japanese name written
+    // with an ideographic space could not be mailed. One is allowed now, as in a
+    // path, because the card marks it; a run of them is still blank space, and
+    // still refused.
     it("a display name may carry a single space separator, and the card marks it", () => {
       for (const cp of every(isSpaceSeparator)) {
         const char = String.fromCodePoint(cp);

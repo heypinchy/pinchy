@@ -52,10 +52,10 @@ function truncate(text: string, max: number): string {
  * would mean the safer surface hides what the riskier one prints.
  */
 function inline(value: unknown): string {
-  // What Pinchy says about a value is printed OUTSIDE its quotes, so no
-  // quoted text can imitate it: `partner_id: (record reference: res.partner
-  // #7 "Acme GmbH")` is a ref, `partner_id: "(record reference: …)"` is a
-  // string pinchy-odoo would look up by name (fourteenth review of #1242).
+  // What Pinchy says about a value is printed OUTSIDE its quotes, so no quoted
+  // text can imitate it: `partner_id: (record reference: res.partner #7 "Acme
+  // GmbH")` is a ref, `partner_id: "(record reference: …)"` is a string
+  // pinchy-odoo would look up by name.
   const node = readNode(value);
   if (node === "unreadable") return "(a value this version cannot show)";
   if (node?.["@"] === "ref") return refText(node);
@@ -69,25 +69,25 @@ function inline(value: unknown): string {
       .map(([key, v]) => `${key}: ${inline(v)}`)
       .join(", ")}}`;
   }
-  // Every string is quoted, with its `"` and `\` escaped, so no string can
-  // print as structure. Printed bare, `name: "Acme, active: false"` read
-  // exactly like `name: "Acme", active: false`, and `ids: ["7, 8"]` like
-  // `ids: [7, 8]` (fourteenth review of #1242). The card needs no quotes: it
-  // draws each field and item in an element of its own. Line breaks stay
-  // line breaks — everything else that could hide is a marker already — and
-  // a key needs none either: it is a bare identifier or already quoted.
+  // Every string is quoted, with its `"` and `\` escaped, so no string can print
+  // as structure. Printed bare, `name: "Acme, active: false"` read exactly like
+  // `name: "Acme", active: false`, and `ids: ["7, 8"]` like `ids: [7, 8]`. The
+  // card needs no quotes: it draws each field and item in an element of its own.
+  // Line breaks stay line breaks — everything else that could hide is a marker
+  // already — and a key needs none either: it is a bare identifier or already
+  // quoted.
   if (typeof value === "string") return quoted(value);
   return displayScalar(value);
 }
 
 function describeArgs(params: unknown, options: SummarizeOptions): string {
-  // Every argument is printed, `null` and empty ones included: leaving them
-  // out would let `active: null` read the same as no `active` at all. And in
-  // the order it was sent, as the card draws it: a chat client reorders
-  // `/data/חוזים/2024.md` into `/data/2024/חוזים.md` exactly as a browser
-  // does (eleventh review of #1242). That holds only where the client
-  // implements Unicode's isolates (6.3+) and overrides; one that drops them
-  // draws the text as before, and the card stays the view to decide on.
+  // Every argument is printed, `null` and empty ones included: leaving them out
+  // would let `active: null` read the same as no `active` at all. And in the
+  // order it was sent, as the card draws it: a chat client reorders
+  // `/data/חוזים/2024.md` into `/data/2024/חוזים.md` exactly as a browser does.
+  // That holds only where the client implements Unicode's isolates (6.3+) and
+  // overrides; one that drops them draws the text as before, and the card stays
+  // the view to decide on.
   return inStoredOrderPlain(
     Object.entries(summarizeArgs(params, options))
       .map(([key, value]) => `${key}: ${inline(value)}`)

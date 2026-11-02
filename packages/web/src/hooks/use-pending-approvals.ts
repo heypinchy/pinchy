@@ -49,8 +49,8 @@ async function poll(): Promise<void> {
         return [{ ...approval, argsSummary: approval.argsSummary }];
       // Never render a card without the arguments it would approve: one whose
       // summary did not come back — or came back `null`, which is what a card
-      // settled mid-request carries (sixth review of #1242) — keeps the one it
-      // holds, or waits for the next poll, which asks for it.
+      // settled mid-request carries — keeps the one it holds, or waits for the
+      // next poll, which asks for it.
       const summary = held.get(approval.id);
       return summary ? [{ ...approval, argsSummary: summary }] : [];
     });

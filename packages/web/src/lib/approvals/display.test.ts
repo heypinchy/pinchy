@@ -43,8 +43,8 @@ describe("displayScalar: one rendering per type, so no value passes for another"
   });
 });
 
-// Sixteenth review of #1242: a URL is what the parser the tool uses accepts,
-// read the way that parser reads it.
+// A URL is what the parser the tool uses accepts, read the way that parser
+// reads it.
 describe("readUrl", () => {
   it.each([
     ["https://firma.at/pay", "firma.at", true],
@@ -125,9 +125,8 @@ describe("FULL_VIEW_KEYS covers every path- or target-like tool parameter", () =
   });
 
   it("includes each of them", () => {
-    // Third review of #1242: `model` and `ids` decide which records an Odoo
-    // write lands on, and were not in the set — the scan now catches id- and
-    // model-like names too (`id`, `ids`, `model`, `messageId`, `res_id`, …).
+    // `model` and `ids` decide which records an Odoo write lands on, so the
+    // scan catches id- and model-like names too (`id`, `ids`, `model`, `messageId`, `res_id`, …).
     const targetLike = [...declared].filter(
       (name) =>
         /path|file|url|target|counterpart|destination|model/i.test(name) ||
@@ -150,7 +149,7 @@ describe("FULL_VIEW_KEYS covers every path- or target-like tool parameter", () =
   });
 });
 
-// Fourth review of #1242: the card shows an address or URL in full at any key,
+// The card shows an address or URL in full at any key,
 // so the host at its end is never behind a preview.
 describe("isAddressShaped", () => {
   it.each([
@@ -158,7 +157,7 @@ describe("isAddressShaped", () => {
     "billing@f\u0456rma.at",
     "https://firma.at/pay",
     "https://evil.com\\@firma.at/x",
-    // Sixteenth review of #1242: what the parser and the mail tool accept.
+    // What the URL parser and the mail tool accept.
     "https:firma.at/x",
     "\u0001https://f\u0456rma.at/x",
     " boss@firma.at",
@@ -167,18 +166,17 @@ describe("isAddressShaped", () => {
     expect(isAddressShaped(text)).toBe(true);
   });
 
-  // Corrected expectation (fourteenth review of #1242): the host note used to
-  // be written after the address, so this stripped a trailing " (…)" first —
-  // and an address with a note TYPED after it read as an address with
-  // Pinchy's note. Notes are nodes of their own now; the value is its text.
+  // The host note is a node of its own, never text after the address, so an
+  // address with a note TYPED after it is text: stripping a trailing " (…)"
+  // first would read it as an address with Pinchy's note.
   it.each([
     "Bitte an billing@firma.at schreiben",
     "Rechnung Q3",
     "a@b, c@d",
     "billing@f\u0456rma.at (xn--frma-l9d.at)",
     "billing@f\u0456rma.at (firma.at)",
-    // Sixteenth review of #1242: free text that begins with a URL is drawn
-    // as text, previewed like any other.
+    // Free text that begins with a URL is drawn as text, previewed like any
+    // other.
     "https://firma.at\nHi team, the new site is live.",
     "https://firma.at — new site is live",
     "https://firma.at, see above",
@@ -224,9 +222,8 @@ describe("readNode", () => {
 });
 
 /**
- * Eleventh review of #1242: with no control character at all, the bidi
- * algorithm drew `/data/חוזים/2024.md` and `/data/2024/חוזים.md` pixel-
- * identically — a digit next to a right-to-left word joins its run — and both
+ * With no control character at all, the bidi algorithm draws
+ * `/data/חוזים/2024.md` and `/data/2024/חוזים.md` pixel-identically — a digit next to a right-to-left word joins its run — and both
  * are plain paths. Isolating each `/`-separated segment is not enough:
  * `/data/חוזים-2024.md` and `/data/2024-חוזים.md` collide inside ONE segment.
  *
@@ -283,9 +280,9 @@ describe("inStoredOrder: a value is shown in the order it was sent", () => {
     expect(view(text)).toBe("[عقود]١٢،٣ [חוזים־א׳ ab]");
   });
 
-  // Twelfth review of #1242: a word was letters and marks only, so the
-  // gershayim of בע״מ — in nearly every Israeli company name — split it into
-  // two words, each drawn on its own in stored order: the name read garbled.
+  // A word of letters and marks only would split the gershayim of בע״מ — in
+  // nearly every Israeli company name — into two words, each drawn on its own
+  // in stored order: the name would read garbled.
   // Hebrew punctuation is strongly right-to-left (R), like a letter, and a
   // `"` or `'` typed in its place between two right-to-left letters resolves
   // to right-to-left there (UAX #9, N1), so either keeps the word whole and

@@ -115,8 +115,8 @@ describe("makeRefResolver", () => {
   });
 });
 
-// Review of #1242: Node's base64url decoder stops at the first `=` and drops the
-// rest, so `<valid ref>=\n\n<any text>` decoded to the same record. The card
+// Node's base64url decoder stops at the first `=` and drops the rest,
+// so `<valid ref>=\n\n<any text>` decoded to the same record. The card
 // then named only the record while the tool received the whole string — an
 // email body hiding a payment instruction behind a ref. A ref is exactly what
 // pinchy-odoo's encoder writes, and both decoders must agree on that: this

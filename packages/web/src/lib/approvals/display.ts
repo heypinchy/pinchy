@@ -150,12 +150,12 @@ export function readUrl(text: string): UrlRead | null {
  * any long text, with the rest one click away. Unbounded, it froze the
  * approver's tab: Chromium lays out a long mixed-direction text in time that
  * grows faster than its length — 13 s for one 200,000-character value
- * (fourteenth review of #1242). At this size the whole card lays out in under
+ * in Chromium. At this size the whole card lays out in under
  * 50 ms in headless Chromium for the worst shape measured, 8,192 alternating
  * Hebrew letters and digits (one isolate per letter): 38–47 ms, against
  * 6–8 ms for a Hebrew or Arabic path of the same length. And past it,
  * the summary always names an address's host (`summary.ts`), since the host
- * sits at the end, behind the preview (fifteenth review).
+ * sits at the end, behind the preview.
  */
 export const WHOLE_MAX = 8_192;
 
@@ -163,7 +163,7 @@ export const WHOLE_MAX = 8_192;
  * Is this value an email address or a URL — the shapes whose host is the
  * decision? The card never shortens one to a preview: a 217-character address
  * whose `@evil.com` sits past the cut reads as the familiar name its local
- * part spells (fourth review of #1242). Only when the WHOLE value is one:
+ * part spells. Only when the WHOLE value is one:
  * a URL the parser accepts with nothing after it (`readUrl`), or one mailbox
  * (`mailboxAddress`). Free text that merely begins with a URL — "https://…
  * — the new site is live" — is previewed like any text. Tested on the value's
@@ -186,12 +186,11 @@ export type SummaryNote =
   | { kind: "name"; name: string };
 
 /**
- * A summary value that carries an annotation. Fourteenth review of #1242: the
- * summary used to write its annotations INTO the value's text —
+ * A summary value that carries an annotation. Written INTO the value's text —
  * `(record reference: res.partner #7 "Acme GmbH")`, `boss@fіrma.at
- * (xn--frma-l9d.at)` — so a value typed with the same characters read exactly
- * like the annotated one; pinchy-odoo resolves a plain string by exact name,
- * so an attacker-made partner of that literal name got the bill. Now every
+ * (xn--frma-l9d.at)` — an annotation reads exactly like a value typed with
+ * the same characters; pinchy-odoo resolves a plain string by exact name, so
+ * an attacker-made partner of that literal name would get the bill. So every
  * annotation travels out of band, in a node of its own:
  *
  * - `ref`: an opaque record reference that decodes — the value is the record,
@@ -337,8 +336,8 @@ export interface OrderedPiece {
 }
 
 /**
- * How a value is drawn so that what you see is the order it was sent in
- * (eleventh review of #1242). Left to itself, the bidi algorithm draws
+ * How a value is drawn so that what you see is the order it was sent in.
+ * Left to itself, the bidi algorithm draws
  * `/data/חוזים/2024.md` and `/data/2024/חוזים.md` pixel-identically: a digit
  * or a slash next to a right-to-left word joins its run and moves with it.
  * No control character is needed, and both are plain paths — so an injected
@@ -354,8 +353,7 @@ export interface OrderedPiece {
  * its direction from a neighbour (digits, other punctuation) can sit in one,
  * and inside it only its characters' own direction decides the order. So two
  * different texts are never drawn alike, and each word stays readable — a
- * company name `חברה בע״מ` too, which split at its gershayim read garbled
- * (twelfth review of #1242).
+ * company name `חברה בע״מ` too, which split at its gershayim read garbled.
  *
  * One array of pieces per line: a line break ends every override and isolate
  * (it separates bidi paragraphs), so each line is held on its own. `null` for

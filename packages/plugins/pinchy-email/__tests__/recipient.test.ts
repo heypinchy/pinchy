@@ -39,7 +39,7 @@ describe("parseSingleRecipient", () => {
     ["nothing after the @", "ada@"],
     ["two @", "a@b@evil.com"],
     ["a comment", "a@x.at (b@evil.com)"],
-    // NFKC folds these into the ASCII characters they imitate (review of #1242).
+    // NFKC folds these into the ASCII characters they imitate.
     ["a fullwidth @ in the display name", "boss\uFF20firma.at <attacker@evil.com>"],
     ["a small-form @ in the display name", "boss\uFE6Bfirma.at <attacker@evil.com>"],
     ["a fullwidth @ in the local part", "chef\uFF20firma.at@evil.com"],
@@ -68,26 +68,25 @@ describe("parseSingleRecipient", () => {
     });
   });
 
-  // Second review of #1242: a familiar name padded with characters that render
-  // blank (braille U+2800, Hangul fillers) pushed the real address out of view.
+  // A familiar name padded with characters that render blank (braille U+2800,
+  // Hangul fillers) pushed the real address out of view.
   it.each([
     ["braille pattern blanks", `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`],
     ["a hangul filler", "Raimund\u3164Korber <attacker@evil.com>"],
     ["a hangul choseong filler", "Raimund\u115FKorber <attacker@evil.com>"],
     ["a hangul jungseong filler", "Raimund\u1160Korber <attacker@evil.com>"],
     ["a halfwidth hangul filler", "Raimund\uFFA0Korber <attacker@evil.com>"],
-    // Corrected expectation (ninth review of #1242): a single no-break or
-    // ideographic space is part of real names — Japanese writes 山田\u3000太郎 —
-    // and the card prints it as ⟨U+3000⟩, as it does in a path. A run of them
-    // is still blank space that pushes the address out of view, so these rows
-    // now test runs.
+    // A single no-break or ideographic space is part of real names — Japanese
+    // writes 山田\u3000太郎 — and the card prints it as ⟨U+3000⟩, as it does in
+    // a path. A run of them is still blank space that pushes the address out
+    // of view, so these rows test runs.
     ["a run of no-break spaces", "Raimund\u00A0\u00A0Korber <attacker@evil.com>"],
     ["a run of ideographic spaces", "Raimund\u3000\u3000Korber <attacker@evil.com>"],
     ["a space next to an ideographic space", "Raimund \u3000Korber <attacker@evil.com>"],
-    // Corrected expectation (third review of #1242): this row used a zero-width
-    // JOINER, which display names now accept — it sits inside ordinary emoji,
-    // takes no space, and the card shows it as it is. The zero-width SPACE
-    // (U+200B) stays refused, so the row keeps testing a zero-width refusal.
+    // This row is a zero-width SPACE (U+200B), not a zero-width JOINER: display
+    // names accept a joiner — it sits inside ordinary emoji, takes no space,
+    // and the card shows it as it is. The zero-width space stays refused, so
+    // the row tests a zero-width refusal.
     ["a zero-width space", "Raimund\u200BKorber <attacker@evil.com>"],
     ["a paragraph separator", "Raimund\u2029Korber <attacker@evil.com>"],
     ["a lone surrogate", "Raimund\uD83DKorber <attacker@evil.com>"],
@@ -97,9 +96,9 @@ describe("parseSingleRecipient", () => {
     if (!result.ok) expect(result.error).toMatch(/invisible|blank/i);
   });
 
-  // Ninth review of #1242: `"山田\u3000太郎" <yamada@example.jp>` was refused, although
-  // a path may carry the same space. One space separator takes visible width,
-  // and the card prints it as ⟨U+XXXX⟩, so the name reads unambiguously.
+  // `"山田\u3000太郎" <yamada@example.jp>` is accepted, as a path may carry the
+  // same space. One space separator takes visible width, and the card prints
+  // it as ⟨U+XXXX⟩, so the name reads unambiguously.
   it.each([
     [
       "an ideographic space",
@@ -147,10 +146,10 @@ describe("parseSingleRecipient", () => {
   });
 });
 
-// Third review of #1242: real names were refused. RFC 5322 lets a display
-// name carry a comma or parentheses inside double quotes, and that is how a
-// mail program writes "Müller, Hans". Unquoted, the same characters are a list
-// separator and a comment — refused, with a message that names the fix.
+// RFC 5322 lets a display name carry a comma or parentheses inside double
+// quotes, and that is how a mail program writes "Müller, Hans". Unquoted, the
+// same characters are a list separator and a comment — refused, with a message
+// that names the fix.
 describe("parseSingleRecipient: names with commas, parentheses and emoji", () => {
   it.each([
     ['"M\u00FCller, Hans" <hans@x.de>', '"M\u00FCller, Hans" <hans@x.de>'],
@@ -196,13 +195,11 @@ describe("parseSingleRecipient: names with commas, parentheses and emoji", () =>
   });
 });
 
-// Seventh review of #1242: a ZWNJ was refused in every display name, but in
-// Persian it is part of how a name is written — it keeps two letters that
-// would join apart. Tenth review: whether a joiner draws anything depends on
-// the script and the font, which no rule here can know, so a display name
-// may carry U+200C and U+200D anywhere — as it already could U+200D — and the
-// card marks every one (an emoji's too, eleventh review). An address never
-// carries one.
+// A ZWNJ is accepted in every display name: in Persian it is part of how a
+// name is written — it keeps two letters that would join apart. Whether a
+// joiner draws anything depends on the script and the font, which no rule here
+// can know, so a display name may carry U+200C and U+200D anywhere and the
+// card marks every one (an emoji's too). An address never carries one.
 describe("parseSingleRecipient: joiners in Arabic-script and Indic names", () => {
   it.each([
     ["a Persian name with a ZWNJ", "علی‌رضا <a@x.ir>"],

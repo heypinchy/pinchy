@@ -536,9 +536,9 @@ export type AuditLogEntry =
       };
     })
   | (AuditLogBase & {
-      // A gated call the gate would not open a confirmation for (third review
-      // of #1242). There is no request row, so no `request.id`; the digest
-      // still binds exactly which call it was.
+      // A gated call the gate would not open a confirmation for. There is no
+      // request row, so no `request.id`; the digest still binds exactly which
+      // call it was.
       eventType: "approval.refused";
       detail: {
         agent: { id: string; name: string | null };

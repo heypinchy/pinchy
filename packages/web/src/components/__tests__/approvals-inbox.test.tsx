@@ -62,10 +62,10 @@ describe("ApprovalsInbox", () => {
     expect(screen.getByText("5")).toBeInTheDocument();
   });
 
-  // Fifth review of #1242: a card listed without its summary that the poller
-  // does not hold — the server read it as known, but the snapshot has since
-  // dropped it — must wait for the next poll. Rendered with `argsSummary: null`
-  // it would be an approvable card that shows nothing of what it approves.
+  // A card listed without its summary that the poller does not hold — the server
+  // read it as known, but the snapshot has since dropped it — must wait for the
+  // next poll. Rendered with `argsSummary: null` it would be an approvable card
+  // that shows nothing of what it approves.
   it("does not render a card whose summary it neither received nor holds", async () => {
     const { argsSummary: _held, ...withoutSummary } = pending;
     fetchPendingApprovals.mockResolvedValueOnce({ approvals: [withoutSummary] });
@@ -83,11 +83,11 @@ describe("ApprovalsInbox", () => {
     await screen.findByText("recordId");
   });
 
-  // Sixth review of #1242: a card settled between the route's two reads came
-  // back with `argsSummary: null`, and the poller rendered it — an approvable
-  // card showing none of the arguments. The route now leaves such a card out;
-  // the poller also treats a `null` it does not already hold as "no summary
-  // yet", so no other path can bring the empty card back.
+  // A card settled between the route's two reads came back with `argsSummary:
+  // null`, and the poller rendered it — an approvable card showing none of the
+  // arguments. The route now leaves such a card out; the poller also treats a
+  // `null` it does not already hold as "no summary yet", so no other path can
+  // bring the empty card back.
   it("does not render a card that arrives with a null summary it does not hold", async () => {
     fetchPendingApprovals.mockResolvedValueOnce({ approvals: [{ ...pending, argsSummary: null }] });
     fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });

@@ -6959,7 +6959,7 @@ describe("odoo_schedule_activity", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  // Sixth review of #1242: the assignee was trimmed BEFORE the ref was
+  // The assignee was trimmed BEFORE the ref was
   // decoded, so `" " + ref` or `ref + "\n"` assigned the activity to the
   // record the ref names — while the confirmation card (which shows a ref as
   // its record only when the string IS the ref) showed opaque text, and the
@@ -7161,7 +7161,8 @@ describe("odoo_reschedule_activity", () => {
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
-  // Sixth review of #1242 — see the matching odoo_schedule_activity test.
+  // A padded assignee ref is refused here too — see the matching
+  // odoo_schedule_activity test.
   it.each([
     ["a leading space", (ref: string) => ` ${ref}`],
     ["a trailing line break", (ref: string) => `${ref}\n`],
@@ -7931,8 +7932,8 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
   //
   // The name used to be "Miscellaneous" against a record called
   // "Miscellaneous Operations" — it passed only because an explicit code
-  // ignored the name next to it, which is the bug the eighth review of #1242
-  // found. The name now matches, so this tests what it says: the case of the
+  // ignored the name next to it, which was a bug of its
+  // own. The name now matches, so this tests what it says: the case of the
   // code.
   it("matches an explicit code against a record whose code differs only in case", async () => {
     mockSchema({});
@@ -7966,7 +7967,7 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
     expect(mockSearchRead.mock.calls.filter((c) => c[0] === "res.country")).toHaveLength(0);
   });
 
-  // Seventh review of #1242: the leading token was matched against `code` and
+  // The leading token was matched against `code` and
   // the rest of the input ignored, so `"6000 Bank fees"` booked to account
   // 6000 whatever it is called. The card shows "Bank fees"; the effect was
   // "Office supplies". A name after the code is a claim about the record, and
@@ -8078,7 +8079,7 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
       );
     });
 
-    // Eighth review of #1242: the object form `{lookup: {code, name}}`
+    // The object form `{lookup: {code, name}}`
     // resolved on the code and ignored the name beside it, so the same
     // contradiction the string form now refuses still booked to 6000.
     it("refuses an explicit code whose record carries a different name", async () => {
@@ -8136,7 +8137,7 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
       );
     });
 
-    // Ninth review of #1242: a code no record carries fell through to the
+    // A code no record carries fell through to the
     // exact-name branch, so `{code: "6000", name: "Bank fees"}` booked to
     // whichever account is called "Bank fees" — 6100 — while the card read
     // 6000. The string form "6000 Bank fees" was refused for the same input.

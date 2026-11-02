@@ -102,14 +102,13 @@ export async function POST(request: NextRequest) {
     return requester?.name ?? null;
   };
 
-  // Fail closed on a call the card cannot show in full (third review of
-  // #1242). The summary marks what it left out, but a person who approves "1
-  // more field not shown" still approves that field — the digest binds the
-  // whole call, and the whole call runs. So no confirmation is opened at all:
-  // there is nothing to approve. The bounds in `summary.ts` are sized for
-  // ordinary work; only an oversized call lands here. No pending row exists,
-  // so no grant can ever clear this digest. The model is told which bound the
-  // call crossed, and to split it only where that can help (fourth review).
+  // Fail closed on a call the card cannot show in full. The summary marks what it
+  // left out, but a person who approves "1 more field not shown" still approves
+  // that field — the digest binds the whole call, and the whole call runs. So no
+  // confirmation is opened at all: there is nothing to approve. The bounds in
+  // `summary.ts` are sized for ordinary work; only an oversized call lands here.
+  // No pending row exists, so no grant can ever clear this digest. The model is
+  // told which bound the call crossed, and to split it only where that can help.
   if (exceeded) {
     const entry: AuditLogEntry = {
       actorType: "agent",

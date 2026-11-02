@@ -960,7 +960,7 @@ const plugin = {
                 throw new Error("filename must be a non-empty string");
               }
               // Refused rather than normalized: the name approved on the
-              // confirmation card is the name written (second review of #1242).
+              // confirmation card is the name written.
               // Surrounding whitespace is the one exception: the name is
               // trimmed below, so both spellings write the same file, and
               // the card marks the spaces.

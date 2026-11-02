@@ -9,15 +9,14 @@ const PADDED_SEGMENT = /^\s|\s$/u;
 
 /**
  * Refuses a path a write tool is asked to change unless it reads as exactly
- * the file it resolves to (second and third review of #1242).
+ * the file it resolves to.
  *
- * The confirmation card shows the path the agent sent. The second review's
- * probe was `/data/reports/old-draft.md` + 180 × U+2800 +
- * `/../../contracts/signed.pdf`: the braille blanks render as empty space and
- * pushed the traversal out of view, and `..` then walked the write from
- * reports/ into contracts/. The third review's was `/data/output/` + 2,100 ×
- * `./` + `contracts/signed.pdf`. So, at the tool's own edge and before
- * `validateAccess` resolves anything:
+ * The confirmation card shows the path the agent sent. One probe was
+ * `/data/reports/old-draft.md` + 180 × U+2800 + `/../../contracts/signed.pdf`:
+ * the braille blanks render as empty space and pushed the traversal out of
+ * view, and `..` then walked the write from reports/ into contracts/. Another
+ * was `/data/output/` + 2,100 × `./` + `contracts/signed.pdf`. So, at the tool's
+ * own edge and before `validateAccess` resolves anything:
  *
  * - at most MAX_PATH_LENGTH characters;
  * - no `..` segment — the path names its target directly or not at all;
@@ -31,15 +30,15 @@ const PADDED_SEGMENT = /^\s|\s$/u;
  *   prints each as `⟨U+XXXX⟩`, and real file names carry them — macOS writes
  *   "Screenshot … at 10.00.00 AM.png".
  *   The joiners U+200C / U+200D and the presentation selectors U+FE0E /
- *   U+FE0F are allowed anywhere too, as Arabic-script and Indic names (tenth
- *   review of #1242) and emoji names (`⚠️ offen.md`, fifth review) need: the
- *   card marks every one, an emoji's included (eleventh review), so
+ *   U+FE0F are allowed anywhere too, as Arabic-script and Indic names and
+ *   emoji names (`⚠️ offen.md`) need: the card marks every one, an emoji's
+ *   included, so
  *   `a\u200Db.md` reads as `a⟨U+200D⟩b.md` and `✅\uFE0F.md` as
  *   `✅⟨U+FE0F⟩.md`, never as `ab.md` or `✅.md`;
  * - no file or folder name that starts or ends with a space of any kind —
  *   `report.md ` would be a different file from `report.md`, and the card can
- *   only mark the space, not make the two read apart at a glance (sixth
- *   review). Unless `trimmedByTool`: a tool that trims the name itself
+ *   only mark the space, not make the two read apart at a glance.
+ *   Unless `trimmedByTool`: a tool that trims the name itself
  *   (`pinchy_generate_file`) writes the one file either spelling names;
  * - NFC only — an NFD path renders exactly like its NFC twin, and on a Linux
  *   filesystem the two can be two different files. A file stored under an NFD

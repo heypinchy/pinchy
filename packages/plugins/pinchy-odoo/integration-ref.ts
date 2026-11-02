@@ -13,8 +13,8 @@ const HEX_64 = /^[0-9a-fA-F]{64}$/;
  * skips whitespace, and ignores the unused bits of the last character — so
  * `<valid ref>=\n\n<any text>` decodes to the same record. Pinchy's
  * confirmation card shows a decoded ref as the record it names; a lenient
- * decode here would let the text after it reach this tool unseen (review of
- * pinchy#1242). Pinchy's own decoder (`approvals/call-models.ts`) applies the
+ * decode here would let the text after it reach this tool unseen. Pinchy's
+ * own decoder (`approvals/call-models.ts`) applies the
  * same rule.
  */
 const REF_SHAPE = /^pinchy_ref:v1:[A-Za-z0-9_-]+$/;

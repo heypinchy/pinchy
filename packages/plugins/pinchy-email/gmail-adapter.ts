@@ -375,8 +375,7 @@ const FOLD = "\r\n ";
  * A non-ASCII display name as RFC 2047 encoded-words. Split on code-point
  * boundaries, so no word ends inside a UTF-8 sequence, and folded onto one
  * line each (CRLF + space), which a decoder drops between adjacent
- * encoded-words. On one line, a long name ran past the 76-character limit
- * (third review of #1242).
+ * encoded-words. On one line, a long name ran past the 76-character limit.
  */
 function encodeDisplayName(name: string): string[] {
   const words: string[] = [];

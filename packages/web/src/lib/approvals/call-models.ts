@@ -38,12 +38,11 @@ const REF_SHAPE = /^pinchy_ref:v1:[A-Za-z0-9_-]+$/;
  * prefix, unpadded base64url, and nothing after it — the same rule the
  * plugin's `decodeRef` applies.
  *
- * Checked before any decode because Node's base64url decoder is lenient: it
- * stops at the first `=` and drops whatever follows, skips whitespace, and
- * ignores the unused bits of the last character. So `<valid ref>=\n\n<any
- * text>` decoded to the record, the card named only the record, and the tool
- * received the whole string (fifth review of #1242). A string that is not
- * exactly a ref is text, and is shown as text.
+ * Checked before any decode because Node's base64url decoder is lenient: it stops
+ * at the first `=` and drops whatever follows, skips whitespace, and ignores the
+ * unused bits of the last character. So `<valid ref>=\n\n<any text>` decoded to
+ * the record, the card named only the record, and the tool received the whole
+ * string. A string that is not exactly a ref is text, and is shown as text.
  */
 export function isCanonicalRef(value: string): boolean {
   if (!REF_SHAPE.test(value)) return false;

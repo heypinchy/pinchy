@@ -52,8 +52,7 @@ function StoredOrder({ text }: { text: string }) {
  * place. The dashed label that sets an annotation apart from a value, and the
  * element boundary that sets one value apart from the next, are seen, not
  * read: a screen reader got `record reference res.partner #7 "Acme GmbH"` for
- * a real record reference and for a string of those words alike (fifteenth
- * review of #1242). So the card says it in words, as the prompt does: a string
+ * a real record reference and for a string of those words alike. So the card says it in words, as the prompt does: a string
  * is read `quoted()`, its own `"` escaped, and an annotation as a note that
  * says it is Pinchy's. The read copy can't be selected, so a copied value is
  * still the drawn one, and it is held left to right in one override: left to
@@ -79,7 +78,7 @@ function Spoken({ drawn, spoken }: { drawn: ReactNode; spoken: string }) {
  * reaches or where it lands, which are short and are the decision, or unless
  * the value itself is an email address or a URL, at any key: its host is the
  * decision too, and it sits at the END of an address, exactly where a preview
- * cuts (fourth review of #1242). Those are drawn whole up to WHOLE_MAX; past
+ * cuts. Those are drawn whole up to WHOLE_MAX; past
  * it, the summary names the host in a note beside the preview.
  *
  * Everything in `text` is the value's own: the card reads no marker out of it.
@@ -142,7 +141,7 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
  * part of the value's text run, never inside its preview. Written into the
  * text, `boss@fіrma.at (xn--frma-l9d.at)` read exactly like a value typed with
  * those characters, and past the preview bound the note sat behind "Show full
- * text" (fourteenth review of #1242). A value's text can't draw this element.
+ * text". A value's text can't draw this element.
  * Nor can it be read as one: it is a `note`, read as Pinchy's, while a value
  * is read in quotes (`Spoken`).
  */
@@ -189,8 +188,7 @@ function NodeValue({ node, full }: { node: SummaryNode; full: boolean }) {
         <Annotation kind="ref">
           {/* The label is Odoo's display name, which anyone who can name a
               partner writes: quoted and escaped, like the prompt's, so
-              `x" — res.partner #12 "Acme` can't close it early (fifteenth
-              review of #1242). */}
+              `x" — res.partner #12 "Acme` can't close it early. */}
           record reference <span className="font-mono">{modelText(node.model)}</span> #{node.id}{" "}
           <StoredOrder text={quoted(node.label)} />
           {node.labelCut > 0 && ` … (label cut: ${node.labelCut} more characters not shown)`}

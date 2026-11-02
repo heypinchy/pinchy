@@ -17,7 +17,7 @@
  * past a size, width or depth bound — it says so with an explicit "… not
  * shown" marker, AND it reports the call as `incomplete` (`summarizeCall`).
  * The gate refuses an incomplete call instead of opening a confirmation for
- * it (third review of #1242): a marker is honest, but a person who clicks
+ * it: a marker is honest, but a person who clicks
  * "Approve" on "1 more field not shown" still approves the field. The bounds
  * are sized so ordinary work — an Odoo invoice with dozens of lines, a long
  * mail body, a report written to a file — fits whole; only an oversized call
@@ -41,13 +41,13 @@
  *   spaces, line breaks or tabs is shown as `⟨N spaces⟩` / `⟨N line breaks⟩` /
  *   `⟨N tabs⟩`, so padding cannot push text out of view. U+200C / U+200D
  *   (the joiners) and U+FE0E / U+FE0F (text / emoji presentation) are marked
- *   everywhere — "Noack\u200D GmbH" must not read as "Noack GmbH" (sixth
- *   review of #1242), nor `க்\u200Cம.md` as `க்ம.md` (tenth), nor
+ *   everywhere — "Noack\u200D GmbH" must not read as "Noack GmbH",
+ *   nor `க்\u200Cம.md` as `க்ம.md`, nor
  *   `❤️\u200D🔥.md` as `❤️🔥.md`: whether a joiner draws anything, in a script
  *   or inside an emoji, depends on the approver's font, which the server
- *   cannot know — Windows 10 draws ❤️‍🔥 as two glyphs (eleventh). A literal
+ *   cannot know — Windows 10 draws ❤️‍🔥 as two glyphs. A literal
  *   `⟨` or `⟩` is marked too (`⟨U+27E8⟩`), so a value cannot type a marker
- *   that reads as a real one (twelfth): every `⟨` opens a marker. Where an
+ *   that reads as a real one: every `⟨` opens a marker. Where an
  *   action lands (`TARGET_KEYS`: a path, a file name, a record), a value names
  *   one target and two that render alike are two targets, so a space, tab or
  *   line break at its start or end is marked too.
@@ -67,7 +67,7 @@
  *   address reaches, a recipient's display name, that a secret is being set —
  *   is a node of its own (`SummaryNode` in `display.ts`), never text written
  *   into the value: written in, it read exactly like a value typed with the
- *   same characters (fourteenth review of #1242). A plain string in the
+ *   same characters. A plain string in the
  *   summary is always the value's own text.
  * - Recipients (`to` / `cc` / `bcc`) are split into an explicit address list,
  *   one entry each, so a comma-smuggled extra address is a visible line. Each
@@ -94,7 +94,7 @@
  * hidden: a number, boolean or null cannot carry a credential, a key ending in
  * `_id` / `_ids` holds record ids (`payment_token_id: 7`), and an object or
  * list under a secret-like key is shown field by field with every text in it
- * hidden (fourth review of #1242). The recipient and subject of an email ARE
+ * hidden. The recipient and subject of an email ARE
  * kept — hiding them would defeat the point of an informed confirmation.
  */
 import { domainToASCII } from "node:url";
@@ -233,8 +233,8 @@ export function isEscapedChar(char: string): boolean {
 }
 
 /**
- * The marker brackets themselves. A value that typed `⟨U+200D⟩` rendered
- * exactly like the marker for a real joiner (twelfth review of #1242), so a
+ * The marker brackets themselves. A value that typed `⟨U+200D⟩` would render
+ * exactly like the marker for a real joiner, so a
  * literal bracket is always marked — on its own, never folded into a run of
  * invisible characters, since it is not one. Every `⟨` on the card then opens
  * a marker the summary wrote, and no marker holds a bracket inside.
@@ -247,7 +247,7 @@ const MARKER_BRACKET = new Set(["\u27E8", "\u27E9"]);
  * front of a right-to-left word) was pixel-identical to `בא\u05BC` (the
  * dagesh on the word's last letter) in Chromium and WebKit, and `a\u05BCع` to
  * `aع\u05BC` in Chromium — a Hebrew dagesh draws on neither a Latin nor an
- * Arabic letter (thirteenth review of #1242). So a mark is kept only where it
+ * Arabic letter. So a mark is kept only where it
  * sits on a letter it is written with — a letter of one of its scripts
  * (Script_Extensions: the dagesh on a Hebrew letter, U+0301 on a Latin,
  * Greek or Cyrillic one), or any letter for a mark of every script (`Zinh`:
@@ -309,7 +309,7 @@ function codePoint(char: string): string {
  * repeated character is counted (`⟨180 × U+2800⟩`); a mixed run names each
  * character in order. It used to collapse into one marker naming its first
  * three, so `a` + four joiners and `a` + three joiners and a non-joiner were
- * one card (fourteenth review of #1242): a marker that drops a character
+ * one card: a marker that drops a character
  * drops the difference between two values.
  */
 function escapeRun(run: string[]): string {
@@ -431,7 +431,7 @@ function keyLabel(key: string): string {
 /**
  * A decoded ref, as a node of its own (`SummaryNode`): written into the text,
  * `(record reference: …)` read exactly like a plain string of those
- * characters, which pinchy-odoo resolves by NAME (fourteenth review of #1242).
+ * characters, which pinchy-odoo resolves by NAME.
  * The label is the record's display name as Odoo gave it when the ref was
  * minted — a hint for the reader, not an argument: the call acts on
  * `model #id`, which is always shown whole. So a cut label is marked, but it
@@ -503,7 +503,7 @@ function punycodeNote(host: string | null, always = false): SummaryNote | null {
  * that very host right after `scheme://` (`readUrl`). A host the text merely
  * reads as is not it: in `https://fіrma.at\@evil.com/x` the backslash is a
  * path separator, so the host is fіrma.at, where a regex reading the `@` saw
- * evil.com (fourth review of #1242). Percent-encoding, a numeric IPv4 form, a
+ * evil.com. Percent-encoding, a numeric IPv4 form, a
  * homoglyph, userinfo, missing or backslashed slashes and a stripped leading
  * control character all reach a host the text does not show. A URL with no
  * host (`file:///…`) reaches none, and gets no note.
@@ -519,7 +519,7 @@ function urlNote(value: string, always: boolean): SummaryNote[] | null {
  * host sits at the end, behind "Show full text". A note was written only for
  * a host that reads differently from where it goes — an ASCII one never does,
  * so `buchhaltung.intranet.firma.at.…@evil.example` and `…@firma.at.xyz`
- * collapsed to the same card (fifteenth review of #1242). Past the bound, the
+ * collapsed to the same card. Past the bound, the
  * host is always named. `shown` is the value as rendered, what the card counts.
  */
 function hidesHost(shown: string): boolean {
@@ -585,7 +585,7 @@ function summarizeString(
     // is (a mail body may well start with these characters), never guessed
     // and never hidden. The shape is checked here as well as in the resolver,
     // because a lenient decode is what let `<ref>=\n\n<text>` hide the text
-    // behind the record (fifth review of #1242), and the card must not rest
+    // behind the record, and the card must not rest
     // on every resolver getting that right.
     const record = budget.refRecord?.(value);
     if (record) return describeRef(record, budget);
@@ -640,8 +640,8 @@ const ENTRY_PADDING = /^[ \t\r\n]+|[ \t\r\n]+$/g;
  * One recipient, address first, with the punycode form of a non-ASCII domain
  * and the display name as notes beside it: printed the other way round, a
  * long familiar display name pushed the real address out of the card's
- * preview (second review of #1242), and written into the text, `(name: "X")`
- * read like an address that merely carried those characters (fourteenth).
+ * preview, and written into the text, `(name: "X")` read like an address that
+ * merely carried those characters.
  */
 function describeRecipient(entry: string, budget: Budget): string | SummaryNode {
   const named = /^([^<>]*)<([^<>]*)>$/.exec(entry);
@@ -717,7 +717,7 @@ function summarizeValue(
   }
   if (value === null || ["number", "boolean"].includes(typeof value)) {
     // A number is shown too, and 200×200×50 of them made a 5.7 MB summary
-    // when they cost nothing (fourth review of #1242).
+    // when they cost nothing.
     budget.chars -= String(JSON.stringify(value)).length;
     return value;
   }
@@ -856,8 +856,7 @@ const count = (n: number) => n.toLocaleString("en-US");
  * The reason the gate gives the agent for refusing a call it cannot show in
  * full. Read by the MODEL, which relays it to the person — so it names what
  * was too large, and suggests splitting only where that can help: a list or
- * a record can be sent in parts, one file or one mail body cannot (fourth
- * review of #1242).
+ * a record can be sent in parts, one file or one mail body cannot.
  */
 export function describeRefusal(limit: SummaryLimit): string {
   const notRun = "so it was not run and no confirmation was opened.";

@@ -1222,8 +1222,8 @@ describe("ImapAdapter named recipients", () => {
     );
   });
 
-  // Third review of #1242: a quoted name with a comma is one mailbox — handed
-  // to nodemailer unquoted, as a name, so it cannot be split into two.
+  // A quoted name with a comma is one mailbox — handed to nodemailer unquoted,
+  // as a name, so it cannot be split into two.
   it("passes a quoted name with a comma to nodemailer as one name", async () => {
     const adapter = new ImapAdapter(opts);
     await adapter.send({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "Hi", body: "Hi" });

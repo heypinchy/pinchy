@@ -362,10 +362,10 @@ describe("approval routes (integration, real DB)", () => {
     expect(polled.approvals[1].toolName).toBe("odoo_write");
   });
 
-  // Sixth review of #1242: the summaries are read in a second query, and a
-  // card settled between the two came back with `argsSummary: null` — settling
-  // drops the summary — which the inbox rendered as a card with no arguments.
-  // A card that is no longer pending by the second read is left out instead.
+  // The summaries are read in a second query, and a card settled between the two
+  // came back with `argsSummary: null` — settling drops the summary — which the
+  // inbox rendered as a card with no arguments. A card that is no longer pending
+  // by the second read is left out instead.
   it("leaves out a card that settles between the list and the summary read", async () => {
     await gateCheck(gateReq(gateBody({ params: { recordId: 5 } })));
     await gateCheck(gateReq(gateBody({ params: { recordId: 6 } })));
@@ -409,10 +409,9 @@ describe("approval routes (integration, real DB)", () => {
     }
   });
 
-  // Fifth review of #1242: `known` was capped at 50 on the grounds that a
-  // requester has at most 20 pending — but that cap is per agent, so a person
-  // working with several agents passed 50 and had the oldest summaries re-sent
-  // on every five-second poll.
+  // `known` was capped at 50 on the grounds that a requester has at most 20
+  // pending — but that cap is per agent, so a person working with several agents
+  // passed 50 and had the oldest summaries re-sent on every five-second poll.
   it("honours `known` for a person with more pending cards than one agent allows", async () => {
     const agentsUsed = [agent, await seedAgent(user.id), await seedAgent(user.id)];
     for (const a of agentsUsed) {
@@ -486,9 +485,9 @@ describe("approval routes (integration, real DB)", () => {
     });
   });
 
-  // Fifth review of #1242: Node's base64url decoder stops at the first `=`, so
-  // `<valid ref>=\n\n<any text>` decoded to the record. The stored card and
-  // the prompt named only the record; the tool received the whole string.
+  // Node's base64url decoder stops at the first `=`, so `<valid ref>=\n\n<any
+  // text>` decoded to the record. The stored card and the prompt named only the
+  // record; the tool received the whole string.
   describe("a ref with text after it", () => {
     async function mintRef() {
       process.env.PINCHY_REF_TOKEN_KEY = await getOrCreatePluginSecret("pinchy-odoo:ref-token-key");
@@ -557,14 +556,14 @@ describe("approval routes (integration, real DB)", () => {
     });
   });
 
-  // Third review of #1242: a summary that said "1 more field not shown" was
-  // still approvable, and the hidden field still ran. A call the card cannot
-  // show in full is refused at the gate — nothing is opened, nothing can be
-  // approved, and the model is told to split it.
+  // A summary that said "1 more field not shown" was still approvable, and the
+  // hidden field still ran. A call the card cannot show in full is refused at the
+  // gate — nothing is opened, nothing can be approved, and the model is told to
+  // split it.
   describe("a call too large to show in full", () => {
-    // Probe sized to the fourth review's budget of 512,000 characters (it was
-    // 4 × 19,000 against 64,000): four texts of 150,000 each, every one under
-    // the per-text limit, together past the total.
+    // Probe sized to the budget of 512,000 characters (it was 4 × 19,000 against
+    // 64,000): four texts of 150,000 each, every one under the per-text limit,
+    // together past the total.
     const oversized = () => ({
       model: "account.move",
       ids: [42],
@@ -614,9 +613,9 @@ describe("approval routes (integration, real DB)", () => {
       expect(requested).toHaveLength(0);
     });
 
-    // Fourth review of #1242: any text over 20,000 characters — counted with
-    // its markers — was refused, so a gated pinchy_write of an ordinary report
-    // could never run, and "split it" is advice no single file can follow.
+    // Any text over 20,000 characters — counted with its markers — was refused,
+    // so a gated pinchy_write of an ordinary report could never run, and "split
+    // it" is advice no single file can follow.
     it("opens a card for a gated pinchy_write of a 30,000-character report, stored whole", async () => {
       agent = await seedAgent(user.id, ["pinchy_write"]);
       const content = "Quarterly report line.\n".repeat(1_305).slice(0, 30_000);
@@ -697,9 +696,9 @@ describe("approval routes (integration, real DB)", () => {
     expect(list.approvals[0].argsSummary.subject).toBe("x⟨U+D83D⟩y");
   });
 
-  // zod's z.record dropped a top-level "__proto__" key (it rebuilds the object
-  // by assignment), so the digest and the card described a call without it
-  // while the tool received the raw JSON (second review of #1242).
+  // zod's z.record dropped a top-level "__proto__" key (it rebuilds the object by
+  // assignment), so the digest and the card described a call without it while the
+  // tool received the raw JSON.
   it("binds and shows a top-level __proto__ key the tool would receive", async () => {
     const params = JSON.parse('{"recordId":5,"__proto__":{"bcc":"evil@x.com"}}');
     await gateCheck(gateReq(gateBody({ params })));

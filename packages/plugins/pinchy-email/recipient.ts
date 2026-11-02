@@ -84,8 +84,8 @@ function checkName(name: string): string | null {
 }
 
 /**
- * `text` with each lone space separator read as a plain space (ninth review of
- * #1242). A no-break or ideographic space takes visible width and is part of
+ * `text` with each lone space separator read as a plain space. A no-break or
+ * ideographic space takes visible width and is part of
  * real names — `"山田\u3000太郎" <yamada@example.jp>` — and the card prints it as
  * `⟨U+3000⟩`, as it does in a path. Next to another space of any kind it is
  * part of a run, which reads as empty space and pushes the address out of
@@ -106,13 +106,13 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
   // Controls, zero-width and bidi characters, and everything that renders as
   // blank space without being a plain space — the braille blank U+2800, Hangul
   // fillers, no-break and ideographic spaces. A run of them reads as empty
-  // space and pushed the real address out of view on the confirmation card
-  // (second review of #1242); bidi overrides make one address read as another.
+  // space and pushed the real address out of view on the confirmation card;
+  // bidi overrides make one address read as another.
   // The emoji format characters (ZWJ, VS15, VS16) are allowed here and kept
   // out of the address by PART: a name like "❤️ Team" is ordinary. So is a
-  // zero-width non-joiner — "علی‌رضا" keeps its ی unjoined (seventh review of
-  // #1242). The card marks every one of them, inside an emoji too, so a name
-  // never reads as the same name without one (tenth and eleventh review).
+  // zero-width non-joiner — "علی‌رضا" keeps its ی unjoined. The card marks
+  // every one of them, inside an emoji too, so a name never reads as the same
+  // name without one.
   // A single no-break or ideographic space is allowed too, as in a path; a run
   // of them is not (`withLoneSpaceSeparatorsAsSpaces`).
   const hidden = hiddenCharIn(

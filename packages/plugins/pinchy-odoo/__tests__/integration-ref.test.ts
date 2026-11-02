@@ -257,7 +257,7 @@ describe("integration refs", () => {
       expect(() => decodeRef(ref)).toThrow(MalformedIntegrationRefError);
     });
 
-    // Review of #1242: Node's base64url decoder stops at the first `=` and
+    // Node's base64url decoder stops at the first `=` and
     // ignores everything after it, so `<valid ref>=\n\n<any text>` decoded to
     // the same record. Pinchy's confirmation card then showed only the record
     // while this tool received — and acted on — the whole string. A ref is

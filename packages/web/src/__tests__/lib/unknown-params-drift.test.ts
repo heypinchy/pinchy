@@ -6,7 +6,7 @@
  *
  * Both copies guard the same promise — a tool call carries nothing the tool
  * does not read, so the approval card cannot offer a look-alike key the tool
- * ignores (review of #1242). A fix to one copy that misses the other would
+ * ignores. A fix to one copy that misses the other would
  * leave half the write tools on the old behaviour, so the two must stay
  * byte-identical.
  */

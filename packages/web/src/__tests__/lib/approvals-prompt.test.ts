@@ -133,10 +133,10 @@ describe("buildApprovalPrompt", () => {
   // Left in the summary it also eats the entire 256-character description,
   // pushing out the arguments that carry the meaning.
   //
-  // Corrected input (second review of #1242): this used a fake "pinchy_ref:v1:
-  // AAAA…" string, which only stayed out of the description because ANY string
-  // with that prefix was hidden — the hole that let a prefixed email body
-  // vanish. A real ref is replaced by the record it names; a fake one is text.
+  // The input is a real ref, not a fake "pinchy_ref:v1:AAAA…" string: a fake one
+  // only stayed out of the description while ANY string with that prefix was
+  // hidden — the hole that let a prefixed email body vanish. A real ref is
+  // replaced by the record it names; a fake one is text.
   it("does not fill the description with an opaque ref token", () => {
     const ref = encodeRef({
       integrationType: "odoo",
@@ -152,14 +152,13 @@ describe("buildApprovalPrompt", () => {
       { refRecord: makeRefResolver(REF_KEY) }
     );
     expect(description).not.toContain(ref.slice(20, 40));
-    // Outside any quotes (fourteenth review of #1242): quoted, the record read
-    // exactly like a string typed with those characters.
+    // Outside any quotes: quoted, the record read exactly like a string typed
+    // with those characters.
     expect(description).toContain('target: (record reference: sale.order #9 "S00009")');
   });
 
-  // Fifth review of #1242: a valid ref followed by `=` and text decoded to the
-  // record, so the prompt named the record and dropped the text the tool
-  // would send.
+  // A valid ref followed by `=` and text decoded to the record, so the prompt
+  // named the record and dropped the text the tool would send.
   it("shows the text after a ref, not the record it seems to name", () => {
     const ref = encodeRef({
       integrationType: "odoo",
@@ -224,8 +223,7 @@ describe("buildApprovalPrompt", () => {
     expect(description).toContain("chef@firma.at");
     expect(description).toContain("angreifer@evil.com");
   });
-  // Twelfth review of #1242: a typed `⟨U+200D⟩` printed exactly like the
-  // marker for a real joiner.
+  // A typed `⟨U+200D⟩` printed exactly like the marker for a real joiner.
   it.each([
     ["/data/a⟨U+200D⟩b.md", "/data/a‍b.md"],
     ["/data/x⟨U+00A0⟩y.md", "/data/x y.md"],
@@ -243,8 +241,8 @@ describe("buildApprovalPrompt", () => {
     expect(title).toContain("a⟨U+27E8⟩b");
   });
 
-  // Third review of #1242: a CRLF mail body printed "⟨U+000D⟩" before every
-  // line break on the chat prompt, as on the card.
+  // A CRLF mail body printed "⟨U+000D⟩" before every line break on the chat
+  // prompt, as on the card.
   it("renders a CRLF body as line breaks", () => {
     const { description } = buildApprovalPrompt("email_send", {
       to: "a@x.at",
@@ -265,11 +263,11 @@ describe("buildApprovalPrompt", () => {
     }
   });
 
-  // Eleventh review of #1242: a chat client draws `/data/חוזים/2024.md` and
-  // `/data/2024/חוזים.md` alike, as the card did. The prompt is plain text, so
-  // it carries the card's order in Unicode's own controls: each line in an
-  // LTR isolate with an override (U+2066 U+202D … U+202C U+2069), each
-  // right-to-left word in an isolate of its own (U+2066 … U+2069).
+  // A chat client draws `/data/חוזים/2024.md` and `/data/2024/חוזים.md` alike, as
+  // the card did. The prompt is plain text, so it carries the card's order in
+  // Unicode's own controls: each line in an LTR isolate with an override (U+2066
+  // U+202D … U+202C U+2069), each right-to-left word in an isolate of its own
+  // (U+2066 … U+2069).
   it("holds the arguments in the order they were sent", () => {
     const shown = (path: string) => buildApprovalPrompt("pinchy_write", { path }).description;
     expect(shown("/data/חוזים/2024.md")).toContain(
@@ -288,19 +286,19 @@ describe("buildApprovalPrompt", () => {
     );
   });
 
-  // Thirteenth review of #1242: a dagesh with no letter under it, in front of
-  // a right-to-left word, drew exactly like the dagesh on the word's last
-  // letter. The prompt is built from the same escaping as the card.
+  // A dagesh with no letter under it, in front of a right-to-left word, drew
+  // exactly like the dagesh on the word's last letter. The prompt is built from
+  // the same escaping as the card.
   it("marks a combining mark that has no letter to sit on", () => {
     const shown = (path: string) => buildApprovalPrompt("pinchy_write", { path }).description;
     expect(shown("/data/\u05BCבא.md")).toContain("/data/⟨U+05BC⟩\u2066בא\u2069.md");
     expect(shown("/data/בא\u05BC.md")).toContain("/data/\u2066בא\u05BC\u2069.md");
   });
 
-  // Fourteenth review of #1242: a string was printed bare, so one holding
-  // `, `, `: `, `{`, `}`, `[` or `]` printed exactly like the structure it
-  // imitated — each pair below was one prompt. Every string is quoted now, at
-  // every level, so a string can only ever read as a string.
+  // A string was printed bare, so one holding `, `, `: `, `{`, `}`, `[` or `]`
+  // printed exactly like the structure it imitated — each pair below was one
+  // prompt. Every string is quoted now, at every level, so a string can only ever
+  // read as a string.
   it.each([
     [
       "a field smuggled into a string",

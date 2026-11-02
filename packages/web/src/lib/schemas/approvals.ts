@@ -20,11 +20,11 @@ export const gateCheckSchema = z.object({
    * must get an answer it can act on rather than a 400. */
   toolCallId: z.string().min(1).optional(),
   /**
-   * Taken as parsed, not rebuilt: `z.record` copies the object by assignment,
-   * and `out["__proto__"] = …` hits the prototype setter — the key vanished
-   * from the digest and the card while the tool, reading the raw JSON, could
-   * still receive it (second review of #1242). JSON.parse makes every key,
-   * `__proto__` included, an own data property; this keeps them all.
+   * Taken as parsed, not rebuilt: `z.record` copies the object by assignment, and
+   * `out["__proto__"] = …` hits the prototype setter — the key vanished from the
+   * digest and the card while the tool, reading the raw JSON, could still receive
+   * it. JSON.parse makes every key, `__proto__` included, an own data property;
+   * this keeps them all.
    */
   params: z
     .custom<Record<string, unknown>>(

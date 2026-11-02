@@ -1656,11 +1656,9 @@ describe("pinchy_generate_file tool", () => {
   // A name stored NFD would never match the NFC grant lookup again (same
   // incident class as sanitizeFilename's NFC rule).
   //
-  // Corrected expectation (second review of #1242): this used to accept the
-  // NFD form and normalize it. The confirmation card shows the name as sent,
-  // so every write tool now refuses a non-NFC name at its edge instead of
-  // rewriting it — the name approved is the name written. An NFC name still
-  // round-trips (next test).
+  // Every write tool refuses a non-NFC name at its edge instead of rewriting
+  // it: the confirmation card shows the name as sent, so the name approved is
+  // the name written. An NFC name still round-trips (next test).
   it("refuses an NFD filename instead of rewriting it", async () => {
     const tool = await makeGenerateFileTool();
 
@@ -1932,7 +1930,7 @@ describe("pinchy_delete tool", () => {
   });
 });
 
-// ── unknown parameters (review of #1242) ─────────────────────────────────────
+// ── unknown parameters ───────────────────────────────────────────────────────
 // A write tool reads its arguments by exact name. A look-alike key the tool
 // never reads — `"path "` next to `path` — still appears on the approval card,
 // where a reader may take it for the real one. The write tools refuse any key
@@ -2017,8 +2015,8 @@ describe("write tools refuse parameters they do not declare", () => {
 });
 
 /**
- * Second review of #1242: the confirmation card shows a path, and a path can
- * read as one file while it resolves to another. 180 braille blanks (U+2800)
+ * The confirmation card shows a path, and a path can read as one file while it
+ * resolves to another. 180 braille blanks (U+2800)
  * pushed "/../../contracts/signed.pdf" out of the card's preview, and `..`
  * then walked the write out of reports/. The write tools refuse such a path at
  * their own edge — before `validateAccess` ever resolves it — so what the card
@@ -2055,7 +2053,7 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     `${root}/reports/old-draft.md${"\u2800".repeat(180)}/../../contracts/signed.pdf`;
 
   it.each(["pinchy_write", "pinchy_delete"])(
-    "%s refuses the review's probe path before validateAccess sees it",
+    "%s refuses a blank-padded traversal path before validateAccess sees it",
     async (name) => {
       const tool = await toolNamed(name);
       const params =
@@ -2071,10 +2069,9 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     ["a '..' segment", (root: string) => `${root}/reports/../contracts/signed.pdf`, /\.\./],
     ["a braille blank", (root: string) => `${root}/report\u2800.md`, /U\+2800/],
     ["a hangul filler", (root: string) => `${root}/report\u3164.md`, /U\+3164/],
-    // Corrected expectation (third review of #1242): this row used a no-break
-    // space, which paths now accept — the card prints it as ⟨U+00A0⟩, and real
-    // file names carry it. A paragraph separator, which breaks the line rather
-    // than taking visible width, takes its place as a refused space character.
+    // A paragraph separator, which breaks the line rather than taking visible
+    // width, is the refused space character here: paths accept a no-break
+    // space — the card prints it as ⟨U+00A0⟩, and real file names carry it.
     ["a paragraph separator", (root: string) => `${root}/report\u2029.md`, /U\+2029/],
     [
       "'.' segments",
@@ -2086,10 +2083,10 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     ["a bidi override", (root: string) => `${root}/report\u202Edm.txt`, /U\+202E/],
     ["a line break", (root: string) => `${root}/report\n.md`, /U\+000A/],
     ["an NFD form", (root: string) => `${root}/u\u0308bersicht.md`, /NFC/],
-    // Sixth review of #1242: these read on the card like the plain name.
+    // These read on the card like the plain name.
     ["a trailing space", (root: string) => `${root}/report.md `, /space at the start or end/],
     ["a space before a slash", (root: string) => `${root}/out /r.md`, /space at the start or end/],
-    // A selector after ✅ is accepted since the eleventh review (the card marks
+    // A selector after ✅ is accepted (the card marks
     // it). A word joiner draws nothing either, and no real name needs one.
     ["a word joiner", (root: string) => `${root}/report\u2060.md`, /U\+2060/],
   ])("pinchy_write refuses a path with %s, says why, and writes nothing", async (_l, make, why) => {
@@ -2125,8 +2122,8 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     expect(readdirSync(workbench)).toEqual([]);
   });
 
-  // Third review of #1242: real names carry visible-width spaces the card
-  // escapes, e.g. macOS screenshots ("… at 10.00.00\u202FAM.png").
+  // Real names carry visible-width spaces the card escapes, e.g. macOS
+  // screenshots ("… at 10.00.00\u202FAM.png").
   it.each([
     ["a narrow no-break space", "Screenshot 2026-11-02 at 10.00.00\u202FAM.png"],
     ["a no-break space", "Betrag 1\u00A0234.md"],
@@ -2138,9 +2135,9 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     expect(existsSync(target)).toBe(true);
   });
 
-  // Fifth review of #1242: the emoji joiner and presentation selector were
-  // refused outright, so ordinary emoji names could be neither written nor
-  // deleted. They are accepted, and the card marks each one.
+  // The emoji joiner and presentation selector are accepted — refused
+  // outright, they left ordinary emoji names neither writable nor deletable.
+  // The card marks each one.
   it.each([
     ["a presentation selector", "\u26A0\uFE0F offen.md"],
     ["joined emoji", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467} Familie.md"],
@@ -2160,7 +2157,7 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     expect(existsSync(target)).toBe(false);
   });
 
-  // Eleventh review of #1242: the card marks every selector, an emoji's too,
+  // The card marks every selector, an emoji's too,
   // so `report⟨U+FE0F⟩.md` reads apart from `report.md` and is written as the
   // separate file it is.
   it("writes a presentation selector outside an emoji too, as its own file", async () => {
@@ -2175,7 +2172,7 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     expect(existsSync(join(tmpDir, "report.md"))).toBe(false);
   });
 
-  // Tenth review of #1242: a joiner outside an emoji is accepted in every
+  // A joiner outside an emoji is accepted in every
   // script, and the card marks it — `க்⟨U+200C⟩ம.md` — so it never reads as
   // the file without it, which stays a different file.
   it.each([

@@ -1158,8 +1158,8 @@ describe("GraphAdapter named recipients", () => {
     ]);
   });
 
-  // Third review of #1242: a quoted name with a comma reaches Graph as one
-  // name, the way the card shows it.
+  // A quoted name with a comma reaches Graph as one name, the way the card
+  // shows it.
   it("unquotes a quoted name with a comma into Graph's name field", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({}) });

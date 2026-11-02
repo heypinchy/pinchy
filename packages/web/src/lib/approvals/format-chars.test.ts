@@ -6,13 +6,12 @@ import { summarizeArgs } from "./summary";
  * (text / emoji presentation) take no space of their own, so the card shows
  * each one as a `⟨U+XXXX⟩` marker — everywhere, inside an emoji too.
  *
- * Moved here from pinchy-files' `emoji-sequence.test.ts` (eleventh review of
- * #1242), whose rule showed them raw inside a full RGI emoji: the server's
- * Unicode data said which sequences are one emoji, but whether one is DRAWN
- * as one depends on the approver's font, and Windows 10's Segoe UI Emoji
- * (Emoji 12) draws ❤️‍🔥 like ❤️🔥. A marker costs the person approving a
- * glance; a joiner drawn as nothing costs them the difference between two
- * files.
+ * Moved here from pinchy-files' `emoji-sequence.test.ts`, whose rule showed them
+ * raw inside a full RGI emoji: the server's Unicode data said which sequences are
+ * one emoji, but whether one is DRAWN as one depends on the approver's font, and
+ * Windows 10's Segoe UI Emoji (Emoji 12) draws ❤️‍🔥 like ❤️🔥. A marker costs the
+ * person approving a glance; a joiner drawn as nothing costs them the difference
+ * between two files.
  */
 
 /** The format characters the card marks in `text`, as code points. */
@@ -27,12 +26,11 @@ const formatChars = (text: string) =>
 
 /**
  * Canonical_Combining_Class = 9 (Virama) in Unicode 16.0, as Python's
- * `unicodedata.combining()` lists it. Ten reviews of #1242 asked, script by
- * script, where a joiner next to one of these draws something — and kept
- * finding scripts and fonts where it draws nothing (tenth review: Tamil
- * க்‌ம, Thai กฺ‍ม, Myanmar က်‍မ, Sinhala ක්‍ම, Gurmukhi ਕ੍‍ਮ, Malayalam
- * ക്‌മ, even Devanagari क्‍म in Devanagari MT, each pixel-identical to the
- * same name without it). The card no longer asks: next to every one of them
+ * `unicodedata.combining()` lists it. Asking script by script where a joiner next
+ * to one of these draws something kept finding scripts and fonts where it draws
+ * nothing (Tamil க்‌ம, Thai กฺ‍ม, Myanmar က်‍မ, Sinhala ක්‍ම, Gurmukhi ਕ੍‍ਮ,
+ * Malayalam ക്‌മ, even Devanagari क्‍म in Devanagari MT, each pixel-identical to
+ * the same name without it). The card no longer asks: next to every one of them
  * the joiner is marked.
  */
 const UNICODE_16_VIRAMAS = [
@@ -60,7 +58,7 @@ describe("the card's marking: a joiner next to a virama", () => {
   });
 });
 
-describe("the card's marking: the tenth review's mid-word probes", () => {
+describe("the card's marking: mid-word probes", () => {
   // Each pixel-identical to the same name without the joiner in at least one
   // shipping font, which is what made `pinchy_delete path:"/data/out/க்‌ம.md"`
   // read on the card as `/data/out/க்ம.md`.
@@ -94,8 +92,7 @@ describe("the card's marking: the tenth review's mid-word probes", () => {
   });
 });
 
-// The seventh to ninth reviews' cases, which the old per-script rule showed
-// raw. None of them is shown raw any more.
+// Cases the old per-script rule showed raw. None of them is shown raw any more.
 describe("the card's marking: joiners the old per-script rule showed raw", () => {
   it.each([
     ["ZWNJ after a virama", "क्\u200Cष"],
@@ -177,8 +174,8 @@ describe("the card's marking: emoji", () => {
     expect(marked(`x ${text} y`)).toEqual(formatChars(text));
   });
 
-  // Tenth review of #1242: any two pictographs joined by a ZWJ were taken as
-  // one emoji, but 📄‍📄 is drawn exactly like 📄📄.
+  // Any two pictographs joined by a ZWJ were taken as one emoji, but 📄‍📄 is drawn
+  // exactly like 📄📄.
   it.each([
     ["two pages joined", "\u{1F4C4}\u200D\u{1F4C4}", ["200d"]],
     ["a heart on fire without its selector", "❤\u200D\u{1F525}", ["200d"]],

@@ -32,14 +32,13 @@ export const MAX_PENDING_PER_REQUESTER = 20;
 /**
  * What a confirmation's stored summary becomes once it leaves `pending`.
  *
- * The summary exists for one reader, the pending list behind the card
- * (`GET /api/approvals`, which lists `status = pending` only), and may be
- * 0.5–1.5 MB. Settled rows are kept for TERMINAL_RETENTION_DAYS
- * (`server/approval-sweep.ts`), and nothing reads their summary — the audit
- * trail records the digest, never the arguments. So every transition out of
- * `pending` — the user's decision, the runtime's resolution, the sweep's
- * expiry, and the gate spending an approved grant — drops it in the same
- * statement (fifth review of #1242).
+ * The summary exists for one reader, the pending list behind the card (`GET
+ * /api/approvals`, which lists `status = pending` only), and may be 0.5–1.5 MB.
+ * Settled rows are kept for TERMINAL_RETENTION_DAYS (`server/approval-sweep.ts`),
+ * and nothing reads their summary — the audit trail records the digest, never the
+ * arguments. So every transition out of `pending` — the user's decision, the
+ * runtime's resolution, the sweep's expiry, and the gate spending an approved
+ * grant — drops it in the same statement.
  */
 const SETTLED_SUMMARY = null;
 

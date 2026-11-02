@@ -10,7 +10,7 @@ import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odo
 const REF_KEY = "b".repeat(64);
 
 /*
- * Fourteenth review of #1242: what the summary says ABOUT a value — a hidden
+ * What the summary says ABOUT a value — a hidden
  * secret, a record a ref names, a host, a display name — is a node of its own
  * (`SummaryNode`), never text written into the value. These build the nodes
  * the expectations below compare against.
@@ -46,10 +46,10 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Corrected expectation (second review of #1242): a bare "[redacted]" hid
-  // that a secret-like field is being SET at all — an attacker-chosen
-  // access_token looked like any other redaction. The value stays hidden (it
-  // may be a real secret), but the effect is now spelled out.
+  // A bare "[redacted]" would hide that a secret-like field is being SET at
+  // all — an attacker-chosen access_token would look like any other
+  // redaction. The value stays hidden (it may be a real secret), but the
+  // effect is spelled out.
   it("hides secret-looking values but says that one is being set, and how long it is", () => {
     const out = summarizeArgs({ apiKey: "sk-123", password: "p", auth_token: "t", to: "x@y.z" });
     expect(out.apiKey).toEqual(secret(6));
@@ -68,10 +68,10 @@ describe("summarizeArgs", () => {
     expect(JSON.stringify(out)).not.toContain("attacker-known-0000");
   });
 
-  // Corrected expectation (fourth review of #1242): a secret-like key hid ANY
-  // value, so `payment_token_id: 7` and a whole object read as one opaque
-  // redaction. Only text is hidden now — a number, boolean or null cannot be a
-  // credential, and an object is shown field by field with its texts hidden.
+  // Hiding ANY value under a secret-like key made `payment_token_id: 7` and a
+  // whole object read as one opaque redaction. Only text is hidden — a
+  // number, boolean or null cannot be a credential, and an object is shown
+  // field by field with its texts hidden.
   it("hides the texts inside an object under a secret-like key, and shows a null as null", () => {
     const out = summarizeArgs({ credentials: { user: "a", pass: "b" }, api_key: null });
     expect(out.credentials).toEqual({ user: secret(1), pass: secret(1) });
@@ -106,12 +106,10 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs({ body })).toEqual({ body });
   });
 
-  // Corrected expectation (third review of #1242): the stored limit rose from
-  // 4,000 to 20,000 characters, so an ordinary long body fits whole, and the
-  // probe needs a longer string to cross it. A cut string now also makes the
-  // call unapprovable (see "a call the card cannot show in full").
-  // Corrected again (fourth review of #1242): the limit is now 200,000
-  // characters of the text as sent, so the probe is 250,000 long.
+  // The stored limit is 200,000 characters of the text as sent, so an
+  // ordinary long body fits whole and the probe is 250,000 long. A cut string
+  // also makes the call unapprovable (see "a call the card cannot show in
+  // full").
   it("marks a string that exceeds the stored limit as truncated, and says by how much", () => {
     const out = summarizeArgs({ body: "a".repeat(250_000) }) as { body: string };
     expect(out.body).toMatch(/\[truncated: 50000 more characters not shown\]$/);
@@ -157,7 +155,7 @@ describe("summarizeArgs", () => {
       });
       expect(out.to).toEqual(["a@x.at", "b@x.at"]);
       expect(out.cc).toEqual(["c@x.at", "d@x.at", "e@x.at"]);
-      // Address first, display name after (second review of #1242).
+      // Address first, display name after.
       expect(out.bcc).toEqual(named("f@evil.com", "Evil"));
     });
 
@@ -166,8 +164,8 @@ describe("summarizeArgs", () => {
       expect(out.to).toEqual([named("hans@x.at", "Meier, Hans"), "b@x.at"]);
     });
 
-    // Third review of #1242: email_send now accepts a quoted name with a
-    // comma or parentheses; the card must show it as the one mailbox it is.
+    // email_send accepts a quoted name with a comma or parentheses; the card
+    // must show it as the one mailbox it is.
     it("shows a quoted name with parentheses as one recipient, address first", () => {
       expect(summarizeArgs({ to: '"Raimund Korber (Noack)" <r@noack.at>' }).to).toEqual(
         named("r@noack.at", "Raimund Korber (Noack)")
@@ -178,10 +176,10 @@ describe("summarizeArgs", () => {
       expect(summarizeArgs({ to: "ada@example.com" }).to).toBe("ada@example.com");
     });
 
-    // Corrected expectation (second review of #1242): collapsing whitespace
-    // rewrote the value, so the card no longer showed the string as sent. The
-    // string is kept; plain spaces, tabs and line breaks stay (the card renders
-    // them with pre-wrap), and every other space-like character is escaped.
+    // Collapsing whitespace would rewrite the value, so the card would not
+    // show the string as sent. The string is kept; plain spaces, tabs and line
+    // breaks stay (the card renders them with pre-wrap), and every other
+    // space-like character is escaped.
     it("keeps whitespace as sent and escapes every space-like character that is not a space, tab or line break", () => {
       const out = summarizeArgs({ subject: "Hello   \n\t world\u00A0\u2003!" });
       expect(out.subject).toBe("Hello   \n\t world⟨U+00A0⟩⟨U+2003⟩!");
@@ -214,7 +212,7 @@ describe("summarizeArgs", () => {
       expect(out.subject).toMatch(/^x⟨U\+[0-9A-F]{4}⟩y$/);
     });
 
-    // The probe of the second review: 180 braille blanks render as empty space,
+    // 180 braille blanks render as empty space,
     // so the path looked like a draft in reports/ while it resolved elsewhere.
     it("makes a path padded with blank-rendering characters readable", () => {
       const path = `/data/reports/old-draft.md${"\u2800".repeat(180)}/../../contracts/signed.pdf`;
@@ -248,8 +246,7 @@ describe("summarizeArgs", () => {
       expect(JSON.stringify(out)).toContain("price_unit");
     });
 
-    // Corrected expectation (third review of #1242): the caps rose to 100 keys
-    // and 200 items, so the probes are sized past the new caps.
+    // The caps are 100 keys and 200 items, so the probes are sized past them.
     it("says so when keys, items or depth are cut, never silently drops them", () => {
       const manyKeys = Object.fromEntries(Array.from({ length: 140 }, (_, i) => [`k${i}`, i]));
       expect(JSON.stringify(summarizeArgs(manyKeys))).toMatch(/more fields? not shown/);
@@ -260,9 +257,7 @@ describe("summarizeArgs", () => {
       expect(JSON.stringify(summarizeArgs({ deep }))).toMatch(/not shown/);
     });
 
-    // Corrected expectation (third review of #1242): the total budget rose
-    // from 16,000 to 64,000 characters, so the bound sits higher. Corrected
-    // again (fourth review): the budget is now 512,000, and so is the probe.
+    // The total budget is 512,000 characters, and so is the probe.
     it("bounds the total size, and says that it did", () => {
       const huge = Object.fromEntries(
         Array.from({ length: 25 }, (_, i) => [`k${i}`, "z".repeat(25_000)])
@@ -284,10 +279,10 @@ describe("summarizeArgs", () => {
     const ref = (model: string, id: number, label: string) =>
       encodeRef({ integrationType: "odoo", connectionId: "c1", model, id, label });
 
-    // Fourteenth review of #1242: the ref used to be stored as the text
-    // `(record reference: res.partner #7 "Acme GmbH")` — the very string an
-    // agent could send instead, which pinchy-odoo resolves by NAME. The ref is
-    // a node now; the text stays the plain string it is.
+    // Stored as the text `(record reference: res.partner #7 "Acme GmbH")`, a
+    // ref would be the very string an agent could send instead, which
+    // pinchy-odoo resolves by NAME. The ref is a node; the text stays the
+    // plain string it is.
     it("stores a ref as a node, and the text it used to render as as text", () => {
       const out = summarizeArgs(
         {
@@ -312,9 +307,9 @@ describe("summarizeArgs", () => {
       expect(result.incomplete).toBe(false);
     });
 
-    // Corrected expectation (second review of #1242): replacing every string
-    // that merely STARTS with the prefix hid free text — an email body that
-    // began with "pinchy_ref:v1:" vanished behind "(record reference)". Only a
+    // Replacing every string that merely STARTS with the prefix would hide
+    // free text — an email body that began with "pinchy_ref:v1:" would vanish
+    // behind "(record reference)". Only a
     // string that decodes to a record is rendered as one; anything else is
     // shown as the text it is.
     it("shows a string that does not decode as the text it is", () => {
@@ -380,19 +375,19 @@ describe("summarizeArgs", () => {
       );
       expect(JSON.stringify(out.target)).not.toContain("\u202E");
       expect(JSON.stringify(out.target)).toContain("⟨U+202E⟩");
-      // Corrected expectation (second review of #1242): whitespace is no longer
-      // collapsed, so the three spaces and the line break stay as sent.
+      // Whitespace is not collapsed, so the three spaces and the line break
+      // stay as sent.
       expect(out.target).toEqual(recordRef("account.move", 42, 'INV⟨U+202E⟩"x"   \n42'));
     });
   });
 
-  // Fifth review of #1242: Node's base64url decoder stops at the first `=` and
-  // drops the rest, so `<valid ref>=\n\n<any text>` still decoded. The card
-  // showed only "(record reference: …)" — and skipped the length check — while
-  // the tool received the whole string: an email body hiding a payment
+  // Node's base64url decoder stops at the first `=` and drops the rest, so
+  // `<valid ref>=\n\n<any text>` still decodes. A card that trusted the decode
+  // would show only "(record reference: …)" — and skip the length check —
+  // while the tool received the whole string: an email body hiding a payment
   // instruction behind a ref. Only the exact string the encoder writes is a
   // ref; anything longer is text, shown and counted like any other.
-  describe("a ref with anything after it is text (fifth review of #1242)", () => {
+  describe("a ref with anything after it is text", () => {
     const partner = () =>
       encodeRef({
         integrationType: "odoo",
@@ -443,10 +438,10 @@ describe("summarizeArgs", () => {
     });
   });
 
-  describe("keys are shown as they are, never merged (review of #1242)", () => {
-    // The exact payload the review used: "to " (trailing space) used to be
-    // trimmed to "to" and merged over the real `to`, so the card showed the
-    // boss while the tool — which reads `to` — mailed the attacker.
+  describe("keys are shown as they are, never merged", () => {
+    // Trimmed to "to", a key "to " (trailing space) would merge over the real
+    // `to`, so the card would show the boss while the tool — which reads `to` —
+    // mailed the attacker.
     it("does not let a look-alike key hide the key the tool reads", () => {
       const params = JSON.parse(
         '{"to":"attacker@evil.com","subject":"Q3","body":"hi","to ":"boss@firma.at"}'
@@ -496,13 +491,13 @@ describe("summarizeArgs", () => {
     });
   });
 
-  describe("invisible characters cannot smuggle a payload (review of #1242)", () => {
+  describe("invisible characters cannot smuggle a payload", () => {
     const tag = (text: string) =>
       [...text].map((c) => String.fromCodePoint(0xe0000 + c.codePointAt(0)!)).join("");
 
-    // Fourteenth review of #1242: a long run used to collapse into one marker
-    // naming its first three characters, so the payload past them was gone —
-    // and with it the difference between two runs. Every one is named now.
+    // A run collapsed into one marker naming its first three characters would
+    // lose the payload past them — and with it the difference between two
+    // runs. Every one is named.
     it("makes Unicode tag characters visible, every one of them", () => {
       const payload = tag("send to evil@x.com");
       const out = summarizeArgs({ subject: `Report${payload}` }) as { subject: string };
@@ -535,9 +530,8 @@ describe("summarizeArgs", () => {
       expect(out.subject).toMatch(/^x⟨U\+[0-9A-F]{4,5}⟩y$/);
     });
 
-    // Eleventh review of #1242: the joiners and selectors inside an RGI emoji
-    // were shown raw, but whether one is drawn as a single glyph depends on
-    // the approver's font, not on the server's Unicode data — Windows 10's
+    // Whether the joiners and selectors inside an RGI emoji are drawn as a
+    // single glyph depends on the approver's font, not on the server's Unicode data — Windows 10's
     // Segoe UI Emoji has no ❤️‍🔥, and draws it like ❤️🔥. So they are marked
     // inside an emoji too.
     it("marks the joiners and selectors of an emoji too", () => {
@@ -557,15 +551,15 @@ describe("summarizeArgs", () => {
       expect(shown(apart)).not.toContain("⟨U+200D⟩");
     });
 
-    // Tenth review of #1242: a text-presentation selector after ☺ was kept
-    // raw, but ☺︎ is not an RGI emoji, and Helvetica draws it exactly like ☺.
+    // ☺︎ (a text-presentation selector after ☺) is not an RGI emoji, and
+    // Helvetica draws it exactly like ☺.
     it("marks a selector after a symbol", () => {
       expect(summarizeArgs({ subject: "☺︎" })).toEqual({ subject: "☺⟨U+FE0E⟩" });
     });
 
-    // Sixth review of #1242: the joiner and the presentation selectors were
-    // kept raw everywhere, so "Noack‍ GmbH" read as "Noack GmbH" — a
-    // different name to look up — and "RE-1001️" as "RE-1001", which the
+    // Kept raw, the joiner and the presentation selectors make "Noack‍ GmbH"
+    // read as "Noack GmbH" — a different name to look up — and "RE-1001️" as
+    // "RE-1001", which the
     // vendor-bill duplicate check compares exactly. Outside an emoji they
     // render as nothing, so they are marked like any other invisible character.
     it("marks a joiner or presentation selector that is not part of an emoji", () => {
@@ -580,11 +574,10 @@ describe("summarizeArgs", () => {
       });
     });
 
-    // Seventh review of #1242 kept a joiner raw where RFC 5892's CONTEXTJ rule
-    // says it shapes Arabic-script or Indic text, and the eighth and ninth
-    // narrowed that per script. Tenth review: each rule still let through
-    // joiners that draw nothing in some font — `க்‌ம.md` read as `க்ம.md`. A
-    // joiner is marked, in every script.
+    // Keeping a joiner raw where RFC 5892's CONTEXTJ rule says it shapes
+    // Arabic-script or Indic text, or any per-script narrowing of that, lets
+    // through joiners that draw nothing in some font — `க்‌ம.md` reads as
+    // `க்ம.md`. A joiner is marked, in every script.
     it("marks a joiner in Arabic-script and Indic text", () => {
       const text = "گزارش‌ها ශ්‍රී അവന്‍ क्‌ष";
       const shown = "گزارش⟨U+200C⟩ها ශ්⟨U+200D⟩රී അവന്⟨U+200D⟩ क्⟨U+200C⟩ष";
@@ -600,10 +593,9 @@ describe("summarizeArgs", () => {
       ["a ZWJ between Arabic letters", "ش‍ه", "ش⟨U+200D⟩ه"],
       ["a ZWNJ after a virama at the end", "जगत्‌.md", "जगत्⟨U+200C⟩.md"],
       // The virama is Devanagari and draws on no Latin letter, so it is a
-      // marker too (thirteenth review of #1242).
+      // marker too.
       ["a ZWNJ after a virama on a Latin letter", "a्‌b.md", "a⟨U+094D⟩⟨U+200C⟩b.md"],
-      // Tenth review of #1242 (the reviewer's probe names): mid-word, after a
-      // virama, before a letter of the same script.
+      // Mid-word, after a virama, before a letter of the same script.
       ["a ZWNJ inside a Tamil word", "க்‌ம", "க்⟨U+200C⟩ம"],
       ["a ZWJ inside a Tamil word", "க்‍ம", "க்⟨U+200D⟩ம"],
       ["a ZWJ inside a Thai word", "กฺ‍ม", "กฺ⟨U+200D⟩ม"],
@@ -618,8 +610,8 @@ describe("summarizeArgs", () => {
       ["a joiner trailing an emoji", "\u{1F468}‍.", "\u{1F468}⟨U+200D⟩."],
       ["a joiner before an emoji", "a‍\u{1F468}", "a⟨U+200D⟩\u{1F468}"],
       ["a second selector", "⚠️️", "⚠⟨U+FE0F⟩⟨U+FE0F⟩"],
-      // Tenth review of #1242: any two pictographs joined by a ZWJ were taken
-      // as one emoji; eleventh: no joiner is shown raw at all.
+      // Two pictographs joined by a ZWJ are not one emoji to every font, and
+      // no joiner is shown raw at all.
       ["two pages joined", "\u{1F4C4}‍\u{1F4C4}", "\u{1F4C4}⟨U+200D⟩\u{1F4C4}"],
       ["a heart on fire without its selector", "❤‍\u{1F525}", "❤⟨U+200D⟩\u{1F525}"],
       [
@@ -638,10 +630,9 @@ describe("summarizeArgs", () => {
       expect(label).toContain("⟨U+E0065⟩⟨U+E0076⟩⟨U+E0069⟩⟨U+E006C⟩");
     });
 
-    // Fourteenth review of #1242: a run collapsed after its third character,
-    // so `a` + four joiners and `a` + three joiners and a non-joiner — and two
-    // paths padded with different space separators, which pinchy-files
-    // accepts — were one card. Only a run of ONE repeated character is
+    // Collapsing a run after its third character would make `a` + four
+    // joiners and `a` + three joiners and a non-joiner — and two paths padded
+    // with different space separators, which pinchy-files accepts — one card. Only a run of ONE repeated character is
     // counted; a mixed run names every character, in order.
     it.each([
       ["joiners", "a\u200D\u200D\u200D\u200D", "a\u200D\u200D\u200D\u200C"],
@@ -701,9 +692,9 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Twelfth review of #1242: a value that TYPED a marker rendered exactly like
-  // the character the marker stands for — `/data/a⟨U+200D⟩b.md` sent as text
-  // and `/data/a‍b.md` with a real joiner were one card, and pinchy-files
+  // A value that TYPED a marker would render exactly like the character the
+  // marker stands for — `/data/a⟨U+200D⟩b.md` sent as text and `/data/a‍b.md`
+  // with a real joiner would be one card, and pinchy-files
   // accepts both. So the brackets themselves are marked: every `⟨` on the
   // card opens a marker the summary wrote.
   describe("a typed marker never reads as a real one", () => {
@@ -773,7 +764,7 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Thirteenth review of #1242: a combining mark draws on the glyph in front
+  // A combining mark draws on the glyph in front
   // of it. With no letter there — at the start, after a space, a `/`,
   // punctuation or a marker — or with a letter of another script there, it
   // was drawn onto the neighbouring word, exactly like the same mark on that
@@ -960,8 +951,7 @@ describe("summarizeArgs", () => {
 
     // Filler keys before `to` used to eat the size budget, so the recipient was
     // cut — or pushed past MAX_KEYS altogether.
-    // Corrected probe (fourth review of #1242): the budget rose to 512,000,
-    // so the filler grows past it to keep exhausting it.
+    // The budget is 512,000, so the filler grows past it to exhaust it.
     it("renders recipients in full even behind filler that exhausts the budget", () => {
       const filler = Object.fromEntries(
         Array.from({ length: 40 }, (_, i) => [`f${String(i).padStart(2, "0")}`, "z".repeat(15_000)])
@@ -972,8 +962,7 @@ describe("summarizeArgs", () => {
       expect(JSON.stringify(out)).toMatch(/not shown/);
     });
 
-    // Corrected expectation (third review of #1242): MAX_KEYS rose from 25 to
-    // 100, so the filler grows past it to keep testing what the name says.
+    // MAX_KEYS is 100, so the filler grows past it to test what the name says.
     it("renders recipients even behind more than the maximum number of keys", () => {
       const filler = Object.fromEntries(Array.from({ length: 160 }, (_, i) => [`k${i}`, i]));
       const out = summarizeArgs({ ...filler, bcc: "hidden@evil.com", reply_to: "r@evil.com" });
@@ -981,9 +970,8 @@ describe("summarizeArgs", () => {
       expect(out.reply_to).toBe("r@evil.com");
     });
 
-    // Corrected bound (fourth review of #1242): the total budget rose from
-    // 64,000 to 512,000, so the summary may be larger — but against 12.5
-    // million characters of keys sent, it still stays within the budget's
+    // The total budget is 512,000, so the summary may be large — but against
+    // 12.5 million characters of keys sent, it still stays within the budget's
     // documented ceiling of about twice MAX_TOTAL_CHARS.
     it("stays bounded when every field carries a long key", () => {
       const wide = Object.fromEntries(
@@ -1025,7 +1013,7 @@ describe("summarizeArgs", () => {
     });
   });
 
-  describe("recipient display (second review of #1242)", () => {
+  describe("recipient display", () => {
     // The probe: a familiar display name padded with braille blanks pushed the
     // real address out of the card's preview. The address comes first now.
     it("puts the address first and the display name after it", () => {
@@ -1054,7 +1042,7 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Sixth review of #1242: a target names one file or record, and two names
+  // A target names one file or record, and two names
   // that render alike are two targets. Where an action lands, what renders as
   // nothing is marked even where ordinary text keeps it.
   describe("where an action lands reads as exactly one target", () => {
@@ -1084,7 +1072,7 @@ describe("summarizeArgs", () => {
     it.each([
       ["a check mark", "/data/out/Vertrag ✅️.pdf", "/data/out/Vertrag ✅⟨U+FE0F⟩.pdf"],
       ["a page", "/data/out/\u{1F4C4}️.md", "/data/out/\u{1F4C4}⟨U+FE0F⟩.md"],
-      // Helvetica draws it exactly like ✅ (tenth review of #1242).
+      // Helvetica draws it exactly like ✅.
       [
         "a check mark asked to be text",
         "/data/out/Vertrag ✅︎.pdf",
@@ -1103,7 +1091,7 @@ describe("summarizeArgs", () => {
       ["a heart on fire", "/data/notes/❤️‍\u{1F525} Team.md"],
     ])("marks the format characters of %s, which the approver's font may not join", (_l, path) => {
       // …and the keycap's U+20E3, which follows the marked U+FE0F and so has
-      // no letter to sit on (thirteenth review of #1242).
+      // no letter to sit on.
       const marked = path.replace(
         /[\u200D\uFE0F\u20E3]/g,
         (char) => `⟨U+${char.codePointAt(0)!.toString(16).toUpperCase()}⟩`
@@ -1112,7 +1100,7 @@ describe("summarizeArgs", () => {
       expect(summarizeArgs({ path })).toEqual({ path: marked });
     });
   });
-  // Third review of #1242: a marker that says "N more fields not shown" is
+  // A marker that says "N more fields not shown" is
   // honest, but a person still approved a call whose hidden part runs. A call
   // whose summary lost anything is reported incomplete, and the gate refuses it.
   describe("a call the card cannot show in full is never approvable", () => {
@@ -1181,7 +1169,7 @@ describe("summarizeArgs", () => {
           return { deep };
         },
       ],
-      // Probe sized to the fourth review's limit of 200,000 characters.
+      // Probe sized to the limit of 200,000 characters.
       ["a string longer than the stored limit", () => ({ body: "a".repeat(200_001) })],
       ["a key longer than the label limit", () => ({ ["k".repeat(101)]: 1 })],
       [
@@ -1194,10 +1182,10 @@ describe("summarizeArgs", () => {
       expect(summarizeCall(build()).incomplete).toBe(true);
     });
 
-    // The review's budget probe: four long strings used up the budget, and the
-    // field after them — the bank account the invoice is paid to — became
-    // "1 more field not shown". It is never silently dropped and approved.
-    // Probe sized to the fourth review's budget of 512,000 characters.
+    // Four long strings use up the budget, and the field after them — the bank
+    // account the invoice is paid to — becomes "1 more field not shown". It is
+    // never silently dropped and approved.
+    // Probe sized to the budget of 512,000 characters.
     it("reports a call that exhausts the total budget as incomplete, never drops a key quietly", () => {
       const params = {
         model: "account.move",
@@ -1227,9 +1215,8 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Third review of #1242: the punycode form was only appended to recipients.
-  // An Odoo `values.email` or `website` with a Cyrillic "і" read exactly like
-  // the real domain.
+  // The punycode form is not only for recipients: an Odoo `values.email` or
+  // `website` with a Cyrillic "і" reads exactly like the real domain.
   describe("homoglyph hosts anywhere in the call", () => {
     const domain = "f\u0456rma.at"; // Cyrillic і
     const ascii = domainToASCII(domain);
@@ -1263,15 +1250,14 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Third review of #1242: a cut could land between the two halves of an
-  // emoji, and a lone surrogate in the input went into the summary as it was.
-  // Postgres rejects either in jsonb ("Unicode low surrogate must follow a
-  // high surrogate"), so the row could not even be stored.
+  // A cut between the two halves of an emoji, or a lone surrogate in the
+  // input kept as it is, would be rejected by Postgres in jsonb ("Unicode low
+  // surrogate must follow a high surrogate"), so the row could not be stored.
   describe("surrogates", () => {
     const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
-    // Corrected probe (fourth review of #1242): one string no longer reaches
-    // the budget, so a filler field spends most of it first; with and without
+    // One string can't reach the budget, so a filler field spends most of it
+    // first; with and without
     // a leading "a", one of the two cuts lands on a pair boundary.
     it("never cuts a string between the halves of an emoji", () => {
       for (const lead of ["", "a"]) {
@@ -1294,8 +1280,8 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Third review of #1242: a Windows line break showed as "⟨U+000D⟩" followed
-  // by a break — noise on every mail body written with CRLF.
+  // A Windows line break shown as "⟨U+000D⟩" followed by a break would be
+  // noise on every mail body written with CRLF.
   describe("line breaks", () => {
     it("renders CRLF as a line break", () => {
       const out = summarizeArgs({ body: "Sehr geehrte Damen,\r\n\r\nanbei die Rechnung.\r\nMax" });
@@ -1311,12 +1297,11 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Fourth review of #1242: the per-string limit was 20,000 characters of the
-  // ESCAPED text, so a gated pinchy_write of a 25 KB report, or a mail body
-  // with no-break spaces (each shown as an 8-character marker), could never be
-  // confirmed — and "split it into smaller calls" is advice nobody can follow
-  // for one file or one mail.
-  describe("long texts (fourth review of #1242)", () => {
+  // A per-string limit of 20,000 characters of the ESCAPED text meant a gated
+  // pinchy_write of a 25 KB report, or a mail body with no-break spaces (each
+  // shown as an 8-character marker), could never be confirmed — and "split it
+  // into smaller calls" is advice nobody can follow for one file or one mail.
+  describe("long texts", () => {
     it("lets a gated pinchy_write of a 30,000-character report through, stored whole", () => {
       const content = "Quarterly report line.\n".repeat(1_305).slice(0, 30_000);
       const { summary, incomplete, exceeded } = summarizeCall({
@@ -1381,9 +1366,9 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Fourth review of #1242: numbers, booleans, null and empty containers
-  // cost nothing, so 200×200×50 numbers produced a 5.7 MB summary.
-  describe("every value counts against the total (fourth review of #1242)", () => {
+  // When numbers, booleans, null and empty containers cost nothing,
+  // 200×200×50 numbers produced a 5.7 MB summary.
+  describe("every value counts against the total", () => {
     const grid = (a: number, b: number, c: number) =>
       Array.from({ length: a }, () =>
         Array.from({ length: b }, () => Array.from({ length: c }, (_, i) => i))
@@ -1413,7 +1398,7 @@ describe("summarizeArgs", () => {
     });
   });
 
-  describe("what the refusal says (fourth review of #1242)", () => {
+  describe("what the refusal says", () => {
     it.each([
       [
         "too many fields",
@@ -1473,10 +1458,10 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Fourth review of #1242: the secret rule matched by key substring and hid
-  // ANY value — `payment_token_id: 7`, `token_ids: [1, 2]`, a whole object
-  // with a recipient in it.
-  describe("secret-like keys hide text, not record ids (fourth review of #1242)", () => {
+  // A secret rule that matches by key substring and hides ANY value hides
+  // `payment_token_id: 7`, `token_ids: [1, 2]`, a whole object with a
+  // recipient in it.
+  describe("secret-like keys hide text, not record ids", () => {
     it("shows a number, boolean or null under a secret-like key", () => {
       const out = summarizeArgs({ access_token: 7, has_password: true, api_key: null });
       expect(out).toEqual({ access_token: 7, has_password: true, api_key: null });
@@ -1507,11 +1492,11 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Fourth review of #1242: the host was read with a regex, which disagrees
-  // with the URL parser the tool uses — `https://fіrma.at\@evil.com/x` read as
-  // evil.com, while WHATWG resolves the host to fіrma.at (a backslash is a
-  // path separator in a special URL).
-  describe("the host a URL resolves to (fourth review of #1242)", () => {
+  // A regex disagrees with the URL parser the tool uses —
+  // `https://fіrma.at\@evil.com/x` reads as evil.com to one, while WHATWG
+  // resolves the host to fіrma.at (a backslash is a path separator in a
+  // special URL).
+  describe("the host a URL resolves to", () => {
     it("annotates the host the URL parser resolves, not the one a regex reads", () => {
       const value = "https://fіrma.at\\@evil.com/x";
       const out = summarizeArgs({ url: value });
@@ -1538,12 +1523,11 @@ describe("summarizeArgs", () => {
     });
   });
 
-  // Sixteenth review of #1242: whether a value is a URL was decided by a
-  // regex that wanted `scheme://` at position 0. The WHATWG parser
-  // pinchy_web_fetch uses (`new URL(url)`) takes far more: no slashes, one
-  // slash, backslashes, and a leading control or space it strips. Each of
-  // those reached `xn--frma-l9d.at` under a card that named no host.
-  describe("a URL is what the parser accepts, not what a regex reads (sixteenth review)", () => {
+  // A regex wanting `scheme://` at position 0 decides URL-ness wrongly: the
+  // WHATWG parser pinchy_web_fetch uses (`new URL(url)`) takes far more — no
+  // slashes, one slash, backslashes, and a leading control or space it
+  // strips. Each of those reaches `xn--frma-l9d.at`.
+  describe("a URL is what the parser accepts, not what a regex reads", () => {
     const homoglyph = "xn--frma-l9d.at";
 
     it.each([

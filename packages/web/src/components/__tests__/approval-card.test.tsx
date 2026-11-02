@@ -190,8 +190,8 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(spokenText(typed)).not.toBe(spoken);
   });
 
-  // The probe of the second review: 180 blank-rendering characters pushed the
-  // traversal out of the 200-character preview. Where an action lands is never
+  // 180 blank-rendering characters would push the traversal out of the
+  // 200-character preview. Where an action lands is never
   // previewed — it is short, and it is the decision.
   it("shows a path in full, never behind a preview", () => {
     const path = `/data/reports/old-draft.md${"\u2800".repeat(180)}/../../contracts/signed.pdf`;
@@ -233,9 +233,9 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(screen.queryByText("(empty)")).not.toBeInTheDocument();
   });
 
-  // Third review of #1242: the stored limit is 20,000 characters now (200,000
-  // since the fourth review), so a long mail body is stored whole — and still
-  // previewed, with all of it on demand and no truncation marker.
+  // The stored limit is 200,000 characters, so a long mail body is stored
+  // whole — and still previewed, with all of it on demand and no truncation
+  // marker.
   it("previews a long body stored whole, and shows all of it on demand", async () => {
     const tail = "MIT-FREUNDLICHEN-GRUESSEN";
     renderCard(summarizeArgs({ body: `${"Absatz. ".repeat(1_800)}${tail}` }));
@@ -264,9 +264,9 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(screen.getByText("pinchy_web_search")).toBeInTheDocument();
   });
 
-  // Fourth review of #1242: an email address or URL under a key the card
-  // does not know (`values.email`, `website`) was previewed like prose, so a
-  // 217-character address showed its familiar local part and cut `@evil.com`.
+  // Previewed like prose, an email address or URL under a key the card does
+  // not know (`values.email`, `website`) would show a 217-character address's
+  // familiar local part and cut `@evil.com`.
   it("shows an email-shaped value in full at any key, so the domain is never cut", () => {
     const email = `buchhaltung.firma.at.${"rechnungen.".repeat(17)}@evil.com`;
     expect(email).toHaveLength(217);
@@ -282,10 +282,9 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
   });
 
-  // Fourteenth review of #1242: a target or an address was drawn whole at any
-  // length, and Chromium lays out a long mixed-direction text in time that
-  // grows faster than its length — 13 s for one 200,000-character value,
-  // frozen on every render of the card. Whole is bounded now, at a size that
+  // Chromium lays out a long mixed-direction text in time that grows faster
+  // than its length — 13 s for one 200,000-character value drawn whole,
+  // frozen on every render of the card. So whole is bounded, at a size that
   // holds every real target: pinchy-files caps a path at 1,024 characters,
   // and the widest marker a character can become is eight (`⟨U+200D⟩`).
   describe("draws a target or an address whole only up to 8,192 characters", () => {
@@ -318,9 +317,9 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(labels).toEqual(["to", "body", "subject", "values", "model", "name"]);
   });
 
-  // Eleventh review of #1242: `/data/חוזים/2024.md` and `/data/2024/חוזים.md`
-  // were drawn pixel-identically — no control character needed, both plain
-  // paths — so an injected write was approved as the other file. The card now
+  // Left to the bidi algorithm, `/data/חוזים/2024.md` and `/data/2024/חוזים.md`
+  // are drawn pixel-identically — no control character needed, both plain
+  // paths — so an injected write would be approved as the other file. The card
   // holds every value in stored order: an LTR override around it, and each
   // right-to-left word in an isolate of its own (`inStoredOrder`).
   describe("shows right-to-left text in the order it was sent", () => {
@@ -390,7 +389,7 @@ describe("ApprovalCard shows what will actually run", () => {
     });
   });
 
-  // Fourteenth review of #1242: annotations are nodes of their own, drawn
+  // Annotations are nodes of their own, drawn
   // beside the value — so a value can't type them.
   describe("annotations", () => {
     it("draws a record reference as the record, apart from any text", () => {
@@ -456,9 +455,9 @@ describe("ApprovalCard shows what will actually run", () => {
   });
 
   /**
-   * Fifteenth review of #1242. The dashed label tells an annotation from a
-   * value only to the eye. A screen reader, and anything else that reads the
-   * card's text, got the same characters for both: a real record reference
+   * The dashed label tells an annotation from a value only to the eye. A
+   * screen reader, and anything else that reads the card's text, gets the
+   * same characters for both: a real record reference
    * and the plain string `record reference res.partner #7 "Acme GmbH"` — which
    * pinchy-odoo resolves by name — read identically. So the card says it in
    * words, the way the prompt does: every string value is read in quotes,

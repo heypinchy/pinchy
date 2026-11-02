@@ -1133,8 +1133,8 @@ function claimedNameText(value: string): string {
 
 /**
  * The record a lookup names by code and name together, once the code is known
- * to match: the `"<code> <name>"` string (seventh review of #1242) and the
- * explicit `{lookup: {code, name}}` (eighth review). The name beside the code
+ * to match: the `"<code> <name>"` string and the
+ * explicit `{lookup: {code, name}}`. The name beside the code
  * is a claim about the record: `"6000 Bank fees"` used to book to account 6000
  * whatever it is called, so the card read "Bank fees" while the effect was
  * "Office supplies". The claim has to hold — case, spacing and one separator
@@ -1255,7 +1255,7 @@ function resolveReferenceFromRecords(
 
   if (lookup.code) {
     // A name beside the code is a claim about the record, exactly as in the
-    // string form below — never ignored (eighth review of #1242).
+    // string form below — never ignored.
     const claimedName = lookup.name ? claimedNameText(lookup.name) : "";
     const coded = claimedName ? recordsWithCode(lookup.code, records) : [];
     if (coded.length > 0) {
@@ -1264,7 +1264,7 @@ function resolveReferenceFromRecords(
     const byExplicitCode = matchByCode(field, lookup, lookup.code, records);
     if (byExplicitCode !== null) return byExplicitCode;
     // A code no record carries is a claim the records contradict, just as a
-    // name is (ninth review of #1242): `{code: "6000", name: "Bank fees"}`
+    // name is: `{code: "6000", name: "Bank fees"}`
     // fell through to the exact-name branch and booked to 6100 "Bank fees"
     // while the card read 6000 — and the string "6000 Bank fees" was refused.
     // `res.country` alone keeps the fall-through: a country is identified by
@@ -2237,7 +2237,7 @@ async function resolveActivityTypeByName(client: OdooClient, name: string): Prom
  * The `assignee` as the tools use it: a user NAME is trimmed (a model pads
  * names freely, and the lookup is an exact match), a ref is taken exactly as
  * sent. A ref with whitespace around it is refused rather than trimmed into
- * the ref (sixth review of #1242): the confirmation card shows a string as the
+ * the ref: the confirmation card shows a string as the
  * record it names only when the string IS the ref, so `" " + ref` was shown
  * as opaque text while the activity went to the record the ref names.
  */

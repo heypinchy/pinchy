@@ -1657,7 +1657,7 @@ describe("recipient hardening: one address per call (approval card must show wha
   });
 });
 
-describe("unknown parameters are refused (review of #1242)", () => {
+describe("unknown parameters are refused", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCredentialResponse();
@@ -1673,7 +1673,7 @@ describe("unknown parameters are refused (review of #1242)", () => {
     },
   };
 
-  // The review's payload: a second, look-alike `to ` key. The tool reads `to`;
+  // A second, look-alike `to ` key. The tool reads `to`;
   // a reader skimming the arguments sees two recipients and may trust the
   // wrong one. Nothing the tool does not read may ride along on a call.
   const smuggled = {

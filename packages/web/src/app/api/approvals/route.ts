@@ -59,8 +59,8 @@ export const GET = withAuth(async (req, _ctx, session) => {
   // Read separately so a held card's summary is never loaded at all. Still
   // `pending` only: a card settled since the list query has had its summary
   // dropped (settling clears it), and returning it as `argsSummary: null` gave
-  // the inbox an approvable card that showed no arguments (sixth review of
-  // #1242). Such a card is left out — it is no longer open anyway.
+  // the inbox an approvable card that showed no arguments. Such a card is left
+  // out — it is no longer open anyway.
   const summaries = new Map(
     wanted.size === 0
       ? []

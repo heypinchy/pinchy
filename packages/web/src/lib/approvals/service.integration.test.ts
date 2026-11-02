@@ -567,9 +567,9 @@ describe("approvals gate decision service", () => {
   });
 
   /**
-   * Fifth review of #1242: a summary may be 0.5–1.5 MB, and only the pending
-   * list reads it — but settled rows kept it for the 30 days they are retained.
-   * Every way out of `pending` drops it. The audit trail never carried it.
+   * A summary may be 0.5–1.5 MB, and only the pending list reads it — but settled
+   * rows kept it for the 30 days they are retained. Every way out of `pending`
+   * drops it. The audit trail never carried it.
    */
   describe("the stored summary is dropped once a confirmation settles", () => {
     const summary = { body: "x".repeat(1000) };

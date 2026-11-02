@@ -9,17 +9,15 @@
  *
  * A tool that a person approves on a confirmation card refuses them in the
  * values that decide where the action lands — a recipient, a path — because a
- * run of them looks like empty space and pushes what follows out of view
- * (second review of #1242).
+ * run of them looks like empty space and pushes what follows out of view.
  *
  * Three groups are refused by default but may be allowed by a caller, each
- * for a reason that holds only where that caller uses it (third and tenth
- * review of #1242):
+ * for a reason that holds only where that caller uses it:
  *
  * - `isEmojiFormatChar` — U+200D, U+FE0E, U+FE0F. They take no space and sit
  *   inside ordinary emoji (👨‍👩‍👧, ❤️). The card marks every one, inside an
  *   emoji too — whether a sequence is drawn as one glyph is the approver's
- *   font (eleventh review). A display name and a path may carry them; an
+ *   font. A display name and a path may carry them; an
  *   address may not.
  * - `isJoiner` — U+200C, U+200D. Arabic-script and Indic names carry them
  *   (گزارش‌ها, ශ්‍රී), and the card marks every one, so a path and a display
@@ -28,7 +26,7 @@
  *   no-break, narrow no-break, ideographic, …). They take visible width, and
  *   the card prints each one as `⟨U+XXXX⟩`. Real file names carry them —
  *   macOS names a screenshot "… at 10.00.00 AM.png" — so a path may.
- *   So may a display name, one at a time (ninth review of #1242): Japanese
+ *   So may a display name, one at a time: Japanese
  *   writes a name with an ideographic space, and a run of them is blank
  *   space again (pinchy-email `recipient.ts`).
  *

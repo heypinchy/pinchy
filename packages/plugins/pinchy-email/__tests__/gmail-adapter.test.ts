@@ -1121,8 +1121,8 @@ describe("GmailAdapter", () => {
       return { lines, name, address };
     }
 
-    // Third review of #1242: a quoted name with a comma is one mailbox, and the
-    // header must say so — the card shows `hans@x.de`, named "Müller, Hans".
+    // A quoted name with a comma is one mailbox, and the header must say so —
+    // the card shows `hans@x.de`, named "Müller, Hans".
     it("keeps a quoted name with a comma one mailbox, ASCII or not", async () => {
       mockSend.mockResolvedValue({ data: { id: "s1" } });
       await adapter.send({ to: '"Mueller, Hans" <hans@x.de>', subject: "S", body: "B" });

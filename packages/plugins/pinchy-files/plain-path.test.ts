@@ -3,8 +3,8 @@ import { describe, it, expect } from "vitest";
 import { assertPlainPath } from "./plain-path";
 
 /**
- * Third review of #1242: `..` and blank characters were refused, but "./"
- * segments were not — 2,100 of them pushed `contracts/signed.pdf` past what the
+ * `..` and blank characters are refused, and so are "./"
+ * segments — 2,100 of them pushed `contracts/signed.pdf` past what the
  * card stored, while the write still landed there. A path is accepted only in
  * the form that names its target directly.
  */
@@ -20,7 +20,7 @@ describe("assertPlainPath", () => {
     ok("/data/Screenshot 2026-11-02 at 10.00.00 AM.png");
   });
 
-  it("refuses the review's probe", () => {
+  it("refuses a path padded with thousands of ./ segments", () => {
     refused(`/data/output/${"./".repeat(2100)}contracts/signed.pdf`, /path/);
   });
 
@@ -58,9 +58,8 @@ describe("assertPlainPath", () => {
     refused(`/data/a${char}b.md`, why);
   });
 
-  // Fifth review of #1242: U+FE0F and U+200D were refused outright, so
-  // ordinary emoji file names could not be written or deleted. They are
-  // accepted, and the card marks each one (eleventh review).
+  // U+FE0F and U+200D are accepted: refused outright, they left ordinary emoji
+  // file names neither writable nor deletable. The card marks each one.
   it.each([
     ["an emoji with a presentation selector", "/data/notes/⚠️ offen.md"],
     ["a heart with a presentation selector", "/data/notes/❤️ Team.md"],
@@ -74,9 +73,9 @@ describe("assertPlainPath", () => {
   });
 
   // A presentation selector outside an emoji draws nothing — `⚠︎ text.md` is
-  // drawn exactly like `⚠ text.md` in Helvetica (tenth review of #1242) — and
-  // was refused for that. The card marks every selector now, inside an emoji
-  // too (eleventh review), so `report⟨U+FE0F⟩.md` reads apart from
+  // drawn exactly like `⚠ text.md` in Helvetica — and
+  // was refused for that. The card marks every selector, inside an emoji
+  // too, so `report⟨U+FE0F⟩.md` reads apart from
   // `report.md`, the way a joiner or a no-break space does.
   it.each([
     ["a presentation selector after a letter", "/data/report️.md"],
@@ -87,11 +86,11 @@ describe("assertPlainPath", () => {
     ok(value);
   });
 
-  // Tenth review of #1242: a joiner is accepted anywhere, and the card marks
-  // it as ⟨U+200C⟩ / ⟨U+200D⟩ everywhere (an emoji's too, eleventh) — the way a
-  // no-break space in a path is accepted and marked. Deciding per script
-  // where it draws something failed for ten reviews; the marker keeps two
-  // names that differ only by a joiner apart on the card.
+  // A joiner is accepted anywhere, and the card marks it as ⟨U+200C⟩ /
+  // ⟨U+200D⟩ everywhere (an emoji's too) — the way a no-break space in a path
+  // is accepted and marked. Deciding per script where it draws something does
+  // not hold up; the marker keeps two names that differ only by a joiner apart
+  // on the card.
   it.each([
     ["a zero-width joiner between letters", "/data/a‍b.md"],
     ["a zero-width non-joiner between letters", "/data/a‌b.md"],
@@ -104,8 +103,7 @@ describe("assertPlainPath", () => {
     ok(value);
   });
 
-  // Seventh review of #1242: U+200C was refused everywhere and U+200D outside
-  // an emoji, but Arabic-script and Indic names carry them — the Persian
+  // Arabic-script and Indic names carry U+200C and U+200D — the Persian
   // plural گزارش‌ها, Sinhala ශ්‍රී, Malayalam അവന്‍. They are accepted, and
   // marked on the card like every joiner.
   it.each([
@@ -120,9 +118,9 @@ describe("assertPlainPath", () => {
     ok(value);
   });
 
-  // The seventh to tenth reviews' probe names: each draws nothing in at least
-  // one font. They were refused while the rule tried to tell them apart from
-  // the names above; now they are accepted and marked like those.
+  // Probe names that each draw nothing in at least one font. They were refused
+  // while the rule tried to tell them apart from the names above; now they are
+  // accepted and marked like those.
   it.each([
     ["a ZWNJ after a right-joining letter", "/data/محمد‌رضا.md"],
     ["a ZWNJ with no letter after it", "/data/گزارش‌.md"],
@@ -140,11 +138,11 @@ describe("assertPlainPath", () => {
     ok(value);
   });
 
-  // Sixth review of #1242: ✅ is shown as an emoji by default, so a U+FE0F
+  // ✅ is shown as an emoji by default, so a U+FE0F
   // after it changes nothing on screen — `Vertrag ✅️.pdf` read exactly like
   // `Vertrag ✅.pdf` and is a different file. The card marks the selector
   // (`Vertrag ✅⟨U+FE0F⟩.pdf`), so the two read apart and the path is
-  // accepted (eleventh review).
+  // accepted.
   it.each([
     ["after an emoji-by-default check mark", "/data/out/Vertrag ✅️.pdf"],
     ["after an emoji-by-default page", "/data/out/\u{1F4C4}️.md"],
@@ -160,7 +158,7 @@ describe("assertPlainPath", () => {
     ok("/data/out/Vertrag ✅︎.pdf");
   });
 
-  // Sixth review of #1242: `/data/out/report.md ` read on the card exactly
+  // `/data/out/report.md ` read on the card exactly
   // like `/data/out/report.md`, and is a different file.
   it.each([
     ["a trailing space", "/data/out/report.md "],

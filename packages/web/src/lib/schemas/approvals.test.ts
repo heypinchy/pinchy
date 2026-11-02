@@ -2,10 +2,10 @@ import { describe, it, expect } from "vitest";
 import { gateCheckSchema } from "./approvals";
 
 /**
- * zod's `z.record` rebuilds the object by assignment, and `out["__proto__"] =
- * …` hits the prototype setter: the key silently disappears. The digest and
- * the card would then describe a call without it, while the tool — which got
- * the raw JSON — could still read it (second review of #1242).
+ * zod's `z.record` rebuilds the object by assignment, and `out["__proto__"] = …`
+ * hits the prototype setter: the key silently disappears. The digest and the card
+ * would then describe a call without it, while the tool — which got the raw JSON
+ * — could still read it.
  */
 describe("gateCheckSchema params", () => {
   const body = (params: string) =>
