@@ -94,10 +94,12 @@ const counters = {
 };
 
 describe("convertOfficeFiles with the office-converter sidecar", () => {
-  it("converts through the sidecar and commits the PDF into a store on another volume", async () => {
+  it("converts through the sidecar and commits the PDF into a store outside the spool", async () => {
     await startSidecar();
-    // A different directory tree than the spool: in the container the store
-    // and the spool are separate volumes, so the commit cannot be a rename.
+    // A different directory tree than the spool. Here both are on one
+    // filesystem, so the commit is still a rename; the cross-volume copy that
+    // production needs is covered by office-artifacts.exdev.test.ts and by
+    // docker-smoke's check-office-converter run.
     const store = new OfficeArtifactStore(join(root, "artifacts"));
     const source = plantDocx("Angebot.docx");
 

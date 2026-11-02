@@ -80,6 +80,9 @@ services:
     entrypoint: ["node", "--import", "tsx", "src/server/office-converter.ts"]
     working_dir: /app/packages/web
     network_mode: none
+    # Reaps the grandchildren a timed-out conversion leaves (soffice forks
+    # soffice.bin); node as PID 1 would keep them as zombies.
+    init: true
     user: "999:999"
     read_only: true
     tmpfs:

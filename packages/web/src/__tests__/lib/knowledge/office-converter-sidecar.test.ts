@@ -105,6 +105,20 @@ describe("office-converter sidecar protocol", () => {
     expect(seen).toEqual([run]);
   });
 
+  it("opens a fresh connection per batch instead of reusing a pooled one", async () => {
+    // Batches are minutes apart. A pooled socket the sidecar's keep-alive has
+    // just closed would fail the next batch as "socket hang up".
+    await startServer();
+    let connections = 0;
+    server!.on("connection", () => connections++);
+    const { converter, run } = await stagedBatch(["0.docx"]);
+
+    await converter.runConverter(run);
+    await converter.runConverter(run);
+
+    expect(connections).toBe(2);
+  });
+
   it("carries a SIGKILL across, so an out-of-memory kill stays retryable", async () => {
     await startServer();
     answer = async () => ({ code: null, signal: "SIGKILL", stderr: "", timedOut: false });

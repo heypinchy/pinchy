@@ -128,6 +128,9 @@ export function sidecarConverter(
         const req = request(
           {
             socketPath,
+            // One request per batch, minutes apart: a pooled keep-alive socket
+            // buys nothing and can be closed by the sidecar just as it is reused.
+            agent: false,
             method: "POST",
             path: "/convert",
             headers: { "content-type": "application/json" },

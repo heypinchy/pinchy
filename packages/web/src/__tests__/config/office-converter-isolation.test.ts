@@ -114,6 +114,13 @@ describe("office-converter sidecar isolation (docker-compose.yml)", () => {
     expect(hasKey(converter!, "cap_add")).toBe(false);
   });
 
+  it("runs under an init that reaps what a killed conversion leaves behind", () => {
+    // Node as PID 1 only reaps the children it spawned. A timed-out batch is
+    // killed as a process group, and its grandchildren would otherwise stay as
+    // zombies against pids_limit until spawn starts failing.
+    expect(scalar(converter!, "init")).toBe("true");
+  });
+
   it("runs the same image as the web process it serves, with the sidecar entrypoint", () => {
     expect(scalar(converter!, "image")).toBe(scalar(pinchy, "image"));
     const entrypoint = scalar(converter!, "entrypoint") ?? "";
