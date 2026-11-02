@@ -7,6 +7,7 @@ import {
   getProviderSnapshotById,
   listOpenAiCompatibleProviders,
   ProviderChangedError,
+  ProviderNotFoundError,
   listOpenAiCompatibleProvidersForAdmin,
   listProvidersWithApiKeys,
 } from "@/lib/openai-compatible-providers";
@@ -285,18 +286,20 @@ describe("createOrUpdateProvider — update", () => {
     expect(await readStoredKey("swisscom-ai")).toBe("sk-rotated-key");
   });
 
-  it("throws a clear error when the id does not exist", async () => {
-    await expect(
-      createOrUpdateProvider(
-        {
-          id: "00000000-0000-0000-0000-000000000000",
-          displayName: "Ghost",
-          baseUrl: "https://api.example/v1",
-        },
-        [MODEL],
-        { baseUrl: "https://api.example/v1", encryptedApiKey: "irrelevant" }
-      )
-    ).rejects.toThrow(/not found/i);
+  // Typed, so the route can answer a row deleted mid-save with the same 404 as
+  // an unknown id instead of treating it as a persist failure (500).
+  it("throws a ProviderNotFoundError when the id does not exist", async () => {
+    const update = createOrUpdateProvider(
+      {
+        id: "00000000-0000-0000-0000-000000000000",
+        displayName: "Ghost",
+        baseUrl: "https://api.example/v1",
+      },
+      [MODEL],
+      { baseUrl: "https://api.example/v1", encryptedApiKey: "irrelevant" }
+    );
+    await expect(update).rejects.toThrow(/not found/i);
+    await expect(update).rejects.toBeInstanceOf(ProviderNotFoundError);
   });
 
   it("refuses an update that does not say which stored state it was checked against", async () => {

@@ -19,6 +19,7 @@ import {
   decryptStoredKey,
   getModelsById,
   ProviderChangedError,
+  ProviderNotFoundError,
 } from "@/lib/openai-compatible-providers";
 import { fetchOpenAiCompatibleModels } from "@/lib/openai-compatible-discovery";
 import { DEFAULT_MODEL_CAPS, lookupModelCapabilities } from "@/lib/model-catalog";
@@ -59,6 +60,9 @@ import { recordAuditFailure } from "@/lib/audit-deferred";
 // `GET <baseUrl>/models`) instead of trusting the client's `models` array —
 // see the schema's doc-comment. `manualModelIds` is the only client-supplied
 // model input left, and it's used only when live discovery finds nothing.
+
+/** Shown for an update whose provider does not exist (or no longer does). */
+const PROVIDER_NOT_FOUND = "OpenAI-compatible provider not found.";
 
 /** Shown when a save lost the compare-and-swap against a concurrent save. */
 const PROVIDER_CHANGED_DURING_SAVE =
@@ -111,7 +115,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   const stored = input.id ? await getProviderSnapshotById(input.id) : undefined;
   if (input.id && !stored) {
     // Nothing to change and nothing was sent anywhere, so no audit row.
-    return NextResponse.json({ error: "OpenAI-compatible provider not found." }, { status: 404 });
+    return NextResponse.json({ error: PROVIDER_NOT_FOUND }, { status: 404 });
   }
   const storedProvider = stored ? { id: stored.slug, name: stored.displayName } : undefined;
   const baseUrlChange = stored ? baseUrlDestinationChange(stored.baseUrl, input.baseUrl) : null;
@@ -213,6 +217,26 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         },
       });
       return NextResponse.json({ error: PROVIDER_CHANGED_DURING_SAVE }, { status: 409 });
+    }
+    if (err instanceof ProviderNotFoundError) {
+      // The row existed when it was checked and was deleted while discovery
+      // ran. The answer is the same 404 an unknown id gets up front — but the
+      // check had passed and a key may have gone to the endpoint, so unlike
+      // that early 404 this one leaves a row.
+      await appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        outcome: "failure",
+        error: { message: PROVIDER_NOT_FOUND },
+        detail: {
+          provider: storedProvider!,
+          authType: "openai-compatible",
+          reason: "provider_deleted_during_save",
+          baseUrlHost,
+        },
+      });
+      return NextResponse.json({ error: PROVIDER_NOT_FOUND }, { status: 404 });
     }
     // The persist itself failed (e.g. slug-unique collision, DB error, or a
     // CREATE with no apiKey at all — see createOrUpdateProvider). Record a

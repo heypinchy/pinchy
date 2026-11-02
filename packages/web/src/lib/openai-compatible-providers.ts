@@ -232,6 +232,17 @@ export class ProviderChangedError extends Error {
 }
 
 /**
+ * The row an update was checked against no longer exists — it was deleted
+ * after the check. The update wrote nothing.
+ */
+export class ProviderNotFoundError extends Error {
+  constructor(id: string) {
+    super(`OpenAI-compatible provider not found: ${id}`);
+    this.name = "ProviderNotFoundError";
+  }
+}
+
+/**
  * The stored last-known-good model snapshot for one provider, by id, or
  * `undefined` if the row doesn't exist. Used by the POST route on an UPDATE
  * whose live discovery found nothing (transient endpoint outage) and that
@@ -263,7 +274,8 @@ export async function getModelsById(id: string): Promise<OpenClawModelDefinition
  * An update must pass `checked`, the {@link StoredProviderSnapshot} its caller
  * validated the destination against: the write only lands while the row still
  * holds that base URL and that key ciphertext, and otherwise throws
- * {@link ProviderChangedError} having written nothing.
+ * {@link ProviderChangedError} (or {@link ProviderNotFoundError}, if the row is
+ * gone) having written nothing.
  */
 export async function createOrUpdateProvider(
   input: UpsertOpenAiCompatibleProviderInput,
@@ -353,7 +365,7 @@ async function updateProvider(
       .from(openaiCompatibleProviders)
       .where(eq(openaiCompatibleProviders.id, id));
     if (stillThere) throw new ProviderChangedError(id);
-    throw new Error(`OpenAI-compatible provider not found: ${id}`);
+    throw new ProviderNotFoundError(id);
   }
 
   return toListItem(row);

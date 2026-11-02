@@ -27,8 +27,15 @@ vi.mock("@/lib/openai-compatible-providers", () => {
       this.name = "ProviderChangedError";
     }
   }
+  class ProviderNotFoundError extends Error {
+    constructor(id: string) {
+      super(`OpenAI-compatible provider not found: ${id}`);
+      this.name = "ProviderNotFoundError";
+    }
+  }
   return {
     ProviderChangedError,
+    ProviderNotFoundError,
     createOrUpdateProvider: vi.fn(),
     listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
     listOpenAiCompatibleProvidersForAdmin: vi.fn().mockResolvedValue([]),
@@ -130,6 +137,7 @@ import {
   decryptStoredKey,
   getModelsById,
   ProviderChangedError,
+  ProviderNotFoundError,
 } from "@/lib/openai-compatible-providers";
 import type { StoredProviderSnapshot } from "@/lib/openai-compatible-providers";
 import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
@@ -830,6 +838,41 @@ describe("POST /api/settings/providers/openai-compatible", () => {
           provider: { id: "acme-llm", name: "Acme LLM" },
           authType: "openai-compatible",
           reason: "provider_changed_during_save",
+        },
+      });
+      expect(JSON.stringify(entry)).not.toContain("sk-stored-key");
+      expect(JSON.stringify(entry)).not.toContain("ciphertext-of-the-stored-key");
+    });
+
+    // The row existed when the snapshot was read and was deleted while
+    // discovery ran. That is the same "not found" the up-front check answers
+    // with 404 — not a persist failure worth a 500 and a recordAuditFailure.
+    it("answers 404 and audits a failure when the row was deleted while discovery ran", async () => {
+      vi.mocked(createOrUpdateProvider).mockRejectedValueOnce(new ProviderNotFoundError(updateId));
+
+      const res = await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: "https://acme.example.com/v1",
+        }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "OpenAI-compatible provider not found." });
+      expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+      expect(recordAuditFailure).not.toHaveBeenCalled();
+      expect(appendAuditLog).toHaveBeenCalledTimes(1);
+      const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(entry).toMatchObject({
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          provider: { id: "acme-llm", name: "Acme LLM" },
+          authType: "openai-compatible",
+          reason: "provider_deleted_during_save",
+          baseUrlHost: "acme.example.com",
         },
       });
       expect(JSON.stringify(entry)).not.toContain("sk-stored-key");
