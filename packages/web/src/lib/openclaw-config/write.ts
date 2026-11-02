@@ -18,8 +18,6 @@ import {
   scheduleShrinkResume,
   nextRegenerateSequence,
 } from "./push-state";
-import { readSecretsFile } from "@/lib/openclaw-secrets";
-import { releaseRetainedSecrets, unresolvedSecretRefs } from "./secret-retention";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
 export function writeConfigAtomic(content: string) {
@@ -343,18 +341,14 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
   const { onChangeApplied, resumeStrandedShrink } = options;
   const generation = nextConfigPushGeneration();
   const regenerateSeq = options.regenerateSeq ?? nextRegenerateSequence();
-  // The target reached OpenClaw (applied, written, or already in place) —
-  // `delivered` is what OpenClaw now holds. Only while this is the newest push:
-  // a newer one in flight may carry other content (a targeted writer's copy of
-  // the old file) and settles both questions itself when it lands.
-  //   - A full regenerate that started after a stranded one makes that one's
-  //     queued follow-up moot (cancelShrinkResume checks the start order).
-  //   - A secret retained for the old config (secret-retention.ts) can leave
-  //     secrets.json once nothing OpenClaw holds references it.
-  const targetReached = (delivered: string) => {
+  // The target reached OpenClaw (applied, written, or already in place). A
+  // full regenerate that started after a stranded one makes that one's queued
+  // follow-up moot (cancelShrinkResume checks the start order) — but only while
+  // this is the newest push: a newer one in flight may carry other content (a
+  // targeted writer's copy of the old file) and settles that itself.
+  const targetReached = () => {
     if (generation !== getCurrentConfigPushGeneration()) return;
     if (options.fullRegenerate) cancelShrinkResume(regenerateSeq);
-    releaseRetainedSecrets(delivered);
   };
 
   // Make the in-flight push observable (health endpoint `configPushesPending`,
@@ -423,31 +417,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     };
     // A file-write fallback for a shrink would land the target past OpenClaw's
     // guard (see MAX_SHRINK_STEPS) — refuse it instead.
-    //
-    // Nor is a file written whose SecretRefs secrets.json cannot resolve:
-    // OpenClaw refuses that config on every transport and fails to START on
-    // it ("required secrets are unavailable"), so the write would only arm the
-    // next restart. A config.apply refused for that reason (`active SecretRef
-    // resolution failed`) ends up here after its retries. An unreadable
-    // secrets.json is no evidence either way and does not block the write.
     const writeFallback = (content: string): boolean => {
       if (shrinkKnown()) {
         dropShrink("could not be delivered over config.apply", { transient: true });
-        return false;
-      }
-      let secrets: ReturnType<typeof readSecretsFile> | undefined;
-      try {
-        secrets = readSecretsFile();
-      } catch {
-        secrets = undefined;
-      }
-      const unresolved = secrets ? unresolvedSecretRefs(JSON.parse(content), secrets) : [];
-      if (unresolved.length > 0) {
-        console.error(
-          `[openclaw-config] push gen=${String(generation)}: NOT writing openclaw.json directly — ` +
-            `secrets.json cannot resolve its SecretRef(s) ${unresolved.join(", ")}, so OpenClaw could neither apply nor start on it. ` +
-            `The change is dropped; the next regenerate rebuilds it from current state.`
-        );
         return false;
       }
       writeConfigAtomic(content);
@@ -466,9 +438,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       // disk before regenerateOpenClawConfig() returns to its caller.
       //
       // Not for a provider-deletion shrink: that write bypasses OpenClaw's
-      // guard like any other fallback, and OpenClaw's read path restores `.bak`
-      // over it — a file that still names the deleted provider's key. The
-      // regenerate on first connect delivers it in steps.
+      // guard like any other fallback, and OpenClaw's startup read restores
+      // last-known-good / `.bak` over a file under half of it. The file stays
+      // what regenerate left there — the key-less bridge (keyless-bridge.ts),
+      // which OpenClaw starts on — and the regenerate on first connect
+      // delivers the deletion in steps.
       if (shrinkKnown()) {
         dropShrink("Pinchy has no OpenClaw client yet", { transient: true });
         return;
@@ -477,7 +451,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         `[openclaw-config] push gen=${String(generation)}: no WS client → file write (inotify; reload may lag)`
       );
       writeConfigAtomic(newContent);
-      targetReached(newContent);
+      targetReached();
       onChangeApplied?.();
       return;
     }
@@ -589,7 +563,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             console.log(
               `[openclaw-config] push gen=${String(generation)}: no-op skip (supplemented payload ≡ OC runtime)`
             );
-            targetReached(supplemented);
+            targetReached();
             return;
           }
         }
@@ -635,7 +609,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         console.log(
           `[openclaw-config] push gen=${String(generation)}: applied via WS config.apply (in-process, synchronous runtime refresh)${rateLimitAttempts > 0 ? ` after ${String(rateLimitAttempts)} rate-limit wait(s)` : ""}`
         );
-        targetReached(payload);
+        targetReached();
         onChangeApplied?.();
         return;
       } catch (err) {
@@ -725,7 +699,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           );
           const fallback = lastSupplemented ?? supplementPayloadWithFileFields(newContent);
           if (writeFallback(fallback)) {
-            targetReached(fallback);
+            targetReached();
             onChangeApplied?.();
           }
           return;
@@ -768,7 +742,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           // the change. Same meta-preservation logic as the rate-limit path above.
           const fallback = lastSupplemented ?? supplementPayloadWithFileFields(newContent);
           if (writeFallback(fallback)) {
-            targetReached(fallback);
+            targetReached();
             onChangeApplied?.();
           }
           return;

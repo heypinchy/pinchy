@@ -36,6 +36,12 @@
  * And that Pinchy never wrote openclaw.json itself: Pinchy's CONFIG_PATH points
  * at a separate file that must never come into existence.
  *
+ * The same handlers, plus OpenClaw's startup read and startup SecretRef
+ * activation, judge the file Pinchy leaves on disk while a deletion is pending
+ * (keyless-bridge.ts): with the deleted key already gone from secrets.json,
+ * OpenClaw must still start on it and accept a targeted writer's copy of it —
+ * and so must an install that lost the key before this fix.
+ *
  * The handlers are not part of OpenClaw's public exports, so the test finds the
  * chunk that exports `configHandlers` in the pinned package's `dist/`. An
  * OpenClaw bump that renames or splits it fails here loudly, never silently.
@@ -52,6 +58,18 @@ vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => mockGetClient(),
 }));
 
+// In production Pinchy cannot read secrets.json: start-openclaw.sh's 50 ms
+// fix-config-permissions tick chowns it to root:root 0600, and Pinchy runs as
+// uid 999. Nothing here may depend on reading it, so here it cannot be read.
+vi.mock("@/lib/openclaw-secrets", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/openclaw-secrets")>()),
+  readSecretsFile: () => {
+    throw Object.assign(new Error("EACCES: permission denied, open 'secrets.json'"), {
+      code: "EACCES",
+    });
+  },
+}));
+
 type Json = Record<string, unknown>;
 
 type Respond = (ok: boolean, payload?: unknown, error?: { message?: string }) => void;
@@ -62,24 +80,78 @@ type ConfigHandler = (opts: {
   context: undefined;
 }) => unknown;
 
+/** The pinned package's dist/ (`openclaw/plugin-sdk/config-runtime` is public and lives in dist/plugin-sdk/). */
+function openClawDist(): string {
+  const require = createRequire(import.meta.url);
+  return dirname(dirname(require.resolve("openclaw/plugin-sdk/config-runtime")));
+}
+
+/** The one dist/ chunk that exports `name` under that name. Fails loudly if a bump moves it. */
+async function importChunkExporting<T>(name: string): Promise<T> {
+  const dist = openClawDist();
+  const exports = new RegExp(`export \\{[^}]*\\b${name}\\b[^}]*\\}`);
+  const exporting = readdirSync(dist).filter(
+    (f) => f.endsWith(".js") && exports.test(readFileSync(join(dist, f), "utf-8"))
+  );
+  expect(exporting, `exactly one chunk in ${dist} must export ${name}`).toHaveLength(1);
+  return (await import(pathToFileURL(join(dist, exporting[0])).href)) as T;
+}
+
 /** OpenClaw's gateway `configHandlers`, from the pinned package's dist/. */
 async function loadConfigHandlers(): Promise<Record<string, ConfigHandler>> {
-  const require = createRequire(import.meta.url);
-  // `openclaw/plugin-sdk/config-runtime` is public and lives in dist/plugin-sdk/.
-  const dist = dirname(dirname(require.resolve("openclaw/plugin-sdk/config-runtime")));
-  const exporting = readdirSync(dist).filter(
-    (f) =>
-      f.endsWith(".js") &&
-      /export \{[^}]*\bconfigHandlers\b[^}]*\}/.test(readFileSync(join(dist, f), "utf-8"))
+  const mod = await importChunkExporting<{ configHandlers: Record<string, ConfigHandler> }>(
+    "configHandlers"
   );
-  expect(exporting, `exactly one chunk in ${dist} must export configHandlers`).toHaveLength(1);
-  const mod = (await import(pathToFileURL(join(dist, exporting[0])).href)) as {
-    configHandlers: Record<string, ConfigHandler>;
-  };
   expect(Object.keys(mod.configHandlers)).toEqual(
     expect.arrayContaining(["config.get", "config.apply"])
   );
   return mod.configHandlers;
+}
+
+interface OcSnapshot {
+  valid: boolean;
+  config: Json;
+}
+
+/** dist/config/config.js — the module OpenClaw's own gateway start imports its config reads from. */
+async function loadOcConfigModule() {
+  return (await import(pathToFileURL(join(openClawDist(), "config", "config.js")).href)) as {
+    readConfigFileSnapshot: () => Promise<OcSnapshot>;
+    readConfigFileSnapshotWithPluginMetadata: (options: Json) => Promise<{ snapshot: OcSnapshot }>;
+    promoteConfigSnapshotToLastKnownGood: (snapshot: OcSnapshot) => Promise<unknown>;
+  };
+}
+
+/** What the gateway's config reloader does with every config it accepts. */
+async function promoteToLastKnownGood(): Promise<void> {
+  const oc = await loadOcConfigModule();
+  await oc.promoteConfigSnapshotToLastKnownGood(await oc.readConfigFileSnapshot());
+}
+
+/**
+ * What OpenClaw does with openclaw.json when it (re)starts, minus the network:
+ * the startup read (`readGatewayStartupConfig`: recoverSuspicious, which
+ * restores last-known-good / `.bak` over a file under half of it) and the
+ * startup SecretRef activation (`createRuntimeSecretsActivator`, reason
+ * "startup"), which throws "Startup failed: required secrets are unavailable"
+ * on a SecretRef the secrets file cannot resolve. Resolves with the config it
+ * would run.
+ */
+async function startOpenClaw(): Promise<Json> {
+  const oc = await loadOcConfigModule();
+  const { snapshot } = await oc.readConfigFileSnapshotWithPluginMetadata({
+    isolateEnv: true,
+    recoverSuspicious: true,
+  });
+  expect(snapshot.valid, "OpenClaw's startup read must find a valid config").toBe(true);
+  type Activate = (config: Json, params: { reason: string; activate: boolean }) => Promise<unknown>;
+  const { createRuntimeSecretsActivator } = await importChunkExporting<{
+    createRuntimeSecretsActivator: (params: Json) => Activate;
+  }>("createRuntimeSecretsActivator");
+  const silent = { info: () => {}, warn: () => {}, error: () => {} };
+  const activate = createRuntimeSecretsActivator({ logSecrets: silent, emitStateEvent: () => {} });
+  await activate(snapshot.config, { reason: "startup", activate: false });
+  return snapshot.config;
 }
 
 /** One gateway request: resolves with the response, or rejects the way the client does. */
@@ -243,20 +315,22 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     expect(existsSync(pinchyConfigPath), "Pinchy must not write openclaw.json itself").toBe(false);
   }, 60_000);
 
-  // secrets.json is written BEFORE the push, and the hand-over above takes
-  // minutes in production. For that whole window OpenClaw's openclaw.json still
-  // names the deleted provider's key. A targeted writer (updateTelegramChannel-
-  // Config) reads that file, changes one block and applies it — and the real
-  // handler resolves every SecretRef in it. So the key stays in secrets.json
-  // while the file references it, and leaves once OpenClaw no longer does.
-  it("keeps the old file applicable during the hand-over, and releases the deleted key once it has landed", async () => {
+  // regenerateOpenClawConfig writes secrets.json from the database, so the
+  // deleted provider's key is gone from it before the push even starts — and
+  // the hand-over above takes minutes in production, or is dropped and resumed.
+  // For that window OpenClaw's openclaw.json is read by OpenClaw itself on a
+  // restart, and copied by every targeted writer (updateTelegramChannelConfig
+  // reads it, changes one block and applies it). Pinchy therefore first writes
+  // the on-disk file with the deleted provider as a key-less stub that keeps
+  // its models (keyless-bridge.ts). Pinchy reads secrets.json for none of this
+  // — in production it cannot (root:root 0600; see the mock at the top).
+  it("leaves OpenClaw a file it can restart on and apply while a deletion is handed over", async () => {
     process.env.OPENCLAW_CONFIG_PATH = pinchyConfigPath;
     process.env.OPENCLAW_SECRETS_PATH = secretsPath;
     const { pushConfigInBackground } = await import("@/lib/openclaw-config/write");
     const { getPendingConfigPushCount } = await import("@/lib/openclaw-config/push-state");
-    const { retainSecretsStillReferenced, setRetainedSecrets, _resetRetainedSecrets } =
-      await import("@/lib/openclaw-config/secret-retention");
-    const { readSecretsFile, writeSecretsFile } = await import("@/lib/openclaw-secrets");
+    const { keylessBridge } = await import("@/lib/openclaw-config/keyless-bridge");
+    const { writeSecretsFile } = await import("@/lib/openclaw-secrets");
     process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
     const { writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
     type OcConfig = Parameters<typeof writeConfigFile>[0];
@@ -264,15 +338,16 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     const get = () => request(handlers["config.get"], {});
     const apply = (raw: string, baseHash?: string, options: Json = {}) =>
       request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}), ...options });
-    _resetRetainedSecrets();
     try {
       writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
       await writeConfigFile(config({ "acme-llm": acme() }) as OcConfig);
+      await promoteToLastKnownGood();
       vi.spyOn(console, "log").mockImplementation(() => {});
       vi.spyOn(console, "warn").mockImplementation(() => {});
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const target = config();
+      // What regenerate builds after the deletion: the key is not in it.
       const authoritative = { providers: { anthropic: { apiKey: "sk-ant-test" } } };
       // A targeted write: the on-disk file with one block changed.
       const targeted = () => {
@@ -293,28 +368,34 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
         );
       };
 
-      // The bug: with the key already gone, the real handler refuses the
-      // targeted write — and a restart would refuse the file on disk.
+      // The bug: secrets.json without the key next to a file that still names
+      // it. OpenClaw cannot start on that file, and refuses a copy of it.
       writeSecretsFile(authoritative);
+      await expect(startOpenClaw()).rejects.toThrow(/required secrets are unavailable/);
       await expect(apply(targeted(), (await get()).hash as string)).rejects.toThrow(/SecretRef/);
 
-      // The fix: what regenerateOpenClawConfig writes instead.
+      // The fix, in regenerate's order: the bridge, then secrets.json.
       writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
-      const { bundle, retained } = retainSecretsStillReferenced({
-        next: authoritative,
-        previous: readSecretsFile(),
-        onDiskConfig: JSON.parse(readFileSync(ocConfigPath, "utf-8")),
-        nextConfig: target,
-      });
-      writeSecretsFile(bundle);
-      setRetainedSecrets(retained);
+      const bridge = keylessBridge(JSON.parse(readFileSync(ocConfigPath, "utf-8")), authoritative);
+      expect(bridge, "the file names a key the bundle lacks").not.toBeNull();
+      const bridgeContent = JSON.stringify(bridge, null, 2).trimEnd() + "\n";
+      writeFileSync(ocConfigPath, bridgeContent, { mode: 0o666 });
+      writeSecretsFile(authoritative);
+
+      // A restart in the window starts — and keeps the bridge: it is not a
+      // suspicious read (over half of last-known-good), so nothing is restored.
+      const started = (await startOpenClaw()) as { models: { providers: Record<string, Json> } };
+      expect(readFileSync(ocConfigPath, "utf-8")).toBe(bridgeContent);
+      expect(started.models.providers["acme-llm"]).not.toHaveProperty("apiKey");
+      expect(started.models.providers["acme-llm"].models).toHaveLength(40);
+      // A targeted writer's copy of the file is accepted.
       await apply(targeted(), (await get()).hash as string);
       expect(
         (JSON.parse(readFileSync(ocConfigPath, "utf-8")) as { agents: { list: Json[] } }).agents
           .list
       ).toHaveLength(2);
 
-      // The deletion then lands in steps…
+      // The deletion then lands in steps from there…
       mockGetClient.mockReturnValue({ config: { get, apply } });
       pushConfigInBackground(JSON.stringify(target, null, 2), { fullRegenerate: true });
       for (let i = 0; i < 2000 && getPendingConfigPushCount() > 0; i++) {
@@ -326,11 +407,42 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
         models: { providers: Json };
       };
       expect(final.models.providers).not.toHaveProperty("acme-llm");
-      // …and the key leaves secrets.json with it; nothing else does.
+      await startOpenClaw();
+      // …and the key was never anywhere again after the regenerate.
       expect(JSON.parse(readFileSync(secretsPath, "utf-8"))).toEqual(authoritative);
+      expect(existsSync(pinchyConfigPath), "the push wrote no file itself").toBe(false);
     } finally {
-      _resetRetainedSecrets();
       delete process.env.OPENCLAW_SECRETS_PATH;
     }
+  }, 60_000);
+
+  // Before this fix, regenerate dropped the key from secrets.json while the
+  // file still named it, and nothing repaired that. Such an install restarts
+  // into a crash loop ("required secrets are unavailable"), and since OpenClaw
+  // only starts after Pinchy is healthy, Pinchy's boot regenerate runs with no
+  // client. It writes the bridge (openclaw-config.test.ts: the build.ts wiring);
+  // here, that OpenClaw then starts on it. The same holds after a full-stack
+  // restart while a deletion was pending: the secrets volume is tmpfs, and
+  // Pinchy rebuilds secrets.json from the database, without the key.
+  it("starts an install whose file names a key secrets.json already lost, once Pinchy wrote the bridge", async () => {
+    process.env.OPENCLAW_CONFIG_PATH = pinchyConfigPath;
+    const { keylessBridge } = await import("@/lib/openclaw-config/keyless-bridge");
+    process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
+    const { writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
+    type OcConfig = Parameters<typeof writeConfigFile>[0];
+    writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
+    await writeConfigFile(config({ "acme-llm": acme() }) as OcConfig);
+    await promoteToLastKnownGood();
+    // The state the old regenerate left behind.
+    const bundle = { providers: { anthropic: { apiKey: "sk-ant-test" } } };
+    writeSecrets(bundle.providers);
+    await expect(startOpenClaw()).rejects.toThrow(/required secrets are unavailable/);
+
+    const bridge = keylessBridge(JSON.parse(readFileSync(ocConfigPath, "utf-8")), bundle);
+    writeFileSync(ocConfigPath, JSON.stringify(bridge, null, 2).trimEnd() + "\n", { mode: 0o666 });
+
+    const started = (await startOpenClaw()) as { models: { providers: Record<string, Json> } };
+    expect(Object.keys(started.models.providers).sort()).toEqual(["acme-llm", "anthropic"]);
+    expect(started.models.providers["acme-llm"]).not.toHaveProperty("apiKey");
   }, 60_000);
 });

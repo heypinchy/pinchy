@@ -8661,6 +8661,50 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     );
   }
 
+  /**
+   * Every openclaw.json Pinchy itself wrote, each checked to be the key-less
+   * bridge (keyless-bridge.ts): the on-disk file with the deleted provider as
+   * a stub that keeps its models and names no key. Never the shrink itself —
+   * that only ever reaches OpenClaw through config.apply.
+   */
+  function keylessBridgesWritten(existing: string): string[] {
+    const deleted = JSON.parse(existing).models.providers["acme-llm"];
+    const writes = mockedWriteFileSync.mock.calls
+      .filter(isOpenClawConfigWrite)
+      .map((c) => String(c[1]));
+    for (const written of writes) {
+      expect(Buffer.byteLength(written), "Pinchy never file-writes the shrink").toBeGreaterThan(
+        Buffer.byteLength(existing) * 0.5
+      );
+      const stub = JSON.parse(written).models.providers["acme-llm"];
+      expect(stub, "the deleted provider stays, as a key-less stub").not.toHaveProperty("apiKey");
+      expect(stub.models).toEqual(deleted.models);
+    }
+    return writes;
+  }
+
+  /** The provider apiKey SecretRef ids in `file` that `secrets` cannot resolve to a string. */
+  function unresolvable(file: string, secrets: Record<string, unknown>): string[] {
+    const providers = (JSON.parse(file).models?.providers ?? {}) as Record<
+      string,
+      { apiKey?: { id?: string } }
+    >;
+    return Object.values(providers)
+      .map((p) => p.apiKey?.id)
+      .filter((id): id is string => typeof id === "string")
+      .filter((id) => {
+        const value = id
+          .split("/")
+          .slice(1)
+          .reduce<unknown>(
+            (node, seg) =>
+              node && typeof node === "object" ? (node as Record<string, unknown>)[seg] : undefined,
+            secrets
+          );
+        return typeof value !== "string";
+      });
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockedGetOrCreateGatewayToken.mockResolvedValue("test-gateway-token");
@@ -8756,7 +8800,7 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       expect(config.models.providers).not.toHaveProperty("acme-llm");
       expect(config.models.providers).toHaveProperty("anthropic");
       expect(rejectedDumps()).toHaveLength(0);
-      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      expect(keylessBridgesWritten(existing)).toHaveLength(1);
     } finally {
       vi.restoreAllMocks();
     }
@@ -8775,11 +8819,16 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       mockedWriteFileSync.mockClear();
+      mockWriteSecretsFile.mockClear();
       await regenerateOpenClawConfig();
 
       expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
       expect(rejectedDumps()).toHaveLength(1);
       expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/suspiciously small/);
+      // secrets.json comes from the same empty read. Written, it would leave the
+      // file OpenClaw keeps naming keys secrets.json no longer has — OpenClaw
+      // could neither restart nor accept a copy of its own file.
+      expect(mockWriteSecretsFile).not.toHaveBeenCalled();
     } finally {
       errorSpy.mockRestore();
     }
@@ -8897,9 +8946,6 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     // file past OpenClaw's guard. One follow-up regenerate, which queues none.
     const existing = await installWithLargeCustomProvider();
     mockedReadFileSync.mockReturnValue(existing);
-    // secrets.json resolves the target, so the shrink rule alone must keep the
-    // fallback from writing it (not the unresolved-SecretRef guard).
-    mockReadSecretsFile.mockReturnValue({ providers: { anthropic: { apiKey: "sk-ant-test" } } });
     const apply = vi.fn(async () => {
       throw new Error("rate limit exceeded for config.apply; retry after 1s");
     });
@@ -8927,7 +8973,7 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       for (let i = 0; i < 400; i++) await vi.advanceTimersByTimeAsync(5_000);
 
       expect(apply, "precondition: the push did try").toHaveBeenCalled();
-      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      expect(keylessBridgesWritten(existing).length).toBeGreaterThan(0);
       const generations = new Set(
         logs.flatMap((line) => [...line.matchAll(/push gen=(\d+)/g)].map((m) => m[1]))
       );
@@ -8939,50 +8985,45 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     }
   }, 60_000);
 
-  it("keeps every SecretRef in openclaw.json resolvable while a deletion is handed over, and drops the key once OpenClaw no longer needs it", async () => {
-    // regenerate writes secrets.json BEFORE it pushes, and the push of a large
-    // deletion is a stepped hand-over that can be superseded. For that whole
-    // window OpenClaw's openclaw.json still names the deleted provider's key.
-    // Taking the key out of secrets.json first made OpenClaw refuse every
-    // config still naming it — here a targeted Telegram write of the on-disk
-    // file, which after its retries then fell back to writing that file
-    // directly — and an OpenClaw restart in the window fail at startup.
+  it("keeps every SecretRef in openclaw.json resolvable while a deletion is handed over, without reading secrets.json", async () => {
+    // regenerate writes secrets.json from the database, so the deleted key is
+    // gone from it before the push even starts — and the push of a large
+    // deletion is a stepped hand-over that a targeted writer can supersede.
+    // Every reader of openclaw.json in that window needs its SecretRefs to
+    // resolve: OpenClaw restarting, and a targeted Telegram write of the file
+    // (refused otherwise, after which its fallback used to write that file).
+    // Pinchy cannot read secrets.json in production (root:root 0600), so here
+    // it cannot either.
     const existing = await installWithLargeCustomProvider();
     let ocFile = existing;
     mockedReadFileSync.mockImplementation(() => ocFile);
+    mockReadSecretsFile.mockImplementation(() => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
     let secretsOnDisk: Record<string, unknown> = {
       providers: { anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "acme-key" } },
     };
-    const unresolvable = (file: string, secrets: Record<string, unknown>) => {
-      const providers = (JSON.parse(file).models?.providers ?? {}) as Record<
-        string,
-        { apiKey?: { id?: string } }
-      >;
-      return Object.values(providers)
-        .map((p) => p.apiKey?.id)
-        .filter((id): id is string => typeof id === "string")
-        .filter((id) => {
-          const value = id
-            .split("/")
-            .slice(1)
-            .reduce<unknown>(
-              (node, seg) =>
-                node && typeof node === "object"
-                  ? (node as Record<string, unknown>)[seg]
-                  : undefined,
-              secrets
-            );
-          return typeof value !== "string";
-        });
-    };
-    // The invariant: no state in which openclaw.json names a key secrets.json lacks.
+    // The invariant, after every write of either file: openclaw.json never
+    // names a key secrets.json lacks — a file OpenClaw can neither start on
+    // nor accept a copy of.
     const violations: string[] = [];
+    const check = (after: string) =>
+      violations.push(...unresolvable(ocFile, secretsOnDisk).map((id) => `${after} left ${id}`));
+    const order: string[] = [];
     mockWriteSecretsFile.mockImplementation((bundle: Record<string, unknown>) => {
       secretsOnDisk = bundle;
-      violations.push(...unresolvable(ocFile, bundle).map((id) => `secrets write left ${id}`));
+      order.push("secrets.json");
+      check("secrets write");
       return false;
     });
-    mockReadSecretsFile.mockImplementation(() => secretsOnDisk);
+    // Pinchy's own write (writeConfigAtomic: tmp, then rename) lands in OpenClaw's file.
+    mockedWriteFileSync.mockImplementation((path: unknown, content: unknown) => {
+      if (typeof path === "string" && path.endsWith("openclaw.json.tmp")) {
+        ocFile = String(content);
+        order.push("openclaw.json");
+        check("Pinchy's config write");
+      }
+    });
     let accepted = 0;
     const acceptedFiles: string[] = [];
     const apply = vi.fn(async (raw: string) => {
@@ -9000,6 +9041,7 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       ocFile = raw;
       acceptedFiles.push(raw);
       accepted++;
+      check("config.apply");
     });
     mockGetClient.mockReturnValue({
       config: {
@@ -9020,14 +9062,12 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     try {
       mockedWriteFileSync.mockClear();
       await regenerateOpenClawConfig();
-      // The bundle written before the push still carries the deleted key:
-      // OpenClaw's file still references it.
-      expect(
-        (secretsOnDisk.providers as Record<string, unknown>)["acme-llm"],
-        "secrets.json must keep the key while openclaw.json references it"
-      ).toEqual({ apiKey: "acme-key" });
+      // The file stops naming the key first; then the key leaves secrets.json —
+      // at once, and for good: nothing keeps it.
+      expect(order).toEqual(["openclaw.json", "secrets.json"]);
+      expect(secretsOnDisk.providers).toEqual({ anthropic: { apiKey: "sk-ant-test" } });
 
-      // A targeted writer reads the (still old) file and changes one block.
+      // A targeted writer reads the file and changes one block.
       expect(updateTelegramChannelConfig("bot-1", { botToken: "tg-token" })).toBe("applied");
       for (let i = 0; i < 400; i++) await vi.advanceTimersByTimeAsync(5_000);
 
@@ -9040,21 +9080,69 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       ).toBe(true);
       const final = JSON.parse(ocFile);
       expect(final.models.providers, "the deletion completed").not.toHaveProperty("acme-llm");
-      expect(
-        findOpenClawConfigWrite(mockedWriteFileSync),
-        "Pinchy never writes openclaw.json itself"
-      ).toBeUndefined();
-      // Released once OpenClaw holds a config without it.
-      expect(secretsOnDisk.providers).toEqual({ anthropic: { apiKey: "sk-ant-test" } });
+      expect(keylessBridgesWritten(existing)).toHaveLength(1);
       expect(errorSpy.mock.calls.flat().join(" ")).not.toMatch(/SecretRef/);
     } finally {
       vi.useRealTimers();
       vi.restoreAllMocks();
+      mockedWriteFileSync.mockReset();
       mockWriteSecretsFile.mockReset();
       mockReadSecretsFile.mockReset();
       mockReadSecretsFile.mockReturnValue({});
     }
   }, 60_000);
+
+  it("repairs, at boot with no OpenClaw client, a file that names a key secrets.json no longer has", async () => {
+    // Before this fix, regenerate dropped a deleted provider's key from
+    // secrets.json while openclaw.json still named it, and OpenClaw then failed
+    // every start with "required secrets are unavailable". A full-stack restart
+    // while a deletion is pending ends the same way: the secrets volume is
+    // tmpfs, and Pinchy rebuilds it from the database, without the key.
+    // OpenClaw only starts once Pinchy is healthy, so Pinchy's boot regenerate
+    // runs with no client — and must leave OpenClaw a file it can start on
+    // (that OpenClaw does start on this shape is proven against its real
+    // startup code in integration/openclaw-config-size-drop-against-oc.test.ts).
+    const existing = await installWithLargeCustomProvider();
+    mockedReadFileSync.mockReturnValue(existing);
+    mockReadSecretsFile.mockImplementation(() => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
+    mockGetClient.mockReturnValue(undefined);
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const order: string[] = [];
+    let secrets: Record<string, unknown> = {};
+    mockWriteSecretsFile.mockImplementation((bundle: Record<string, unknown>) => {
+      secrets = bundle;
+      order.push("secrets.json");
+      return false;
+    });
+    mockedWriteFileSync.mockImplementation((path: unknown) => {
+      if (typeof path === "string" && path.endsWith("openclaw.json.tmp")) {
+        order.push("openclaw.json");
+      }
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+
+      // Precondition: the file named a key the new bundle lacks.
+      expect(unresolvable(existing, secrets)).toEqual(["/providers/acme-llm/apiKey"]);
+      // One write — the bridge, never the shrink — and before secrets.json.
+      const [bridge] = keylessBridgesWritten(existing);
+      expect(order).toEqual(["openclaw.json", "secrets.json"]);
+      expect(unresolvable(bridge, secrets)).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+      mockedWriteFileSync.mockReset();
+      mockWriteSecretsFile.mockReset();
+      mockReadSecretsFile.mockReset();
+      mockReadSecretsFile.mockReturnValue({});
+    }
+  });
 
   it("knows a deletion of a provider with non-ASCII model names is a size drop (OpenClaw counts bytes)", async () => {
     // OpenClaw's rule is floor(OLD * 0.5) in UTF-8 bytes. A provider whose
@@ -9081,9 +9169,6 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     mockListProvidersWithApiKeys.mockResolvedValue([{ slug: "acme-llm", apiKey: "acme-key" }]);
     const existing = await regenerateAndCapture();
     mockedReadFileSync.mockReturnValue(existing);
-    // secrets.json resolves the target, so the shrink rule alone must keep the
-    // fallback from writing it (not the unresolved-SecretRef guard).
-    mockReadSecretsFile.mockReturnValue({ providers: { anthropic: { apiKey: "sk-ant-test" } } });
     const apply = vi.fn(async (raw: string): Promise<void> => {
       throw new Error(
         `rate limit exceeded for config.apply; retry after 1s (${String(raw.length)})`
@@ -9119,54 +9204,10 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       // Precondition: inside the band.
       expect(sent.length).toBeGreaterThanOrEqual(existing.length * 0.5);
       expect(Buffer.byteLength(sent)).toBeLessThan(Math.floor(Buffer.byteLength(existing) * 0.5));
-      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      expect(keylessBridgesWritten(existing).length).toBeGreaterThan(0);
     } finally {
       vi.useRealTimers();
       vi.restoreAllMocks();
-    }
-  }, 60_000);
-
-  it("never falls back to writing an openclaw.json whose SecretRefs secrets.json cannot resolve", async () => {
-    // OpenClaw refuses such a config on every transport, and it fails to START
-    // on one ("required secrets are unavailable"). A file write after the
-    // apply retries ran out would leave exactly that on disk for the next
-    // restart to trip over.
-    const existing = await installWithLargeCustomProvider();
-    mockReadSecretsFile.mockReturnValue({ providers: { anthropic: { apiKey: "sk-ant-test" } } });
-    const apply = vi.fn(async () => {
-      throw new Error(
-        'invalid config: active SecretRef resolution failed (JSON pointer segment "acme-llm" does not exist.)'
-      );
-    });
-    mockGetClient.mockReturnValue({
-      config: {
-        get: vi.fn(async () => ({ hash: "h", config: JSON.parse(existing) })),
-        apply,
-      },
-    });
-    vi.spyOn(console, "log").mockImplementation(() => {});
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const onChangeApplied = vi.fn();
-    vi.useFakeTimers();
-    try {
-      mockedWriteFileSync.mockClear();
-      const changed = JSON.parse(existing);
-      changed.channels = { telegram: { enabled: true } };
-      pushConfigInBackground(JSON.stringify(changed, null, 2) + "\n", { onChangeApplied });
-      for (let i = 0; i < 50 && getPendingConfigPushCount() > 0; i++) {
-        await vi.advanceTimersByTimeAsync(5_000);
-      }
-
-      expect(apply, "precondition: the push did retry").toHaveBeenCalled();
-      expect(getPendingConfigPushCount()).toBe(0);
-      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
-      expect(onChangeApplied).not.toHaveBeenCalled();
-      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/\/providers\/acme-llm\/apiKey/);
-    } finally {
-      vi.useRealTimers();
-      vi.restoreAllMocks();
-      mockReadSecretsFile.mockReturnValue({});
     }
   }, 60_000);
 

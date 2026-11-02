@@ -1,12 +1,7 @@
 import { readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { isDeepStrictEqual } from "util";
-import {
-  writeSecretsFile,
-  readSecretsFile,
-  secretRef,
-  type SecretsBundle,
-} from "@/lib/openclaw-secrets";
+import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -45,10 +40,10 @@ import { getSkillBody, isKnownSkill } from "@/lib/skills";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
-import { readExistingConfig, pushConfigInBackground } from "./write";
+import { readExistingConfig, pushConfigInBackground, writeConfigAtomic } from "./write";
 import { sizeGuardBaseline, expectsSizeDropRefusal } from "./size-drop";
 import { nextRegenerateSequence } from "./push-state";
-import { retainSecretsStillReferenced, setRetainedSecrets } from "./secret-retention";
+import { keylessBridge, unresolvedSecretRefs } from "./keyless-bridge";
 import { reloadSecretsInBackground } from "./secrets-reload";
 import {
   buildSecretsBundle,
@@ -1735,55 +1730,6 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
     );
   }
 
-  // A secrets-only change is invisible to EVERY guard below: `openclaw.json`
-  // carries a SecretRef, not the value, so a rotated provider key leaves the
-  // emitted config byte-identical, the equivalence check returns right here, and
-  // the running OpenClaw keeps serving the credential it resolved at process
-  // start — 401 on every agent until someone restarts the container (#943).
-  // `secrets.reload` is the RPC that closes that gap, and it is fired BEFORE the
-  // early returns for exactly that reason. It costs no `config.apply` rate-limit
-  // slot, so the no-op guard keeps doing the job it exists for.
-  //
-  // The flag is "a value was added or rotated", NOT "the file changed": a pure
-  // removal must stay silent here, because OpenClaw would re-resolve the config
-  // it is still running. See writeSecretsFile.
-  //
-  // A removal does not take effect here at all while OpenClaw still needs it.
-  // This file is written BEFORE the push, and the push of a provider deletion
-  // can take minutes (a stepped hand-over at OpenClaw's rate limit) or be
-  // dropped and resumed. Until it lands, OpenClaw's openclaw.json still names
-  // the deleted provider's key: dropping the key now would make OpenClaw refuse
-  // every config that still names it (a targeted writer's copy of the file)
-  // and fail to start if it restarts in that window. So a secret this config
-  // stops referencing is kept while the on-disk file still references it, and
-  // released once a config without the reference has reached OpenClaw (the
-  // push calls releaseRetainedSecrets) — or by the next regenerate that no
-  // longer finds it on disk. See secret-retention.ts.
-  let previousSecrets: SecretsBundle = {};
-  try {
-    previousSecrets = readSecretsFile();
-  } catch {
-    // Unreadable or corrupt: nothing to retain from.
-  }
-  // The file as it is NOW, not as this regenerate read it at the start: a push
-  // may have landed in between. Falls back to that first read.
-  let onDiskConfig: Record<string, unknown> = existing;
-  try {
-    onDiskConfig = readExistingConfig();
-  } catch {
-    // Persistent EACCES (OpenClaw's restart chmod race) — use the first read.
-  }
-  const { bundle: secretsToWrite, retained } = retainSecretsStillReferenced({
-    next: secretsBundle,
-    previous: previousSecrets,
-    onDiskConfig,
-    nextConfig: config,
-  });
-  if (writeSecretsFile(secretsToWrite)) {
-    reloadSecretsInBackground();
-  }
-  setRetainedSecrets(retained);
-
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts.
   // Format must match what OpenClaw's writeConfigFile produces (trimEnd + "\n")
   // so the SHA256 hashes line up. OpenClaw's reload subsystem dedupes
@@ -1793,24 +1739,31 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
   // hashes diverge and chokidar fires a redundant reload that diffs against
   // a stale `currentCompareConfig` — see #193 / openclaw#75534.
   const newContent = JSON.stringify(config, null, 2).trimEnd() + "\n";
+  // The file as it is NOW, not as this regenerate read it at the start: a push
+  // may have landed in between.
+  let onDiskContent: string | undefined;
+  try {
+    onDiskContent = readFileSync(CONFIG_PATH, "utf-8");
+  } catch {
+    // File doesn't exist yet — write it
+  }
+  // Workaround for openclaw#75534: OpenClaw stamps `meta.lastTouchedAt` on
+  // every write it performs (config.apply RPC, internal restart bookkeeping).
+  // Pinchy preserves `meta` from existing, so back-to-back regenerates with no
+  // DB changes still differ on this single field. Without this normalize-
+  // compare, sending the byte-different config via config.apply triggers
+  // OpenClaw's diff-against-runtime-resolved-snapshot to flag env.* paths as
+  // changed (env templates "${VAR}" vs resolved "sk-..."), which falls through
+  // `BASE_RELOAD_RULES` to the default full-restart trigger. Result: every
+  // settings save costs 15-30 s of "Agent runtime is not available" downtime
+  // (#193). Removable when we bump OpenClaw past the upstream fix; tracked in #215.
+  const unchanged =
+    onDiskContent !== undefined &&
+    (onDiskContent === newContent ||
+      configsAreEquivalentUpToOpenClawMetadata(onDiskContent, newContent));
   // Set below when the guard lets a deletion through that OpenClaw will refuse.
   let expectsProviderShrink = false;
-  try {
-    const existing = readFileSync(CONFIG_PATH, "utf-8");
-    if (existing === newContent) return;
-    // Workaround for openclaw#75534: OpenClaw stamps `meta.lastTouchedAt`
-    // on every write it performs (config.apply RPC, internal restart
-    // bookkeeping). Pinchy preserves `meta` from existing, so back-to-back
-    // regenerates with no DB changes still differ on this single field.
-    // Without this normalize-compare, sending the byte-different config
-    // via config.apply triggers OpenClaw's diff-against-runtime-resolved-
-    // snapshot to flag env.* paths as changed (env templates "${VAR}" vs
-    // resolved "sk-..."), which falls through `BASE_RELOAD_RULES` to the
-    // default full-restart trigger. Result: every settings save costs
-    // 15-30 s of "Agent runtime is not available" downtime (#193).
-    // Removable when we bump OpenClaw past the upstream fix; tracked in #215.
-    if (configsAreEquivalentUpToOpenClawMetadata(existing, newContent)) return;
-
+  if (onDiskContent !== undefined && !unchanged) {
     // Defense-in-depth size-drop guard (#311). A regenerate that runs through a
     // window where DB-derived state isn't fully loaded (telegram_bot_token race
     // in CI flake) produces a payload missing `channels.telegram` + `bindings`,
@@ -1819,6 +1772,12 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
     // payload off disk and out of the push; the next regenerate writes correct
     // content. The bad payload is saved alongside the config for postmortem —
     // silent skip would hide the underlying race forever (#314).
+    //
+    // secrets.json is not written either: it comes from the same read. Written
+    // without keys the on-disk file still names (an empty provider read), it
+    // would leave OpenClaw a file it can neither restart on nor accept a copy
+    // of — and the key-less bridge below must never be built from a payload
+    // this guard refused.
     //
     // Measured against the existing file MINUS the bytes of every provider the
     // payload deleted, as long as a provider survives (see size-drop.ts).
@@ -1831,8 +1790,8 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
     // `[]` (Ollama unreachable — this voids the deletion discount too), and any
     // shrink outside `models.providers`. Delivering a deletion past OpenClaw's
     // own check is pushConfigInBackground's job (stepwise config.apply).
-    const sizeBaseline = sizeGuardBaseline(existing, config);
-    if (existing.length > 0 && newContent.length < sizeBaseline * 0.5) {
+    const sizeBaseline = sizeGuardBaseline(onDiskContent, config);
+    if (onDiskContent.length > 0 && newContent.length < sizeBaseline * 0.5) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       const rejectedPath = `${CONFIG_PATH}.regenerate-rejected.${ts}`;
       try {
@@ -1843,8 +1802,8 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
       }
       console.error(
         `[openclaw-config] regenerate produced a suspiciously small config ` +
-          `(${newContent.length} bytes, was ${existing.length}` +
-          `${sizeBaseline !== existing.length ? `; ${sizeBaseline} after discounting deleted providers` : ""}). ` +
+          `(${newContent.length} bytes, was ${onDiskContent.length}` +
+          `${sizeBaseline !== onDiskContent.length ? `; ${sizeBaseline} after discounting deleted providers` : ""}). ` +
           `Refusing the write to keep OpenClaw's existing state intact. ` +
           `Likely a DB-state-loading race; see #311. ` +
           `Rejected payload saved to ${rejectedPath}.`
@@ -1861,10 +1820,61 @@ export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) 
     // because missing a refusal costs a file write past OpenClaw's guard while
     // expecting one that never comes costs nothing (expectsSizeDropRefusal).
     expectsProviderShrink =
-      sizeBaseline < existing.length && expectsSizeDropRefusal(existing, newContent);
-  } catch {
-    // File doesn't exist yet — write it
+      sizeBaseline < onDiskContent.length && expectsSizeDropRefusal(onDiskContent, newContent);
+
+    // openclaw.json stops naming a key BEFORE secrets.json loses it. A deleted
+    // provider's key is not in this bundle, but OpenClaw's file names it until
+    // the push delivers the deletion — minutes for a large provider, or never
+    // for an install that hit this before it was fixed — and OpenClaw cannot
+    // restart on, or accept a targeted writer's copy of, a file whose
+    // SecretRefs do not resolve. So the file first becomes the key-less bridge:
+    // itself, with every such provider a stub that keeps its models (see
+    // keyless-bridge.ts). Decided from the file and the bundle alone; Pinchy
+    // cannot read secrets.json in production.
+    let onDiskConfig: Record<string, unknown> | undefined;
+    try {
+      onDiskConfig = JSON.parse(onDiskContent) as Record<string, unknown>;
+    } catch {
+      // Unparseable: nothing OpenClaw could run either; nothing to bridge.
+    }
+    const bridge = onDiskConfig ? keylessBridge(onDiskConfig, secretsBundle) : null;
+    if (bridge) {
+      const dangling = unresolvedSecretRefs(bridge, secretsBundle);
+      if (dangling.length > 0) {
+        console.error(
+          `[openclaw-config] openclaw.json names SecretRef(s) outside models.providers that the new secrets lack (${dangling.join(", ")}); ` +
+            `Pinchy emits none there, so the key-less bridge cannot cover them.`
+        );
+      }
+      writeConfigAtomic(JSON.stringify(bridge, null, 2).trimEnd() + "\n");
+      console.log(
+        `[openclaw-config] openclaw.json no longer names the removed key(s) ${unresolvedSecretRefs(onDiskConfig, secretsBundle).join(", ")} (key-less bridge written before secrets.json)`
+      );
+    }
   }
+
+  // A secrets-only change is invisible to EVERY config guard: `openclaw.json`
+  // carries a SecretRef, not the value, so a rotated provider key leaves the
+  // emitted config byte-identical, the equivalence check above says
+  // "unchanged", and the running OpenClaw keeps serving the credential it
+  // resolved at process start — 401 on every agent until someone restarts the
+  // container (#943). `secrets.reload` is the RPC that closes that gap, and it
+  // is fired BEFORE the unchanged return below for exactly that reason. It
+  // costs no `config.apply` rate-limit slot, so the no-op guard keeps doing
+  // the job it exists for.
+  //
+  // The flag is "a value was added or rotated", NOT "the file changed": a pure
+  // removal must stay silent here, because OpenClaw would re-resolve the config
+  // it is still running. See writeSecretsFile.
+  //
+  // Always written, even when the config is unchanged — tmpfs is wiped on
+  // container restart, and secrets.json must be present for OpenClaw to
+  // resolve SecretRef pointers. A removal is safe to write here: the bridge
+  // above already took every reference to it out of openclaw.json.
+  if (writeSecretsFile(secretsBundle)) {
+    reloadSecretsInBackground();
+  }
+  if (unchanged) return;
 
   // Write per-agent auth-profiles.json for agents that use API-key-based
   // providers. Required by OpenClaw ≥ 4.15: each agent directory must

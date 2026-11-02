@@ -146,7 +146,8 @@ export function parseSizeDropRejection(message: string): SizeDropRejection | nul
 
 /**
  * A deleted provider as the smallest valid custom provider: an inert baseUrl,
- * its api, and `models: []` (models are then re-added one at a time).
+ * its api, and `models: []` (a step re-adds models one at a time; the
+ * key-less bridge keeps them all — keyless-bridge.ts).
  *
  * Everything else is dropped, and the baseUrl loses userinfo, query and
  * fragment. `ocProvider` comes from `config.get`, which REDACTS credentials —
@@ -156,7 +157,7 @@ export function parseSizeDropRejection(message: string): SizeDropRejection | nul
  * have OpenClaw re-write the deleted provider's secret into openclaw.json for
  * every step. `apiKey` would also no longer resolve: secrets.json has lost it.
  */
-function providerStub(ocProvider: Json): Json {
+export function providerStub(ocProvider: Json): Json {
   const stub: Json = { baseUrl: inertBaseUrl(ocProvider.baseUrl) };
   if (typeof ocProvider.api === "string") stub.api = ocProvider.api;
   stub.models = [];
