@@ -2,7 +2,10 @@ import { readSecretsFile, versionedSecretName, type SecretsBundle } from "@/lib/
 import { getOrCreateGatewayToken } from "@/lib/gateway-token-source";
 import { getOrCreatePluginSecret } from "@/lib/plugin-secrets-source";
 import { PROVIDERS } from "@/lib/providers";
-import { listProvidersWithApiKeys } from "@/lib/openai-compatible-providers";
+import {
+  listProvidersWithApiKeys,
+  type CustomProviderConfigSource,
+} from "@/lib/openai-compatible-providers";
 import { getSetting } from "@/lib/settings";
 
 // Central home for the runtime-secret pipeline that feeds openclaw.json
@@ -33,11 +36,14 @@ export interface ProviderSecretsCollection {
   /** Per-provider apiKey for `secrets.json#/providers`. */
   providers: Record<string, { apiKey: string }>;
   /**
-   * For each OpenAI-compatible slug, the `providers` slot holding its key —
-   * `<slug>@<keyVersion>`. build.ts points `models.providers.<slug>.apiKey`
-   * at `/providers/<slot>/apiKey`, so the pointer changes whenever the key does.
+   * Every OpenAI-compatible provider, exactly as the read that produced its
+   * key saw it, plus the `providers` slot holding that key —
+   * `<slug>@<keyVersion>`. build.ts emits `models.providers.<slug>` (base URL,
+   * models, and a SecretRef to `/providers/<secretSlot>/apiKey`) from these
+   * rows and nothing else, so an address and a key can only reach OpenClaw
+   * together if they came from the same row read.
    */
-  customProviderSecretNames: Record<string, string>;
+  customProviders: (CustomProviderConfigSource & { secretSlot: string })[];
 }
 
 /**
@@ -71,14 +77,15 @@ export async function collectProviderSecrets(): Promise<ProviderSecretsCollectio
   // is what keeps a re-pointed base URL and its new key together at runtime —
   // see versionedSecretName. The raw key lives ONLY here in the secrets bundle,
   // never in openclaw.json. `listProvidersWithApiKeys` is one query + one
-  // decrypt per row (no keyHint waste, no per-slug round trip).
-  const customProviderSecretNames: Record<string, string> = {};
+  // decrypt per row (no keyHint waste, no per-slug round trip), and the only
+  // read of the table a regenerate takes — see `customProviders`.
+  const customProviders: ProviderSecretsCollection["customProviders"] = [];
   for (const p of await listProvidersWithApiKeys()) {
-    const slot = versionedSecretName(p.slug, p.keyVersion);
-    providers[slot] = { apiKey: p.apiKey };
-    customProviderSecretNames[p.slug] = slot;
+    const secretSlot = versionedSecretName(p.slug, p.keyVersion);
+    providers[secretSlot] = { apiKey: p.apiKey };
+    customProviders.push({ ...p, secretSlot });
   }
-  return { providers, customProviderSecretNames };
+  return { providers, customProviders };
 }
 
 /**

@@ -4,6 +4,7 @@ import {
   auditableDestinationUrl,
   baseUrlDestinationChange,
   integrationDestinationChange,
+  capForAudit,
 } from "@/lib/secret-destination";
 
 describe("canonicalDestinationUrl", () => {
@@ -122,5 +123,31 @@ describe("integrationDestinationChange", () => {
 
   it("has no destination rule for types whose destination is fixed", () => {
     expect(integrationDestinationChange("web-search", {}, { apiKey: "x" })).toBeNull();
+  });
+});
+
+// A caller chooses the destination, so its length is theirs too. An audit
+// detail over 2 KB is replaced wholesale by a truncation summary, which would
+// take `reason` and the destination diff with it — so each audited value is
+// capped on its own.
+describe("capForAudit", () => {
+  const bytes = (v: string) => new TextEncoder().encode(v).length;
+
+  it("leaves a value of up to 256 bytes alone", () => {
+    expect(capForAudit("https://acme.example.com/v1")).toBe("https://acme.example.com/v1");
+    expect(capForAudit("a".repeat(256))).toBe("a".repeat(256));
+  });
+
+  it("cuts a longer value to at most 256 bytes, ending in an ellipsis", () => {
+    const capped = capForAudit(`https://acme.example.com/${"a".repeat(3000)}`);
+    expect(bytes(capped)).toBeLessThanOrEqual(256);
+    expect(capped.startsWith("https://acme.example.com/aaa")).toBe(true);
+    expect(capped.endsWith("…")).toBe(true);
+  });
+
+  it("counts bytes, not characters, and never splits a character", () => {
+    const capped = capForAudit("ü".repeat(300));
+    expect(bytes(capped)).toBeLessThanOrEqual(256);
+    expect(capped).toMatch(/^ü+…$/);
   });
 });

@@ -413,6 +413,43 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       expect(JSON.stringify(entry)).not.toContain("secret-key");
     });
 
+    it("caps each audited URL so a 3 KB path cannot push reason and destinationChange into a truncation summary", async () => {
+      const { truncateDetail } = await vi.importActual<typeof import("@/lib/audit")>("@/lib/audit");
+      mockDecrypt.mockReturnValueOnce(
+        JSON.stringify({
+          url: `https://odoo.example.com/${"a".repeat(3000)}`,
+          db: "prod",
+          login: "admin",
+          apiKey: "secret-key",
+          uid: 2,
+        })
+      );
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-1", {
+          method: "PATCH",
+          body: JSON.stringify({
+            credentials: { url: `https://attacker.example/${"b".repeat(3000)}` },
+          }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+
+      expect(response.status).toBe(422);
+      const stored = truncateDetail(mockAppendAuditLog.mock.calls[0]![0].detail);
+      expect(stored).not.toHaveProperty("_truncated");
+      expect(stored).toMatchObject({ reason: "secret_required_for_new_destination" });
+      const { from, to } = (stored as { destinationChange: { url: { from: string; to: string } } })
+        .destinationChange.url;
+      expect(from.startsWith("https://odoo.example.com/aaa")).toBe(true);
+      expect(to.startsWith("https://attacker.example/bbb")).toBe(true);
+      for (const value of [from, to]) {
+        expect(new TextEncoder().encode(value).length).toBeLessThanOrEqual(256);
+        expect(value.endsWith("…")).toBe(true);
+      }
+    });
+
     it("reports an invalid URL as invalid rather than asking for the key", async () => {
       const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
 

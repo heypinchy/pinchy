@@ -17,15 +17,27 @@ vi.mock("@/lib/auth", () => {
   };
 });
 
-vi.mock("@/lib/openai-compatible-providers", () => ({
-  createOrUpdateProvider: vi.fn(),
-  listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
-  listOpenAiCompatibleProvidersForAdmin: vi.fn().mockResolvedValue([]),
-  deleteProviderById: vi.fn(),
-  getDecryptedKeyById: vi.fn().mockResolvedValue("sk-stored-key"),
-  getBaseUrlById: vi.fn().mockResolvedValue("https://acme.example.com/v1"),
-  getModelsById: vi.fn().mockResolvedValue([]),
-}));
+// The route tells a lost compare-and-swap apart from any other persist failure
+// by `instanceof`, so the factory exports a real class (same pattern as the
+// provider-url-guard mock below).
+vi.mock("@/lib/openai-compatible-providers", () => {
+  class ProviderChangedError extends Error {
+    constructor(id: string) {
+      super(`OpenAI-compatible provider changed while saving: ${id}`);
+      this.name = "ProviderChangedError";
+    }
+  }
+  return {
+    ProviderChangedError,
+    createOrUpdateProvider: vi.fn(),
+    listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
+    listOpenAiCompatibleProvidersForAdmin: vi.fn().mockResolvedValue([]),
+    deleteProviderById: vi.fn(),
+    getProviderSnapshotById: vi.fn(),
+    decryptStoredKey: vi.fn().mockReturnValue("sk-stored-key"),
+    getModelsById: vi.fn().mockResolvedValue([]),
+  };
+});
 
 vi.mock("@/lib/provider-count", () => ({
   countConfiguredProviders: vi.fn().mockResolvedValue(2),
@@ -114,10 +126,12 @@ import {
   listOpenAiCompatibleProviders,
   listOpenAiCompatibleProvidersForAdmin,
   deleteProviderById,
-  getDecryptedKeyById,
-  getBaseUrlById,
+  getProviderSnapshotById,
+  decryptStoredKey,
   getModelsById,
+  ProviderChangedError,
 } from "@/lib/openai-compatible-providers";
+import type { StoredProviderSnapshot } from "@/lib/openai-compatible-providers";
 import type { OpenAiCompatibleProviderListItem } from "@/lib/openai-compatible-providers";
 import { countConfiguredProviders, listConfiguredBuiltIns } from "@/lib/provider-count";
 import { db } from "@/db";
@@ -186,14 +200,26 @@ function discoverRequest(body: object) {
 
 const routeCtx = { params: Promise.resolve({}) };
 
+/** The stored row an update is checked against: one read, all four fields. */
+function storedSnapshot(overrides: Partial<StoredProviderSnapshot> = {}): StoredProviderSnapshot {
+  return {
+    id: "11111111-1111-4111-8111-111111111111",
+    slug: "acme-llm",
+    displayName: "Acme LLM",
+    baseUrl: "https://acme.example.com/v1",
+    encryptedApiKey: "ciphertext-of-the-stored-key",
+    ...overrides,
+  };
+}
+
 describe("POST /api/settings/providers/openai-compatible", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getSetting).mockResolvedValue(null);
     vi.mocked(createOrUpdateProvider).mockResolvedValue(listItem());
     vi.mocked(regenerateOpenClawConfig).mockResolvedValue(undefined);
-    vi.mocked(getDecryptedKeyById).mockResolvedValue("sk-stored-key");
-    vi.mocked(getBaseUrlById).mockResolvedValue("https://acme.example.com/v1");
+    vi.mocked(decryptStoredKey).mockReturnValue("sk-stored-key");
+    vi.mocked(getProviderSnapshotById).mockResolvedValue(storedSnapshot());
     // Default: server-side discovery finds one model. #894 backend redesign —
     // the client no longer sends `models`; the route calls
     // fetchOpenAiCompatibleModels itself, mocked here.
@@ -324,7 +350,8 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     // The preserved snapshot is what gets persisted — not an empty list.
     expect(createOrUpdateProvider).toHaveBeenCalledWith(
       expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
-      existing
+      existing,
+      storedSnapshot()
     );
   });
 
@@ -459,14 +486,16 @@ describe("POST /api/settings/providers/openai-compatible", () => {
 
     expect(res.status).toBe(200);
     // No apiKey in the body ⇒ the route falls back to the stored, decrypted key.
-    expect(getDecryptedKeyById).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    expect(getProviderSnapshotById).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    expect(decryptStoredKey).toHaveBeenCalledWith(storedSnapshot());
     expect(fetchOpenAiCompatibleModels).toHaveBeenCalledWith(
       "https://acme.example.com/v1",
       "sk-stored-key"
     );
     expect(createOrUpdateProvider).toHaveBeenCalledWith(
       expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
-      expect.any(Array)
+      expect.any(Array),
+      storedSnapshot()
     );
     const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
     expect(entry.detail).toMatchObject({
@@ -497,7 +526,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         "Enter the API key again when you change the address — the stored key is never sent to a new address.",
       ]);
       // The stored key is never even decrypted, let alone sent anywhere.
-      expect(getDecryptedKeyById).not.toHaveBeenCalled();
+      expect(decryptStoredKey).not.toHaveBeenCalled();
       expect(fetchOpenAiCompatibleModels).not.toHaveBeenCalled();
       expect(createOrUpdateProvider).not.toHaveBeenCalled();
       expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
@@ -530,7 +559,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       );
 
       expect(res.status).toBe(200);
-      expect(getDecryptedKeyById).not.toHaveBeenCalled();
+      expect(decryptStoredKey).not.toHaveBeenCalled();
       expect(fetchOpenAiCompatibleModels).toHaveBeenCalledTimes(1);
       expect(fetchOpenAiCompatibleModels).toHaveBeenCalledWith(
         "https://new-host.example.com/v1",
@@ -544,7 +573,9 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     // Cloudflare AI Gateway URL `/v1/<account>/<gateway>` sends the key into
     // whichever account it names), so the key is bound to the full base URL.
     it("refuses a path-only change without a fresh key: a shared origin routes by path", async () => {
-      vi.mocked(getBaseUrlById).mockResolvedValue("https://gateway.ai.cloudflare.com/v1/acct-a/gw");
+      vi.mocked(getProviderSnapshotById).mockResolvedValue(
+        storedSnapshot({ baseUrl: "https://gateway.ai.cloudflare.com/v1/acct-a/gw" })
+      );
       const res = await POST(
         postRequest({
           id: updateId,
@@ -555,7 +586,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       );
 
       expect(res.status).toBe(422);
-      expect(getDecryptedKeyById).not.toHaveBeenCalled();
+      expect(decryptStoredKey).not.toHaveBeenCalled();
       expect(fetchOpenAiCompatibleModels).not.toHaveBeenCalled();
       expect(createOrUpdateProvider).not.toHaveBeenCalled();
     });
@@ -594,7 +625,9 @@ describe("POST /api/settings/providers/openai-compatible", () => {
         eventType: "config.changed",
         outcome: "failure",
         detail: {
-          provider: { id: updateId, name: "Acme LLM" },
+          // The same identity the success row uses (the slug), so one filter
+          // finds a provider's whole history.
+          provider: { id: "acme-llm", name: "Acme LLM" },
           authType: "openai-compatible",
           reason: "secret_required_for_new_destination",
           baseUrlChange: {
@@ -607,6 +640,68 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       // The query can carry a credential, so it never reaches the audit row.
       expect(JSON.stringify(entry)).not.toContain("leaky");
       expect(JSON.stringify(entry)).not.toContain("sk-stored-key");
+    });
+
+    it("names a refused provider by its STORED name, never the one in the request", async () => {
+      await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Totally Legit Provider",
+          baseUrl: "https://attacker.example.net/v1",
+        }),
+        routeCtx
+      );
+
+      const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(entry.detail).toMatchObject({ provider: { id: "acme-llm", name: "Acme LLM" } });
+      expect(JSON.stringify(entry.detail)).not.toContain("Totally Legit Provider");
+    });
+
+    it("caps each audited URL so a 3 KB path cannot push reason and baseUrlChange into a truncation summary", async () => {
+      const { truncateDetail } = await vi.importActual<typeof import("@/lib/audit")>("@/lib/audit");
+      // A stored row from before the schema bounded URLs, and a submitted URL
+      // just inside today's bound: together they would blow the 2 KB budget.
+      vi.mocked(getProviderSnapshotById).mockResolvedValue(
+        storedSnapshot({ baseUrl: `https://acme.example.com/${"a".repeat(3000)}` })
+      );
+      const res = await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: `https://attacker.example.net/${"b".repeat(1900)}`,
+        }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(422);
+      const stored = truncateDetail(vi.mocked(appendAuditLog).mock.calls[0][0].detail);
+      expect(stored).not.toHaveProperty("_truncated");
+      expect(stored).toMatchObject({ reason: "secret_required_for_new_destination" });
+      const change = (stored as { baseUrlChange: { from: string; to: string } }).baseUrlChange;
+      expect(change.from.startsWith("https://acme.example.com/aaa")).toBe(true);
+      expect(change.to.startsWith("https://attacker.example.net/bbb")).toBe(true);
+      for (const value of [change.from, change.to]) {
+        expect(new TextEncoder().encode(value).length).toBeLessThanOrEqual(256);
+        expect(value.endsWith("…")).toBe(true);
+      }
+    });
+
+    it("rejects a base URL longer than 2048 characters with an inline field error", async () => {
+      const res = await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: `https://acme.example.com/${"a".repeat(2100)}`,
+          apiKey: SECRET_KEY,
+        }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.details.fieldErrors.baseUrl).toBeDefined();
+      expect(fetchOpenAiCompatibleModels).not.toHaveBeenCalled();
+      expect(createOrUpdateProvider).not.toHaveBeenCalled();
     });
 
     it("records the base URL change on the success audit, without any key", async () => {
@@ -633,6 +728,19 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       expect(JSON.stringify(entry.detail).length).toBeLessThan(2048);
     });
 
+    it("returns 404 when the provider to update does not exist, without probing anything", async () => {
+      vi.mocked(getProviderSnapshotById).mockResolvedValue(undefined);
+
+      const res = await POST(
+        postRequest({ id: updateId, displayName: "Ghost", baseUrl: "https://acme.example.com/v1" }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(404);
+      expect(fetchOpenAiCompatibleModels).not.toHaveBeenCalled();
+      expect(createOrUpdateProvider).not.toHaveBeenCalled();
+    });
+
     it("does not record a base URL change when the base URL is unchanged", async () => {
       await POST(
         postRequest({
@@ -645,6 +753,87 @@ describe("POST /api/settings/providers/openai-compatible", () => {
 
       const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
       expect(entry.detail).not.toHaveProperty("baseUrlChange");
+    });
+  });
+
+  // Review finding on #1238: the destination check, the discovery request (up to
+  // ~10s against a host the caller may control) and the write used to be three
+  // independent steps. A keyless save held open that long could land after an
+  // admin had re-entered the real key, pairing the caller's URL with that key.
+  // The write is now conditional on the row still holding the base URL AND the
+  // key ciphertext the check saw; the DB half is pinned in
+  // openai-compatible-providers.integration.test.ts and
+  // openai-compatible-provider-race.integration.test.ts.
+  describe("a save only lands on the row it was checked against", () => {
+    const updateId = "11111111-1111-4111-8111-111111111111";
+
+    it("reads base URL and key in one snapshot and hands that snapshot to the write as its condition", async () => {
+      await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: "https://acme.example.com/v1",
+        }),
+        routeCtx
+      );
+
+      expect(getProviderSnapshotById).toHaveBeenCalledTimes(1);
+      expect(createOrUpdateProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: updateId }),
+        expect.any(Array),
+        storedSnapshot()
+      );
+    });
+
+    it("conditions a save that brings a fresh key on the same snapshot", async () => {
+      await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: "https://new-host.example.com/v1",
+          apiKey: SECRET_KEY,
+        }),
+        routeCtx
+      );
+
+      expect(createOrUpdateProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: updateId }),
+        expect.any(Array),
+        storedSnapshot()
+      );
+    });
+
+    it("answers 409 and audits a failure when the row changed while discovery ran", async () => {
+      vi.mocked(createOrUpdateProvider).mockRejectedValueOnce(new ProviderChangedError(updateId));
+
+      const res = await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: "https://acme.example.com/v1",
+        }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: "This provider changed while you were saving. Reload and try again.",
+      });
+      expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+      expect(recordAuditFailure).not.toHaveBeenCalled();
+      expect(appendAuditLog).toHaveBeenCalledTimes(1);
+      const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(entry).toMatchObject({
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          provider: { id: "acme-llm", name: "Acme LLM" },
+          authType: "openai-compatible",
+          reason: "provider_changed_during_save",
+        },
+      });
+      expect(JSON.stringify(entry)).not.toContain("sk-stored-key");
+      expect(JSON.stringify(entry)).not.toContain("ciphertext-of-the-stored-key");
     });
   });
 
@@ -808,7 +997,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(JSON.stringify(entry.detail)).not.toContain(SECRET_KEY);
   });
 
-  it("correlates an UPDATE failure by input.id in the failure audit", async () => {
+  it("correlates an UPDATE failure by the stored provider identity in the failure audit", async () => {
     const updateId = "22222222-2222-4222-8222-222222222222";
     vi.mocked(createOrUpdateProvider).mockRejectedValueOnce(new Error("db exploded"));
 
@@ -827,10 +1016,11 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(recordAuditFailure).toHaveBeenCalledTimes(1);
     const [, entry] = vi.mocked(recordAuditFailure).mock.calls[0];
     expect(entry.outcome).toBe("failure");
-    // input.id is in hand on an update — it's the only correlation key an
-    // analyst has for which row failed to save.
+    // The stored row was read before the write, so the failure names the
+    // provider the way every other provider row does — by slug, with the name
+    // it actually has (the failed save renamed nothing).
     expect(entry.detail).toMatchObject({
-      provider: { id: updateId, name: "Acme Renamed" },
+      provider: { id: "acme-llm", name: "Acme LLM" },
     });
     expect(JSON.stringify(entry.detail)).not.toContain(SECRET_KEY);
   });

@@ -15,15 +15,19 @@ import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 import { z } from "zod";
 import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
 import {
+  capForAudit,
   integrationDestinationChange,
   secretRequiredMessage,
   SECRET_REQUIRED_FOR_NEW_DESTINATION,
   type DestinationChanges,
 } from "@/lib/secret-destination";
 
-/** Audit form of a destination diff: email-shaped tokens scrubbed from every value. */
+/**
+ * Audit form of a destination diff: email-shaped tokens scrubbed from every
+ * value, then each value capped (scrub first, so a cut can't hide an address).
+ */
 function scrubDestinationChanges(changes: DestinationChanges): DestinationChanges {
-  const scrub = (v: string | number) => (typeof v === "string" ? scrubEmails(v) : v);
+  const scrub = (v: string | number) => (typeof v === "string" ? capForAudit(scrubEmails(v)) : v);
   return Object.fromEntries(
     Object.entries(changes).map(([field, { from, to }]) => [
       field,

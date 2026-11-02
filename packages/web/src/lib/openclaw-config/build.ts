@@ -27,7 +27,6 @@ import {
   getModelCatalogForProvider,
   type OpenClawModelDefinition,
 } from "@/lib/openclaw-builtin-models";
-import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
 import {
   getOpenClawWorkspacePath,
@@ -377,7 +376,12 @@ export async function regenerateOpenClawConfig() {
   // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
   // provider with a configured apiKey. Helper returns a fresh mutable map;
   // ollama-cloud is spliced into providerSecrets at the model-providers call site.
-  const { providers: providerSecrets, customProviderSecretNames } = await collectProviderSecrets();
+  // `customProviders` is this regenerate's ONE read of the OpenAI-compatible
+  // table: every use below (default-model guard, models.providers emission,
+  // live discovery) takes slug, base URL, models and key from these rows, so
+  // a save committing mid-regenerate can never pair one save's address with
+  // another save's key.
+  const { providers: providerSecrets, customProviders } = await collectProviderSecrets();
 
   // Keep agents.defaults minimal. OpenClaw enriches agents.defaults with
   // heartbeat, models, contextPruning, compaction at runtime; if Pinchy were to
@@ -450,9 +454,7 @@ export async function regenerateOpenClawConfig() {
       local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH },
     },
   };
-  // Fetched once here (reused for the models.providers emission below) so the
-  // default-model guard can recognise a custom slug without a second query.
-  const customProviders = await listOpenAiCompatibleProviders();
+  // The default-model guard recognises a custom slug from the same read.
   const defaultProvider = await getSetting("default_provider");
   // Emit the default model when `default_provider` names either a built-in OR a
   // known custom OpenAI-compatible slug (#894). `getDefaultModel` is slug-aware
@@ -1457,26 +1459,25 @@ export async function regenerateOpenClawConfig() {
   // #894 backend redesign: the emitted model list is resolved LIVE via
   // `resolveCustomProviderModels` (short-TTL cache + snapshot fallback — same
   // helper the model dropdown uses in provider-models.ts), not read off
-  // `p.models` directly. `customProviders` (fetched key-free, above) still
-  // supplies slug/baseUrl/snapshot and backs the default-provider guard;
-  // `providerSecrets` (already fetched for the secrets bundle) supplies the
-  // decrypted key discovery needs without a second DB round trip.
+  // `p.models` directly — with `p.models` as the fallback snapshot.
   //
-  // The key's slot is versioned (`<slug>@<keyVersion>`, see versionedSecretName):
-  // a new key is a new pointer, so the config that moves `baseUrl` is the only
-  // one that resolves the key entered for it — the two can never go live apart.
+  // Everything here comes from one row of `customProviders` (see above): the
+  // base URL, the key discovery authenticates with, and the key's slot, which
+  // is versioned (`<slug>@<keyVersion>`, see versionedSecretName). A new key is
+  // a new pointer, so the config that moves `baseUrl` is the only one that
+  // resolves the key entered for it — the two can never go live apart, and
+  // discovery never sends one save's key to another save's address.
   for (const p of customProviders) {
-    const secretSlot = customProviderSecretNames[p.slug] ?? p.slug;
     const models = await resolveCustomProviderModels({
       slug: p.slug,
       baseUrl: p.baseUrl,
-      apiKey: providerSecrets[secretSlot]?.apiKey ?? "",
+      apiKey: p.apiKey,
       models: p.models,
     });
     modelProviders[p.slug] = {
       baseUrl: p.baseUrl,
       api: "openai-completions",
-      apiKey: secretRef(`/providers/${secretSlot}/apiKey`),
+      apiKey: secretRef(`/providers/${p.secretSlot}/apiKey`),
       models: stripVision(models).map((m) => ({
         ...m,
         compat: { supportsUsageInStreaming: true },

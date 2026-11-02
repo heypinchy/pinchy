@@ -57,10 +57,23 @@ describe("collectProviderSecrets", () => {
     vi.mocked(getSetting).mockResolvedValue(null);
 
     const { listProvidersWithApiKeys } = await import("@/lib/openai-compatible-providers");
-    vi.mocked(listProvidersWithApiKeys).mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-key", keyVersion: "0123456789abcdef" },
-      { slug: "acme-llm", apiKey: "acme-key", keyVersion: "fedcba9876543210" },
-    ]);
+    const swiss = {
+      slug: "swisscom-ai",
+      displayName: "Swisscom AI",
+      baseUrl: "https://api.swisscom.example/v1",
+      models: [],
+      apiKey: "swiss-key",
+      keyVersion: "0123456789abcdef",
+    };
+    const acme = {
+      slug: "acme-llm",
+      displayName: "Acme LLM",
+      baseUrl: "https://acme.example/v1",
+      models: [],
+      apiKey: "acme-key",
+      keyVersion: "fedcba9876543210",
+    };
+    vi.mocked(listProvidersWithApiKeys).mockResolvedValue([swiss, acme]);
 
     const { collectProviderSecrets } = await import("@/lib/openclaw-config/secrets-bundle");
     const result = await collectProviderSecrets();
@@ -68,10 +81,12 @@ describe("collectProviderSecrets", () => {
     expect(result.providers["swisscom-ai@0123456789abcdef"]).toEqual({ apiKey: "swiss-key" });
     expect(result.providers["acme-llm@fedcba9876543210"]).toEqual({ apiKey: "acme-key" });
     expect(result.providers).not.toHaveProperty("swisscom-ai");
-    expect(result.customProviderSecretNames).toEqual({
-      "swisscom-ai": "swisscom-ai@0123456789abcdef",
-      "acme-llm": "acme-llm@fedcba9876543210",
-    });
+    // The same rows come back with their slot, so build.ts emits the base URL
+    // and the pointer from the read that produced the key — never a second one.
+    expect(result.customProviders).toEqual([
+      { ...swiss, secretSlot: "swisscom-ai@0123456789abcdef" },
+      { ...acme, secretSlot: "acme-llm@fedcba9876543210" },
+    ]);
   });
 
   it("collects OpenAI-compatible keys via the single-query accessor, not per-slug (#894)", async () => {
@@ -80,7 +95,14 @@ describe("collectProviderSecrets", () => {
 
     const { listProvidersWithApiKeys } = await import("@/lib/openai-compatible-providers");
     vi.mocked(listProvidersWithApiKeys).mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-key", keyVersion: "0123456789abcdef" },
+      {
+        slug: "swisscom-ai",
+        displayName: "Swisscom AI",
+        baseUrl: "https://api.swisscom.example/v1",
+        models: [],
+        apiKey: "swiss-key",
+        keyVersion: "0123456789abcdef",
+      },
     ]);
 
     const { collectProviderSecrets } = await import("@/lib/openclaw-config/secrets-bundle");

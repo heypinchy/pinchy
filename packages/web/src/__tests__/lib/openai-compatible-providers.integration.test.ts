@@ -4,8 +4,9 @@ import { decrypt } from "@/lib/encryption";
 import {
   createOrUpdateProvider,
   deleteProviderById,
-  getBaseUrlById,
+  getProviderSnapshotById,
   listOpenAiCompatibleProviders,
+  ProviderChangedError,
   listOpenAiCompatibleProvidersForAdmin,
   listProvidersWithApiKeys,
 } from "@/lib/openai-compatible-providers";
@@ -143,7 +144,7 @@ async function readStoredKey(slug: string): Promise<string | undefined> {
 }
 
 describe("listProvidersWithApiKeys", () => {
-  it("returns exactly { slug, apiKey, keyVersion } with real decrypted keys for every row", async () => {
+  it("returns identity, base URL, models and the real decrypted key + version for every row, from one read", async () => {
     await createOrUpdateProvider(
       {
         displayName: "Swisscom AI",
@@ -162,22 +163,42 @@ describe("listProvidersWithApiKeys", () => {
     );
 
     const rows = await listProvidersWithApiKeys();
-    // Order-independent: assert the set of decrypted { slug, apiKey } pairs.
+    // Order-independent: each key comes back beside the base URL of its own row.
     expect(rows).toEqual(
       expect.arrayContaining([
-        { slug: "swisscom-ai", apiKey: "sk-swiss-real", keyVersion: expect.any(String) },
-        { slug: "acme-llm", apiKey: "sk-acme-real", keyVersion: expect.any(String) },
+        {
+          slug: "swisscom-ai",
+          displayName: "Swisscom AI",
+          baseUrl: "https://api.swisscom.example/v1",
+          models: [MODEL],
+          apiKey: "sk-swiss-real",
+          keyVersion: expect.any(String),
+        },
+        {
+          slug: "acme-llm",
+          displayName: "Acme LLM",
+          baseUrl: "https://acme.example/v1",
+          models: [MODEL],
+          apiKey: "sk-acme-real",
+          keyVersion: expect.any(String),
+        },
       ])
     );
     expect(rows).toHaveLength(2);
 
-    // Shape is EXACTLY slug + apiKey + keyVersion — no keyHint, no ciphertext.
+    // Shape is exactly what config emission needs — no keyHint, no ciphertext.
     for (const row of rows) {
-      expect(Object.keys(row).sort()).toEqual(["apiKey", "keyVersion", "slug"]);
+      expect(Object.keys(row).sort()).toEqual([
+        "apiKey",
+        "baseUrl",
+        "displayName",
+        "keyVersion",
+        "models",
+        "slug",
+      ]);
       expect(row.keyVersion).toMatch(/^[0-9a-f]{16}$/);
       expect(row.keyVersion).not.toContain(row.apiKey);
       expect(row).not.toHaveProperty("keyHint");
-      expect(row).not.toHaveProperty("models");
     }
   });
 
@@ -204,7 +225,8 @@ describe("listProvidersWithApiKeys", () => {
         displayName: "Swisscom Renamed",
         baseUrl: "https://api.swisscom.example/v1",
       },
-      [MODEL]
+      [MODEL],
+      await getProviderSnapshotById(created.id)
     );
     expect(await version()).toBe(v1);
 
@@ -215,7 +237,8 @@ describe("listProvidersWithApiKeys", () => {
         baseUrl: "https://moved.swisscom.example/v1",
         apiKey: "sk-k",
       },
-      [MODEL]
+      [MODEL],
+      await getProviderSnapshotById(created.id)
     );
     expect(await version()).not.toBe(v1);
   });
@@ -238,7 +261,8 @@ describe("createOrUpdateProvider — update", () => {
         displayName: "Swisscom AI Renamed",
         baseUrl: "https://api.swisscom.example/v2",
       },
-      [MODEL]
+      [MODEL],
+      await getProviderSnapshotById(created.id)
     );
 
     expect(updated.slug).toBe("swisscom-ai");
@@ -255,7 +279,8 @@ describe("createOrUpdateProvider — update", () => {
         baseUrl: "https://api.swisscom.example/v2",
         apiKey: "sk-rotated-key",
       },
-      [MODEL]
+      [MODEL],
+      await getProviderSnapshotById(created.id)
     );
     expect(await readStoredKey("swisscom-ai")).toBe("sk-rotated-key");
   });
@@ -268,20 +293,110 @@ describe("createOrUpdateProvider — update", () => {
           displayName: "Ghost",
           baseUrl: "https://api.example/v1",
         },
-        [MODEL]
+        [MODEL],
+        { baseUrl: "https://api.example/v1", encryptedApiKey: "irrelevant" }
       )
     ).rejects.toThrow(/not found/i);
   });
+
+  it("refuses an update that does not say which stored state it was checked against", async () => {
+    const created = await createOrUpdateProvider(
+      { displayName: "Swisscom AI", baseUrl: "https://api.swisscom.example/v1", apiKey: "sk-k" },
+      [MODEL]
+    );
+    await expect(
+      createOrUpdateProvider(
+        { id: created.id, displayName: "Swisscom AI", baseUrl: "https://api.swisscom.example/v1" },
+        [MODEL]
+      )
+    ).rejects.toThrow(/checked/i);
+  });
+
+  // The write is a compare-and-swap on (base_url, api_key): the route checked
+  // the destination against one stored state, then spent up to ~10s on
+  // discovery against a host the caller may control. If the key was
+  // re-entered meanwhile, a keyless save landing now would pair the caller's
+  // URL with that new key.
+  it("refuses a keyless update when the stored key changed since the check, and leaves the row alone", async () => {
+    const created = await createOrUpdateProvider(
+      { displayName: "Swisscom AI", baseUrl: "https://evil.example/v1", apiKey: "sk-attacker" },
+      [MODEL]
+    );
+    const checked = await getProviderSnapshotById(created.id);
+
+    // Meanwhile the real admin moves it back and re-enters the real key.
+    await createOrUpdateProvider(
+      {
+        id: created.id,
+        displayName: "Swisscom AI",
+        baseUrl: "https://api.swisscom.example/v1",
+        apiKey: "sk-real",
+      },
+      [MODEL],
+      checked
+    );
+
+    await expect(
+      createOrUpdateProvider(
+        { id: created.id, displayName: "Swisscom AI", baseUrl: "https://evil.example/v1" },
+        [MODEL],
+        checked
+      )
+    ).rejects.toBeInstanceOf(ProviderChangedError);
+
+    const [row] = await db
+      .select()
+      .from(openaiCompatibleProviders)
+      .where(eq(openaiCompatibleProviders.id, created.id));
+    expect(row.baseUrl).toBe("https://api.swisscom.example/v1");
+    expect(decrypt(row.apiKey)).toBe("sk-real");
+  });
+
+  it("refuses an update carrying a key when the base URL changed since the check", async () => {
+    const created = await createOrUpdateProvider(
+      { displayName: "Swisscom AI", baseUrl: "https://api.swisscom.example/v1", apiKey: "sk-k" },
+      [MODEL]
+    );
+    const checked = await getProviderSnapshotById(created.id);
+    await db
+      .update(openaiCompatibleProviders)
+      .set({ baseUrl: "https://moved.swisscom.example/v1" })
+      .where(eq(openaiCompatibleProviders.id, created.id));
+
+    await expect(
+      createOrUpdateProvider(
+        {
+          id: created.id,
+          displayName: "Swisscom AI",
+          baseUrl: "https://api.swisscom.example/v1",
+          apiKey: "sk-new",
+        },
+        [MODEL],
+        checked
+      )
+    ).rejects.toBeInstanceOf(ProviderChangedError);
+    expect(await readStoredKey("swisscom-ai")).toBe("sk-k");
+  });
 });
 
-describe("getBaseUrlById", () => {
-  it("returns the stored base URL, and undefined for an unknown id", async () => {
+describe("getProviderSnapshotById", () => {
+  it("returns identity, base URL and key ciphertext from one row, and undefined for an unknown id", async () => {
     const created = await createOrUpdateProvider(
       { displayName: "Swisscom AI", baseUrl: "https://api.swisscom.example/v1", apiKey: "sk-key" },
       [MODEL]
     );
-    expect(await getBaseUrlById(created.id)).toBe("https://api.swisscom.example/v1");
-    expect(await getBaseUrlById("00000000-0000-0000-0000-000000000000")).toBeUndefined();
+    const snapshot = await getProviderSnapshotById(created.id);
+    expect(snapshot).toEqual({
+      id: created.id,
+      slug: "swisscom-ai",
+      displayName: "Swisscom AI",
+      baseUrl: "https://api.swisscom.example/v1",
+      encryptedApiKey: expect.any(String),
+    });
+    // Ciphertext, never the key itself.
+    expect(snapshot!.encryptedApiKey).not.toContain("sk-key");
+    expect(decrypt(snapshot!.encryptedApiKey)).toBe("sk-key");
+    expect(await getProviderSnapshotById("00000000-0000-0000-0000-000000000000")).toBeUndefined();
   });
 });
 

@@ -62,6 +62,33 @@ export function baseUrlDestinationChange(
   return { from: auditableDestinationUrl(storedUrl), to: auditableDestinationUrl(nextUrl) };
 }
 
+/** Upper bound, in UTF-8 bytes, for one destination value in an audit row. */
+export const AUDIT_DESTINATION_MAX_BYTES = 256;
+
+/**
+ * A destination value as it may appear in an audit row: at most
+ * {@link AUDIT_DESTINATION_MAX_BYTES} bytes, ending in "…" when cut. The caller
+ * picks the destination, so it picks its length too, and an audit detail over
+ * 2 KB is replaced wholesale by a truncation summary — `reason` and the
+ * destination diff would go with it and stop being filterable. Cut on
+ * character boundaries; scrub PII from the value BEFORE capping it, so a cut
+ * can never leave half an address the scrubber no longer recognizes.
+ */
+export function capForAudit(value: string): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).length <= AUDIT_DESTINATION_MAX_BYTES) return value;
+  const budget = AUDIT_DESTINATION_MAX_BYTES - encoder.encode("…").length;
+  let out = "";
+  let used = 0;
+  for (const char of value) {
+    const size = encoder.encode(char).length;
+    if (used + size > budget) break;
+    out += char;
+    used += size;
+  }
+  return `${out}…`;
+}
+
 type FieldRule = {
   /** Compare form; equal forms mean "same destination". */
   normalize: (value: unknown) => string;
