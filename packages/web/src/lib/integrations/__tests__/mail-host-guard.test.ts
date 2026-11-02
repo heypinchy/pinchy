@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { assertMailHostAllowed, MailHostBlockedError } from "../mail-host-guard";
 
@@ -231,8 +232,8 @@ describe("assertMailHostAllowed", () => {
       // Common on internal mail servers. The guard resolves this exact string,
       // so whatever a resolver makes of the `_`, guard and client make the same.
       ["an underscore inside a label", "mail_srv.corp.example"],
-      ["an IPv4 literal", "192.0.2.10"],
-      ["an IPv6 literal", "2001:db8::1"],
+      ["an IPv4 literal", "93.184.216.34"],
+      ["an IPv6 literal", "2606:4700:4700::1111"],
     ])("resolves %s (%s) exactly as given", async (_label, host) => {
       const resolver = vi.fn(resolvesTo("93.184.216.34"));
 
@@ -250,6 +251,27 @@ describe("assertMailHostAllowed", () => {
       expect(error).toBeInstanceOf(MailHostBlockedError);
       expect((error as Error).message).toMatch(/plain host name or IP address/);
       expect((error as Error).message).not.toContain("ALLOW_PRIVATE_MAIL_HOSTS");
+    });
+
+    it("offers only examples the guard itself accepts", async () => {
+      // The refusal tells an admin what to type instead. An example from a
+      // range the guard refuses whatever is set (192.0.2.0/24 and 2001:db8::/32
+      // are documentation space, `reserved`) would send them from one refusal
+      // straight into the next. An IP literal resolves to itself; a name is
+      // given a public address, so only its spelling is under test.
+      const error = await assertMailHostAllowed("a%b.attacker.test", resolvesTo()).catch(
+        (e: unknown) => e
+      );
+      const message = (error as Error).message;
+      const examples = (message.match(/[0-9A-Za-z][0-9A-Za-z.:-]*[0-9A-Za-z]/g) ?? []).filter(
+        (token) => isIP(token) !== 0 || /^[a-z0-9.-]+\.[a-z]+$/i.test(token)
+      );
+      expect(examples.length).toBeGreaterThan(0);
+
+      for (const example of examples) {
+        const resolver = async (host: string) => [isIP(host) !== 0 ? host : "93.184.216.34"];
+        await expect(assertMailHostAllowed(example, resolver), example).resolves.toBeUndefined();
+      }
     });
   });
 });

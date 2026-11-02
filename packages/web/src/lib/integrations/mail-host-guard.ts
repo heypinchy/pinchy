@@ -116,9 +116,8 @@ export async function assertMailHostAllowed(
 ): Promise<void> {
   if (!isPlainHost(host)) {
     throw new MailHostBlockedError(
-      "Blocked: enter the mail server as a plain host name or IP address — like imap.example.com " +
-        "or 192.0.2.10, with no spaces, brackets, port or zone ID. An internationalised name goes " +
-        "in its xn-- form."
+      "Blocked: enter the mail server as a plain host name or IP address, like imap.example.com, " +
+        "with no spaces, brackets, port or zone ID. An internationalised name goes in its xn-- form."
     );
   }
 
