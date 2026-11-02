@@ -5,6 +5,7 @@ import "@testing-library/jest-dom";
 
 import { KnowledgeUnsearchableList } from "@/components/knowledge-unsearchable-list";
 import { apiGet } from "@/lib/api-client";
+import { holdResult, trackDataApplied } from "@/test-helpers/data-applied";
 
 vi.mock("@/lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api-client")>();
@@ -84,9 +85,13 @@ describe("KnowledgeUnsearchableList", () => {
   // trivially true of an empty index and would sit right under "Not yet
   // indexed" — a reassurance about nothing.
   it("stays silent about zero when no run has finished yet", async () => {
-    const { container } = render(<KnowledgeUnsearchableList agentId="a1" announceNone={false} />);
+    const load = trackDataApplied();
+    mockGet.mockImplementation(() => load.deliver({ documents: [], total: 0 }));
+    const { container } = render(
+      load.wrap(<KnowledgeUnsearchableList agentId="a1" announceNone={false} />)
+    );
 
-    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    await load.waitForApplied();
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -150,11 +155,15 @@ describe("KnowledgeUnsearchableList", () => {
   // A failed read must not claim the corpus is clean: silence is the honest
   // answer, and the next reload retries.
   it("renders nothing when the read fails, rather than a false all-clear", async () => {
-    mockGet.mockRejectedValue(new Error("network down"));
+    // A swallowed rejection commits nothing, so there is no render to wait
+    // for: the failure is released inside act() instead.
+    const read = holdResult<never>();
+    mockGet.mockReturnValue(read.promise);
 
     const { container } = render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
-    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    expect(mockGet).toHaveBeenCalled();
+    await read.reject(new Error("network down"));
     expect(container).toBeEmptyDOMElement();
   });
 });

@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import { Profiler, type ProfilerOnRenderCallback } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,6 +8,7 @@ const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
 import { EnterpriseBanner } from "@/components/enterprise-banner";
+import { trackDataApplied } from "@/test-helpers/data-applied";
 
 const DAY = 86400000;
 
@@ -43,22 +43,19 @@ function mockStatusResponse(data: object) {
  * macrotask; on a CPU-starved worker the Scheduler loses and the assertions
  * read an empty <div />.
  *
- * A Profiler "update" commit is the one signal that serves both kinds of
- * test in this file. The positive ones could wait on the banner itself, but
- * the negative ones commit `null` — there is no DOM change to wait for, and
- * without this wait "renders nothing" passes before the status has arrived.
- * The only update this component makes before a user interaction is
- * setLicense, so its first update commit is the one that rendered the status.
+ * Nor is "any update commit": a mount-time state update added to the
+ * component later would satisfy it before the status arrived and bring the
+ * race back. The wait is tied to the data — the first commit after the mocked
+ * body was handed over by `json()`. That serves both kinds of test here: the
+ * positive ones could wait on the banner itself, but the negative ones commit
+ * `null`, so there is no DOM change to wait for, and without this wait
+ * "renders nothing" passes before the status has arrived.
  */
 async function renderWithStatus(data: object) {
-  mockFetch.mockResolvedValue(mockStatusResponse(data));
-  const onRender = vi.fn<ProfilerOnRenderCallback>();
-  render(
-    <Profiler id="enterprise-banner" onRender={onRender}>
-      <EnterpriseBanner isAdmin={true} />
-    </Profiler>
-  );
-  await waitFor(() => expect(onRender.mock.calls.map(([, phase]) => phase)).toContain("update"));
+  const load = trackDataApplied();
+  mockFetch.mockResolvedValue({ ok: true, json: () => load.deliver(data) } as Response);
+  render(load.wrap(<EnterpriseBanner isAdmin={true} />));
+  await load.waitForApplied();
 }
 
 describe("EnterpriseBanner", () => {

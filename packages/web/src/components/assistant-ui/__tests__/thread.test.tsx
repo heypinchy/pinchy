@@ -5,6 +5,7 @@ import React from "react";
 import "@testing-library/jest-dom";
 import { sendingOpacityClass } from "@/components/assistant-ui/thread";
 import type { MessageState } from "@assistant-ui/react";
+import { trackDataApplied } from "@/test-helpers/data-applied";
 
 // Mutable AuiIf state — lets individual tests flip thread.isRunning so we can
 // exercise the Send/Cancel mutual-exclusion path covered by issue #207.
@@ -557,21 +558,27 @@ describe("AssistantMessage retryable error bubble", () => {
     // the component takes its no-agent shortcut and the test would pass while
     // proving nothing about the read-only case.
     const { apiGet } = await import("@/lib/api-client");
-    vi.mocked(apiGet).mockResolvedValue({ sideEffects: false });
+    const gate = trackDataApplied();
+    vi.mocked(apiGet).mockImplementation(() => gate.deliver({ sideEffects: false }));
 
     const mockRetryContinue = vi.fn();
     const { RetryContinueContext, AgentIdContext } = await import("@/components/chat");
     const { AssistantMessage } = await import("@/components/assistant-ui/thread");
     render(
-      <AgentIdContext.Provider value="agent-1">
-        <RetryContinueContext.Provider value={mockRetryContinue}>
-          <AssistantMessage />
-        </RetryContinueContext.Provider>
-      </AgentIdContext.Provider>
+      gate.wrap(
+        <AgentIdContext.Provider value="agent-1">
+          <RetryContinueContext.Provider value={mockRetryContinue}>
+            <AssistantMessage />
+          </RetryContinueContext.Provider>
+        </AgentIdContext.Provider>
+      )
     );
 
     fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
-    await waitFor(() => expect(mockRetryContinue).toHaveBeenCalledTimes(1));
+    // The retry fires inside the gate's handler, before React has committed
+    // what that handler set — so wait for the commit that applied the answer.
+    await gate.waitForApplied();
+    expect(mockRetryContinue).toHaveBeenCalledTimes(1);
     expect(apiGet).toHaveBeenCalledWith("/api/agents/agent-1/retry-gate");
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
