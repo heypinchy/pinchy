@@ -3,8 +3,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 // Real filesystem, with switchable faults for the key-generation tests below:
 // a disk that fills up mid-write (everywhere, or only on writes to one path),
 // another process winning the race to create the key file, a filesystem
-// without hard links, and a key file the process may not read. Off by default,
-// so every other test sees plain fs.
+// without hard links, a key file the process may not read, a write that
+// accepts only part of the bytes (or none), and a filesystem that refuses to
+// fsync a directory. Off by default, so every other test sees plain fs.
 const faults = vi.hoisted(() => ({
   diskFull: false,
   diskFullFor: null as string | null,
@@ -12,6 +13,13 @@ const faults = vi.hoisted(() => ({
   linkError: null as string | null,
   readError: null as { path: string; code: string } | null,
   readdirCalls: [] as string[],
+  // write() may write fewer bytes than asked (a signal, a quota, NFS).
+  // The first write (to `path`, when given) writes only `bytes` bytes.
+  shortWrite: null as { bytes: number; path?: string } | null,
+  zeroWrite: false,
+  // Which paths were fsynced, and a directory fsync the filesystem refuses.
+  fsyncedPaths: [] as string[],
+  dirFsyncError: null as { at: "open" | "fsync"; code: string } | null,
 }));
 
 vi.mock("fs", async (importOriginal) => {
@@ -28,6 +36,13 @@ vi.mock("fs", async (importOriginal) => {
       const [path, flags] = args;
       if (faults.readError && path === faults.readError.path && (flags ?? "r") === "r") {
         throw errno(faults.readError.code, "open");
+      }
+      if (
+        faults.dirFsyncError?.at === "open" &&
+        actual.existsSync(path) &&
+        actual.statSync(path).isDirectory()
+      ) {
+        throw errno(faults.dirFsyncError.code, "open");
       }
       const fd = actual.openSync(...args);
       fdPaths.set(fd, String(path));
@@ -47,8 +62,27 @@ vi.mock("fs", async (importOriginal) => {
       if (faults.diskFullFor !== null && fdPaths.get(args[0] as number) === faults.diskFullFor) {
         throw enospc();
       }
+      if (faults.zeroWrite) return 0;
+      const short = faults.shortWrite;
+      if (short && (short.path === undefined || fdPaths.get(args[0] as number) === short.path)) {
+        faults.shortWrite = null;
+        const n = short.bytes;
+        const [fd, data, offset, length] = args as [number, string | Buffer, number?, number?];
+        const bytes =
+          typeof data === "string"
+            ? Buffer.from(data)
+            : data.subarray(offset ?? 0, (offset ?? 0) + (length ?? data.length - (offset ?? 0)));
+        return actual.writeSync(fd, bytes.subarray(0, n));
+      }
       return (actual.writeSync as (...a: unknown[]) => number)(...args);
     }) as typeof actual.writeSync,
+    fsyncSync: ((fd: number) => {
+      faults.fsyncedPaths.push(fdPaths.get(fd) ?? "");
+      if (faults.dirFsyncError?.at === "fsync" && actual.fstatSync(fd).isDirectory()) {
+        throw errno(faults.dirFsyncError.code, "fsync");
+      }
+      return actual.fsyncSync(fd);
+    }) as typeof actual.fsyncSync,
     linkSync: ((existing: string, target: string) => {
       if (faults.rivalKey !== null) actual.writeFileSync(target, faults.rivalKey, { mode: 0o600 });
       if (faults.linkError !== null) throw errno(faults.linkError, "link");
@@ -110,6 +144,10 @@ describe("persistEnvSecretToKeyFile", () => {
     faults.linkError = null;
     faults.readError = null;
     faults.readdirCalls.length = 0;
+    faults.shortWrite = null;
+    faults.zeroWrite = false;
+    faults.fsyncedPaths.length = 0;
+    faults.dirFsyncError = null;
     rmSync(dir, { recursive: true, force: true });
     if (savedDir === undefined) delete process.env.ENCRYPTION_KEY_DIR;
     else process.env.ENCRYPTION_KEY_DIR = savedDir;
@@ -289,6 +327,15 @@ describe("persistEnvSecretToKeyFile", () => {
       expect(readdirSync(dir)).toEqual([`.${NAME}`]);
     }
   );
+
+  it("writes the whole key when the filesystem accepts it in pieces", () => {
+    faults.shortWrite = { bytes: 10 };
+    process.env.AUDIT_HMAC_SECRET = KEY_A;
+
+    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written" });
+
+    expect(readFileSync(keyFile, "utf-8")).toBe(KEY_A);
+  });
 });
 
 describe("getOrCreateSecret writing a generated key", () => {
@@ -316,6 +363,10 @@ describe("getOrCreateSecret writing a generated key", () => {
     faults.linkError = null;
     faults.readError = null;
     faults.readdirCalls.length = 0;
+    faults.shortWrite = null;
+    faults.zeroWrite = false;
+    faults.fsyncedPaths.length = 0;
+    faults.dirFsyncError = null;
     rmSync(dir, { recursive: true, force: true });
     if (savedDir === undefined) delete process.env.ENCRYPTION_KEY_DIR;
     else process.env.ENCRYPTION_KEY_DIR = savedDir;
@@ -379,6 +430,65 @@ describe("getOrCreateSecret writing a generated key", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
+  // write() may return having written only part of the buffer. Ignoring the
+  // count would link a key file holding the first few characters of the key
+  // while this process signs with all 64: every later read rejects the file,
+  // and everything signed so far is under a key nothing can load again.
+  it.each([
+    ["with hard links", null],
+    ["without hard links", "ENOTSUP"],
+  ])("writes the whole key when the filesystem accepts it in pieces (%s)", (_, linkError) => {
+    faults.linkError = linkError;
+    // Without hard links the key file itself is written; short-change that write.
+    faults.shortWrite = linkError ? { bytes: 10, path: keyFile } : { bytes: 10 };
+
+    const generated = getOrCreateSecret(NAME);
+
+    expect(readFileSync(keyFile, "utf-8")).toBe(generated.toString("hex"));
+    expect(readdirSync(dir)).toEqual([`.${NAME}`]);
+  });
+
+  it.each([
+    ["with hard links", null],
+    ["without hard links", "ENOTSUP"],
+  ])("leaves no key file when a write makes no progress (%s)", (_, linkError) => {
+    faults.linkError = linkError;
+    faults.zeroWrite = true;
+
+    expect(() => getOrCreateSecret(NAME)).toThrow(/EIO/);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  // The file's own fsync makes its bytes durable, not its name: until the
+  // directory is fsynced, a power cut can lose the link while the process has
+  // already signed with the key it named.
+  it.each([
+    ["with hard links", null],
+    ["without hard links", "ENOTSUP"],
+  ])("fsyncs the key directory once the key file has its name (%s)", (_, linkError) => {
+    faults.linkError = linkError;
+
+    getOrCreateSecret(NAME);
+
+    expect(faults.fsyncedPaths).toContain(dir);
+  });
+
+  // Some filesystems (and Windows) refuse to open or fsync a directory. The
+  // key file is in place either way; that refusal must not fail the write.
+  it.each([
+    ["open", "EISDIR"],
+    ["fsync", "EISDIR"],
+    ["fsync", "EINVAL"],
+    ["fsync", "EPERM"],
+    ["fsync", "EBADF"],
+  ] as const)("still generates the key when the directory %s fails with %s", (at, code) => {
+    faults.dirFsyncError = { at, code };
+
+    const generated = getOrCreateSecret(NAME);
+
+    expect(readFileSync(keyFile, "utf-8")).toBe(generated.toString("hex"));
+  });
+
   it("does not fall back on a link error that is not about missing hard links", () => {
     faults.linkError = "EIO";
 
@@ -404,6 +514,10 @@ describe("getOrCreateSecret cleaning up after a crash", () => {
 
   afterEach(() => {
     faults.readdirCalls.length = 0;
+    faults.shortWrite = null;
+    faults.zeroWrite = false;
+    faults.fsyncedPaths.length = 0;
+    faults.dirFsyncError = null;
     rmSync(dir, { recursive: true, force: true });
     if (savedDir === undefined) delete process.env.ENCRYPTION_KEY_DIR;
     else process.env.ENCRYPTION_KEY_DIR = savedDir;

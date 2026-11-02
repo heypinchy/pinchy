@@ -24,7 +24,12 @@ vi.mock("fs", async (importOriginal) => {
   const fstatSyncMock = vi.fn(() => ({ mtimeMs: 1 }));
   // A generated key goes through a temp file (write, fsync, link, unlink). The
   // fds above are fake, so these must never reach the real fs.
-  const writeSyncMock = vi.fn();
+  // Reports every byte it was handed as written, as a real write usually does:
+  // the implementation loops on the returned count.
+  const writeSyncMock = vi.fn(
+    (_fd: number, data: string | Buffer, offset = 0, length?: number): number =>
+      typeof data === "string" ? Buffer.byteLength(data) : (length ?? data.length - offset)
+  );
   const fsyncSyncMock = vi.fn();
   const linkSyncMock = vi.fn();
   const unlinkSyncMock = vi.fn();
@@ -58,6 +63,7 @@ import {
   linkSync,
   unlinkSync,
 } from "fs";
+import { dirname } from "path";
 
 const { __fdToPath } = (await import("fs")) as unknown as {
   __fdToPath: (fd: number) => string | undefined;
@@ -70,20 +76,32 @@ const mockedFstatSync = vi.mocked(fstatSync);
 
 /**
  * A generated key is written to a 0600 temp file next to the key file,
- * fsynced, then linked into place (never replacing an existing file), and the
- * temp file removed: no partial key file, even on a full disk.
+ * fsynced, then linked into place (never replacing an existing file), the
+ * directory fsynced so the new name survives a power cut, and the temp file
+ * removed: no partial key file, even on a full disk.
  */
 function expectGeneratedKeyWritten(keyFilePath: string, keyHex: string) {
   const tmpOpens = mockedOpenSync.mock.calls.filter(([, flags]) => flags === "wx");
   expect(tmpOpens).toHaveLength(1);
   const [tmpPath, , mode] = tmpOpens[0];
+  const fdOpenedFor = (path: string, flags: string) =>
+    mockedOpenSync.mock.results[
+      mockedOpenSync.mock.calls.findIndex(([p, f]) => p === path && f === flags)
+    ]?.value as number;
+  const tmpFd = fdOpenedFor(String(tmpPath), "wx");
+  const dirFd = fdOpenedFor(dirname(keyFilePath), "r");
   const suffix = String(tmpPath).slice(keyFilePath.length);
   expect(String(tmpPath).startsWith(`${keyFilePath}.`)).toBe(true);
   expect(suffix).toMatch(/^\.\d+\.[0-9a-f]{8}\.tmp$/);
   expect(mode).toBe(0o600);
   expect(keyHex).toMatch(/^[0-9a-f]{64}$/);
-  expect(vi.mocked(writeSync)).toHaveBeenCalledWith(expect.any(Number), keyHex);
-  expect(vi.mocked(fsyncSync)).toHaveBeenCalledOnce();
+  const written = (vi.mocked(writeSync).mock.calls as unknown as [number, Buffer, number, number][])
+    .filter(([fd]) => fd === tmpFd)
+    .map(([, data, offset, length]) => data.subarray(offset, offset + length));
+  expect(Buffer.concat(written).toString()).toBe(keyHex);
+  expect(vi.mocked(fsyncSync)).toHaveBeenCalledWith(tmpFd);
+  expect(dirFd).toEqual(expect.any(Number));
+  expect(vi.mocked(fsyncSync)).toHaveBeenCalledWith(dirFd);
   expect(vi.mocked(linkSync)).toHaveBeenCalledWith(tmpPath, keyFilePath);
   expect(vi.mocked(unlinkSync)).toHaveBeenCalledWith(tmpPath);
 }

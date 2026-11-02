@@ -149,6 +149,52 @@ export type EnvSecretPersistOutcome =
 const NO_HARD_LINK_CODES = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "ENOSYS", "EXDEV"]);
 
 /**
+ * Write all of `data`, then fsync. `write` may return having written only part
+ * of the buffer; ignoring the count would leave a key file holding the first
+ * few characters of a key the process is already using in full. A write that
+ * makes no progress at all is an error, never a loop.
+ */
+function writeAllAndSync(fd: number, path: string, data: string): void {
+  const bytes = Buffer.from(data);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = writeSync(fd, bytes, offset, bytes.length - offset);
+    if (!(written > 0)) {
+      throw Object.assign(new Error(`EIO: write made no progress, write '${path}'`), {
+        code: "EIO",
+      });
+    }
+    offset += written;
+  }
+  fsyncSync(fd);
+}
+
+/** What a filesystem that cannot open or fsync a directory says (Windows, some FUSE/SMB mounts). */
+const NO_DIR_FSYNC_CODES = new Set(["EISDIR", "EINVAL", "EPERM", "EBADF"]);
+
+/**
+ * Make a new name in `dir` durable. The file's own fsync covers its bytes,
+ * not the directory entry: until the directory is fsynced, a power cut can
+ * lose the key file while the process has already used the key it holds.
+ */
+function fsyncDirectory(dir: string): void {
+  let fd: number;
+  try {
+    fd = openSync(dir, "r");
+  } catch (err) {
+    if (NO_DIR_FSYNC_CODES.has((err as NodeJS.ErrnoException).code ?? "")) return;
+    throw err;
+  }
+  try {
+    fsyncSync(fd);
+  } catch (err) {
+    if (!NO_DIR_FSYNC_CODES.has((err as NodeJS.ErrnoException).code ?? "")) throw err;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
  * Write a key to its key file without ever leaving a partial file or replacing
  * an existing one: written and fsynced to a temporary file in the same
  * directory, then hard-linked to the final name. `link` fails with EEXIST
@@ -171,8 +217,7 @@ function writeKeyFileExclusive(keyFilePath: string, keyHex: string): "written" |
   const fd = openSync(tmpPath, "wx", 0o600);
   try {
     try {
-      writeSync(fd, keyHex);
-      fsyncSync(fd);
+      writeAllAndSync(fd, tmpPath, keyHex);
     } finally {
       closeSync(fd);
     }
@@ -184,6 +229,7 @@ function writeKeyFileExclusive(keyFilePath: string, keyHex: string): "written" |
       if (code && NO_HARD_LINK_CODES.has(code)) return createKeyFileDirectly(keyFilePath, keyHex);
       throw err;
     }
+    fsyncDirectory(dirname(keyFilePath));
     return "written";
   } finally {
     try {
@@ -211,8 +257,7 @@ function createKeyFileDirectly(keyFilePath: string, keyHex: string): "written" |
   }
   try {
     try {
-      writeSync(fd, keyHex);
-      fsyncSync(fd);
+      writeAllAndSync(fd, keyFilePath, keyHex);
     } finally {
       closeSync(fd);
     }
@@ -224,6 +269,7 @@ function createKeyFileDirectly(keyFilePath: string, keyHex: string): "written" |
     }
     throw err;
   }
+  fsyncDirectory(dirname(keyFilePath));
   return "written";
 }
 
