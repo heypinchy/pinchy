@@ -4,6 +4,7 @@ import { gfm } from "turndown-plugin-gfm";
 import {
   MAX_DOCX_DECOMPRESSED_BYTES,
   MAX_DOCX_ENTRY_BYTES,
+  MAX_DOCX_MARKUP_BYTES,
   verifiedZipCopy,
 } from "./docx-zip-guard";
 import { MAX_FILE_SIZE } from "./validate";
@@ -20,8 +21,13 @@ export interface DocxExtractionResult {
 export interface DocxExtractOptions {
   /** Cap on the archive's declared decompressed size (issue #424). */
   maxDecompressedBytes?: number;
-  /** Cap on any one part's size: mammoth builds a DOM from a part, at many times its size. */
+  /** Cap on any one part's size, pictures included. */
   maxEntryBytes?: number;
+  /**
+   * Cap on the markup mammoth parses, summed: its DOM costs up to ~300x the
+   * XML (see `MAX_DOCX_MARKUP_BYTES`), while a picture costs it nothing.
+   */
+  maxMarkupBytes?: number;
   /** Cap on the extracted Markdown length — second defense layer. */
   maxTextBytes?: number;
 }
@@ -100,6 +106,10 @@ export async function extractDocxText(
   const verified = await verifiedZipCopy(buffer, {
     maxDecompressedBytes: options.maxDecompressedBytes ?? MAX_DOCX_DECOMPRESSED_BYTES,
     maxEntryBytes: options.maxEntryBytes ?? MAX_DOCX_ENTRY_BYTES,
+    // A document past this is answered with the guard's error ("…bytes of
+    // markup to parse, past the …-byte limit…") instead of a DOM that can take
+    // the OpenClaw container down (fourth review, PR #1243).
+    maxMarkupBytes: options.maxMarkupBytes ?? MAX_DOCX_MARKUP_BYTES,
   });
 
   const { value: rawHtml } = await mammoth.convertToHtml(

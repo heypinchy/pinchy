@@ -20,7 +20,7 @@ import { constants as fsConstants, mkdtempSync, rmSync } from "node:fs";
 import { mkdir, open, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import mammoth from "mammoth";
 
 import {
@@ -42,6 +42,7 @@ import {
   declaredBomb,
   docxWith,
   lyingEntry,
+  REL_IMAGE,
   relationships,
   replaceEntry,
 } from "@/test-helpers/office-zip";
@@ -919,6 +920,54 @@ describe("preflight before conversion (release review v0.10.0)", () => {
     } finally {
       extract.mockRestore();
     }
+  });
+});
+
+describe("the word-count oracle's markup ceiling (fourth review, PR #1243)", () => {
+  // mammoth's DOM costs up to ~300x the XML it parses, and the oracle runs in
+  // the web process: a 1.9 MB .docx with a 31 MiB document part peaked at
+  // 2.9 GB. The oracle is a tripwire, not a gate — past the ceiling it is
+  // skipped, the conversion goes on, and the document is recorded unverified.
+  it("skips a document with more markup than it may parse, says so, and never calls mammoth", async () => {
+    const big = join(tmpRoot, "long.docx");
+    await writeFile(
+      big,
+      docxWith({
+        documentRels: relationships(),
+        body: "<w:p><w:r><w:t>word</w:t></w:r></w:p>".repeat(60_000),
+      })
+    );
+    const extract = vi.spyOn(mammoth, "extractRawText");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await countSourceWordsWithOracle(big)).toBeNull();
+      expect(extract).not.toHaveBeenCalled();
+      expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(
+        /unverified.*markup/
+      );
+    } finally {
+      extract.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("still counts a document whose picture is bigger than that ceiling", async () => {
+    const photo = Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      randomBytes(3 * 1024 * 1024),
+    ]);
+    const withPhoto = join(tmpRoot, "photo.docx");
+    await writeFile(
+      withPhoto,
+      docxWith({
+        text: "Three words here",
+        documentRels: relationships(
+          `<Relationship Id="rId9" Type="${REL_IMAGE}" Target="media/photo.png"/>`
+        ),
+        parts: { "word/media/photo.png": photo },
+      })
+    );
+    expect(await countSourceWordsWithOracle(withPhoto)).toBe(3);
   });
 });
 

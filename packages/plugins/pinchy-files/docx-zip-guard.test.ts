@@ -565,6 +565,130 @@ describe("verifiedZipCopy — a ceiling per entry", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Fourth review (PR #1243): what a reader PARSES is capped, not what it stores
+// ---------------------------------------------------------------------------
+
+describe("verifiedZipCopy — a ceiling on the markup a reader may parse", () => {
+  // mammoth builds a DOM from every XML part it reads, at 90-300x the part's
+  // size (measured: a 2 MiB document part of tiny paragraphs peaks at 0.7 GB
+  // through extractDocxText). A per-entry ceiling low enough for that would
+  // refuse every document carrying a phone photo, so the ceiling is on the
+  // MARKUP: every part a reader may parse as XML, summed. A picture only an
+  // image relationship points at is never parsed, so it does not count.
+  const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
+  const LIMITS_2K = { ...LIMITS, maxMarkupBytes: 2000 };
+
+  const pictureBytes = () =>
+    Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.alloc(5000, 7)]);
+
+  function docRels(...rels: Array<[type: string, target: string]>): string {
+    return `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels
+      .map(
+        ([type, target], i) =>
+          `<Relationship Id="rId${i}" Type="${REL}${type}" Target="${target}"/>`
+      )
+      .join("")}</Relationships>`;
+  }
+
+  const rootRels = docRels(["officeDocument", "word/document.xml"]);
+
+  it("refuses markup past the ceiling, summed over every XML part, naming the total", async () => {
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      honest("_rels/.rels", rootRels),
+      honest("word/document.xml", `<w:document>${"x".repeat(900)}</w:document>`),
+      honest("word/footnotes.xml", `<w:footnotes>${"y".repeat(900)}</w:footnotes>`),
+    ]);
+    const err = await refusal(verifiedZipCopy(zip, LIMITS_2K));
+    expect(err).toBeInstanceOf(ZipLimitError);
+    expect(err.message).toMatch(/markup/);
+    expect(err.message).toMatch(/2000-byte limit/);
+  });
+
+  it("does not count a picture only an image relationship points at", async () => {
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      honest("_rels/.rels", rootRels),
+      honest("word/_rels/document.xml.rels", docRels(["image", "media/image1.png"])),
+      honest("word/document.xml", "<w:document/>"),
+      honest("word/media/image1.png", pictureBytes()),
+    ]);
+    const copy = await verifiedZipCopy(zip, LIMITS_2K);
+    expect(contentsOf(copy).get("word/media/image1.png")!.length).toBe(5008);
+  });
+
+  it("counts a 'picture' that a relationship mammoth parses points at — its name and bytes do not matter", async () => {
+    // mammoth reads the main document wherever _rels/.rels says it is, and it
+    // parsed XML sitting behind a PNG signature without complaint (measured).
+    const xmlBehindPng = Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      Buffer.from(`<w:styles>${"s".repeat(4000)}</w:styles>`),
+    ]);
+    for (const rels of [
+      [
+        ["image", "media/image1.png"],
+        ["styles", "media/image1.png"],
+      ],
+      [
+        ["image", "media/image1.png"],
+        ["styles", "./media/../media/image1.png"],
+      ],
+      [
+        ["image", "media/image1.png"],
+        ["styles", "MEDIA/IMAGE1.PNG"],
+      ],
+    ] as Array<Array<[string, string]>>) {
+      const zip = rawZip([
+        honest("[Content_Types].xml", "<Types/>"),
+        honest("_rels/.rels", rootRels),
+        honest("word/_rels/document.xml.rels", docRels(...rels)),
+        honest("word/document.xml", "<w:document/>"),
+        honest("word/media/image1.png", xmlBehindPng),
+      ]);
+      expect(await refusal(verifiedZipCopy(zip, LIMITS_2K))).toBeInstanceOf(ZipLimitError);
+    }
+  });
+
+  it("counts every part when a relationship it would have to resolve is spelled in a way it does not decode", async () => {
+    // An entity or a percent-escape in a parsed relationship's target names a
+    // part only a decoder agrees on. Rather than decode like mammoth, it
+    // gives up on telling pictures apart: everything counts.
+    for (const target of ["media/image&#49;.png", "media/image%31.png", "media\\image1.png"]) {
+      const zip = rawZip([
+        honest("[Content_Types].xml", "<Types/>"),
+        honest("_rels/.rels", rootRels),
+        honest(
+          "word/_rels/document.xml.rels",
+          docRels(["image", "media/image1.png"], ["styles", target])
+        ),
+        honest("word/document.xml", "<w:document/>"),
+        honest("word/media/image1.png", pictureBytes()),
+      ]);
+      expect(await refusal(verifiedZipCopy(zip, LIMITS_2K))).toBeInstanceOf(ZipLimitError);
+    }
+  });
+
+  it("counts every part when a relationship part cannot be read unambiguously", async () => {
+    const zip = rawZip([
+      honest("[Content_Types].xml", "<Types/>"),
+      honest("_rels/.rels", rootRels),
+      honest(
+        "word/_rels/document.xml.rels",
+        `<Relationships><Relationship Id="a>b" Type="${REL}image" Target="media/image1.png"/></Relationships>`
+      ),
+      honest("word/document.xml", "<w:document/>"),
+      honest("word/media/image1.png", pictureBytes()),
+    ]);
+    expect(await refusal(verifiedZipCopy(zip, LIMITS_2K))).toBeInstanceOf(ZipLimitError);
+  });
+
+  it("is off unless asked for: workbooks and decks keep their own limits", async () => {
+    const zip = rawZip([honest("xl/worksheets/sheet1.xml", "x".repeat(5000))]);
+    expect(contentsOf(await verifiedZipCopy(zip, LIMITS)).size).toBe(1);
+  });
+});
+
 describe("verifiedZipCopy — a ZIP64 end record nothing needed", () => {
   // Some writers (.NET's System.IO.Packaging among them) put a ZIP64 end of
   // central directory record and its locator in front of the classic end

@@ -87,6 +87,7 @@ import { extname } from "node:path";
 
 import {
   MAX_DOCX_ENTRY_BYTES,
+  MAX_DOCX_MARKUP_BYTES,
   verifiedZipCopy,
   ZipLimitError,
   type ZipLimits,
@@ -153,11 +154,19 @@ const XLSX_LIMITS: ZipLimits = {
 
 /**
  * What mammoth (the word-count oracle) may be handed: the conversion's limits,
- * plus a ceiling on any ONE part. mammoth inflates a part whole and builds a
- * DOM from it at many times its size; the total above bounds the archive, not
- * that. The plugin's own `extractDocxText` uses the same ceiling.
+ * plus a ceiling on any ONE part, plus a ceiling on the MARKUP it parses,
+ * summed. mammoth builds a DOM at up to ~300x the XML it reads — a 1.9 MB
+ * .docx with a 31 MiB document part peaked at 2.9 GB, in the web process
+ * (fourth review, PR #1243) — while a picture costs it nothing. The plugin's
+ * own `extractDocxText` uses the same ceilings; `MAX_DOCX_MARKUP_BYTES` has
+ * the measurements. Past them the oracle is skipped and the conversion is
+ * recorded `unverified`: the oracle is a tripwire, not worth the server.
  */
-const MAMMOTH_LIMITS: ZipLimits = { ...OOXML_LIMITS, maxEntryBytes: MAX_DOCX_ENTRY_BYTES };
+const MAMMOTH_LIMITS: ZipLimits = {
+  ...OOXML_LIMITS,
+  maxEntryBytes: MAX_DOCX_ENTRY_BYTES,
+  maxMarkupBytes: MAX_DOCX_MARKUP_BYTES,
+};
 
 /** No real relationship part is anywhere near this; a bigger one is not one. */
 const MAX_RELS_BYTES = 4 * MiB;

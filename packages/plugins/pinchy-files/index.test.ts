@@ -734,6 +734,54 @@ describe("pinchy_read DOCX integration", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+  it("answers a .docx with too much markup to read safely with isError=true and says why (fourth review, PR #1243)", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "pinchy-files-test-"));
+    const path = join(tmpDir, "huge-text.docx");
+    const { assembleZip, crc32, readZipEntries } = await import("./docx-zip-guard");
+    const { deflateRawSync } = await import("zlib");
+    const fixture = realReadFileSync(join(FIXTURES, "simple.docx"));
+    const xml = Buffer.from(
+      `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${"<w:p><w:r><w:t>word</w:t></w:r></w:p>".repeat(60_000)}</w:body></w:document>`
+    );
+    writeFileSync(
+      path,
+      assembleZip(
+        readZipEntries(fixture).map((entry) => {
+          const at = entry.localHeaderOffset;
+          const start = at + 30 + fixture.readUInt16LE(at + 26) + fixture.readUInt16LE(at + 28);
+          return entry.name === "word/document.xml"
+            ? {
+                name: entry.name,
+                method: 8,
+                flags: 0,
+                crc32: crc32(xml),
+                uncompressedSize: xml.length,
+                data: deflateRawSync(xml),
+              }
+            : {
+                name: entry.name,
+                method: entry.method,
+                flags: entry.flags,
+                crc32: entry.crc32,
+                uncompressedSize: entry.uncompressedSize,
+                data: fixture.subarray(start, start + entry.compressedSize),
+              };
+        })
+      )
+    );
+
+    try {
+      const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+      const tool = await getReadTool(api);
+
+      const result = await tool.execute("call-1", { path });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/markup/);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("pinchy_read image integration", () => {

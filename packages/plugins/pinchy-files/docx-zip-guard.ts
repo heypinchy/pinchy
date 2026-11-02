@@ -32,6 +32,7 @@
 // become a web dependency (and, resolved out of a plugin's node_modules, would
 // not resolve at all).
 
+import { posix } from "node:path";
 import * as zlib from "node:zlib";
 
 const EOCD_SIGNATURE = 0x06054b50; // end of central directory
@@ -52,6 +53,24 @@ export const MAX_DOCX_DECOMPRESSED_BYTES = 500 * 1024 * 1024;
 // a .docx the plugin reads is at most MAX_FILE_SIZE (10 MB) on disk, so a
 // picture past it cannot be stored either.
 export const MAX_DOCX_ENTRY_BYTES = 32 * 1024 * 1024;
+
+// The most MARKUP mammoth is handed: every part it may parse as XML, summed
+// (see `ZipLimits.maxMarkupBytes`). mammoth's DOM costs 90-300x the XML it
+// parses, worst for many tiny paragraphs. Measured with mammoth 1.12 on Node 22
+// (fourth review, PR #1243), peak RSS of a process doing nothing else:
+//
+//   markup     extractDocxText (plugin)    extractRawText (web's word count)
+//   1 MiB      371 MB                      254 MB
+//   2 MiB      697 MB                      378 MB
+//   4 MiB      1093 MB                     588 MB
+//   8 MiB      2483 MB                     1234 MB
+//
+// 2 MiB keeps the worst case of either well under the 1 GB the web container
+// and half the 2 GB the OpenClaw container get by default. A real document is
+// far cheaper per byte (a 4 MiB part of Word-shaped paragraphs: 573 MB through
+// extractDocxText), so 2 MiB of markup is a document of a few hundred pages;
+// past it, `pinchy_read` answers with a clear error instead.
+export const MAX_DOCX_MARKUP_BYTES = 2 * 1024 * 1024;
 
 export interface DocxDeclaredSize {
   totalUncompressedBytes: number;
@@ -229,6 +248,23 @@ export interface ZipLimits {
    * declared ones by `verifiedZipCopy`, so the declared size is the real one.
    */
   maxEntryBytes?: number;
+  /**
+   * Ceiling on the MARKUP a reader may parse: the summed size of every part it
+   * could read as XML. A DOM-building reader (mammoth) pays for that, many
+   * times over, while a picture costs it nothing — so a per-entry ceiling low
+   * enough to bound the DOM would refuse every document with a photo in it.
+   *
+   * What counts is decided by relationship, not by name or bytes: mammoth
+   * reads the main document wherever `_rels/.rels` points, and it parses XML
+   * sitting behind a PNG signature without complaint (measured). So every
+   * `.xml`/`.rels` part counts, and so does every part a relationship of a
+   * type other than picture, font, hyperlink or embedded object points at. A
+   * picture only an image relationship points at does not. Where a
+   * relationship part cannot be read unambiguously — a malformed tag, or a
+   * target spelled with an entity or escape mammoth would decode — every part
+   * counts (`markupBytes`).
+   */
+  maxMarkupBytes?: number;
 }
 
 /**
@@ -466,7 +502,163 @@ export async function verifiedZipCopy(buffer: Buffer, limits: ZipLimits): Promis
     });
   }
 
+  if (limits.maxMarkupBytes !== undefined) {
+    const markup = markupBytes(parts);
+    if (markup > limits.maxMarkupBytes) {
+      throw new ZipLimitError(
+        `This document has ${markup} bytes of markup to parse, past the ${limits.maxMarkupBytes}-byte limit for reading one safely.`
+      );
+    }
+  }
+
   return assembleZip(parts);
+}
+
+// ---------------------------------------------------------------------------
+// Markup: what a reader may parse as XML
+// ---------------------------------------------------------------------------
+
+/**
+ * Relationship types whose target a reader embeds or links but never parses as
+ * XML: pictures, fonts, embedded objects and packages, media, hyperlinks.
+ * Matched on the type's last path segment, so the Strict namespace counts too.
+ * Anything not listed — including a type spelled with an entity — is assumed
+ * parsed.
+ */
+const UNPARSED_RELATIONSHIP_TYPES = new Set([
+  "image",
+  "font",
+  "oleobject",
+  "package",
+  "hyperlink",
+  "video",
+  "audio",
+  "media",
+]);
+
+/** No real relationship tag is this long; one that is, is not read. */
+const MAX_RELATIONSHIP_TAG_CHARS = 16 * 1024;
+
+interface Relationship {
+  type: string;
+  target: string;
+}
+
+const isXmlSpace = (c: string | undefined) => c === " " || c === "\t" || c === "\n" || c === "\r";
+
+/**
+ * The attributes of one tag, or null where they cannot be read unambiguously:
+ * an unquoted or unterminated value (a `>` inside a quoted value ends the tag
+ * early and leaves one), or the same attribute twice.
+ */
+function tagAttributes(tag: string): Map<string, string> | null {
+  const attributes = new Map<string, string>();
+  let at = 0;
+  // Skip the element name.
+  while (at < tag.length && !isXmlSpace(tag[at]) && tag[at] !== "/") at++;
+  for (;;) {
+    while (isXmlSpace(tag[at])) at++;
+    if (at >= tag.length || tag[at] === "/") return attributes;
+    const nameStart = at;
+    while (at < tag.length && tag[at] !== "=" && !isXmlSpace(tag[at])) at++;
+    const name = tag.slice(nameStart, at);
+    while (isXmlSpace(tag[at])) at++;
+    if (tag[at] !== "=") return null;
+    at++;
+    while (isXmlSpace(tag[at])) at++;
+    const quote = tag[at];
+    if (quote !== '"' && quote !== "'") return null;
+    const end = tag.indexOf(quote, at + 1);
+    if (end < 0 || attributes.has(name)) return null;
+    attributes.set(name, tag.slice(at + 1, end));
+    at = end + 1;
+  }
+}
+
+/**
+ * Every `Relationship` element in a relationship part, or null if the part
+ * cannot be read unambiguously. One forward pass: each tag is read from its
+ * `<` to the next `>`, and a `<` with no `>` ends the scan.
+ */
+function relationshipsIn(xml: string): Relationship[] | null {
+  const out: Relationship[] = [];
+  let at = 0;
+  for (;;) {
+    const open = xml.indexOf("<", at);
+    if (open < 0) return out;
+    const close = xml.indexOf(">", open + 1);
+    if (close < 0 || close - open > MAX_RELATIONSHIP_TAG_CHARS) return null;
+    const tag = xml.slice(open + 1, close);
+    at = close + 1;
+    const name = /^[^\s/>]*/.exec(tag)![0];
+    if (name.slice(name.indexOf(":") + 1) !== "Relationship") continue;
+    const attributes = tagAttributes(tag);
+    if (!attributes) return null;
+    out.push({ type: attributes.get("Type") ?? "", target: attributes.get("Target") ?? "" });
+  }
+}
+
+/**
+ * The lowercased file name a relationship target resolves to, whatever path
+ * it is joined to — or null when the target is spelled in a way only a
+ * decoder agrees on (an entity, a percent-escape, a backslash).
+ */
+function targetFileName(target: string): string | null {
+  if (/[&%\\]/.test(target)) return null;
+  const normalized = posix.normalize(`/${target}`).replace(/\/+$/, "");
+  return posix.basename(normalized).toLowerCase();
+}
+
+/** A part's file name as `targetFileName` would spell it. */
+const fileNameOf = (name: string) => posix.basename(name).toLowerCase();
+
+const isMarkupName = (name: string) => /\.(?:xml|rels)$/i.test(name);
+
+function inflated(part: ZipPart): Buffer {
+  return part.method === METHOD_STORED
+    ? part.data
+    : zlib.inflateRawSync(part.data, { maxOutputLength: Math.max(part.uncompressedSize, 1) });
+}
+
+/**
+ * How many bytes of `parts` a reader may parse as XML — see
+ * `ZipLimits.maxMarkupBytes` for what counts and why.
+ *
+ * Errs towards counting. A part is left out only when it is not named like
+ * XML, is pointed at by an unparsed (picture-like) relationship, and has a
+ * file name no other relationship's target resolves to. Matching on the FILE
+ * NAME alone, case-insensitively, is what makes that conservative: however a
+ * reader joins a target to its base path, the part it lands on has that name.
+ */
+function markupBytes(parts: ZipPart[]): number {
+  const all = parts.reduce((total, part) => total + part.uncompressedSize, 0);
+  const parsedNames = new Set<string>();
+  const unparsedNames = new Set<string>();
+
+  for (const part of parts) {
+    if (!/\.rels$/i.test(part.name)) continue;
+    const relationships = relationshipsIn(inflated(part).toString("utf8"));
+    if (!relationships) return all;
+    for (const { type, target } of relationships) {
+      const fileName = targetFileName(target);
+      const kind = type.includes("&") ? "" : type.slice(type.lastIndexOf("/") + 1).toLowerCase();
+      if (UNPARSED_RELATIONSHIP_TYPES.has(kind)) {
+        if (fileName) unparsedNames.add(fileName);
+        continue;
+      }
+      if (fileName === null) return all;
+      parsedNames.add(fileName);
+    }
+  }
+
+  let markup = 0;
+  for (const part of parts) {
+    const fileName = fileNameOf(part.name);
+    const skipped =
+      !isMarkupName(part.name) && unparsedNames.has(fileName) && !parsedNames.has(fileName);
+    if (!skipped) markup += part.uncompressedSize;
+  }
+  return markup;
 }
 
 const ZIP64_END_SIGNATURE = 0x06064b50;

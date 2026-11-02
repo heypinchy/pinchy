@@ -734,7 +734,13 @@ export async function countSourceWordsWithOracle(absPath: string): Promise<numbe
       const { default: mammoth } = await import("mammoth");
       const { value } = await mammoth.extractRawText({ buffer });
       return countWords(value);
-    } catch {
+    } catch (err) {
+      if (err instanceof OfficeFileRejectedError && err.code === "too_large") {
+        // Too much for mammoth's DOM in this process (or a bomb the
+        // conversion's own preflight refuses as well). Not a failure: the
+        // conversion goes on, without its tripwire.
+        console.warn(`[kb-convert] ${absPath}: word count skipped, unverified — ${err.message}`);
+      }
       return null;
     }
   }

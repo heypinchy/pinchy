@@ -1,11 +1,18 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from "vitest";
+import { randomBytes } from "crypto";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { constants as zlibConstants, deflateRawSync } from "zlib";
 import mammoth from "mammoth";
 import { extractDocxText } from "./docx-extract";
-import { assembleZip, crc32, readZipEntries, ZipLimitError } from "./docx-zip-guard";
+import {
+  assembleZip,
+  crc32,
+  MAX_DOCX_MARKUP_BYTES,
+  readZipEntries,
+  ZipLimitError,
+} from "./docx-zip-guard";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
 
@@ -124,6 +131,87 @@ describe("extractDocxText — one part, however honest, is capped (third review,
     }
   });
 });
+
+describe("extractDocxText — the markup mammoth parses is capped, the pictures it skips are not (fourth review, PR #1243)", () => {
+  // mammoth's DOM costs up to ~300x the XML it parses: a 1.9 MB .docx with a
+  // 31 MiB document part peaked at 2.9 GB, and a 2 MiB part of tiny paragraphs
+  // at 0.7 GB through this very function. The OpenClaw container gets 2 GB.
+  const paragraphs = (bytes: number) =>
+    "<w:p><w:r><w:t>word</w:t></w:r></w:p>".repeat(Math.ceil(bytes / 37));
+
+  it("refuses more than 2 MiB of markup with an error that says so, without calling mammoth", async () => {
+    const fixture = readFileSync(join(FIXTURES, "simple.docx"));
+    const big = withDocumentXml(fixture, paragraphs(MAX_DOCX_MARKUP_BYTES + 1));
+    const convert = vi.spyOn(mammoth, "convertToHtml");
+    try {
+      const err = await extractDocxText(big).then(
+        () => null,
+        (e: unknown) => e as Error
+      );
+      expect(err).toBeInstanceOf(ZipLimitError);
+      expect(err!.message).toMatch(/markup/);
+      expect(convert).not.toHaveBeenCalled();
+    } finally {
+      convert.mockRestore();
+    }
+  });
+
+  it("still reads a document whose PICTURE is bigger than the markup ceiling", async () => {
+    // A phone photo is 3-5 MB. mammoth never parses it (the image converter
+    // here does not even read it), so it must not count against the DOM.
+    const fixture = readFileSync(join(FIXTURES, "with-image.docx"));
+    const photo = Buffer.concat([
+      Buffer.from("89504e470d0a1a0a", "hex"),
+      randomBytes(MAX_DOCX_MARKUP_BYTES + 512 * 1024),
+    ]);
+    const withPhoto = replacePart(
+      fixture,
+      "word/media/b3e7639622b0359f8b4e73fcd9d43f43c7727804.png",
+      photo
+    );
+    const { text } = await extractDocxText(withPhoto);
+    expect(text).toContain("[image]");
+  });
+});
+
+/** `docx` with `word/document.xml` replaced by a document whose body is `body`. */
+function withDocumentXml(docx: Buffer, body: string): Buffer {
+  return replacePart(
+    docx,
+    "word/document.xml",
+    Buffer.from(
+      `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}</w:body></w:document>`
+    )
+  );
+}
+
+/** `docx` with part `name` replaced by `content`, truthful about its size and CRC. */
+function replacePart(docx: Buffer, name: string, content: Buffer): Buffer {
+  return assembleZip(
+    readZipEntries(docx).map((entry) => {
+      if (entry.name === name) {
+        return {
+          name,
+          method: 8,
+          flags: 0,
+          crc32: crc32(content),
+          uncompressedSize: content.length,
+          data: deflateRawSync(content),
+        };
+      }
+      const at = entry.localHeaderOffset;
+      const start = at + 30 + docx.readUInt16LE(at + 26) + docx.readUInt16LE(at + 28);
+      return {
+        name: entry.name,
+        method: entry.method,
+        flags: entry.flags,
+        crc32: entry.crc32,
+        uncompressedSize: entry.uncompressedSize,
+        data: docx.subarray(start, start + entry.compressedSize),
+      };
+    })
+  );
+}
 
 /** `docx` with `word/document.xml` replaced by `realBytes` of document, truthful about its size and CRC. */
 function withTruthfulDocument(docx: Buffer, realBytes: number): Buffer {
