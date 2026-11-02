@@ -392,6 +392,25 @@ describe("verifyIntegrity", () => {
         expect(result.chainBreakIds).toEqual([6]);
       });
 
+      it("seedPredecessorBroken: reports a first row of unknown version as a chain break too", async () => {
+        // A row version no verifier knows is invalid on its own, but the break
+        // to its predecessor is known from outside the window and must still be
+        // named where the deletion happened.
+        const seedHmac = "a".repeat(64);
+        const r6 = { ...makeV3Entry(6, seedHmac), version: 99 };
+        const r7 = makeV3Entry(7, r6.rowHmac);
+        mockLimit.mockResolvedValue([r6, r7]);
+
+        const result = await verifyIntegrity(6, 7, {
+          seedPrevHmac: seedHmac,
+          seedPredecessorBroken: true,
+        });
+
+        expect(result.valid).toBe(false);
+        expect(result.invalidIds).toEqual([6]);
+        expect(result.chainBreakIds).toEqual([6]);
+      });
+
       it("seedPredecessorBroken: marks only the first row of the window, not the first row of each page", async () => {
         const seedHmac = "a".repeat(64);
         const r6 = makeV3Entry(6, seedHmac);
@@ -639,6 +658,32 @@ describe("verifyIntegrity across a signing-secret rotation", () => {
     });
 
     expect(result.invalidIds).toEqual([5]);
+    expect(result.previousKeyIds).toEqual([]);
+    expect(result.valid).toBe(false);
+  });
+
+  // The sweep's checkpoint was a row signed under the earlier key, and someone
+  // deleted or re-signed it before the first sweep under the new key. The sweep
+  // can't tell where the key changed any more, so it closes the old key for the
+  // window (seedActiveKeySeen) and the earlier-key rows in it are invalid. The
+  // first row's signature therefore fails, and that must not hide the broken
+  // link: it is the one finding that says what actually happened.
+  it("seedPredecessorBroken: an earlier-key first row after a broken checkpoint is still a chain break", async () => {
+    const r5 = makeV3SignedWith(5, "checkpoint-hmac", previousSecret);
+    const r6 = makeV3SignedWith(6, r5.rowHmac, previousSecret);
+    const r7 = makeV3SignedWith(7, r6.rowHmac, secret);
+    mockLimit.mockResolvedValue([r5, r6, r7]);
+
+    const result = await verifyIntegrity(5, 7, {
+      seedPrevHmac: "checkpoint-hmac",
+      seedActiveKeySeen: true,
+      seedPredecessorBroken: true,
+    });
+
+    expect(result.chainBreakIds).toEqual([5]);
+    // Where the key changed is unknown after the checkpoint broke, so the
+    // earlier-key rows can't be confirmed as pre-change history.
+    expect(result.invalidIds).toEqual([5, 6]);
     expect(result.previousKeyIds).toEqual([]);
     expect(result.valid).toBe(false);
   });

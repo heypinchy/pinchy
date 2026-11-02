@@ -96,6 +96,17 @@ async function writeCheckpoint(
  * intact fails closed: the key change counts as seen, so an old-key row in the
  * window can't pass as pre-change history.
  *
+ * That has a cost, and it is the honest one. If the checkpoint was the last
+ * row signed under the earlier key, the window can hold untouched pre-change
+ * rows, and they land in `invalidIds` too. Nothing left in the window says
+ * where the key changed: the deleted row may just as well have been an
+ * active-key row with forged old-key rows after it, and those must not be
+ * reported as authentic history. The deletion itself is reported as a chain
+ * break on the window's first row whatever that row's own signature says
+ * (`seedPredecessorBroken`), so the report names it. A full verification walks
+ * from the first row, finds the real change point, and lists the untouched
+ * pre-change rows in `previousKeyIds` again.
+ *
  * Intact does NOT require the row to verify under a key we hold. A row that
  * verifies under neither key may have had its content altered in place (rowHmac
  * left alone), but it may just as well be a legitimate row signed under a key

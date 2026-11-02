@@ -497,6 +497,59 @@ describe("audit-verify-job across a signing-secret rotation (integration)", () =
     expect(second.chainBreakCount).toBe(1);
   });
 
+  // The checkpoint is the last report row signed under the earlier key, rows
+  // signed under it follow, then the key switches. Before the first sweep under
+  // the new key, the checkpoint row is deleted. The sweep must name the deletion
+  // as a chain break on the window's first row, although that row only verifies
+  // under the earlier key and the broken checkpoint closes that key for the
+  // window. A full verification then tells the untouched pre-switch rows apart.
+  it("reports a deleted earlier-key checkpoint row as a chain break on the window's first row", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const reportId = (await readCheckpointRow())!.lastVerifiedId;
+    await appendRow("u3");
+    await appendRow("u4");
+    // Everything so far was written while the earlier key was active.
+    await resignChainUnder(previousSecret);
+    const report = (await allRowsById()).find((r) => r.id === reportId)!;
+    await db
+      .update(auditVerifyState)
+      .set({ lastVerifiedHmac: report.rowHmac })
+      .where(eq(auditVerifyState.id, 1));
+    const [u3, u4] = (await allRowsById()).filter((r) => r.id > reportId);
+
+    // The switch: this row is signed under the active key.
+    await appendRow("u5");
+    await deleteRowPastTrigger(reportId);
+
+    const second = await sweepAuditVerify();
+
+    expect(second.valid).toBe(false);
+    expect(second.chainBreakCount).toBe(1);
+    const [failure] = await db
+      .select({ detail: auditLog.detail })
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "audit.integrity_check"))
+      .orderBy(sql`${auditLog.id} desc`)
+      .limit(1);
+    expect(failure.detail).toMatchObject({
+      chainBreakIds: [u3.id],
+      // The run can't place the key change any more, so the earlier-key rows in
+      // its window aren't accepted as pre-change history.
+      invalidIds: [u3.id, u4.id],
+      previousKeyCount: 0,
+    });
+
+    // A full verification establishes the change point from the first row:
+    // the untouched pre-switch rows are signed with the earlier key, and the
+    // deletion is the only finding.
+    const full = await verifyIntegrity();
+    expect(full.invalidIds).toEqual([]);
+    expect(full.chainBreakIds).toEqual([u3.id]);
+    expect(full.previousKeyIds).toEqual(expect.arrayContaining([u3.id, u4.id]));
+  });
+
   // Content-only tampering: the checkpoint row's content changes, its row_hmac
   // does not. The remembered hash still matches, so the row reads as intact,
   // but it verifies under no key any more. Read as "not signed under the active

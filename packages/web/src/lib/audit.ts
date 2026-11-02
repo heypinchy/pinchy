@@ -1171,6 +1171,8 @@ interface VerifyResult {
   invalidIds: number[];
   // v3 chain links that don't point at their predecessor's rowHmac — evidence
   // of a deleted (middle) row or a reordering, distinct from field tampering.
+  // Also the window's first row when the caller says its predecessor broke
+  // (`seedPredecessorBroken`); that row can be in `invalidIds` as well.
   chainBreakIds: number[];
   // Rows whose signature verifies under the SUPERSEDED signing secret rather
   // than the active one — an operator pinned AUDIT_HMAC_SECRET on an install
@@ -1315,7 +1317,15 @@ export async function verifyIntegrity(
     // was deleted, or its rowHmac changed. `seedPrevHmac` can't see that, since
     // the first row's link still matches the value the caller remembered. The
     // first row's link to its real predecessor is broken all the same, so it is
-    // reported in `chainBreakIds`, whatever its row version.
+    // reported in `chainBreakIds` whatever its row version and whatever its own
+    // signature says. A first row that also fails its signature (or has an
+    // unknown version) is in `invalidIds` too: the two findings are independent.
+    //
+    // That matters with `seedActiveKeySeen: true`, which a caller that lost its
+    // predecessor passes to fail closed: an earlier-key first row then fails
+    // its signature, and without this the deletion would only show up as that
+    // row being "changed". The option does not touch the key context itself;
+    // that is `seedActiveKeySeen`'s job.
     seedPredecessorBroken?: boolean;
   }
 ): Promise<VerifyResult> {
@@ -1367,6 +1377,10 @@ export async function verifyIntegrity(
       // window's first row.
       const linkKnownBroken = predecessorBroken;
       predecessorBroken = false;
+      // The break to this row's real predecessor is known from outside the
+      // window, not read from the row, so it is reported whatever the row's own
+      // signature says. A row that also fails its signature is in both lists.
+      if (linkKnownBroken) chainBreakIds.push(entry.id);
       const verifier = ROW_HMAC_VERIFIERS[entry.version];
       if (!verifier) {
         invalidIds.push(entry.id);
@@ -1413,9 +1427,8 @@ export async function verifyIntegrity(
 
       if (!signatureOk) {
         invalidIds.push(entry.id);
-      } else if (linkKnownBroken) {
-        chainBreakIds.push(entry.id);
       } else if (
+        !linkKnownBroken &&
         entry.version >= 3 &&
         prevRowHmac !== undefined &&
         entry.prevHmac !== prevRowHmac
