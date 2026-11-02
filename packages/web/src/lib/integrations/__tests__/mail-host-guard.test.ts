@@ -184,42 +184,61 @@ describe("assertMailHostAllowed", () => {
       expect(resolver).not.toHaveBeenCalled();
     });
 
-    it("strips brackets from an IPv6 literal before resolving", async () => {
-      const resolver = vi.fn(resolvesTo("2606:4700:4700::1111"));
-
-      await assertMailHostAllowed("[2606:4700:4700::1111]", resolver);
-
-      expect(resolver).toHaveBeenCalledWith("2606:4700:4700::1111");
-    });
-
-    it("blocks a bracketed IPv6 loopback literal", async () => {
-      await expect(assertMailHostAllowed("[::1]", resolvesTo("::1"))).rejects.toThrow(
-        MailHostBlockedError
-      );
-    });
-
-    // The guard used to check the host with everything after a `%` dropped,
-    // while imapflow/nodemailer connect to the host as stored. For
-    // `a%b.attacker.test` that meant checking `a` (unresolvable → let through)
-    // and connecting to a name whose DNS the attacker controls. Measured: glibc
-    // and c-ares (our node:22-slim images) refuse to query such a name, musl
-    // sends the query and connects to the answer — so the check was only as
-    // good as the libc. No mail host needs a `%`: a hostname cannot contain
-    // one, and the only literal that does (an IPv6 zone ID) is link-local,
-    // refused anyway.
+    // The guard used to check a NORMALISED host — trimmed, brackets and
+    // everything after a `%` dropped — while imapflow/nodemailer connect to the
+    // host exactly as stored. `a%b.attacker.test` was checked as `a`
+    // (unresolvable → let through), `[a.attacker.test` as `a.attacker.test`,
+    // and the client then handed the raw string to a resolver. Measured: glibc
+    // and c-ares (our node:22-slim images) refuse such names, musl sends the
+    // query and connects to the answer — so the check was only as good as the
+    // libc. Now the host must already be something every resolver reads the
+    // same way, and it is resolved verbatim.
     it.each([
-      ["a name whose prefix does not resolve", "a%b.attacker.test"],
-      ["a public name with a suffix", "mail.example.com%x"],
+      ["a leading bracket", "[a.attacker.test"],
+      ["a trailing bracket", "a.attacker.test]"],
+      // Neither imapflow nor nodemailer strips brackets: `[::1]` reaches the
+      // resolver as a name, never as an address.
+      ["a bracketed IPv6 literal", "[2606:4700:4700::1111]"],
+      ["a bracketed IPv6 loopback literal", "[::1]"],
+      ["leading whitespace", " a.attacker.test"],
+      ["trailing whitespace", "imap.example.com "],
+      ["a % in a name whose prefix does not resolve", "a%b.attacker.test"],
+      ["a % after a public name", "mail.example.com%x"],
       ["an IPv6 link-local literal with a zone ID", "fe80::1%eth0"],
       ["a bracketed literal with a zone ID", "[fe80::1%25eth0]"],
-    ])("refuses %s (%s) without resolving it", async (_label, host) => {
+      ["a space inside the name", "a b.attacker.test"],
+      ["an underscore", "mail_server.example.com"],
+      // Raw Unicode: the clients pass it to the resolver unconverted (no IDNA),
+      // so what it reaches depends on the libc. The punycode form is accepted.
+      ["a raw Unicode (IDN) name", "mail.bücher.example"],
+      ["an empty label", "mail..example.com"],
+      ["a label starting with a hyphen", "-mail.example.com"],
+      ["a leading dot", ".mail.example.com"],
+      ["a URL instead of a host", "imaps://mail.example.com"],
+      ["a host with a port", "mail.example.com:993"],
+    ])("refuses %s (%j) without resolving it", async (_label, host) => {
       const resolver = vi.fn(resolvesTo("93.184.216.34"));
 
       await expect(assertMailHostAllowed(host, resolver)).rejects.toThrow(MailHostBlockedError);
       expect(resolver).not.toHaveBeenCalled();
     });
 
-    it("refuses a `%` even with ALLOW_PRIVATE_MAIL_HOSTS=1, and says what is wrong", async () => {
+    it.each([
+      ["a hostname", "imap.example.com"],
+      ["a fully-qualified name with a trailing dot", "mail.example.com."],
+      ["an upper-case name", "IMAP.Example.COM"],
+      ["a single-label on-premise name", "mailserver"],
+      ["a punycode (IDN) name", "mail.xn--bcher-kva.example"],
+      ["an IPv4 literal", "192.0.2.10"],
+      ["an IPv6 literal", "2001:db8::1"],
+    ])("resolves %s (%s) exactly as given", async (_label, host) => {
+      const resolver = vi.fn(resolvesTo("93.184.216.34"));
+
+      await expect(assertMailHostAllowed(host, resolver)).resolves.toBeUndefined();
+      expect(resolver).toHaveBeenCalledWith(host);
+    });
+
+    it("refuses a malformed host even with ALLOW_PRIVATE_MAIL_HOSTS=1, and says what is wrong", async () => {
       vi.stubEnv("ALLOW_PRIVATE_MAIL_HOSTS", "1");
 
       const error = await assertMailHostAllowed("a%b.attacker.test", resolvesTo()).catch(
@@ -227,7 +246,7 @@ describe("assertMailHostAllowed", () => {
       );
 
       expect(error).toBeInstanceOf(MailHostBlockedError);
-      expect((error as Error).message).toContain("%");
+      expect((error as Error).message).toMatch(/plain host name or IP address/);
       expect((error as Error).message).not.toContain("ALLOW_PRIVATE_MAIL_HOSTS");
     });
   });

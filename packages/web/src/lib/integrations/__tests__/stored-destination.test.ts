@@ -82,19 +82,20 @@ describe("checkStoredDestination", () => {
       expect(result).toMatchObject({ allowed: false, field: "imapHost" });
     });
 
-    // A host saved before the guard refused `%` must not keep being used: it was
-    // checked with the part after `%` dropped, the mail client connects to all of it.
-    it("refuses a stored host containing `%`, which the guard used to check only in part", async () => {
-      const result = await checkStoredDestination(
-        "imap",
-        imap("93.184.216.34", "a%b.attacker.test")
-      );
-      expect(result).toEqual({
-        allowed: false,
-        field: "smtpHost",
-        message: expect.stringContaining('"%"'),
-      });
-    });
+    // A host saved before the guard refused malformed hosts must not keep being
+    // used: it was checked in a normalised form (trimmed, brackets and anything
+    // after `%` dropped), while the mail client connects to the stored string.
+    it.each(["a%b.attacker.test", "[a.attacker.test", "a.attacker.test]", " a.attacker.test"])(
+      "refuses a stored host the guard used to check only in part (%j)",
+      async (host) => {
+        const result = await checkStoredDestination("imap", imap("93.184.216.34", host));
+        expect(result).toEqual({
+          allowed: false,
+          field: "smtpHost",
+          message: expect.stringContaining("plain host name or IP address"),
+        });
+      }
+    );
   });
 
   // The Odoo side never had the mail guard's split: the check and odoo-node's

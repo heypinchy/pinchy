@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { classifyIpAddress, type IpAddressClass } from "@/lib/integrations/url-validation";
 
 /**
@@ -73,6 +74,31 @@ function normalizeAddress(address: string): string {
     .toLowerCase();
 }
 
+// A DNS hostname (RFC 1123): dot-separated labels of letters, digits and
+// inner hyphens, at most 63 characters each and 253 in all, with an optional
+// trailing dot for a fully-qualified name. An internationalised name is
+// accepted in its punycode form (`xn--…`), which is what DNS actually carries.
+const HOSTNAME =
+  /^(?=.{1,253}\.?$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$/i;
+
+/**
+ * Is `host` something every resolver reads the same way?
+ *
+ * imapflow and nodemailer hand the stored host to the resolver unchanged, so
+ * the guard has to resolve that same string — and the string must not be one
+ * that resolvers disagree on. The guard used to check a normalised copy
+ * (trimmed, brackets and anything after a `%` dropped): `a%b.attacker.test`
+ * was checked as `a`, `[a.attacker.test` as `a.attacker.test`. glibc and
+ * c-ares (our node:22-slim images) refuse the raw strings; musl, measured,
+ * queries them and connects to the answer. So: a hostname, or a bare IP
+ * literal. No brackets (neither client strips them), no zone ID (an interface
+ * on Pinchy's own host means nothing for a remote mail server), no raw Unicode
+ * (neither client converts it to punycode).
+ */
+function isPlainHost(host: string): boolean {
+  return HOSTNAME.test(host) || (/^[0-9a-f:.]+$/i.test(host) && isIP(host) !== 0);
+}
+
 /**
  * Throws `MailHostBlockedError` if `host` resolves to an address the probe must
  * not touch. Resolves silently otherwise.
@@ -86,30 +112,17 @@ export async function assertMailHostAllowed(
   host: string,
   resolver: MailHostResolver = resolveViaDns
 ): Promise<void> {
-  const normalizedHost = normalizeAddress(host.trim());
-  if (normalizedHost.length === 0) {
-    // The schemas already require a non-empty host, so this is a belt-and-
-    // suspenders guard for a future caller — say what is actually wrong rather
-    // than reusing the internal-address wording.
-    throw new MailHostBlockedError("Blocked: no mail server host was given.");
-  }
-
-  // Checked on the host as given, not on `normalizedHost`: the address
-  // normalizer drops a zone ID, but the mail client connects to the host as
-  // stored. `a%b.attacker.test` was checked as `a` (unresolvable, so let
-  // through) and then handed to a resolver that — on musl, measured — queries
-  // the full name and connects to the attacker's answer. No mail host needs a
-  // `%`: hostnames cannot contain one, and the only literal that does (an IPv6
-  // zone ID) is link-local, refused below anyway.
-  if (host.includes("%")) {
+  if (!isPlainHost(host)) {
     throw new MailHostBlockedError(
-      'Blocked: a mail server host cannot contain "%". Enter the server\'s name or IP address without a zone ID.'
+      "Blocked: enter the mail server as a plain host name or IP address — like imap.example.com " +
+        "or 192.0.2.10, with no spaces, brackets, port or zone ID. An internationalised name goes " +
+        "in its xn-- form."
     );
   }
 
   let addresses: string[];
   try {
-    addresses = await resolver(normalizedHost);
+    addresses = await resolver(host);
   } catch {
     return;
   }
