@@ -13,17 +13,24 @@
 //     writer and none of them passes `allowConfigSizeDrop`, so no RPC lifts it.
 //
 // Both are right about a race and both are wrong about one specific shrink: a
-// provider catalog getting smaller. An OpenAI-compatible provider with 40
+// provider being deleted. An OpenAI-compatible provider with 40
 // discovered models is most of an install's openclaw.json, so deleting it
 // legitimately removes far more than half the file — and the deleted provider
 // (with its key reference) stayed live in OpenClaw.
 //
-// Provider catalogs are rebuilt on every regenerate from authoritative reads
-// (provider rows, provider settings, live discovery), and Pinchy refuses to
-// delete the last provider. So a payload that still carries at least one
-// provider is not an empty read, and its catalog shrink is deliberate. Nothing
-// else gets that benefit: a shrink outside `models.providers` is judged exactly
-// as before.
+// What is deliberate is narrower than "the provider catalog got smaller": a
+// provider ABSENT from the next payload is a deletion: provider rows and
+// settings are authoritative, and Pinchy refuses to delete the last provider.
+// A provider still PRESENT with fewer models is not — its model list comes from
+// live discovery, which fails quietly: an Ollama that is unreachable at boot
+// answers `[]` (uncached) and is emitted with `models: []`, and timed-out
+// `/api/show` calls drop models one by one. Delivering that promotes a
+// collapsed catalogue to OpenClaw's last-known-good, and on an offline install
+// every agent then fails with "Unknown model". So only deleted providers are
+// discounted (guard) or stepped (push); a kept provider's shrink is judged in
+// full, and a kept provider whose catalogue collapsed to nothing voids the
+// discount altogether — that payload is an empty read, whatever else it does.
+// A shrink outside `models.providers` is judged exactly as before.
 
 type Json = Record<string, unknown>;
 
@@ -45,11 +52,28 @@ export function utf8Bytes(text: string): number {
   return Buffer.byteLength(text, "utf-8");
 }
 
+function modelsOf(provider: unknown): unknown[] {
+  return isRecord(provider) && Array.isArray(provider.models) ? provider.models : [];
+}
+
+/**
+ * True when a provider present in both configs had models before and has none
+ * now — a failed discovery read, never a deliberate change.
+ */
+export function keptProviderCollapsed(before: Json, after: Json): boolean {
+  return Object.entries(after).some(
+    ([key, provider]) =>
+      key in before && modelsOf(before[key]).length > 0 && modelsOf(provider).length === 0
+  );
+}
+
 /**
  * The size the #311 guard should compare a new payload against: the existing
- * file, minus whatever the provider catalog shrank by — provided the new payload
- * still has at least one provider. Never larger than the existing file, so the
- * guard can only become more permissive, and only for provider catalogs.
+ * file, minus the bytes of every provider the new payload DELETED — provided at
+ * least one provider survives and no surviving provider's catalogue collapsed
+ * to empty. A kept provider that shrank is not discounted. Never larger than
+ * the existing file, so the guard can only become more permissive, and only by
+ * deleted providers' bytes.
  */
 export function sizeGuardBaseline(existing: string, next: Json): number {
   let parsed: unknown;
@@ -58,14 +82,19 @@ export function sizeGuardBaseline(existing: string, next: Json): number {
   } catch {
     return existing.length;
   }
+  const existingProviders = providersOf(parsed);
   const nextProviders = providersOf(next);
-  if (!isRecord(parsed) || !providersOf(parsed) || !nextProviders) return existing.length;
+  if (!isRecord(parsed) || !existingProviders || !nextProviders) return existing.length;
   if (Object.keys(nextProviders).length === 0) return existing.length;
+  if (keptProviderCollapsed(existingProviders, nextProviders)) return existing.length;
 
   const models = parsed.models as Json;
-  const withNextCatalog = { ...parsed, models: { ...models, providers: nextProviders } };
-  const catalogShrink = serialize(parsed).length - serialize(withNextCatalog).length;
-  return existing.length - Math.max(0, catalogShrink);
+  const kept = Object.fromEntries(
+    Object.entries(existingProviders).filter(([key]) => key in nextProviders)
+  );
+  const withoutDeleted = { ...parsed, models: { ...models, providers: kept } };
+  const deletedBytes = serialize(parsed).length - serialize(withoutDeleted).length;
+  return existing.length - Math.max(0, deletedBytes);
 }
 
 export interface SizeDropRejection {
@@ -87,17 +116,57 @@ export function parseSizeDropRejection(message: string): SizeDropRejection | nul
 }
 
 /**
- * One step of a provider-catalog shrink: `target`, plus back as little of
- * OpenClaw's current provider content as keeps the write at or above `minBytes`
- * (UTF-8, as serialized for `config.apply`).
+ * A deleted provider as the smallest valid custom provider: an inert baseUrl,
+ * its api, and `models: []` (models are then re-added one at a time).
  *
- * A provider the target deleted comes back as a keyless stub (`apiKey` dropped:
- * secrets.json no longer resolves it, and OpenClaw rejects an unresolvable
- * SecretRef) with `models: []` — the smallest shape OpenClaw accepts for a
- * custom provider — and models are then re-added one at a time. Nothing outside
- * `models.providers` differs from the target. Returns null when even all of
- * OpenClaw's provider content cannot reach `minBytes`: then the shrink is not a
- * provider catalog shrink, and must not be delivered.
+ * Everything else is dropped, and the baseUrl loses userinfo, query and
+ * fragment. `ocProvider` comes from `config.get`, which REDACTS credentials —
+ * and `config.apply` restores a redacted value from the file at the same path
+ * (`restoreRedactedValues`, verified against 2026.7.1). A stub that echoes a
+ * redacted `apiKey`, `headers` entry or credential-bearing baseUrl back would
+ * have OpenClaw re-write the deleted provider's secret into openclaw.json for
+ * every step. `apiKey` would also no longer resolve: secrets.json has lost it.
+ */
+function providerStub(ocProvider: Json): Json {
+  const stub: Json = { baseUrl: inertBaseUrl(ocProvider.baseUrl) };
+  if (typeof ocProvider.api === "string") stub.api = ocProvider.api;
+  stub.models = [];
+  return stub;
+}
+
+/** Stands in for a baseUrl that is redacted or unparseable. `.invalid` never resolves (RFC 2606). */
+const REMOVED_PROVIDER_BASE_URL = "https://removed-provider.invalid/v1";
+
+function inertBaseUrl(baseUrl: unknown): string {
+  if (typeof baseUrl !== "string") return REMOVED_PROVIDER_BASE_URL;
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    // e.g. OpenClaw's `__OPENCLAW_REDACTED__` sentinel for a URL with credentials.
+    return REMOVED_PROVIDER_BASE_URL;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return REMOVED_PROVIDER_BASE_URL;
+  url.username = "";
+  url.password = "";
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/$/, "");
+}
+
+/**
+ * One step of a provider deletion: `target`, plus back as little of the
+ * DELETED providers' content OpenClaw still has as keeps the write at or above
+ * `minBytes` (UTF-8, as serialized for `config.apply`).
+ *
+ * A provider the target deleted comes back as a credential-free stub (see
+ * {@link providerStub}) and its models are then re-added one at a time. A
+ * provider the target KEEPS is sent exactly as the target has it: a shrink
+ * inside it is judged in full, never stepped. Nothing outside
+ * `models.providers` differs from the target. Returns null when the deleted
+ * providers cannot reach `minBytes` — then the shrink is not a deletion, and
+ * must not be delivered — and when a kept provider's catalogue collapsed to
+ * empty (a failed discovery read; see the header).
  */
 export function buildProviderShrinkStep(
   target: Json,
@@ -107,30 +176,20 @@ export function buildProviderShrinkStep(
   const ocProviders = providersOf(ocConfig);
   if (!ocProviders) return null;
 
+  const targetProviders = providersOf(target) ?? {};
+  if (keptProviderCollapsed(ocProviders, targetProviders)) return null;
+
   // The step's provider entries: the target's, then a stub per provider only
-  // OpenClaw still has. `additions` is every model OpenClaw has that the step
-  // lacks, in OpenClaw's order — re-added as a prefix.
-  const entries = new Map<string, unknown>(
-    Object.entries(structuredClone(providersOf(target) ?? {}))
-  );
+  // OpenClaw still has. `additions` is every model of a deleted provider, in
+  // OpenClaw's order — re-added as a prefix.
+  const entries = new Map<string, unknown>(Object.entries(structuredClone(targetProviders)));
   const additions: Array<[provider: string, model: Json]> = [];
   for (const [key, ocProvider] of Object.entries(ocProviders)) {
-    if (!isRecord(ocProvider)) continue;
-    const ocModels = (Array.isArray(ocProvider.models) ? ocProvider.models : []).filter(isRecord);
-    const entry = entries.get(key);
-    let missing = ocModels;
-    if (isRecord(entry)) {
-      const kept = new Set<unknown>(
-        (Array.isArray(entry.models) ? entry.models : []).map((m) => (isRecord(m) ? m.id : m))
-      );
-      missing = ocModels.filter((m) => !kept.has(m.id));
-    } else {
-      const stub = structuredClone(ocProvider);
-      delete stub.apiKey;
-      stub.models = [];
-      entries.set(key, stub);
+    if (!isRecord(ocProvider) || entries.has(key)) continue;
+    entries.set(key, providerStub(ocProvider));
+    for (const model of modelsOf(ocProvider).filter(isRecord)) {
+      additions.push([key, structuredClone(model)]);
     }
-    for (const model of missing) additions.push([key, model]);
   }
 
   const targetModels = isRecord(target.models) ? target.models : {};
@@ -189,8 +248,10 @@ export interface ShrinkPushState {
 
 /**
  * What to send next while OpenClaw is refusing a shrink: the target once it
- * clears OpenClaw's 50% rule, otherwise the next provider-catalog step. Null
- * when no step can explain the shrink.
+ * clears OpenClaw's 50% rule, otherwise the next provider-deletion step. Null
+ * when no step can explain the shrink, and when the target collapses a kept
+ * provider's catalogue — OpenClaw refused that payload once, and it is a failed
+ * discovery read that must not be delivered by any route.
  */
 export function planShrinkPush({
   target,
@@ -198,6 +259,11 @@ export function planShrinkPush({
   ocBaselineBytes,
   offset,
 }: ShrinkPushState): { payload: string; isStep: boolean } | null {
+  const parsedTarget = JSON.parse(target) as Json;
+  const ocProviders = providersOf(ocConfig);
+  if (ocProviders && keptProviderCollapsed(ocProviders, providersOf(parsedTarget) ?? {})) {
+    return null;
+  }
   const floorHalf = Math.floor(ocBaselineBytes * 0.5);
   if (
     ocBaselineBytes < OPENCLAW_SIZE_DROP_MIN_BASELINE_BYTES ||
@@ -207,7 +273,7 @@ export function planShrinkPush({
   }
   if (!ocConfig) return null;
   const step = buildProviderShrinkStep(
-    JSON.parse(target) as Json,
+    parsedTarget,
     ocConfig,
     floorHalf + SIZE_DROP_MARGIN_BYTES - offset
   );

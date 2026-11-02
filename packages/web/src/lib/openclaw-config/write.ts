@@ -14,6 +14,9 @@ import {
   trackConfigPushSettled,
   nextConfigPushGeneration,
   getCurrentConfigPushGeneration,
+  markLatestPushKind,
+  isLatestPushFullRegenerate,
+  scheduleShrinkResume,
 } from "./push-state";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
@@ -236,11 +239,12 @@ const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 // OpenClaw's config writer refuses any write under half of the current
 // openclaw.json (`size-drop:OLD->NEW`), and config.apply exposes no way to lift
 // that. A shrink regenerateOpenClawConfig has already judged deliberate — a
-// provider catalog getting smaller, e.g. a deleted 40-model OpenAI-compatible
-// provider (see size-drop.ts) — is delivered in steps that each stay above
-// OpenClaw's threshold: the first refusal calibrates Pinchy's byte count against
-// OpenClaw's, then every step re-adds just enough of the provider content
-// OpenClaw still has to clear floor(OLD * 0.5). Each accepted step is an
+// deleted provider, e.g. a 40-model OpenAI-compatible one (see size-drop.ts) —
+// is delivered in steps that each stay above OpenClaw's threshold: the first
+// refusal calibrates Pinchy's byte count against OpenClaw's, then every step
+// re-adds just enough of the deleted providers' content OpenClaw still has to
+// clear floor(OLD * 0.5). A provider the target keeps is never stepped: its
+// shrink — a failed or partial discovery read — is judged in full. Each accepted step is an
 // ordinary OpenClaw-owned write, so OpenClaw promotes it to last-known-good
 // like any other and its own clobber detection stays fully in force.
 //
@@ -248,11 +252,22 @@ const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 // OpenClaw's guard, and OpenClaw's read path undoes it anyway: the next start
 // (or any unpinned config load) sees the file under half of last-known-good and
 // restores `.bak` (`size-drop-vs-last-good`). When no step can explain the
-// shrink — it is outside the provider catalog, the stale-payload shape of #314 —
-// the push is dropped loudly; the next regenerate starts from current state.
+// shrink — it is not a provider deletion: the stale-payload shape of #314, or a
+// kept provider's catalogue collapsing — the push is dropped loudly; the next regenerate starts from current state.
+//
+// A delivery that stops short of its target strands OpenClaw on an
+// intermediate step: the deleted provider is still there as a stub. That
+// happens when a partial writer (updateTelegramChannelConfig) supersedes the
+// push — it reads the intermediate file, changes one block, and pushes that —
+// or when the push is dropped after OpenClaw accepted at least one step. Both
+// hand off to one follow-up full regenerate (`resumeStrandedShrink`, debounced
+// process-wide in push-state.ts), which steps on from wherever OpenClaw stands.
+// A drop BEFORE any step strands nothing and queues nothing: OpenClaw is
+// unchanged, and re-running the same regenerate would only be refused again.
 //
 // Halving per step, 8 steps cover a 256x shrink; 3 refusals bound a
-// calibration that keeps missing (it should never need a second).
+// calibration that keeps missing (it should never need a second). The step
+// budget is checked before a step is applied, never after.
 const MAX_SHRINK_STEPS = 8;
 const MAX_SIZE_DROP_REFUSALS = 3;
 
@@ -275,11 +290,25 @@ const MAX_SIZE_DROP_REFUSALS = 3;
  */
 export interface PushConfigOptions {
   onChangeApplied?: () => void;
+  /**
+   * The payload is a full regenerate — the whole target config — rather than a
+   * partial writer's edit of the on-disk file. Decides whether superseding an
+   * unfinished shrink strands it (see MAX_SHRINK_STEPS).
+   */
+  fullRegenerate?: boolean;
+  /**
+   * Runs (once, debounced) when this push's stepped delivery stops short of
+   * its target and leaves OpenClaw on an intermediate step. build.ts passes a
+   * follow-up regenerate here — and passes none from that follow-up, so it
+   * cannot recurse.
+   */
+  resumeStrandedShrink?: () => void;
 }
 
 export function pushConfigInBackground(newContent: string, options: PushConfigOptions = {}): void {
-  const { onChangeApplied } = options;
+  const { onChangeApplied, resumeStrandedShrink } = options;
   const generation = nextConfigPushGeneration();
+  markLatestPushKind(options.fullRegenerate === true);
 
   // Make the in-flight push observable (health endpoint `configPushesPending`,
   // consumed by the E2E stability gates): a rate-limited apply can park this
@@ -350,12 +379,27 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     let lastOcConfig: Record<string, unknown> | undefined;
     let lastSent: string | undefined;
     let lastSizeDrop = "";
+    // Hand a shrink that stopped short of its target to one follow-up full
+    // regenerate (see MAX_SHRINK_STEPS).
+    const resumeShrink = (why: string) => {
+      if (!resumeStrandedShrink) return;
+      console.warn(
+        `[openclaw-config] push gen=${String(generation)}: provider deletion stopped after ${String(shrinkSteps)} step(s) (${why}); queueing a follow-up regenerate to finish it`
+      );
+      scheduleShrinkResume(resumeStrandedShrink);
+    };
     const dropRefusedShrink = (why: string) => {
       console.error(
         `[openclaw-config] push gen=${String(generation)}: OpenClaw refused this config as a size drop (${lastSizeDrop}) and ${why}. ` +
           `NOT writing openclaw.json directly — that would bypass OpenClaw's clobber guard, and OpenClaw restores .bak over it on its next start. ` +
-          `Only a shrinking provider catalog is delivered in steps; anything else is the #311/#314 stale-payload shape.`
+          `Only a deleted provider is delivered in steps; anything else is the #311/#314 stale-payload shape.`
       );
+      if (shrinkSteps > 0) resumeShrink(why);
+    };
+    // Superseded mid-shrink: a newer full regenerate carries the target itself;
+    // a partial writer leaves OpenClaw on whatever this push last delivered.
+    const onSuperseded = () => {
+      if (shrink && !isLatestPushFullRegenerate()) resumeShrink("superseded by a partial write");
     };
     // A file-write fallback while a shrink is in flight would land the target
     // past OpenClaw's guard (see MAX_SHRINK_STEPS) — refuse it instead.
@@ -374,6 +418,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         console.log(
           `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(getCurrentConfigPushGeneration())}) before attempt ${String(i)}`
         );
+        onSuperseded();
         return;
       }
       try {
@@ -393,6 +438,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           console.log(
             `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(getCurrentConfigPushGeneration())}) during config.get`
           );
+          onSuperseded();
           return;
         }
 
@@ -464,7 +510,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         if (shrink) {
           const plan = planShrinkPush({ target: supplemented, ocConfig: lastOcConfig, ...shrink });
           if (!plan) {
-            dropRefusedShrink("the shrink is not one the provider catalog explains");
+            dropRefusedShrink("the shrink is not a provider deletion");
+            return;
+          }
+          if (plan.isStep && shrinkSteps >= MAX_SHRINK_STEPS) {
+            dropRefusedShrink(`${String(MAX_SHRINK_STEPS)} steps did not reach the target`);
             return;
           }
           payload = plan.payload;
@@ -476,17 +526,13 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         });
         if (isShrinkStep && shrink) {
           shrinkSteps++;
-          if (shrinkSteps > MAX_SHRINK_STEPS) {
-            dropRefusedShrink(`${String(MAX_SHRINK_STEPS)} steps did not reach the target`);
-            return;
-          }
           shrink.ocBaselineBytes = utf8Bytes(payload) + shrink.offset;
           // Progress, not a failure: a step that landed must not count against
           // the budgets meant for an apply that keeps failing. OpenClaw's
           // rate limit (~3 applies per window) is smaller than a 10x shrink.
           rateLimitAttempts = 0;
           console.log(
-            `[openclaw-config] push gen=${String(generation)}: provider-catalog shrink step ${String(shrinkSteps)} applied (~${String(shrink.ocBaselineBytes)} bytes)`
+            `[openclaw-config] push gen=${String(generation)}: provider-deletion step ${String(shrinkSteps)} applied (~${String(shrink.ocBaselineBytes)} bytes)`
           );
           i--;
           continue;
@@ -520,6 +566,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(getCurrentConfigPushGeneration())}) during attempt ${String(i)} — skipping fallback write:`,
             message
           );
+          onSuperseded();
           return;
         }
 
@@ -544,7 +591,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             offset: sizeDrop.toBytes - utf8Bytes(lastSent),
           };
           console.warn(
-            `[openclaw-config] push gen=${String(generation)}: config.apply refused a size drop (${String(sizeDrop.fromBytes)}->${String(sizeDrop.toBytes)} bytes); delivering the provider-catalog shrink in steps`
+            `[openclaw-config] push gen=${String(generation)}: config.apply refused a size drop (${String(sizeDrop.fromBytes)}->${String(sizeDrop.toBytes)} bytes); delivering the provider deletion in steps`
           );
           i--;
           continue;

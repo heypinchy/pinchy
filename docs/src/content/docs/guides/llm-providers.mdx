@@ -103,7 +103,7 @@ Agents pinned to a model from the removed provider are moved to a still-configur
 
 Pinchy refuses to remove the **last** configured provider — add another one first. That is what keeps the sentence above true: there is always somewhere for an orphaned agent to go.
 
-Removing a provider with a long model list — an OpenAI-compatible endpoint serving dozens of models, say — can take a minute or two to reach the agent runtime. The runtime refuses to lose more than half of its configuration in one write, as a guard against a corrupted config, so we hand it the removal in a few smaller steps. Your agents keep working the whole time.
+Removing a provider with a long model list — an OpenAI-compatible endpoint serving dozens of models, say — can take a few minutes to reach the agent runtime. The runtime refuses to lose more than half of its configuration in one write, as a guard against a corrupted config, so we hand it the removal in smaller steps, at the pace the runtime accepts configuration writes. If something interrupts the hand-over, Pinchy picks it up again on its own. Your agents keep working the whole time.
 
 The move is a starting point, not a verdict: pick a different model for any agent afterwards — see [Change an agent's model](#change-an-agents-model).
 

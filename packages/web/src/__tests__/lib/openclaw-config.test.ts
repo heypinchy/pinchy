@@ -8616,9 +8616,10 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
 // same small payload against the same large file and was refused too: the
 // config froze until someone hand-edited openclaw.json.
 //
-// The guard now measures against the existing file with the provider catalog
-// shrink discounted — but only while the new payload still carries at least one
-// provider. A DB read that came back empty (no providers at all) and any shrink
+// The guard now measures against the existing file with the DELETED providers'
+// bytes discounted — but only while the new payload still carries at least one
+// provider. A DB read that came back empty (no providers at all), a kept
+// provider whose discovered catalogue shrank or collapsed, and any shrink
 // OUTSIDE models.providers still trip it exactly as before.
 describe("regenerateOpenClawConfig size-drop guard vs deliberate provider removal", () => {
   function makeLargeCustomProvider() {
@@ -8750,6 +8751,110 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
       errorSpy.mockRestore();
     }
   });
+
+  it("still refuses when Ollama discovery comes back empty — a failed read, not a deletion", async () => {
+    // Ollama unreachable at boot: fetchOllamaLocalModelsFromUrl returns []
+    // (uncached) and `ollama` is emitted with `models: []`. The provider is
+    // still in the payload, so this is no deletion, and discounting its bytes
+    // would let an empty catalogue through to OpenClaw's last-known-good — on
+    // an offline install every agent then fails with "Unknown model".
+    const ollamaModels = Array.from({ length: 80 }, (_, i) => ({
+      id: `ollama/qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M`,
+      name: `qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M (32B)`,
+      parameterSize: "32B",
+      compatible: true,
+      capabilities: { tools: true, vision: false, completion: true, thinking: false },
+    }));
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue(ollamaModels);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+    const existing = await regenerateAndCapture();
+    expect(JSON.parse(existing).models.providers.ollama.models).toHaveLength(80);
+    mockedReadFileSync.mockReturnValue(existing);
+
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+
+      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      expect(rejectedDumps()).toHaveLength(1);
+      const rejected = JSON.parse(rejectedDumps()[0][1] as string);
+      // Precondition: the collapse alone more than halves the file.
+      expect((rejectedDumps()[0][1] as string).length).toBeLessThan(existing.length * 0.5);
+      expect(rejected.models.providers.ollama.models).toEqual([]);
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/suspiciously small/);
+    } finally {
+      errorSpy.mockRestore();
+      vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+    }
+  });
+
+  it("finishes a stranded deletion with exactly one follow-up regenerate, which queues none", async () => {
+    // After each size-drop refusal OpenClaw accepts exactly one deletion step
+    // and then rate-limits every apply past Pinchy's retry budget: each push
+    // stops on an intermediate config that still carries the deleted provider
+    // as a stub. One follow-up regenerate must pick it up — and when that one
+    // strands the same way, it must not queue another (no regenerate loop).
+    const existing = await installWithLargeCustomProvider();
+    mockedReadFileSync.mockReturnValue(existing);
+    let ocFile = existing;
+    let accepted = 0;
+    let stepAllowed = false;
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => ({
+          hash: `h${accepted}`,
+          config: JSON.parse(ocFile),
+          parsed: JSON.parse(ocFile),
+        })),
+        apply: vi.fn(async (raw: string) => {
+          const base = Buffer.byteLength(ocFile);
+          const next = Buffer.byteLength(raw);
+          if (next < Math.floor(base * 0.5)) {
+            stepAllowed = true;
+            throw new Error(`Config write rejected: x (size-drop:${base}->${next}).`);
+          }
+          if (!stepAllowed) {
+            throw new Error("rate limit exceeded for config.apply; retry after 1s");
+          }
+          stepAllowed = false;
+          ocFile = raw;
+          accepted++;
+        }),
+      },
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const logs: string[] = [];
+    const capture = (...args: unknown[]) => void logs.push(args.map(String).join(" "));
+    vi.spyOn(console, "log").mockImplementation(capture);
+    vi.spyOn(console, "warn").mockImplementation(capture);
+    vi.spyOn(console, "error").mockImplementation(capture);
+    vi.useFakeTimers();
+    try {
+      await regenerateOpenClawConfig();
+      for (let i = 0; i < 400; i++) await vi.advanceTimersByTimeAsync(5_000);
+
+      // Precondition: both pushes stranded after progress (one step each), and
+      // the deleted provider is still in OpenClaw as a stub.
+      expect(accepted).toBe(2);
+      expect(JSON.parse(ocFile).models.providers).toHaveProperty("acme-llm");
+      const generations = new Set(
+        logs.flatMap((line) => [...line.matchAll(/push gen=(\d+)/g)].map((m) => m[1]))
+      );
+      // The original regenerate's push, and one follow-up — never a third.
+      expect(generations.size).toBe(2);
+      expect(logs.filter((l) => l.includes("queueing a follow-up regenerate"))).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  }, 60_000);
 
   it("still refuses when the rest of the config collapses alongside a provider deletion (#311)", async () => {
     // A deletion discounts exactly the provider bytes it explains — nothing

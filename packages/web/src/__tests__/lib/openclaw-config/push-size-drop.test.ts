@@ -88,6 +88,10 @@ class FakeOpenClaw {
   file: string;
   applies: string[] = [];
   rejections: string[] = [];
+  /** Accepted writes, in order. */
+  accepted: string[] = [];
+  /** Runs after every accepted write — lets a test interleave another writer. */
+  onAccepted?: (acceptedCount: number) => void;
   private writes = 0;
   constructor(
     initial: Json,
@@ -131,6 +135,8 @@ class FakeOpenClaw {
           throw new Error(message);
         }
         this.file = next;
+        this.accepted.push(next);
+        this.onAccepted?.(this.accepted.length);
         return { ok: true };
       }),
     },
@@ -151,6 +157,15 @@ async function settle() {
     await new Promise((r) => setImmediate(r));
   }
   expect(getPendingConfigPushCount(), "push coroutine never settled").toBe(0);
+}
+
+/** Run every push to completion under fake timers, then past the follow-up debounce. */
+async function drainWithFakeTimers() {
+  for (let i = 0; i < 200 && getPendingConfigPushCount() > 0; i++) {
+    await vi.advanceTimersByTimeAsync(5_000);
+  }
+  expect(getPendingConfigPushCount(), "push coroutine never settled").toBe(0);
+  await vi.advanceTimersByTimeAsync(5 * 60_000);
 }
 
 describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () => {
@@ -249,5 +264,148 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
     expect(oc.providers()).not.toHaveProperty("acme-llm");
     expect(configFileWrites()).toHaveLength(0);
     expect(onChangeApplied).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not step a kept provider's catalogue collapse past OpenClaw (Ollama unreachable at boot)", async () => {
+    // Discovery against an unreachable Ollama returns [] (uncached), and the
+    // regenerate emits `ollama` with `models: []`. OpenClaw refuses that as a
+    // size drop — rightly: delivering it promotes an empty catalogue to
+    // last-known-good, and on an offline install every agent then fails with
+    // "Unknown model". Ollama is still in the payload, so this is a failed
+    // read, not a deletion, and stepping must not explain it away.
+    const ollama = {
+      baseUrl: "http://host.docker.internal:11434/v1",
+      api: "openai-completions",
+      request: { allowPrivateNetwork: true },
+      models: Array.from({ length: 40 }, (_, i) => model(i)),
+    };
+    const oc = new FakeOpenClaw(pinchyConfig({ ollama }), new Set([anthropicRef.id]));
+    mockGetClient.mockReturnValue(oc.client);
+    const before = oc.file;
+    const onChangeApplied = vi.fn();
+    const resume = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig({ ollama: { ...ollama, models: [] } })), {
+      onChangeApplied,
+      fullRegenerate: true,
+      resumeStrandedShrink: resume,
+    });
+    await settle();
+
+    expect(oc.rejections).toHaveLength(1);
+    expect(oc.accepted).toHaveLength(0);
+    expect(oc.file).toBe(before);
+    expect(configFileWrites()).toHaveLength(0);
+    expect(onChangeApplied).not.toHaveBeenCalled();
+    expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/size-drop/);
+    // Nothing was stepped, so nothing is stranded — no follow-up.
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it("stops before applying a step past its budget, and queues one follow-up regenerate", async () => {
+    // A shrink so large that eight halving steps cannot reach the target. The
+    // budget must be checked BEFORE a step is applied: applying the ninth and
+    // then giving up leaves OpenClaw one step further for nothing. Either way
+    // OpenClaw is now on an intermediate step, so the push hands off to a full
+    // regenerate, which steps on from there.
+    vi.useFakeTimers();
+    const huge = {
+      ...acmeProvider,
+      models: Array.from({ length: 4000 }, (_, i) => model(i)),
+    };
+    const oc = new FakeOpenClaw(pinchyConfig({ "acme-llm": huge }), new Set([anthropicRef.id]));
+    mockGetClient.mockReturnValue(oc.client);
+    const resume = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      fullRegenerate: true,
+      resumeStrandedShrink: resume,
+    });
+    await drainWithFakeTimers();
+
+    expect(oc.providers(), "precondition: 8 steps cannot finish this shrink").toHaveProperty(
+      "acme-llm"
+    );
+    expect(oc.accepted.length).toBeGreaterThan(0);
+    expect(oc.accepted.length).toBeLessThanOrEqual(8);
+    expect(configFileWrites()).toHaveLength(0);
+    expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/8 steps/);
+    expect(resume).toHaveBeenCalledTimes(1);
+  }, 60_000);
+
+  it("queues one follow-up regenerate when a targeted write supersedes an unfinished stepped delivery", async () => {
+    // updateTelegramChannelConfig reads openclaw.json — mid-shrink, that is an
+    // intermediate step carrying the deleted provider's stub — and pushes it
+    // with one channel changed, bumping the push generation. The stepping push
+    // is superseded and OpenClaw stays on the stub config. A full regenerate
+    // must follow, or the deletion never completes.
+    vi.useFakeTimers();
+    const oc = new FakeOpenClaw(
+      pinchyConfig({ "acme-llm": acmeProvider }),
+      new Set([anthropicRef.id])
+    );
+    mockGetClient.mockReturnValue(oc.client);
+    const resume = vi.fn();
+    oc.onAccepted = (n) => {
+      if (n !== 1) return;
+      const onDisk = JSON.parse(oc.file) as Json;
+      pushConfigInBackground(
+        serialize({ ...onDisk, channels: { telegram: { enabled: true, dmPolicy: "pairing" } } })
+      );
+    };
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      fullRegenerate: true,
+      resumeStrandedShrink: resume,
+    });
+    await drainWithFakeTimers();
+
+    expect(oc.providers(), "precondition: the targeted write stranded the stub").toHaveProperty(
+      "acme-llm"
+    );
+    expect(JSON.parse(oc.file).channels).toEqual({
+      telegram: { enabled: true, dmPolicy: "pairing" },
+    });
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues no follow-up when a full regenerate supersedes the stepped delivery — it carries the target itself", async () => {
+    vi.useFakeTimers();
+    const oc = new FakeOpenClaw(
+      pinchyConfig({ "acme-llm": acmeProvider }),
+      new Set([anthropicRef.id])
+    );
+    mockGetClient.mockReturnValue(oc.client);
+    const firstResume = vi.fn();
+    const secondResume = vi.fn();
+    oc.onAccepted = (n) => {
+      if (n !== 1) return;
+      pushConfigInBackground(serialize(pinchyConfig()), {
+        fullRegenerate: true,
+        resumeStrandedShrink: secondResume,
+      });
+    };
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    pushConfigInBackground(serialize(pinchyConfig()), {
+      fullRegenerate: true,
+      resumeStrandedShrink: firstResume,
+    });
+    await drainWithFakeTimers();
+
+    expect(oc.providers()).not.toHaveProperty("acme-llm");
+    expect(firstResume).not.toHaveBeenCalled();
+    expect(secondResume).not.toHaveBeenCalled();
   });
 });

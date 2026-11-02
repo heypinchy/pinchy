@@ -188,7 +188,16 @@ export async function loadAgentConnectionPermissions(dbClient: typeof db): Promi
   });
 }
 
-export async function regenerateOpenClawConfig() {
+/**
+ * Options for {@link regenerateOpenClawConfig}. `shrinkFollowUp` marks the one
+ * follow-up regenerate a stranded provider deletion queues (see write.ts,
+ * MAX_SHRINK_STEPS): its own push queues none, so the hand-off cannot recurse.
+ */
+export interface RegenerateOptions {
+  shrinkFollowUp?: boolean;
+}
+
+export async function regenerateOpenClawConfig(options: RegenerateOptions = {}) {
   // `readExistingConfig` distinguishes two recoverable failure modes:
   //   - ENOENT / parse error → returns {} (cold start; we build the first config from scratch).
   //   - Persistent EACCES → throws (file exists but unreadable; race with OC's
@@ -1767,14 +1776,17 @@ export async function regenerateOpenClawConfig() {
     // content. The bad payload is saved alongside the config for postmortem —
     // silent skip would hide the underlying race forever (#314).
     //
-    // Measured against the existing file MINUS whatever the provider catalog
-    // shrank by, as long as a provider survives (see size-drop.ts). Deleting a
-    // 40-model OpenAI-compatible provider removes most of the file on purpose;
-    // judged against the raw size, it was refused here, every later regenerate
-    // was refused the same way, and OpenClaw kept serving the deleted provider.
-    // An empty provider read, and any shrink outside `models.providers`, are
-    // still judged in full. Delivering such a shrink past OpenClaw's own check
-    // is pushConfigInBackground's job (stepwise config.apply).
+    // Measured against the existing file MINUS the bytes of every provider the
+    // payload deleted, as long as a provider survives (see size-drop.ts).
+    // Deleting a 40-model OpenAI-compatible provider removes most of the file
+    // on purpose; judged against the raw size, it was refused here, every later
+    // regenerate was refused the same way, and OpenClaw kept serving the
+    // deleted provider. Everything else is still judged in full: an empty
+    // provider read, a kept provider whose discovered model list shrank (a
+    // half-answered discovery), a kept provider whose catalogue collapsed to
+    // `[]` (Ollama unreachable — this voids the deletion discount too), and any
+    // shrink outside `models.providers`. Delivering a deletion past OpenClaw's
+    // own check is pushConfigInBackground's job (stepwise config.apply).
     const sizeBaseline = sizeGuardBaseline(existing, config);
     if (existing.length > 0 && newContent.length < sizeBaseline * 0.5) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1788,7 +1800,7 @@ export async function regenerateOpenClawConfig() {
       console.error(
         `[openclaw-config] regenerate produced a suspiciously small config ` +
           `(${newContent.length} bytes, was ${existing.length}` +
-          `${sizeBaseline !== existing.length ? `; ${sizeBaseline} after discounting the provider catalog shrink` : ""}). ` +
+          `${sizeBaseline !== existing.length ? `; ${sizeBaseline} after discounting deleted providers` : ""}). ` +
           `Refusing the write to keep OpenClaw's existing state intact. ` +
           `Likely a DB-state-loading race; see #311. ` +
           `Rejected payload saved to ${rejectedPath}.`
@@ -1875,7 +1887,19 @@ export async function regenerateOpenClawConfig() {
   // Fire-and-forget: the caller must not block on this — config.apply
   // can take 10–30 s when a gateway restart is needed, which broke
   // interactive save flows (Odoo "Save & Restart", UI waits for 200 OK).
-  pushConfigInBackground(newContent);
+  pushConfigInBackground(newContent, {
+    fullRegenerate: true,
+    resumeStrandedShrink: options.shrinkFollowUp
+      ? undefined
+      : () => {
+          regenerateOpenClawConfig({ shrinkFollowUp: true }).catch((err: unknown) => {
+            console.error(
+              "[openclaw-config] follow-up regenerate for a stranded provider deletion failed:",
+              err instanceof Error ? err.message : String(err)
+            );
+          });
+        },
+  });
 
   // Report AFTER the push, never instead of it. The caller has to hear about
   // this — the setup wizard turns the rejection into a warning toast and records

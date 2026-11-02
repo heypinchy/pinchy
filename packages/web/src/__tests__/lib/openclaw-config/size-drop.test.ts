@@ -56,10 +56,38 @@ describe("sizeGuardBaseline", () => {
     expect(baseline).toBeLessThan(existing.length * 0.5);
   });
 
-  it("discounts a provider whose model list shrank (live discovery returned fewer models)", () => {
+  it("does NOT discount a kept provider whose model list shrank — live discovery can fail part-way", () => {
+    // A provider still in the payload with fewer models is not a deletion: it
+    // is what a timed-out `/api/show` or a half-answered discovery produces.
+    // That shrink is judged in full, exactly as before the deletion discount.
     const existing = serialize(config({ anthropic, acme: provider(40) }));
     const next = config({ anthropic, acme: provider(2) });
-    expect(sizeGuardBaseline(existing, next)).toBe(serialize(next).length);
+    expect(sizeGuardBaseline(existing, next)).toBe(existing.length);
+  });
+
+  it("discounts only the deleted provider when a kept provider also shrank", () => {
+    const existing = serialize(config({ anthropic, acme: provider(40), ollama: provider(20) }));
+    const next = config({ anthropic, ollama: provider(5) });
+    // The baseline loses acme's bytes and nothing else: ollama's shrink from
+    // 20 to 5 models still counts against the payload.
+    expect(sizeGuardBaseline(existing, next)).toBe(
+      serialize(config({ anthropic, ollama: provider(20) })).length
+    );
+  });
+
+  it("grants no discount at all when a kept provider's catalogue collapsed to [] (failed discovery)", () => {
+    // Ollama unreachable at boot: discovery returns [] uncached and `ollama`
+    // is emitted with `models: []`. That is an empty read, not a deletion —
+    // even when another provider really was deleted in the same regenerate.
+    const existing = serialize(config({ anthropic, ollama: provider(40), acme: provider(40) }));
+    expect(sizeGuardBaseline(existing, config({ anthropic, ollama: provider(0) }))).toBe(
+      existing.length
+    );
+    const noModelsKey = provider(0);
+    delete noModelsKey.models;
+    expect(sizeGuardBaseline(existing, config({ anthropic, ollama: noModelsKey }))).toBe(
+      existing.length
+    );
   });
 
   it("does not discount anything when the new payload has no provider at all (#311 empty read)", () => {
@@ -149,6 +177,59 @@ describe("buildProviderShrinkStep", () => {
     const before = [structuredClone(target), structuredClone(ocConfig)];
     buildProviderShrinkStep(target, ocConfig, utf8Bytes(serialize(ocConfig)) / 2);
     expect([target, ocConfig]).toEqual(before);
+  });
+
+  it("never re-adds a kept provider's models — only a deleted provider is stepped", () => {
+    // acme stays in the target with 2 of its 40 models. Re-adding the other 38
+    // would deliver a partial discovery read past OpenClaw's guard; a kept
+    // provider's shrink is judged in full, so nothing here can be stepped.
+    const keptShrink = config({ anthropic, acme: provider(2) });
+    expect(
+      buildProviderShrinkStep(keptShrink, ocConfig, Math.ceil(utf8Bytes(serialize(ocConfig)) / 2))
+    ).toBeNull();
+  });
+
+  it("refuses to step a kept provider's catalogue collapse, even beside a real deletion", () => {
+    // Ollama unreachable (models: []) while acme is genuinely deleted. Stepping
+    // acme out would still end on a config whose Ollama catalogue is empty —
+    // promoted to last-known-good on an offline install.
+    const oc = config({ anthropic, ollama: provider(40), acme: provider(40) });
+    const collapsed = config({ anthropic, ollama: provider(0) });
+    expect(buildProviderShrinkStep(collapsed, oc, utf8Bytes(serialize(oc)) / 2)).toBeNull();
+  });
+
+  it("strips credentials a deleted provider's baseUrl, headers or auth carried from its stub", () => {
+    // OpenClaw restores whatever `config.get` redacted at the same path
+    // (`restoreRedactedValues`), so a stub that echoes the redacted value back
+    // gets the credential re-written into openclaw.json. The stub keeps only
+    // what a custom provider needs: an inert baseUrl, its api, and models.
+    const withCreds = config({
+      anthropic,
+      acme: provider(40, {
+        baseUrl: "https://user:s3cret@acme.example/v1?api-key=QQQ#frag",
+        headers: { Authorization: "Bearer hdr-secret" },
+        auth: "api-key",
+      }),
+    });
+    const step = buildProviderShrinkStep(target, withCreds, utf8Bytes(serialize(withCreds)) / 2)!;
+    const stub = (step.models as { providers: { acme: Json } }).providers.acme;
+    expect(stub.baseUrl).toBe("https://acme.example/v1");
+    expect(Object.keys(stub).sort()).toEqual(["api", "baseUrl", "models"]);
+    expect(JSON.stringify(step)).not.toMatch(/s3cret|QQQ|hdr-secret/);
+
+    // What OpenClaw's config.get actually hands back for such a URL.
+    const redacted = config({
+      anthropic,
+      acme: provider(40, { baseUrl: "__OPENCLAW_REDACTED__" }),
+    });
+    const redactedStep = buildProviderShrinkStep(
+      target,
+      redacted,
+      utf8Bytes(serialize(redacted)) / 2
+    )!;
+    const redactedStub = (redactedStep.models as { providers: { acme: Json } }).providers.acme;
+    expect(redactedStub.baseUrl).not.toContain("__OPENCLAW_REDACTED__");
+    expect(() => new URL(redactedStub.baseUrl as string)).not.toThrow();
   });
 
   it("returns null when even all provider content cannot reach the minimum (shrink is elsewhere)", () => {

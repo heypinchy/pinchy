@@ -36,6 +36,10 @@
 interface ConfigPushState {
   pending: number;
   generation: number;
+  /** Whether the newest push carries a full regenerate (see markLatestPushKind). */
+  latestIsFullRegenerate: boolean;
+  /** Pending follow-up regenerate for a stranded shrink (see scheduleShrinkResume). */
+  shrinkResume: ReturnType<typeof setTimeout> | undefined;
 }
 
 declare global {
@@ -58,11 +62,17 @@ function state(): ConfigPushState {
   // that can never arrive.
   const existing = globalThis.__pinchyConfigPushState as Partial<ConfigPushState> | undefined;
   if (!existing) {
-    globalThis.__pinchyConfigPushState = { pending: 0, generation: 0 };
+    globalThis.__pinchyConfigPushState = {
+      pending: 0,
+      generation: 0,
+      latestIsFullRegenerate: false,
+      shrinkResume: undefined,
+    };
     return globalThis.__pinchyConfigPushState;
   }
   existing.pending ??= 0;
   existing.generation ??= 0;
+  existing.latestIsFullRegenerate ??= false;
   return existing as ConfigPushState;
 }
 
@@ -107,9 +117,74 @@ export function getCurrentConfigPushGeneration(): number {
   return state().generation;
 }
 
+/**
+ * Record what the push that just claimed the newest generation carries. A full
+ * regenerate is the whole target config: it supersedes a stranded shrink
+ * completely (it steps on from wherever OpenClaw stands), so any follow-up
+ * already queued for one is moot. A partial writer — a targeted channel update
+ * that reads the on-disk file and changes one block — is not.
+ */
+export function markLatestPushKind(fullRegenerate: boolean): void {
+  const s = state();
+  s.latestIsFullRegenerate = fullRegenerate;
+  if (fullRegenerate && s.shrinkResume !== undefined) {
+    clearTimeout(s.shrinkResume);
+    s.shrinkResume = undefined;
+  }
+}
+
+/** Whether the newest push is a full regenerate. */
+export function isLatestPushFullRegenerate(): boolean {
+  return state().latestIsFullRegenerate;
+}
+
+/** How long a stranded shrink waits before its follow-up regenerate runs. */
+export const SHRINK_RESUME_DELAY_MS = 2_000;
+/**
+ * While other pushes are still in flight the follow-up waits for them (a
+ * targeted write can sit out a 45 s rate-limit window), re-checking every
+ * SHRINK_RESUME_DELAY_MS — but at most this often, then it runs regardless.
+ */
+const SHRINK_RESUME_MAX_RECHECKS = 60;
+
+/**
+ * Queue one follow-up full regenerate for a stepped provider deletion that
+ * stopped short of its target — superseded by a partial writer, or dropped
+ * after OpenClaw had already accepted a step. OpenClaw then sits on an
+ * intermediate config carrying the deleted provider's stub, and nothing else
+ * would ever finish the job.
+ *
+ * Debounced and coalesced process-wide: one pending follow-up at most, the
+ * latest caller's `resume` wins, and a full regenerate starting in the
+ * meantime cancels it (markLatestPushKind). It waits for pushes still in
+ * flight so it does not supersede them. Not recursive by itself: `resume` is a
+ * regenerate whose own push must not pass a `resume` of its own (build.ts).
+ */
+export function scheduleShrinkResume(resume: () => void): void {
+  const s = state();
+  if (s.shrinkResume !== undefined) clearTimeout(s.shrinkResume);
+  let rechecks = 0;
+  const fire = () => {
+    if (getPendingConfigPushCount() > 0 && rechecks < SHRINK_RESUME_MAX_RECHECKS) {
+      rechecks++;
+      s.shrinkResume = setTimeout(fire, SHRINK_RESUME_DELAY_MS);
+      s.shrinkResume.unref?.();
+      return;
+    }
+    s.shrinkResume = undefined;
+    resume();
+  };
+  s.shrinkResume = setTimeout(fire, SHRINK_RESUME_DELAY_MS);
+  s.shrinkResume.unref?.();
+}
+
 /** Test-only: reset the pending counter between tests. Do not call in app code. */
 export function _resetConfigPushState(): void {
-  state().pending = 0;
+  const s = state();
+  s.pending = 0;
+  s.latestIsFullRegenerate = false;
+  if (s.shrinkResume !== undefined) clearTimeout(s.shrinkResume);
+  s.shrinkResume = undefined;
 }
 
 // There is deliberately NO reset for `generation`. It is a cancellation token
