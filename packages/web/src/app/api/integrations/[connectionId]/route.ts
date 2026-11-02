@@ -14,6 +14,23 @@ import { getOAuthProvider } from "@/lib/integrations/oauth-providers";
 import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 import { z } from "zod";
 import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
+import {
+  integrationDestinationChange,
+  secretRequiredMessage,
+  SECRET_REQUIRED_FOR_NEW_DESTINATION,
+  type DestinationChanges,
+} from "@/lib/secret-destination";
+
+/** Audit form of a destination diff: email-shaped tokens scrubbed from every value. */
+function scrubDestinationChanges(changes: DestinationChanges): DestinationChanges {
+  const scrub = (v: string | number) => (typeof v === "string" ? scrubEmails(v) : v);
+  return Object.fromEntries(
+    Object.entries(changes).map(([field, { from, to }]) => [
+      field,
+      { from: scrub(from), to: scrub(to) },
+    ])
+  );
+}
 
 const credentialSchemas: Record<string, z.ZodType> = {
   odoo: odooCredentialsSchema.partial(),
@@ -90,6 +107,60 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     parsedCredentials = credResult.data as Record<string, unknown>;
   }
 
+  // An invalid URL is reported as invalid, not as "enter the key again" — the
+  // admin fixes the address first. The check resolves the host but sends it
+  // nothing, so it is safe ahead of the destination check below.
+  if (parsedCredentials !== undefined && existing.type === "odoo" && "url" in parsedCredentials) {
+    const urlCheck = await validateExternalUrl(parsedCredentials.url as string);
+    if (!urlCheck.valid) {
+      return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+    }
+  }
+
+  // Merge base for the "leave empty to keep current" pattern, and the record of
+  // where the stored secret is allowed to go. Decrypted here, but nothing
+  // leaves the process until the destination check below has passed.
+  const existingDecoded =
+    parsedCredentials !== undefined
+      ? (JSON.parse(decrypt(existing.credentials)) as Record<string, unknown>)
+      : undefined;
+
+  // A stored secret is bound to the destination it was entered for (see
+  // lib/secret-destination.ts). Without this, `{ credentials: { url } }` would
+  // merge the stored Odoo login + API key into a probe of whatever host the
+  // caller named, and an IMAP host/port change would hand the stored password
+  // to a new server. A destination change must bring the secret with it.
+  const destinationChange =
+    parsedCredentials !== undefined && existingDecoded !== undefined
+      ? integrationDestinationChange(existing.type, existingDecoded, parsedCredentials)
+      : null;
+  if (destinationChange && !parsedCredentials?.[destinationChange.secretField]) {
+    const message = secretRequiredMessage(existing.type);
+    // Nothing changed and nothing was sent, but a refused attempt to re-point a
+    // stored credential is exactly what a CISO filters the trail for.
+    await appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "integration.credentials_updated",
+      resource: `integration:${connectionId}`,
+      detail: {
+        id: connectionId,
+        name: scrubEmails(existing.name),
+        reason: SECRET_REQUIRED_FOR_NEW_DESTINATION,
+        destinationChange: scrubDestinationChanges(destinationChange.changes),
+      },
+      outcome: "failure",
+      error: { message },
+    });
+    return NextResponse.json(
+      {
+        error: message,
+        details: { formErrors: [], fieldErrors: { [destinationChange.secretField]: [message] } },
+      },
+      { status: 422 }
+    );
+  }
+
   const updateData: Record<string, unknown> = { updatedAt: new Date() };
   const changes: Record<string, { from: unknown; to: unknown }> = {};
 
@@ -111,16 +182,8 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     }
   }
   if (parsedCredentials !== undefined) {
-    if (existing.type === "odoo" && "url" in parsedCredentials) {
-      const urlCheck = await validateExternalUrl(parsedCredentials.url as string);
-      if (!urlCheck.valid) {
-        return NextResponse.json({ error: urlCheck.error }, { status: 400 });
-      }
-    }
-
     // Merge with existing stored credentials so callers can omit unchanged fields
     // ("leave empty to keep current" pattern).
-    const existingDecoded = JSON.parse(decrypt(existing.credentials)) as Record<string, unknown>;
     const merged = { ...existingDecoded, ...parsedCredentials };
 
     // Probe before persisting.
@@ -192,6 +255,10 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
         id: connectionId,
         name: scrubEmails(updated.name),
         fields: Object.keys(parsedCredentials),
+        // Where the credential now points, when the update moved it.
+        ...(destinationChange
+          ? { destinationChange: scrubDestinationChanges(destinationChange.changes) }
+          : {}),
       },
       outcome: "success",
     });

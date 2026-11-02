@@ -375,6 +375,124 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     expect(persistedCreds.apiKey).toBe("new-key");
   });
 
+  describe("a stored Odoo API key never follows the connection to a new destination", () => {
+    it("refuses a new URL without the API key: 422 on apiKey, no probe, no write, a failure audit", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { url: "https://attacker.example" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+
+      expect(response.status).toBe(422);
+      const body = await response.json();
+      expect(body.details.fieldErrors.apiKey).toEqual([
+        "Enter the API key again when you change the URL or database — the stored key is never sent to a new destination.",
+      ]);
+      // The stored login + key never reach OdooClient.authenticate.
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+      expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+      const entry = mockAppendAuditLog.mock.calls[0]![0];
+      expect(entry).toMatchObject({
+        eventType: "integration.credentials_updated",
+        resource: "integration:conn-1",
+        outcome: "failure",
+        detail: {
+          id: "conn-1",
+          name: "Test Odoo",
+          reason: "secret_required_for_new_destination",
+          destinationChange: {
+            url: { from: "https://odoo.example.com", to: "https://attacker.example" },
+          },
+        },
+      });
+      expect(JSON.stringify(entry)).not.toContain("secret-key");
+    });
+
+    it("reports an invalid URL as invalid rather than asking for the key", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { url: "http://odoo.example.com" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toBe("URL must use HTTPS");
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    });
+
+    it("refuses a new database without the API key", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { db: "someone-elses-db" } }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+
+      expect(response.status).toBe(422);
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    });
+
+    it("keeps the stored key for an unchanged destination (trailing slash) and a changed login", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-1", {
+          method: "PATCH",
+          body: JSON.stringify({
+            credentials: { url: "https://odoo.example.com/", db: "prod", login: "bob" },
+          }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+        "odoo",
+        expect.objectContaining({ login: "bob", apiKey: "secret-key" })
+      );
+    });
+
+    it("lets a new URL through with a fresh key, and records the change on the success audit", async () => {
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await PATCH(
+        makeRequest("/api/integrations/conn-1", {
+          method: "PATCH",
+          body: JSON.stringify({
+            credentials: { url: "https://odoo2.example.com", apiKey: "fresh-key" },
+          }),
+        }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+        "odoo",
+        expect.objectContaining({ url: "https://odoo2.example.com", apiKey: "fresh-key" })
+      );
+      const entry = mockAppendAuditLog.mock.calls.find(
+        (c) => (c[0] as { eventType?: string }).eventType === "integration.credentials_updated"
+      )![0];
+      expect(entry.outcome).toBe("success");
+      expect(entry.detail.destinationChange).toEqual({
+        url: { from: "https://odoo.example.com", to: "https://odoo2.example.com" },
+      });
+      expect(JSON.stringify(entry)).not.toContain("fresh-key");
+    });
+  });
+
   describe("imap connections", () => {
     const mockImapConnection = {
       ...mockOdooConnection,
@@ -445,22 +563,143 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
       );
     });
 
+    // Corrected expectation: this test used to change `imapHost` without a
+    // password and assert the stored password was merged in — i.e. that the
+    // stored password follows the mailbox to a new server, which is the leak
+    // this PR closes. The merge itself is still pinned, through a field that
+    // is not a destination.
     it("PATCH omitting password keeps the existing password via merge", async () => {
       const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
 
       await PATCH(
         makeRequest("/api/integrations/conn-imap-1", {
           method: "PATCH",
-          body: JSON.stringify({ credentials: { imapHost: "imap2.example.com" } }),
+          body: JSON.stringify({ credentials: { username: "support@example.com" } }),
         }),
         { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
       );
 
       const encryptedPayload = mockEncrypt.mock.calls[0]?.[0] as string;
       const persisted = JSON.parse(encryptedPayload);
-      expect(persisted.imapHost).toBe("imap2.example.com");
+      expect(persisted.username).toBe("support@example.com");
       // Untouched password preserved from the decrypted existing blob.
       expect(persisted.password).toBe("old-app-password");
+    });
+
+    describe("a stored password never follows the mailbox to a new server", () => {
+      it("refuses a new IMAP host without the password: 422 on password, no probe, no write, a failure audit", async () => {
+        const emailNamedConn = { ...mockImapConnection, name: "team@example.com" };
+        mockSelectWhere.mockResolvedValue([emailNamedConn]);
+        const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+        const response = await PATCH(
+          makeRequest("/api/integrations/conn-imap-1", {
+            method: "PATCH",
+            body: JSON.stringify({ credentials: { imapHost: "imap.attacker.example" } }),
+          }),
+          { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
+        );
+
+        expect(response.status).toBe(422);
+        const body = await response.json();
+        expect(body.details.fieldErrors.password).toEqual([
+          "Enter the password again when you change the server, a port or the security setting — the stored password is never sent to a new destination.",
+        ]);
+        expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+        expect(mockUpdateSet).not.toHaveBeenCalled();
+        expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+        const entry = mockAppendAuditLog.mock.calls[0]![0];
+        expect(entry).toMatchObject({
+          eventType: "integration.credentials_updated",
+          resource: "integration:conn-imap-1",
+          outcome: "failure",
+          detail: {
+            id: "conn-imap-1",
+            name: "<email-redacted>",
+            reason: "secret_required_for_new_destination",
+            destinationChange: {
+              imapHost: { from: "imap.example.com", to: "imap.attacker.example" },
+            },
+          },
+        });
+        expect(JSON.stringify(entry)).not.toContain("team@example.com");
+        expect(JSON.stringify(entry)).not.toContain("old-app-password");
+      });
+
+      it.each([
+        ["smtpHost", "smtp.attacker.example"],
+        ["imapPort", 143],
+        ["smtpPort", 2525],
+        ["security", "none"],
+      ])("refuses a changed %s without the password", async (field, value) => {
+        const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+        const response = await PATCH(
+          makeRequest("/api/integrations/conn-imap-1", {
+            method: "PATCH",
+            body: JSON.stringify({ credentials: { [field]: value } }),
+          }),
+          { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
+        );
+
+        expect(response.status).toBe(422);
+        expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+        expect(mockUpdateSet).not.toHaveBeenCalled();
+      });
+
+      it("accepts the dialog's prefilled, unchanged server fields without a password", async () => {
+        const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+        const response = await PATCH(
+          makeRequest("/api/integrations/conn-imap-1", {
+            method: "PATCH",
+            body: JSON.stringify({
+              credentials: {
+                imapHost: "IMAP.example.com",
+                imapPort: "993",
+                smtpHost: "smtp.example.com",
+                smtpPort: "587",
+                security: "tls",
+                senderName: "Team",
+              },
+            }),
+          }),
+          { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
+        );
+
+        expect(response.status).toBe(200);
+      });
+
+      it("lets a new server through with a fresh password, probing with that password", async () => {
+        const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+        const response = await PATCH(
+          makeRequest("/api/integrations/conn-imap-1", {
+            method: "PATCH",
+            body: JSON.stringify({
+              credentials: { imapHost: "imap2.example.com", password: "fresh-password" },
+            }),
+          }),
+          { params: Promise.resolve({ connectionId: "conn-imap-1" }) }
+        );
+
+        expect(response.status).toBe(200);
+        expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+          "imap",
+          expect.objectContaining({ imapHost: "imap2.example.com", password: "fresh-password" })
+        );
+        expect(mockAppendAuditLog).toHaveBeenCalledWith(
+          expect.objectContaining({
+            eventType: "integration.credentials_updated",
+            outcome: "success",
+            detail: expect.objectContaining({
+              destinationChange: {
+                imapHost: { from: "imap.example.com", to: "imap2.example.com" },
+              },
+            }),
+          })
+        );
+      });
     });
 
     it("PATCH with an out-of-range port returns 400 structured validation and writes nothing", async () => {

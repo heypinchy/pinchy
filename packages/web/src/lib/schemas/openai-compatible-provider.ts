@@ -85,24 +85,6 @@ export const upsertOpenAiCompatibleProviderSchema = z.object({
   manualModelIds: z.array(z.string().min(1)).optional(),
 });
 
-/**
- * Origin (scheme + host + port) of a base URL, or `""` when it doesn't parse —
- * which never equals a real origin, so an unreadable stored URL counts as
- * "changed". A stored API key is bound to this origin: the route refuses to
- * reuse it for any other (see the POST route), and the form mirrors that rule.
- */
-export function baseUrlOrigin(url: string): string {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return "";
-  }
-}
-
-/** Shown (field error on `apiKey`) when an update changes the origin without a fresh key. */
-export const KEY_REQUIRED_FOR_NEW_ORIGIN =
-  "Enter the API key again when you change the address — the stored key is never sent to a new host.";
-
 /** Request body for discovering a provider's models from its `/models` endpoint. */
 export const discoverSchema = z.object({
   baseUrl: providerBaseUrlSchema,

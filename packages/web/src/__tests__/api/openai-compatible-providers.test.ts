@@ -478,7 +478,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
     expect(setSetting).not.toHaveBeenCalled();
   });
 
-  describe("a stored key never follows the base URL to a new origin", () => {
+  describe("a stored key never follows the base URL to a new address", () => {
     const updateId = "11111111-1111-4111-8111-111111111111";
 
     it("rejects an update that moves the base URL to a new host without an api key, before any request", async () => {
@@ -494,7 +494,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       expect(res.status).toBe(422);
       const body = await res.json();
       expect(body.details.fieldErrors.apiKey).toEqual([
-        "Enter the API key again when you change the address — the stored key is never sent to a new host.",
+        "Enter the API key again when you change the address — the stored key is never sent to a new address.",
       ]);
       // The stored key is never even decrypted, let alone sent anywhere.
       expect(getDecryptedKeyById).not.toHaveBeenCalled();
@@ -507,7 +507,7 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       ["scheme", "http://acme.example.com/v1"],
       ["port", "https://acme.example.com:8443/v1"],
       ["host", "https://acme.example.org/v1"],
-    ])("treats a changed %s as a new origin", async (_what, baseUrl) => {
+    ])("treats a changed %s as a new address", async (_what, baseUrl) => {
       const res = await POST(
         postRequest({ id: updateId, displayName: "Acme LLM", baseUrl }),
         routeCtx
@@ -538,24 +538,78 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       );
     });
 
-    it("still reuses the stored key when only the path changes on the same origin", async () => {
+    // Corrected expectation, not a weakened one: this test used to assert that a
+    // path-only change on the same origin REUSED the stored key. That is the
+    // same leak one level down — a shared gateway origin routes by path (a
+    // Cloudflare AI Gateway URL `/v1/<account>/<gateway>` sends the key into
+    // whichever account it names), so the key is bound to the full base URL.
+    it("refuses a path-only change without a fresh key: a shared origin routes by path", async () => {
+      vi.mocked(getBaseUrlById).mockResolvedValue("https://gateway.ai.cloudflare.com/v1/acct-a/gw");
       const res = await POST(
         postRequest({
           id: updateId,
           displayName: "Acme LLM",
-          baseUrl: "https://acme.example.com/openai/v1",
+          baseUrl: "https://gateway.ai.cloudflare.com/v1/acct-b/gw",
+        }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(422);
+      expect(getDecryptedKeyById).not.toHaveBeenCalled();
+      expect(fetchOpenAiCompatibleModels).not.toHaveBeenCalled();
+      expect(createOrUpdateProvider).not.toHaveBeenCalled();
+    });
+
+    it("still reuses the stored key when only a trailing slash or the host's letter case differs", async () => {
+      const res = await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: "https://ACME.example.com/v1/",
         }),
         routeCtx
       );
 
       expect(res.status).toBe(200);
       expect(fetchOpenAiCompatibleModels).toHaveBeenCalledWith(
-        "https://acme.example.com/openai/v1",
+        "https://ACME.example.com/v1/",
         "sk-stored-key"
       );
     });
 
-    it("records the origin change on the success audit, without any key", async () => {
+    it("audits a refused update as a config.changed failure, naming the provider and both URLs", async () => {
+      const res = await POST(
+        postRequest({
+          id: updateId,
+          displayName: "Acme LLM",
+          baseUrl: "https://attacker.example.net/v1?key=leaky",
+        }),
+        routeCtx
+      );
+
+      expect(res.status).toBe(422);
+      expect(appendAuditLog).toHaveBeenCalledTimes(1);
+      const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(entry).toMatchObject({
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          provider: { id: updateId, name: "Acme LLM" },
+          authType: "openai-compatible",
+          reason: "secret_required_for_new_destination",
+          baseUrlChange: {
+            from: "https://acme.example.com/v1",
+            to: "https://attacker.example.net/v1",
+          },
+        },
+      });
+      expect(entry.error?.message).toBeTruthy();
+      // The query can carry a credential, so it never reaches the audit row.
+      expect(JSON.stringify(entry)).not.toContain("leaky");
+      expect(JSON.stringify(entry)).not.toContain("sk-stored-key");
+    });
+
+    it("records the base URL change on the success audit, without any key", async () => {
       const res = await POST(
         postRequest({
           id: updateId,
@@ -571,15 +625,15 @@ describe("POST /api/settings/providers/openai-compatible", () => {
       expect(entry.detail).toMatchObject({
         baseUrlHost: "new-host.example.com:8443",
         baseUrlChange: {
-          from: "https://acme.example.com",
-          to: "https://new-host.example.com:8443",
+          from: "https://acme.example.com/v1",
+          to: "https://new-host.example.com:8443/v1",
         },
       });
       expect(JSON.stringify(entry.detail)).not.toContain(SECRET_KEY);
       expect(JSON.stringify(entry.detail).length).toBeLessThan(2048);
     });
 
-    it("does not record an origin change when the origin is unchanged", async () => {
+    it("does not record a base URL change when the base URL is unchanged", async () => {
       await POST(
         postRequest({
           id: updateId,

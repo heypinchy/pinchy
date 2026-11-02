@@ -1003,15 +1003,15 @@ Add or update an OpenAI-compatible provider. See [OpenAI-compatible providers](/
 
 **Request body:**
 
-| Field            | Type     | Required | Description                                                                                                         |
-| ---------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
-| `id`             | uuid     | No       | Omit to create, pass to update                                                                                      |
-| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                                                     |
-| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API. Rejected if it resolves to a private-network address                           |
-| `apiKey`         | string   | No       | Omit on update to keep the stored key. Required when the update changes the `baseUrl` origin (scheme, host or port) |
-| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                                           |
+| Field            | Type     | Required | Description                                                                               |
+| ---------------- | -------- | -------- | ----------------------------------------------------------------------------------------- |
+| `id`             | uuid     | No       | Omit to create, pass to update                                                            |
+| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                           |
+| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API. Rejected if it resolves to a private-network address |
+| `apiKey`         | string   | No       | Omit on update to keep the stored key. Required when the update changes `baseUrl`         |
+| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                 |
 
-An update that moves `baseUrl` to a different origin without a fresh `apiKey` is rejected with `422` and an `apiKey` field error before any request is made — the stored key is never sent to a new host.
+The stored key is bound to the base URL it was entered for — scheme, host, port **and path**, because a shared gateway host routes by path. Only a trailing slash and the letter case of the host are ignored. An update that changes `baseUrl` without a fresh `apiKey` is rejected with `422` and an `apiKey` field error before any request is made, and the refusal is written to the audit trail as a failed `config.changed` row — the stored key is never sent to a new address.
 
 The key is encrypted at rest and never written into the OpenClaw configuration in plaintext — see [Secret handling](/security/secrets/).
 
@@ -1500,7 +1500,23 @@ Get a single connection (credentials masked).
 
 ### `PATCH /api/integrations/:connectionId`
 
-Update a connection's name, description, or credentials.
+Update a connection's name, description, or credentials. Credential fields you leave out keep their stored values, and the merged credentials are tested against the service before they are saved.
+
+A stored secret never follows the connection to a new destination. If the update changes where the secret would be sent, the secret has to come in the same request:
+
+| Type | Destination fields                                         | Secret to re-send |
+| ---- | ---------------------------------------------------------- | ----------------- |
+| Odoo | `url` (trailing slash ignored), `db`                       | `apiKey`          |
+| IMAP | `imapHost`, `imapPort`, `smtpHost`, `smtpPort`, `security` | `password`        |
+
+Without it the request is rejected with `422` and a field error on the secret, before anything is sent to the new destination, and the refusal is written to the audit trail as a failed `integration.credentials_updated` row. Changing only the login, username, or sender name keeps the stored secret.
+
+**Errors:**
+
+- `400` — invalid credentials, an invalid Odoo URL, or the test against the service failed
+- `404` — connection not found
+- `409` — the credentials were changed concurrently; retry
+- `422` — the destination changed but the secret was not re-entered
 
 ### `DELETE /api/integrations/:connectionId`
 

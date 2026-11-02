@@ -4,9 +4,12 @@ import { parseRequestBody } from "@/lib/api-validation";
 import {
   upsertOpenAiCompatibleProviderSchema,
   deleteOpenAiCompatibleSchema,
-  baseUrlOrigin,
-  KEY_REQUIRED_FOR_NEW_ORIGIN,
 } from "@/lib/schemas/openai-compatible-provider";
+import {
+  baseUrlDestinationChange,
+  KEY_REQUIRED_FOR_NEW_DESTINATION,
+  SECRET_REQUIRED_FOR_NEW_DESTINATION,
+} from "@/lib/secret-destination";
 import {
   createOrUpdateProvider,
   listOpenAiCompatibleProvidersForAdmin,
@@ -44,7 +47,8 @@ import { recordAuditFailure } from "@/lib/audit-deferred";
 // that derives a `configRegenerated` flag rather than 500-ing an already-persisted
 // save (see setup/provider/route.ts + #880), `resetCache()`, and a
 // `config.changed` audit whose detail snapshots `{ id, name }` and NEVER carries
-// the API key or the full base URL (host only).
+// the API key — the base URL appears as its host, plus origin + path when an
+// update re-points it (never userinfo or query).
 //
 // #894 backend redesign: POST now DISCOVERS the model list itself (server-side
 // `GET <baseUrl>/models`) instead of trusting the client's `models` array —
@@ -83,20 +87,38 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // can reuse it. `new URL(baseUrl)` is safe: the schema already validated it.
   const baseUrlHost = new URL(input.baseUrl).host;
 
-  // A stored key is bound to the origin it was entered for. The admin UI never
-  // shows the key, so without this an admin (or a stolen admin session) could
-  // point the base URL at a host they control and receive the key — as the
-  // Bearer token during discovery below, and on every later chat. The SSRF guard
-  // cannot help: the attacker's host is public. So an update that changes the
-  // origin must bring a fresh key; the stored one is never decrypted for it.
-  const newOrigin = new URL(input.baseUrl).origin;
+  // A stored key is bound to the base URL it was entered for (see
+  // lib/secret-destination.ts). The admin UI never shows the key, so without
+  // this an admin (or a stolen admin session) could point the base URL at a
+  // host — or, on a shared gateway origin, a path — they control and receive
+  // the key: as the Bearer token during discovery below, and on every later
+  // chat. The SSRF guard cannot help: the attacker's host is public. So an
+  // update that changes the base URL must bring a fresh key; the stored one is
+  // never decrypted for it.
   const storedBaseUrl = input.id ? await getBaseUrlById(input.id) : undefined;
-  const originChanged = storedBaseUrl !== undefined && baseUrlOrigin(storedBaseUrl) !== newOrigin;
-  if (originChanged && !input.apiKey) {
+  const baseUrlChange =
+    storedBaseUrl !== undefined ? baseUrlDestinationChange(storedBaseUrl, input.baseUrl) : null;
+  if (baseUrlChange && !input.apiKey) {
+    // Refused before anything left the building, but still worth a row: a
+    // repeated attempt to re-point a stored key is exactly what a CISO filters
+    // the trail for. Nothing changed, so a plain awaited append fits.
+    await appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      outcome: "failure",
+      error: { message: KEY_REQUIRED_FOR_NEW_DESTINATION },
+      detail: {
+        provider: { id: input.id!, name: input.displayName },
+        authType: "openai-compatible",
+        reason: SECRET_REQUIRED_FOR_NEW_DESTINATION,
+        baseUrlChange,
+      },
+    });
     return NextResponse.json(
       {
-        error: KEY_REQUIRED_FOR_NEW_ORIGIN,
-        details: { formErrors: [], fieldErrors: { apiKey: [KEY_REQUIRED_FOR_NEW_ORIGIN] } },
+        error: KEY_REQUIRED_FOR_NEW_DESTINATION,
+        details: { formErrors: [], fieldErrors: { apiKey: [KEY_REQUIRED_FOR_NEW_DESTINATION] } },
       },
       { status: 422 }
     );
@@ -104,7 +126,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
   // Server-side model discovery (#894 backend redesign). The effective key is
   // the freshly-supplied one, or — on an update that omitted it and kept the
-  // same origin — the stored, decrypted key: discovery must still hit the live
+  // same base URL — the stored, decrypted key: discovery must still hit the live
   // endpoint with SOME credential even when the admin didn't rotate it.
   // Undefined only on a CREATE with no apiKey, which createOrUpdateProvider
   // itself rejects below; discovery is simply skipped rather than probing with
@@ -251,11 +273,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         provider: { id: row.slug, name: row.displayName },
         authType: "openai-compatible",
         baseUrlHost,
-        // Only present when an update moved the provider to a new origin (key-free:
-        // scheme + host + port only), so an analyst can see where a key was re-pointed.
-        ...(originChanged
-          ? { baseUrlChange: { from: baseUrlOrigin(storedBaseUrl!), to: newOrigin } }
-          : {}),
+        // `baseUrlChange` is only present when an update moved the provider to a
+        // new base URL (origin + path, never userinfo or query — either can carry
+        // a credential), so an analyst can see where a key was re-pointed.
+        ...(baseUrlChange ? { baseUrlChange } : {}),
         modelCount: row.models.length,
         configRegenerated,
         // Only present when an edit actually repointed agents off removed models.

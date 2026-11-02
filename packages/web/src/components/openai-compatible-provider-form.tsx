@@ -8,11 +8,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiPost, ApiError, errorMessage } from "@/lib/api-client";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
+import type { UpsertOpenAiCompatibleProviderInput } from "@/lib/schemas/openai-compatible-provider";
 import {
-  baseUrlOrigin,
-  KEY_REQUIRED_FOR_NEW_ORIGIN,
-  type UpsertOpenAiCompatibleProviderInput,
-} from "@/lib/schemas/openai-compatible-provider";
+  canonicalDestinationUrl,
+  KEY_REQUIRED_FOR_NEW_DESTINATION,
+} from "@/lib/secret-destination";
 
 // Add/Edit form for the generic "OpenAI-compatible" provider type (#894). Talks
 // to the typed api-client with shared request schemas so the client payload
@@ -65,9 +65,13 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
   const [manualError, setManualError] = useState("");
   const [formError, setFormError] = useState("");
 
-  // The stored key is bound to its host: changing the origin on an edit means
-  // the key must be typed again (the server enforces the same rule).
-  const needsFreshKey = isEdit && baseUrlOrigin(baseUrl) !== baseUrlOrigin(provider.baseUrl);
+  // The stored key is bound to its base URL: changing it on an edit means the
+  // key must be typed again (the server enforces the same rule). Only once the
+  // new address parses, though — a half-typed or malformed URL is the server's
+  // to reject as invalid, not a reason to ask for the key.
+  const nextBaseUrl = canonicalDestinationUrl(baseUrl);
+  const needsFreshKey =
+    isEdit && nextBaseUrl !== null && nextBaseUrl !== canonicalDestinationUrl(provider.baseUrl);
 
   async function handleSubmit() {
     setKeyError("");
@@ -76,7 +80,7 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
     setFormError("");
 
     if (needsFreshKey && !apiKey.trim()) {
-      setKeyError(KEY_REQUIRED_FOR_NEW_ORIGIN);
+      setKeyError(KEY_REQUIRED_FOR_NEW_DESTINATION);
       return;
     }
 
@@ -193,7 +197,7 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
             {keyError}
           </p>
         ) : needsFreshKey ? (
-          <p className="text-xs text-muted-foreground">{KEY_REQUIRED_FOR_NEW_ORIGIN}</p>
+          <p className="text-xs text-muted-foreground">{KEY_REQUIRED_FOR_NEW_DESTINATION}</p>
         ) : (
           <p className="text-xs text-muted-foreground flex items-center gap-1">
             <Lock className="size-3" />
