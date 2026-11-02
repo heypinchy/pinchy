@@ -44,9 +44,14 @@ export default defineConfig({
     testTimeout: 30_000,
     // Same budget for setup/teardown hooks: beforeAll/afterAll here do
     // CREATE / DROP DATABASE WITH (FORCE) plus migration cp/rm, which contend
-    // for the shared Postgres under full-suite load. The 10s hook default was
-    // too tight and flaked migration-gap-repair's afterAll; 30s still
-    // fail-fast for a genuine hang.
+    // for the shared Postgres under full-suite load; 30s still fail-fast for a
+    // genuine hang. The afterAll timeouts that once flaked migration-gap-repair
+    // (and later migration-upgrade-path, -090, -kb-archive-backfill) were not
+    // a too-tight budget: DROP DATABASE forces a checkpoint, which had to fsync
+    // the ~210 files a TRUNCATE-based per-test reset created for EVERY test
+    // since the last one — 45s under load. Fixed at the source in
+    // src/test-helpers/integration/reset-db.ts; do not "fix" a recurrence by
+    // raising this number.
     hookTimeout: 30_000,
     env: {
       DATABASE_URL: TEST_DB_URL,
