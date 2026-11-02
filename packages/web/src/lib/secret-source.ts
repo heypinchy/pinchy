@@ -174,6 +174,46 @@ export function evaluateAuditSecretRotation(opts: {
   };
 }
 
+export interface IgnoredSecretEnvLog {
+  action: "warn" | "none";
+  message?: string;
+}
+
+/**
+ * The startup warning for a key variable Pinchy ignores. {@link getSecretSource}
+ * only accepts 64 hex characters and otherwise falls back to the key file,
+ * which is the right fallback but used to be a silent one: an operator with a
+ * 63-character value or a `0x` prefix saw nothing wrong and believed the
+ * variable was the key. For the audit secret that belief is dangerous, because
+ * the retire-the-earlier-key steps remove the key file, and while the variable
+ * is ignored that file is the signing key.
+ *
+ * Takes a boolean, never the value, for the reason
+ * {@link evaluateAuditSecretRotation} does. The message says only "not 64 hex
+ * characters", never the length or any part of what was set.
+ */
+export function describeIgnoredSecretEnv(opts: {
+  envVar: "ENCRYPTION_KEY" | "AUDIT_HMAC_SECRET";
+  ignored: boolean;
+}): IgnoredSecretEnvLog {
+  if (!opts.ignored) return { action: "none" };
+
+  const consequence =
+    opts.envVar === "AUDIT_HMAC_SECRET"
+      ? " Until then, the key file is the audit signing key, so don't remove " +
+        ".audit_hmac_secret from the volume."
+      : "";
+  return {
+    action: "warn",
+    message:
+      `WARNING: ${opts.envVar} is set but is not a valid key, so Pinchy ignores it ` +
+      "and uses the key file in the secrets volume instead (creating one there if " +
+      "there is none). A valid key is 64 hex characters (0-9, a-f), with no 0x " +
+      "prefix, quotes or spaces: the output of openssl rand -hex 32. Fix the value " +
+      `in your .env and restart Pinchy.${consequence}`,
+  };
+}
+
 export interface AuditKeyFilePersistLog {
   action: "info" | "warn" | "none";
   message?: string;

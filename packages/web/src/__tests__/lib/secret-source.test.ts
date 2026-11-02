@@ -20,7 +20,7 @@ vi.mock("fs", async (importOriginal) => {
 });
 
 import { existsSync, readFileSync } from "fs";
-import { getSecretSource } from "@/lib/encryption";
+import { getSecretSource, isSecretEnvIgnored } from "@/lib/encryption";
 import {
   getAuthSecretSource,
   getDbPasswordSource,
@@ -30,6 +30,7 @@ import {
   AUDIT_KEY_SWITCH_BACK_DOCS_URL,
   AUDIT_KEY_SWITCH_DOCS_URL,
   describeAuditKeyFilePersist,
+  describeIgnoredSecretEnv,
 } from "@/lib/secret-source";
 
 const mockedExistsSync = vi.mocked(existsSync);
@@ -71,6 +72,93 @@ describe("getSecretSource", () => {
   it("resolves per-secret names (audit_hmac_secret)", () => {
     vi.stubEnv("AUDIT_HMAC_SECRET", VALID_KEY);
     expect(getSecretSource("audit_hmac_secret")).toBe("envvar");
+  });
+});
+
+describe("isSecretEnvIgnored", () => {
+  // getSecretSource falls through to the key file when the variable is set but
+  // not a valid key. That fallback is right, but it was silent: an operator
+  // with a 63-character value or a 0x prefix believed the variable was the key.
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("is true for a value that is set but not 64 hex characters", () => {
+    vi.stubEnv("AUDIT_HMAC_SECRET", "a".repeat(63));
+    expect(isSecretEnvIgnored("audit_hmac_secret")).toBe(true);
+  });
+
+  it("is true for a hex key with a 0x prefix", () => {
+    vi.stubEnv("AUDIT_HMAC_SECRET", `0x${VALID_KEY}`);
+    expect(isSecretEnvIgnored("audit_hmac_secret")).toBe(true);
+  });
+
+  it("is true for 64 characters that are not all hex", () => {
+    vi.stubEnv("ENCRYPTION_KEY", "g".repeat(64));
+    expect(isSecretEnvIgnored("encryption_key")).toBe(true);
+  });
+
+  it("is false for a valid key", () => {
+    vi.stubEnv("AUDIT_HMAC_SECRET", VALID_KEY);
+    expect(isSecretEnvIgnored("audit_hmac_secret")).toBe(false);
+  });
+
+  it("is false when the variable is empty: unset is a supported choice, not a mistake", () => {
+    // docker-compose.yml passes `AUDIT_HMAC_SECRET=${AUDIT_HMAC_SECRET:-}`, so
+    // an install that never set it sees an empty string, not an absent one.
+    vi.stubEnv("AUDIT_HMAC_SECRET", "");
+    expect(isSecretEnvIgnored("audit_hmac_secret")).toBe(false);
+  });
+
+  it("agrees with getSecretSource: ignored exactly when a set value is not the source", () => {
+    mockedExistsSync.mockReturnValue(false);
+    for (const value of ["a".repeat(63), `0x${VALID_KEY}`, VALID_KEY, ` ${VALID_KEY}`]) {
+      vi.stubEnv("AUDIT_HMAC_SECRET", value);
+      expect(isSecretEnvIgnored("audit_hmac_secret")).toBe(
+        getSecretSource("audit_hmac_secret") !== "envvar"
+      );
+    }
+  });
+});
+
+describe("describeIgnoredSecretEnv", () => {
+  it("warns, naming the variable, that it is ignored and the key file is used", () => {
+    const result = describeIgnoredSecretEnv({ envVar: "AUDIT_HMAC_SECRET", ignored: true });
+
+    expect(result.action).toBe("warn");
+    expect(result.message).toMatch(/^WARNING: AUDIT_HMAC_SECRET is set but is not a valid key/);
+    expect(result.message).toMatch(/ignores it/);
+    expect(result.message).toMatch(/key file in the secrets volume instead/);
+  });
+
+  it("says what a valid value looks like", () => {
+    const result = describeIgnoredSecretEnv({ envVar: "ENCRYPTION_KEY", ignored: true });
+
+    expect(result.message).toMatch(/^WARNING: ENCRYPTION_KEY is set but is not a valid key/);
+    expect(result.message).toMatch(/64 hex characters/);
+    expect(result.message).toMatch(/0x/);
+    expect(result.message).toMatch(/openssl rand -hex 32/);
+  });
+
+  it("tells the audit operator not to remove the key file while the variable is ignored", () => {
+    // While the variable is ignored the file IS the signing key. Removing it,
+    // as the retire-the-earlier-key steps describe, would make Pinchy generate
+    // a new random key at the next audit entry.
+    const result = describeIgnoredSecretEnv({ envVar: "AUDIT_HMAC_SECRET", ignored: true });
+    expect(result.message).toMatch(/don't remove \.audit_hmac_secret/);
+  });
+
+  it("is silent when the variable is not ignored", () => {
+    expect(describeIgnoredSecretEnv({ envVar: "AUDIT_HMAC_SECRET", ignored: false })).toEqual({
+      action: "none",
+    });
+  });
+
+  it("never carries the value", () => {
+    // Takes a boolean, not the value, so the value cannot reach the log; this
+    // pins that no key-shaped text does either.
+    for (const envVar of ["ENCRYPTION_KEY", "AUDIT_HMAC_SECRET"] as const) {
+      const result = describeIgnoredSecretEnv({ envVar, ignored: true });
+      expect(result.message).not.toMatch(/[0-9a-f]{16}/i);
+    }
   });
 });
 

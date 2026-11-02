@@ -1,7 +1,13 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
-import { AUDIT_KEY_SWITCH_BACK_DOCS_URL, AUDIT_KEY_SWITCH_DOCS_URL } from "@/lib/secret-source";
+import {
+  AUDIT_KEY_SWITCH_BACK_DOCS_URL,
+  AUDIT_KEY_SWITCH_DOCS_URL,
+  describeAuditKeyFilePersist,
+  describeIgnoredSecretEnv,
+  evaluateAuditSecretRotation,
+} from "@/lib/secret-source";
 
 const repoRoot = resolve(__dirname, "../../../../..");
 const pagePath = resolve(repoRoot, "docs/src/content/docs/concepts/audit-trail-verification.mdx");
@@ -40,5 +46,36 @@ describe("the audit-key startup notices link to sections that exist", () => {
     // Printed when the variable's value could not be written to the key file:
     // the operator needs the one procedure that says what to do before a switch.
     expectExistingSection(AUDIT_KEY_SWITCH_DOCS_URL);
+  });
+});
+
+describe("the retire-the-earlier-key steps quote log lines Pinchy prints", () => {
+  // Step 3 makes removing the key file conditional on what the log says. If
+  // a message is reworded and the docs are not, an operator looks for a line
+  // that never appears and either stops for nothing or, worse, reads its
+  // absence the wrong way. Pin each quoted line to the code that prints it.
+  const page = readFileSync(pagePath, "utf-8");
+  const quoted = (line: string) => expect(page).toContain(`\`${line}\``);
+
+  it("the key-switch notice", () => {
+    const line = "AUDIT_HMAC_SECRET is set and differs from the audit signing key";
+    quoted(line);
+    expect(evaluateAuditSecretRotation({ hasSupersededSecret: true }).message).toContain(line);
+  });
+
+  it("the ignored-variable warning", () => {
+    const line = "AUDIT_HMAC_SECRET is set but is not a valid key";
+    quoted(line);
+    expect(
+      describeIgnoredSecretEnv({ envVar: "AUDIT_HMAC_SECRET", ignored: true }).message
+    ).toContain(line);
+  });
+
+  it("the key-file write", () => {
+    const line = "Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret";
+    quoted(line);
+    expect(
+      describeAuditKeyFilePersist({ status: "written", dir: "/app/secrets" }).message
+    ).toContain(line);
   });
 });

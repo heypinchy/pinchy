@@ -54,10 +54,15 @@ import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 import {
   describeAuditKeyFilePersist,
+  describeIgnoredSecretEnv,
   evaluateAuditSecretRotation,
   evaluateDbPasswordPolicy,
 } from "./src/lib/secret-source";
-import { getPreviousSecret, persistEnvSecretToKeyFile } from "./src/lib/encryption";
+import {
+  getPreviousSecret,
+  isSecretEnvIgnored,
+  persistEnvSecretToKeyFile,
+} from "./src/lib/encryption";
 import { exitOnStartupFailure } from "./src/server/startup-failure";
 import { getTrustedProxies, stampClientIp, TRUSTED_PROXIES_ENV_VAR } from "./src/server/client-ip";
 
@@ -101,6 +106,20 @@ const dbPasswordPolicy = evaluateDbPasswordPolicy({
 });
 if (dbPasswordPolicy.action === "warn") {
   console.warn(dbPasswordPolicy.message);
+}
+
+// A key variable that is set but not 64 hex characters is ignored in favour of
+// the key file. Say so: the operator set it to be the key, and without this
+// line nothing tells them it isn't. Before the steps below, which only act on
+// a variable that is in effect.
+for (const [envVar, name] of [
+  ["ENCRYPTION_KEY", "encryption_key"],
+  ["AUDIT_HMAC_SECRET", "audit_hmac_secret"],
+] as const) {
+  const ignoredEnvLog = describeIgnoredSecretEnv({ envVar, ignored: isSecretEnvIgnored(name) });
+  if (ignoredEnvLog.action === "warn") {
+    console.warn(ignoredEnvLog.message);
+  }
 }
 
 // The earlier key Pinchy verifies against is always the key file. When

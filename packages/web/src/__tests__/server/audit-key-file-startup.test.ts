@@ -23,6 +23,27 @@ describe("server.ts writes a variable-only audit key to the key file at startup"
   });
 });
 
+describe("server.ts warns at startup about a key variable it ignores", () => {
+  // getSecretSource silently falls back to the key file when ENCRYPTION_KEY or
+  // AUDIT_HMAC_SECRET is set but not 64 hex characters. The unit tests prove
+  // the warning; this proves server.ts emits it, for both variables.
+  const serverSource = fs.readFileSync(path.resolve(__dirname, "../../../server.ts"), "utf8");
+
+  it("checks both variables and logs the outcome", () => {
+    expect(serverSource).toContain("describeIgnoredSecretEnv(");
+    expect(serverSource).toMatch(/\["ENCRYPTION_KEY", "encryption_key"\]/);
+    expect(serverSource).toMatch(/\["AUDIT_HMAC_SECRET", "audit_hmac_secret"\]/);
+    expect(serverSource).toContain("isSecretEnvIgnored(name)");
+  });
+
+  it("warns before the key-file write and the key-switch notice", () => {
+    const warnAt = serverSource.indexOf("describeIgnoredSecretEnv(");
+    const persistAt = serverSource.indexOf('persistEnvSecretToKeyFile("audit_hmac_secret")');
+    expect(warnAt).toBeGreaterThan(-1);
+    expect(warnAt).toBeLessThan(persistAt);
+  });
+});
+
 describe("the host-run E2E server has somewhere to write the audit key file", () => {
   // playwright.config.ts starts server.ts on the host with AUDIT_HMAC_SECRET
   // set. Without ENCRYPTION_KEY_DIR the key directory defaults to /app/secrets,

@@ -84,6 +84,8 @@ Pinchy generates each of these on first start and persists it in the `pinchy-sec
 
 Once it's set, Pinchy also writes the value into `.audit_hmac_secret` in the `pinchy-secrets` volume the first time it starts without a key file there, so a later change keeps the old key for verifying older entries. Setting or changing it on an install that has been running switches the signing key: follow [Switching the key](/concepts/audit-trail-verification/#switching-the-key).
 
+`ENCRYPTION_KEY` and `AUDIT_HMAC_SECRET` have to be exactly 64 hex characters, the output of `openssl rand -hex 32`. A value that isn't, for example one with a `0x` prefix, quotes, or a character missing, is ignored: Pinchy uses the key in the `pinchy-secrets` volume instead and logs a warning on every start, such as `ENCRYPTION_KEY is set but is not a valid key`.
+
 The one thing that cannot be recovered is a key you delete. Keep the `pinchy-secrets` volume in your backups even after pinning the value in `.env`.
 
 :::caution

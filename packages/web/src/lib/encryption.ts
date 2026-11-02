@@ -35,6 +35,22 @@ function secretPaths(name: string) {
  */
 const fileSecretCache = new Map<string, { mtimeMs: number; secret: Buffer }>();
 
+function isHexKey(value: string): boolean {
+  return value.length === 64 && /^[0-9a-fA-F]+$/.test(value);
+}
+
+/**
+ * True when the secret's variable is set but is not a valid key, so
+ * {@link getSecretSource} ignores it and falls through to the key file. An
+ * empty variable is not ignored, it is unset: docker-compose.yml passes
+ * `${VAR:-}`, so every install that never set it sees an empty string.
+ * Returns a boolean so the value never leaves this module.
+ */
+export function isSecretEnvIgnored(name: string): boolean {
+  const envKey = process.env[name.toUpperCase()];
+  return !!envKey && !isHexKey(envKey);
+}
+
 /**
  * Resolve the provenance of a secret WITHOUT creating it. Mirrors the
  * priority order of getOrCreateSecret below — keep both in sync by having
@@ -42,7 +58,7 @@ const fileSecretCache = new Map<string, { mtimeMs: number; secret: Buffer }>();
  */
 export function getSecretSource(name: string): SecretSource {
   const envKey = process.env[name.toUpperCase()];
-  if (envKey && envKey.length === 64 && /^[0-9a-fA-F]+$/.test(envKey)) {
+  if (envKey && isHexKey(envKey)) {
     return "envvar";
   }
   if (existsSync(secretPaths(name).keyFilePath)) {
