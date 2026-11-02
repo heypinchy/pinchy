@@ -105,6 +105,10 @@ vi.mock("@/lib/providers", () => ({
   PROVIDERS: {},
 }));
 
+vi.mock("@/lib/audit-deferred", () => ({
+  deferAuditLog: vi.fn(),
+}));
+
 vi.mock("@/lib/provider-models", () => ({
   getDefaultModel: vi.fn().mockResolvedValue("ollama-local/test-model"),
 }));
@@ -113,6 +117,7 @@ import { ensureWorkspace } from "@/lib/workspace";
 import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { markOpenClawConfigReady, isOpenClawConfigReady } from "@/lib/openclaw-config-ready";
+import { deferAuditLog } from "@/lib/audit-deferred";
 
 import { db } from "@/db";
 
@@ -229,6 +234,41 @@ describe("POST /api/setup", () => {
 
     expect(response.status).toBe(201);
     expect(data).toEqual({ id: "1", email: "admin@test.com" });
+  });
+
+  it("audits the account it creates as user.created via setup", async () => {
+    // The first admin is the one account no invite explains, so its creation
+    // is the row the provenance check (lib/user-provenance.ts) and an auditor
+    // both need. Actor is the new admin; no email or raw id in detail.
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+
+    const response = await POST(
+      makeRequest({ name: "Admin User", email: "admin@test.com", password: "Br1ghtNova!2" }) as any
+    );
+
+    expect(response.status).toBe(201);
+    expect(deferAuditLog).toHaveBeenCalledOnce();
+    expect(deferAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "1",
+      eventType: "user.created",
+      detail: { name: "Admin User", role: "admin", via: "setup" },
+      outcome: "success",
+    });
+  });
+
+  it("writes no user.created row when setup is already complete", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(
+      makeDbUserRow({ id: "1", email: "admin@test.com", name: "Admin", role: "admin" })
+    );
+    vi.mocked(isOpenClawConfigReady).mockReturnValue(true);
+
+    const response = await POST(
+      makeRequest({ name: "Late", email: "late@test.com", password: "Br1ghtNova!2" }) as any
+    );
+
+    expect(response.status).toBe(403);
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 
   it("should return 400 when name is missing", async () => {

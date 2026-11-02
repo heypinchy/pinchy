@@ -20,6 +20,27 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 
+// The account-creation audit row is written through deferAuditLog (next's
+// after()), which throws outside a request scope. Run the callback inline
+// and collect its promise so a test can await the write before reading the
+// audit table.
+const pendingAfter: Promise<unknown>[] = [];
+async function flushAfter(): Promise<void> {
+  while (pendingAfter.length > 0) {
+    await Promise.allSettled(pendingAfter.splice(0));
+  }
+}
+vi.mock("next/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/server")>();
+  return {
+    ...actual,
+    after: vi.fn((fn: () => void | Promise<void>) => {
+      const result = fn();
+      if (result instanceof Promise) pendingAfter.push(result);
+    }),
+  };
+});
+
 vi.mock("@/lib/personal-agent", () => ({
   seedPersonalAgent: vi.fn().mockResolvedValue({ id: "fake-agent-id" }),
 }));
@@ -241,6 +262,66 @@ describe("POST /api/invite/claim (integration)", () => {
     expect(newAdmin?.role).toBe("admin");
     // seedPersonalAgent receives isAdmin=true so Smithers gets the org-context tool.
     expect(seedPersonalAgent).toHaveBeenCalledWith(newAdmin!.id, true);
+  });
+
+  // ── Audit: account creation ─────────────────────────────────────────
+
+  it("writes a user.created audit row for the account a claimed invite creates", async () => {
+    // Before this row existed, an account's only trace in the audit trail was
+    // the inviter's `user.invited` — nothing recorded that the invite became
+    // an account, or which one. Actor is the new user (pseudonymized on the
+    // actorId column); their raw id and email stay out of `detail`.
+    const adminId = await seedAdmin();
+    const invite = await createInvite({
+      email: "audited@test.local",
+      role: "admin",
+      type: "invite",
+      createdBy: adminId,
+    });
+
+    const response = await POST(
+      makeRequest({ token: invite.token, name: "Audited User", password: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(201);
+    await flushAfter();
+
+    const user = await db.query.users.findFirst({ where: eq(users.email, "audited@test.local") });
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorType: "user",
+      actorId: user!.auditPseudonym,
+      outcome: "success",
+    });
+    expect(rows[0].detail).toEqual({
+      name: "Audited User",
+      role: "admin",
+      via: "invite",
+      invite: { id: invite.id },
+    });
+    const serialized = JSON.stringify(rows[0]);
+    expect(serialized).not.toContain("audited@test.local");
+    expect(serialized).not.toContain(user!.id);
+  });
+
+  it("writes no user.created row for a password-reset claim", async () => {
+    const adminId = await seedAdmin();
+    await auth.api.signUpEmail({
+      body: { name: "Resetter", email: "resetter@test.local", password: "originalpassword1" },
+    });
+    const { token } = await createInvite({
+      email: "resetter@test.local",
+      role: "member",
+      type: "reset",
+      createdBy: adminId,
+    });
+
+    const response = await POST(makeRequest({ token, password: "newpassword456" }));
+    expect(response.status).toBe(200);
+    await flushAfter();
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(0);
   });
 
   // ── Group assignment on claim ───────────────────────────────────────

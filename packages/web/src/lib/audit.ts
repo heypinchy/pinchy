@@ -127,6 +127,9 @@ export type AuditEventType =
   | "agent.created"
   | "agent.updated"
   | "agent.deleted"
+  // An account came into existence: through the setup wizard (the first
+  // admin) or a claimed invite. `detail.via` says which. Actor is the new user.
+  | "user.created"
   | "user.invited"
   | "user.invite_blocked"
   | "user.updated"
