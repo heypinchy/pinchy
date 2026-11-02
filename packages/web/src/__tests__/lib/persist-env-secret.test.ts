@@ -1,16 +1,38 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-// Real filesystem, with two switchable faults for the key-generation tests
-// below: a disk that fills up mid-write, and another process winning the race
-// to create the key file. Off by default, so every other test sees plain fs.
-const faults = vi.hoisted(() => ({ diskFull: false, rivalKey: null as string | null }));
+// Real filesystem, with switchable faults for the key-generation tests below:
+// a disk that fills up mid-write (everywhere, or only on writes to one path),
+// another process winning the race to create the key file, a filesystem
+// without hard links, and a key file the process may not read. Off by default,
+// so every other test sees plain fs.
+const faults = vi.hoisted(() => ({
+  diskFull: false,
+  diskFullFor: null as string | null,
+  rivalKey: null as string | null,
+  linkError: null as string | null,
+  readError: null as { path: string; code: string } | null,
+  readdirCalls: [] as string[],
+}));
 
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
+  const errno = (code: string, syscall: string) =>
+    Object.assign(new Error(`${code}: simulated, ${syscall}`), { code });
   const enospc = () =>
     Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+  // Which path each open descriptor names, so a write can fail for one path.
+  const fdPaths = new Map<number, string>();
   const patched = {
     ...actual,
+    openSync: ((...args: Parameters<typeof actual.openSync>) => {
+      const [path, flags] = args;
+      if (faults.readError && path === faults.readError.path && (flags ?? "r") === "r") {
+        throw errno(faults.readError.code, "open");
+      }
+      const fd = actual.openSync(...args);
+      fdPaths.set(fd, String(path));
+      return fd;
+    }) as typeof actual.openSync,
     // A full disk lets open() create the file and then fails the write, which
     // is what leaves a 0-byte file behind when the write goes to the final path.
     writeFileSync: ((...args: Parameters<typeof actual.writeFileSync>) => {
@@ -22,18 +44,27 @@ vi.mock("fs", async (importOriginal) => {
     }) as typeof actual.writeFileSync,
     writeSync: ((...args: unknown[]) => {
       if (faults.diskFull) throw enospc();
+      if (faults.diskFullFor !== null && fdPaths.get(args[0] as number) === faults.diskFullFor) {
+        throw enospc();
+      }
       return (actual.writeSync as (...a: unknown[]) => number)(...args);
     }) as typeof actual.writeSync,
     linkSync: ((existing: string, target: string) => {
       if (faults.rivalKey !== null) actual.writeFileSync(target, faults.rivalKey, { mode: 0o600 });
+      if (faults.linkError !== null) throw errno(faults.linkError, "link");
       return actual.linkSync(existing, target);
     }) as typeof actual.linkSync,
+    readdirSync: ((...args: Parameters<typeof actual.readdirSync>) => {
+      faults.readdirCalls.push(String(args[0]));
+      return actual.readdirSync(...args);
+    }) as typeof actual.readdirSync,
   };
   return { ...patched, default: patched };
 });
 
 import {
   mkdtempSync,
+  mkdirSync,
   rmSync,
   writeFileSync,
   readFileSync,
@@ -74,7 +105,11 @@ describe("persistEnvSecretToKeyFile", () => {
 
   afterEach(() => {
     faults.diskFull = false;
+    faults.diskFullFor = null;
     faults.rivalKey = null;
+    faults.linkError = null;
+    faults.readError = null;
+    faults.readdirCalls.length = 0;
     rmSync(dir, { recursive: true, force: true });
     if (savedDir === undefined) delete process.env.ENCRYPTION_KEY_DIR;
     else process.env.ENCRYPTION_KEY_DIR = savedDir;
@@ -153,6 +188,28 @@ describe("persistEnvSecretToKeyFile", () => {
     expect(readFileSync(keyFile, "utf-8")).toBe("");
   });
 
+  it("reports a key file it may not read as unreadable, not as invalid, and leaves it in place", () => {
+    // A restored key file owned by root reads as EACCES. It may well be the
+    // earlier key, the only one that verifies what it signed. "Not a valid
+    // key" tells the operator to move it aside; this one needs its owner fixed.
+    writeFileSync(keyFile, KEY_A, { mode: 0o600 });
+    faults.readError = { path: keyFile, code: "EACCES" };
+    process.env.AUDIT_HMAC_SECRET = KEY_B;
+
+    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "file-unreadable", code: "EACCES" });
+
+    faults.readError = null;
+    expect(readFileSync(keyFile, "utf-8")).toBe(KEY_A);
+  });
+
+  it("reports a directory where the key file should be as unreadable, and leaves it in place", () => {
+    mkdirSync(keyFile);
+    process.env.AUDIT_HMAC_SECRET = KEY_A;
+
+    expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "file-unreadable", code: "EISDIR" });
+    expect(statSync(keyFile).isDirectory()).toBe(true);
+  });
+
   it("removes temp files a crash left behind, and nothing else", () => {
     // A crash between writing the temp file and unlinking it leaves a copy of
     // the key next to the key file, and nothing would ever clean it up.
@@ -216,6 +273,22 @@ describe("persistEnvSecretToKeyFile", () => {
     // The reason is the error code and path, never the key.
     expect(JSON.stringify(outcome)).not.toContain(KEY_A);
   });
+  // exFAT and vfat have no hard links (link fails with ENOTSUP on macOS, EPERM
+  // on Linux), and neither do some FUSE and SMB mounts. A plain write used to
+  // work there, so the exclusive write must not be what stops it.
+  it.each(["ENOTSUP", "EOPNOTSUPP", "EPERM", "ENOSYS", "EXDEV"])(
+    "still writes the key file when the volume has no hard links (link fails with %s)",
+    (code) => {
+      faults.linkError = code;
+      process.env.AUDIT_HMAC_SECRET = KEY_A;
+
+      expect(persistEnvSecretToKeyFile(NAME)).toEqual({ status: "written" });
+
+      expect(readFileSync(keyFile, "utf-8")).toBe(KEY_A);
+      expect(statSync(keyFile).mode & 0o777).toBe(0o600);
+      expect(readdirSync(dir)).toEqual([`.${NAME}`]);
+    }
+  );
 });
 
 describe("getOrCreateSecret writing a generated key", () => {
@@ -238,7 +311,11 @@ describe("getOrCreateSecret writing a generated key", () => {
 
   afterEach(() => {
     faults.diskFull = false;
+    faults.diskFullFor = null;
     faults.rivalKey = null;
+    faults.linkError = null;
+    faults.readError = null;
+    faults.readdirCalls.length = 0;
     rmSync(dir, { recursive: true, force: true });
     if (savedDir === undefined) delete process.env.ENCRYPTION_KEY_DIR;
     else process.env.ENCRYPTION_KEY_DIR = savedDir;
@@ -265,5 +342,101 @@ describe("getOrCreateSecret writing a generated key", () => {
     expect(key.toString("hex")).toBe(KEY_B);
     expect(readFileSync(keyFile, "utf-8")).toBe(KEY_B);
     expect(readdirSync(dir)).toEqual([`.${NAME}`]);
+  });
+
+  it.each(["ENOTSUP", "EOPNOTSUPP", "EPERM", "ENOSYS", "EXDEV"])(
+    "generates the key on a volume without hard links (link fails with %s)",
+    (code) => {
+      // Reproduced on exFAT: first boot threw ENOTSUP where it used to start.
+      faults.linkError = code;
+
+      const generated = getOrCreateSecret(NAME);
+
+      expect(readFileSync(keyFile, "utf-8")).toBe(generated.toString("hex"));
+      expect(statSync(keyFile).mode & 0o777).toBe(0o600);
+      expect(readdirSync(dir)).toEqual([`.${NAME}`]);
+    }
+  );
+
+  it("still never replaces a key another process wrote first on a volume without hard links", () => {
+    faults.linkError = "ENOTSUP";
+    faults.rivalKey = KEY_B;
+
+    const key = getOrCreateSecret(NAME);
+
+    expect(key.toString("hex")).toBe(KEY_B);
+    expect(readFileSync(keyFile, "utf-8")).toBe(KEY_B);
+    expect(readdirSync(dir)).toEqual([`.${NAME}`]);
+  });
+
+  it("leaves no partial key file when the disk fills up during the direct write", () => {
+    // Without a link, the key file is created and then written. A write that
+    // fails there must not leave an empty key file behind.
+    faults.linkError = "ENOTSUP";
+    faults.diskFullFor = keyFile;
+
+    expect(() => getOrCreateSecret(NAME)).toThrow(/ENOSPC/);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it("does not fall back on a link error that is not about missing hard links", () => {
+    faults.linkError = "EIO";
+
+    expect(() => getOrCreateSecret(NAME)).toThrow(/EIO/);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+});
+
+describe("getOrCreateSecret cleaning up after a crash", () => {
+  // A crash between writing the temp file and removing it leaves a copy of the
+  // key next to the key file. Every key getOrCreateSecret generates goes
+  // through that temp file, the encryption key included, so every one of them
+  // gets cleaned up, not only the audit key that startup persists.
+  let dir: string;
+  const savedDir = process.env.ENCRYPTION_KEY_DIR;
+  const savedKey = process.env.ENCRYPTION_KEY;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "pinchy-keyclean-"));
+    process.env.ENCRYPTION_KEY_DIR = dir;
+    delete process.env.ENCRYPTION_KEY;
+  });
+
+  afterEach(() => {
+    faults.readdirCalls.length = 0;
+    rmSync(dir, { recursive: true, force: true });
+    if (savedDir === undefined) delete process.env.ENCRYPTION_KEY_DIR;
+    else process.env.ENCRYPTION_KEY_DIR = savedDir;
+    if (savedKey === undefined) delete process.env.ENCRYPTION_KEY;
+    else process.env.ENCRYPTION_KEY = savedKey;
+  });
+
+  it("removes stale temp files of the encryption key before generating it", () => {
+    writeFileSync(join(dir, ".encryption_key.4242.deadbeef.tmp"), KEY_B, { mode: 0o600 });
+
+    const generated = getOrCreateSecret("encryption_key");
+
+    expect(readdirSync(dir)).toEqual([".encryption_key"]);
+    expect(readFileSync(join(dir, ".encryption_key"), "utf-8")).toBe(generated.toString("hex"));
+  });
+
+  it("removes a stale temp file of the encryption key also when the key file is in place", () => {
+    // The crash can land between link and unlink.
+    writeFileSync(join(dir, ".encryption_key"), KEY_A, { mode: 0o600 });
+    writeFileSync(join(dir, ".encryption_key.77.cafef00d.tmp"), KEY_A, { mode: 0o600 });
+
+    expect(getOrCreateSecret("encryption_key").toString("hex")).toBe(KEY_A);
+    expect(readdirSync(dir)).toEqual([".encryption_key"]);
+  });
+
+  it("looks for them once per key file, not on every call", () => {
+    // getOrCreateSecret sits on the hot path of every encrypt, decrypt and
+    // audit append; a directory listing on each of them would be a cost
+    // without a benefit, since only a crash leaves these files.
+    writeFileSync(join(dir, ".encryption_key"), KEY_A, { mode: 0o600 });
+
+    for (let i = 0; i < 3; i++) getOrCreateSecret("encryption_key");
+
+    expect(faults.readdirCalls.filter((d) => d === dir)).toHaveLength(1);
   });
 });

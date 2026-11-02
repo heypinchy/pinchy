@@ -135,8 +135,18 @@ export type EnvSecretPersistOutcome =
   | { status: "written" }
   | { status: "file-exists" }
   | { status: "file-invalid" }
+  | { status: "file-unreadable"; code: string }
   | { status: "not-envvar" }
   | { status: "failed"; reason: string };
+
+/**
+ * What `link` fails with on a volume that has no hard links: exFAT and vfat
+ * (ENOTSUP on macOS, EPERM on Linux), and some FUSE and SMB mounts (ENOSYS,
+ * EOPNOTSUPP, or EXDEV from a mount that maps each file to its own device).
+ * EPERM is otherwise what Linux's protected_hardlinks returns for a file the
+ * caller does not own, which cannot happen here: the temp file is our own.
+ */
+const NO_HARD_LINK_CODES = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "ENOSYS", "EXDEV"]);
 
 /**
  * Write a key to its key file without ever leaving a partial file or replacing
@@ -146,6 +156,12 @@ export type EnvSecretPersistOutcome =
  * another instance on a shared volume) is never touched, and a full disk or a
  * crash mid-write leaves at most a temp file, never a 0-byte key file that
  * every later read would trip over.
+ *
+ * A volume without hard links (see {@link NO_HARD_LINK_CODES}) gets
+ * {@link createKeyFileDirectly} instead: still never replacing, and still no
+ * partial file on a failed write, but a crash mid-write there can leave one.
+ * Before the link, a plain write worked on such a volume, so the stricter
+ * write must not be what stops Pinchy from starting there.
  *
  * Returns "exists" when another file got there first. Throws on any other
  * error; fs errors name the code and the path, never the content.
@@ -163,7 +179,9 @@ function writeKeyFileExclusive(keyFilePath: string, keyHex: string): "written" |
     try {
       linkSync(tmpPath, keyFilePath);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") return "exists";
+      if (code && NO_HARD_LINK_CODES.has(code)) return createKeyFileDirectly(keyFilePath, keyHex);
       throw err;
     }
     return "written";
@@ -176,6 +194,39 @@ function writeKeyFileExclusive(keyFilePath: string, keyHex: string): "written" |
   }
 }
 
+/**
+ * The fallback for a volume without hard links: create the key file itself,
+ * exclusively ("wx" fails with EEXIST instead of replacing), then write and
+ * fsync. A failed write removes the file it just created, which is ours
+ * because the exclusive create succeeded, so a full disk still leaves no empty
+ * key file behind.
+ */
+function createKeyFileDirectly(keyFilePath: string, keyHex: string): "written" | "exists" {
+  let fd: number;
+  try {
+    fd = openSync(keyFilePath, "wx", 0o600);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+    throw err;
+  }
+  try {
+    try {
+      writeSync(fd, keyHex);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch (err) {
+    try {
+      unlinkSync(keyFilePath);
+    } catch {
+      // Nothing more to do; the write error below is the one worth reporting.
+    }
+    throw err;
+  }
+  return "written";
+}
+
 // `<pid>.<8 hex>`, the middle of the temp names writeKeyFileExclusive creates.
 const TEMP_SUFFIX = /^\d+\.[0-9a-f]{8}$/;
 
@@ -185,9 +236,13 @@ const TEMP_SUFFIX = /^\d+\.[0-9a-f]{8}$/;
  * clean it up. Only names of exactly the form writeKeyFileExclusive creates,
  * only in the key file's own directory.
  *
- * Called once at startup. An instance starting at the very same moment on a
- * shared volume could lose its in-flight temp file to this; its write then
- * fails and is reported, and the other instance's write still lands.
+ * Called by {@link persistEnvSecretToKeyFile} at startup, and by
+ * {@link getOrCreateSecret} the first time a process uses each key file, so
+ * the temp files of every key it generates are cleaned up, the encryption key
+ * included, not only the audit key startup persists. An instance writing a key
+ * at that very moment on a shared volume could lose its in-flight temp file to
+ * this; its write then fails and is reported, and the other instance's write
+ * still lands.
  */
 function removeStaleKeyTempFiles(keyFilePath: string): void {
   const dir = dirname(keyFilePath);
@@ -209,12 +264,34 @@ function removeStaleKeyTempFiles(keyFilePath: string): void {
   }
 }
 
-/** An existing key file: a key we can read, or something that is not one. */
+/**
+ * Key files getOrCreateSecret has already looked for stale temp files next
+ * to, in this process. It sits on the hot path of every encrypt, decrypt and
+ * audit append, and only a crash leaves those files, so once is enough.
+ */
+const keyFilesCleaned = new Set<string>();
+
+function removeStaleKeyTempFilesOnce(keyFilePath: string): void {
+  if (keyFilesCleaned.has(keyFilePath)) return;
+  keyFilesCleaned.add(keyFilePath);
+  removeStaleKeyTempFiles(keyFilePath);
+}
+
+/**
+ * An existing key file: a key we can read, a file that is not a key, or one
+ * we cannot read at all. The last two are different problems with different
+ * fixes. A file we cannot read (a root-owned restore, a directory in its
+ * place) may hold exactly the earlier key that verifies what it signed;
+ * calling it invalid would send the operator to move a good key aside.
+ */
 function existingKeyFileOutcome(keyFilePath: string): EnvSecretPersistOutcome {
   try {
     readSecretFile(keyFilePath);
     return { status: "file-exists" };
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // readSecretFile's format error carries no code; every fs error does.
+    if (typeof code === "string") return { status: "file-unreadable", code };
     return { status: "file-invalid" };
   }
 }
@@ -236,7 +313,9 @@ function existingKeyFileOutcome(keyFilePath: string): EnvSecretPersistOutcome {
  * signed with it. Even a corrupt file is left for the operator to look at,
  * but reported as "file-invalid": it is not a key anything can verify
  * against, so the current value is not saved, and saying nothing would read
- * exactly like a healthy file.
+ * exactly like a healthy file. A file that cannot be read at all is reported
+ * as "file-unreadable" with the error code, for the same reason, and because
+ * it may still be a good key.
  *
  * Written through {@link writeKeyFileExclusive}, after removing temp files an
  * earlier crash left behind.
@@ -246,7 +325,7 @@ function existingKeyFileOutcome(keyFilePath: string): EnvSecretPersistOutcome {
  */
 export function persistEnvSecretToKeyFile(name: string): EnvSecretPersistOutcome {
   const { keyFilePath } = secretPaths(name);
-  removeStaleKeyTempFiles(keyFilePath);
+  removeStaleKeyTempFilesOnce(keyFilePath);
 
   if (getSecretSource(name) !== "envvar") return { status: "not-envvar" };
   if (existsSync(keyFilePath)) return existingKeyFileOutcome(keyFilePath);
@@ -267,6 +346,7 @@ export function persistEnvSecretToKeyFile(name: string): EnvSecretPersistOutcome
 export function getOrCreateSecret(name: string): Buffer {
   const envVarName = name.toUpperCase();
   const { keyFileDir, keyFilePath } = secretPaths(name);
+  removeStaleKeyTempFilesOnce(keyFilePath);
 
   switch (getSecretSource(name)) {
     case "envvar":

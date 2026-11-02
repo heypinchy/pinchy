@@ -291,6 +291,31 @@ describe("describeAuditKeyFilePersist", () => {
     expect(result.message).toContain(AUDIT_KEY_SWITCH_DOCS_URL);
   });
 
+  it("warns when the existing key file cannot be read, and points at its owner instead of moving it", () => {
+    // A key file restored from a backup as root reads as EACCES. It can be the
+    // earlier key, the only one that verifies what it signed, so the advice
+    // for an invalid file (move it aside) would make the operator discard it.
+    const result = describeAuditKeyFilePersist({ status: "file-unreadable", code: "EACCES" });
+
+    expect(result.action).toBe("warn");
+    expect(result.message).toMatch(/\.audit_hmac_secret/);
+    expect(result.message).toMatch(/EACCES/);
+    expect(result.message).toMatch(/not saved/);
+    expect(result.message).toMatch(/owner and permissions/);
+    // Dockerfile.pinchy: useradd -u 999; the entrypoint starts the server as it.
+    expect(result.message).toMatch(/uid 999/);
+    expect(result.message).not.toMatch(/move it aside/i);
+    expect(result.message).not.toMatch(/not a valid key/);
+    expect(result.message).toContain(AUDIT_KEY_SWITCH_DOCS_URL);
+  });
+
+  it("names the code for an unreadable key file that is not a permissions problem", () => {
+    const result = describeAuditKeyFilePersist({ status: "file-unreadable", code: "EISDIR" });
+
+    expect(result.action).toBe("warn");
+    expect(result.message).toMatch(/EISDIR/);
+  });
+
   it("is silent when the file already exists or the variable is not in use", () => {
     expect(describeAuditKeyFilePersist({ status: "file-exists" })).toEqual({ action: "none" });
     expect(describeAuditKeyFilePersist({ status: "not-envvar" })).toEqual({ action: "none" });
