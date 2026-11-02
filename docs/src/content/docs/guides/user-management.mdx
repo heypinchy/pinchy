@@ -137,7 +137,8 @@ Deactivation prevents a user from logging in without permanently deleting their 
 
 When a user is deactivated:
 
-- They can no longer log in.
+- They can no longer log in, and every session they had ends at once.
+- Any chat they have open stops working immediately: Pinchy closes the connection with the message "Your account has been deactivated." and refuses anything that tab still sends, so no agent runs another tool for them. A reply that was already streaming when you deactivated them is not delivered to them.
 - Their personal agents are soft-deleted.
 - Their data remains in the database and can be restored.
 - The user appears as "Deactivated" in the user list with reduced opacity.

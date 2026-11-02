@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -213,6 +213,7 @@ vi.mock("@/server/attachment-pipeline", async (importOriginal) => {
 import { ClientRouter } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
 import { CHAT_HISTORY_OVERSIZED_PLACEHOLDER } from "@/lib/openclaw-history";
+import { getUserSocketRegistry, ACCOUNT_DEACTIVATED_CLOSE_CODE } from "@/server/user-sockets";
 
 function createMockClientWs() {
   const sent: string[] = [];
@@ -2858,6 +2859,50 @@ describe("ClientRouter", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("a user deactivated while their chat was open", () => {
+    // DELETE /api/users/:id closes the user's sockets (user-sockets.ts), but a
+    // frame already in flight on a closing socket still reaches the router.
+    // It must not reach the agent: no lookup, no OpenClaw call, no tool run.
+    beforeEach(() => getUserSocketRegistry().revoke("user-1"));
+    afterEach(() => getUserSocketRegistry().restore("user-1"));
+
+    it.each(["message", "history", "abort"] as const)(
+      "refuses its %s frame and closes the socket",
+      async (type) => {
+        const clientWs = createMockClientWs();
+
+        await router.handleMessage(
+          clientWs as any,
+          {
+            type,
+            content: "Run the payroll export",
+            agentId: "agent-1",
+          } as any
+        );
+
+        expect(mockChat).not.toHaveBeenCalled();
+        expect(mockSessionsHistory).not.toHaveBeenCalled();
+        expect(mockFindFirst).not.toHaveBeenCalled();
+        expect(clientWs.sent.map((s) => JSON.parse(s))).toEqual([
+          { type: "error", message: "Your account has been deactivated." },
+        ]);
+        expect(clientWs.close).toHaveBeenCalledWith(
+          ACCOUNT_DEACTIVATED_CLOSE_CODE,
+          "Account deactivated"
+        );
+      }
+    );
+
+    it("serves a different, active user as before", async () => {
+      const other = new ClientRouter(mockOpenClawClient as any, "user-2", "member", sessionCache);
+      const clientWs = createMockClientWs();
+
+      await other.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" } as any);
+
+      expect(mockFindFirst).toHaveBeenCalled();
     });
   });
 

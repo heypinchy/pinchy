@@ -9,6 +9,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
 import { updateUserSchema } from "@/lib/schemas/users";
+import { getUserSocketRegistry } from "@/server/user-sockets";
 
 export async function PATCH(
   request: NextRequest,
@@ -138,6 +139,12 @@ export async function DELETE(
   if (!deactivated) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
+
+  // Deleting the session rows refuses the next WebSocket upgrade, but a chat
+  // the user already has open was authenticated once, at its upgrade, and
+  // would keep working — agent tools included. Close those sockets now; the
+  // registry also makes ClientRouter refuse a frame still in flight.
+  getUserSocketRegistry().revoke(userId);
 
   after(() =>
     appendAuditLog({

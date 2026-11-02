@@ -1199,7 +1199,7 @@ The acknowledgement is stored as a `user.origin_acknowledged` row in the [audit 
 
 ### `DELETE /api/users/:id`
 
-Deactivate a user (soft delete — sets banned status). Their personal agents are removed from the shared view but the account record is retained and can be reactivated via `POST /api/users/:id/reactivate`.
+Deactivate a user (soft delete — sets banned status). Their sessions are deleted, and any chat WebSocket they have open is closed with code `4403` after an error frame saying the account was deactivated; a frame that tab still sends is refused. Their personal agents are removed from the shared view but the account record is retained and can be reactivated via `POST /api/users/:id/reactivate`.
 
 **Response:** `200 OK`
 

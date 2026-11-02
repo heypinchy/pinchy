@@ -59,6 +59,7 @@ import {
 import { attachmentIdsSchema } from "@/lib/schemas/uploads";
 import { chatIdSchema } from "@/lib/schemas/sessions";
 import { StreamPipe, GENERIC_RUN_FAILURE_MESSAGE } from "@/server/stream-pipe";
+import { getUserSocketRegistry, refuseDeactivatedSocket } from "@/server/user-sockets";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -328,6 +329,14 @@ export class ClientRouter {
   }
 
   async handleMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
+    // The upgrade authenticated this socket once. If the account was
+    // deactivated since, DELETE /api/users/:id has closed the socket — but a
+    // frame already on its way still lands here, and must not reach an agent.
+    if (getUserSocketRegistry().isRevoked(this.userId)) {
+      refuseDeactivatedSocket(clientWs);
+      return;
+    }
+
     // Look up agent and check access
     const agent = await db.query.agents.findFirst({
       where: eq(agents.id, message.agentId),

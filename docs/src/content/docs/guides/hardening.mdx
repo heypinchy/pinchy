@@ -343,6 +343,8 @@ Two route prefixes are exempt:
 
 The upgrade handler reapplies both checks itself before validating the session cookie: the same domain-lock host check, and the same Origin comparison the CSRF gate runs — literally the same function, scheme included, so an `http://` Origin on an instance your proxy reports as `https` is rejected here exactly as it is on an ordinary API call. A mismatch ends the handshake with `403` before any auth work happens. A client that sends no `Origin` header at all (a non-browser caller) is let through this specific check — a browser cannot suppress `Origin` on a WebSocket handshake, so requiring it would only turn away scripts and internal tools, which the session cookie judges anyway. A rejection is audited the same way an HTTP-path rejection is: `auth.host_blocked` for a domain mismatch, `auth.csrf_blocked` for an Origin mismatch.
 
+The session cookie is checked once, at the handshake; an open connection is not re-authenticated per message. Deactivating a user (`DELETE /api/users/:id`) therefore does more than delete their sessions: it closes every chat connection they have open, with close code `4403`, and the server refuses any frame that connection still delivers, so no agent runs another tool for them. Reactivating the user lifts the refusal. The refusal is held in the Pinchy process, which is enough — a restart drops every connection, and a new one has to pass the handshake, whose session lookup the deactivation already emptied.
+
 ### Reverse proxy configuration
 
 The Origin check relies on knowing the public-facing host and scheme. If your reverse proxy strips or rewrites these headers, the check will reject legitimate requests. Set both headers explicitly:
