@@ -25,7 +25,9 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
   const marker = split.marker ? (
     <span className="text-muted-foreground"> {split.marker}</span>
   ) : null;
-  if (full || shown.length <= PREVIEW_LEN) {
+  // Counted and cut by code point, so the preview never ends in half an emoji.
+  const chars = [...shown];
+  if (full || chars.length <= PREVIEW_LEN) {
     return (
       <span className="break-words">
         <span className="whitespace-pre-wrap">{shown}</span>
@@ -36,12 +38,12 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
   return (
     <span className="break-words">
       <span className="whitespace-pre-wrap">
-        {expanded ? shown : `${shown.slice(0, PREVIEW_LEN)}…`}
+        {expanded ? shown : `${chars.slice(0, PREVIEW_LEN).join("")}…`}
       </span>
       {!expanded && (
         <span className="text-muted-foreground">
           {" "}
-          ({shown.length - PREVIEW_LEN} more characters hidden)
+          ({chars.length - PREVIEW_LEN} more characters hidden)
         </span>
       )}
       {marker}{" "}

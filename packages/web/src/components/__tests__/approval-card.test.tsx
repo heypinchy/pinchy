@@ -154,6 +154,32 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(screen.queryByText("(empty)")).not.toBeInTheDocument();
   });
 
+  // Third review of #1242: the stored limit is 20,000 characters now, so a
+  // long mail body is stored whole — and still previewed, with all of it on
+  // demand and no truncation marker.
+  it("previews a long body stored whole, and shows all of it on demand", async () => {
+    const tail = "MIT-FREUNDLICHEN-GRUESSEN";
+    renderCard(summarizeArgs({ body: `${"Absatz. ".repeat(1_800)}${tail}` }));
+    expect(screen.queryByText(new RegExp(tail))).not.toBeInTheDocument();
+    expect(screen.queryByText(/truncated/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
+    expect(screen.getByText(new RegExp(tail))).toBeInTheDocument();
+  });
+
+  it("never cuts the preview between the halves of an emoji", () => {
+    renderCard({ body: `a${"😀".repeat(300)}` });
+    const preview = screen.getByText(/😀/);
+    expect(preview.textContent).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+    );
+  });
+
+  it("renders a CRLF mail body as line breaks, not as escaped carriage returns", () => {
+    renderCard(summarizeArgs({ body: "Hallo,\r\n\r\nzweite Zeile" }));
+    const text = screen.getByText(/zweite Zeile/);
+    expect(text.textContent).toBe("Hallo,\n\nzweite Zeile");
+  });
+
   it("renders a call without arguments", () => {
     renderCard(null, "pinchy_web_search");
     expect(screen.getByText("pinchy_web_search")).toBeInTheDocument();

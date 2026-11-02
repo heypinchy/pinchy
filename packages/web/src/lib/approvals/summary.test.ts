@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { domainToASCII } from "node:url";
-import { summarizeArgs } from "./summary";
+import { summarizeArgs, summarizeCall } from "./summary";
 import { makeRefResolver } from "./call-models";
 // The pinchy-odoo encoder, so the ref rendering is tested against real refs —
 // see call-models.test.ts for why this crosses the package boundary.
@@ -55,10 +55,14 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs({ body })).toEqual({ body });
   });
 
+  // Corrected expectation (third review of #1242): the stored limit rose from
+  // 4,000 to 20,000 characters, so an ordinary long body fits whole, and the
+  // probe needs a longer string to cross it. A cut string now also makes the
+  // call unapprovable (see "a call the card cannot show in full").
   it("marks a string that exceeds the stored limit as truncated, and says by how much", () => {
-    const out = summarizeArgs({ body: "a".repeat(10_000) }) as { body: string };
+    const out = summarizeArgs({ body: "a".repeat(30_000) }) as { body: string };
     expect(out.body).toMatch(/\[truncated: \d+ more characters not shown\]$/);
-    expect(out.body.length).toBeLessThan(5_000);
+    expect(out.body.length).toBeLessThan(21_000);
   });
 
   it("shows the contents of arrays and objects, not a shape hint", () => {
@@ -106,6 +110,14 @@ describe("summarizeArgs", () => {
     it("does not split on a comma inside a quoted display name", () => {
       const out = summarizeArgs({ to: '"Meier, Hans" <hans@x.at>, b@x.at' });
       expect(out.to).toEqual(['hans@x.at (name: "Meier, Hans")', "b@x.at"]);
+    });
+
+    // Third review of #1242: email_send now accepts a quoted name with a
+    // comma or parentheses; the card must show it as the one mailbox it is.
+    it("shows a quoted name with parentheses as one recipient, address first", () => {
+      expect(summarizeArgs({ to: '"Raimund Korber (Noack)" <r@noack.at>' }).to).toBe(
+        'r@noack.at (name: "Raimund Korber (Noack)")'
+      );
     });
 
     it("keeps a single recipient as a plain string", () => {
@@ -184,22 +196,26 @@ describe("summarizeArgs", () => {
       expect(JSON.stringify(out)).toContain("price_unit");
     });
 
+    // Corrected expectation (third review of #1242): the caps rose to 100 keys
+    // and 200 items, so the probes are sized past the new caps.
     it("says so when keys, items or depth are cut, never silently drops them", () => {
-      const manyKeys = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, i]));
+      const manyKeys = Object.fromEntries(Array.from({ length: 140 }, (_, i) => [`k${i}`, i]));
       expect(JSON.stringify(summarizeArgs(manyKeys))).toMatch(/more fields? not shown/);
-      const manyItems = Array.from({ length: 200 }, (_, i) => i);
+      const manyItems = Array.from({ length: 250 }, (_, i) => i);
       expect(JSON.stringify(summarizeArgs({ ids: manyItems }))).toMatch(/more items? not shown/);
       let deep: unknown = "bottom";
       for (let i = 0; i < 20; i++) deep = { n: deep };
       expect(JSON.stringify(summarizeArgs({ deep }))).toMatch(/not shown/);
     });
 
+    // Corrected expectation (third review of #1242): the total budget rose
+    // from 16,000 to 64,000 characters, so the bound sits higher.
     it("bounds the total size, and says that it did", () => {
       const huge = Object.fromEntries(
         Array.from({ length: 25 }, (_, i) => [`k${i}`, "z".repeat(3_900)])
       );
       const json = JSON.stringify(summarizeArgs(huge));
-      expect(json.length).toBeLessThan(40_000);
+      expect(json.length).toBeLessThan(70_000);
       expect(json).toMatch(/not shown/);
     });
 
@@ -426,8 +442,10 @@ describe("summarizeArgs", () => {
       expect(JSON.stringify(out)).toMatch(/not shown/);
     });
 
+    // Corrected expectation (third review of #1242): MAX_KEYS rose from 25 to
+    // 100, so the filler grows past it to keep testing what the name says.
     it("renders recipients even behind more than the maximum number of keys", () => {
-      const filler = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`k${i}`, i]));
+      const filler = Object.fromEntries(Array.from({ length: 160 }, (_, i) => [`k${i}`, i]));
       const out = summarizeArgs({ ...filler, bcc: "hidden@evil.com", reply_to: "r@evil.com" });
       expect(out.bcc).toBe("hidden@evil.com");
       expect(out.reply_to).toBe("r@evil.com");
@@ -495,6 +513,192 @@ describe("summarizeArgs", () => {
       });
       expect(Object.keys(out).slice(0, 2)).toEqual(["path", "url"]);
       expect(out.path).toBe("/data/contracts/signed.pdf");
+    });
+  });
+  // Third review of #1242: a marker that says "N more fields not shown" is
+  // honest, but a person still approved a call whose hidden part runs. A call
+  // whose summary lost anything is reported incomplete, and the gate refuses it.
+  describe("a call the card cannot show in full is never approvable", () => {
+    const odooWrite26 = () => {
+      const values: Record<string, unknown> = {};
+      for (let i = 0; i < 25; i++) values[`x_note_${i}`] = "ok";
+      values.acc_number = "AT61 1904 3002 3457 3201";
+      return { model: "res.partner.bank", ids: [7], values };
+    };
+
+    it("shows an Odoo write with 26 fields in full, the bank account included", () => {
+      const params = odooWrite26();
+      const { summary, incomplete } = summarizeCall(params);
+      expect(incomplete).toBe(false);
+      expect(summary).toEqual(params);
+      expect(JSON.stringify(summary)).not.toMatch(/not shown/);
+    });
+
+    it("shows an ordinary Odoo invoice create with lines and taxes in full", () => {
+      const line = (name: string, price: number) => [
+        0,
+        0,
+        {
+          name,
+          product_id: 12,
+          quantity: 3,
+          price_unit: price,
+          discount: 0,
+          account_id: 400,
+          analytic_distribution: { "7": 100 },
+          tax_ids: [[6, 0, [3, 4]]],
+        },
+      ];
+      const params = {
+        model: "account.move",
+        values: {
+          move_type: "out_invoice",
+          partner_id: 7,
+          partner_bank_id: 3,
+          invoice_date: "2026-11-02",
+          invoice_date_due: "2026-12-02",
+          invoice_payment_term_id: 2,
+          ref: "PO-4711",
+          narration: "Zahlbar innerhalb von 30 Tagen ohne Abzug. ".repeat(20),
+          invoice_line_ids: Array.from({ length: 40 }, (_, i) => line(`Consulting ${i}`, 100 + i)),
+        },
+      };
+      const { summary, incomplete } = summarizeCall(params);
+      expect(incomplete).toBe(false);
+      expect(summary).toEqual(params);
+    });
+
+    it.each([
+      [
+        "more keys than an object shows",
+        () => ({
+          values: Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`k${i}`, i])),
+        }),
+      ],
+      ["more items than an array shows", () => ({ ids: Array.from({ length: 201 }, (_, i) => i) })],
+      [
+        "deeper nesting than the card shows",
+        () => {
+          let deep: unknown = "bottom";
+          for (let i = 0; i < 12; i++) deep = { n: deep };
+          return { deep };
+        },
+      ],
+      ["a string longer than the stored limit", () => ({ body: "a".repeat(20_001) })],
+      ["a key longer than the label limit", () => ({ ["k".repeat(101)]: 1 })],
+      [
+        "more recipients than a list shows",
+        () => ({
+          to: Array.from({ length: 201 }, (_, i) => `a${i}@x.at`).join(", "),
+        }),
+      ],
+    ])("reports %s as incomplete", (_label, build) => {
+      expect(summarizeCall(build()).incomplete).toBe(true);
+    });
+
+    // The review's budget probe: four long strings used up the budget, and the
+    // field after them — the bank account the invoice is paid to — became
+    // "1 more field not shown". It is never silently dropped and approved.
+    it("reports a call that exhausts the total budget as incomplete, never drops a key quietly", () => {
+      const params = {
+        model: "account.move",
+        ids: [42],
+        values: {
+          narration: "a".repeat(19_000),
+          ref: "b".repeat(19_000),
+          x1: "c".repeat(19_000),
+          x2: "d".repeat(19_000),
+          partner_bank_id: 666,
+        },
+      };
+      const { summary, incomplete } = summarizeCall(params);
+      expect(incomplete).toBe(true);
+      expect(JSON.stringify(summary)).toMatch(/not shown/);
+    });
+
+    it("reports a call that fits as complete", () => {
+      expect(
+        summarizeCall({ to: "a@x.at", subject: "Hi", body: "x".repeat(20_000) }).incomplete
+      ).toBe(false);
+    });
+
+    it("renders model and ids before anything else, as targets", () => {
+      const out = summarizeArgs({ values: { a: 1 }, ids: [7], model: "res.partner" });
+      expect(Object.keys(out)).toEqual(["ids", "model", "values"]);
+    });
+  });
+
+  // Third review of #1242: the punycode form was only appended to recipients.
+  // An Odoo `values.email` or `website` with a Cyrillic "і" read exactly like
+  // the real domain.
+  describe("homoglyph hosts anywhere in the call", () => {
+    const domain = "f\u0456rma.at"; // Cyrillic і
+    const ascii = domainToASCII(domain);
+
+    it("appends the punycode form to an email-shaped value at any key and depth", () => {
+      const out = summarizeArgs({
+        model: "res.partner",
+        ids: [7],
+        values: { email: `billing@${domain}`, website: `https://${domain}/pay` },
+      }) as { values: Record<string, string> };
+      expect(out.values.email).toBe(`billing@${domain} (${ascii})`);
+      expect(out.values.website).toBe(`https://${domain}/pay (${ascii})`);
+    });
+
+    it("does so inside arrays, and for a URL with credentials and a port", () => {
+      const out = summarizeArgs({ links: [`http://user@${domain}:8080/x`] }) as { links: string[] };
+      expect(out.links[0]).toBe(`http://user@${domain}:8080/x (${ascii})`);
+    });
+
+    it("leaves ASCII hosts and free text alone", () => {
+      const out = summarizeArgs({
+        email: "billing@firma.at",
+        website: "https://firma.at",
+        note: `Schreib an billing@${domain} bitte`,
+      });
+      expect(out.email).toBe("billing@firma.at");
+      expect(out.website).toBe("https://firma.at");
+      expect(out.note).toBe(`Schreib an billing@${domain} bitte`);
+    });
+  });
+
+  // Third review of #1242: a cut could land between the two halves of an
+  // emoji, and a lone surrogate in the input went into the summary as it was.
+  // Postgres rejects either in jsonb ("Unicode low surrogate must follow a
+  // high surrogate"), so the row could not even be stored.
+  describe("surrogates", () => {
+    const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+    it("never cuts a string between the halves of an emoji", () => {
+      const out = summarizeArgs({ body: `a${"😀".repeat(15_000)}` }) as { body: string };
+      expect(out.body).toMatch(/not shown\]$/);
+      expect(LONE.test(out.body)).toBe(false);
+      expect(JSON.stringify(out)).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i);
+    });
+
+    it("escapes a lone surrogate in the input as a marker", () => {
+      const out = summarizeArgs({ subject: "a\uD83Db", ["k\uDE00"]: 1 }) as Record<string, unknown>;
+      expect(out.subject).toBe("a⟨U+D83D⟩b");
+      const json = JSON.stringify(out);
+      expect(LONE.test(json)).toBe(false);
+      expect(json).not.toMatch(/\\ud[89abcdef][0-9a-f]{2}/i);
+    });
+  });
+
+  // Third review of #1242: a Windows line break showed as "⟨U+000D⟩" followed
+  // by a break — noise on every mail body written with CRLF.
+  describe("line breaks", () => {
+    it("renders CRLF as a line break", () => {
+      const out = summarizeArgs({ body: "Sehr geehrte Damen,\r\n\r\nanbei die Rechnung.\r\nMax" });
+      expect(out.body).toBe("Sehr geehrte Damen,\n\nanbei die Rechnung.\nMax");
+    });
+
+    it("counts a long run of CRLFs as line breaks", () => {
+      expect(summarizeArgs({ body: `a${"\r\n".repeat(6)}b` }).body).toBe("a⟨6 line breaks⟩b");
+    });
+
+    it("keeps a lone carriage return escaped", () => {
+      expect(summarizeArgs({ body: "a\rb\n\rc" }).body).toBe("a⟨U+000D⟩b\n⟨U+000D⟩c");
     });
   });
 });

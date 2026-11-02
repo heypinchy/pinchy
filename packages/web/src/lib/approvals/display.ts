@@ -27,12 +27,21 @@ export const RECIPIENT_KEYS: ReadonlySet<string> = new Set([
 /**
  * Keys that name WHERE an action lands: the file it writes or deletes, the
  * record it acts on, the URL it calls. Taken from the write tools' own schemas
- * (pinchy-files `path` / `filename`, pinchy-odoo `target` / `targets` /
- * `targetRef` / `counterpart` / `filename`, pinchy-web `url`), plus the generic
- * spellings a future tool would use. `display.test.ts` scans every plugin's
- * declared parameters and fails when a path- or target-like one is missing.
+ * (pinchy-files `path` / `filename`, pinchy-odoo `model` / `ids` / `target` /
+ * `targets` / `targetRef` / `counterpart` / `filename`, pinchy-email
+ * `messageId` / `attachmentId`, pinchy-web `url`), plus the generic spellings a
+ * future tool would use (`id`, `res_id`, `record_id`). `display.test.ts` scans
+ * every plugin's declared parameters and fails when a path-, target-, id- or
+ * model-like one is missing.
  */
 export const TARGET_KEYS: ReadonlySet<string> = new Set([
+  "model",
+  "ids",
+  "id",
+  "res_id",
+  "record_id",
+  "messageId",
+  "attachmentId",
   "path",
   "paths",
   "file",

@@ -202,6 +202,9 @@ export type AuditEventType =
   | "approval.denied"
   | "approval.consumed"
   | "approval.expired"
+  // A gated call whose arguments are too large to show on a confirmation card
+  // in full: nothing was opened, so nobody could approve what they cannot see.
+  | "approval.refused"
   | "approval.gc"
   // Cost budgets (#36). Written once per budget and month by the budget
   // monitor when spend crosses 80% (threshold_reached) and 100% (exceeded).
@@ -518,6 +521,19 @@ export type AuditLogEntry =
         /** Set on sweep-emitted rows (approval.expired) so analysts can
          * correlate one sweep run (AGENTS.md §"Audit logging rules"). */
         sweepId?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // A gated call the gate would not open a confirmation for (third review
+      // of #1242). There is no request row, so no `request.id`; the digest
+      // still binds exactly which call it was.
+      eventType: "approval.refused";
+      detail: {
+        agent: { id: string; name: string | null };
+        requester: { id: string; name: string | null };
+        toolName: string;
+        argsDigest: string;
+        reason: "too-large-to-show";
       };
     })
   | (AuditLogBase & {

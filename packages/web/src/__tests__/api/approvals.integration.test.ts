@@ -356,6 +356,93 @@ describe("approval routes (integration, real DB)", () => {
     });
   });
 
+  // Third review of #1242: a summary that said "1 more field not shown" was
+  // still approvable, and the hidden field still ran. A call the card cannot
+  // show in full is refused at the gate — nothing is opened, nothing can be
+  // approved, and the model is told to split it.
+  describe("a call too large to show in full", () => {
+    const oversized = () => ({
+      model: "account.move",
+      ids: [42],
+      values: {
+        narration: "a".repeat(19_000),
+        ref: "b".repeat(19_000),
+        x1: "c".repeat(19_000),
+        x2: "d".repeat(19_000),
+        partner_bank_id: 666,
+      },
+    });
+
+    it("is refused: no pending row, a reason that tells the agent to split it", async () => {
+      const res = await (await gateCheck(gateReq(gateBody({ params: oversized() })))).json();
+      expect(res.decision).toBe("block");
+      expect(res.reason).toMatch(/too large to show for approval in full/i);
+      expect(res.reason).toMatch(/split it into smaller calls/i);
+      // Nothing for the plugin to pause on: there is no card to wait for.
+      expect(res.approval).toBeUndefined();
+      expect(res.requestId).toBeUndefined();
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+    });
+
+    it("records the refusal in the audit trail, and no request", async () => {
+      const params = oversized();
+      await gateCheck(gateReq(gateBody({ params })));
+      const refused = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.refused"));
+      expect(refused).toHaveLength(1);
+      expect(refused[0].outcome).toBe("failure");
+      expect(refused[0].detail).toMatchObject({
+        agent: { id: agent.id, name: "Smithers" },
+        requester: { id: user.id },
+        toolName: "odoo_write",
+        argsDigest: computeArgsDigest(params),
+        reason: "too-large-to-show",
+      });
+      // The summary — and the field values in it — never reach the audit log.
+      expect(JSON.stringify(refused[0].detail)).not.toContain("aaaa");
+      const requested = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.requested"));
+      expect(requested).toHaveLength(0);
+    });
+
+    it("still opens a full card for an Odoo write with 26 fields, the bank account last", async () => {
+      const values: Record<string, unknown> = {};
+      for (let i = 0; i < 25; i++) values[`x_note_${i}`] = "ok";
+      values.acc_number = "AT61 1904 3002 3457 3201";
+      const params = { model: "res.partner.bank", ids: [7], values };
+      const res = await (await gateCheck(gateReq(gateBody({ params })))).json();
+      expect(res.decision).toBe("block");
+      expect(res.approval).toBeDefined();
+
+      setSession(user);
+      const list = await (
+        await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+      ).json();
+      expect(list.approvals[0].argsSummary).toEqual(params);
+    });
+  });
+
+  // Postgres refuses a lone UTF-16 surrogate inside jsonb. The old 4,000
+  // character cut could land between the halves of an emoji, and a lone
+  // surrogate in the input went into the summary as it was.
+  it("stores a summary with an emoji across the old cut point, and with a lone surrogate", async () => {
+    const body = `a${"😀".repeat(2_500)}`; // index 3,999 splits a pair
+    const params = { recordId: 5, body, subject: "x\uD83Dy" };
+    const res = await (await gateCheck(gateReq(gateBody({ params })))).json();
+    expect(res.decision).toBe("block");
+
+    setSession(user);
+    const list = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(list.approvals[0].argsSummary.body).toBe(body);
+    expect(list.approvals[0].argsSummary.subject).toBe("x⟨U+D83D⟩y");
+  });
+
   // zod's z.record dropped a top-level "__proto__" key (it rebuilds the object
   // by assignment), so the digest and the card described a call without it
   // while the tool received the raw JSON (second review of #1242).

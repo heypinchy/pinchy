@@ -71,11 +71,22 @@ describe("FULL_VIEW_KEYS covers every path- or target-like tool parameter", () =
   });
 
   it("includes each of them", () => {
-    const targetLike = [...declared].filter((name) =>
-      /path|file|url|target|counterpart|destination/i.test(name)
+    // Third review of #1242: `model` and `ids` decide which records an Odoo
+    // write lands on, and were not in the set — the scan now catches id- and
+    // model-like names too (`id`, `ids`, `model`, `messageId`, `res_id`, …).
+    const targetLike = [...declared].filter(
+      (name) =>
+        /path|file|url|target|counterpart|destination|model/i.test(name) ||
+        /^ids?$|_ids?$|[a-z]Ids?$/.test(name)
     );
     expect(targetLike.length).toBeGreaterThan(3);
     for (const name of targetLike) expect(FULL_VIEW_KEYS, name).toContain(name);
+  });
+
+  it("includes the keys that name which record an action lands on", () => {
+    for (const key of ["model", "ids", "id", "res_id", "record_id"]) {
+      expect(FULL_VIEW_KEYS).toContain(key);
+    }
   });
 
   it("includes every recipient key", () => {

@@ -5,7 +5,7 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { gateCheckSchema } from "@/lib/schemas/approvals";
 import { decideGate } from "@/lib/approvals/service";
 import { computeArgsDigest } from "@/lib/approvals/digest";
-import { summarizeArgs } from "@/lib/approvals/summary";
+import { summarizeCall } from "@/lib/approvals/summary";
 import { buildApprovalPrompt } from "@/lib/approvals/prompt";
 import { resolveConfirmation, toolIsConfigured } from "@/lib/approvals/policy";
 import { collectCallModels, makeRefResolver } from "@/lib/approvals/call-models";
@@ -92,6 +92,52 @@ export async function POST(request: NextRequest) {
 
   const argsDigest = computeArgsDigest(params);
   const refRecord = makeRefResolver(refKey);
+  const { summary: argsSummary, incomplete } = summarizeCall(params, { refRecord });
+  const requesterName = async () => {
+    const [requester] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, requesterId))
+      .limit(1);
+    return requester?.name ?? null;
+  };
+
+  // Fail closed on a call the card cannot show in full (third review of
+  // #1242). The summary marks what it left out, but a person who approves "1
+  // more field not shown" still approves that field — the digest binds the
+  // whole call, and the whole call runs. So no confirmation is opened at all:
+  // there is nothing to approve, and the model is told to split the call. The
+  // bounds in `summary.ts` are sized for ordinary work; only an oversized call
+  // lands here. No pending row exists, so no grant can ever clear this digest.
+  if (incomplete) {
+    const entry: AuditLogEntry = {
+      actorType: "agent",
+      actorId: agentId,
+      eventType: "approval.refused",
+      resource: `agent:${agentId}`,
+      detail: {
+        agent: { id: agentId, name: agent?.name ?? null },
+        requester: { id: requesterId, name: await requesterName() },
+        toolName,
+        argsDigest,
+        reason: "too-large-to-show",
+      },
+      outcome: "failure",
+    };
+    try {
+      await appendAuditLog(entry);
+    } catch (err) {
+      recordAuditFailure(err, entry);
+    }
+    return NextResponse.json({
+      decision: "block",
+      reason:
+        `This call is too large to show for approval in full, so it was not run and ` +
+        `no confirmation was opened. Split it into smaller calls — fewer fields, records ` +
+        `or lines per call, or a shorter text — and try again with each part.`,
+    });
+  }
+
   const result = await decideGate({
     agentId,
     requesterId,
@@ -99,16 +145,11 @@ export async function POST(request: NextRequest) {
     toolName,
     toolCallId,
     argsDigest,
-    argsSummary: summarizeArgs(params, { refRecord }),
+    argsSummary,
   });
 
   // Audit a fresh request once (not on retries) and every consume.
   if (result.created || result.decision === "allow") {
-    const [requester] = await db
-      .select({ name: users.name })
-      .from(users)
-      .where(eq(users.id, requesterId))
-      .limit(1);
     const entry: AuditLogEntry = {
       actorType: "agent",
       actorId: agentId,
@@ -117,7 +158,7 @@ export async function POST(request: NextRequest) {
       detail: {
         request: { id: result.requestId },
         agent: { id: agentId, name: agent?.name ?? null },
-        requester: { id: requesterId, name: requester?.name ?? null },
+        requester: { id: requesterId, name: await requesterName() },
         toolName,
         argsDigest,
       },

@@ -22,10 +22,14 @@ import { displayScalar } from "@/lib/approvals/display";
 export const APPROVAL_TITLE_MAX = 80;
 export const APPROVAL_DESCRIPTION_MAX = 256;
 
-/** Cuts at a word boundary where one is near, so the text ends readably. */
+/** Cuts at a word boundary where one is near, so the text ends readably —
+ * and never between the two halves of a surrogate pair. */
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
-  const cut = text.slice(0, max - 1);
+  let end = max - 1;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end--;
+  const cut = text.slice(0, end);
   const lastSpace = cut.lastIndexOf(" ");
   return `${lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut}…`;
 }

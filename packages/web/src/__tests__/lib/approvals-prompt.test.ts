@@ -201,4 +201,25 @@ describe("buildApprovalPrompt", () => {
     expect(description).toContain("chef@firma.at");
     expect(description).toContain("angreifer@evil.com");
   });
+  // Third review of #1242: a CRLF mail body printed "⟨U+000D⟩" before every
+  // line break on the chat prompt, as on the card.
+  it("renders a CRLF body as line breaks", () => {
+    const { description } = buildApprovalPrompt("email_send", {
+      to: "a@x.at",
+      body: "Hallo,\r\nzweite Zeile\rx",
+    });
+    expect(description).toContain("body: Hallo,\nzweite Zeile⟨U+000D⟩x");
+  });
+
+  it("never cuts the description between the halves of an emoji", () => {
+    for (let pad = 0; pad < 4; pad++) {
+      const { description } = buildApprovalPrompt("email_send", {
+        to: "a@x.at",
+        body: `${"x".repeat(pad)}${"😀".repeat(300)}`,
+      });
+      expect(description).not.toMatch(
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+      );
+    }
+  });
 });

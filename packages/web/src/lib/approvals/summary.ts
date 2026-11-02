@@ -13,8 +13,16 @@
  * "{2 fields}", which let a prompt-injected agent hide a second recipient
  * behind 200 spaces, and bank details behind "{2 fields}".
  *
- * So this summary keeps the structure and the content, and only ever loses
- * data in a way that SAYS so:
+ * So this summary keeps the structure and the content. Where it has to stop —
+ * past a size, width or depth bound — it says so with an explicit "… not
+ * shown" marker, AND it reports the call as `incomplete` (`summarizeCall`).
+ * The gate refuses an incomplete call instead of opening a confirmation for
+ * it (third review of #1242): a marker is honest, but a person who clicks
+ * "Approve" on "1 more field not shown" still approves the field. The bounds
+ * are sized so ordinary work — an Odoo invoice with dozens of lines, a long
+ * mail body — fits whole; only an oversized call is refused, and the agent is
+ * told to split it.
+ *
  *
  * - Strings are kept as sent — never trimmed or whitespace-collapsed, since a
  *   rewritten value is not the value that runs. The card renders them with
@@ -24,13 +32,16 @@
  *   overrides, zero-width, Unicode tag characters), every other space
  *   separator (no-break, ideographic, …), variation selectors and the other
  *   default-ignorables (Hangul fillers), and the braille blank U+2800 — is
- *   shown as a `⟨U+XXXX⟩` marker. A long run of them collapses into one
- *   bounded marker that says how many there were. A run of four or more
+ *   shown as a `⟨U+XXXX⟩` marker, and so is a lone UTF-16 surrogate (which
+ *   Postgres would refuse to store in jsonb). A long run of them collapses
+ *   into one bounded marker that says how many there were. A CRLF is a line
+ *   break like LF; a lone CR stays escaped. A run of four or more
  *   spaces, line breaks or tabs is shown as `⟨N spaces⟩` / `⟨N line breaks⟩` /
  *   `⟨N tabs⟩`, so padding cannot push text out of view. Only U+200D (the emoji
  *   joiner) and U+FE0E / U+FE0F (text / emoji presentation) are left alone:
  *   they carry no payload and sit inside ordinary emoji. Strings are kept whole
  *   up to MAX_STRING_LEN; the card shows a preview and the full text on demand.
+ *   A cut never lands between the two halves of a surrogate pair.
  * - Keys are never merged. A key that is not a plain identifier is shown
  *   quoted and escaped, so `"to "` (trailing space) is its own row next to
  *   `to` — trimming it into `to` once let a second, look-alike key overwrite
@@ -43,7 +54,10 @@
  *   entry names the address FIRST and the display name after it, so a long
  *   familiar name cannot push the real address out of view, and a non-ASCII
  *   domain is shown in punycode too, so a homoglyph domain reads as the
- *   different domain it is. Recipient and target keys (`FULL_VIEW_KEYS`) are
+ *   different domain it is. The same goes for ANY value that is shaped like an
+ *   email address or a URL, at any key and depth — an Odoo `values.email` or
+ *   `website` deceives the same way a `to` does. Recipient and target keys
+ *   (`FULL_VIEW_KEYS`) are
  *   rendered before anything else, so no filler in front of them can starve
  *   them of the size budget or push them past MAX_KEYS.
  * - An opaque record reference names the record it points at — model, id and
@@ -65,16 +79,29 @@ import { FULL_VIEW_KEYS, truncationMarker } from "./display";
 const SECRET_KEY = /(token|secret|password|passwd|api[-_]?key|authorization|cookie|credential)/i;
 const RECIPIENT_KEY = /^(to|cc|bcc)$/i;
 
-/** Longest string stored whole. Beyond it the value is cut and marked. */
-const MAX_STRING_LEN = 4000;
-const MAX_KEYS = 25;
-const MAX_ITEMS = 50;
+/*
+ * The bounds. Crossing any of them makes the call `incomplete`, and the gate
+ * refuses it, so they are sized for real work rather than for a tidy card:
+ * an Odoo record carries a few dozen fields (`res.partner` writes of 30–60 are
+ * ordinary), an invoice create a few dozen line commands, a mail body a few
+ * pages. The card scrolls (`max-h-64 overflow-y-auto`) and previews long text,
+ * so a large summary stays usable.
+ *
+ * Size: MAX_TOTAL_CHARS bounds the jsonb row at roughly 64 KB plus markers and
+ * JSON quoting, and the inbox poll carries at most MAX_PENDING_PER_REQUESTER
+ * (20) of them for one person — about 1.3 MB in the worst case, which is a
+ * deliberately-sized call repeated twenty times rather than a normal day.
+ */
+/** Longest string stored whole: ~10 pages of mail body. */
+const MAX_STRING_LEN = 20_000;
+const MAX_KEYS = 100;
+const MAX_ITEMS = 200;
 /** Deep enough for an Odoo invoice: values → invoice_line_ids → [0, 0, {…}] →
  * tax_ids → [6, 0, [ids]] sits at depth 7. MAX_TOTAL_CHARS bounds the size. */
 const MAX_DEPTH = 10;
 /** Total characters across all strings and keys in one summary — keeps the
  * jsonb row (and the poll response that carries every pending card) bounded. */
-const MAX_TOTAL_CHARS = 16_000;
+const MAX_TOTAL_CHARS = 64_000;
 /** Longest key (in code points) rendered; a longer one is cut and says so. */
 const MAX_KEY_LEN = 100;
 /** Longest record label rendered for a reference. */
@@ -95,6 +122,20 @@ export interface SummarizeOptions {
 interface Budget {
   chars: number;
   refRecord?: (ref: string) => RefRecord | null;
+  /** Set as soon as anything is dropped or cut. */
+  incomplete: boolean;
+}
+
+/** What the confirmation card stores, and whether it is the whole call. */
+export interface CallSummary {
+  summary: Record<string, unknown>;
+  /**
+   * True when any part of the call did not fit — a key past MAX_KEYS, an item
+   * past MAX_ITEMS, nesting past MAX_DEPTH, a string or key cut, the total
+   * budget spent. Such a call must not be offered for approval: the person
+   * would approve the part they cannot see.
+   */
+  incomplete: boolean;
 }
 
 /**
@@ -102,10 +143,13 @@ interface Budget {
  * (bidi, zero-width, tags, U+FFF9–FFFB, …), every space separator, line and
  * paragraph separators, every default-ignorable code point (variation
  * selectors, Hangul fillers, the combining grapheme joiner, …) and the
- * braille blank. The same set the write tools refuse (`hidden-chars.ts` in
- * pinchy-email / pinchy-files; `hidden-chars-drift.test.ts` pins the two).
+ * braille blank — and a lone UTF-16 surrogate, which renders as nothing
+ * readable and which Postgres refuses inside jsonb. The same set the write
+ * tools refuse (`hidden-chars.ts` in pinchy-email / pinchy-files;
+ * `hidden-chars-drift.test.ts` pins the two, and the deliberate exceptions).
  */
-const HIDDEN = /[\p{Cc}\p{Cf}\p{Z}\p{Default_Ignorable_Code_Point}\u2800\u115F\u1160\u3164\uFFA0]/u;
+const HIDDEN =
+  /[\p{Cc}\p{Cf}\p{Cs}\p{Z}\p{Default_Ignorable_Code_Point}\u2800\u115F\u1160\u3164\uFFA0]/u;
 /** Readable as they are: layout (space, tab, line break), and the three that
  * cannot carry a payload and appear in ordinary emoji: 👨‍👩‍👧, ❤️. */
 const KEPT_VISIBLE = new Set([" ", "\t", "\n", "\u200D", "\uFE0E", "\uFE0F"]);
@@ -142,7 +186,9 @@ function escapeText(
   text: string,
   { layout, visible = (c) => c }: { layout: boolean; visible?: (char: string) => string }
 ): string {
-  const chars = [...text];
+  // A CRLF is one line break, as every mail client and editor shows it. Only
+  // for values: a key with a CR in it is not a line break, it is a trick.
+  const chars = [...(layout ? text.replace(/\r\n/g, "\n") : text)];
   let out = "";
   let run: string[] = [];
   for (let i = 0; i < chars.length; i++) {
@@ -198,6 +244,12 @@ function keyLabel(key: string): string {
     : quoted;
 }
 
+/**
+ * A decoded ref. The label is the record's display name as Odoo gave it when
+ * the ref was minted — a hint for the reader, not an argument: the call acts on
+ * `model #id`, which is always shown whole. So a cut label is marked, but it
+ * does not make the call incomplete.
+ */
 function describeRef(record: RefRecord): string {
   const label = renderText(record.label);
   const chars = [...label];
@@ -211,13 +263,44 @@ function describeRef(record: RefRecord): string {
 
 /** Spends `text` against the budget, cutting it — and saying so — if needed. */
 function bounded(text: string, budget: Budget): string {
-  const allowed = Math.max(0, Math.min(MAX_STRING_LEN, budget.chars));
+  let allowed = Math.max(0, Math.min(MAX_STRING_LEN, budget.chars));
   if (text.length <= allowed) {
     budget.chars -= text.length;
     return text;
   }
+  budget.incomplete = true;
+  // Never between the two halves of a surrogate pair: the lone half would be
+  // an invalid string, and Postgres refuses it in jsonb.
+  const last = text.charCodeAt(allowed - 1);
+  if (allowed > 0 && last >= 0xd800 && last <= 0xdbff) allowed--;
   budget.chars -= allowed;
   return `${text.slice(0, allowed)}${truncationMarker(text.length - allowed)}`;
+}
+
+/** An email address: no whitespace, one `@`, nothing that makes it a list. */
+const EMAIL_SHAPED = /^[^\s@<>,;/]+@([^\s@<>,;/:?#]+)$/u;
+/** A URL with an authority: `scheme://[userinfo@]host[:port]…`. */
+const URL_SHAPED = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^/?#\s@]*@)?(\[[^\]]*\]|[^/?#\s:]+)/u;
+
+/**
+ * The host a value names, when the whole value is an email address or a URL.
+ * Free text that merely contains one is left alone: rewriting the middle of a
+ * mail body is not what the card is for.
+ */
+function hostOf(value: string): string | null {
+  const host = URL_SHAPED.exec(value)?.[1] ?? EMAIL_SHAPED.exec(value)?.[1];
+  return host ?? null;
+}
+
+/**
+ * The punycode form of a non-ASCII host, as a suffix: `boss@fіrma.at` with a
+ * Cyrillic "і" renders exactly like the real domain, and its ASCII form
+ * (`xn--…`) is what shows that it is not.
+ */
+function punycodeNote(host: string | null): string {
+  if (host === null || /^[\x00-\x7F]*$/.test(host)) return "";
+  const ascii = domainToASCII(host);
+  return ` (${ascii || "not a valid domain name"})`;
 }
 
 function summarizeString(value: string, budget: Budget): string {
@@ -235,7 +318,7 @@ function summarizeString(value: string, budget: Budget): string {
       return text;
     }
   }
-  return bounded(renderText(value), budget);
+  return bounded(renderText(value) + punycodeNote(hostOf(value)), budget);
 }
 
 /**
@@ -277,13 +360,8 @@ const ENTRY_PADDING = /^[ \t\r\n]+|[ \t\r\n]+$/g;
  * and its ASCII form (`xn--…`) is what shows that it is not.
  */
 function describeAddress(address: string): string {
-  const shown = renderText(address);
   const at = address.lastIndexOf("@");
-  if (at < 0) return shown;
-  const domain = address.slice(at + 1);
-  if (/^[\x00-\x7F]*$/.test(domain)) return shown;
-  const ascii = domainToASCII(domain);
-  return `${shown} (${ascii || "not a valid domain name"})`;
+  return renderText(address) + punycodeNote(at < 0 ? null : address.slice(at + 1));
 }
 
 /**
@@ -314,6 +392,7 @@ function summarizeRecipients(value: unknown, budget: Budget): unknown | undefine
     .slice(0, MAX_ITEMS)
     .map((address) => bounded(describeRecipient(address), budget));
   if (addresses.length > MAX_ITEMS) {
+    budget.incomplete = true;
     shown.push(`… [${addresses.length - MAX_ITEMS} more addresses not shown]`);
   }
   return shown.length === 1 ? shown[0] : shown;
@@ -346,24 +425,31 @@ function summarizeValue(value: unknown, depth: number, budget: Budget): unknown 
   if (typeof value === "string") return summarizeString(value, budget);
   if (value === null || ["number", "boolean"].includes(typeof value)) return value;
   if (Array.isArray(value)) {
-    if (depth >= MAX_DEPTH) return `… [${plural(value.length, "item")} not shown: nested too deep]`;
+    if (depth >= MAX_DEPTH) {
+      budget.incomplete = true;
+      return `… [${plural(value.length, "item")} not shown: nested too deep]`;
+    }
     const shown: unknown[] = [];
     for (const item of value.slice(0, MAX_ITEMS)) {
       if (budget.chars <= 0) {
+        budget.incomplete = true;
         shown.push(`… [${value.length - shown.length} more items not shown: size limit reached]`);
         return shown;
       }
       shown.push(summarizeValue(item, depth + 1, budget));
     }
     if (value.length > MAX_ITEMS) {
+      budget.incomplete = true;
       shown.push(`… [${value.length - MAX_ITEMS} more items not shown]`);
     }
     return shown;
   }
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>);
-    if (depth >= MAX_DEPTH)
+    if (depth >= MAX_DEPTH) {
+      budget.incomplete = true;
       return `… [${plural(entries.length, "field")} not shown: nested too deep]`;
+    }
     return summarizeObject(entries, depth, budget);
   }
   return String(value);
@@ -396,14 +482,17 @@ function summarizeObject(
     const [key, value] = ordered[i];
     const priority = FULL_VIEW_KEYS.has(key);
     if (i >= MAX_KEYS) {
+      budget.incomplete = true;
       add("…", `${ordered.length - i} more fields not shown`);
       break;
     }
     if (!priority && budget.chars <= 0) {
+      budget.incomplete = true;
       add("…", `${ordered.length - i} more fields not shown: size limit reached`);
       break;
     }
     // Keys are displayed too, so they count against the same budget.
+    if ([...key].length > MAX_KEY_LEN) budget.incomplete = true;
     const label = keyLabel(key);
     budget.chars -= label.length;
     if (SECRET_KEY.test(key)) {
@@ -417,15 +506,26 @@ function summarizeObject(
   return Object.fromEntries(shown);
 }
 
+/**
+ * The summary the card stores, and whether it holds the whole call. The gate
+ * refuses an `incomplete` call rather than open a confirmation for it.
+ */
+export function summarizeCall(params: unknown, options: SummarizeOptions = {}): CallSummary {
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return { summary: {}, incomplete: false };
+  }
+  const budget: Budget = {
+    chars: MAX_TOTAL_CHARS,
+    refRecord: options.refRecord,
+    incomplete: false,
+  };
+  const summary = summarizeObject(Object.entries(params as Record<string, unknown>), 0, budget);
+  return { summary, incomplete: budget.incomplete };
+}
+
 export function summarizeArgs(
   params: unknown,
   options: SummarizeOptions = {}
 ): Record<string, unknown> {
-  if (!params || typeof params !== "object" || Array.isArray(params)) {
-    return {};
-  }
-  return summarizeObject(Object.entries(params as Record<string, unknown>), 0, {
-    chars: MAX_TOTAL_CHARS,
-    refRecord: options.refRecord,
-  });
+  return summarizeCall(params, options).summary;
 }
