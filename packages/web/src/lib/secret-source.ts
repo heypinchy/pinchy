@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { getSecretSource, type SecretSource } from "@/lib/encryption";
+import { getSecretSource, type SecretSource, type EnvSecretPersistOutcome } from "@/lib/encryption";
 
 export type DbPasswordSource = "custom" | "default" | "generated";
 
@@ -106,9 +106,17 @@ export interface AuditSecretPolicyResult {
 }
 
 /**
+ * Where the startup warning sends an operator whose key file could not be
+ * written: the one procedure for switching the key. Exported so a docs test
+ * can check the heading still exists: the docs anchor check only reads links
+ * in the built site, never a URL in a log line.
+ */
+export const AUDIT_KEY_SWITCH_DOCS_URL =
+  "https://docs.heypinchy.com/concepts/audit-trail-verification/#switching-the-key";
+
+/**
  * Where the startup notice sends an operator who did not mean to switch keys.
- * Exported so a docs test can check the heading still exists: the docs anchor
- * check only reads links in the built site, never a URL in a log line.
+ * Exported for the same docs test.
  */
 export const AUDIT_KEY_SWITCH_BACK_DOCS_URL =
   "https://docs.heypinchy.com/concepts/audit-trail-verification/#switching-back-to-the-earlier-key";
@@ -164,4 +172,45 @@ export function evaluateAuditSecretRotation(opts: {
       "Switch back only if you then stay on the generated key for good. See " +
       AUDIT_KEY_SWITCH_BACK_DOCS_URL,
   };
+}
+
+export interface AuditKeyFilePersistLog {
+  action: "info" | "warn" | "none";
+  message?: string;
+}
+
+/**
+ * The startup log line for {@link persistEnvSecretToKeyFile} on the audit
+ * secret. One line when it wrote the file, so the file appearing in the volume
+ * is never a mystery; a warning when it could not, because the write is what
+ * lets a later switch of the variable keep the old key, and an operator who
+ * does not know it failed would switch and lose verification of everything
+ * signed so far. Silent otherwise. Never the key.
+ */
+export function describeAuditKeyFilePersist(
+  outcome: EnvSecretPersistOutcome
+): AuditKeyFilePersistLog {
+  switch (outcome.status) {
+    case "written":
+      return {
+        action: "info",
+        message:
+          "Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret in the secrets " +
+          "volume, so a later change of the variable keeps this key for verifying " +
+          "the entries signed with it.",
+      };
+    case "failed":
+      return {
+        action: "warn",
+        message:
+          "WARNING: Could not write the AUDIT_HMAC_SECRET value to " +
+          `.audit_hmac_secret (${outcome.reason}). Startup continues and audit ` +
+          "entries are signed as usual, but if you switch AUDIT_HMAC_SECRET to a " +
+          "new value before this works, the entries signed with the current value " +
+          "can't be verified any more. See " +
+          AUDIT_KEY_SWITCH_DOCS_URL,
+      };
+    default:
+      return { action: "none" };
+  }
 }

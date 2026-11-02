@@ -1,5 +1,16 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
-import { readFileSync, writeFileSync, existsSync, openSync, fstatSync, closeSync } from "fs";
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  openSync,
+  fstatSync,
+  closeSync,
+  writeSync,
+  fsyncSync,
+  linkSync,
+  unlinkSync,
+} from "fs";
 import { join } from "path";
 
 const ALGORITHM = "aes-256-gcm";
@@ -94,7 +105,9 @@ function readSecretFile(keyFilePath: string): Buffer {
  *
  * The limitation is real and documented: this covers env-over-file. An operator
  * who OVERWRITES the file has destroyed the old key, and nothing can bring back
- * the ability to verify rows signed under it.
+ * the ability to verify rows signed under it. An install that only ever had the
+ * variable gets the file from persistEnvSecretToKeyFile at startup, so its old
+ * value is here too when the variable changes.
  */
 export function getPreviousSecret(name: string): Buffer | null {
   if (getSecretSource(name) !== "envvar") return null;
@@ -115,6 +128,80 @@ export function getPreviousSecret(name: string): Buffer | null {
   // Same value on both paths: nothing was superseded, so there is no previous
   // key and no rotation to report.
   return fileSecret.equals(active) ? null : fileSecret;
+}
+
+/** What {@link persistEnvSecretToKeyFile} did. Never carries the key. */
+export type EnvSecretPersistOutcome =
+  | { status: "written" }
+  | { status: "file-exists" }
+  | { status: "not-envvar" }
+  | { status: "failed"; reason: string };
+
+/**
+ * When the environment variable is the active secret and no key file exists,
+ * write the variable's value to the key file.
+ *
+ * Why: the earlier key Pinchy verifies against is always the key FILE
+ * ({@link getPreviousSecret}). An install that set the variable from day one
+ * never had that file, so switching the variable to a new value left every
+ * entry signed with the old one verifying under no key at all, and the only
+ * defence was a manual step in the docs. With the file written at startup,
+ * the old value is already in place as the earlier key when the variable
+ * changes. Safe by construction instead of by procedure.
+ *
+ * Never overwrites: an existing file is either the same key or the earlier
+ * one, and the earlier one is the only thing that can verify the entries
+ * signed with it. Even a corrupt file is left for the operator to look at.
+ *
+ * Atomic and non-clobbering: the key is written and fsynced to a temporary
+ * file in the same directory, then hard-linked to the final name. `link`
+ * fails with EEXIST instead of replacing, so a file that appeared in between
+ * is never touched, and a crash mid-write leaves at most a temp file, never a
+ * truncated key file that a later boot would trip over.
+ *
+ * Never throws: a failed write is reported, and the caller logs it and starts
+ * anyway.
+ */
+export function persistEnvSecretToKeyFile(name: string): EnvSecretPersistOutcome {
+  if (getSecretSource(name) !== "envvar") return { status: "not-envvar" };
+
+  const { keyFilePath } = secretPaths(name);
+  if (existsSync(keyFilePath)) return { status: "file-exists" };
+
+  // Same format as the file getOrCreateSecret generates: lowercase hex, no
+  // trailing newline.
+  const key = Buffer.from(process.env[name.toUpperCase()]!, "hex").toString("hex");
+  const tmpPath = `${keyFilePath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+
+  let tmpCreated = false;
+  try {
+    const fd = openSync(tmpPath, "wx", 0o600);
+    tmpCreated = true;
+    try {
+      writeSync(fd, key);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    try {
+      linkSync(tmpPath, keyFilePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") return { status: "file-exists" };
+      throw err;
+    }
+    return { status: "written" };
+  } catch (err) {
+    // fs errors name the code and the path, never the content written.
+    return { status: "failed", reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (tmpCreated) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // A leftover temp file is harmless: nothing reads *.tmp.
+      }
+    }
+  }
 }
 
 export function getOrCreateSecret(name: string): Buffer {

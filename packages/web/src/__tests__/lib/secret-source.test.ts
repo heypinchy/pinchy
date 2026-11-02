@@ -28,6 +28,7 @@ import {
   evaluateDbPasswordPolicy,
   evaluateAuditSecretRotation,
   AUDIT_KEY_SWITCH_BACK_DOCS_URL,
+  describeAuditKeyFilePersist,
 } from "@/lib/secret-source";
 
 const mockedExistsSync = vi.mocked(existsSync);
@@ -245,5 +246,38 @@ describe("evaluateAuditSecretRotation", () => {
     // reach it, and this pins that signature.
     const result = evaluateAuditSecretRotation({ hasSupersededSecret: true });
     expect(result.message).not.toMatch(/[0-9a-f]{32}/i);
+  });
+});
+
+describe("describeAuditKeyFilePersist", () => {
+  // The startup step that writes a variable-only AUDIT_HMAC_SECRET into the
+  // key file says what it did, once, and never the key. A failed write is
+  // logged as a warning and startup continues — but the warning must say what
+  // that costs, or "fail open" quietly becomes "fail silent".
+  it("announces a written key file without the key", () => {
+    const result = describeAuditKeyFilePersist({ status: "written" });
+
+    expect(result.action).toBe("info");
+    expect(result.message).toMatch(/AUDIT_HMAC_SECRET/);
+    expect(result.message).toMatch(/\.audit_hmac_secret/);
+    expect(result.message).not.toMatch(/[0-9a-f]{32}/i);
+  });
+
+  it("warns on a failed write, names the reason and the consequence, and does not stop startup", () => {
+    const result = describeAuditKeyFilePersist({
+      status: "failed",
+      reason: "EACCES: permission denied, open '/app/secrets/.audit_hmac_secret.tmp'",
+    });
+
+    expect(result.action).toBe("warn");
+    expect(result.message).toMatch(/EACCES/);
+    expect(result.message).toMatch(/continu/i);
+    // What a later switch of the variable then loses.
+    expect(result.message).toMatch(/switch/i);
+  });
+
+  it("is silent when the file already exists or the variable is not in use", () => {
+    expect(describeAuditKeyFilePersist({ status: "file-exists" })).toEqual({ action: "none" });
+    expect(describeAuditKeyFilePersist({ status: "not-envvar" })).toEqual({ action: "none" });
   });
 });

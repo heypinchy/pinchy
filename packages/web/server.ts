@@ -52,8 +52,12 @@ import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
-import { evaluateAuditSecretRotation, evaluateDbPasswordPolicy } from "./src/lib/secret-source";
-import { getPreviousSecret } from "./src/lib/encryption";
+import {
+  describeAuditKeyFilePersist,
+  evaluateAuditSecretRotation,
+  evaluateDbPasswordPolicy,
+} from "./src/lib/secret-source";
+import { getPreviousSecret, persistEnvSecretToKeyFile } from "./src/lib/encryption";
 import { exitOnStartupFailure } from "./src/server/startup-failure";
 import { getTrustedProxies, stampClientIp, TRUSTED_PROXIES_ENV_VAR } from "./src/server/client-ip";
 
@@ -97,6 +101,18 @@ const dbPasswordPolicy = evaluateDbPasswordPolicy({
 });
 if (dbPasswordPolicy.action === "warn") {
   console.warn(dbPasswordPolicy.message);
+}
+
+// The earlier key Pinchy verifies against is always the key file. When
+// AUDIT_HMAC_SECRET is set and no key file exists yet, write the variable's
+// value there, so a later change of the variable keeps this key as the earlier
+// one. Never overwrites, never throws: a failed write is a warning, not a
+// reason to stay down. Runs before the notice below, which reads the same file.
+const auditKeyFileLog = describeAuditKeyFilePersist(persistEnvSecretToKeyFile("audit_hmac_secret"));
+if (auditKeyFileLog.action === "info") {
+  console.log(auditKeyFileLog.message);
+} else if (auditKeyFileLog.action === "warn") {
+  console.warn(auditKeyFileLog.message);
 }
 
 // An operator who pins AUDIT_HMAC_SECRET over the generated key changes what
