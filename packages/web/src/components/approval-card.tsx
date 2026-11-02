@@ -14,6 +14,7 @@ import {
   quoted,
   readNode,
   secretText,
+  textWindow,
   type SummaryNode,
   type SummaryNote,
 } from "@/lib/approvals/display";
@@ -80,16 +81,22 @@ function Spoken({ drawn, spoken }: { drawn: ReactNode; spoken: string }) {
  * `previewed`'s answer, the one the summary asks too: wherever it says yes to
  * a URL or an address, the summary has named its host in a note beside it.
  *
+ * "Show full text" reveals the rest one part at a time (`textWindow`), each
+ * costing no more to draw than a target drawn whole, and only one part is on
+ * the card at once: drawn whole, a 200,000-character value froze the tab for
+ * as long as 28 s, and again on every relayout. Every character is a few
+ * clicks away, and the card says which of them are shown.
+ *
  * Everything in `text` is the value's own: the card reads no marker out of it.
  * The gate refuses any call the summary would have to cut, so a value that
  * ends in "… [truncated: …]" typed it, and it is drawn and read as the rest of
  * the value is — inside it, inside its quotes.
  */
 function TextValue({ text, full }: { text: string; full: boolean }) {
-  const [expanded, setExpanded] = useState(false);
+  // Where each part shown since "Show full text" starts, the one on screen
+  // last; `null` while the value is collapsed to its preview.
+  const [starts, setStarts] = useState<number[] | null>(null);
   const shown = displayScalar(text);
-  // Counted and cut by code point, so the preview never ends in half an emoji.
-  const chars = [...shown];
   if (!previewed(text, full)) {
     return (
       <span className="break-words">
@@ -104,32 +111,76 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
       </span>
     );
   }
+  const toggle = (
+    <Button
+      type="button"
+      variant="link"
+      size="sm"
+      className="h-auto p-0 align-baseline text-xs"
+      aria-expanded={starts !== null}
+      onClick={() => setStarts(starts ? null : [0])}
+    >
+      {starts ? "Show less" : "Show full text"}
+    </Button>
+  );
+  if (!starts) {
+    // Counted and cut by code point, so the preview never ends in half an emoji.
+    return (
+      <span className="break-words">
+        <Spoken
+          drawn={
+            <span className="whitespace-pre-wrap">
+              <StoredOrder text={`${drawnText(text, full)}…`} />
+            </span>
+          }
+          spoken={`${quoted([...text].slice(0, PREVIEW_LEN).join(""))}…`}
+        />
+        <span className="text-muted-foreground">
+          {" "}
+          ({[...shown].length - PREVIEW_LEN} more characters hidden)
+        </span>{" "}
+        {toggle}
+      </span>
+    );
+  }
+  const part = textWindow(text, starts[starts.length - 1]);
+  const before = part.start > 0 ? "…" : "";
+  const after = part.end < text.length ? "…" : "";
+  const whole = !before && !after;
+  const step = (label: string, disabled: boolean, onClick: () => void) => (
+    <Button
+      type="button"
+      variant="link"
+      size="sm"
+      className="h-auto p-0 align-baseline text-xs"
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {label}
+    </Button>
+  );
   return (
     <span className="break-words">
       <Spoken
         drawn={
           <span className="whitespace-pre-wrap">
-            <StoredOrder text={expanded ? shown : `${drawnText(text, full)}…`} />
+            <StoredOrder text={`${before}${part.drawn}${after}`} />
           </span>
         }
-        spoken={expanded ? quoted(text) : `${quoted([...text].slice(0, PREVIEW_LEN).join(""))}…`}
+        spoken={`${before}${quoted(text.slice(part.start, part.end))}${after}`}
       />
-      {!expanded && (
-        <span className="text-muted-foreground">
-          {" "}
-          ({chars.length - PREVIEW_LEN} more characters hidden)
-        </span>
+      {!whole && (
+        <>
+          <span className="text-muted-foreground">
+            {" "}
+            (characters {part.first.toLocaleString("en-US")}–{part.last.toLocaleString("en-US")} of{" "}
+            {part.total.toLocaleString("en-US")})
+          </span>{" "}
+          {step("Show previous part", !before, () => setStarts(starts.slice(0, -1)))}{" "}
+          {step("Show next part", !after, () => setStarts([...starts, part.end]))}
+        </>
       )}{" "}
-      <Button
-        type="button"
-        variant="link"
-        size="sm"
-        className="h-auto p-0 align-baseline text-xs"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((open) => !open)}
-      >
-        {expanded ? "Show less" : "Show full text"}
-      </Button>
+      {toggle}
     </span>
   );
 }

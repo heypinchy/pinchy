@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { ApprovalCard } from "../approval-card";
 import type { PendingApproval } from "@/lib/approvals/client";
 import { summarizeArgs } from "@/lib/approvals/summary";
+import { WHOLE_MAX, displayScalar } from "@/lib/approvals/display";
 
 function approval(argsSummary: Record<string, unknown> | null, toolName = "email_send") {
   return {
@@ -40,6 +41,35 @@ function drawnText(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
   if (node instanceof Element && node.classList.contains("sr-only")) return "";
   return [...node.childNodes].map(drawnText).join("");
+}
+
+/**
+ * Clicks "Show full text" and then "Show next part" until the last part, and
+ * returns what the one value on the card drew and what it read at each step.
+ */
+async function showEveryPart(container: HTMLElement) {
+  await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
+  const drawn: string[] = [];
+  const spoken: string[] = [];
+  for (;;) {
+    drawn.push(container.querySelector("dd [aria-hidden='true']")!.textContent!);
+    spoken.push(container.querySelector("dd .sr-only")!.textContent!);
+    const next = screen.queryByRole("button", { name: /show next part/i });
+    if (!next || next.hasAttribute("disabled")) return { drawn, spoken };
+    await userEvent.click(next);
+  }
+}
+
+/** A part as drawn or read, without the `…` that says more comes before or after it. */
+function withoutEllipses(part: string): string {
+  return part.replace(/^…/, "").replace(/…$/, "");
+}
+
+/** The text a read part quotes: its `"` and `\` unescaped. */
+function unquoted(part: string): string {
+  const inner = withoutEllipses(part);
+  expect(inner).toMatch(/^"(?:[^"\\]|\\[\s\S])*"$/u);
+  return inner.slice(1, -1).replace(/\\([\s\S])/gu, "$1");
 }
 
 function renderCard(argsSummary: Record<string, unknown> | null, toolName?: string) {
@@ -238,11 +268,13 @@ describe("ApprovalCard shows what will actually run", () => {
   // marker.
   it("previews a long body stored whole, and shows all of it on demand", async () => {
     const tail = "MIT-FREUNDLICHEN-GRUESSEN";
-    renderCard(summarizeArgs({ body: `${"Absatz. ".repeat(1_800)}${tail}` }));
+    const body = `${"Absatz. ".repeat(1_800)}${tail}`;
+    const { container } = renderCard(summarizeArgs({ body }));
     expect(screen.queryByText(new RegExp(tail))).not.toBeInTheDocument();
     expect(screen.queryByText(/truncated/)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
-    expect(screen.getByText(new RegExp(tail))).toBeInTheDocument();
+    const { drawn } = await showEveryPart(container);
+    expect(drawn.map(withoutEllipses).join("")).toBe(body);
+    expect(drawn.at(-1)).toMatch(new RegExp(`${tail}$`));
   });
 
   it("never cuts the preview between the halves of an emoji", () => {
@@ -301,11 +333,83 @@ describe("ApprovalCard shows what will actually run", () => {
       ["a target", { path: `/data/${"x".repeat(8200)}END` }],
       ["an address at any key", { note: `https://x.at/${"y".repeat(8200)}END` }],
     ])("previews %s past that, and shows all of it on demand", async (_label, summary) => {
-      renderCard(summary);
+      const { container } = renderCard(summary);
       expect(screen.queryByText(/END$/)).not.toBeInTheDocument();
       expect(screen.getByText(/more characters hidden/i)).toBeInTheDocument();
+      const { drawn } = await showEveryPart(container);
+      expect(drawn.map(withoutEllipses).join("")).toBe(Object.values(summary)[0]);
+      expect(drawn.at(-1)).toMatch(/END$/);
+    });
+  });
+
+  // Drawn whole, one 200,000-character value of alternating Hebrew letters
+  // and digits — a mail body the gate accepts, since its preview is cheap —
+  // blocked Chromium for 13–28 s on "Show full text", and again on every
+  // relayout. So the full text is revealed one part at a time, each bounded
+  // like one target drawn whole, and only one part is on the card at once.
+  describe("reveals a long text one bounded part at a time", () => {
+    it("draws and reads one bounded part of a 200,000-character right-to-left body", async () => {
+      const body = "\u05d01".repeat(100_000);
+      const { container } = renderCard(summarizeArgs({ body }));
       await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
-      expect(screen.getByText(/END$/)).toBeInTheDocument();
+      const drawn = container.querySelector("dd [aria-hidden='true']")!;
+      expect([...drawn.textContent!].length).toBeLessThanOrEqual(WHOLE_MAX + 1);
+      expect(drawn.querySelectorAll("bdi").length).toBeLessThanOrEqual(WHOLE_MAX / 2);
+      const spoken = container.querySelector("dd .sr-only")!.textContent!;
+      expect(unquoted(spoken)).toBe(body.slice(0, WHOLE_MAX));
+      expect(screen.getByText(/characters 1–8,192 of 200,000/)).toBeInTheDocument();
+    });
+
+    it.each([
+      ["mixed text", `${'Grüße,\u00A0שלום 1 "x" \\ 😀 '.repeat(800)}END`],
+      ["text drawn quoted", JSON.stringify(Array(1_500).fill('he said "hi" \\ ok \u05d0'))],
+    ])(
+      "draws and reads every character of %s across its parts, and never half a marker",
+      async (_name, text) => {
+        const body = summarizeArgs({ body: text }).body as string;
+        const { container } = renderCard({ body });
+        const { drawn, spoken } = await showEveryPart(container);
+        expect(drawn.length).toBeGreaterThan(2);
+        expect(drawn.map(withoutEllipses).join("")).toBe(displayScalar(body));
+        expect(spoken.map(unquoted).join("")).toBe(body);
+        for (const part of drawn) {
+          expect(part).not.toMatch(/⟨[^⟩]*$/u);
+          expect(part).not.toMatch(/^[^⟨]*⟩/u);
+        }
+        const total = [...displayScalar(body)].length.toLocaleString("en-US");
+        expect(
+          screen.getByText(new RegExp(`characters [\\d,]+–${total} of ${total}`))
+        ).toBeInTheDocument();
+      }
+    );
+
+    it("says which part is shown, steps back, and collapses to the preview again", async () => {
+      const body = `${"a".repeat(WHOLE_MAX)}SECOND-PART`;
+      renderCard({ body });
+      await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
+      expect(screen.getByText(/characters 1–8,192 of 8,203/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /show previous part/i })).toBeDisabled();
+      expect(screen.queryByText(/SECOND-PART/)).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: /show next part/i }));
+      expect(screen.getByText(/^…SECOND-PART$/)).toBeInTheDocument();
+      expect(screen.getByText(/characters 8,193–8,203 of 8,203/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /show next part/i })).toBeDisabled();
+
+      await userEvent.click(screen.getByRole("button", { name: /show previous part/i }));
+      expect(screen.getByText(/characters 1–8,192 of 8,203/)).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: /show less/i }));
+      expect(screen.getByText(/more characters hidden/i)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /show next part/i })).not.toBeInTheDocument();
+    });
+
+    it("offers no parts for a text that fits in one", async () => {
+      renderCard({ body: "a".repeat(WHOLE_MAX) });
+      await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
+      expect(screen.getByText("a".repeat(WHOLE_MAX))).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /show next part/i })).not.toBeInTheDocument();
+      expect(screen.queryByText(/characters 1–/)).not.toBeInTheDocument();
     });
   });
 

@@ -3,7 +3,9 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   FULL_VIEW_KEYS,
+  WHOLE_MAX,
   displayScalar,
+  drawCost,
   inStoredOrder,
   inStoredOrderPlain,
   isAddressShaped,
@@ -11,6 +13,8 @@ import {
   previewed,
   readNode,
   readUrl,
+  textWindow,
+  type TextWindow,
 } from "./display";
 
 describe("displayScalar: one rendering per type, so no value passes for another", () => {
@@ -484,5 +488,114 @@ describe("inStoredOrder: a value is shown in the order it was sent", () => {
       "\u2066\u202Da/\u2066א\u2069\u202C\u2069\n\u2066\u202Db\u202C\u2069"
     );
     expect(inStoredOrderPlain("/data/2024/x.md")).toBe("/data/2024/x.md");
+  });
+});
+
+/** Every part "Show full text" reveals of `text`, in order. */
+function partsOf(text: string): TextWindow[] {
+  const parts = [textWindow(text, 0)];
+  while (parts.at(-1)!.end < text.length) parts.push(textWindow(text, parts.at(-1)!.end));
+  return parts;
+}
+
+/**
+ * Drawn whole, a 200,000-character value blocked Chromium for 13–28 s on
+ * "Show full text", and again on every relayout. So the card reveals a long
+ * text one part at a time, each part bounded by the rule that bounds a whole
+ * target: its characters cost at most WHOLE_MAX (`drawCost`).
+ */
+describe("textWindow: a long text revealed in parts, each one bounded", () => {
+  const texts: [string, string][] = [
+    ["alternating Hebrew letters and digits", "\u05d01".repeat(100_000)],
+    ["emoji between letters", `${"a".repeat(200)}${"\u{1F3F3}x".repeat(30_000)}`],
+    ["a letter carrying 20,000 marks", `a${"\u0301".repeat(20_000)}`],
+    ["markers", `x${"⟨U+2800⟩".repeat(3_000)}`],
+    ["flags", `a${"\u{1F1E6}\u{1F1F9}".repeat(2_000)}`],
+    ["accented letters", `a${"e\u0301".repeat(10_000)}`],
+    ["a text that reads as a literal", JSON.stringify(Array(3_000).fill('he said "hi" \\ ok'))],
+  ];
+
+  it.each(texts)("costs at most WHOLE_MAX to draw per part: %s", (_name, text) => {
+    const parts = partsOf(text);
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) {
+      expect(part.end).toBeGreaterThan(part.start);
+      expect(drawCost(part.drawn)).toBeLessThanOrEqual(WHOLE_MAX + 1);
+    }
+  });
+
+  it.each(texts)("draws every character, in order, across its parts: %s", (_name, text) => {
+    const parts = partsOf(text);
+    expect(parts.map((part) => part.drawn).join("")).toBe(displayScalar(text));
+    expect(parts.map((part) => text.slice(part.start, part.end)).join("")).toBe(text);
+    parts.forEach((part, index) => {
+      expect(part.start).toBe(index === 0 ? 0 : parts[index - 1].end);
+    });
+  });
+
+  it.each(texts)("counts the parts in characters as drawn: %s", (_name, text) => {
+    const parts = partsOf(text);
+    const total = [...displayScalar(text)].length;
+    let first = 1;
+    for (const part of parts) {
+      expect(part).toMatchObject({ first, last: first + [...part.drawn].length - 1, total });
+      first = part.last + 1;
+    }
+    expect(parts.at(-1)!.last).toBe(total);
+  });
+
+  it("draws a text that fits in one part whole", () => {
+    const text = "x".repeat(WHOLE_MAX);
+    expect(textWindow(text, 0)).toMatchObject({ start: 0, end: text.length, drawn: text });
+  });
+
+  it("never ends a part inside a character, an emoji flag or a letter with its accent", () => {
+    for (const text of [
+      `a${"\u{1F1E6}\u{1F1F9}".repeat(2_000)}`,
+      `a${"e\u0301".repeat(10_000)}`,
+      `a${"😀".repeat(2_000)}`,
+    ]) {
+      for (const part of partsOf(text).slice(1)) {
+        const head = text.slice(part.start);
+        expect(head).not.toMatch(/^[\p{M}\uDC00-\uDFFF]/u);
+        // A flag is a pair of regional indicators: a part starts on the first.
+        const indicators = [...text.slice(0, part.start)].filter((char) =>
+          /\p{Regional_Indicator}/u.test(char)
+        );
+        expect(indicators.length % 2).toBe(0);
+      }
+    }
+  });
+
+  it("splits one character too long to draw at once between its code points", () => {
+    const text = `a${"\u0301".repeat(20_000)}`;
+    const parts = partsOf(text);
+    expect(parts.length).toBeGreaterThan(2);
+    expect(parts.map((part) => part.drawn).join("")).toBe(text);
+  });
+
+  // Every `⟨` opens a marker Pinchy wrote; a part that ended inside one would
+  // draw `⟨U+28` and start the next with `00⟩`, neither of them a marker.
+  it("never ends a part inside a marker", () => {
+    for (const text of [`x${"⟨U+2800⟩".repeat(3_000)}`, `xy${"⟨12 × U+2800⟩".repeat(1_000)}`]) {
+      for (const part of partsOf(text)) {
+        expect(part.drawn).toMatch(/^(?:x|y|⟨[^⟨⟩]*⟩)+$/u);
+      }
+    }
+  });
+
+  // A text that reads as a literal is drawn quoted and escaped. A part that
+  // ended between `\` and the `"` it escapes would draw a lone backslash and
+  // start the next part with a bare quote.
+  it("never ends a part inside an escape of a text drawn quoted", () => {
+    const text = JSON.stringify(Array(3_000).fill('he said "hi" \\ ok'));
+    const parts = partsOf(text);
+    parts.forEach((part, index) => {
+      const open = index === 0 ? '"' : "";
+      const close = index === parts.length - 1 ? '"' : "";
+      expect(part.drawn.startsWith(open) && part.drawn.endsWith(close)).toBe(true);
+      const inner = part.drawn.slice(open.length, part.drawn.length - close.length);
+      expect(JSON.parse(`"${inner}"`)).toBe(text.slice(part.start, part.end));
+    });
   });
 });

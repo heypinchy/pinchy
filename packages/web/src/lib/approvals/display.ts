@@ -148,14 +148,15 @@ export function readUrl(text: string): UrlRead | null {
  * characters, as shown. It holds every real one: pinchy-files caps a path at
  * 1,024 characters, and the widest a character is shown is an
  * eight-character marker (`⟨U+200D⟩`). Past it, the value is previewed like
- * any long text, with the rest one click away. Unbounded, it froze the
+ * any long text, with the rest revealed a part at a time. Unbounded, it froze the
  * approver's tab: Chromium lays out a long mixed-direction text in time that
  * grows faster than its length — 13 s for one 200,000-character value
  * in Chromium. At this size one value lays out in 38–47 ms in headless
  * Chromium for the worst shape measured, 8,192 alternating Hebrew letters and
  * digits (one isolate per letter), against 6–8 ms for a Hebrew or Arabic path
  * of the same length. This bounds one value, not a card: sixty such targets
- * took about a second. DRAW_BUDGET bounds the card. Wherever the card
+ * took about a second. DRAW_BUDGET bounds the card, and this bounds each part
+ * "Show full text" reveals of a longer text (`textWindow`). Wherever the card
  * previews an address, the summary names its host beside it (`previewed`),
  * since the host sits at the end, behind the preview.
  */
@@ -207,6 +208,18 @@ export function previewed(text: string, full: boolean): boolean {
  * counts it (`drawCost`, on what the card draws: a previewed text by its
  * preview) and refuses a call past this bound; the card draws what the summary
  * accepted, so the count is one decision.
+ *
+ * It counts the card before "Show full text" is clicked, and only then. Behind
+ * that button a text of up to 200,000 characters waits, and drawn whole one of
+ * alternating Hebrew letters and digits, accepted at a preview cost of 201,
+ * blocked Chromium for 13.6–28.7 s, again on every relayout. So the button
+ * reveals the text a part at a time, by the same count: a part ends where its
+ * characters would cost more than WHOLE_MAX, what one target drawn whole may
+ * (`textWindow`), and only one part is on the card at once. Measured on the
+ * card itself in headless Chromium (load 10–30): the first two clicks on that
+ * text 105–142 ms while the page warms up, every later one 29–41 ms through
+ * all 25 parts, and a relayout after the last 2 ms — the card holds one part,
+ * so nothing grows. The same card drawing one such target whole: 60 ms.
  *
  * What a character costs the browser varies by orders of magnitude, so a
  * bound on size alone (MAX_TOTAL_CHARS in `summary.ts`) did not bound the
@@ -265,6 +278,99 @@ export function drawCost(text: string): number {
 export function drawnText(text: string, full: boolean): string {
   const shown = displayScalar(text);
   return previewed(text, full) ? [...shown].slice(0, PREVIEW_LEN).join("") : shown;
+}
+
+/**
+ * One part of a long text, as the card reveals it after "Show full text".
+ * `start` and `end` are UTF-16 offsets into the value's text; `drawn` is that
+ * stretch of it as `displayScalar` draws it (escaped, and with the opening or
+ * closing quote on the first or last part, where the text is drawn quoted);
+ * `first`, `last` and `total` count characters as drawn, from 1.
+ */
+export interface TextWindow {
+  start: number;
+  end: number;
+  drawn: string;
+  first: number;
+  last: number;
+  total: number;
+}
+
+/** A text as `displayScalar` draws it, without the quotes around it. */
+function escaped(text: string, literal: boolean): string {
+  return literal ? JSON.stringify(text).slice(1, -1) : text;
+}
+
+/** Absent before Firefox 125: a part then ends between code points, never inside one. */
+const GRAPHEMES =
+  typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : null;
+
+/**
+ * The part of `text` the card draws from offset `start` (the end of the part
+ * before, or 0): as much as one target drawn whole may cost, its characters
+ * at most WHOLE_MAX (`drawCost`). Drawn whole, one 200,000-character value of
+ * alternating Hebrew letters and digits blocked Chromium for 13–28 s, and
+ * again on every relayout; the preview was within DRAW_BUDGET, the text behind
+ * "Show full text" was not.
+ *
+ * A part ends between two characters as a person reads them (grapheme
+ * clusters: a flag, a letter and its accent stay whole) unless one character
+ * alone costs more than a part, and never inside a `⟨…⟩` marker — every `⟨`
+ * opens one Pinchy wrote — nor inside an escape of a text drawn quoted, which
+ * is escaped per code point. The parts, drawn one after the other, are
+ * `displayScalar(text)`.
+ */
+export function textWindow(text: string, start: number): TextWindow {
+  const literal = displayScalar(text) !== text;
+  let budget = WHOLE_MAX - (literal ? 2 : 0);
+  let end = start;
+  while (end < text.length) {
+    const width = text.codePointAt(end)! > 0xffff ? 2 : 1;
+    const cost = drawCost(escaped(text.slice(end, end + width), literal)) - 1;
+    if (cost > budget && end > start) break;
+    budget -= cost;
+    end += width;
+  }
+  if (end < text.length && GRAPHEMES) {
+    // The last boundary between graphemes at or before the cut, read with the
+    // character after it, which decides whether the cut is one.
+    let boundary = 0;
+    for (const { index } of GRAPHEMES.segment(text.slice(start, end + 2))) {
+      if (index > end - start) break;
+      boundary = index;
+    }
+    if (boundary > 0) end = start + boundary;
+  }
+  if (end < text.length) {
+    const open = text.lastIndexOf("⟨", end - 1);
+    if (open > start && text.slice(open, end).indexOf("⟩") === -1) end = open;
+  }
+  const drawn = `${literal && start === 0 ? '"' : ""}${escaped(text.slice(start, end), literal)}${
+    literal && end === text.length ? '"' : ""
+  }`;
+  // Drawn quoted, what comes before a later part is the opening quote and the
+  // text before it escaped: its JSON string without the closing quote.
+  const before =
+    literal && start > 0
+      ? codePoints(JSON.stringify(text.slice(0, start))) - 1
+      : codePoints(text.slice(0, start));
+  return {
+    start,
+    end,
+    drawn,
+    first: before + 1,
+    last: before + codePoints(drawn),
+    total: codePoints(displayScalar(text)),
+  };
+}
+
+/** How many characters (code points) `text` has, without spreading it into an array. */
+function codePoints(text: string): number {
+  let count = 0;
+  for (let i = 0; i < text.length; i += text.codePointAt(i)! > 0xffff ? 2 : 1) count++;
+  return count;
 }
 
 /**
