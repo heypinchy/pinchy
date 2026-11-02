@@ -2071,7 +2071,17 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     ["a '..' segment", (root: string) => `${root}/reports/../contracts/signed.pdf`, /\.\./],
     ["a braille blank", (root: string) => `${root}/report\u2800.md`, /U\+2800/],
     ["a hangul filler", (root: string) => `${root}/report\u3164.md`, /U\+3164/],
-    ["a no-break space", (root: string) => `${root}/report\u00A0.md`, /U\+00A0/],
+    // Corrected expectation (third review of #1242): this row used a no-break
+    // space, which paths now accept — the card prints it as ⟨U+00A0⟩, and real
+    // file names carry it. A paragraph separator, which breaks the line rather
+    // than taking visible width, takes its place as a refused space character.
+    ["a paragraph separator", (root: string) => `${root}/report\u2029.md`, /U\+2029/],
+    [
+      "'.' segments",
+      (root: string) => `${root}/${"./".repeat(2100)}contracts/signed.pdf`,
+      /plain form|longer than/,
+    ],
+    ["an empty segment", (root: string) => `${root}//contracts/signed.pdf`, /plain form/],
     ["a zero-width space", (root: string) => `${root}/report\u200B.md`, /U\+200B/],
     ["a bidi override", (root: string) => `${root}/report\u202Edm.txt`, /U\+202E/],
     ["a line break", (root: string) => `${root}/report\n.md`, /U\+000A/],
@@ -2107,6 +2117,19 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/U\+2800/);
     expect(readdirSync(workbench)).toEqual([]);
+  });
+
+  // Third review of #1242: real names carry visible-width spaces the card
+  // escapes, e.g. macOS screenshots ("… at 10.00.00\u202FAM.png").
+  it.each([
+    ["a narrow no-break space", "Screenshot 2026-11-02 at 10.00.00\u202FAM.png"],
+    ["a no-break space", "Betrag 1\u00A0234.md"],
+  ])("still writes a path with %s", async (_l, name) => {
+    const tool = await toolNamed("pinchy_write");
+    const target = join(tmpDir, name);
+    const result = await tool.execute("call-1", { path: target, content: "x" });
+    expect(result.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(true);
   });
 
   it("still writes an ordinary path, spaces and umlauts included", async () => {

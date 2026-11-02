@@ -13,7 +13,11 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isEscapedChar } from "@/lib/approvals/summary";
-import { hiddenCharIn } from "../../../../plugins/pinchy-email/hidden-chars";
+import {
+  hiddenCharIn,
+  isEmojiFormatChar,
+  isSpaceSeparator,
+} from "../../../../plugins/pinchy-email/hidden-chars";
 
 const COPIES = ["pinchy-email", "pinchy-files"].map((plugin) =>
   resolve(import.meta.dirname, `../../../../plugins/${plugin}/hidden-chars.ts`)
@@ -30,10 +34,11 @@ describe("hidden-chars drift guard", () => {
     for (const copy of rest) expect(copy).toBe(first);
   });
 
+  // Lone surrogates included (third review of #1242): the summary escapes them
+  // — Postgres refuses one inside jsonb — and the tools refuse them.
   it("the summary escapes exactly what the tools refuse, minus layout and emoji", () => {
     const mismatches: string[] = [];
     for (let cp = 0; cp <= 0x10ffff; cp++) {
-      if (cp >= 0xd800 && cp <= 0xdfff) continue;
       const char = String.fromCodePoint(cp);
       const refused = hiddenCharIn(char) !== null;
       const expected = refused && !SUMMARY_KEEPS.has(cp);
@@ -49,5 +54,41 @@ describe("hidden-chars drift guard", () => {
       );
     }
     expect(hiddenCharIn("plain text with spaces")).toBeNull();
+  });
+  // Third review of #1242: each tool now allows one group the default refuses,
+  // and each allowance is only safe because of what the card does with it.
+  describe("the deliberate allowances", () => {
+    const every = (pick: (char: string) => boolean) => {
+      const found: number[] = [];
+      for (let cp = 0; cp <= 0x10ffff; cp++) {
+        if (pick(String.fromCodePoint(cp))) found.push(cp);
+      }
+      return found;
+    };
+
+    it("a display name may carry exactly the emoji characters the card shows as they are", () => {
+      const allowed = every(isEmojiFormatChar);
+      expect(allowed).toEqual([...SUMMARY_KEEPS].filter((cp) => cp > 0x0a).sort((a, b) => a - b));
+      for (const cp of allowed) {
+        const char = String.fromCodePoint(cp);
+        expect(hiddenCharIn(char)).not.toBeNull();
+        expect(hiddenCharIn(char, isEmojiFormatChar)).toBeNull();
+        expect(isEscapedChar(char)).toBe(false);
+      }
+    });
+
+    it("a path may carry exactly the space separators, and the card marks every one", () => {
+      const allowed = every(isSpaceSeparator);
+      expect(allowed).toEqual(every((char) => char !== " " && /^\p{Zs}$/u.test(char)));
+      expect(allowed).toContain(0x00a0);
+      expect(allowed).toContain(0x202f);
+      for (const cp of allowed) {
+        const char = String.fromCodePoint(cp);
+        expect(hiddenCharIn(char)).not.toBeNull();
+        expect(hiddenCharIn(char, isSpaceSeparator)).toBeNull();
+        // Visible on the card as a ⟨U+XXXX⟩ marker, never as blank space.
+        expect(isEscapedChar(char)).toBe(true);
+      }
+    });
   });
 });
