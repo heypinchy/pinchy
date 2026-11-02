@@ -52,11 +52,17 @@
  * text), NOT a guarantee.
  */
 import { spawn } from "node:child_process";
-import { mkdir, rm, stat, symlink } from "node:fs/promises";
+import { mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 
 import { getOfficeArtifactStore, hashFileContents, OfficeArtifactStore } from "./office-artifacts";
-import { OFFICE_CONVERT_BATCH_SIZE, OFFICE_EXTENSIONS, isOfficeFile } from "./office-formats";
+import {
+  OFFICE_CONVERT_BATCH_SIZE,
+  OFFICE_EXTENSIONS,
+  OfficeFileRejectedError,
+  isOfficeFile,
+} from "./office-formats";
+import { prepareOfficeSource, readGuardedDocx, type PreparedSource } from "./office-preflight";
 import { extractPdfPages } from "./pdf-extract";
 
 /**
@@ -174,9 +180,18 @@ export interface ConvertProgress {
   total: number;
 }
 
+/**
+ * Vets one source and returns the bytes to convert — or `null` to convert the
+ * file in place, through a link (what the tests that fake the converter use).
+ * Throws `OfficeFileRejectedError` for a file that must not reach a reader.
+ */
+export type PrepareSource = (absPath: string) => Promise<PreparedSource | null>;
+
 export interface ConvertOptions {
   store?: OfficeArtifactStore;
   runConverter?: RunConverter;
+  /** Defaults to the real preflight (./office-preflight.ts). */
+  prepareSource?: PrepareSource;
   /** Words in the converted PDF. Prod: the pdfjs text layer (./pdf-extract.ts). */
   countPdfWords?: (absPath: string) => Promise<number>;
   /** Words the INDEPENDENT extractor sees in the original, or null when there is none for this format. */
@@ -210,6 +225,7 @@ export async function convertOfficeFiles(
 
   const store = options.store ?? getOfficeArtifactStore();
   const runConverter = options.runConverter ?? runSoffice;
+  const prepareSource = options.prepareSource ?? prepareOfficeSource;
   const countPdfWords = options.countPdfWords ?? defaultCountPdfWords;
   const countSourceWords = options.countSourceWords ?? countSourceWordsWithOracle;
   const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE);
@@ -255,6 +271,7 @@ export async function convertOfficeFiles(
     const results = await convertBatch(batch, {
       store,
       runConverter,
+      prepareSource,
       countPdfWords,
       countSourceWords,
       epsilon,
@@ -276,6 +293,7 @@ export async function convertOfficeFiles(
 interface BatchDeps {
   store: OfficeArtifactStore;
   runConverter: RunConverter;
+  prepareSource: PrepareSource;
   countPdfWords: (absPath: string) => Promise<number>;
   countSourceWords: (absPath: string) => Promise<number | null>;
   epsilon: number;
@@ -284,15 +302,16 @@ interface BatchDeps {
 /**
  * Converts one batch in a single converter process.
  *
- * Inputs are STAGED as index-named symlinks (`0.doc`, `1.pptx`, …) in a
- * scratch directory, and that is not cosmetic. LibreOffice derives the output
+ * Inputs are STAGED under index names (`0.doc`, `1.pptx`, …) in a scratch
+ * directory — as a private copy of the bytes the preflight checked (the file
+ * sits on a share its planter can still write to, so converting a link would
+ * convert whatever it holds by then) — and the naming is not cosmetic. LibreOffice derives the output
  * name from the input's basename, so two documents called `Rechnung.doc` in
  * different folders — the normal state of a real corpus — would write the same
  * `Rechnung.pdf` and one document would end up serving the other's text.
  * Index names make the input→output mapping positional and unambiguous, and
  * sidestep every quoting question a corpus filename can raise. Verified
- * against the real binary: the output follows the symlink's name, not the
- * target's.
+ * against the real binary: the output follows the staged name, symlink or not.
  */
 async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<ConversionOutcome[]> {
   let stagingDir: string;
@@ -323,10 +342,15 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
     for (const [i, item] of batch.entries()) {
       const staged = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
       try {
-        await symlink(item.absPath, staged);
+        const prepared = await deps.prepareSource(item.absPath);
+        if (prepared) await writeFile(staged, prepared.data);
+        else await symlink(item.absPath, staged);
         inputs.push(staged);
       } catch (err) {
-        outcomes[i] = documentFailure(item.absPath, `could not stage source: ${reasonOf(err)}`);
+        outcomes[i] =
+          err instanceof OfficeFileRejectedError
+            ? documentFailure(item.absPath, `refused before conversion: ${err.message}`)
+            : documentFailure(item.absPath, `could not stage source: ${reasonOf(err)}`);
       }
     }
 
@@ -529,6 +553,58 @@ function killTree(child: ReturnType<typeof spawn>): void {
 }
 
 /**
+ * The user-installation settings every conversion runs with, written as
+ * `registrymodifications.xcu` into a profile that has never been used.
+ *
+ * The documents are untrusted, and LibreOffice, left to its defaults, will
+ * fetch a linked picture over HTTP (an SSRF from a container that has a
+ * network) and embed a `file://` one into the PDF (a local-file read that is
+ * then served to every reader of the knowledge base). Each setting here was
+ * chosen by CANARY — a crafted document, a local listener, the real binary —
+ * not by its name (office-convert.libreoffice.test.ts keeps those canaries):
+ *
+ *   - `BlockUntrustedRefererLinks` stopped BOTH the http fetch and the
+ *     `file://` embed on its own, for Word, PowerPoint, an HTML file posing as
+ *     `.doc`, and flat ODF. It is the load-bearing line.
+ *   - `Link = 2` (never update links on load) is the same intent, by the
+ *     documented knob; on its own it did NOT stop the fetch.
+ *   - A manual proxy at a closed port (nothing exempted) stopped the http
+ *     fetch but not `file://`. Its job is the future: whatever LibreOffice
+ *     learns to fetch next still has nowhere to go.
+ *
+ * None of these is the only line of defence: `office-preflight.ts` has already
+ * cut the external relationships out of the copy it is converting, and refused
+ * files whose content is not the format they claim. This is the layer that
+ * holds if one of those is wrong. A sidecar with no network at all would be
+ * the real boundary; that is a deployment change, not a profile one.
+ */
+const LOCKED_DOWN_PROFILE = `<?xml version="1.0" encoding="UTF-8"?>
+<oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+${[
+  ["/org.openoffice.Office.Common/Security/Scripting", "BlockUntrustedRefererLinks", "true"],
+  ["/org.openoffice.Office.Writer/Content/Update", "Link", "2"],
+  ["/org.openoffice.Inet/Settings", "ooInetProxyType", "2"],
+  ["/org.openoffice.Inet/Settings", "ooInetHTTPProxyName", "127.0.0.1"],
+  ["/org.openoffice.Inet/Settings", "ooInetHTTPProxyPort", "9"],
+  ["/org.openoffice.Inet/Settings", "ooInetHTTPSProxyName", "127.0.0.1"],
+  ["/org.openoffice.Inet/Settings", "ooInetHTTPSProxyPort", "9"],
+  ["/org.openoffice.Inet/Settings", "ooInetNoProxy", ""],
+]
+  .map(
+    ([path, name, value]) =>
+      `<item oor:path="${path}"><prop oor:name="${name}" oor:op="fuse"><value>${value}</value></prop></item>`
+  )
+  .join("\n")}
+</oor:items>
+`;
+
+async function writeLockedDownProfile(profileDir: string): Promise<void> {
+  const userDir = join(profileDir, "user");
+  await mkdir(userDir, { recursive: true });
+  await writeFile(join(userDir, "registrymodifications.xcu"), LOCKED_DOWN_PROFILE);
+}
+
+/**
  * The real converter: ONE `soffice` per batch.
  *
  * `-env:UserInstallation` (and a matching HOME) gives the process a private
@@ -540,7 +616,14 @@ function killTree(child: ReturnType<typeof spawn>): void {
  * a stub: without that, everything below is only reachable on a machine with a
  * 422 MB LibreOffice installed, which is no machine CI runs on.
  */
-export const runSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =>
+export const runSoffice: RunConverter = async ({ inputs, outDir, profileDir, timeoutMs }) => {
+  // Before the process exists, and a failure here is a failure to convert: a
+  // converter that cannot be locked down must not run at all.
+  await writeLockedDownProfile(profileDir);
+  return spawnSoffice({ inputs, outDir, profileDir, timeoutMs });
+};
+
+const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =>
   new Promise<ConverterResult>((resolve, reject) => {
     const child = spawn(
       process.env.KB_SOFFICE_BIN || "soffice",
@@ -610,8 +693,11 @@ export async function countSourceWordsWithOracle(absPath: string): Promise<numbe
 
   if (ext === ".docx") {
     try {
+      // The same limits the conversion input passed: mammoth inflates the
+      // whole archive, so a bomb must not reach it through the oracle's door.
+      const buffer = await readGuardedDocx(absPath);
       const { default: mammoth } = await import("mammoth");
-      const { value } = await mammoth.extractRawText({ path: absPath });
+      const { value } = await mammoth.extractRawText({ buffer });
       return countWords(value);
     } catch {
       return null;

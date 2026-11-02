@@ -105,6 +105,57 @@ describe("runSoffice", () => {
     expect(env.HOME).toBe(profileDir);
   });
 
+  describe("the locked-down profile (release review v0.10.0, finding 1)", () => {
+    // Each key below was found by CANARY, not by name: a crafted document with
+    // an external picture link, converted by the real binary against a local
+    // listener (see office-convert.libreoffice.test.ts). Only
+    // BlockUntrustedRefererLinks stopped http AND file:// on its own; the
+    // others are belts. This test pins that the profile is WRITTEN, before the
+    // converter starts, into the user installation the child is pointed at.
+    async function profileAtStart(): Promise<string> {
+      const record = join(tmpRoot, "xcu-at-start");
+      process.env.KB_SOFFICE_BIN = stub(
+        "soffice-xcu",
+        `cat ${profileDir}/user/registrymodifications.xcu > ${record}\n`
+      );
+      await run();
+      return readFile(record, "utf8");
+    }
+
+    it("is in place before the converter starts", async () => {
+      expect(await profileAtStart()).toContain("<oor:items");
+    });
+
+    it("refuses to follow links from documents it did not write", async () => {
+      expect(await profileAtStart()).toMatch(
+        /oor:path="\/org\.openoffice\.Office\.Common\/Security\/Scripting"><prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true<\/value>/
+      );
+    });
+
+    it("never updates links on load, and routes any network access to a dead proxy", async () => {
+      const xcu = await profileAtStart();
+      expect(xcu).toMatch(/oor:name="Link" oor:op="fuse"><value>2<\/value>/);
+      expect(xcu).toMatch(/oor:name="ooInetProxyType" oor:op="fuse"><value>2<\/value>/);
+      expect(xcu).toMatch(
+        /oor:name="ooInetHTTPProxyName" oor:op="fuse"><value>127\.0\.0\.1<\/value>/
+      );
+      expect(xcu).toMatch(
+        /oor:name="ooInetHTTPSProxyName" oor:op="fuse"><value>127\.0\.0\.1<\/value>/
+      );
+      expect(xcu).toMatch(/oor:name="ooInetNoProxy" oor:op="fuse"><value><\/value>/);
+    });
+
+    it("fails closed: if the profile cannot be written, the converter does not run", async () => {
+      const ran = join(tmpRoot, "ran");
+      process.env.KB_SOFFICE_BIN = stub("soffice-ran", `touch ${ran}\n`);
+      // A FILE where the profile directory must go.
+      writeFileSync(profileDir, "in the way");
+
+      await expect(run()).rejects.toThrow();
+      await expect(readFile(ran)).rejects.toThrow();
+    });
+  });
+
   it("reports the exit code a container OOM kill produces", async () => {
     process.env.KB_SOFFICE_BIN = stub("soffice-oom", "exit 137\n");
 

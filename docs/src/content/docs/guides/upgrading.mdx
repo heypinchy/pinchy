@@ -320,6 +320,12 @@ Connecting an OpenAI-compatible endpoint lost a step as well: Pinchy asks your e
 
 Your existing providers, keys and default carry over untouched.
 
+#### Indexing no longer follows links inside Office files
+
+Anyone who can write to a mounted folder can put a Word, PowerPoint or Excel file there, and indexing opens it inside Pinchy's container — which has a network and can read the agent workspaces. A crafted `.docx` can point at a URL (a request from inside your Docker network) or at a file on the server, and a converter left to its defaults fetches the one and draws the other into the converted PDF, which every reader of the agent can open. So indexing cuts every linked reference out of a copy before converting it, locks LibreOffice's own profile against fetching, and refuses a file whose content isn't the format its name claims.
+
+What you may notice: a Word or PowerPoint file that linked a picture, a template or a hyperlink target on another machine converts without them — the text is indexed, the linked picture isn't drawn, and a hyperlink keeps its text but not its destination. Files that are too big to open safely (a Word or PowerPoint file over 200 MB, a workbook over 100 MB, or any Office file that unpacks to far more than it weighs) and files that aren't what their extension says (an HTML page named `.doc`) are listed as `unsearchable` instead of being opened, and the server log says which and why. [Supported file types](/guides/mount-data-directories/#supported-file-types) has the numbers. Nothing to configure.
+
 #### Documents in archive folders drop out of everyday answers
 
 A knowledge-base document now counts as archived if any **folder** on its path is called `old`, `archive`, `archived` or `archiv` — matched whole and case-insensitively, so `OLD/` counts and `Goldakte/` does not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it to one of those four to get the same treatment.

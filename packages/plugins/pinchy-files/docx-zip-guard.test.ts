@@ -7,6 +7,9 @@ import {
   readDeclaredDocxSize,
   assertDocxDecompressedSizeWithinLimit,
   MAX_DOCX_DECOMPRESSED_BYTES,
+  readZipEntries,
+  assertZipWithinLimits,
+  ZipLimitError,
 } from "./docx-zip-guard";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
@@ -162,5 +165,123 @@ describe("assertDocxDecompressedSizeWithinLimit", () => {
       /decompressed size .* exceeds/i
     );
     expect(() => assertDocxDecompressedSizeWithinLimit(zip, 4000)).not.toThrow();
+  });
+});
+
+// The same guard now also fronts the knowledge-base's Office readers (exceljs,
+// mammoth, LibreOffice), which read .xlsx/.pptx too — so the generic entry
+// points below carry no ".docx" in their wording and add a ratio rule that a
+// bare size ceiling cannot express.
+describe("readZipEntries", () => {
+  it("lists every entry with its name, method, sizes and local-header offset", () => {
+    const zip = buildZip([
+      { name: "[Content_Types].xml", data: Buffer.alloc(100, 0x41) },
+      { name: "word/_rels/document.xml.rels", data: Buffer.alloc(40, 0x42) },
+    ]);
+    const entries = readZipEntries(zip);
+    expect(entries.map((e) => e.name)).toEqual([
+      "[Content_Types].xml",
+      "word/_rels/document.xml.rels",
+    ]);
+    expect(entries[0]).toMatchObject({ method: 8, uncompressedSize: 100, localHeaderOffset: 0 });
+    expect(entries[1].localHeaderOffset).toBeGreaterThan(0);
+    expect(entries[1].uncompressedSize).toBe(40);
+  });
+
+  it("throws a generic (not .docx-specific) error on a buffer that is not a zip", () => {
+    expect(() => readZipEntries(Buffer.from("not a zip"))).toThrow(/not a valid zip archive/i);
+  });
+});
+
+describe("assertZipWithinLimits", () => {
+  it("accepts an ordinary archive", () => {
+    const zip = buildZip([{ name: "xl/worksheets/sheet1.xml", data: Buffer.alloc(5000, 0x41) }]);
+    expect(() =>
+      assertZipWithinLimits(zip, { maxDecompressedBytes: 1_000_000, maxCompressionRatio: 100 })
+    ).not.toThrow();
+  });
+
+  it("rejects an archive whose declared total exceeds the ceiling, without inflating it", () => {
+    const zip = buildZip([
+      {
+        name: "xl/worksheets/sheet1.xml",
+        data: Buffer.alloc(64),
+        declaredUncompressedSize: 2_000_000,
+      },
+    ]);
+    expect(() => assertZipWithinLimits(zip, { maxDecompressedBytes: 1_000_000 })).toThrow(
+      /decompressed size .* exceeds/i
+    );
+  });
+
+  it("rejects a high-ratio archive that stays UNDER the ceiling", () => {
+    // 20 MB declared from a few dozen compressed bytes is far past anything an
+    // office writer produces (XML deflates ~10-20:1), yet under a 256 MB
+    // ceiling — the shape a ceiling alone waves through.
+    const zip = buildZip([
+      {
+        name: "xl/worksheets/sheet1.xml",
+        data: Buffer.alloc(64),
+        declaredUncompressedSize: 20_000_000,
+      },
+    ]);
+    expect(() =>
+      assertZipWithinLimits(zip, {
+        maxDecompressedBytes: 256 * 1024 * 1024,
+        maxCompressionRatio: 200,
+        ratioFloorBytes: 16 * 1024 * 1024,
+      })
+    ).toThrow(/compression ratio/i);
+  });
+
+  it("does not apply the ratio rule to small archives", () => {
+    // A 100 KB sheet of repeated cells legitimately deflates 1000:1.
+    const zip = buildZip([{ name: "xl/worksheets/sheet1.xml", data: Buffer.alloc(100_000, 0x41) }]);
+    expect(() =>
+      assertZipWithinLimits(zip, {
+        maxDecompressedBytes: 256 * 1024 * 1024,
+        maxCompressionRatio: 50,
+        ratioFloorBytes: 16 * 1024 * 1024,
+      })
+    ).not.toThrow();
+  });
+
+  it("fails closed on ZIP64 size markers", () => {
+    const zip = buildZip([
+      { name: "a.xml", data: Buffer.alloc(64), declaredUncompressedSize: 0xffffffff },
+    ]);
+    expect(() => assertZipWithinLimits(zip, { maxDecompressedBytes: 1_000_000 })).toThrow(
+      /decompressed size|ZIP64/i
+    );
+  });
+
+  it("tells a limit violation (ZipLimitError) from a corrupt archive (plain Error)", () => {
+    // A caller that lets its reader diagnose corruption must not do the same
+    // for a bomb: the reader is what the limit protects.
+    const big = buildZip([
+      { name: "a.xml", data: Buffer.alloc(64), declaredUncompressedSize: 5000 },
+    ]);
+    expect(() => assertZipWithinLimits(big, { maxDecompressedBytes: 1000 })).toThrow(ZipLimitError);
+    const zip64 = buildZip([
+      { name: "a.xml", data: Buffer.alloc(64), declaredUncompressedSize: 0xffffffff },
+    ]);
+    // The marker value itself exceeds any sane ceiling, so this is a limit too.
+    expect(() => assertZipWithinLimits(zip64, { maxDecompressedBytes: 1000 })).toThrow(
+      ZipLimitError
+    );
+    let corrupt: unknown;
+    try {
+      assertZipWithinLimits(Buffer.from("not a zip at all, sorry"), { maxDecompressedBytes: 1000 });
+    } catch (err) {
+      corrupt = err;
+    }
+    expect(corrupt).toBeInstanceOf(Error);
+    expect(corrupt).not.toBeInstanceOf(ZipLimitError);
+  });
+
+  it("throws the generic invalid-archive error on a non-zip", () => {
+    expect(() =>
+      assertZipWithinLimits(Buffer.from("MZ not a zip"), { maxDecompressedBytes: 1000 })
+    ).toThrow(/not a valid zip archive/i);
   });
 });

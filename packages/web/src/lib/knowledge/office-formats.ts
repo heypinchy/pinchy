@@ -109,3 +109,33 @@ export function convertedPdfName(path: string): string {
   const ext = extensionOf(name);
   return `${ext ? name.slice(0, -ext.length) : name}.pdf`;
 }
+
+/**
+ * Why an Office file was refused BEFORE any reader touched it.
+ *
+ * - `too_large`   — the file, or what its zip central directory says it
+ *                   inflates to, is past what we will load into the web
+ *                   process. A decompression bomb takes this exit; so does a
+ *                   genuinely enormous workbook, and that is deliberate — the
+ *                   reader (exceljs, mammoth, LibreOffice) materialises the
+ *                   whole thing and the cost is the same.
+ * - `unexpected_content` — the bytes are not the format the extension claims
+ *                   (HTML renamed `.doc`, an ODF package renamed `.docx`).
+ *                   LibreOffice sniffs content, not names, so such a file would
+ *                   be imported by a filter the extension never promised — one
+ *                   that fetches linked content.
+ *
+ * It lives in this import-free module because the ingest, the converter, the
+ * spreadsheet reader and the workspace-file route all need to tell "this
+ * document is refused" from "this reader broke", and none of them may pull the
+ * others' dependencies (exceljs, `child_process`) to do it.
+ */
+export class OfficeFileRejectedError extends Error {
+  constructor(
+    readonly code: "too_large" | "unexpected_content",
+    message: string
+  ) {
+    super(message);
+    this.name = "OfficeFileRejectedError";
+  }
+}

@@ -69,6 +69,7 @@ import { detectLang } from "./lid";
 import { collectHeadingSections, headingLocatorAt } from "./heading-sections";
 import {
   isOfficeFile,
+  OfficeFileRejectedError,
   isPresentationFile,
   isSpreadsheetFile,
   isWordFile,
@@ -560,7 +561,19 @@ async function extractDocument(
   }
 
   if (isSpreadsheetFile(absPath)) {
-    const extraction = await deps.extractXlsx(absPath);
+    const extraction = await deps.extractXlsx(absPath).catch((err: unknown) => {
+      if (!(err instanceof OfficeFileRejectedError)) throw err;
+      // Refused unread: too large to load into this process (a compressed bomb
+      // is the case that matters). That is a verdict on THIS file, and a final
+      // one — retrying reads the same bytes — so it becomes a row with no
+      // chunks, which is exactly how the unreadable list (unsearchable.ts)
+      // finds it, with its reason in the server log.
+      console.warn(`[kb-ingest] ${absPath}: not read — ${err.message}`);
+      return null;
+    });
+    if (extraction === null) {
+      return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "sheets" };
+    }
     return {
       chunks: extraction.chunks.map(({ text, sheet, startRow, endRow }) => ({
         text,

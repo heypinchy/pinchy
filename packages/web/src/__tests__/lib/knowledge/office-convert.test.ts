@@ -17,13 +17,15 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
+import mammoth from "mammoth";
 
 import {
   batchTimeoutMs,
   convertOfficeFiles,
+  countSourceWordsWithOracle,
   isOfficeFile,
   OFFICE_EXTENSIONS,
   OFFICE_VERIFY_EPSILON,
@@ -33,6 +35,8 @@ import {
   type RunConverter,
 } from "@/lib/knowledge/office-convert";
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
+import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
+import { declaredBomb } from "@/test-helpers/office-zip";
 
 let tmpRoot: string;
 let corpusDir: string;
@@ -116,6 +120,11 @@ function deps(converter: FakeConverter, extra: Partial<ConvertOptions> = {}): Co
     // legacy binaries when catdoc is absent). Tests that exercise the tripwire
     // override it.
     countSourceWords: async () => null,
+    // These fixtures are plain text under Office names, which the real
+    // preflight (rightly) refuses: stage a link to the original, as before.
+    // The preflight has its own suite (office-preflight.test.ts), and the
+    // "preflight" block below turns the real one back on.
+    prepareSource: async () => null,
     ...extra,
   };
 }
@@ -663,6 +672,124 @@ describe("convertOfficeFiles", () => {
 
     expect(onProgress.mock.calls.map(([p]) => p.processed)).toEqual([2, 4, 5]);
     expect(onProgress.mock.calls.every(([p]) => p.total === 5)).toBe(true);
+  });
+});
+
+describe("preflight before conversion (release review v0.10.0)", () => {
+  /** A converter that records what it was handed — kind and bytes — and converts everything. */
+  function recordingConverter() {
+    const seen: Array<{ staged: string; symlink: boolean; body: string }> = [];
+    const run: RunConverter = async (call) => {
+      for (const staged of call.inputs) {
+        seen.push({
+          staged: basename(staged),
+          symlink: (await lstat(staged)).isSymbolicLink(),
+          body: await readFile(staged, "utf8"),
+        });
+        await writeFile(
+          join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
+          "%PDF-1.4\nsome converted words\n"
+        );
+      }
+      return { code: 0, signal: null, stderr: "" };
+    };
+    return { run, seen };
+  }
+
+  it("converts the bytes that were checked, from a private copy, not a link to the file on the share", async () => {
+    // The share's planter can still write to the file. A symlink would let it
+    // change between the check and the conversion; a copy of the checked
+    // bytes cannot.
+    const source = await corpusFile("a.docx", "ORIGINAL");
+    const converter = recordingConverter();
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(
+        { run: converter.run, calls: [] },
+        {
+          prepareSource: async () => ({
+            data: Buffer.from("CHECKED COPY"),
+            externalLinksRemoved: 2,
+          }),
+        }
+      )
+    );
+
+    expect(outcomes[0].status).toBe("converted");
+    expect(converter.seen).toEqual([{ staged: "0.docx", symlink: false, body: "CHECKED COPY" }]);
+  });
+
+  it("books a refused file as a document-level failure, with the reason, and converts its neighbours", async () => {
+    const [bad, good] = [await corpusFile("bad.doc", "x"), await corpusFile("good.doc", "y")];
+    const converter = recordingConverter();
+
+    const outcomes = await convertOfficeFiles(
+      [bad, good],
+      deps(
+        { run: converter.run, calls: [] },
+        {
+          prepareSource: async (absPath) => {
+            if (absPath === bad.absPath) {
+              throw new OfficeFileRejectedError("unexpected_content", "this .doc is really HTML");
+            }
+            return null;
+          },
+        }
+      )
+    );
+
+    // `failed`, not `infrastructure`: nothing about this document will
+    // convert on a retry, and it lands on the unreadable list.
+    expect(outcomes.map((o) => o.status)).toEqual(["failed", "converted"]);
+    expect(outcomes[0].reason).toContain("this .doc is really HTML");
+    expect(converter.seen.map((s) => s.staged)).toEqual(["1.doc"]);
+  });
+
+  it("with the real preflight, never hands a renamed HTML file to the converter", async () => {
+    // LibreOffice picks its import filter from the content: an HTML file named
+    // .doc is imported by Writer/Web, which fetches every <img src>.
+    const html = await corpusFile("invoice.doc", "<html><img src='http://10.0.0.5/x.png'></html>");
+    const converter = recordingConverter();
+
+    const outcomes = await convertOfficeFiles(
+      [html],
+      deps({ run: converter.run, calls: [] }, { prepareSource: undefined })
+    );
+
+    expect(outcomes[0].status).toBe("failed");
+    expect(outcomes[0].reason).toMatch(/not a Word or PowerPoint document/);
+    expect(converter.seen).toEqual([]);
+  });
+
+  it("treats a file that vanished mid-run as unreadable, not as a crash", async () => {
+    const source = await corpusFile("gone.doc", "x");
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(fakeConverter({ outputs: {} }), {
+        prepareSource: async () => {
+          throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+        },
+      })
+    );
+    expect(outcomes[0].status).toBe("failed");
+    expect(outcomes[0].reason).toContain("could not stage source");
+  });
+
+  it("does not trust a compressed-bomb .docx to the word-count oracle either", async () => {
+    // mammoth inflates the whole archive. The oracle must refuse what the
+    // preflight refuses — it opens the same file.
+    const bomb = join(tmpRoot, "bomb.docx");
+    await writeFile(bomb, declaredBomb(0xfffffffe, "word/document.xml"));
+    // A null alone proves little (mammoth would fail on this archive too), so
+    // pin that it was never asked.
+    const extract = vi.spyOn(mammoth, "extractRawText");
+    try {
+      expect(await countSourceWordsWithOracle(bomb)).toBeNull();
+      expect(extract).not.toHaveBeenCalled();
+    } finally {
+      extract.mockRestore();
+    }
   });
 });
 

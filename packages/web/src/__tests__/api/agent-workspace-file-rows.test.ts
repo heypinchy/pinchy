@@ -219,4 +219,23 @@ describe("what it answers rather than failing", () => {
     expect(entry.outcome).toBe("failure");
     expect(entry.detail.reason).toBe("unreadable_document");
   });
+
+  it("answers 413 for a compressed-bomb workbook instead of inflating it, and audits the reason (release review v0.10.0)", async () => {
+    // Any member with agent access can ask for this, uncached and as often as
+    // they like, and exceljs would inflate the declared 4 GB into the web
+    // server's heap. The refusal is read off the central directory.
+    const { writeFileSync } = await import("node:fs");
+    const { declaredBomb } = await import("@/test-helpers/office-zip");
+    const path = join(allowedRoot, "bomb.xlsx");
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- test-local path under a per-test temp dir
+    writeFileSync(path, declaredBomb(0xfffffffe));
+
+    const res = await callGET(path, ROWS);
+
+    expect(res.status).toBe(413);
+    expect((await res.json()).error).toMatch(/too large to read/i);
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.outcome).toBe("failure");
+    expect(entry.detail.reason).toBe("document_too_large");
+  });
 });

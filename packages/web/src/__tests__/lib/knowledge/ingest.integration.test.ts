@@ -28,6 +28,7 @@ import {
   type IngestProgress,
   type IngestResult,
 } from "@/lib/knowledge/ingest";
+import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
 import type { XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
 import type { ConversionOutcome } from "@/lib/knowledge/office-convert";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
@@ -1403,6 +1404,35 @@ it("books a workbook it could read nothing out of as unsearchable, not indexed",
 
   const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(await chunksFor(doc.id)).toHaveLength(0);
+});
+
+it("books a workbook refused as too large as unsearchable — listed, final, and not a failed run (release review v0.10.0)", async () => {
+  // A compressed bomb is a verdict on THIS file: nothing a retry does changes
+  // what its central directory declares. It must neither crash the run (the
+  // reader refuses before inflating) nor vanish as `failed` with no row —
+  // it lands in the same visible bucket a text-less scan does (#935), and is
+  // not re-read on every reindex.
+  const xlsxPath = join(tmpRoot, "bomb.xlsx");
+  writeFileSync(xlsxPath, "fake-xlsx-bomb");
+  const { deps, extractXlsx } = fakeDeps();
+  extractXlsx.mockRejectedValue(
+    new OfficeFileRejectedError("too_large", "Archive declared decompressed size is past the limit")
+  );
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+    // Unchanged on the next run: settled, so it is skipped rather than re-read.
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 1 }));
+    expect(extractXlsx).toHaveBeenCalledTimes(1);
+    // The operator can tell which file and why, in the server log.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("bomb.xlsx"));
+  } finally {
+    warn.mockRestore();
+  }
+
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
+  expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
 });
 
 it("keeps PDFs indexed before spreadsheets existed working, untouched", async () => {

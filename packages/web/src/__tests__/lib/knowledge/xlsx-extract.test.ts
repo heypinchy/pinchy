@@ -16,6 +16,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
 
+import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
+import { declaredBomb } from "@/test-helpers/office-zip";
 import {
   extractXlsx,
   readSheetRange,
@@ -661,5 +663,66 @@ describe("readSheetRange — what a spreadsheet citation opens", () => {
     const range = await readSheetRange(path, "Sheet1", 1, 100000);
 
     expect(range?.rows).toHaveLength(SHEET_RANGE_MAX_ROWS);
+  });
+});
+
+describe("a compressed-bomb workbook is refused, not inflated (release review v0.10.0, finding 2)", () => {
+  // exceljs inflates every zip entry whole and builds the entire cell model. A
+  // few hundred bytes can declare gigabytes; the index worker runs in the web
+  // process and the rows preview is reachable by any member with agent access,
+  // uncached and repeatable — so one planted file could take the server down.
+  // The archive below DECLARES 4 GB for its sheet and carries 64 real bytes:
+  // nothing here can allocate that, which is exactly what must stay true.
+  async function plantBomb(name: string): Promise<string> {
+    const path = join(tmpRoot, name);
+    await writeFile(path, declaredBomb(0xfffffffe));
+    return path;
+  }
+
+  it("extractXlsx rejects it as too large, quickly and without allocating", async () => {
+    const path = await plantBomb("bomb.xlsx");
+    const arrayBuffersBefore = process.memoryUsage().arrayBuffers;
+    const started = Date.now();
+
+    const err = await extractXlsx(path).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("too_large");
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(process.memoryUsage().arrayBuffers - arrayBuffersBefore).toBeLessThan(50 * 1024 * 1024);
+  });
+
+  it("never hands a bomb to exceljs at all", async () => {
+    const path = await plantBomb("bomb-spy.xlsx");
+    const workbook = new ExcelJS.Workbook();
+    const xlsxPrototype = Object.getPrototypeOf(workbook.xlsx);
+    const load = vi.spyOn(xlsxPrototype, "load");
+    const readFile = vi.spyOn(xlsxPrototype, "readFile");
+    try {
+      await expect(extractXlsx(path)).rejects.toBeInstanceOf(OfficeFileRejectedError);
+      await expect(readSheetRange(path, null, 1, 10)).rejects.toBeInstanceOf(
+        OfficeFileRejectedError
+      );
+      expect(load).not.toHaveBeenCalled();
+      expect(readFile).not.toHaveBeenCalled();
+    } finally {
+      load.mockRestore();
+      readFile.mockRestore();
+    }
+  });
+
+  it("readSheetRange rejects it the same way, so the rows view can answer without crashing", async () => {
+    const path = await plantBomb("bomb-rows.xlsx");
+    const err = await readSheetRange(path, "Sheet1", 1, 10).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("too_large");
+  });
+
+  it("still reads an ordinary workbook (the guard costs real files nothing)", async () => {
+    const path = await buildWorkbook("ordinary.xlsx", (workbook) => {
+      workbook.addWorksheet("Sheet1").addRows([["Name"], ["Alice"]]);
+    });
+    expect((await extractXlsx(path)).chunks).toHaveLength(1);
+    expect((await readSheetRange(path, "Sheet1", 1, 5))?.rows).toHaveLength(1);
   });
 });

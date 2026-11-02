@@ -27,6 +27,9 @@
  */
 import ExcelJS from "exceljs";
 
+import { OfficeFileRejectedError } from "./office-formats";
+import { readWorkbookBuffer } from "./office-preflight";
+
 /** A group of whole rows from ONE sheet, anchored on the sheet name and an inclusive row range. */
 export interface XlsxChunk {
   text: string;
@@ -323,6 +326,44 @@ function chunkSheet(sheet: SheetContent, targetChars: number): XlsxChunk[] {
 }
 
 /**
+ * Opens a workbook the way both entry points need it: vetted first, then parsed
+ * from the very bytes that were vetted.
+ *
+ * exceljs inflates every zip entry whole and builds the entire cell model, so a
+ * few hundred bytes declaring gigabytes can exhaust the heap of the web
+ * process — from the index worker, or from the rows preview that any member
+ * with agent access can request, uncached and repeatably. The central directory
+ * is read first (nothing is inflated); a workbook past the limits is refused
+ * with `OfficeFileRejectedError`, which callers answer as "too large to read"
+ * instead of letting the process find out the hard way.
+ *
+ * @throws OfficeFileRejectedError when the workbook is past the limits.
+ * @throws XlsxExtractionError when it cannot be opened as a workbook at all.
+ */
+async function openWorkbook(absPath: string): Promise<ExcelJS.Workbook> {
+  const unreadable = (cause: unknown) =>
+    new XlsxExtractionError(absPath, "the file could not be opened as a workbook", { cause });
+
+  let buffer: Buffer;
+  try {
+    buffer = await readWorkbookBuffer(absPath);
+  } catch (err) {
+    if (err instanceof OfficeFileRejectedError) throw err;
+    throw unreadable(err);
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  try {
+    // exceljs's typings name the older `Buffer` shape (no ArrayBufferLike
+    // generic); the value is a plain Node Buffer either way.
+    await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+  } catch (err) {
+    throw unreadable(err);
+  }
+  return workbook;
+}
+
+/**
  * Extracts row-wise chunks from the spreadsheet at `absPath`, anchored on sheet
  * name and row range.
  *
@@ -337,19 +378,13 @@ function chunkSheet(sheet: SheetContent, targetChars: number): XlsxChunk[] {
  * other unreadable file. That is the intended outcome: loud, with a reason.
  *
  * @throws XlsxExtractionError if the file cannot be read as a workbook.
+ * @throws OfficeFileRejectedError if it is too large to read safely (see `openWorkbook`).
  */
 export async function extractXlsx(
   absPath: string,
   opts: XlsxExtractOptions = {}
 ): Promise<XlsxExtraction> {
-  const workbook = new ExcelJS.Workbook();
-  try {
-    await workbook.xlsx.readFile(absPath);
-  } catch (err) {
-    throw new XlsxExtractionError(absPath, "the file could not be opened as a workbook", {
-      cause: err,
-    });
-  }
+  const workbook = await openWorkbook(absPath);
 
   const targetChars = (opts.targetTokens ?? DEFAULT_TARGET_TOKENS) * CHARS_PER_TOKEN;
 
@@ -431,6 +466,7 @@ export const SHEET_RANGE_MAX_ROWS = 200;
  * the preview must not show what the index never read.
  *
  * @throws XlsxExtractionError if the file cannot be read as a workbook.
+ * @throws OfficeFileRejectedError if it is too large to read safely (see `openWorkbook`).
  */
 export async function readSheetRange(
   absPath: string,
@@ -438,14 +474,7 @@ export async function readSheetRange(
   startRow: number,
   endRow: number
 ): Promise<SheetRange | null> {
-  const workbook = new ExcelJS.Workbook();
-  try {
-    await workbook.xlsx.readFile(absPath);
-  } catch (err) {
-    throw new XlsxExtractionError(absPath, "the file could not be opened as a workbook", {
-      cause: err,
-    });
-  }
+  const workbook = await openWorkbook(absPath);
 
   // Hidden sheets are skipped here exactly as they are during indexing, so a
   // citation naming one resolves to nothing rather than to content the index

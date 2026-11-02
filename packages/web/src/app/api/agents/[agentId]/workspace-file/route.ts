@@ -15,7 +15,12 @@ import { resolveAllowedFile } from "@/lib/agent-file-access";
 import { contentTypeForFile } from "@/lib/agent-file-content-type";
 import { parseRangeHeader } from "@/lib/http-range";
 import { getOfficeArtifactStore, hashFileContents } from "@/lib/knowledge/office-artifacts";
-import { convertedPdfName, isOfficeFile, isSpreadsheetFile } from "@/lib/knowledge/office-formats";
+import {
+  convertedPdfName,
+  isOfficeFile,
+  isSpreadsheetFile,
+  OfficeFileRejectedError,
+} from "@/lib/knowledge/office-formats";
 import { readSheetRange, SHEET_RANGE_MAX_ROWS } from "@/lib/knowledge/xlsx-extract";
 import type { AgentPluginConfig } from "@/db/schema";
 
@@ -310,7 +315,14 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     let sheetRange;
     try {
       sheetRange = await readSheetRange(realPath, range.sheet, range.startRow, range.endRow);
-    } catch {
+    } catch (err) {
+      if (err instanceof OfficeFileRejectedError && err.code === "too_large") {
+        // Refused before exceljs inflated anything: this route is reachable by
+        // any member with agent access, uncached and repeatably, so a
+        // compressed bomb must cost a central-directory read and not a heap.
+        auditFailure("document_too_large");
+        return NextResponse.json({ error: "The workbook is too large to read" }, { status: 413 });
+      }
       // The workbook is on disk and inside the grant but will not open. That is
       // a fact about the document, so it is audited like one.
       auditFailure("unreadable_document");
