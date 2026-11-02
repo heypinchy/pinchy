@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { Profiler, type ProfilerOnRenderCallback } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -31,10 +32,33 @@ function mockStatusResponse(data: object) {
   return { ok: true, json: async () => data } as Response;
 }
 
+/**
+ * Render the banner against a mocked status response and wait until React
+ * has COMMITTED the render that consumed it.
+ *
+ * Waiting for `fetch` to have been called is not that signal: the mount
+ * effect calls fetch synchronously inside render()'s act(), so such a wait
+ * returns at once. The response -> setLicense -> render chain is then left
+ * racing waitFor's trailing setTimeout(0) against React's Scheduler
+ * macrotask; on a CPU-starved worker the Scheduler loses and the assertions
+ * read an empty <div />.
+ *
+ * A Profiler "update" commit is the one signal that serves both kinds of
+ * test in this file. The positive ones could wait on the banner itself, but
+ * the negative ones commit `null` — there is no DOM change to wait for, and
+ * without this wait "renders nothing" passes before the status has arrived.
+ * The only update this component makes before a user interaction is
+ * setLicense, so its first update commit is the one that rendered the status.
+ */
 async function renderWithStatus(data: object) {
   mockFetch.mockResolvedValue(mockStatusResponse(data));
-  render(<EnterpriseBanner isAdmin={true} />);
-  await waitFor(() => expect(mockFetch).toHaveBeenCalled());
+  const onRender = vi.fn<ProfilerOnRenderCallback>();
+  render(
+    <Profiler id="enterprise-banner" onRender={onRender}>
+      <EnterpriseBanner isAdmin={true} />
+    </Profiler>
+  );
+  await waitFor(() => expect(onRender.mock.calls.map(([, phase]) => phase)).toContain("update"));
 }
 
 describe("EnterpriseBanner", () => {
