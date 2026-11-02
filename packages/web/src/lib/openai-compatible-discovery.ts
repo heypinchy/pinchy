@@ -52,6 +52,13 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
  * so the header is re-attached only while the destination's origin still
  * matches the one the key was issued for, and never restored once a chain has
  * left it.
+ *
+ * The first URL is checked too, not only the hops. The routes validate an
+ * admin's input, but `resolveCustomProviderModels` fetches the STORED base URL
+ * on every config regeneration and model-list load — a provider saved under
+ * older rules, before `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS` was set, or
+ * whose name now resolves somewhere else, was fetched with its key attached.
+ * A refusal throws, which every caller below turns into "unreachable".
  */
 async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
   let current = modelsUrl(baseUrl);
@@ -59,6 +66,7 @@ async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
   let sendKey = true;
 
   for (let hop = 0; ; hop++) {
+    await assertAllowedProviderUrl(current);
     // Annotated, not inferred: `sendKey` is decided from the hop's URL, which
     // is read off the previous response, which is this call — so letting the
     // header object's type flow into the fetch overload closes a loop tsc
@@ -88,7 +96,6 @@ async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
     // one past this check.
     sendKey = sendKey && next.origin === keyOrigin;
     current = next.toString();
-    await assertAllowedProviderUrl(current);
   }
 }
 

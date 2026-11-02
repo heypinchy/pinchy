@@ -29,6 +29,7 @@ import {
 } from "@/lib/openclaw-builtin-models";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
+import { withoutRefusedBaseUrls } from "@/lib/openai-compatible-stored-url";
 import {
   getOpenClawWorkspacePath,
   getAgentBootstrapSizes,
@@ -1461,7 +1462,8 @@ export async function regenerateOpenClawConfig() {
   // supplies slug/baseUrl/snapshot and backs the default-provider guard;
   // `providerSecrets` (already fetched for the secrets bundle) supplies the
   // decrypted key discovery needs without a second DB round trip.
-  for (const p of customProviders) {
+  // A saved base URL the SSRF guard now refuses is not emitted at all.
+  for (const p of await withoutRefusedBaseUrls(customProviders)) {
     const models = await resolveCustomProviderModels({
       slug: p.slug,
       baseUrl: p.baseUrl,

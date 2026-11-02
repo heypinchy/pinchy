@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   validateOpenAiCompatibleProvider,
   fetchOpenAiCompatibleModels,
@@ -11,6 +11,18 @@ import { DEFAULT_MODEL_CAPS } from "@/lib/model-catalog";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 
 global.fetch = vi.fn();
+
+// Every request goes through the SSRF guard, which resolves hostnames. No test
+// here may touch real DNS: by default every name is unresolvable, which the
+// guard treats as allowed (fail open), so tests about HTTP behaviour are
+// unaffected. Tests about the guard give a name a concrete answer.
+const { mockLookup } = vi.hoisted(() => ({ mockLookup: vi.fn() }));
+vi.mock("dns/promises", () => ({ default: { lookup: mockLookup }, lookup: mockLookup }));
+
+beforeEach(() => {
+  mockLookup.mockReset();
+  mockLookup.mockRejectedValue(Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" }));
+});
 
 describe("validateOpenAiCompatibleProvider", () => {
   beforeEach(() => {
@@ -466,5 +478,101 @@ describe("fetchModels — redirects are re-validated", () => {
 
       expect(authHeaderOfCall(2)).toBeUndefined();
     });
+  });
+});
+
+/**
+ * The saved base URL is checked again every time Pinchy fetches it — not only
+ * when an admin saves it.
+ *
+ * The discover/save routes validate the URL, but the stored value is then read
+ * back on every `regenerateOpenClawConfig()` and every model-list fetch, both
+ * of which call in here. A provider saved under older rules, or before
+ * `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS` was set, kept being fetched — with
+ * its API key attached. Same contract as the stored Odoo URL / mail host
+ * (lib/integrations/stored-destination.ts).
+ */
+describe("fetchModels — the stored base URL itself is re-validated", () => {
+  const snapshot: OpenClawModelDefinition[] = [
+    { ...DEFAULT_MODEL_CAPS, id: "acme-snapshot", name: "Acme Snapshot" },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCustomModelCache();
+    // A fresh Response per call: a body can be read only once.
+    vi.mocked(fetch).mockImplementation(
+      async () => new Response(JSON.stringify({ data: [{ id: "acme-large" }] }), { status: 200 })
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ["the cloud metadata literal", "http://169.254.169.254/v1"],
+    ["an IPv6 loopback literal", "http://[::1]:8000/v1"],
+    ["Alibaba Cloud metadata inside CGNAT", "http://100.100.100.200/v1"],
+  ])("never requests %s", async (_label, baseUrl) => {
+    const models = await fetchOpenAiCompatibleModels(baseUrl, "sk-key");
+
+    expect(models).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("never requests a name that now resolves to a metadata address", async () => {
+    mockLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
+
+    const models = await fetchOpenAiCompatibleModels("https://llm.acme.example/v1", "sk-key");
+
+    expect(models).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports a refused base URL as unreachable, not as a bad key", async () => {
+    const result = await validateOpenAiCompatibleProvider("http://169.254.169.254/v1", "sk-key");
+
+    expect(result).toEqual({ valid: false, error: "network_error" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the saved snapshot instead of fetching a refused saved provider", async () => {
+    const models = await resolveCustomProviderModels({
+      slug: "acme",
+      baseUrl: "http://169.254.169.254/v1",
+      apiKey: "sk-key",
+      models: snapshot,
+    });
+
+    expect(models).toEqual(snapshot);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("honours PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS for a provider saved before it was set", async () => {
+    vi.stubEnv("PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS", "1");
+    mockLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+
+    const models = await resolveCustomProviderModels({
+      slug: "lan",
+      baseUrl: "http://vllm.lan.example:8000/v1",
+      apiKey: "sk-key",
+      models: snapshot,
+    });
+
+    expect(models).toEqual(snapshot);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("still fetches a LAN endpoint by default, and a public one", async () => {
+    mockLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+    const lan = await fetchOpenAiCompatibleModels("http://vllm.lan.example:8000/v1", "sk-key");
+    expect(lan.map((m) => m.id)).toEqual(["acme-large"]);
+
+    mockLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    const pub = await fetchOpenAiCompatibleModels("https://llm.acme.example/v1", "sk-key");
+    expect(pub.map((m) => m.id)).toEqual(["acme-large"]);
+
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });

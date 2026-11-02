@@ -142,6 +142,18 @@ vi.mock("@/lib/openai-compatible-discovery", () => ({
   resolveCustomProviderModels: mockResolveCustomProviderModels,
 }));
 
+// Emission re-checks each custom provider's saved base URL with the SSRF guard
+// (openai-compatible-stored-url.ts), which resolves hostnames. No real DNS in
+// this file: every name is unresolvable, which the guard lets through (fail
+// open), so the hostname fixtures below emit as before. The refusal test uses
+// an address literal, which is classified without DNS.
+vi.mock("dns/promises", () => {
+  const lookup = vi.fn(async () => {
+    throw Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
+  });
+  return { default: { lookup }, lookup };
+});
+
 const { mockValidateBuiltConfig } = vi.hoisted(() => ({
   mockValidateBuiltConfig: vi.fn().mockReturnValue({ ok: true }),
 }));
@@ -8899,6 +8911,39 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // The vision-less model encodes input as ["text"] only.
     expect(config.models.providers["acme-llm"].models[0].input).toEqual(["text"]);
     expect(config.models.providers["acme-llm"].models[0]).not.toHaveProperty("vision");
+  });
+
+  it("does not emit a provider whose saved base URL the SSRF guard now refuses", async () => {
+    // Saved under older rules (the metadata address used to be accepted when
+    // it sat inside a "private" range). OpenClaw would carry chat traffic and
+    // the key to whatever baseUrl it is given, so the refusal has to happen
+    // here, not only in Pinchy's own fetch.
+    mockListOpenAiCompatibleProviders.mockResolvedValue([
+      makeProvider(),
+      makeProvider({
+        id: "prov-2",
+        slug: "imds",
+        displayName: "Rebound",
+        baseUrl: "http://100.100.100.200/v1",
+      }),
+    ]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+      expect(Object.keys(config.models.providers)).toContain("swisscom-ai");
+      expect(config.models.providers).not.toHaveProperty("imds");
+      expect(mockResolveCustomProviderModels).not.toHaveBeenCalledWith(
+        expect.objectContaining({ slug: "imds" })
+      );
+      expect(warn.mock.calls.map((c) => String(c[0]))).toContainEqual(
+        expect.stringContaining("Rebound (imds)")
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/snapshot", async () => {
