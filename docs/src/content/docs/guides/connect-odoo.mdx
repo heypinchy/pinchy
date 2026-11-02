@@ -232,13 +232,13 @@ read-write finance templates carry.
 
 Pinchy fetches the URL you enter from its own server, so an admin who can add a connection can point it at anything that server can reach. That's why we only connect to a URL that lands on a public address — and we check the address it actually resolves to, not just how the hostname reads. A name like `erp.yourcompany.com` pointing at `10.0.0.5` is the same request as typing `10.0.0.5` directly.
 
-If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale or other carrier-grade-NAT address (`100.64.0.0/10`), `198.18.0.0/15`, an IPv6 unique-local range, or an IPv6-only network's own NAT64 prefix (`64:ff9b:1::/48`) — set the environment variable on the Pinchy container and restart it:
+If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale address (`100.x`), an IPv6 unique-local address, or any other of the [private ranges](/reference/network-address-checks/#private-ranges) — set the environment variable on the Pinchy container and restart it:
 
 ```bash
 ALLOW_PRIVATE_URLS=1
 ```
 
-That opens your private network and nothing else. Loopback and link-local addresses stay blocked either way — `localhost`, `127.0.0.1`, `::1`, and the cloud metadata endpoints `169.254.169.254`, `100.100.100.200` (Alibaba Cloud), `168.63.129.16` (Azure's WireServer), and on IPv6 `fd00:ec2::254` (AWS), `fd00:ec2::23` (the EKS Pod Identity Agent), `fd20:ce::254` (Google Cloud) and `fd00:c1::a9fe:a9fe` (Oracle Cloud) — and so do `0.0.0.0/8`, multicast, broadcast and the reserved test ranges (`192.0.0.0/24`, `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `240.0.0.0/4`, and on IPv6 `2001:db8::/32`), as do the IPv6 forms that hide an IPv4 address without naming it (Teredo `2001::/32`, SIIT `::ffff:0:0:0/96`). No Odoo server lives there, so there's nothing to trade off. It's the same two-tier switch [`ALLOW_PRIVATE_MAIL_HOSTS`](/guides/connect-email-imap/#mail-servers-on-your-own-network) is for mail servers, and a hostname is still resolved and checked with it set.
+That opens your private network and nothing else. Loopback, link-local, the cloud metadata endpoints and the reserved ranges stay blocked either way — `localhost`, `127.0.0.1`, `::1`, `0.0.0.0/8`, `169.254.169.254`, the documentation ranges, multicast and the rest of the [always-refused list](/reference/network-address-checks/#always-refused). No Odoo server lives there, so there's nothing to trade off. It's the same two-tier switch [`ALLOW_PRIVATE_MAIL_HOSTS`](/guides/connect-email-imap/#mail-servers-on-your-own-network) is for mail servers, and a hostname is still resolved and checked with it set.
 
 :::caution
 With the flag set, an admin who can add an Odoo connection can point Pinchy at anything on your private network, not only at Odoo — including the other containers of the Pinchy stack, such as the agent runtime (`openclaw`) and the database (`db`), which Docker's network reaches by name. Set it only on an instance whose admins you'd trust with that reach anyway.
