@@ -1,7 +1,12 @@
 import { writeFileSync } from "fs";
 import { dirname } from "path";
 import { isDeepStrictEqual } from "util";
-import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
+import {
+  writeSecretsFile,
+  secretRef,
+  secretsFileExists,
+  type SecretsBundle,
+} from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -61,7 +66,12 @@ import {
   recordWrittenSecrets,
   takeRegenerateRunIsFollowUpOnly,
 } from "./push-state";
-import { keylessBridge, rekeyedBridge, unresolvedSecretRefs } from "./keyless-bridge";
+import {
+  keylessBridge,
+  rekeyedBridge,
+  unresolvedSecretRefs,
+  withRemovedKeyPlaceholders,
+} from "./keyless-bridge";
 import { readSideBaselineBytes, UnderReadSideLineError } from "./last-good-bound";
 import { reloadSecretsInBackground } from "./secrets-reload";
 import { serializeRegenerates } from "./regenerate-queue";
@@ -1941,13 +1951,14 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       // the last provider, so that is an empty provider read, and a bridge
       // built from it would strip every key from a working OpenClaw. Then
       // neither file is written — secrets.json would drop keys the file
-      // still names.
+      // still names. Unless secrets.json is gone (keepOnDiskConfigResolvable).
       const dropped = onDiskConfig ? unresolvedSecretRefs(onDiskConfig, secretsBundle) : [];
-      if (dropped.length > 0 && !keepsAProvider(config)) {
+      if (onDiskConfig && dropped.length > 0 && !keepsAProvider(config)) {
         console.error(
           `[openclaw-config] secrets.json not written either: the payload has no provider, ` +
             `and it would drop ${dropped.join(", ")}, which openclaw.json still names.`
         );
+        keepOnDiskConfigResolvable(onDiskConfig, secretsBundle);
         return;
       }
     } else {
@@ -1981,9 +1992,9 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     //
     // A bridge under OpenClaw's read-side line — judged against a bound that
     // can be stale-high (last-good-bound.ts) — goes over config.apply instead
-    // (writeFileOrApply), and nothing else is written: openclaw.json still
-    // names the key, so secrets.json keeps it until the regenerate that runs
-    // once the bridge has landed.
+    // (writeFileOrApply), and openclaw.json still names the key, so
+    // secrets.json keeps it until the regenerate that runs once the bridge has
+    // landed. Unless secrets.json is gone (keepOnDiskConfigResolvable).
     bridge = onDiskConfig ? keylessBridge(onDiskConfig, secretsBundle) : null;
     if (bridge && onDiskConfig) {
       const dangling = unresolvedSecretRefs(bridge, secretsBundle);
@@ -1993,7 +2004,10 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
             `Pinchy emits none there, so the key-less bridge cannot cover them.`
         );
       }
-      if (!writeFileOrApply(bridge, deferredWrite)) return;
+      if (!writeFileOrApply(bridge, deferredWrite)) {
+        keepOnDiskConfigResolvable(onDiskConfig, secretsBundle);
+        return;
+      }
       console.log(
         `[openclaw-config] openclaw.json no longer names the removed key(s) ${unresolvedSecretRefs(onDiskConfig, secretsBundle).join(", ")} (key-less bridge written before secrets.json)`
       );
@@ -2208,6 +2222,39 @@ function writeFileOrApply(config: Record<string, unknown>, push: PushConfigOptio
     pushConfigInBackground(content, push);
     return false;
   }
+}
+
+/**
+ * For a regenerate that writes no secrets.json because openclaw.json still
+ * names a key `bundle` lacks — a bridge waiting for config.apply, or an empty
+ * provider read the #311 guard refused. Then secrets.json is normally the one
+ * written while the file named that key, and still holds it. When it is gone,
+ * write one the file resolves against in full: `bundle`, plus an inert
+ * placeholder for each missing key (withRemovedKeyPlaceholders).
+ *
+ * A host reboot empties the secrets tmpfs, and OpenClaw starts only once
+ * Pinchy is healthy, so the boot regenerate runs with no OpenClaw — and
+ * OpenClaw starts only on a file whose every SecretRef resolves, the kept
+ * providers' included. Without a secrets.json it never came up, so nothing
+ * that waits for its connect — the bridge over config.apply, the regenerate
+ * that reads the providers again — ever ran. The placeholder is not a
+ * recovered key: Pinchy has none, the database dropped it. It leaves with the
+ * next regenerate that writes secrets.json: the one that follows the bridge
+ * once OpenClaw has taken it, or the first connect's.
+ *
+ * No `secrets.reload`: OpenClaw is not running on this file yet.
+ */
+function keepOnDiskConfigResolvable(
+  onDiskConfig: Record<string, unknown>,
+  bundle: SecretsBundle
+): void {
+  if (secretsFileExists()) return;
+  console.warn(
+    `[openclaw-config] secrets.json is missing (host reboot?) while openclaw.json still names ` +
+      `${unresolvedSecretRefs(onDiskConfig, bundle).join(", ")}: writing it with an inert placeholder ` +
+      `for those, so OpenClaw can start and take the change over config.apply`
+  );
+  writeSecretsAndReload(withRemovedKeyPlaceholders(onDiskConfig, bundle), { reload: false });
 }
 
 /**

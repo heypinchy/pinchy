@@ -60,6 +60,7 @@ import { createRequire } from "module";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { pathToFileURL } from "url";
+import { endPinchyProcess } from "@/test-helpers/pinchy-restart";
 
 const mockGetClient = vi.fn();
 vi.mock("@/server/openclaw-client", () => ({
@@ -931,7 +932,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
      */
     async function startPinchy() {
       vi.resetModules();
-      (globalThis as { __pinchyConfigPushState?: unknown }).__pinchyConfigPushState = undefined;
+      endPinchyProcess();
       process.env.OPENCLAW_CONFIG_PATH = ocConfigPath;
       process.env.OPENCLAW_SECRETS_PATH = secretsPath;
       return {
@@ -1066,7 +1067,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
 
     afterEach(() => {
       delete process.env.OPENCLAW_SECRETS_PATH;
-      (globalThis as { __pinchyConfigPushState?: unknown }).__pinchyConfigPushState = undefined;
+      endPinchyProcess();
     });
 
     const rekeyTarget = (n: number) =>
@@ -1167,6 +1168,50 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
         catalogue("new", n).map((m) => m.id)
       );
       expect(acme.apiKey).toEqual(ref(`/providers/${NEW_SLOT}/apiKey`));
+    }, 120_000);
+
+    // A host reboot empties the secrets tmpfs; OpenClaw starts only once
+    // Pinchy is healthy. With the deleted provider's key still named by the
+    // file and the bridge under a persisted bound, the bridge waits for
+    // config.apply — which needs an OpenClaw that starts on that file. It
+    // judges the file by its own last-known-good at startup (its health state
+    // and `.bak`, never Pinchy's bound), keeps it, and resolves every SecretRef
+    // in it: the kept keys and the removed one alike (build.ts:
+    // keepOnDiskConfigResolvable).
+    it("starts after a host reboot on a file naming a deleted provider's key, while the bridge waits for config.apply", async () => {
+      let pinchy = await startPinchy();
+      const installed = await installOld();
+      writeFileSync(
+        pinchy.LAST_GOOD_BOUND_PATH,
+        JSON.stringify({ bytes: 2 * bytes(installed) - 1 }) + "\n"
+      );
+      rmSync(secretsPath);
+      pinchy = await startPinchy();
+      const onDisk = JSON.parse(installed) as Json;
+      const bundle = { providers: { anthropic: { apiKey: "sk-ant-test" } } };
+      expect(
+        () => pinchy.writeConfigAtomic(serialize(pinchy.keylessBridge(onDisk, bundle)!)),
+        "precondition: the bridge falls under the bound"
+      ).toThrow(pinchy.UnderReadSideLineError);
+
+      // secrets.json as the database has it cannot start OpenClaw on this file.
+      pinchy.writeSecretsFile(bundle);
+      await expect(startsOnCopy()).rejects.toThrow(/required secrets are unavailable/);
+
+      pinchy.writeSecretsFile(pinchy.withRemovedKeyPlaceholders(onDisk, bundle));
+      const started = await startsOnCopy();
+      expect(started.file, "OpenClaw keeps the file").toBe(installed);
+      expect(started.acme.apiKey).toEqual(ref(`/providers/${OLD_SLOT}/apiKey`));
+
+      // It comes up, Pinchy connects, and the deletion lands.
+      const target = config();
+      mockGetClient.mockReturnValue(undefined);
+      const acme = await openClawComesUp(pinchy, target, { firstConnect: true });
+      expect(acme, "the deleted provider is gone").toBeUndefined();
+      // The regenerate after it writes secrets.json from the database again.
+      pinchy.writeSecretsFile(bundle);
+      const restarted = (await startOpenClaw()) as { models: { providers: Record<string, Json> } };
+      expect(Object.keys(restarted.models.providers)).toEqual(["anthropic"]);
     }, 120_000);
 
     it("keeps a file OpenClaw starts on through two re-keys in a row, with a Pinchy restart between them", async () => {

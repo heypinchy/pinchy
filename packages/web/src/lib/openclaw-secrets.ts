@@ -270,6 +270,15 @@ export function writeSecretsFile(bundle: SecretsBundle): boolean {
   }
 }
 
+/**
+ * Whether secrets.json is there at all. Pinchy cannot read it in production,
+ * but it can see it: the directory is Pinchy's (0770, uid 999). Gone after a
+ * host reboot — the volume is a tmpfs.
+ */
+export function secretsFileExists(): boolean {
+  return existsSync(process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH);
+}
+
 export function readSecretsFile(): SecretsBundle {
   const path = process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH;
   if (!existsSync(path)) return {};

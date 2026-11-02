@@ -57,8 +57,12 @@ vi.mock("fs", async (importOriginal) => {
     afterWrite.check(String(to));
   });
   // Directories are not modelled: report every path as present so no
-  // workspace retrofit writes run, exactly like the sibling rotation tests.
-  const existsSync = vi.fn(() => true);
+  // workspace retrofit writes run, exactly like the sibling rotation tests —
+  // except secrets.json, which a host reboot removes (its volume is a tmpfs).
+  // Pinchy can see whether it is there: the directory is Pinchy's (0770).
+  const existsSync = vi.fn((path: string) =>
+    String(path) === secretsPath ? files.has(String(path)) : true
+  );
   const unlinkSync = vi.fn((path: string) => {
     if (!files.delete(String(path))) throw enoent(String(path));
   });
@@ -162,6 +166,7 @@ import { pushConfigInBackground } from "@/lib/openclaw-config/write";
 import { LAST_GOOD_BOUND_PATH } from "@/lib/openclaw-config/last-good-bound";
 import { keylessBridge } from "@/lib/openclaw-config/keyless-bridge";
 import { referencedSecretIds, type SecretsBundle } from "@/lib/openclaw-secrets";
+import { endPinchyProcess } from "@/test-helpers/pinchy-restart";
 
 const SECRETS_PATH = process.env.OPENCLAW_SECRETS_PATH || "/openclaw-secrets/secrets.json";
 
@@ -539,7 +544,7 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       /** Pinchy restarts: fresh modules and process state; the disk survives. */
       const restartPinchy = async () => {
         vi.resetModules();
-        (globalThis as { __pinchyConfigPushState?: unknown }).__pinchyConfigPushState = undefined;
+        endPinchyProcess();
         return (await import("@/lib/openclaw-config")).regenerateOpenClawConfig;
       };
 
@@ -837,6 +842,53 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       expect(writes.flatMap((w) => w.dangling)).toEqual([]);
     });
 
+    // A host reboot empties the secrets tmpfs, and OpenClaw starts only once
+    // Pinchy is healthy, so Pinchy's boot regenerate runs with OpenClaw down.
+    // When the file still names a deleted provider's key and the bridge falls
+    // under a persisted bound, the bridge waits for config.apply — and
+    // secrets.json used to wait with it. OpenClaw could then start on nothing:
+    // every SecretRef in the file, the kept providers' too, was unresolvable,
+    // so it never came up, never connected, and the deferred bridge never
+    // landed. The file on disk must resolve against secrets.json whatever
+    // waits for OpenClaw.
+    it("writes a secrets.json the file on disk resolves against after a host reboot, while the bridge waits for OpenClaw", async () => {
+      const installed = await install();
+      staleBound(2 * bytes(installed) - 1);
+      customProviders.length = 0;
+      // The reboot: secrets.json is gone, Pinchy starts afresh, OpenClaw is down.
+      files.delete(SECRETS_PATH);
+      _resetConfigPushState();
+      writes = [];
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await regenerateOpenClawConfig();
+      await drain();
+
+      expect(files.get(CONFIG_PATH), "the bridge waits for config.apply").toBe(installed);
+      expect(files.has(SECRETS_PATH), "secrets.json is written").toBe(true);
+      expect(danglingOnDisk(), "every SecretRef in openclaw.json resolves").toEqual([]);
+      expect(resolve("/providers/anthropic/apiKey"), "kept keys are the real ones").toBe(
+        "sk-ant-original"
+      );
+      expect(resolve(`/providers/${OLD_SLOT}/apiKey`)).not.toBe("sk-acme-old");
+
+      // OpenClaw starts on it and connects; the regenerate that connect runs
+      // delivers the bridge, then the deletion.
+      connectGateway();
+      await regenerateOpenClawConfig();
+      await drain();
+      expect(pendingApplies, "the bridge goes over config.apply").toHaveLength(1);
+      land();
+      await waitFor(
+        () => pendingApplies.length === 1 && secretsOnDisk().providers[OLD_SLOT] === undefined,
+        "secrets.json without the removed key once the bridge landed, then the deletion"
+      );
+      land();
+      await drain();
+      expect(JSON.parse(files.get(CONFIG_PATH)!).models.providers).not.toHaveProperty("acme-llm");
+      expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+    });
+
     it("sends the re-keyed entry over config.apply when its file write is refused, and lands the re-key", async () => {
       // An address long enough that the re-keyed entry, pointing at a short
       // one, is smaller than the bridge that keeps the long one.
@@ -894,6 +946,36 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       expect(files.has(LAST_GOOD_BOUND_PATH)).toBe(false);
       expect(writes.flatMap((w) => w.dangling)).toEqual([]);
     });
+  });
+
+  // A provider read that comes back empty is refused by the #311 guard, and
+  // writes no secrets.json: it would drop every key the file still names. But
+  // after a host reboot there is no secrets.json to keep keys in, and OpenClaw,
+  // started only once Pinchy is healthy, could not resolve a single SecretRef
+  // in the file — it never came up, so no connect ever ran the regenerate that
+  // reads the providers again.
+  it("leaves a secrets.json the file on disk resolves against when an empty provider read follows a host reboot", async () => {
+    mockGetClient.mockImplementation(() => {
+      throw new Error("OpenClaw client not initialized");
+    });
+    await regenerateOpenClawConfig();
+    await drain();
+    const installed = files.get(CONFIG_PATH)!;
+    files.delete(SECRETS_PATH);
+    _resetConfigPushState();
+    settings.delete("anthropic_api_key");
+    customProviders.length = 0;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await regenerateOpenClawConfig();
+    await drain();
+
+    expect(errorSpy.mock.calls.flat().join(" "), "precondition: refused").toMatch(
+      /suspiciously small/
+    );
+    expect(files.get(CONFIG_PATH)).toBe(installed);
+    expect(files.has(SECRETS_PATH), "secrets.json is written").toBe(true);
+    expect(danglingOnDisk(), "every SecretRef in openclaw.json resolves").toEqual([]);
   });
 
   // A small provider deletion — not one OpenClaw refuses as a size drop — can

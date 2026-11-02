@@ -105,6 +105,48 @@ export function unresolvedSecretRefs(config: unknown, bundle: SecretsBundle): st
 }
 
 /**
+ * What secrets.json holds for a key `onDisk` still names when Pinchy has
+ * neither the key nor the file that held it (withRemovedKeyPlaceholders).
+ * Inert: no provider accepts it, and it says so in a request log.
+ */
+export const REMOVED_KEY_PLACEHOLDER = "pinchy-removed-key";
+
+/**
+ * `bundle`, plus {@link REMOVED_KEY_PLACEHOLDER} at every pinchy SecretRef in
+ * `config` it cannot resolve — a bundle `config` resolves against in full.
+ *
+ * Only for a secrets.json that is gone (a host reboot empties its tmpfs) while
+ * openclaw.json still names a key the database no longer has: a deleted
+ * provider's, or a re-keyed one's previous slot, with the bridge that drops
+ * that name waiting for config.apply (writeFileOrApply in build.ts). OpenClaw
+ * starts only on a file whose every SecretRef resolves to a non-empty string
+ * — the kept providers' keys included, which are the real ones here — and only
+ * a running OpenClaw can take the bridge. The placeholder leaves secrets.json
+ * with the regenerate that runs once the bridge has landed.
+ */
+export function withRemovedKeyPlaceholders(config: unknown, bundle: SecretsBundle): SecretsBundle {
+  const missing = unresolvedSecretRefs(config, bundle)
+    .map(pointerSegments)
+    .filter((segments): segments is string[] => segments !== null);
+  if (missing.length === 0) return bundle;
+  const filled = structuredClone(bundle) as Json;
+  for (const segments of missing) {
+    let node: Json | undefined = filled;
+    for (const segment of segments.slice(0, -1)) {
+      const child: unknown = Object.hasOwn(node, segment) ? node[segment] : undefined;
+      if (child === undefined) node[segment] = {};
+      else if (!isRecord(child)) {
+        node = undefined;
+        break;
+      }
+      node = node[segment] as Json;
+    }
+    if (node) node[segments.at(-1)!] = REMOVED_KEY_PLACEHOLDER;
+  }
+  return filled as SecretsBundle;
+}
+
+/**
  * The file to write before `bundle` replaces secrets.json: `onDisk` with every
  * provider that names a SecretRef `bundle` cannot resolve replaced by its
  * key-less stub (inert baseUrl, api, all its models — see providerStub).

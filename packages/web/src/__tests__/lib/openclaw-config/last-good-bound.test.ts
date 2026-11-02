@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
+import { endPinchyProcess } from "@/test-helpers/pinchy-restart";
 
 const mockGetClient = vi.fn();
 vi.mock("@/server/openclaw-client", () => ({
@@ -60,7 +61,7 @@ describe("Pinchy's file writes against OpenClaw's last-known-good", () => {
   /** Pinchy as a (re)started process loads it: only the disk survives. */
   async function startPinchy() {
     vi.resetModules();
-    (globalThis as { __pinchyConfigPushState?: unknown }).__pinchyConfigPushState = undefined;
+    endPinchyProcess();
     return {
       ...(await import("@/lib/openclaw-config/write")),
       ...(await import("@/lib/openclaw-config/last-good-bound")),
@@ -87,7 +88,7 @@ describe("Pinchy's file writes against OpenClaw's last-known-good", () => {
 
   afterEach(() => {
     delete process.env.OPENCLAW_CONFIG_PATH;
-    (globalThis as { __pinchyConfigPushState?: unknown }).__pinchyConfigPushState = undefined;
+    endPinchyProcess();
     rmSync(dir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
