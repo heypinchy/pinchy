@@ -363,15 +363,22 @@ function sanitizeHeader(value: string): string {
 }
 
 /** Longest RFC 2047 encoded-word payload in bytes: 75 characters minus the
- * 12 of `=?UTF-8?B?…?=` leave 63 base64 characters, i.e. 45 bytes. */
+ * 12 of `=?UTF-8?B?…?=` leave 63 base64 characters, i.e. 45 bytes — whose 60
+ * base64 characters make a 72-character word. */
 const ENCODED_WORD_BYTES = 45;
+/** RFC 2047 §2: a header line that carries an encoded-word is at most 76
+ * characters long. `To: ` plus one 72-character word is exactly that. */
+const MAX_ENCODED_LINE = 76;
+const FOLD = "\r\n ";
 
 /**
  * A non-ASCII display name as RFC 2047 encoded-words. Split on code-point
- * boundaries, so no word ends inside a UTF-8 sequence, and joined by a space,
- * which a decoder drops between adjacent encoded-words.
+ * boundaries, so no word ends inside a UTF-8 sequence, and folded onto one
+ * line each (CRLF + space), which a decoder drops between adjacent
+ * encoded-words. On one line, a long name ran past the 76-character limit
+ * (third review of #1242).
  */
-function encodeDisplayName(name: string): string {
+function encodeDisplayName(name: string): string[] {
   const words: string[] = [];
   let chunk = "";
   for (const char of name) {
@@ -382,9 +389,19 @@ function encodeDisplayName(name: string): string {
     chunk += char;
   }
   if (chunk) words.push(chunk);
-  return words
-    .map((word) => `=?UTF-8?B?${Buffer.from(word, "utf8").toString("base64")}?=`)
-    .join(" ");
+  return words.map((word) => `=?UTF-8?B?${Buffer.from(word, "utf8").toString("base64")}?=`);
+}
+
+/**
+ * Encoded words, one per header line, then the address — on the last word's
+ * line when it fits within MAX_ENCODED_LINE, on a line of its own otherwise.
+ * `prefix` is what precedes the value on the first line (`To: `).
+ */
+function foldEncodedMailbox(prefix: string, words: string[], address: string): string {
+  const last = words.length === 1 ? prefix + words[0] : ` ${words[words.length - 1]}`;
+  const addressPart = `<${address}>`;
+  const sep = last.length + 1 + addressPart.length <= MAX_ENCODED_LINE ? " " : FOLD;
+  return `${words.join(FOLD)}${sep}${addressPart}`;
 }
 
 /**
@@ -396,7 +413,7 @@ function formatRecipientHeader(to: string): string {
   const { name, address } = splitMailbox(sanitizeHeader(to));
   if (!name) return address;
   if (/^[\x20-\x7E]*$/.test(name)) return `"${name.replace(/[\\"]/g, "\\$&")}" <${address}>`;
-  return `${encodeDisplayName(name)} <${address}>`;
+  return foldEncodedMailbox("To: ", encodeDisplayName(name), address);
 }
 
 function buildRawMessage(opts: ComposeOptions): string {

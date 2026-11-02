@@ -14,7 +14,7 @@
  * recipient, which is also what the schema ("Recipient email address") says.
  */
 
-import { hiddenCharIn } from "./hidden-chars.js";
+import { hiddenCharIn, isEmojiFormatChar } from "./hidden-chars.js";
 
 export type ParsedRecipient = { ok: true; address: string } | { ok: false; error: string };
 
@@ -25,12 +25,21 @@ export type ParsedRecipient = { ok: true; address: string } | { ok: false; error
 const MAX_NAME_LENGTH = 64;
 
 // Characters that separate, group or comment an address in RFC 5322 syntax. If
-// one is present the string is not one plain address.
-const PART = String.raw`[^\s@,;:<>()\[\]"\\]`;
-const BARE_ADDRESS = new RegExp(`^${PART}+@${PART}+$`, "u");
-// `Display Name <address>`; the display name may not itself contain an `@`
-// (that is how "boss@firma.at <attacker@evil.com>" would impersonate).
-const NAMED_ADDRESS = new RegExp(`^([^<>@,;:()\\[\\]"\\\\]*)<(${PART}+@${PART}+)>$`, "u");
+// one is present the string is not one plain address. The emoji format
+// characters a display name may carry are not part of any address either.
+const PART = String.raw`[^\s@,;:<>()\[\]"\\\u200D\uFE0E\uFE0F]`;
+const ADDRESS = `${PART}+@${PART}+`;
+const BARE_ADDRESS = new RegExp(`^${ADDRESS}$`, "u");
+// `"Display Name" <address>`: RFC 5322's quoted form, which is how a mail
+// program writes a name with a comma or parentheses ("Müller, Hans"). Inside
+// the quotes, only the characters that would make it more than a name are
+// refused: `@` (that is how "boss@firma.at" <attacker@evil.com> would
+// impersonate), a quote or backslash (escapes), and angle or square brackets.
+const QUOTED_ADDRESS = new RegExp(`^"([^"\\\\@<>\\[\\]]*)"\\s?<(${ADDRESS})>$`, "u");
+// `Display Name <address>`, unquoted.
+const NAMED_ADDRESS = new RegExp(`^([^<>"]*)<(${ADDRESS})>$`, "u");
+/** Characters a name may carry only inside double quotes. */
+const NEEDS_QUOTES = /[,;:()]/;
 
 // The characters that give an address its structure. Compatibility forms of
 // them (fullwidth ＠ U+FF20, small-form ﹫ U+FE6B, fullwidth ，＜＞ …) are not
@@ -48,6 +57,31 @@ const ONLY_ONE =
   "email_send and email_draft take exactly one recipient address in `to` (for example " +
   '"ada@example.com"). To reach several people, make one call per recipient — one recipient per call.';
 
+/** The quoted form of a recipient, for an error that shows the fix. */
+function quoted(name: string, address: string): string {
+  return `"${name}" <${address}>`;
+}
+
+/**
+ * `Name <address>`, quoting the name when it carries a character that would
+ * otherwise be read as syntax — so the string the adapters receive parses as
+ * the same single mailbox in every library.
+ */
+function mailbox(name: string, address: string): string {
+  if (!name) return address;
+  return NEEDS_QUOTES.test(name) ? quoted(name, address) : `${name} <${address}>`;
+}
+
+function checkName(name: string): string | null {
+  if ([...name].length > MAX_NAME_LENGTH) {
+    return (
+      `Invalid recipient: the display name is longer than ${MAX_NAME_LENGTH} characters. ` +
+      `Shorten it, or send to the bare address. ${ONLY_ONE}`
+    );
+  }
+  return null;
+}
+
 export function parseSingleRecipient(value: unknown): ParsedRecipient {
   if (typeof value !== "string") {
     return { ok: false, error: `Invalid recipient: ${ONLY_ONE}` };
@@ -61,7 +95,9 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
   // fillers, no-break and ideographic spaces. A run of them reads as empty
   // space and pushed the real address out of view on the confirmation card
   // (second review of #1242); bidi overrides make one address read as another.
-  const hidden = hiddenCharIn(text);
+  // The emoji format characters (ZWJ, VS15, VS16) are allowed here and kept
+  // out of the address by PART: a name like "❤️ Team" is ordinary.
+  const hidden = hiddenCharIn(text, isEmojiFormatChar);
   if (hidden) {
     return {
       ok: false,
@@ -88,18 +124,45 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
   }
   if (BARE_ADDRESS.test(text)) return { ok: true, address: text };
 
+  const quotedName = QUOTED_ADDRESS.exec(text);
+  if (quotedName) {
+    const name = quotedName[1].trim();
+    const tooLong = checkName(name);
+    if (tooLong) return { ok: false, error: tooLong };
+    return { ok: true, address: mailbox(name, quotedName[2]) };
+  }
+
   const named = NAMED_ADDRESS.exec(text);
-  if (named) {
+  if (named && !named[1].includes("@")) {
     const name = named[1].trim();
-    if ([...name].length > MAX_NAME_LENGTH) {
+    // Unquoted, a comma or semicolon separates two recipients and parentheses
+    // open a comment — so "Müller, Hans <hans@x.de>" is two mailboxes to a
+    // mail library. The name is real; it only needs quotes. Say exactly that,
+    // rather than the "one recipient per call" message, which would send the
+    // model looking for a second recipient that is not there.
+    if (/[,;]/.test(name)) {
       return {
         ok: false,
         error:
-          `Invalid recipient: the display name is longer than ${MAX_NAME_LENGTH} characters. ` +
-          `Shorten it, or send to the bare address. ${ONLY_ONE}`,
+          "Invalid recipient: the display name contains a comma or semicolon, which a mail " +
+          "program reads as the start of a second recipient. Put the name in double quotes: " +
+          `${quoted(name, named[2])}`,
       };
     }
-    return { ok: true, address: name ? `${name} <${named[2]}>` : named[2] };
+    if (/[()]/.test(name)) {
+      return {
+        ok: false,
+        error:
+          "Invalid recipient: the display name contains parentheses, which a mail program " +
+          "reads as a comment rather than as part of the name. Put the name in double " +
+          `quotes: ${quoted(name, named[2])}`,
+      };
+    }
+    if (!/[:[\]\\]/.test(name)) {
+      const tooLong = checkName(name);
+      if (tooLong) return { ok: false, error: tooLong };
+      return { ok: true, address: mailbox(name, named[2]) };
+    }
   }
   return { ok: false, error: `Invalid recipient: it is not a single plain address. ${ONLY_ONE}` };
 }
@@ -114,7 +177,12 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
 export function splitMailbox(recipient: string): { name?: string; address: string } {
   const named = /^([^<>]*)<([^<>]+)>$/.exec(recipient.trim());
   if (!named) return { address: recipient.trim() };
-  const name = named[1].trim();
+  let name = named[1].trim();
+  // `parseSingleRecipient` quotes a name that carries a comma or parentheses
+  // and never lets a quote or backslash inside, so unquoting is just this.
+  if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) {
+    name = name.slice(1, -1).trim();
+  }
   const address = named[2].trim();
   return name ? { name, address } : { address };
 }

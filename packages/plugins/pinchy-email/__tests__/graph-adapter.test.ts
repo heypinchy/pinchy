@@ -1158,6 +1158,17 @@ describe("GraphAdapter named recipients", () => {
     ]);
   });
 
+  // Third review of #1242: a quoted name with a comma reaches Graph as one
+  // name, the way the card shows it.
+  it("unquotes a quoted name with a comma into Graph's name field", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    await adapter.send({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "S", body: "B" });
+    expect(sentRecipients(0).message.toRecipients).toEqual([
+      { emailAddress: { name: "M\u00FCller, Hans", address: "hans@x.de" } },
+    ]);
+  });
+
   it("does the same for a new draft and a reply draft", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     (fetch as Mock)

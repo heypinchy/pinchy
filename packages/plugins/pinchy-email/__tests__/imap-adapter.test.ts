@@ -1222,6 +1222,27 @@ describe("ImapAdapter named recipients", () => {
     );
   });
 
+  // Third review of #1242: a quoted name with a comma is one mailbox — handed
+  // to nodemailer unquoted, as a name, so it cannot be split into two.
+  it("passes a quoted name with a comma to nodemailer as one name", async () => {
+    const adapter = new ImapAdapter(opts);
+    await adapter.send({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "Hi", body: "Hi" });
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: { name: "M\u00FCller, Hans", address: "hans@x.de" } })
+    );
+  });
+
+  it("writes a quoted name with a comma into a draft as one encoded mailbox", async () => {
+    mockClient.list.mockResolvedValue(SERVER_MAILBOXES_WITH_DRAFTS);
+    const adapter = new ImapAdapter(opts);
+    await adapter.draft({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "S", body: "B" });
+    const raw = mockClient.append.mock.calls[0][1];
+    const rawStr = Buffer.isBuffer(raw) ? raw.toString("utf-8") : String(raw);
+    const to = /^To: (.*)\r$/m.exec(rawStr)![1];
+    expect(to).toMatch(/^=\?UTF-8\?[BQ]\?[^\r\n]+\?= <hans@x\.de>$/);
+    expect(to.match(/@/g)).toHaveLength(1);
+  });
+
   it("passes a bare address through unchanged", async () => {
     const adapter = new ImapAdapter(opts);
     await adapter.send({ to: "bob@example.com", subject: "Hi", body: "Hi" });

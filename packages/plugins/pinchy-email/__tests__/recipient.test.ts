@@ -78,7 +78,13 @@ describe("parseSingleRecipient", () => {
     ["a halfwidth hangul filler", "Raimund\uFFA0Korber <attacker@evil.com>"],
     ["a no-break space", "Raimund\u00A0Korber <attacker@evil.com>"],
     ["an ideographic space", "Raimund\u3000Korber <attacker@evil.com>"],
-    ["a zero-width joiner", "Raimund\u200DKorber <attacker@evil.com>"],
+    // Corrected expectation (third review of #1242): this row used a zero-width
+    // JOINER, which display names now accept — it sits inside ordinary emoji,
+    // takes no space, and the card shows it as it is. The zero-width SPACE
+    // (U+200B) stays refused, so the row keeps testing a zero-width refusal.
+    ["a zero-width space", "Raimund\u200BKorber <attacker@evil.com>"],
+    ["a paragraph separator", "Raimund\u2029Korber <attacker@evil.com>"],
+    ["a lone surrogate", "Raimund\uD83DKorber <attacker@evil.com>"],
   ])("rejects a display name with %s, and says why", (_label, input) => {
     const result = parseSingleRecipient(input);
     expect(result.ok).toBe(false);
@@ -107,7 +113,63 @@ describe("parseSingleRecipient", () => {
   });
 });
 
+// Third review of #1242: real names were refused. RFC 5322 lets a display
+// name carry a comma or parentheses inside double quotes, and that is how a
+// mail program writes "Müller, Hans". Unquoted, the same characters are a list
+// separator and a comment — refused, with a message that names the fix.
+describe("parseSingleRecipient: names with commas, parentheses and emoji", () => {
+  it.each([
+    ['"M\u00FCller, Hans" <hans@x.de>', '"M\u00FCller, Hans" <hans@x.de>'],
+    ['"Raimund Korber (Noack)" <r@noack.at>', '"Raimund Korber (Noack)" <r@noack.at>'],
+    [' "Meier; Partner" <m@x.at> ', '"Meier; Partner" <m@x.at>'],
+    ['"Ada Lovelace" <ada@example.com>', "Ada Lovelace <ada@example.com>"],
+    ["\u2764\uFE0F Team <t@x.at>", "\u2764\uFE0F Team <t@x.at>"],
+    [
+      "Familie \u{1F468}\u200D\u{1F469}\u200D\u{1F467} <f@x.at>",
+      "Familie \u{1F468}\u200D\u{1F469}\u200D\u{1F467} <f@x.at>",
+    ],
+  ])("accepts %j", (input, expected) => {
+    expect(parseSingleRecipient(input)).toEqual({ ok: true, address: expected });
+  });
+
+  it("tells the model to quote an unquoted name with a comma, not to send one call per recipient", () => {
+    const result = parseSingleRecipient("M\u00FCller, Hans <hans@x.de>");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/double quotes/i);
+    expect(result.error).toContain('"M\u00FCller, Hans" <hans@x.de>');
+    expect(result.error).not.toMatch(/one recipient per call/i);
+  });
+
+  it("tells the model to quote an unquoted name with parentheses", () => {
+    const result = parseSingleRecipient("Raimund Korber (Noack) <r@noack.at>");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/parenthes/i);
+    expect(result.error).toContain('"Raimund Korber (Noack)" <r@noack.at>');
+  });
+
+  it.each([
+    ["an @ inside the quotes", '"boss@firma.at" <attacker@evil.com>'],
+    ["a quote inside the quotes", '"a\\"b" <a@x.at>'],
+    ["angle brackets inside the quotes", '"<boss@firma.at>" <attacker@evil.com>'],
+    ["an unterminated quote", '"Ada <ada@example.com>'],
+    ["an emoji joiner in the address", "a\u200Db@x.at"],
+    ["a variation selector in the address", "Ada <a\uFE0Fb@x.at>"],
+    ["a quoted name over 64 characters", `"${"a".repeat(65)}" <a@x.at>`],
+  ])("still rejects %s", (_label, input) => {
+    expect(parseSingleRecipient(input).ok).toBe(false);
+  });
+});
+
 describe("splitMailbox", () => {
+  it("unquotes a quoted display name", () => {
+    expect(splitMailbox('"M\u00FCller, Hans" <hans@x.de>')).toEqual({
+      name: "M\u00FCller, Hans",
+      address: "hans@x.de",
+    });
+  });
+
   it("splits a named address into its name and address", () => {
     expect(splitMailbox("Ada Lovelace <ada@example.com>")).toEqual({
       name: "Ada Lovelace",

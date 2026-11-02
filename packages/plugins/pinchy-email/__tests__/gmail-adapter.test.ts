@@ -1104,6 +1104,52 @@ describe("GmailAdapter", () => {
       await adapter.send({ to: "ada@example.com", subject: "S", body: "B" });
       expect(rawOf(mockSend)).toContain("To: ada@example.com\r\n");
     });
+
+    /** The To: header, unfolded, with its encoded-words decoded — what a
+     * receiving mail program shows. */
+    function decodedTo(raw: string): { lines: string[]; name: string; address: string } {
+      const header = /^To: .*(?:\r\n .*)*/m.exec(raw)![0];
+      const lines = header.split("\r\n");
+      const unfolded = header.replace(/\r\n /g, " ");
+      const address = /<([^<>]+)>$/.exec(unfolded)![1];
+      const words = [...unfolded.matchAll(/=\?UTF-8\?B\?([^?]*)\?=/g)].map((m) =>
+        Buffer.from(m[1], "base64")
+      );
+      const name = words.length
+        ? Buffer.concat(words).toString("utf8")
+        : /^To: "(.*)" </.exec(unfolded)![1];
+      return { lines, name, address };
+    }
+
+    // Third review of #1242: a quoted name with a comma is one mailbox, and the
+    // header must say so — the card shows `hans@x.de (name: "Müller, Hans")`.
+    it("keeps a quoted name with a comma one mailbox, ASCII or not", async () => {
+      mockSend.mockResolvedValue({ data: { id: "s1" } });
+      await adapter.send({ to: '"Mueller, Hans" <hans@x.de>', subject: "S", body: "B" });
+      expect(rawOf(mockSend)).toContain('To: "Mueller, Hans" <hans@x.de>\r\n');
+
+      mockSend.mockClear();
+      await adapter.send({ to: '"M\u00FCller, Hans" <hans@x.de>', subject: "S", body: "B" });
+      expect(decodedTo(rawOf(mockSend))).toMatchObject({
+        name: "M\u00FCller, Hans",
+        address: "hans@x.de",
+      });
+    });
+
+    // RFC 2047 §2: a header line carrying encoded-words is at most 76
+    // characters. A long non-ASCII name used to be one line of several words.
+    it("folds a long encoded name so no header line exceeds 76 characters", async () => {
+      mockSend.mockResolvedValue({ data: { id: "s1" } });
+      const name = "\u5C71\u7530\u592A\u90CE".repeat(16); // 64 CJK code points
+      expect([...name]).toHaveLength(64);
+      await adapter.send({ to: `${name} <taro@example.jp>`, subject: "S", body: "B" });
+      const { lines, name: decoded, address } = decodedTo(rawOf(mockSend));
+      expect(lines.length).toBeGreaterThan(1);
+      for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(76);
+      for (const line of lines.slice(1)) expect(line.startsWith(" ")).toBe(true);
+      expect(decoded).toBe(name);
+      expect(address).toBe("taro@example.jp");
+    });
   });
 
   describe("MIME header injection prevention", () => {
