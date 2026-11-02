@@ -60,36 +60,47 @@
 # `pnpm.auditConfig.ignoreGhsas` — which scripts/lib/audit-ignore-parity
 # .test.mjs (`pnpm test:scripts`) enforces.
 
-# Two advisories published in the 2026-10 wave have NO fixed release at all —
-# both ranges are "through the latest version" — so no bump or override can
-# clear them. Neither reaches Pinchy at runtime, and neither is in the range
-# `pnpm audit --audit-level=high --prod` fails on (braces is dev-only, sprintf-js
-# is moderate), so neither needs an `ignoreGhsas` mirror. ignoreUntil forces a
-# re-triage in three months, by which time either upstream ships a fix or the
-# consuming chain has moved.
+# GHSA-vfj7-8cjw-p6xm (braces) and GHSA-hp3w-g68c-fv3c (sprintf-js) were
+# retired 2026-11-01: GitHub withdrew both advisories (2026-10-22/23), osv-scanner
+# reported the entries as UNUSED (it exits 1 on that), and neither package is
+# flagged any more. Re-add with a fresh reason if either comes back.
+
+# Two medium DoS advisories published 2026-10-27 whose fix exists only in a
+# major no consumer declares: glob GHSA-3g3m-2fjr-6pw4 (fixed 14.0.2) and
+# minimatch GHSA-g3hv-75wg-m249 (fixed 11.0.1). Neither is in the range
+# `pnpm audit --audit-level=high --prod` fails on, so neither needs an
+# `ignoreGhsas` mirror. Overriding past the declared range was rejected: the
+# only clean candidates are cross-major (minimatch 3 -> 11 under eslint is the
+# brace-expansion 5 failure again; rimraf@5 declares glob ^10; openclaw pins
+# glob 13.0.6 and minimatch 10.2.5 EXACTLY, which openclaw-runtime-closure
+# .test.ts refuses to see moved across a major).
 #
-# braces (GHSA-vfj7, stack-exhaustion DoS through deeply nested patterns):
-# reached only via eslint-config-next > @next/eslint-plugin-next > fast-glob >
-# micromatch — the lint toolchain, a devDependency that never reaches the runtime
-# image (only the dev image and the build stage install it). The
-# patterns it expands are the code-authored globs in our eslint config.
-#
-# sprintf-js 1.0.3 (GHSA-hp3w, DoS through unbounded precision specifiers in an
-# attacker-controlled FORMAT string): reached via mammoth > argparse@1, a
-# production dependency of pinchy-files and web. argparse is required only by
-# mammoth's `bin/mammoth` CLI; `lib/index.js`, which is what Pinchy imports to
-# read DOCX files, never loads it. And argparse's own sprintf calls use format
-# strings written in argparse, never document content.
+# Reachability, which is the criterion (see the docs-only pair below):
+# - minimatch: the amplification is in firstPhasePreProcess() at
+#   optimizationLevel >= 2, and minimatch defaults to 1. openclaw imports
+#   minimatch (not inlined) and calls it with `{ dot: true }` / `{ nocase: true }`
+#   on tool-policy and model-id patterns, level 1; the dev-only copies (eslint's
+#   minimatch@3, typescript-estree's 10.x) match code-authored config globs.
+#   glob does pass level 2 to the minimatch it drives.
+# - glob: the bug is that an aborted walk keeps reading directories. Nothing in
+#   the tree starts a walk with an AbortSignal. openclaw's one globSync call
+#   (dist/sessions-*.js, package-manifest resource entries) passes none and
+#   walks patterns authored in installed manifests; glob@10.5.0 + minimatch@9.0.9
+#   arrive via googleapis > gaxios > rimraf@5, a declared dependency gaxios'
+#   build/ never loads. minimatch@5.1.9 is readdir-glob (exceljs > archiver),
+#   which builds its Minimatch from archiver's code-authored patterns.
+# No pattern or signal reaches either from an unauthenticated request. ignoreUntil
+# forces the question again once rimraf/readdir-glob/openclaw move.
 
 [[IgnoredVulns]]
-id = "GHSA-vfj7-8cjw-p6xm"
-ignoreUntil = 2027-01-15
-reason = "braces <=3.0.3, no fixed release exists. Reached only via eslint-config-next > @next/eslint-plugin-next > fast-glob > micromatch (lint toolchain, devDependency: present in the dev image and the build stage, absent from the runtime image); the patterns expanded are code-authored eslint config globs, never attacker input."
+id = "GHSA-3g3m-2fjr-6pw4"
+ignoreUntil = 2026-12-15
+reason = "glob 10.5.0 / 13.0.6, AbortSignal cancellation does not stop the walk (medium); fixed only in 14.0.2, a major no dependent declares. Nothing here starts a walk with a signal: openclaw's single globSync (package-manifest resource entries, imported not inlined) passes none and walks patterns written in installed manifests; glob@10.5.0 is rimraf@5 under googleapis > gaxios, which gaxios never loads. A walk that cannot be aborted is not reachable from request input."
 
 [[IgnoredVulns]]
-id = "GHSA-hp3w-g68c-fv3c"
-ignoreUntil = 2027-01-15
-reason = "sprintf-js <=1.1.3, no fixed release exists. Reached via mammoth > argparse@1 (pinchy-files, web), but argparse is loaded only by mammoth's bin/mammoth CLI — lib/index.js, which Pinchy imports, never requires it — and argparse's sprintf format strings are its own literals, never document content."
+id = "GHSA-g3hv-75wg-m249"
+ignoreUntil = 2026-12-15
+reason = "minimatch 3.1.5 / 5.1.9 / 9.0.9 / 10.2.5, globparts amplification in firstPhasePreProcess() at optimizationLevel >= 2 (medium); fixed only in 11.0.1, a major no dependent declares (3 -> 11 under eslint is the brace-expansion 5 breakage again). minimatch defaults to optimizationLevel 1 and the direct callers pass code- or config-authored patterns and no level: openclaw tool-policy/model-id matching; dev-only eslint routes (@eslint/config-array, @eslint/eslintrc, eslint-config-next, eslint-plugin-import, eslint-plugin-jsx-a11y, eslint-plugin-react) and typescript-estree; exceljs (archiver > readdir-glob, patterns from archiver's own calls); only glob's own Minimatch runs at 2, over manifest-authored patterns. No request-supplied pattern reaches it."
 
 # Two docs-build-only advisories whose fix exists only in a major the consuming
 # package does not declare. Overriding past the declared range was tried (#1222)

@@ -533,6 +533,13 @@
       "when": 1792479661949,
       "tag": "0075_uneven_ricochet",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1793563042935,
+      "tag": "0076_session_impersonated_by",
+      "breakpoints": true
     }
   ]
 }
