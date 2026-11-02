@@ -16,8 +16,8 @@
  *     other file in the same batch still converts.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { constants as fsConstants, mkdtempSync, rmSync } from "node:fs";
+import { mkdir, open, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import mammoth from "mammoth";
@@ -681,11 +681,22 @@ describe("preflight before conversion (release review v0.10.0)", () => {
     const seen: Array<{ staged: string; symlink: boolean; body: string }> = [];
     const run: RunConverter = async (call) => {
       for (const staged of call.inputs) {
-        seen.push({
-          staged: basename(staged),
-          symlink: (await lstat(staged)).isSymbolicLink(),
-          body: await readFile(staged, "utf8"),
-        });
+        // One open, no follow: a symlink fails here with ELOOP instead of
+        // being checked first and read later (CodeQL js/file-system-race).
+        let symlink = false;
+        let body = "";
+        try {
+          const fh = await open(staged, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+          try {
+            body = await fh.readFile("utf8");
+          } finally {
+            await fh.close();
+          }
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ELOOP") throw err;
+          symlink = true;
+        }
+        seen.push({ staged: basename(staged), symlink, body });
         await writeFile(
           join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
           "%PDF-1.4\nsome converted words\n"
