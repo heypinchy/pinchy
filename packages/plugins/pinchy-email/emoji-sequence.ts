@@ -115,6 +115,117 @@ export function isVirama(char: string): boolean {
 }
 
 /**
+ * The scripts that have a virama (Canonical_Combining_Class 9), by their
+ * Unicode property value names. A joiner after a virama shapes text only
+ * between letters of the virama's own script, and JavaScript cannot ask a
+ * character for its script — it can only test it against a named one
+ * (`\p{Script_Extensions=…}`). So the names are listed, and the test file pins
+ * the list to every virama of Unicode 16.0: a virama whose script is missing
+ * here would have every joiner after it refused, never accepted.
+ */
+const VIRAMA_SCRIPT_NAMES = [
+  "Devanagari",
+  "Bengali",
+  "Gurmukhi",
+  "Gujarati",
+  "Oriya",
+  "Tamil",
+  "Telugu",
+  "Kannada",
+  "Malayalam",
+  "Sinhala",
+  "Thai",
+  "Lao",
+  "Tibetan",
+  "Myanmar",
+  "Tagalog",
+  "Hanunoo",
+  "Khmer",
+  "Tai_Tham",
+  "Balinese",
+  "Sundanese",
+  "Batak",
+  "Tifinagh",
+  "Syloti_Nagri",
+  "Saurashtra",
+  "Rejang",
+  "Javanese",
+  "Meetei_Mayek",
+  "Kharoshthi",
+  "Brahmi",
+  "Kaithi",
+  "Chakma",
+  "Sharada",
+  "Khojki",
+  "Khudawadi",
+  "Grantha",
+  "Tulu_Tigalari",
+  "Newa",
+  "Tirhuta",
+  "Siddham",
+  "Modi",
+  "Takri",
+  "Ahom",
+  "Dogra",
+  "Dives_Akuru",
+  "Nandinagari",
+  "Zanabazar_Square",
+  "Soyombo",
+  "Bhaiksuki",
+  "Masaram_Gondi",
+  "Gunjala_Gondi",
+  "Kawi",
+  "Gurung_Khema",
+];
+
+let viramaScripts: Array<{ name: string; test: RegExp }> | undefined;
+
+function viramaScriptPatterns(): Array<{ name: string; test: RegExp }> {
+  if (viramaScripts) return viramaScripts;
+  viramaScripts = [];
+  for (const name of VIRAMA_SCRIPT_NAMES) {
+    try {
+      viramaScripts.push({ name, test: new RegExp(`^\\p{Script_Extensions=${name}}$`, "u") });
+    } catch {
+      // A runtime on an older Unicode does not know the newest scripts. It
+      // knows none of their letters or viramas either, so nothing is lost.
+    }
+  }
+  return viramaScripts;
+}
+
+/** The script of a virama, by its Unicode name, or `undefined` for anything else. */
+export function viramaScript(char: string): string | undefined {
+  if (!isVirama(char)) return undefined;
+  return viramaScriptPatterns().find(({ test }) => test.test(char))?.name;
+}
+
+/**
+ * Does the joiner at `chars[index]`, right after a virama, shape the text?
+ * RFC 5892's CONTEXTJ asks only for the virama; this asks what the joiner
+ * acts on as well (eighth review of #1242), because a joiner that acts on
+ * nothing renders as nothing — `जगत्‌.md` reads exactly like `जगत्.md`:
+ *
+ * - the virama sits on a letter of its own script (marks such as a nukta
+ *   between them are skipped), so `a्‌b` shapes nothing;
+ * - a U+200C keeps the virama from forming a conjunct with the letter after
+ *   it, so that letter has to be there, in the same script;
+ * - a U+200D asks for the half form, or in Malayalam the chillu (അവന്‍), which
+ *   is visible at the end of a word too. A letter after it still has to be of
+ *   the same script.
+ */
+function joinerShapesVirama(chars: string[], index: number): boolean {
+  const script = viramaScriptPatterns().find(({ test }) => test.test(chars[index - 1]));
+  if (!script) return false;
+  let base = index - 2;
+  while (base >= 0 && MARK.test(chars[base])) base--;
+  if (base < 0 || !LETTER.test(chars[base]) || !script.test.test(chars[base])) return false;
+  const next = chars[index + 1];
+  if (next !== undefined && LETTER.test(next)) return script.test.test(next);
+  return chars[index] === "\u200D";
+}
+
+/**
  * The letters of the scripts whose letters join — the ones Unicode's
  * ArabicShaping.txt gives a Joining_Type other than U (non-joining).
  *
@@ -156,12 +267,13 @@ function joinsBackward(char: string | undefined): boolean {
 }
 
 /**
- * The UTF-16 offsets of every U+200C / U+200D in `text` that IDNA's CONTEXTJ
- * rule allows (RFC 5892, Appendix A.1 and A.2) — the places where a joiner
- * changes how the text is drawn:
+ * The UTF-16 offsets of every U+200C / U+200D in `text` that changes how the
+ * text is drawn — an approximation of IDNA's CONTEXTJ rule (RFC 5892,
+ * Appendix A.1 and A.2), stricter after a virama and, outside the main Arabic
+ * block, more permissive between joining letters:
  *
- * - either one right after a virama: क्‌ष (an explicit half form), ශ්‍රී,
- *   അവന്‍ (a chillu);
+ * - right after a virama, where it acts on letters of the virama's script
+ *   (`joinerShapesVirama`): क्‌ष (an explicit half form), ශ්‍රී, അവന്‍ (a chillu);
  * - a U+200C between a letter that joins forward and one that joins backward,
  *   with only marks between them: گزارش‌ها.
  *
@@ -175,7 +287,7 @@ export function contextualJoinerOffsets(text: string): Set<number> {
     const char = chars[i];
     if (char !== "\u200C" && char !== "\u200D") continue;
     if (i > 0 && isVirama(chars[i - 1])) {
-      offsets.add(offset);
+      if (joinerShapesVirama(chars, i)) offsets.add(offset);
       continue;
     }
     if (char !== "\u200C") continue;

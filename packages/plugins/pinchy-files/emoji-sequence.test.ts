@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
-import { contextualJoinerOffsets, invisibleFormatOffsets, isVirama } from "./emoji-sequence";
+import {
+  contextualJoinerOffsets,
+  invisibleFormatOffsets,
+  isVirama,
+  viramaScript,
+} from "./emoji-sequence";
 
 /**
  * Canonical_Combining_Class = 9 (Virama) in Unicode 16.0, as Python's
@@ -43,6 +48,27 @@ describe("isVirama", () => {
   });
 });
 
+// A joiner after a virama shapes text only within the virama's own script, so
+// the module has to know that script. JavaScript cannot ask a character for
+// its script, only test it against a named one, so the names are listed — and
+// a virama whose script is missing from the list would refuse every joiner
+// after it, which is why the list is pinned to every virama.
+describe("viramaScript", () => {
+  it("knows the script of every virama of Unicode 16.0", () => {
+    const unknown = UNICODE_16_VIRAMAS.filter(
+      (cp) => viramaScript(String.fromCodePoint(cp)) === undefined
+    );
+    expect(unknown.map((cp) => cp.toString(16))).toEqual([]);
+  });
+
+  it("names the script a virama belongs to", () => {
+    expect(viramaScript("\u094D")).toBe("Devanagari");
+    expect(viramaScript("\u0DCA")).toBe("Sinhala");
+    expect(viramaScript("\u0D4D")).toBe("Malayalam");
+    expect(viramaScript("a")).toBeUndefined();
+  });
+});
+
 describe("contextualJoinerOffsets (RFC 5892 CONTEXTJ)", () => {
   const offsetsOf = (text: string) => [...contextualJoinerOffsets(text)];
 
@@ -52,6 +78,11 @@ describe("contextualJoinerOffsets (RFC 5892 CONTEXTJ)", () => {
     ["ZWNJ between two dual-joining letters", "گزارش\u200Cها", 5],
     ["ZWNJ between a dual- and a right-joining letter", "علی\u200Cرضا", 3],
     ["ZWNJ with vowel marks on either side", "مِ\u200Cِه", 2],
+    // A ZWJ ending a word after a virama asks for the half form or, in
+    // Malayalam, the chillu — visible with nothing after it.
+    ["ZWJ after a virama at the end (a chillu)", "അവന്\u200D", 4],
+    ["ZWJ after a virama before punctuation", "അവന്\u200D.md", 4],
+    ["ZWNJ after a virama on a letter with a nukta", "क\u093C्\u200Cष", 3],
   ])("allows %s", (_label, text, offset) => {
     expect(offsetsOf(text)).toEqual([offset]);
   });
@@ -66,6 +97,20 @@ describe("contextualJoinerOffsets (RFC 5892 CONTEXTJ)", () => {
     ["ZWJ between Arabic letters", "ش\u200Dه"],
     ["ZWNJ between an Arabic and a Latin letter", "ش\u200Ca"],
     ["ZWNJ after a nukta", "क\u093C\u200Cष"],
+    // Eighth review of #1242: a ZWNJ after a virama was accepted whatever
+    // came next, so `जगत्‌.md` and `जगत्.md` were two names that look the
+    // same. A ZWNJ keeps a virama from forming a conjunct with the letter
+    // after it; with no letter of that script after it, there is nothing to
+    // keep apart.
+    ["ZWNJ after a virama at the end", "जगत्\u200C"],
+    ["ZWNJ after a virama before punctuation", "जगत्\u200C.md"],
+    ["ZWNJ after a virama before a letter of another script", "क्\u200Cb"],
+    ["ZWJ after a virama before a letter of another script", "क्\u200Db"],
+    // …and the virama has to sit on a letter of its own script.
+    ["ZWNJ after a virama on a Latin letter", "a्\u200Cb"],
+    ["ZWJ after a virama on a Latin letter", "a्\u200D"],
+    ["ZWNJ after a Sinhala virama on a Devanagari letter", "क\u0DCA\u200Cष"],
+    ["ZWNJ after a virama with no letter before it", "\u094D\u200Cष"],
   ])("refuses %s", (_label, text) => {
     expect(offsetsOf(text)).toEqual([]);
   });

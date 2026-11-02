@@ -170,6 +170,9 @@ describe("hidden-chars drift guard", () => {
         "അവന്\u200D",
         "क्\u200Cष",
         "क\u093C\u200Cष",
+        "जगत्\u200C",
+        "a्\u200Cb",
+        "क्\u200Cb",
         "a\u200Cb",
         "Ad\u200Da",
       ];

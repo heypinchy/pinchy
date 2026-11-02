@@ -180,6 +180,7 @@ describe("parseSingleRecipient: joiners that shape Arabic-script and Indic names
     // د joins only to the right, so the ZWNJ after it changes nothing on
     // screen: this reads exactly like محمدرضا (the reviewer's probe name).
     ["a ZWNJ after a right-joining letter", "محمد\u200Cرضا <m@x.ir>"],
+    ["a ZWNJ after a virama with no letter after it", "जगत्\u200C <j@x.in>"],
     ["a ZWNJ in the address itself", "علی\u200Cرضا@x.ir"],
     ["a ZWNJ in the address of a named recipient", "Ali <علی\u200Cرضا@x.ir>"],
   ])("refuses %s", (_label, input) => {

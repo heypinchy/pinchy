@@ -113,6 +113,11 @@ describe("assertPlainPath", () => {
     ["a ZWNJ before a non-joining hamza", "/data/ش\u200Cء.md", /U\+200C/],
     ["a ZWJ between Arabic letters", "/data/ش\u200Dه.md", /U\+200D/],
     ["a ZWNJ between Latin letters next to Persian", "/data/گزارش a\u200Cb.md", /U\+200C/],
+    // Eighth review of #1242 (the reviewer's probe names): a ZWNJ after a
+    // virama with no letter after it changes nothing, so this read exactly
+    // like /data/out/जगत्.md; and a virama on a Latin letter shapes nothing.
+    ["a ZWNJ after a virama at the end of a name", "/data/out/जगत्\u200C.md", /U\+200C/],
+    ["a ZWNJ after a virama on a Latin letter", "/data/out/a्\u200Cb.md", /U\+200C/],
   ])("still refuses %s, which renders as nothing", (_label, value, why) => {
     refused(value, why);
   });

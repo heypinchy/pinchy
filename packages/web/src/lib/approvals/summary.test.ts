@@ -502,6 +502,10 @@ describe("summarizeArgs", () => {
       ["a ZWNJ between Latin letters", "a\u200Cb", "a⟨U+200C⟩b"],
       ["a ZWNJ after a right-joining letter", "محمد\u200Cرضا", "محمد⟨U+200C⟩رضا"],
       ["a ZWJ between Arabic letters", "ش\u200Dه", "ش⟨U+200D⟩ه"],
+      // Eighth review of #1242: nothing after the virama for the ZWNJ to keep
+      // apart, or a virama on a letter of another script.
+      ["a ZWNJ after a virama at the end", "जगत्\u200C.md", "जगत्⟨U+200C⟩.md"],
+      ["a ZWNJ after a virama on a Latin letter", "a्\u200Cb.md", "a्⟨U+200C⟩b.md"],
     ])("marks %s", (_label, text, shown) => {
       expect(summarizeArgs({ subject: text })).toEqual({ subject: shown });
     });
