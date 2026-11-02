@@ -7,7 +7,7 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 const fetchPendingApprovals = vi.fn();
 const submitApprovalDecision = vi.fn();
 vi.mock("@/lib/approvals/client", () => ({
-  fetchPendingApprovals: () => fetchPendingApprovals(),
+  fetchPendingApprovals: (...args: unknown[]) => fetchPendingApprovals(...args),
   submitApprovalDecision: (id: string, body: unknown) => submitApprovalDecision(id, body),
 }));
 
@@ -39,6 +39,25 @@ describe("ApprovalsInbox", () => {
     render(<ApprovalsInbox />);
     await screen.findByText(/Smithers needs your confirmation/i);
     expect(screen.getByText(/odoo_write/)).toBeInTheDocument();
+    expect(screen.getByText("recordId")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+  });
+
+  // A summary may be half a megabyte (a long report written to a file), and
+  // the list is polled every five seconds for as long as the card waits. It
+  // never changes once stored, so each poll names the cards it already holds
+  // and the server sends those back without their summary.
+  it("sends each summary once: later polls name the cards they hold and keep the summary", async () => {
+    fetchPendingApprovals.mockResolvedValueOnce({ approvals: [pending] });
+    const { argsSummary: _held, ...withoutSummary } = pending;
+    fetchPendingApprovals.mockResolvedValue({ approvals: [withoutSummary] });
+    render(<ApprovalsInbox />);
+    await screen.findByText("recordId");
+    expect(fetchPendingApprovals).toHaveBeenLastCalledWith([]);
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(fetchPendingApprovals).toHaveBeenLastCalledWith(["req-1"]));
+    await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(2));
     expect(screen.getByText("recordId")).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
   });

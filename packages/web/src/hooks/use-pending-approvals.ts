@@ -38,8 +38,21 @@ async function poll(): Promise<void> {
   // so skip the request and catch up on the visibility flip.
   if (document.visibilityState === "hidden") return;
   try {
-    const { approvals } = await fetchPendingApprovals();
-    snapshot = approvals;
+    // A stored summary never changes and may be half a megabyte, so the poll
+    // names the cards it holds and gets those back without one. The map is
+    // taken BEFORE the request: a card decided meanwhile leaves the snapshot,
+    // but its summary must still be at hand if the answer lists it again.
+    const held = new Map(snapshot.map((approval) => [approval.id, approval.argsSummary]));
+    const { approvals } = await fetchPendingApprovals([...held.keys()]);
+    snapshot = approvals.flatMap((approval): PendingApproval[] => {
+      if (approval.argsSummary !== undefined)
+        return [{ ...approval, argsSummary: approval.argsSummary }];
+      // Never render a card without the arguments it would approve: one whose
+      // summary did not come back waits for the next poll, which asks for it.
+      return held.has(approval.id)
+        ? [{ ...approval, argsSummary: held.get(approval.id) ?? null }]
+        : [];
+    });
     emit();
   } catch {
     // Background poller — transient failures self-heal on the next tick.

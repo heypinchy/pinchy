@@ -12,8 +12,16 @@ export interface PendingApproval {
   expiresAt: string;
 }
 
-export function fetchPendingApprovals(): Promise<{ approvals: PendingApproval[] }> {
-  return apiGet<{ approvals: PendingApproval[] }>("/api/approvals");
+/** A listed confirmation; `argsSummary` is absent for a card the poll named
+ * as already held (`known`) — a stored summary never changes. */
+export type ListedApproval = Omit<PendingApproval, "argsSummary"> &
+  Partial<Pick<PendingApproval, "argsSummary">>;
+
+export function fetchPendingApprovals(
+  known: readonly string[] = []
+): Promise<{ approvals: ListedApproval[] }> {
+  const query = known.length > 0 ? `?known=${known.map(encodeURIComponent).join(",")}` : "";
+  return apiGet<{ approvals: ListedApproval[] }>(`/api/approvals${query}`);
 }
 
 export interface DecisionResult {

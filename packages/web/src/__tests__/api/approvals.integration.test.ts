@@ -332,6 +332,31 @@ describe("approval routes (integration, real DB)", () => {
     expect(list.approvals[0].argsSummary).toEqual({ recordId: 5 });
   });
 
+  // A summary may be half a megabyte, and the list is polled every five
+  // seconds. It never changes once stored, so a poll that names the cards it
+  // already holds gets those back without their summary.
+  it("leaves out the summary of a card the poll says it already holds", async () => {
+    await gateCheck(gateReq(gateBody({ params: { recordId: 5 } })));
+    await gateCheck(gateReq(gateBody({ params: { recordId: 6 } })));
+    setSession(user);
+    const all = await (
+      await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
+    ).json();
+    expect(all.approvals).toHaveLength(2);
+    const [newest, older] = all.approvals;
+
+    const polled = await (
+      await listApprovals(
+        new NextRequest(`http://localhost/api/approvals?known=${older.id},not-a-uuid`),
+        {}
+      )
+    ).json();
+    expect(polled.approvals.map((a: { id: string }) => a.id)).toEqual([newest.id, older.id]);
+    expect(polled.approvals[0].argsSummary).toEqual(newest.argsSummary);
+    expect(polled.approvals[1]).not.toHaveProperty("argsSummary");
+    expect(polled.approvals[1].toolName).toBe("odoo_write");
+  });
+
   it("stores what will actually run: a smuggled second recipient and the full odoo values stay visible", async () => {
     await gateCheck(
       gateReq(

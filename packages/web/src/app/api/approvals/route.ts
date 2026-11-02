@@ -1,21 +1,41 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, desc, eq, gt, inArray } from "drizzle-orm";
 import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { toolApproval, agents } from "@/db/schema";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** More than a requester can have pending (MAX_PENDING_PER_REQUESTER is 20). */
+const MAX_KNOWN = 50;
+
+/**
+ * The ids in `?known=`, the cards the poller already holds. A stored summary
+ * never changes, and one may be half a megabyte (a long report written to a
+ * file), so a card the caller already holds comes back without it — the list
+ * is polled every five seconds for as long as a card waits. Anything that is
+ * not an id is ignored, which at worst sends a summary twice.
+ */
+function knownIds(params: URLSearchParams): Set<string> {
+  const raw = params.get("known") ?? "";
+  return new Set(
+    raw
+      .split(",")
+      .filter((id) => UUID.test(id))
+      .slice(0, MAX_KNOWN)
+  );
+}
 
 /**
  * The caller's own pending confirmations, for the inline chat card.
  * audit-exempt: read-only listing.
  */
-export const GET = withAuth(async (_req, _ctx, session) => {
-  const approvals = await db
+export const GET = withAuth(async (req, _ctx, session) => {
+  const rows = await db
     .select({
       id: toolApproval.id,
       agentId: toolApproval.agentId,
       agentName: agents.name,
       toolName: toolApproval.toolName,
-      argsSummary: toolApproval.argsSummary,
       sessionKey: toolApproval.sessionKey,
       createdAt: toolApproval.createdAt,
       expiresAt: toolApproval.expiresAt,
@@ -33,5 +53,21 @@ export const GET = withAuth(async (_req, _ctx, session) => {
     )
     .orderBy(desc(toolApproval.createdAt));
 
+  const known = knownIds(req.nextUrl.searchParams);
+  const wanted = rows.filter((row) => !known.has(row.id)).map((row) => row.id);
+  const summaries = new Map(
+    wanted.length === 0
+      ? []
+      : (
+          await db
+            .select({ id: toolApproval.id, argsSummary: toolApproval.argsSummary })
+            .from(toolApproval)
+            .where(inArray(toolApproval.id, wanted))
+        ).map((row) => [row.id, row.argsSummary])
+  );
+
+  const approvals = rows.map((row) =>
+    summaries.has(row.id) ? { ...row, argsSummary: summaries.get(row.id) ?? null } : row
+  );
   return NextResponse.json({ approvals });
 });

@@ -2000,6 +2000,12 @@ The human-in-the-loop checkpoint an admin can put in front of a tool — see [Re
 
 Your own pending confirmations, newest first — the source for the in-app confirmation cards. Returns only requests where you are the requester and that have not expired; a confirmation is personal and never appears in a teammate's list, even on a shared agent.
 
+**Query parameters:**
+
+| Parameter | Description                                                                                                                                                                                                                                                                                                                                      |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `known`   | Optional. Comma-separated ids of confirmations you already hold. They are listed as usual but **without** `argsSummary`, which never changes once stored and can be large (up to roughly half a megabyte), so a client that polls this list receives each summary only once. Anything that is not an id is ignored, and at most 50 ids are read. |
+
 **Response:**
 
 ```json
