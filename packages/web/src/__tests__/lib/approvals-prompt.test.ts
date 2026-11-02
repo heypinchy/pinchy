@@ -222,6 +222,25 @@ describe("buildApprovalPrompt", () => {
     expect(description).toContain("chef@firma.at");
     expect(description).toContain("angreifer@evil.com");
   });
+  // Twelfth review of #1242: a typed `⟨U+200D⟩` printed exactly like the
+  // marker for a real joiner.
+  it.each([
+    ["/data/a⟨U+200D⟩b.md", "/data/a‍b.md"],
+    ["/data/x⟨U+00A0⟩y.md", "/data/x y.md"],
+    ["/data/a⟨4 spaces⟩b.md", "/data/a    b.md"],
+  ])("prints a typed marker %j apart from the character it names", (typed, real) => {
+    const prompt = (path: string) => buildApprovalPrompt("pinchy_write", { path }).description;
+    expect(prompt(typed)).not.toBe(prompt(real));
+  });
+
+  // The title names the model the call acts on, and that name comes from the
+  // call too — it is rendered like every other value.
+  it("renders the model in the title as the card does", () => {
+    const { title } = buildApprovalPrompt("odoo_delete", {}, ["res.partner‮evil", "a⟨b"]);
+    expect(title).toContain("res.partner⟨U+202E⟩evil");
+    expect(title).toContain("a⟨U+27E8⟩b");
+  });
+
   // Third review of #1242: a CRLF mail body printed "⟨U+000D⟩" before every
   // line break on the chat prompt, as on the card.
   it("renders a CRLF body as line breaks", () => {

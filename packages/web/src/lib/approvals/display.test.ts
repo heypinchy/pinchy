@@ -167,17 +167,162 @@ describe("inStoredOrder: a value is shown in the order it was sent", () => {
     expect(view("שלום עולם 2024")).toBe("[שלום עולם] 2024");
   });
 
-  it("puts digits, punctuation and right-to-left non-letters outside every word", () => {
-    // Arabic-Indic digits, the Hebrew maqaf and geresh, the Arabic comma: none
-    // is a letter, so none can join a word and move with it.
+  it("puts digits and punctuation that is not strongly right-to-left outside every word", () => {
+    // Arabic-Indic digits (an Arabic number, AN) and the Arabic comma (a
+    // common separator, CS) take their direction from their neighbours, so
+    // neither can join a word and move with it. The Hebrew maqaf and geresh
+    // are strongly right-to-left themselves (R), so they belong to the word.
     const text = "عقود١٢،٣ חוזים־א׳ ab";
     for (const line of inStoredOrder(text)!) {
       for (const piece of line) {
         if (piece.word)
-          expect(piece.text).toMatch(/^\p{L}[\p{L}\p{M}]*(?: +\p{L}[\p{L}\p{M}]*)*$/u);
+          expect(piece.text).toMatch(/^\p{L}[\p{L}\p{M}־׳]*(?: +\p{L}[\p{L}\p{M}־׳]*)*$/u);
       }
     }
-    expect(view(text)).toBe("[عقود]١٢،٣ [חוזים]־[א]׳ ab");
+    // A Latin word after a space joins the run, as it always has: the space
+    // between it and the Hebrew takes the direction of the line, so it stays.
+    expect(view(text)).toBe("[عقود]١٢،٣ [חוזים־א׳ ab]");
+  });
+
+  // Twelfth review of #1242: a word was letters and marks only, so the
+  // gershayim of בע״מ — in nearly every Israeli company name — split it into
+  // two words, each drawn on its own in stored order: the name read garbled.
+  // Hebrew punctuation is strongly right-to-left (R), like a letter, and a
+  // `"` or `'` typed in its place between two right-to-left letters resolves
+  // to right-to-left there (UAX #9, N1), so either keeps the word whole and
+  // nothing in it can take a neighbour's direction.
+  it.each([
+    ["חברה בע״מ", "[חברה בע״מ]"],
+    ['חברה בע"מ', '[חברה בע"מ]'],
+    ["/data/דו״ח רבעוני.pdf", "/data/[דו״ח רבעוני].pdf"],
+    ['/data/דו"ח רבעוני.pdf', '/data/[דו"ח רבעוני].pdf'],
+    ["/data/ג'ירפה.md", "/data/[ג'ירפה].md"],
+    ["/data/ג׳ירפה.md", "/data/[ג׳ירפה].md"],
+    ["תל־אביב 2024", "[תל־אביב] 2024"],
+    ["פרק א׳", "[פרק א׳]"],
+  ])("keeps the Hebrew word %s whole", (text, shown) => {
+    expect(view(text)).toBe(shown);
+  });
+
+  it.each([
+    // Only between two right-to-left letters: next to anything else a quote
+    // takes the direction of the text around it, so it stays outside.
+    ['a"ב', 'a"[ב]'],
+    ['א"b', '[א]"b'],
+    ['א"1', '[א]"1'],
+    ['1"א', '1"[א]'],
+    ['"א"', '"[א]"'],
+    ['א" ב', '[א]" [ב]'],
+    ['א""ב', '[א]""[ב]'],
+    ["א' ב", "[א]' [ב]"],
+  ])("keeps a quote in %s outside the word", (text, shown) => {
+    expect(view(text)).toBe(shown);
+  });
+
+  it("keeps a quote after a letter with its marks", () => {
+    expect(view("גּ'ירפה")).toBe("[גּ'ירפה]");
+  });
+
+  /*
+   * Unicode 16.0, from Python's `unicodedata.bidirectional`, over the blocks
+   * `inStoredOrder` treats as right-to-left: every assigned code point that is
+   * not a letter, a mark or a format character, split by whether its class is
+   * strongly right-to-left (R, AL) or not. Only a strong one may join a word:
+   * inside the word's isolate anything weaker would take its direction from a
+   * neighbour and could move — a digit next to a word is exactly how
+   * `/data/חוזים/2024.md` and `/data/2024/חוזים.md` came to look alike.
+   */
+  const STRONG_NON_LETTERS = [
+    [0x5be, 0x5be],
+    [0x5c0, 0x5c0],
+    [0x5c3, 0x5c3],
+    [0x5c6, 0x5c6],
+    [0x5f3, 0x5f4],
+    [0x608, 0x608],
+    [0x60b, 0x60b],
+    [0x60d, 0x60d],
+    [0x61b, 0x61b],
+    [0x61d, 0x61f],
+    [0x66d, 0x66d],
+    [0x6d4, 0x6d4],
+    [0x6fd, 0x6fe],
+    [0x700, 0x70d],
+    [0x7c0, 0x7c9],
+    [0x7fe, 0x7ff],
+    [0x830, 0x83e],
+    [0x85e, 0x85e],
+    [0x888, 0x888],
+    [0xfbb2, 0xfbc2],
+    [0xfdfc, 0xfdfc],
+    [0x10857, 0x1085f],
+    [0x10877, 0x1087f],
+    [0x108a7, 0x108af],
+    [0x108fb, 0x108ff],
+    [0x10916, 0x1091b],
+    [0x1093f, 0x1093f],
+    [0x109bc, 0x109bd],
+    [0x109c0, 0x109cf],
+    [0x109d2, 0x109ff],
+    [0x10a40, 0x10a48],
+    [0x10a50, 0x10a58],
+    [0x10a7d, 0x10a7f],
+    [0x10a9d, 0x10a9f],
+    [0x10ac8, 0x10ac8],
+    [0x10aeb, 0x10af6],
+    [0x10b58, 0x10b5f],
+    [0x10b78, 0x10b7f],
+    [0x10b99, 0x10b9c],
+    [0x10ba9, 0x10baf],
+    [0x10cfa, 0x10cff],
+    [0x10d8e, 0x10d8f],
+    [0x10ead, 0x10ead],
+    [0x10f1d, 0x10f26],
+    [0x10f51, 0x10f59],
+    [0x10f86, 0x10f89],
+    [0x10fc5, 0x10fcb],
+    [0x1e8c7, 0x1e8cf],
+    [0x1e950, 0x1e959],
+    [0x1e95e, 0x1e95f],
+    [0x1ec71, 0x1ecb4],
+    [0x1ed01, 0x1ed3d],
+  ];
+  const WEAK_NON_LETTERS = [
+    [0x600, 0x607],
+    [0x609, 0x60a],
+    [0x60c, 0x60c],
+    [0x60e, 0x60f],
+    [0x660, 0x66c],
+    [0x6dd, 0x6de],
+    [0x6e9, 0x6e9],
+    [0x6f0, 0x6f9],
+    [0x7f6, 0x7f9],
+    [0x890, 0x891],
+    [0x8e2, 0x8e2],
+    [0xfb29, 0xfb29],
+    [0xfd3e, 0xfd4f],
+    [0xfdcf, 0xfdcf],
+    [0xfdfd, 0xfdff],
+    [0xfeff, 0xfeff],
+    [0x1091f, 0x1091f],
+    [0x10b39, 0x10b3f],
+    [0x10d30, 0x10d39],
+    [0x10d40, 0x10d49],
+    [0x10d6e, 0x10d6e],
+    [0x10e60, 0x10e7e],
+    [0x1eef0, 0x1eef1],
+  ];
+  const each = (ranges: number[][]) =>
+    ranges.flatMap(([from, to]) =>
+      Array.from({ length: to - from + 1 }, (_, i) => String.fromCodePoint(from + i))
+    );
+
+  it("lets every strongly right-to-left non-letter join a word, and nothing weaker", () => {
+    const strong = each(STRONG_NON_LETTERS);
+    const weak = each(WEAK_NON_LETTERS);
+    expect(strong.length).toBeGreaterThan(400);
+    expect(weak.length).toBeGreaterThan(100);
+    expect(strong.filter((char) => view(`א${char}ב`) !== `[א${char}ב]`)).toEqual([]);
+    expect(weak.filter((char) => view(`א${char}ב`) !== `[א]${char}[ב]`)).toEqual([]);
   });
 
   it("keeps a mark on the letter it belongs to", () => {

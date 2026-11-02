@@ -91,9 +91,36 @@ export function isAddressShaped(text: string): boolean {
  * summary shows as `⟨U+XXXX⟩` markers anyway. Checked against Python's
  * `unicodedata` (Unicode 16) over every code point.
  */
-const RIGHT_TO_LEFT = /[֐-ࣿיִ-﷿ﹰ-﻿\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}]/u;
-/** One word, or several joined by plain spaces: letters with their marks. */
-const WORDS = /\p{L}[\p{L}\p{M}]*(?: +\p{L}[\p{L}\p{M}]*)*/gu;
+const RIGHT_TO_LEFT =
+  /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}]/u;
+/**
+ * The characters in those blocks that are strongly right-to-left (bidi class
+ * R or AL) without being letters: Hebrew maqaf, geresh and gershayim, the
+ * Arabic question mark and full stop, the digits of N'Ko and Adlam, … Taken
+ * from Unicode 16.0 (Python's `unicodedata.bidirectional`), every assigned
+ * code point in the blocks that is not a letter, a mark or a format character
+ * and whose class is R or AL; a range may span letters, which are word
+ * characters anyway. `display.test.ts` checks every one of them, and every
+ * weaker one (digits, separators, neutrals) that must stay out.
+ */
+const STRONG_NON_LETTER =
+  "\u05BE\u05C0\u05C3\u05C6\u05F3-\u05F4\u0608\u060B\u060D\u061B\u061D-\u061F\u066D\u06D4\u06FD-\u070D\u07C0-\u07C9\u07FE-\u07FF\u0830-\u083E\u085E\u0888\uFBB2-\uFBC2\uFDFC\u{10857}-\u{1087F}\u{108A7}-\u{108AF}\u{108FB}-\u{1091B}\u{1093F}\u{109BC}-\u{109CF}\u{109D2}-\u{109FF}\u{10A40}-\u{10A48}\u{10A50}-\u{10A58}\u{10A7D}-\u{10A9F}\u{10AC8}\u{10AEB}-\u{10AF6}\u{10B58}-\u{10B5F}\u{10B78}-\u{10B7F}\u{10B99}-\u{10B9C}\u{10BA9}-\u{10BAF}\u{10CFA}-\u{10CFF}\u{10D8E}-\u{10D8F}\u{10EAD}\u{10F1D}-\u{10F26}\u{10F51}-\u{10F59}\u{10F86}-\u{10F89}\u{10FC5}-\u{10FCB}\u{1E8C7}-\u{1E8CF}\u{1E950}-\u{1E959}\u{1E95E}-\u{1E95F}\u{1EC71}-\u{1ECB4}\u{1ED01}-\u{1ED3D}";
+/** A character a word is made of: a letter, or a strong right-to-left non-letter. */
+const WORD_CHAR = `[\\p{L}${STRONG_NON_LETTER}]`;
+/** A strongly right-to-left character: a letter of those blocks, or a non-letter above. */
+const STRONG_RTL = `(?:(?=${RIGHT_TO_LEFT.source})\\p{L}|[${STRONG_NON_LETTER}])`;
+/**
+ * A strongly right-to-left character with its marks and a `"` or `'` typed for
+ * a gershayim or geresh (`בע"מ`, `ג'ירפה`), when another strongly
+ * right-to-left character follows. Between two of them the quote resolves to
+ * right-to-left (UAX #9, N1), so inside the word it is ordered like the
+ * letters around it; anywhere else it is not, and it stays outside. Written
+ * without a lookbehind, which Safari before 16.4 cannot parse.
+ */
+const QUOTED = `${STRONG_RTL}\\p{M}*["'](?=${STRONG_RTL})`;
+const WORD = `(?:${QUOTED}|${WORD_CHAR})(?:${QUOTED}|${WORD_CHAR}|\\p{M})*`;
+/** One word, or several joined by plain spaces. */
+const WORDS = new RegExp(`${WORD}(?: +${WORD})*`, "gu");
 
 /** A piece of one line: a right-to-left `word`, or text held in order. */
 export interface OrderedPiece {
@@ -112,10 +139,15 @@ export interface OrderedPiece {
  *
  * So everything is held in stored order (an LTR override) except the
  * right-to-left words, each drawn in an isolate of its own so it still reads.
- * A word is letters and marks only, joined by plain spaces — nothing that
- * takes its direction from a neighbour (digits, punctuation) can sit in one —
- * and inside it only its letters' own direction decides the order. So two
- * different texts are never drawn alike, and each word stays readable.
+ * A word is letters, their marks and the non-letters that are strongly
+ * right-to-left themselves (`STRONG_NON_LETTER`: the gershayim of בע״מ), plus
+ * a `"` or `'` between two right-to-left characters, which resolves to
+ * right-to-left there; words are joined by plain spaces. Nothing that takes
+ * its direction from a neighbour (digits, other punctuation) can sit in one,
+ * and inside it only its characters' own direction decides the order. So two
+ * different texts are never drawn alike, and each word stays readable — a
+ * company name `חברה בע״מ` too, which split at its gershayim read garbled
+ * (twelfth review of #1242).
  *
  * One array of pieces per line: a line break ends every override and isolate
  * (it separates bidi paragraphs), so each line is held on its own. `null` for

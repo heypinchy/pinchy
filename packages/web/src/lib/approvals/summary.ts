@@ -44,7 +44,9 @@
  *   review of #1242), nor `க்\u200Cம.md` as `க்ம.md` (tenth), nor
  *   `❤️\u200D🔥.md` as `❤️🔥.md`: whether a joiner draws anything, in a script
  *   or inside an emoji, depends on the approver's font, which the server
- *   cannot know — Windows 10 draws ❤️‍🔥 as two glyphs (eleventh). Where an
+ *   cannot know — Windows 10 draws ❤️‍🔥 as two glyphs (eleventh). A literal
+ *   `⟨` or `⟩` is marked too (`⟨U+27E8⟩`), so a value cannot type a marker
+ *   that reads as a real one (twelfth): every `⟨` opens a marker. Where an
  *   action lands (`TARGET_KEYS`: a path, a file name, a record), a value names
  *   one target and two that render alike are two targets, so a space, tab or
  *   line break at its start or end is marked too.
@@ -212,6 +214,15 @@ export function isEscapedChar(char: string): boolean {
   return HIDDEN.test(char) && !KEPT_VISIBLE.has(char);
 }
 
+/**
+ * The marker brackets themselves. A value that typed `⟨U+200D⟩` rendered
+ * exactly like the marker for a real joiner (twelfth review of #1242), so a
+ * literal bracket is always marked — on its own, never folded into a run of
+ * invisible characters, since it is not one. Every `⟨` on the card then opens
+ * a marker the summary wrote, and no marker holds a bracket inside.
+ */
+const MARKER_BRACKET = new Set(["\u27E8", "\u27E9"]);
+
 function codePoint(char: string): string {
   return `U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
 }
@@ -259,6 +270,12 @@ function escapeText(
       run.push(char);
       continue;
     }
+    if (MARKER_BRACKET.has(char)) {
+      if (run.length > 0) out += escapeRun(run);
+      run = [];
+      out += `⟨${codePoint(char)}⟩`;
+      continue;
+    }
     const runName = layout ? LAYOUT_RUN_NAME[char] : undefined;
     let length = 1;
     if (runName) {
@@ -287,7 +304,7 @@ function escapeText(
 }
 
 /** A value as sent, with everything that could hide text made visible. */
-function renderText(text: string, target = false): string {
+export function renderText(text: string, target = false): string {
   return escapeText(text, { layout: true, target });
 }
 

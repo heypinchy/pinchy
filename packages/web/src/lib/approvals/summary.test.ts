@@ -562,6 +562,78 @@ describe("summarizeArgs", () => {
     });
   });
 
+  // Twelfth review of #1242: a value that TYPED a marker rendered exactly like
+  // the character the marker stands for — `/data/a⟨U+200D⟩b.md` sent as text
+  // and `/data/a‍b.md` with a real joiner were one card, and pinchy-files
+  // accepts both. So the brackets themselves are marked: every `⟨` on the
+  // card opens a marker the summary wrote.
+  describe("a typed marker never reads as a real one", () => {
+    it.each([
+      ["a joiner", "/data/a⟨U+200D⟩b.md", "/data/a‍b.md"],
+      ["a no-break space", "/data/x⟨U+00A0⟩y.md", "/data/x y.md"],
+      ["a run of spaces", "/data/a⟨4 spaces⟩b.md", "/data/a    b.md"],
+    ])("shows a typed marker for %s apart from the character", (_label, typed, real) => {
+      const shown = (path: string) => summarizeArgs({ path }).path as string;
+      expect(shown(typed)).not.toBe(shown(real));
+    });
+
+    it("marks the brackets of a typed marker", () => {
+      expect(summarizeArgs({ path: "/data/a⟨U+200D⟩b.md" })).toEqual({
+        path: "/data/a⟨U+27E8⟩U+200D⟨U+27E9⟩b.md",
+      });
+    });
+
+    it("marks a bracket next to an invisible character, each on its own", () => {
+      expect(summarizeArgs({ subject: "‍⟨‍⟩" })).toEqual({
+        subject: "⟨U+200D⟩⟨U+27E8⟩⟨U+200D⟩⟨U+27E9⟩",
+      });
+    });
+
+    it("marks a typed marker in a record label and a display name too", () => {
+      const ref = encodeRef({
+        integrationType: "odoo",
+        connectionId: "c1",
+        model: "res.partner",
+        id: 7,
+        label: "Noack⟨U+200D⟩ GmbH",
+      });
+      const out = summarizeArgs(
+        { target: ref, to: '"Noack⟨U+200D⟩" <a@x.at>' },
+        { refRecord: makeRefResolver(REF_KEY) }
+      );
+      expect(out).toEqual({
+        target: '(record reference: res.partner #7 "Noack⟨U+27E8⟩U+200D⟨U+27E9⟩ GmbH")',
+        to: 'a@x.at (name: "Noack⟨U+27E8⟩U+200D⟨U+27E9⟩")',
+      });
+    });
+
+    // The drift guard: whatever a value holds, every `⟨` in its rendering
+    // opens one of the markers the summary writes, and every `⟩` closes one.
+    it("never lets a bracket stand outside a marker it wrote", () => {
+      const MARKER =
+        /⟨(?:U\+[0-9A-F]{4,6}|\d+ (?:spaces|line breaks|tabs)|\d+ invisible characters: (?:U\+[0-9A-F]{4,6} ){2}U\+[0-9A-F]{4,6} …)⟩/gu;
+      const alphabet = ["⟨", "⟩", "U", "+", "2", "0", "D", " ", "\n", "\t", "‍", " ", "a"];
+      let seed = 1242;
+      const random = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+      const stray: string[] = [];
+      for (let n = 0; n < 2000; n++) {
+        const length = 1 + Math.floor(random() * 12);
+        const text = Array.from(
+          { length },
+          () => alphabet[Math.floor(random() * alphabet.length)]
+        ).join("");
+        for (const shown of [
+          summarizeArgs({ subject: text }).subject as string,
+          summarizeArgs({ path: text }).path as string,
+          Object.keys(summarizeArgs({ [text]: 1 }))[0],
+        ]) {
+          if (/[⟨⟩]/u.test(shown.replace(MARKER, ""))) stray.push(JSON.stringify(text));
+        }
+      }
+      expect(stray).toEqual([]);
+    });
+  });
+
   describe("bounds that do not hide what matters", () => {
     it("renders a standard Odoo invoice with line commands and tax commands fully", () => {
       const params = {

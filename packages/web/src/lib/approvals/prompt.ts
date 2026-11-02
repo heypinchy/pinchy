@@ -1,5 +1,5 @@
 import { TOOL_REGISTRY } from "@/lib/tool-registry";
-import { summarizeArgs, type SummarizeOptions } from "@/lib/approvals/summary";
+import { renderText, summarizeArgs, type SummarizeOptions } from "@/lib/approvals/summary";
 import { displayScalar, inStoredOrderPlain } from "@/lib/approvals/display";
 
 /**
@@ -92,7 +92,11 @@ export function buildApprovalPrompt(
   // Base template and appears in no registry, which is exactly how #865's
   // confirmation list rendered empty.
   const action = known?.label ?? `Run ${toolName}`;
-  const named = [...new Set(resources.filter((r): r is string => r !== null))];
+  // A model name comes from the call, so it is rendered like any other value:
+  // a bidi override or a typed marker in it is shown, not obeyed.
+  const named = [
+    ...new Set(resources.filter((r): r is string => r !== null).map((r) => renderText(r))),
+  ];
   const title = truncate(
     named.length > 0 ? `${action} — ${named.join(", ")}` : action,
     APPROVAL_TITLE_MAX
