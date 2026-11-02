@@ -30,11 +30,13 @@
 // falsifies the docs claim that "every key lifecycle event is written to the
 // audit trail."
 //
-// Fix: a `hooks.before` middleware in lib/auth.ts blocks any CLIENT request
-// (ctx.request || ctx.headers present — the same discriminator the plugin
-// itself uses for its server-only property checks) to `/api-key/*` with a
-// 404, while leaving Pinchy's own server-side `auth.api.createApiKey({body})`
-// call (no headers/request) untouched.
+// Fix: the `hooks.before` guard in lib/auth.ts. A CLIENT request (ctx.request)
+// to `/api-key/*` gets a 404 because it is outside the client allowlist
+// (CLIENT_REACHABLE_AUTH_PATHS — see auth-client-surface.integration.test.ts,
+// whose drift guard covers every endpoint). A server-side call that forwards
+// headers (ctx.headers — the discriminator the plugin itself uses for its
+// server-only property checks) is refused too, while Pinchy's own server-side
+// `auth.api.createApiKey({body})` call (no headers/request) is untouched.
 //
 // Provisioned by global-setup.ts (fresh migrated DB), truncated between
 // tests (setup.ts). audit-exempt: test-only.

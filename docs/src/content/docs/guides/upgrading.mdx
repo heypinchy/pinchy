@@ -237,11 +237,23 @@ docker compose pull && docker compose up -d && docker image prune -f
 
 #### Security: open self-registration is closed — review your user list
 
-Earlier releases, v0.9.1 included, left the authentication library's sign-up endpoint reachable. Anyone who could reach your Pinchy URL could create their own account with the `member` role and see every shared agent, bypassing invites and your seat cap. This release closes it: `POST /api/auth/sign-up/*` now answers `404` to every client. Accounts are created only by the setup wizard and by claiming an invite.
+Earlier releases, v0.9.1 included, left the authentication library's sign-up endpoint reachable. Anyone who could reach your Pinchy URL could create their own account with the `member` role, bypassing invites and your seat cap. That account saw what any member sees: every shared agent set to **All users** — and, on an install without an Enterprise licence, every shared agent, since **Restricted** only takes effect with one. It got no personal agent and no groups. This release closes it: `POST /api/auth/sign-up/*` now answers `404` to every client. Accounts are created only by the setup wizard and by claiming an invite.
 
-The same release also closes the library's own user-administration and profile endpoints (`/api/auth/admin/*`, `/update-user`, `/change-password`, `/change-email`, `/delete-user`) to direct client calls. They bypassed Pinchy's audit trail and, for admins, the rule that personal agents stay private. Everything the Pinchy UI does is unchanged — it never used them.
+The same release goes further and turns the library's endpoints into an allowlist. A client — admin or not — now reaches exactly three of them: sign-in, sign-out and the session lookup. Everything else answers `404`, including the user-administration and profile endpoints (`/api/auth/admin/*`, `/update-user`, `/change-password`, `/change-email`, `/delete-user`), which bypassed Pinchy's audit trail and, for admins, the rule that personal agents stay private, and `/verify-password`, which let anyone holding a stolen session test password guesses outside the sign-in limit. Everything the Pinchy UI does is unchanged — it never used them.
 
-What to do: open **Settings → Users** and look for accounts you didn't invite. Remove any you don't recognise and check the [audit trail](/concepts/audit-trail/) for what they touched. If your instance was reachable from the internet, treat unknown members as a possible exposure of shared-agent content. The API-key list in **Settings → API Keys** also now flags keys created by an admin who has since been demoted, not just one who was banned or deleted — consider rotating those.
+What to do: check for accounts you didn't create. Every legitimate account is either the admin who ran the setup wizard or someone who claimed an invite, so an account that is neither came in through the open endpoint. In **Settings → Users**, look for names you don't recognise. To check precisely, list the users that no claimed invite points to:
+
+```bash
+docker compose exec -T db psql -U pinchy pinchy -c "
+  SELECT u.email, u.role, u.created_at FROM \"user\" u
+  WHERE NOT EXISTS (SELECT 1 FROM invites i
+                    WHERE i.claimed_by_user_id = u.id AND i.type = 'invite')
+  ORDER BY u.created_at;"
+```
+
+The first row is normally your setup admin; anything after it deserves a look. Remove the accounts you don't recognise. Don't expect the audit trail to show the sign-up itself: registering wrote no audit row, and neither did the session it opened — only later sign-ins of such an account appear, as `auth.login`. What the account did is recorded like any member's activity, so check the [audit trail](/concepts/audit-trail/) for what it touched. If your instance was reachable from the internet, treat unknown members as a possible exposure of shared-agent content.
+
+The API-key list in **Settings → API Keys** also now flags keys created by an admin who has since been demoted, not just one who was banned or deleted — consider rotating those.
 
 #### Memory is now its own permission — and most agents gain it on upgrade
 
