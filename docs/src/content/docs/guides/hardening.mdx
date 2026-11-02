@@ -473,7 +473,7 @@ This is the sequence for restoring Pinchy onto a brand-new host — a full disas
    docker compose run --rm --no-deps -T --entrypoint tar pinchy -C /app/secrets -xpf - < pinchy-secrets-<stamp>.tar
    ```
 
-   Whichever way you restore them, the `.env` from step 1 and `pinchy-secrets` have to be in the state [Which backup to restore](/concepts/audit-trail-verification/#which-backup-to-restore) describes before the first `docker compose up -d`. A pair backed up after your last key change already is. That section says how to correct an older one, and what the log shows afterwards.
+   Whichever way you restore them, the `.env` from step 1 and `pinchy-secrets` have to be in the state [Which backup to restore](/concepts/audit-trail-verification/#which-backup-to-restore) describes before the first `docker compose up -d`. A pair backed up after your last key change already is. That section says how to correct an older one, how to check the key files before that start without printing a key, and what the log shows afterwards. Do those checks before step 4: about 60 seconds after the start, the first background run verifies the audit log against the restored key file.
 
    Restore `pinchy-secrets` even if you pin all four secrets in `.env`. It can hold keys `.env` doesn't (see the tip above), and without it, whatever was signed or encrypted with one of them stays unverifiable or unreadable for good, and Pinchy can't warn you about a key it never saw. `openclaw-config` is safe to skip; Pinchy regenerates it from the restored database on boot, at the cost of a fresh gateway bootstrap token.
 

@@ -101,6 +101,7 @@ However old your backups are, what you restore has to end up like this before Pi
 
 - **`.env`** holds the keys Pinchy ran on last: for `AUDIT_HMAC_SECRET` and `ENCRYPTION_KEY`, the value it used, or no line if it used the key file.
 - **`.audit_hmac_secret`** in `pinchy-secrets`: with no `AUDIT_HMAC_SECRET` in `.env`, the key Pinchy signs with. With the variable set, the key your last switch to that value replaced. If you've retired that key since, or there never was one, the file holds the current value, or there's no file and Pinchy writes the current value there on start.
+- **`.encryption_key`** in `pinchy-secrets`: with no `ENCRYPTION_KEY` in `.env`, the key Pinchy encrypted with, from a `pinchy-secrets` backup made after the variable was last removed or ignored. A backup from while the variable was in effect may not have the file. Without it, Pinchy generates a new random key the first time it encrypts or decrypts something, without a warning, and every provider API key and integration credential saved with the old one is unreadable.
 
 A pair you backed up after your last key change already is in that state. To get there from an older one, put the values Pinchy ran on into `.env` yourself; for `AUDIT_HMAC_SECRET`, that's the copy you kept when you switched. Take the key file from a `pinchy-secrets` backup made right before your last switch or after it, with no retire in between: a switch keeps the key it replaces in the file. If you've retired that key since, remove the file instead:
 
@@ -108,7 +109,22 @@ A pair you backed up after your last key change already is in that state. To get
 docker compose run --rm --no-deps -T --entrypoint rm pinchy /app/secrets/.audit_hmac_secret
 ```
 
-Then check the log of that first start (`docker compose logs pinchy`). With `AUDIT_HMAC_SECRET` set:
+Before the first start, check what you restored. For each variable with no line in `.env`, its key file has to be in the volume. This lists the files, never their contents:
+
+```bash
+docker compose run --rm --no-deps -T --entrypoint ls pinchy -la /app/secrets
+```
+
+With `AUDIT_HMAC_SECRET` set, compare the key file with the value instead. About 60 seconds after that start, the first background run verifies against whatever the file holds, and a failure it records can't be cleared. These two commands print a hash each, never the key:
+
+```bash
+docker compose run --rm --no-deps -T --entrypoint cat pinchy /app/secrets/.audit_hmac_secret | sha256sum
+sed -n 's/^AUDIT_HMAC_SECRET=//p' .env | tr -dc '0-9a-fA-F' | tr 'A-F' 'a-f' | sha256sum
+```
+
+While the key your last switch replaced is still kept, the hashes have to differ. Otherwise they have to match, or `cat` says there's no such file. Like the log notice below, different hashes only say the file holds some other key; which one, only the backup you took it from says.
+
+Then confirm it in the log of that first start (`docker compose logs pinchy`). With `AUDIT_HMAC_SECRET` set:
 
 - **The notice `AUDIT_HMAC_SECRET is set and differs from the audit signing key`:** the file holds a different key. That's right until the key your last switch replaced is retired. The notice doesn't say which key it is; only the backup you took the file from does.
 - **`Wrote the AUDIT_HMAC_SECRET value to .audit_hmac_secret`, or neither line:** the file holds the current value. That's right only if there's no replaced key to keep: you never switched, or you've retired it. If you removed the file and get the notice instead, the removal didn't take: stop Pinchy, remove the file again, and run `docker compose up -d`.
