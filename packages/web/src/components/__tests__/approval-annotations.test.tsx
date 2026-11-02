@@ -11,7 +11,15 @@ import {
   summarizeCall,
   type SummarizeOptions,
 } from "@/lib/approvals/summary";
-import { FULL_VIEW_KEYS, MAX_DRAWN_WORDS, displayScalar, quoted } from "@/lib/approvals/display";
+import {
+  ASTRAL_COST,
+  DRAW_BUDGET,
+  FULL_VIEW_KEYS,
+  WHOLE_MAX,
+  displayScalar,
+  quoted,
+  secretText,
+} from "@/lib/approvals/display";
 // pinchy-odoo's own encoder, so the refs below are real ones — see
 // call-models.test.ts for why this crosses the package boundary.
 import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
@@ -499,54 +507,97 @@ describe("the host a value reaches is always on the collapsed card and in the pr
 });
 
 /**
- * The card draws every right-to-left word in an isolate of its own, and the
- * summary refuses a call whose card would draw more than MAX_DRAWN_WORDS of
- * them. That bound holds only if the summary counts what the card draws:
- * whole values, previews, display names and record labels alike. So for each
- * place a word can be drawn, a call that brings the card to exactly the bound
- * is drawn with that many isolates and accepted, and one word more is refused.
+ * The summary refuses a call whose collapsed card would cost more than
+ * DRAW_BUDGET to draw: one for every key, value and note the card draws, one
+ * for each of their characters, ASTRAL_COST for a character outside the Basic
+ * Multilingual Plane. That bound holds only if the summary counts what the
+ * card draws: whole values, previews by their preview, display names, record
+ * labels, field names, host notes, numbers, empty lists and hidden secrets
+ * alike. So for each place, a call that brings the card to exactly the bound
+ * is accepted, and drawn with exactly the characters counted for that place;
+ * one more is refused, and the refusal reports the exact cost.
  */
-describe("the card draws exactly the right-to-left words the summary counts", () => {
-  /** `count` words: each Hebrew letter is followed by a digit, which no word holds. */
-  const words = (count: number) => "א1".repeat(count);
-  const isolates = (html: string) => html.split("<bdi").length - 1;
+describe("the card draws exactly what the summary counts", () => {
+  const flag = "\u{1F3F3}";
+  /** The card as drawn, without the copy read to assistive technology. */
+  const drawn = (html: string) =>
+    html.replace(/<(bdo|span)[^>]*class="sr-only[^"]*"[^>]*>.*?<\/\1>/g, "");
+  const occurrences = (html: string, char: string) =>
+    [...decode(drawn(html))].filter((c) => c === char).length;
+  const label = (labelText: string) =>
+    encodeRef({
+      integrationType: "odoo",
+      connectionId: "c1",
+      model: "res.partner",
+      id: 9,
+      label: labelText,
+    });
 
-  const places: [string, (base: number) => [Record<string, unknown>, number]][] = [
-    ["a short value", (base) => [{ targets: [words(base)], note: words(60) }, base + 60]],
+  /** Each place: its arguments (built when the test runs, after the ref key
+   * is set), what they cost, and the character drawn there with how many of
+   * it the card must draw (`null`: nothing to probe). */
+  const places: [string, () => Record<string, unknown>, number, [string, number] | null][] = [
+    [
+      "a short value",
+      () => ({ note: flag.repeat(10) }),
+      1 + 4 + (1 + 10 * ASTRAL_COST),
+      [flag, 10],
+    ],
     [
       "a previewed text, by its preview",
-      (base) => [{ targets: [words(base)], note: words(900) }, base + 100],
+      () => ({ note: flag.repeat(30) + "b".repeat(900) }),
+      1 + 4 + (1 + 30 * ASTRAL_COST + 170),
+      [flag, 30],
     ],
     [
       "a recipient's display name",
-      (base) => [{ targets: [words(base)], to: `"${words(40)}" <a@firma.at>` }, base + 40],
+      () => ({ to: `"${flag.repeat(3)}" <a@firma.at>` }),
+      1 + 2 + (1 + 10) + (1 + 3 * ASTRAL_COST),
+      [flag, 3],
     ],
     [
       "a record label",
-      (base) => [
-        {
-          targets: [words(base)],
-          partner_id: encodeRef({
-            integrationType: "odoo",
-            connectionId: "c1",
-            model: "res.partner",
-            id: 9,
-            label: words(70),
-          }),
-        },
-        base + 70,
-      ],
+      () => ({ partner_id: label(flag.repeat(5)) }),
+      // `res.partner #9 "…"`, one element.
+      1 + 10 + (1 + 15 + 2 + 5 * ASTRAL_COST),
+      [flag, 5],
+    ],
+    ["a field name", () => ({ ["q".repeat(50)]: null }), 1 + 50 + (1 + 4), ["q", 50]],
+    [
+      "a host note",
+      () => ({ site: "https://%71%71%71%71.at/" }),
+      1 + 4 + (1 + 24) + (1 + "qqqq.at".length),
+      ["q", 4],
+    ],
+    ["a number", () => ({ count: 123_456_789 }), 1 + 5 + (1 + 9), null],
+    ["an empty list", () => ({ none: [] }), 1 + 4 + (1 + 2), null],
+    [
+      "a hidden secret",
+      () => ({ api_key: "s3cr3t" }),
+      1 + 7 + (1 + secretText({ "@": "secret", length: 6 }).length),
+      null,
     ],
   ];
 
-  it.each(places)("counts %s", (_name, build) => {
+  it.each(places)("counts %s", (_name, place, cost, probe) => {
     for (const extra of [0, 1]) {
-      // Fill the rest of the bound with one target drawn whole.
-      const [, others] = build(0);
-      const [params, total] = build(MAX_DRAWN_WORDS - others + extra);
-      expect(total).toBe(MAX_DRAWN_WORDS + extra);
-      expect(summarizeCall(params, options).incomplete).toBe(extra > 0);
-      if (extra === 0) expect(isolates(card(params))).toBe(MAX_DRAWN_WORDS);
+      // Fill the rest of the bound with two targets drawn whole: `targets`,
+      // as many letters as one may hold, and as many as the place leaves.
+      const rest = DRAW_BUDGET - (1 + 7) - (1 + WHOLE_MAX) - 1 - cost + extra;
+      expect(rest).toBeGreaterThan(0);
+      expect(rest).toBeLessThanOrEqual(WHOLE_MAX);
+      const params = { targets: ["a".repeat(WHOLE_MAX), "a".repeat(rest)], ...place() };
+      const { exceeded } = summarizeCall(params, options);
+      if (extra === 0) {
+        expect(exceeded).toBeNull();
+        if (probe) expect(occurrences(card(params), probe[0])).toBe(probe[1]);
+      } else {
+        expect(exceeded).toEqual({
+          kind: "too-costly-to-draw",
+          cost: DRAW_BUDGET + 1,
+          limit: DRAW_BUDGET,
+        });
+      }
     }
   });
 });

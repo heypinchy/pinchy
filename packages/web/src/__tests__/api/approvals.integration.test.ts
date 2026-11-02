@@ -706,10 +706,9 @@ describe("approval routes (integration, real DB)", () => {
       expect(refused.detail).toMatchObject({ exceeded: "text-too-long" });
     });
 
-    // Every right-to-left word the card isolates costs the approver's browser
-    // layout time; sixty long targets of alternating Hebrew and digits took
-    // about a second to draw.
-    it("is refused when the card would draw too many right-to-left words", async () => {
+    // What the card draws costs the approver's browser layout time; sixty long
+    // targets of alternating Hebrew and digits took about a second to draw.
+    it("is refused when the card would take too long to draw", async () => {
       agent = await seedAgent(user.id, ["pinchy_write"]);
       const target = Array.from({ length: 4_096 }, (_, i) => (i % 2 ? "1" : "א")).join("");
       const params = { path: "/data/out/a.md", content: "x", targets: Array(60).fill(target) };
@@ -718,13 +717,37 @@ describe("approval routes (integration, real DB)", () => {
       ).json();
       expect(res.decision).toBe("block");
       expect(res.approval).toBeUndefined();
-      expect(res.reason).toMatch(/right-to-left words/);
+      expect(res.reason).toMatch(/to draw/);
       expect(await db.select().from(toolApproval)).toHaveLength(0);
       const [refused] = await db
         .select()
         .from(auditLog)
         .where(eq(auditLog.eventType, "approval.refused"));
-      expect(refused.detail).toMatchObject({ exceeded: "too-many-rtl-words" });
+      expect(refused.detail).toMatchObject({ exceeded: "too-costly-to-draw" });
+      expect(refused.outcome).toBe("failure");
+      expect(JSON.stringify(refused.detail)).not.toContain("א1");
+    });
+
+    // A white flag in an emoji sequence costs Chromium a font-fallback pass per
+    // run: 500 previews of such sequences took two seconds to draw, inside
+    // every other bound.
+    it("is refused when the card is emoji previews too costly to draw", async () => {
+      agent = await seedAgent(user.id, ["pinchy_write"]);
+      const flags = "👩‍👩‍👧‍👦🏳️‍🌈".repeat(20).slice(0, 200);
+      const notes = Object.fromEntries(
+        Array.from({ length: 3 }, (_, k) => [`n${k}`, Array(k < 2 ? 200 : 100).fill(flags)])
+      );
+      const params = { path: "/data/out/a.md", content: "x", ...notes };
+      const res = await (
+        await gateCheck(gateReq(gateBody({ toolName: "pinchy_write", params })))
+      ).json();
+      expect(res.decision).toBe("block");
+      expect(await db.select().from(toolApproval)).toHaveLength(0);
+      const [refused] = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.eventType, "approval.refused"));
+      expect(refused.detail).toMatchObject({ exceeded: "too-costly-to-draw" });
     });
 
     it("still opens a full card for an Odoo write with 26 fields, the bank account last", async () => {
@@ -748,7 +771,9 @@ describe("approval routes (integration, real DB)", () => {
   // character cut could land between the halves of an emoji, and a lone
   // surrogate in the input went into the summary as it was.
   it("stores a summary with an emoji across the old cut point, and with a lone surrogate", async () => {
-    const body = `a${"😀".repeat(2_500)}`; // index 3,999 splits a pair
+    // Index 3,999 splits a pair. Letters first, so the preview the card draws
+    // is not emoji, which cost a card far more to draw (`DRAW_BUDGET`).
+    const body = `${"a".repeat(3_999)}${"😀".repeat(50)}`;
     const params = { recordId: 5, body, subject: "x\uD83Dy" };
     const res = await (await gateCheck(gateReq(gateBody({ params })))).json();
     expect(res.decision).toBe("block");

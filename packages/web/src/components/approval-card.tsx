@@ -7,6 +7,7 @@ import {
   FULL_VIEW_KEYS,
   PREVIEW_LEN,
   displayScalar,
+  drawnText,
   inStoredOrder,
   modelText,
   previewed,
@@ -108,7 +109,7 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
       <Spoken
         drawn={
           <span className="whitespace-pre-wrap">
-            <StoredOrder text={expanded ? shown : `${chars.slice(0, PREVIEW_LEN).join("")}…`} />
+            <StoredOrder text={expanded ? shown : `${drawnText(text, full)}…`} />
           </span>
         }
         spoken={expanded ? quoted(text) : `${quoted([...text].slice(0, PREVIEW_LEN).join(""))}…`}

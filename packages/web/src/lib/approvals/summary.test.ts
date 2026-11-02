@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { domainToASCII } from "node:url";
 import { describeRefusal, markScripts, summarizeArgs, summarizeCall } from "./summary";
 import { makeRefResolver } from "./call-models";
-import { MAX_DRAWN_WORDS, WHOLE_MAX, inStoredOrder, readNode } from "./display";
+import { ASTRAL_COST, DRAW_BUDGET, WHOLE_MAX, inStoredOrder, readNode } from "./display";
 // The pinchy-odoo encoder, so the ref rendering is tested against real refs —
 // see call-models.test.ts for why this crosses the package boundary.
 import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
@@ -1338,8 +1338,11 @@ describe("summarizeArgs", () => {
     });
 
     it("counts code points, so an emoji is one character", () => {
-      expect(summarizeCall({ body: "😀".repeat(200_000) }).incomplete).toBe(false);
-      expect(summarizeCall({ body: "😀".repeat(200_001) }).exceeded).toMatchObject({
+      // Plain letters first, so the preview the card draws is not emoji: an
+      // emoji costs that card ASTRAL_COST to draw (`DRAW_BUDGET`).
+      const body = (emoji: number) => "x".repeat(200) + "😀".repeat(emoji);
+      expect(summarizeCall({ body: body(199_800) }).incomplete).toBe(false);
+      expect(summarizeCall({ body: body(199_801) }).exceeded).toMatchObject({
         kind: "text-too-long",
         length: 200_001,
       });
@@ -1390,52 +1393,93 @@ describe("summarizeArgs", () => {
       expect(JSON.stringify(summary).length).toBeLessThan(1_100_000);
     });
 
-    it("still shows a 200×200 grid of numbers in full", () => {
-      const rows = grid(1, 200, 200)[0];
+    it("still shows a 200×30 grid of numbers in full", () => {
+      const rows = grid(1, 200, 30)[0];
       const { summary, incomplete } = summarizeCall({ rows });
       expect(incomplete).toBe(false);
       expect(summary.rows).toEqual(rows);
     });
+
+    it("refuses a 200×200 grid of numbers, whose 40,000 values are too costly to draw", () => {
+      const { exceeded } = summarizeCall({ rows: grid(1, 200, 200)[0] });
+      expect(exceeded).toEqual({
+        kind: "too-costly-to-draw",
+        // Each row 0…199: ten numbers of one digit, ninety of two, a hundred of three.
+        cost: 1 + 4 + 200 * (10 * 2 + 90 * 3 + 100 * 4),
+        limit: DRAW_BUDGET,
+      });
+    });
   });
 
-  // Chromium lays out every right-to-left word the card isolates as an
-  // element of its own, and the time grows with how many it draws: sixty
-  // 4,096-character targets of alternating Hebrew letters and digits drew
-  // 122,880 of them, and so did two thousand 200-character notes — about a
-  // second either way, in the approver's tab, for a call the gate accepted.
-  // So a call whose card would draw more than one maximal value holds is
-  // refused, like any other call the card cannot show.
+  // What the collapsed card draws costs the approver's browser layout time,
+  // and what one character costs varies by orders of magnitude: sixty
+  // 4,096-character targets of alternating Hebrew letters and digits took about
+  // a second, and so did 500 previews of emoji-flag sequences — both within
+  // every other bound, in the approver's tab, for a call the gate accepted. So
+  // a call whose card would cost more than DRAW_BUDGET to draw is refused,
+  // like any other call the card cannot show.
   describe("a card that takes too long to draw", () => {
     const alternating = (length: number) =>
       Array.from({ length }, (_, i) => (i % 2 ? "1" : "א")).join("");
+    /** `count` values under keys of their own, 200 to a list. */
+    const lists = (count: number, value: () => unknown) =>
+      Object.fromEntries(
+        Array.from({ length: Math.ceil(count / 200) }, (_, k) => [
+          `n${k}`,
+          Array.from({ length: Math.min(200, count - k * 200) }, value),
+        ])
+      );
 
     it("refuses sixty long targets drawn whole", () => {
       const { exceeded } = summarizeCall({
         targets: Array.from({ length: 60 }, () => alternating(4_096)),
       });
       expect(exceeded).toEqual({
-        kind: "too-many-rtl-words",
-        count: 60 * 2_048,
-        limit: MAX_DRAWN_WORDS,
+        kind: "too-costly-to-draw",
+        // The key and each value: one for the element, one per character.
+        cost: 1 + 7 + 60 * (1 + 4_096),
+        limit: DRAW_BUDGET,
       });
     });
 
-    it("refuses as many words in short values, which are drawn whole too", () => {
-      const notes = Object.fromEntries(
-        Array.from({ length: 10 }, (_, k) => [
-          `n${k}`,
-          Array.from({ length: 200 }, () => alternating(200)),
-        ])
-      );
-      expect(summarizeCall(notes).exceeded).toMatchObject({ kind: "too-many-rtl-words" });
+    it("refuses as many right-to-left words in short values, which are drawn whole too", () => {
+      const notes = lists(2_000, () => alternating(200));
+      expect(summarizeCall(notes).exceeded).toMatchObject({ kind: "too-costly-to-draw" });
     });
 
-    it("counts a previewed text by its preview, the only part the card draws", () => {
-      // 40 texts of 500 words each, 100 of them drawn in each preview: 4,000.
+    it("refuses previews of emoji-flag sequences that fit every other bound", () => {
+      // 🏳️‍🌈 in a family sequence: the white flag U+1F3F3 sends Chromium
+      // through its font fallback once per run.
+      const flags = "👩‍👩‍👧‍👦🏳️‍🌈".repeat(20).slice(0, 200);
+      const { exceeded } = summarizeCall(lists(500, () => flags));
+      expect(exceeded).toMatchObject({ kind: "too-costly-to-draw" });
+    });
+
+    it("charges a character outside the Basic Multilingual Plane ASTRAL_COST", () => {
+      const cost = (text: string) =>
+        (summarizeCall({ targets: [text] }).exceeded as { cost: number } | null)?.cost;
+      // Under the bound, nothing is reported; one past it, the cost is exact.
+      const flags = Math.floor((DRAW_BUDGET - 8 - 1) / ASTRAL_COST);
+      expect(cost("🏳".repeat(flags))).toBeUndefined();
+      expect(cost("🏳".repeat(flags + 1))).toBe(8 + 1 + (flags + 1) * ASTRAL_COST);
+    });
+
+    it("counts a previewed text by its preview, however long the text", () => {
+      // 80 texts of 6,000 characters, 200 drawn of each.
       const { exceeded } = summarizeCall({
-        notes: Array.from({ length: 40 }, () => alternating(1_000)),
+        notes: Array.from({ length: 80 }, () => "x".repeat(6_000)),
       });
       expect(exceeded).toBeNull();
+    });
+
+    it("counts every value drawn, a number or a one-letter text too", () => {
+      const count = Math.ceil(DRAW_BUDGET / 2);
+      expect(summarizeCall(lists(count, () => 7)).exceeded).toMatchObject({
+        kind: "too-costly-to-draw",
+      });
+      expect(summarizeCall(lists(count, () => "x")).exceeded).toMatchObject({
+        kind: "too-costly-to-draw",
+      });
     });
 
     it("still shows one target as long as a target may be drawn whole", () => {
@@ -1447,6 +1491,67 @@ describe("summarizeArgs", () => {
       const line = "חברה בע״מ, רחוב הרצל 12, תל אביב — חשבונית לחודש מרץ";
       const values = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`x_${i}`, line]));
       expect(summarizeCall({ model: "res.partner", ids: [7], values }).incomplete).toBe(false);
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      [
+        "a mail with a long body",
+        {
+          to: "Anna Huber <anna.huber@firma.at>",
+          cc: "team@firma.at",
+          subject: "Angebot für März 🎉",
+          body: "Sehr geehrte Frau Huber 🙂\n\n" + "Wir danken für Ihre Anfrage. ".repeat(5_000),
+        },
+      ],
+      [
+        "one address as long as a target is drawn whole, and sixty fields beside it",
+        {
+          url: `https://example.com/${"a/b".repeat(2_700)}`,
+          body: "x".repeat(50_000),
+          ...Object.fromEntries(
+            Array.from({ length: 60 }, (_, i) => [
+              `x_field_${i}`,
+              `Wert ${i}, etwas länger formuliert`,
+            ])
+          ),
+        },
+      ],
+      [
+        "an invoice with fifty lines",
+        {
+          model: "account.move",
+          values: {
+            partner_id: 7,
+            invoice_line_ids: Array.from({ length: 50 }, (_, i) => [
+              0,
+              0,
+              {
+                product_id: i,
+                name: `Beratung März, Position ${i}`,
+                quantity: 10,
+                price_unit: 120,
+                tax_ids: [[6, 0, [1]]],
+              },
+            ]),
+          },
+        },
+      ],
+      [
+        "a mail to two hundred named recipients",
+        {
+          to: Array.from({ length: 200 }, (_, i) => `Person ${i} <p${i}@firma.at>`).join(", "),
+          subject: "Rundschreiben",
+          body: "Hallo",
+        },
+      ],
+      [
+        "forty chat messages with emoji in them",
+        {
+          messages: Array.from({ length: 40 }, (_, i) => `Danke für Update ${i} 👍 — passt so 🎉`),
+        },
+      ],
+    ])("still shows %s in full", (_name, params) => {
+      expect(summarizeCall(params).exceeded).toBeNull();
     });
   });
 
@@ -1507,10 +1612,11 @@ describe("summarizeArgs", () => {
       expect(describeRefusal({ kind: "nested-too-deep", at: "deep", limit: 10 })).not.toMatch(
         split
       );
-      const rtl = describeRefusal({ kind: "too-many-rtl-words", count: 122_880, limit: 4_096 });
-      expect(rtl).toMatch(split);
-      expect(rtl).toMatch(/122,880 right-to-left words/);
-      expect(rtl).toMatch(/4,096/);
+      const costly = describeRefusal({ kind: "too-costly-to-draw", cost: 245_828, limit: 16_384 });
+      expect(costly).toMatch(split);
+      expect(costly).toMatch(/245,828/);
+      expect(costly).toMatch(/16,384/);
+      expect(costly).toMatch(/emoji/);
       const hosts = describeRefusal({ kind: "too-many-hosts", count: 27 });
       expect(hosts).toMatch(split);
       expect(hosts).toMatch(/27 different hosts/);

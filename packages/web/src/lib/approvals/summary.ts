@@ -103,12 +103,14 @@
 import { domainToASCII } from "node:url";
 import { isCanonicalRef, type RefRecord } from "./call-models";
 import {
+  ASTRAL_COST,
+  DRAW_BUDGET,
   FULL_VIEW_KEYS,
-  MAX_DRAWN_WORDS,
   TARGET_KEYS,
-  drawnWords,
-  isolatedWords,
+  drawCost,
+  drawnText,
   mailboxAddress,
+  modelText,
   noteText,
   previewed,
   quoted,
@@ -145,9 +147,10 @@ const RECIPIENT_KEY = /^(to|cc|bcc)$/i;
  * cards it already holds (`known`, up to MAX_KNOWN_APPROVALS) and gets those
  * back without their summary.
  *
- * Drawing: the right-to-left words the collapsed card draws, each in an
- * isolate of its own, are counted against MAX_DRAWN_WORDS (`display.ts`) —
- * the layout time of a card grows with them, wherever they sit.
+ * Drawing: what the collapsed card draws — every key, value and note, a
+ * previewed text by its preview — is counted against DRAW_BUDGET
+ * (`display.ts`), which bounds the time the approver's browser takes to lay
+ * the card out.
  */
 /** Longest string stored whole, in characters as sent (code points): a
  * report of ~60 pages, or a long mail body with room to spare. */
@@ -188,8 +191,8 @@ export type SummaryLimit =
   | { kind: "too-many-recipients"; at: string; count: number; limit: number }
   | { kind: "nested-too-deep"; at: string; limit: number }
   | { kind: "too-large-in-all"; limit: number }
-  /** The card would draw more right-to-left words than MAX_DRAWN_WORDS. */
-  | { kind: "too-many-rtl-words"; count: number; limit: number }
+  /** The collapsed card would cost more than DRAW_BUDGET to draw (`drawCost`). */
+  | { kind: "too-costly-to-draw"; cost: number; limit: number }
   /** The prompt cannot name every host the call reaches (`prompt.ts`). */
   | { kind: "too-many-hosts"; count: number };
 
@@ -200,8 +203,8 @@ interface Budget {
   exceeded: SummaryLimit | null;
   /** Every host a shown value reaches, in the order the values are summarized. */
   hosts: string[];
-  /** The right-to-left words the collapsed card draws (`drawnWords`). */
-  words: number;
+  /** What the collapsed card costs to draw so far (`drawCost`). */
+  drawn: number;
 }
 
 /**
@@ -226,8 +229,8 @@ export interface CallSummary {
   /**
    * True when any part of the call did not fit — a key past MAX_KEYS, an item
    * past MAX_ITEMS, nesting past MAX_DEPTH, a string or key cut, the total
-   * budget spent, more right-to-left words than the card may draw
-   * (MAX_DRAWN_WORDS). Such a call must not be offered for approval: the
+   * budget spent, a card too costly to draw (DRAW_BUDGET). Such a call must
+   * not be offered for approval: the
    * person would approve the part they cannot see.
    */
   incomplete: boolean;
@@ -484,16 +487,23 @@ function describeRef(record: RefRecord, budget: Budget): SummaryNode {
     labelCut: Math.max(0, chars.length - MAX_REF_LABEL_LEN),
   };
   budget.chars -= refText(node).length;
-  // The card draws a label whole, quoted.
-  budget.words += isolatedWords(quoted(node.label));
+  // The card draws the record and its label whole, the label quoted.
+  budget.drawn += drawCost(`${modelText(node.model)} #${node.id} ${quoted(node.label)}`);
   return node;
+}
+
+/** What the card draws of a note besides its fixed wording. */
+function noteDrawn(note: SummaryNote, full: boolean): string {
+  if (note.kind === "host") return note.host;
+  if (note.kind === "name") return drawnText(note.name, full);
+  return "";
 }
 
 /**
  * A string with what Pinchy says about it, or the plain string when there is
  * nothing to say. The notes are charged as the prompt prints them, and the
- * text and a display name by the words the card draws of them (`full`: as
- * the card draws a value under a recipient or target key).
+ * text and its notes by what the card draws of them (`full`: as the card
+ * draws a value under a recipient or target key).
  */
 function noted(
   text: string,
@@ -501,11 +511,11 @@ function noted(
   budget: Budget,
   full: boolean
 ): string | SummaryNode {
-  budget.words += drawnWords(text, full);
+  budget.drawn += drawCost(drawnText(text, full));
   if (notes.length === 0) return text;
   for (const note of notes) {
     budget.chars -= noteText(note).length + 3;
-    if (note.kind === "name") budget.words += drawnWords(note.name, full);
+    budget.drawn += drawCost(noteDrawn(note, full));
   }
   return { "@": "noted", text, notes };
 }
@@ -764,6 +774,7 @@ function plural(count: number, noun: string): string {
 function describeSecret(value: string, budget: Budget): SummaryNode {
   const node: SummaryNode = { "@": "secret", length: codePointLength(value) };
   budget.chars -= secretText(node).length;
+  budget.drawn += drawCost(secretText(node));
   return node;
 }
 
@@ -787,7 +798,9 @@ function summarizeValue(
   if (value === null || ["number", "boolean"].includes(typeof value)) {
     // A number is shown too, and 200×200×50 of them made a 5.7 MB summary
     // when they cost nothing.
-    budget.chars -= String(JSON.stringify(value)).length;
+    const shown = String(JSON.stringify(value));
+    budget.chars -= shown.length;
+    budget.drawn += drawCost(shown);
     return value;
   }
   if (Array.isArray(value)) {
@@ -796,6 +809,8 @@ function summarizeValue(
       return `… [${plural(value.length, "item")} not shown: nested too deep]`;
     }
     budget.chars -= 2;
+    // An empty list is drawn `[]`.
+    if (value.length === 0) budget.drawn += drawCost("[]");
     const shown: unknown[] = [];
     for (const item of value.slice(0, MAX_ITEMS)) {
       if (budget.chars <= 0) {
@@ -820,6 +835,8 @@ function summarizeValue(
       return `… [${plural(entries.length, "field")} not shown: nested too deep]`;
     }
     budget.chars -= 2;
+    // An empty object is drawn `{}`.
+    if (entries.length === 0) budget.drawn += drawCost("{}");
     return summarizeObject(entries, depth, budget, path, secret, place);
   }
   return String(value);
@@ -848,6 +865,7 @@ function summarizeObject(
     let unique = label;
     for (let n = 2; used.has(unique); n++) unique = `${label} (#${n})`;
     used.add(unique);
+    budget.drawn += drawCost(unique);
     shown.push([unique, value]);
   };
 
@@ -913,7 +931,7 @@ export function summarizeCall(params: unknown, options: SummarizeOptions = {}): 
     refRecord: options.refRecord,
     exceeded: null,
     hosts: [],
-    words: 0,
+    drawn: 0,
   };
   const summary = summarizeObject(
     Object.entries(params as Record<string, unknown>),
@@ -925,8 +943,8 @@ export function summarizeCall(params: unknown, options: SummarizeOptions = {}): 
   );
   // A last value can overshoot without anything after it to cut.
   if (budget.chars < 0) exceed(budget, TOO_LARGE_IN_ALL);
-  if (budget.words > MAX_DRAWN_WORDS) {
-    exceed(budget, { kind: "too-many-rtl-words", count: budget.words, limit: MAX_DRAWN_WORDS });
+  if (budget.drawn > DRAW_BUDGET) {
+    exceed(budget, { kind: "too-costly-to-draw", cost: budget.drawn, limit: DRAW_BUDGET });
   }
   return {
     summary,
@@ -988,10 +1006,12 @@ export function describeRefusal(limit: SummaryLimit): string {
         `Shown for approval it would be more than ${count(limit.limit)} characters in all — ` +
           `send fewer fields, records or lines per call, or shorter texts.`
       );
-    case "too-many-rtl-words":
+    case "too-costly-to-draw":
       return split(
-        `Shown for approval it would draw ${count(limit.count)} right-to-left words; a ` +
-          `confirmation draws at most ${count(limit.limit)} — send fewer values per call.`
+        `Its confirmation card would cost ${count(limit.cost)} to draw, and a card may cost at ` +
+          `most ${count(limit.limit)}: every field and value counts one, and each of its ` +
+          `characters one more — an emoji or another character outside the Basic Multilingual ` +
+          `Plane ${ASTRAL_COST} — send fewer or shorter values per call.`
       );
     case "too-many-hosts":
       return split(

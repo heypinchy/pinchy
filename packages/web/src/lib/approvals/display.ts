@@ -155,7 +155,7 @@ export function readUrl(text: string): UrlRead | null {
  * Chromium for the worst shape measured, 8,192 alternating Hebrew letters and
  * digits (one isolate per letter), against 6–8 ms for a Hebrew or Arabic path
  * of the same length. This bounds one value, not a card: sixty such targets
- * took about a second. MAX_DRAWN_WORDS bounds the card. Wherever the card
+ * took about a second. DRAW_BUDGET bounds the card. Wherever the card
  * previews an address, the summary names its host beside it (`previewed`),
  * since the host sits at the end, behind the preview.
  */
@@ -201,48 +201,70 @@ export function previewed(text: string, full: boolean): boolean {
 }
 
 /**
- * The most right-to-left words one card draws, collapsed, over all its values
- * — exactly what one target drawn whole holds at most: WHOLE_MAX alternating
- * Hebrew letters and digits are 4,096 words. The card draws each such word in
- * an isolate of its own (`inStoredOrder`), and the time Chromium takes to lay
- * them out grows with how many it draws, wherever they sit: a bound per value
- * let sixty 4,096-character targets hold 122,880 of them, and two thousand
- * 200-character notes 200,000 — 0.8–1.3 s and 0.85–0.94 s to lay out in
- * headless Chromium (load 8–13; 2.5 s at load 53). The summary counts them
- * (`drawnWords`) and refuses a call past this bound; the card draws what the
- * summary accepted, so the count is one decision. Natural right-to-left text
- * is a handful of words per line — words joined by spaces are one — so
- * ordinary work stays far below it.
+ * What drawing one collapsed card may cost, over everything it draws: one for
+ * every key, value and note, plus one for each of their characters — a
+ * character outside the Basic Multilingual Plane ASTRAL_COST. The summary
+ * counts it (`drawCost`, on what the card draws: a previewed text by its
+ * preview) and refuses a call past this bound; the card draws what the summary
+ * accepted, so the count is one decision.
  *
- * Measured with the bound, same machine and load: the right-to-left words of
- * any accepted card lay out in 38–54 ms (that one 8,192-character target; the
- * same 4,096 words spread over forty values take 18 ms). The rest of a card is
- * bounded by its size (MAX_TOTAL_CHARS in `summary.ts`), and costs what its
- * glyphs cost: that target plus 2,400 short Latin values 98–117 ms, 2,500
- * Arabic or Devanagari ones 205–248 ms. One shape is slower and is not bounded
- * here: a glyph Chromium finds in no font it tries first — the white flag
- * U+1F3F3 of 🏳️‍🌈 — costs ~11 µs each, so 500 previews of such sequences
- * took 2.1–2.2 s.
+ * What a character costs the browser varies by orders of magnitude, so a
+ * bound on size alone (MAX_TOTAL_CHARS in `summary.ts`) did not bound the
+ * time. Measured in headless Chromium on macOS (load 9–16, three runs each),
+ * cards the gate accepted before this bound: 500 previews of emoji sequences
+ * holding the white flag U+1F3F3 (🏳️‍🌈) 2.10–2.14 s; 2,500 short Arabic or
+ * Devanagari values 203–243 ms; sixty 4,096-character targets of alternating
+ * Hebrew letters and digits, one isolate per letter, about a second. Counted
+ * this way, a unit of the Basic Multilingual Plane costs at most 5–8 µs (an
+ * isolate per right-to-left word, a list item per one-letter value); a
+ * character outside it up to ~1 ms, 128 times as much: Chromium resolves the
+ * font of an emoji, a regional indicator, an ideograph of the CJK extensions
+ * or a historic script per run, and the white flag or a regional indicator in
+ * a value of its own costs about 0.5 ms for each of the two elements it is
+ * drawn in (the value and the copy read to assistive technology). Hence
+ * ASTRAL_COST.
+ *
+ * Measured at this bound, same machine and load: 16,374 alternating Hebrew
+ * letters and digits in two targets drawn whole (8,187 isolates) 88–138 ms;
+ * 126 values of one white flag, or of one regional indicator, 128–140 ms;
+ * 8,191 one-letter values 93–101 ms, as many numbers 36–46 ms; 127 flag and
+ * rainbow pairs in one target 70–74 ms; Arabic, Devanagari, CJK, combining
+ * marks and markers in 81 previews 5–20 ms. Ordinary cards stay far below it
+ * and draw in 1–7 ms: a mail with a long body, a 60-field partner write, an
+ * invoice of fifty lines, two hundred named recipients, forty chat messages
+ * with emoji in them; one address drawn whole at WHOLE_MAX leaves room for as
+ * much again.
+ *
+ * One font is slower than the bound accounts for: Noto Sans SignWriting.
+ * 126 SignWriting characters between letters lay out in 1 ms once loaded, but
+ * the first draw loads the font (~300 ms, whatever the count), and once
+ * Chromium's font cache has dropped it — one card of ~1,700 characters from
+ * many other fonts is enough — every run reloads it: 544–597 ms.
  */
-export const MAX_DRAWN_WORDS = 4_096;
+export const DRAW_BUDGET = 16_384;
+
+/** What one character outside the Basic Multilingual Plane costs (`DRAW_BUDGET`). */
+export const ASTRAL_COST = 128;
 
 /**
- * How many right-to-left words the collapsed card draws for `text` — a value,
- * or a display name beside one: the whole text, or its preview where the card
- * previews it (`previewed`).
+ * What drawing `text` as one key, value or note costs against DRAW_BUDGET:
+ * one for its element, one for each character, ASTRAL_COST for each outside
+ * the Basic Multilingual Plane.
  */
-export function drawnWords(text: string, full: boolean): number {
-  const shown = displayScalar(text);
-  return isolatedWords(previewed(text, full) ? [...shown].slice(0, PREVIEW_LEN).join("") : shown);
+export function drawCost(text: string): number {
+  let cost = 1;
+  for (const char of text) cost += char.length > 1 ? ASTRAL_COST : 1;
+  return cost;
 }
 
-/** How many right-to-left words `inStoredOrder` isolates in `drawn`. */
-export function isolatedWords(drawn: string): number {
-  let words = 0;
-  for (const line of inStoredOrder(drawn) ?? []) {
-    for (const piece of line) if (piece.word) words++;
-  }
-  return words;
+/**
+ * What the collapsed card draws of `text` — a value, or a display name beside
+ * one: the whole text as `displayScalar` shows it, or its first PREVIEW_LEN
+ * characters where the card previews it (`previewed`).
+ */
+export function drawnText(text: string, full: boolean): string {
+  const shown = displayScalar(text);
+  return previewed(text, full) ? [...shown].slice(0, PREVIEW_LEN).join("") : shown;
 }
 
 /**
