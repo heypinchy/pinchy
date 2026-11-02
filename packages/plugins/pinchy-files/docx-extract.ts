@@ -88,11 +88,9 @@ export interface DocxExtractOptions {
 export const MAX_DOCX_EXTRACTED_TEXT_BYTES = MAX_FILE_SIZE;
 
 /**
- * The reader child's heap, in MB. The markup ceiling admits at most
- * `MAX_DOCX_MARKUP_BYTES` (2 MiB), and the worst shape of that — many tiny
- * paragraphs — needs a heap between 192 MB (dies) and 256 MB (reads it).
- * Measured in the OpenClaw image (Node 22, mammoth 1.13) at this cap
- * (sixth review, PR #1243), peak RSS:
+ * The reader child's heap, in MB — the bound on what reading a document may
+ * cost, whatever the markup scan in front of it predicts. Measured in the
+ * OpenClaw image (Node 22, mammoth 1.13), peak RSS (sixth review, PR #1243):
  *
  *   document                                  child     result
  *   2 MiB markup, tiny paragraphs (legit)     443 MB    reads it
@@ -101,12 +99,20 @@ export const MAX_DOCX_EXTRACTED_TEXT_BYTES = MAX_FILE_SIZE;
  *   30 MiB of markup, guard switched off      503 MB    refused: out of memory
  *
  * while the process that forked it stayed under 120 MB in every case. Without
- * the child the 30 MiB one took the 2 GB OpenClaw container down.
+ * the child the 30 MiB one took the 2 GB OpenClaw container down. Where in
+ * this heap a long Word document runs out is measured at
+ * `MAX_DOCX_MARKUP_BYTES`, which sits below it.
  */
 export const DOCX_READER_HEAP_MB = 384;
 
-/** A 2 MiB-markup document converts in a few seconds; a reader still busy after this is killed. */
-export const DOCX_READER_TIMEOUT_MS = 60_000;
+/**
+ * A reader still busy after this is killed. Time follows the TEXT more than
+ * the markup: a 1850-page document of long paragraphs (8.2 MiB of markup,
+ * 6.4 MB of text) took 15 s on two cores, and on a loaded host up to 25 s —
+ * the text cap (`MAX_DOCX_EXTRACTED_TEXT_BYTES`) bounds the rest. Two minutes
+ * leaves a slow host room, the same budget the knowledge base's reader has.
+ */
+export const DOCX_READER_TIMEOUT_MS = 120_000;
 
 const CHILD_ENTRY = fileURLToPath(new URL("./docx-reader-child.ts", import.meta.url));
 

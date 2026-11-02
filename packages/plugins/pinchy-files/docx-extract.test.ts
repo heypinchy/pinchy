@@ -149,7 +149,7 @@ describe("extractDocxText — the markup mammoth parses is capped, the pictures 
   const paragraphs = (bytes: number) =>
     "<w:p><w:r><w:t>word</w:t></w:r></w:p>".repeat(Math.ceil(bytes / 37));
 
-  it("refuses more than 2 MiB of markup with an error that says so, without calling mammoth", async () => {
+  it("refuses more markup than the ceiling with an error that says so, without calling mammoth", async () => {
     const fixture = readFileSync(join(FIXTURES, "simple.docx"));
     const big = withDocumentXml(fixture, paragraphs(MAX_DOCX_MARKUP_BYTES + 1));
     const read = vi.fn(async () => "");
@@ -180,15 +180,52 @@ describe("extractDocxText — the markup mammoth parses is capped, the pictures 
   });
 });
 
+describe("extractDocxText — a long document is read, not refused (seventh review, PR #1243)", () => {
+  // The ceiling used to be 2 MiB: a LibreOffice-written report of 118 pages
+  // is 1.72 MB of markup, so a document of ~140 pages was refused — a
+  // regression, since main read it. The heap-capped child is what bounds the
+  // memory now; the ceiling only turns away what the child could not read
+  // anyway. Each run of these fixtures is one real child, so they get room.
+  const LONG_DOCUMENT_TIMEOUT_MS = 60_000;
+
+  it(
+    "reads a 150-page Word document",
+    async () => {
+      const docx = withDocumentXml(
+        readFileSync(join(FIXTURES, "simple.docx")),
+        wordShapedPages(150)
+      );
+      const { text } = await extractDocxText(docx);
+      expect(text).toContain("Seite 1 von 150");
+      expect(text).toContain("Seite 150 von 150");
+    },
+    LONG_DOCUMENT_TIMEOUT_MS
+  );
+
+  it(
+    "reads a 450-page Word document, just inside the ceiling",
+    async () => {
+      const body = wordShapedPages(450);
+      expect(body.length).toBeLessThan(MAX_DOCX_MARKUP_BYTES);
+      const docx = withDocumentXml(readFileSync(join(FIXTURES, "simple.docx")), body);
+      const { text } = await extractDocxText(docx);
+      expect(text).toContain("Seite 450 von 450");
+    },
+    LONG_DOCUMENT_TIMEOUT_MS
+  );
+});
+
 describe("extractDocxText — the shapes the markup scan read differently are refused (sixth review, PR #1243)", () => {
   // The reviewer's three probes, built small: each hides megabytes of
   // paragraphs from the markup ceiling by a spelling mammoth (xmldom + JSZip)
   // resolves and the scan did not. 13 KB of .docx, 1.2-1.5 GB RSS here.
+  // Each hides more paragraphs than the ceiling admits, so a scan that
+  // counted them refuses the file; one that missed them would read it.
   const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
   const rels = (body: string) =>
     `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${body}</Relationships>`;
   const hidden = () =>
-    `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${"<w:p><w:r><w:t>a</w:t></w:r></w:p>".repeat(Math.ceil((3 * 1024 * 1024) / 34))}</w:body></w:document>`;
+    `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${"<w:p><w:r><w:t>a</w:t></w:r></w:p>".repeat(Math.ceil((MAX_DOCX_MARKUP_BYTES + 1024 * 1024) / 34))}</w:body></w:document>`;
   const decoy = `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello decoy</w:t></w:r></w:p></w:body></w:document>`;
 
   it.each([
@@ -569,4 +606,39 @@ function withLyingDocument(docx: Buffer, realBytes: number): Buffer {
   eocd.writeUInt32LE(directory.length, 12);
   eocd.writeUInt32LE(offset, 16);
   return Buffer.concat([...local, directory, eocd]);
+}
+
+/**
+ * `pages` pages of the paragraphs Word writes: revision ids on every
+ * paragraph and run, paragraph and run properties, a sentence split over six
+ * runs (spell-check and edit sessions do that) — about 16 KB of markup a
+ * page, heavier than the 14.6 KB a page LibreOffice writes. Each page ends
+ * with "Seite N von <pages>", so a test can see the last page was read.
+ */
+function wordShapedPages(pages: number): string {
+  const words =
+    "Die Wartung der Anlage erfolgt gemäß den Vorgaben des Herstellers und wird quartalsweise dokumentiert".split(
+      " "
+    );
+  const rPr = `<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="de-AT"/></w:rPr>`;
+  let n = 0;
+  const id = () => (0x10000000 + n++).toString(16).toUpperCase();
+  const run = (text: string) =>
+    `<w:r w:rsidRPr="${id()}">${rPr}<w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const paragraph = (runs: string) =>
+    `<w:p w:rsidR="${id()}" w:rsidRDefault="${id()}" w:rsidP="${id()}"><w:pPr><w:spacing w:after="120" w:line="276" w:lineRule="auto"/><w:jc w:val="both"/>${rPr}</w:pPr>${runs}<w:proofErr w:type="spellStart"/><w:bookmarkStart w:id="0" w:name="_Toc${id()}"/><w:bookmarkEnd w:id="0"/></w:p>`;
+  const body: string[] = [];
+  for (let page = 1; page <= pages; page++) {
+    for (let p = 0; p < 8; p++) {
+      const runs = Array.from({ length: 6 }, (_, r) =>
+        run(
+          `${Array.from({ length: 10 }, (_, w) => words[(page + p + r + w) % words.length]).join(" ")} `
+        )
+      ).join("");
+      body.push(paragraph(runs));
+    }
+    body.push(paragraph(run(`Seite ${page} von ${pages}`)));
+    body.push(`<w:p><w:r><w:br w:type="page"/></w:r></w:p>`);
+  }
+  return body.join("");
 }

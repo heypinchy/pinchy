@@ -328,7 +328,7 @@ What you may notice: a Word or PowerPoint file that linked a picture, a template
 
 #### Agents read Word documents in a separate process
 
-When an agent opens a `.docx` directly, the text is now extracted in a separate process with its own memory and time limit (384 MB, one minute). Reading a Word document can take many times its own size in memory, and a crafted file only a few kilobytes big could make it take more than the agent runtime has — taking every agent down with it. Now such a file is answered with an error that says it needs more memory than reading may use, and everything else keeps running. Ordinary documents read exactly as before. A `.docx` put together in a way no Office application writes, as above, is refused the same way it is by indexing. Nothing to configure.
+When an agent opens a `.docx` directly, the text is now extracted in a separate process with its own memory and time limit (384 MB, two minutes). Reading a Word document can take many times its own size in memory, and a crafted file only a few kilobytes big could make it take more than the agent runtime has — taking every agent down with it. Now such a file is answered with an error that says it needs more memory than reading may use, and everything else keeps running. Ordinary documents read exactly as before, up to about 8 MB of text and formatting — some 500 pages the way Word writes them; a longer one is answered with an error. A `.docx` put together in a way no Office application writes, as above, is refused the same way it is by indexing. Nothing to configure.
 
 #### Documents in archive folders drop out of everyday answers
 

@@ -56,29 +56,34 @@ export const MAX_DOCX_ENTRY_BYTES = 32 * 1024 * 1024;
 
 // The most MARKUP mammoth is handed: every part it may parse as XML, summed
 // (see `ZipLimits.maxMarkupBytes`). mammoth's DOM costs 90-300x the XML it
-// parses, worst for many tiny paragraphs. Measured with mammoth 1.12 on Node 22
-// (fourth review, PR #1243), peak RSS of a process doing nothing else:
+// parses, worst for many tiny paragraphs.
 //
-//   markup     extractDocxText (plugin)    extractRawText (web's word count)
-//   1 MiB      371 MB                      254 MB
-//   2 MiB      697 MB                      378 MB
-//   4 MiB      1093 MB                     588 MB
-//   8 MiB      2483 MB                     1234 MB
+// This is NOT what bounds the memory. mammoth runs in a child whose heap is
+// capped (`DOCX_READER_HEAP_MB` in docx-extract.ts, `SHEET_READER_HEAP_MB` for
+// the knowledge base's word count), and that cap holds whatever this scan
+// predicts — three review rounds in a row found a spelling it read
+// differently from mammoth (PR #1243). So the ceiling only turns away, early
+// and with a precise message, a document the child could not read anyway. It
+// sits below where WORD-SHAPED markup — revision ids, run properties, a
+// sentence split over several runs — exhausts that heap, measured in the
+// OpenClaw image (Node 22, mammoth 1.13) through `extractDocxText` with the
+// ceiling switched off (seventh review, PR #1243):
 //
-// 2 MiB keeps the worst case of either well under the 1 GB the web container
-// and half the 2 GB the OpenClaw container get by default. A real document is
-// far cheaper per byte (a 4 MiB part of Word-shaped paragraphs: 573 MB through
-// extractDocxText), so 2 MiB of markup is a document of a few hundred pages;
-// past it, `pinchy_read` answers with a clear error instead.
+//   document                          markup      reader child    result
+//   150 pages, Word-shaped            2.4 MiB     252 MB          read, 1.9 s
+//   490 pages, Word-shaped            7.9 MiB     510 MB          read, 2.4 s
+//   600 pages, Word-shaped            9.7 MiB     448 MB          read, 7.9 s
+//   700 pages, Word-shaped            11.4 MiB    481 MB          out of heap
+//   1850 pages, LibreOffice-shaped    8.2 MiB     552 MB          read, 15 s
+//   tiny paragraphs (worst case)      3 MiB       451 MB          read
+//   tiny paragraphs (worst case)      4 MiB       476 MB          out of heap
 //
-// This is the FIRST layer, and a prediction: which parts mammoth parses is
-// decided by mammoth's XML parser and JSZip, and three review rounds in a row
-// found a spelling this scan read differently (PR #1243). What bounds the
-// memory whatever the scan misses is the heap cap of the child mammoth runs in
-// (`DOCX_READER_HEAP_MB` in docx-extract.ts, `SHEET_READER_HEAP_MB` for the
-// knowledge base's word count). This layer keeps the common case cheap and
-// the refusal precise.
-export const MAX_DOCX_MARKUP_BYTES = 2 * 1024 * 1024;
+// 8 MiB is some 500 pages the way Word writes them, more the way LibreOffice
+// does (a real 118-page report: 1.72 MB). The worst shapes run out of heap
+// below it, and are answered by the child's own refusal instead — which is
+// the bound doing its job. The ceiling was 2 MiB until the child existed,
+// and refused a 140-page report.
+export const MAX_DOCX_MARKUP_BYTES = 8 * 1024 * 1024;
 
 export interface DocxDeclaredSize {
   totalUncompressedBytes: number;

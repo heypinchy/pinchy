@@ -737,11 +737,14 @@ describe("pinchy_read DOCX integration", () => {
   it("answers a .docx with too much markup to read safely with isError=true and says why (fourth review, PR #1243)", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "pinchy-files-test-"));
     const path = join(tmpDir, "huge-text.docx");
-    const { assembleZip, crc32, readZipEntries } = await import("./docx-zip-guard");
+    const { assembleZip, crc32, readZipEntries, MAX_DOCX_MARKUP_BYTES } =
+      await import("./docx-zip-guard");
     const { deflateRawSync } = await import("zlib");
     const fixture = realReadFileSync(join(FIXTURES, "simple.docx"));
+    // Past the ceiling, whatever it is set to.
+    const paragraphs = Math.ceil((MAX_DOCX_MARKUP_BYTES + 1) / 37);
     const xml = Buffer.from(
-      `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${"<w:p><w:r><w:t>word</w:t></w:r></w:p>".repeat(60_000)}</w:body></w:document>`
+      `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${"<w:p><w:r><w:t>word</w:t></w:r></w:p>".repeat(paragraphs)}</w:body></w:document>`
     );
     writeFileSync(
       path,
