@@ -207,6 +207,31 @@ describe("rekeyedBridge", () => {
     ).toEqual(acmeTarget);
   });
 
+  // A bridge can reach OpenClaw's file with no re-keyed entry after it: sent
+  // over config.apply, copied back by a targeted writer, or Pinchy stopping
+  // between the two writes. The next regenerate finds a file whose every
+  // SecretRef resolves — no bridge to write — and must still give the stub
+  // its entry: the decision is read off the file.
+  it("gives a provider the file already holds as a key-less stub the target's entry", () => {
+    const onDisk = keylessBridge(config({ anthropic, "acme-llm": acmeOld }), rekeyedBundle)!;
+    const target = config({ anthropic, "acme-llm": acmeTarget });
+    expect(keylessBridge(onDisk, rekeyedBundle), "precondition: nothing to bridge").toBeNull();
+
+    const rekeyed = rekeyedBridge(onDisk, onDisk, target, rekeyedBundle);
+
+    expect(
+      (rekeyed as { models: { providers: Record<string, unknown> } }).models.providers["acme-llm"]
+    ).toEqual(acmeTarget);
+    expect({ ...rekeyed, models: undefined }).toEqual({ ...onDisk, models: undefined });
+  });
+
+  it("leaves a key-less provider alone when its target entry names no key either", () => {
+    const keyless = { baseUrl: "http://ollama:11434", api: "ollama", models };
+    const onDisk = config({ anthropic, local: keyless });
+    const target = config({ anthropic, local: { ...keyless, models: models.slice(0, 39) } });
+    expect(rekeyedBridge(onDisk, onDisk, target, rekeyedBundle)).toBeNull();
+  });
+
   it("is null for a deleted provider — its stub stays until the push removes it", () => {
     const onDisk = config({ anthropic, "acme-llm": acme });
     const keyless = keylessBridge(onDisk, bundleWithoutAcme)!;

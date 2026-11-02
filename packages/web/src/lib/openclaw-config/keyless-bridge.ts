@@ -34,7 +34,12 @@
 // just enough of the file's models too — see rekeyedBridge.) Two writes, because
 // no single order works with one: the old slot is in the old secrets.json only,
 // the new slot in the new one only, and the key-less stub in between resolves
-// against both.
+// against both. The second write is decided from the file, not from the
+// first: any regenerate that finds a kept provider still waiting for its key
+// — its previous slot, or its stub — writes it (rekeyedProviders). So a bridge
+// that reached OpenClaw's file without the second write after it (deferred to
+// config.apply, copied back by a targeted writer, or Pinchy stopping between
+// the two) is finished by the next regenerate.
 //
 // Both writes, like every Pinchy write of openclaw.json, are judged against the
 // largest file OpenClaw may still hold as last-known-good, not just the file
@@ -170,14 +175,15 @@ export function keylessBridge(onDisk: Json, bundle: SecretsBundle): Json | null 
 }
 
 /**
- * The file to write AFTER `bundle` replaced secrets.json: `keyless` (from
- * {@link keylessBridge}) with every provider it stubbed that `target` still has
- * given `target`'s entry for it — when every SecretRef in that entry resolves
- * against `bundle`. That is a re-keyed provider (a new versioned key slot), or
- * one upgraded from an unversioned slot. The whole entry, not just the
- * SecretRef: the key was entered for the target's base URL, and must not be
- * paired with the one on disk. Null when no provider qualifies: a deleted one
- * stays a stub until the push removes it.
+ * The file to write AFTER `bundle` replaced secrets.json: `keyless` — the
+ * {@link keylessBridge} of `onDisk`, or `onDisk` itself when every SecretRef in
+ * it resolves — with every provider {@link rekeyedProviders} names given
+ * `target`'s entry for it. That is a re-keyed provider (a new versioned key
+ * slot), or one upgraded from an unversioned slot, whether `onDisk` still names
+ * its previous slot or already holds its key-less stub. The whole entry, not
+ * just the SecretRef: the key was entered for the target's base URL, and must
+ * not be paired with the one on disk. Null when no provider qualifies: a
+ * deleted one stays a stub until the push removes it.
  *
  * Except the entry's model list, when the target's catalogue is much smaller
  * than the one on disk (a re-key to an address that serves fewer models). This
@@ -214,22 +220,11 @@ export function rekeyedBridge(
   bundle: SecretsBundle,
   lastGoodBytes = 0
 ): Json | null {
-  const providersOf = (config: Json): Json => {
-    const models = isRecord(config.models) ? config.models : {};
-    return isRecord(models.providers) ? models.providers : {};
-  };
   const onDiskProviders = providersOf(onDisk);
   const targetProviders = providersOf(target);
-  const rekeyed = Object.keys(providersOf(keyless)).filter((key) => {
-    const was = onDiskProviders[key];
-    const next = targetProviders[key];
-    return (
-      isRecord(was) &&
-      unresolvedSecretRefs(was, bundle).length > 0 &&
-      isRecord(next) &&
-      unresolvedSecretRefs(next, bundle).length === 0
-    );
-  });
+  const rekeyed = rekeyedProviders(onDisk, target, bundle).filter((key) =>
+    Object.hasOwn(providersOf(keyless), key)
+  );
   if (rekeyed.length === 0) return null;
   const models = isRecord(keyless.models) ? keyless.models : {};
   // Every model the file lists for a re-keyed provider that its target entry
@@ -268,6 +263,40 @@ export function rekeyedBridge(
     else hi = mid;
   }
   return withCarried(lo);
+}
+
+function providersOf(config: Json): Json {
+  const models = isRecord(config.models) ? config.models : {};
+  return isRecord(models.providers) ? models.providers : {};
+}
+
+/**
+ * The providers `target` keeps whose entry in `onDisk` is still waiting for the
+ * key `target` gives it, and whose `target` entry resolves in full against
+ * `bundle`: on disk, the entry names a key `bundle` lacks (the previous slot
+ * of a re-keyed provider), or no key at all (its key-less stub, from a bridge
+ * written earlier).
+ *
+ * A pure function of the file and the target, never of what the regenerate
+ * that asks has written itself: a bridge can reach OpenClaw's file in several
+ * ways — written by an earlier regenerate that stopped before the re-keyed
+ * entry (Pinchy restarted in between), landed over config.apply after
+ * regenerating moved on, or copied back by a targeted writer — and every one of
+ * them leaves the stub with no regenerate due to replace it. Read off the file,
+ * the next regenerate does, whatever happened before it.
+ */
+export function rekeyedProviders(onDisk: Json, target: Json, bundle: SecretsBundle): string[] {
+  const onDiskProviders = providersOf(onDisk);
+  const targetProviders = providersOf(target);
+  return Object.keys(onDiskProviders).filter((key) => {
+    const was = onDiskProviders[key];
+    const next = targetProviders[key];
+    if (!isRecord(was) || !isRecord(next) || unresolvedSecretRefs(next, bundle).length > 0) {
+      return false;
+    }
+    if (unresolvedSecretRefs(was, bundle).length > 0) return true;
+    return !Object.hasOwn(was, "apiKey") && referencedSecretIds(next).size > 0;
+  });
 }
 
 /** As Pinchy and OpenClaw write openclaw.json. */

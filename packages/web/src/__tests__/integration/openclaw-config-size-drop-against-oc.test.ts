@@ -766,8 +766,8 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
   // OpenClaw refused the push's target as a size drop against it (no deleted
   // provider to step, so the push was dropped), and every later regenerate was
   // refused by the #311 guard against the enlarged file — "refused forever",
-  // where main's config.apply of the same target went through. Found by review
-  // probing exactly this band against these handlers.
+  // where main's config.apply of the same target went through. This band is
+  // probed against the real handlers here.
   it("re-keys a provider to a catalogue just over half of the file, and the push lands", async () => {
     process.env.OPENCLAW_CONFIG_PATH = pinchyConfigPath;
     process.env.OPENCLAW_SECRETS_PATH = secretsPath;
@@ -901,8 +901,8 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
   // second write, judged only against the re-keyed file on disk, could fall far
   // under half of last-known-good, and OpenClaw's next start restored `.bak`,
   // which names the old slot secrets.json no longer holds: "required secrets
-  // are unavailable", a crash loop until the next regenerate. Found by review
-  // probing exactly these two sequences against these handlers.
+  // are unavailable", a crash loop until the next regenerate. Both sequences
+  // are run against the real handlers here.
   describe("with OpenClaw down across several Pinchy writes", () => {
     const OLD_SLOT = "acme-llm@0000000000000001";
     const NEW_SLOT = "acme-llm@0000000000000002";

@@ -69,6 +69,7 @@ import {
 import {
   keylessBridge,
   rekeyedBridge,
+  rekeyedProviders,
   unresolvedSecretRefs,
   withRemovedKeyPlaceholders,
 } from "./keyless-bridge";
@@ -1857,12 +1858,20 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
         });
       };
   const deletesProvider = onDiskConfig !== undefined && deletesAProvider(onDiskConfig, config);
+  // A deletion, or a re-keyed provider still waiting in openclaw.json for its
+  // new entry (rekeyedProviders): a targeted writer's copy of the file that
+  // supersedes this regenerate's push carries the stub back, so the push queues
+  // a follow-up then (handsOverProvider in write.ts).
+  const handsOverProvider =
+    deletesProvider ||
+    (onDiskConfig !== undefined &&
+      rekeyedProviders(onDiskConfig, config, secretsBundle).length > 0);
   // How a write of openclaw.json below goes to OpenClaw when it falls under
   // the read-side line (writeFileOrApply): carrying this regenerate's change
   // like its own push, and resuming it once it has landed.
   const deferredWrite: PushConfigOptions = {
     regenerateSeq,
-    deletesProvider,
+    handsOverProvider,
     resumeStrandedShrink,
     onChangeApplied: () => {
       regenerateOpenClawConfig().catch((err: unknown) => {
@@ -1987,8 +1996,12 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // stub that keeps its models, which resolves against the old secrets.json
     // and the new one alike. A provider the target keeps — re-keyed, not
     // deleted — then takes the target's entry, once secrets.json holds its new
-    // slot (see keyless-bridge.ts). Decided from the file and the bundle
-    // alone; Pinchy cannot read secrets.json in production.
+    // slot (see keyless-bridge.ts) — and so does one the file already holds
+    // as a stub, from a bridge some earlier write left there with no re-keyed
+    // entry after it (rekeyedProviders): which provider takes the target's
+    // entry is read off the file, never off what this regenerate wrote.
+    // Decided from the file and the bundle alone; Pinchy cannot read
+    // secrets.json in production.
     //
     // A bridge under OpenClaw's read-side line — judged against a bound that
     // can be stale-high (last-good-bound.ts) — goes over config.apply instead
@@ -2011,14 +2024,16 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       console.log(
         `[openclaw-config] openclaw.json no longer names the removed key(s) ${unresolvedSecretRefs(onDiskConfig, secretsBundle).join(", ")} (key-less bridge written before secrets.json)`
       );
-      rekeyed = rekeyedBridge(
-        bridge,
-        onDiskConfig,
-        config,
-        secretsBundle,
-        readSideBaselineBytes(onDiskContent)
-      );
     }
+    rekeyed = onDiskConfig
+      ? rekeyedBridge(
+          bridge ?? onDiskConfig,
+          onDiskConfig,
+          config,
+          secretsBundle,
+          readSideBaselineBytes(onDiskContent)
+        )
+      : null;
   }
 
   // Written even when the config is unchanged or refused (all but an empty
@@ -2033,7 +2048,9 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // the key this write removes — it fails, and tells the operator to restart.
   writeSecretsAndReload(secretsBundle, { reload: !bridge });
   // Under the read-side line, the re-keyed entry goes over config.apply too;
-  // the file stays the bridge, which resolves against this secrets.json.
+  // the file keeps the key-less stub, which resolves against this
+  // secrets.json, and whichever regenerate runs next writes the entry again
+  // should that push not land (rekeyedProviders).
   if (rekeyed) {
     if (!writeFileOrApply(rekeyed, deferredWrite)) return;
     console.log(
@@ -2161,7 +2178,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     fullRegenerate: true,
     regenerateSeq,
     expectsProviderShrink,
-    deletesProvider,
+    handsOverProvider,
     resumeStrandedShrink,
   });
 

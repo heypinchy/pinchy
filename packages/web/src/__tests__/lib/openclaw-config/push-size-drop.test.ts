@@ -418,7 +418,7 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
     expect(bytes(target), "precondition: no size drop").toBeGreaterThan(bytes(oc.file) / 2);
     pushConfigInBackground(target, {
       fullRegenerate: true,
-      deletesProvider: true,
+      handsOverProvider: true,
       resumeStrandedShrink: resume,
     });
     const onDisk = JSON.parse(oc.file) as Json;
@@ -428,6 +428,54 @@ describe("pushConfigInBackground: a shrink OpenClaw refuses as size-drop", () =>
     await drainWithFakeTimers();
 
     expect(oc.providers(), "precondition: the targeted write kept it").toHaveProperty("acme-llm");
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(undeliveredConfigChange()).toBe(true);
+  });
+
+  // The same, with the targeted write starting while the deletion's own apply
+  // is in flight: the deletion lands, and the targeted writer's copy of the
+  // file from before it lands on top, the stub with it. A push superseded
+  // after its apply landed is as stranded as one superseded before it.
+  it("queues one follow-up regenerate when a targeted write supersedes a small provider deletion during its apply", async () => {
+    vi.useFakeTimers();
+    // The key-less bridge (keyless-bridge.ts): what a targeted writer copies.
+    const small = { baseUrl: acmeProvider.baseUrl, api: acmeProvider.api, models: [model(0)] };
+    const agents = {
+      list: Array.from({ length: 12 }, (_, i) => ({
+        id: `agent-${i}`,
+        name: `Agent ${i}`,
+        model: "anthropic/claude",
+      })),
+    };
+    const oc = new FakeOpenClaw(
+      pinchyConfig({ "acme-llm": small }, { agents }),
+      new Set([anthropicRef.id])
+    );
+    mockGetClient.mockReturnValue(oc.client);
+    const resume = vi.fn();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const target = serialize(pinchyConfig({}, { agents }));
+    expect(bytes(target), "precondition: no size drop").toBeGreaterThan(bytes(oc.file) / 2);
+    const before = JSON.parse(oc.file) as Json;
+    oc.onAccepted = (n) => {
+      if (n !== 1) return;
+      pushConfigInBackground(
+        serialize({ ...before, channels: { telegram: { enabled: true, dmPolicy: "pairing" } } })
+      );
+    };
+    pushConfigInBackground(target, {
+      fullRegenerate: true,
+      handsOverProvider: true,
+      resumeStrandedShrink: resume,
+    });
+    await drainWithFakeTimers();
+
+    expect(oc.accepted, "precondition: the deletion landed first").toHaveLength(2);
+    expect(oc.providers(), "precondition: the targeted write put it back").toHaveProperty(
+      "acme-llm"
+    );
     expect(resume).toHaveBeenCalledTimes(1);
     expect(undeliveredConfigChange()).toBe(true);
   });

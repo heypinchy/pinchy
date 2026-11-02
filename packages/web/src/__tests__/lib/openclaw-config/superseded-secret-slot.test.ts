@@ -1,6 +1,5 @@
 // A superseded versioned key slot must not outlive its last reference in
-// openclaw.json — nor leave secrets.json while openclaw.json still names it
-// (review finding on #1238, and #1246).
+// openclaw.json — nor leave secrets.json while openclaw.json still names it.
 //
 // Re-keying an OpenAI-compatible provider writes a NEW slot
 // (`providers.<slug>@<newVersion>`) and a config whose SecretRef names it. That
@@ -946,6 +945,213 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       expect(files.has(LAST_GOOD_BOUND_PATH)).toBe(false);
       expect(writes.flatMap((w) => w.dangling)).toEqual([]);
     });
+
+    // A deferred bridge lands as OpenClaw's file, and the regenerate that
+    // follows it reads a file whose every SecretRef resolves: the re-keyed
+    // provider is a key-less stub there, not a dangling reference. When the new
+    // address serves far fewer models, the #311 guard refuses the target
+    // against that stub (which kept every old model), so the re-keyed entry is
+    // the only thing that can give the provider its key. It used to be written
+    // only by a regenerate that had just written a bridge itself, so here it
+    // never was: OpenClaw kept the stub — old address, no key — on this and
+    // every later regenerate, and every other config change was refused with
+    // it.
+    describe("a re-key whose bridge went over config.apply", () => {
+      const bigCatalogue = Array.from({ length: 40 }, (_, i) => ({
+        id: `acme-model-${i}-with-a-realistically-long-identifier`,
+        name: `Acme Model ${i} (realistic display name)`,
+        contextWindow: 128000,
+        maxTokens: 8192,
+        input: ["text"],
+      }));
+      const smallCatalogue = (n: number) =>
+        Array.from({ length: n }, (_, i) => ({
+          ...bigCatalogue[i],
+          id: `small-model-${i}-with-a-realistically-long-identifier`,
+        }));
+
+      for (const size of [1, 8]) {
+        it(`gives the provider its new address and key once the bridge has landed, for a ${String(size)}-model catalogue`, async () => {
+          customProviders[0] = { ...customProviders[0], models: bigCatalogue };
+          const installed = await install();
+          staleBound(2 * bytes(installed) - 1);
+          connectGateway();
+          writes = [];
+          const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+          const smaller = smallCatalogue(size);
+          customProviders[0] = {
+            ...customProviders[0],
+            baseUrl: "https://small.example/v1",
+            models: smaller,
+            apiKey: "sk-acme-new",
+            keyVersion: NEW_VERSION,
+          };
+
+          await regenerateOpenClawConfig();
+          await drain();
+          expect(errorSpy.mock.calls.flat().join(" "), "precondition: refused").toMatch(
+            /suspiciously small/
+          );
+          expect(pendingApplies, "precondition: the bridge went over config.apply").toHaveLength(1);
+          land();
+          await waitFor(
+            () => secretsOnDisk().providers[OLD_SLOT] === undefined,
+            "the regenerate the landed bridge runs writes secrets.json"
+          );
+          await waitFor(() => getPendingConfigPushCount() === 0, "it settles");
+
+          const acme = () => JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"];
+          expect(acme().apiKey?.id).toBe(`/providers/${NEW_SLOT}/apiKey`);
+          expect(acme().baseUrl).toBe("https://small.example/v1");
+          expect(acme().models.map((m: { id: string }) => m.id)).toEqual(
+            expect.arrayContaining(smaller.map((m) => m.id))
+          );
+
+          // Later regenerates keep it, and deliver the shorter list once it is
+          // over half of the re-keyed file.
+          for (let i = 0; i < 3; i++) {
+            await regenerateOpenClawConfig();
+            await drain();
+            land();
+            await drain();
+          }
+          expect(acme().apiKey?.id).toBe(`/providers/${NEW_SLOT}/apiKey`);
+          expect(acme().baseUrl).toBe("https://small.example/v1");
+          if (size === 8) {
+            expect(acme().models.map((m: { id: string }) => m.id)).toEqual(
+              smaller.map((m) => m.id)
+            );
+          }
+          expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+          expect(danglingOnDisk()).toEqual([]);
+        });
+      }
+    });
+
+    // The re-keyed entry, deferred to config.apply, is overtaken by a targeted
+    // writer (a Telegram bot connected meanwhile) before it goes out. The
+    // targeted writer's copy of the file is the bridge, the stub in it, and
+    // that is what OpenClaw then runs. The regenerate the re-keyed entry
+    // carried never runs, so nothing gave the provider its key back.
+    it("gives the provider its entry when a targeted write supersedes the deferred re-keyed entry", async () => {
+      customProviders[0] = {
+        ...customProviders[0],
+        baseUrl: `https://api.acme.example/${"v".repeat(400)}/v1`,
+      };
+      const installed = await install();
+      const bridgeBytes = bytes(
+        serialize(
+          keylessBridge(
+            JSON.parse(installed),
+            bundleResolving(installed, `/providers/${OLD_SLOT}/apiKey`)
+          )
+        )
+      );
+      staleBound(2 * bridgeBytes);
+      connectGateway();
+      // The re-keyed entry's push waits in config.get until the targeted write
+      // has started.
+      const gateway = mockGetClient() as { config: { get: ReturnType<typeof vi.fn> } };
+      let releaseGet!: () => void;
+      const held = new Promise<void>((resolve) => (releaseGet = resolve));
+      gateway.config.get.mockImplementationOnce(async () => {
+        await held;
+        return { hash: "h", config: JSON.parse(files.get(CONFIG_PATH)!) };
+      });
+      writes = [];
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      customProviders[0] = {
+        ...customProviders[0],
+        baseUrl: "https://s.example/v1",
+        apiKey: "sk-acme-new",
+        keyVersion: NEW_VERSION,
+      };
+      await regenerateOpenClawConfig();
+      await drain();
+      expect(
+        writes.map((w) => w.path),
+        "precondition: bridge, secrets.json, re-keyed entry deferred"
+      ).toEqual([CONFIG_PATH, SECRETS_PATH]);
+
+      const bridge = JSON.parse(files.get(CONFIG_PATH)!);
+      pushConfigInBackground(
+        JSON.stringify({ ...bridge, channels: { telegram: { enabled: false } } }, null, 2)
+      );
+      releaseGet();
+      await waitFor(() => pendingApplies.length === 1, "the targeted write goes out");
+      land();
+      expect(
+        JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"],
+        "precondition: OpenClaw runs the stub"
+      ).not.toHaveProperty("apiKey");
+
+      await waitFor(() => {
+        if (pendingApplies.length > 0) land();
+        const acme = JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"];
+        return acme?.apiKey?.id === `/providers/${NEW_SLOT}/apiKey`;
+      }, "a follow-up regenerate gives the provider its new entry");
+      const acme = JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"];
+      expect(acme.baseUrl).toBe("https://s.example/v1");
+      expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+    }, 20_000);
+  });
+
+  // Pinchy stops between secrets.json and the re-keyed entry: the file is the
+  // bridge, the re-keyed provider a key-less stub in it. Every SecretRef in it
+  // resolves, so the next regenerate writes no bridge — and the re-keyed entry
+  // used to follow only one. For a catalogue the #311 guard refuses against
+  // the stub, OpenClaw kept the stub on every later regenerate.
+  it("gives a re-keyed provider its entry on the regenerate after Pinchy stopped between the two writes", async () => {
+    customProviders[0] = {
+      ...customProviders[0],
+      models: Array.from({ length: 40 }, (_, i) => ({
+        id: `acme-model-${i}-with-a-realistically-long-identifier`,
+        name: `Acme Model ${i} (realistic display name)`,
+        contextWindow: 128000,
+        maxTokens: 8192,
+        input: ["text"],
+      })),
+    };
+    mockGetClient.mockImplementation(() => {
+      throw new Error("OpenClaw client not initialized");
+    });
+    await regenerateOpenClawConfig();
+    await drain();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    customProviders[0] = {
+      ...customProviders[0],
+      baseUrl: "https://small.example/v1",
+      models: [{ id: "small-model", name: "Small Model", input: ["text"] }],
+      apiKey: "sk-acme-new",
+      keyVersion: NEW_VERSION,
+    };
+    const record = afterWrite.check;
+    afterWrite.check = (path) => {
+      record(path);
+      if (path === SECRETS_PATH) throw new Error("Pinchy stopped");
+    };
+    await expect(regenerateOpenClawConfig()).rejects.toThrow();
+    afterWrite.check = record;
+    expect(
+      JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"],
+      "precondition: the bridge's stub"
+    ).not.toHaveProperty("apiKey");
+    expect(errorSpy.mock.calls.flat().join(" "), "precondition: refused").toMatch(
+      /suspiciously small/
+    );
+
+    vi.resetModules();
+    endPinchyProcess();
+    const regenerate = (await import("@/lib/openclaw-config")).regenerateOpenClawConfig;
+    await regenerate();
+    await drain();
+
+    const acme = JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"];
+    expect(acme.apiKey?.id).toBe(`/providers/${NEW_SLOT}/apiKey`);
+    expect(acme.baseUrl).toBe("https://small.example/v1");
+    expect(acme.models.map((m: { id: string }) => m.id)).toContain("small-model");
+    expect(danglingOnDisk()).toEqual([]);
   });
 
   // A provider read that comes back empty is refused by the #311 guard, and

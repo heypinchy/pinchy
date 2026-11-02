@@ -150,7 +150,7 @@ Some endpoints — a bare vLLM server, say — don't publish a `/models` list. W
 
 ### Moving a provider to a much smaller endpoint
 
-The agent runtime picks up a provider's new address and key straight away. Its model list can lag behind when the new endpoint serves far fewer models than the old one — a hosted catalogue of hundreds of models swapped for a single self-hosted one, say. Until the shorter list arrives, the runtime also lists some of the previous models after the new ones — just enough to keep its configuration from shrinking by more than half at once, which the runtime would take for a damaged file. Agents on a model the new endpoint doesn't serve answer with an error meanwhile.
+The agent runtime picks up a provider's new address and key together, as soon as it takes the change — usually straight away. If something interrupts that — Pinchy restarting at the wrong moment, say, or another configuration change overtaking it — we finish it on our own: a few seconds later, or as soon as Pinchy and the runtime are back. Its model list can lag behind when the new endpoint serves far fewer models than the old one — a hosted catalogue of hundreds of models swapped for a single self-hosted one, say. Until the shorter list arrives, the runtime also lists some of the previous models after the new ones — just enough to keep its configuration from shrinking by more than half at once, which the runtime would take for a damaged file. Agents on a model the new endpoint doesn't serve answer with an error meanwhile.
 
 How soon the shorter list arrives depends on how much smaller it is:
 

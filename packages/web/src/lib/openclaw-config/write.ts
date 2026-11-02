@@ -360,15 +360,17 @@ export interface PushConfigOptions {
    */
   expectsProviderShrink?: boolean;
   /**
-   * The payload deletes a provider, whatever its size. A newer push that
-   * supersedes it then hands off to `resumeStrandedShrink` even when OpenClaw
-   * would have taken the deletion in one write: a targeted writer's copy of
-   * the file still lists the deleted provider (as a key-less stub), and
-   * nothing else would remove it before the next config change.
+   * The payload finishes a provider handover, whatever its size: it deletes a
+   * provider, or gives a re-keyed one its new entry (keyless-bridge.ts). A
+   * newer push that supersedes it — before or during its apply — then hands
+   * off to `resumeStrandedShrink` even when OpenClaw would have taken the
+   * change in one write: a targeted writer's copy of the file still lists the
+   * provider as a key-less stub, and nothing else would finish the handover
+   * before the next config change.
    */
-  deletesProvider?: boolean;
+  handsOverProvider?: boolean;
   /**
-   * Runs (once, debounced) when this push's provider deletion stops short of
+   * Runs (once, debounced) when this push's provider handover stops short of
    * its target: superseded, dropped for a transient reason, or dropped after a
    * step landed (see MAX_SHRINK_STEPS). build.ts passes a
    * follow-up regenerate here — and passes none from that follow-up, so it
@@ -381,19 +383,6 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
   const { onChangeApplied, resumeStrandedShrink } = options;
   const generation = nextConfigPushGeneration();
   const regenerateSeq = options.regenerateSeq ?? nextRegenerateSequence();
-  // The target reached OpenClaw (applied, written, or already in place). A
-  // full regenerate that started after a stranded one makes that one's queued
-  // follow-up moot (cancelShrinkResume checks the start order), and likewise
-  // pays a change owed to OpenClaw's next connect (settleUndeliveredConfig-
-  // Change), and keeps an older push that gives up later from owing it again
-  // (noteFullRegenerateDelivered) — but only while this is the newest push: a
-  // newer one in flight may carry other content (a targeted writer's copy of
-  // the old file) and settles that itself.
-  const targetReached = () => {
-    if (generation !== getCurrentConfigPushGeneration()) return;
-    if (!options.fullRegenerate) return;
-    noteFullRegenerateDelivered(regenerateSeq);
-  };
 
   // Make the in-flight push observable (health endpoint `configPushesPending`,
   // consumed by the E2E stability gates): a rate-limited apply can park this
@@ -466,14 +455,34 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       );
       if (transient || shrinkSteps > 0) resumeShrink(why);
     };
-    // Superseded before a deletion finished — a shrink, or any other push that
-    // deletes a provider (`deletesProvider`). Queued even when a full
-    // regenerate supersedes: that one cancels the follow-up only once it has
-    // reached OpenClaw, and a partial writer can still supersede it first.
+    // Superseded before a provider handover finished — a shrink, or any other
+    // push that deletes a provider or re-keys one (`handsOverProvider`).
+    // Queued even when a full regenerate supersedes: that one cancels the
+    // follow-up only once it has reached OpenClaw, and a partial writer can
+    // still supersede it first.
     const onSuperseded = () => {
-      if (shrinkKnown() || options.deletesProvider === true) {
+      if (shrinkKnown() || options.handsOverProvider === true) {
         resumeShrink("superseded before it finished");
       }
+    };
+    // The target reached OpenClaw (applied, written, or already in place). A
+    // full regenerate that started after a stranded one makes that one's
+    // queued follow-up moot (cancelShrinkResume checks the start order), and
+    // likewise pays a change owed to OpenClaw's next connect (settleUndelivered-
+    // ConfigChange), and keeps an older push that gives up later from owing it
+    // again (noteFullRegenerateDelivered) — but only while this is the newest
+    // push. A newer one that started while this one's apply was in flight is
+    // superseding it all the same: it may carry other content — a targeted
+    // writer's copy of the file from before this push landed, a deleted
+    // provider's stub included — and lands on top, exactly as if it had
+    // started before this apply.
+    const targetReached = () => {
+      if (generation !== getCurrentConfigPushGeneration()) {
+        onSuperseded();
+        return;
+      }
+      if (!options.fullRegenerate) return;
+      noteFullRegenerateDelivered(regenerateSeq);
     };
     // A payload that names a key secrets.json no longer holds — captured
     // before a regenerate took the key out (a targeted writer's copy of the
