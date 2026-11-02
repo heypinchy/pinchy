@@ -34,7 +34,10 @@
  * 3. **OOM is distinguishable, and the difference is load-bearing.** Exit
  *    **137** (or a bare SIGKILL, which is what a direct spawn sees) means the
  *    container was too small — infrastructure, retryable. Exit 0 with no
- *    artifact means THIS document is unreadable — final. Without the split,
+ *    artifact means THIS document is unreadable — final — unless the PDF
+ *    could not be WRITTEN: the output lands on the artifact volume, and a
+ *    full one gives the same exit 0 and no file (`failedStoreLine`,
+ *    `probeWritable`). Without the split,
  *    one memory squeeze brands perfectly good documents as permanently
  *    unreadable and nothing ever retries them.
  *
@@ -52,8 +55,9 @@
  * text), NOT a guarantee.
  */
 import { spawn } from "node:child_process";
-import { mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { mkdir, open, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { getOfficeArtifactStore, hashFileContents, OfficeArtifactStore } from "./office-artifacts";
 import {
@@ -429,15 +433,30 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         return batch.map((item, i) => outcomes[i] ?? infrastructureFailure(item.absPath, reason));
       }
 
+      let probe: Promise<string | null> | undefined;
       for (const [i, item] of batch.entries()) {
         if (outcomes[i]) continue;
-        outcomes[i] = await collectOne(
+        const producedPdf = join(outDir, `${i}.pdf`);
+        const outcome = await collectOne(
           { ...item, contentHash: keys[i] },
           join(inDir, `${i}${extname(item.absPath).toLowerCase()}`),
-          join(outDir, `${i}.pdf`),
+          producedPdf,
           deps,
           result.stderr
         );
+        // Every document verdict collectOne gives is drawn from the PDF — and
+        // the PDF lands on the artifact volume the staged copies just filled.
+        // Before a missing or broken PDF is held against the document, rule
+        // out the volume: either LibreOffice said it could not store this
+        // output, or the directory no longer takes a write at all.
+        const volumeFault =
+          outcome.status === "failed"
+            ? (failedStoreLine(result.stderr, producedPdf) ??
+              (await (probe ??= probeWritable(outDir))))
+            : null;
+        outcomes[i] = volumeFault
+          ? infrastructureFailure(item.absPath, `could not write the converted PDF: ${volumeFault}`)
+          : outcome;
       }
     }
 
@@ -509,6 +528,68 @@ async function collectOne(
 }
 
 /**
+ * LibreOffice's own word that it could not write `producedPdf`, or null.
+ *
+ * A failed write of the output is reported, per file, as
+ * `SfxBaseModel::impl_store <file:///…/out/<i>.pdf> failed: 0x…(Error Area:Io …)`
+ * — exit 0, no PDF, exactly like an input it could not load, which says
+ * `Error: source file could not be loaded` instead. Measured against the
+ * runtime image's LibreOffice 7.4: a full tmpfs gives `Class:Access`, one with
+ * 4 KB left `Class:Space`, a target answering ENOSPC `Class:Abort`. The class
+ * is LibreOffice's mapping of the errno, not a line to draw, so any `Area:Io`
+ * failure to store THIS output counts. That direction is the safe one: a
+ * document mis-booked as infrastructure is read again next run and keeps its
+ * old version; a full disk mis-booked as the document deletes that version.
+ *
+ * This is the witness for a NEARLY full volume, where a PDF does not fit but
+ * the probe's 4 KB still fit. It is matched to the output it names —
+ * stderr is batch-wide.
+ */
+function failedStoreLine(stderr: string, producedPdf: string): string | null {
+  for (const line of stderr.split("\n")) {
+    const match = /impl_store <(file:[^>]+)> failed:.*Error Area:Io/.exec(line);
+    if (!match) continue;
+    let target: string;
+    try {
+      target = fileURLToPath(match[1]);
+    } catch {
+      continue;
+    }
+    // By name: this stderr is the batch's own process, which writes into one
+    // directory, and the path it prints may be one the OS resolved (macOS's
+    // /var -> /private/var).
+    if (basename(target) === basename(producedPdf)) return line.trim().slice(0, 300);
+  }
+  return null;
+}
+
+/**
+ * Null when `dir` still takes a write, else why not.
+ *
+ * Writes, fsyncs and removes a small file: an fsync is where a quota or a
+ * failing disk speaks up, not the open. The directory is the batch's own
+ * scratch space, so a failure here says nothing about any document — whatever
+ * the errno, it is the volume.
+ */
+async function probeWritable(dir: string): Promise<string | null> {
+  const probe = join(dir, ".write-probe");
+  try {
+    const handle = await open(probe, "wx");
+    try {
+      await handle.write(Buffer.alloc(4096));
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await unlink(probe);
+    return null;
+  } catch (err) {
+    await rm(probe, { force: true }).catch(() => {});
+    return `output directory does not take a write: ${reasonOf(err)}`;
+  }
+}
+
+/**
  * Was the converter killed rather than finished? 137 is 128+9 — what a shell
  * or `docker` reports for SIGKILL — while a direct spawn sees the signal with
  * a null exit code. Both are the same event: the OOM killer, or our own
@@ -561,8 +642,14 @@ function summarise(stderr: string): string {
 // Production adapters
 // ---------------------------------------------------------------------------
 
-/** stderr we keep. LibreOffice repeats itself per file; a huge batch must not build a huge string. */
-const MAX_STDERR_BYTES = 8 * 1024;
+/**
+ * stderr we keep. LibreOffice repeats itself per file; a huge batch must not
+ * build a huge string. But the per-file `impl_store … failed` line is how a
+ * PDF that did not fit is told apart from a document (`failedStoreLine`), so
+ * the cap must hold a whole batch of them: at staging-path lengths a failed
+ * file costs ~450 bytes (its `convert` line and its error), 20 of them ~9 KB.
+ */
+const MAX_STDERR_BYTES = 32 * 1024;
 
 /**
  * What a converter subprocess inherits from us — an allow-list, not a copy of
@@ -716,7 +803,9 @@ const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =
     let stderr = "";
     let timedOut = false;
     child.stderr.on("data", (chunk: Buffer) => {
-      if (stderr.length < MAX_STDERR_BYTES) stderr += chunk.toString("utf8");
+      if (stderr.length < MAX_STDERR_BYTES) {
+        stderr = (stderr + chunk.toString("utf8")).slice(0, MAX_STDERR_BYTES);
+      }
     });
 
     const timer = setTimeout(() => {

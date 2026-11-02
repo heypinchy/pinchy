@@ -58,6 +58,7 @@ import {
   type ConversionOutcome,
   type OfficeSource,
   type PrepareSource,
+  type RunConverter,
 } from "@/lib/knowledge/office-convert";
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
 import { stageOfficeSourceIsolated } from "@/lib/knowledge/xlsx-isolated";
@@ -1757,7 +1758,7 @@ it("keeps the last indexed version when a re-conversion of a changed file fails 
   );
 });
 
-describe("a staged copy that cannot be written (eighth review, PR #1243)", () => {
+describe("an artifact volume that cannot be written (eighth and ninth review, PR #1243)", () => {
   // The reader child writes each checked copy onto the artifact volume. A
   // full or read-only volume there is a squeeze on the machine, not a verdict
   // on the document: a CHANGED file must keep the version the index holds and
@@ -1774,7 +1775,12 @@ describe("a staged copy that cannot be written (eighth review, PR #1243)", () =>
   });
 
   /** The real converter, with `prepareSource` swapped and LibreOffice never reached. */
-  function realConverterDeps(prepareSource: PrepareSource) {
+  function realConverterDeps(
+    prepareSource: PrepareSource,
+    runConverter: RunConverter = async () => {
+      throw new Error("the converter must not run when nothing could be staged");
+    }
+  ) {
     const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05)));
     return {
       embed,
@@ -1784,15 +1790,13 @@ describe("a staged copy that cannot be written (eighth review, PR #1243)", () =>
         convertOfficeFiles(sources, {
           store: new OfficeArtifactStore(storeRoot),
           prepareSource,
-          runConverter: async () => {
-            throw new Error("the converter must not run when nothing could be staged");
-          },
+          runConverter,
         }),
       ocrModel: null,
     } as IngestDeps;
   }
 
-  async function expectOldVersionKept(prepareSource: PrepareSource) {
+  async function expectOldVersionKept(prepareSource: PrepareSource, runConverter?: RunConverter) {
     const docPath = join(tmpRoot, "Angebot.doc");
     writeFileSync(docPath, "{\\rtf1 version one}");
     const good = officeDeps(convertedTo("/artifacts/v1.pdf"), () => WORD_PAGES);
@@ -1804,9 +1808,9 @@ describe("a staged copy that cannot be written (eighth review, PR #1243)", () =>
     writeFileSync(docPath, "{\\rtf1 version two}");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      expect(await ingestDirectory(ORG_ID, tmpRoot, realConverterDeps(prepareSource))).toEqual(
-        counts({ failed: 1 })
-      );
+      expect(
+        await ingestDirectory(ORG_ID, tmpRoot, realConverterDeps(prepareSource, runConverter))
+      ).toEqual(counts({ failed: 1 }));
     } finally {
       consoleError.mockRestore();
     }
@@ -1836,6 +1840,19 @@ describe("a staged copy that cannot be written (eighth review, PR #1243)", () =>
       });
     }
   );
+
+  it("keeps the last indexed version when the converted PDF cannot be written (ninth review)", async () => {
+    // The copy fit; the PDF, written to the same volume right after, did not.
+    // What the real `soffice` does then: exit 0, no PDF, one stderr line.
+    await expectOldVersionKept(
+      async () => null,
+      async ({ outDir }) => ({
+        code: 0,
+        signal: null,
+        stderr: `Error: Please verify input parameters... (SfxBaseModel::impl_store <file://${join(outDir, "0.pdf")}> failed: 0x909(Error Area:Io Class:Space Code:9) at ./sfx2/source/doc/sfxbasemodel.cxx:3207)\n`,
+      })
+    );
+  });
 });
 
 it("converts in batches, and not at all for a document it can skip", async () => {

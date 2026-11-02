@@ -18,12 +18,12 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmod, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
+import { convertOfficeFiles, runSoffice } from "@/lib/knowledge/office-convert";
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 
@@ -122,6 +122,53 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
       spawnSync("ls", [corpusDir], { encoding: "utf8" }).stdout.trim().split("\n").sort()
     ).toEqual(["broken.docx", "source.doc", "source.docx"]);
   }, 180_000);
+
+  // Ninth review, PR #1243: LibreOffice writes its PDFs onto the artifact
+  // volume the staged copies just filled. A failed write there exits 0 with no
+  // PDF — the same shape as an unloadable document — and must not be booked
+  // as one: a changed file would lose its indexed version.
+  it.skipIf(process.getuid?.() === 0)(
+    "books a PDF it could not write into an unwritable output directory as infrastructure",
+    async () => {
+      // Skipped as root, which the mode bits do not stop; the /dev/full case
+      // below is the one that runs as root (CI runs this suite as root).
+      const source = buildFixture("docx", "source.docx");
+
+      const outcomes = await convertOfficeFiles([{ absPath: source }], {
+        store: new OfficeArtifactStore(join(tmpRoot, "artifacts-ro")),
+        runConverter: async (run) => {
+          await chmod(run.outDir, 0o500);
+          return runSoffice(run);
+        },
+      });
+
+      expect(outcomes[0].status).toBe("infrastructure");
+      expect(outcomes[0].reason).toMatch(/could not write the converted PDF/);
+    },
+    180_000
+  );
+
+  it.skipIf(!existsSync("/dev/full"))(
+    "books a PDF whose write ran out of space as infrastructure, from what LibreOffice says",
+    async () => {
+      // The output directory itself still takes a small file — exactly a
+      // nearly full volume, where the probe passes and the PDF does not fit.
+      // /dev/full answers every write with ENOSPC, for root too (Linux only).
+      const source = buildFixture("docx", "source.docx");
+
+      const outcomes = await convertOfficeFiles([{ absPath: source }], {
+        store: new OfficeArtifactStore(join(tmpRoot, "artifacts-full")),
+        runConverter: async (run) => {
+          await symlink("/dev/full", join(run.outDir, "0.pdf"));
+          return runSoffice(run);
+        },
+      });
+
+      expect(outcomes[0].status).toBe("infrastructure");
+      expect(outcomes[0].reason).toMatch(/could not write the converted PDF: .*impl_store/);
+    },
+    180_000
+  );
 
   it("serves the stored artifact on the second run without touching LibreOffice again", async () => {
     const source = buildFixture("doc:MS Word 97", "source.doc");

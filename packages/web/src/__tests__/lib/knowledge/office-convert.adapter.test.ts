@@ -167,7 +167,7 @@ describe("runSoffice", () => {
     // multi-megabyte string inside the web process.
     process.env.KB_SOFFICE_BIN = stub(
       "soffice-loud",
-      "i=0; while [ $i -lt 400 ]; do i=$((i+1)); " +
+      "i=0; while [ $i -lt 1200 ]; do i=$((i+1)); " +
         'printf "Error: source file could not be loaded padding padding padding padding\\n" >&2; ' +
         "done\n"
     );
@@ -176,6 +176,26 @@ describe("runSoffice", () => {
 
     expect(result.stderr.length).toBeLessThan(64 * 1024);
     expect(result.stderr).toContain("could not be loaded");
+  });
+
+  it("keeps enough stderr for every file of a full batch whose PDFs did not fit (ninth review, PR #1243)", async () => {
+    // The per-file `impl_store … failed` line is what tells a full volume
+    // from an unloadable document. At production staging-path lengths a
+    // batch of 20 prints ~9 KB of them; the last file must not lose its line
+    // to the cap and be booked against the document.
+    const dir = `/app/kb-artifacts/staging/${"0".repeat(8)}-0000-4000-8000-${"0".repeat(12)}`;
+    process.env.KB_SOFFICE_BIN = stub(
+      "soffice-full",
+      'printf "Warning: failed to launch javaldx - java may not function correctly\\n" >&2; ' +
+        "i=0; while [ $i -lt 20 ]; do " +
+        `printf "convert ${dir}/in/$i.pptx -> ${dir}/out/$i.pdf using filter : impress_pdf_Export\\n" >&2; ` +
+        `printf "Error: Please verify input parameters... (SfxBaseModel::impl_store <file://${dir}/out/$i.pdf> failed: 0x507(Error Area:Io Class:Access Code:7) at ./sfx2/source/doc/sfxbasemodel.cxx:3207 at ./sfx2/source/doc/sfxbasemodel.cxx:1783)\\n" >&2; ` +
+        "i=$((i+1)); done\n"
+    );
+
+    const result = await run();
+
+    expect(result.stderr).toContain(`impl_store <file://${dir}/out/19.pdf> failed`);
   });
 
   it("rejects rather than resolving when the binary is missing", async () => {

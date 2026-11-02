@@ -1025,6 +1025,141 @@ describe("a staged copy that cannot be written is infrastructure, not a verdict 
   });
 });
 
+describe("an output the converter could not write is infrastructure, not a verdict (ninth review, PR #1243)", () => {
+  // LibreOffice writes its PDFs into staging/<batch>/out — the same volume the
+  // staged copies just filled. When that write fails it exits 0, writes no
+  // PDF and only says so on stderr, which looks exactly like a document it
+  // could not load. Booked as a document failure, a CHANGED file would lose
+  // the version the index already held to a chunkless row.
+  const runningAsRoot = process.getuid?.() === 0;
+
+  /**
+   * What the real `soffice` in the runtime image prints for an output it
+   * could not store — captured with `--outdir` on a tmpfs with 4 KB left.
+   */
+  const implStoreFailed = (pdf: string, errorClass = "Space Code:9") =>
+    `convert ${pdf.replace(/\.pdf$/, ".doc")} -> ${pdf} using filter : writer_pdf_Export\n` +
+    `Error: Please verify input parameters... (SfxBaseModel::impl_store <file://${pdf}> failed: 0x909(Error Area:Io Class:${errorClass}) at ./sfx2/source/doc/sfxbasemodel.cxx:3207 at ./sfx2/source/doc/sfxbasemodel.cxx:1783)\n`;
+
+  /** Converts the inputs whose source maps to text, and lets `after` spoil the run. */
+  function converterThat(
+    outputs: Record<string, string>,
+    after: (call: ConverterRun) => Promise<string>
+  ): RunConverter {
+    return async (call) => {
+      for (const staged of call.inputs) {
+        const text = outputs[basename(await realpath(staged))];
+        if (text) {
+          const outName = basename(staged, extname(staged)) + ".pdf";
+          await writeFile(join(call.outDir, outName), `%PDF-1.4\n${text}\n`);
+        }
+      }
+      return { code: 0, signal: null, stderr: await after(call) };
+    };
+  }
+
+  it("books a missing PDF as infrastructure when the converter says it could not store it", async () => {
+    // The volume still takes a small probe here (4 KB free), so stderr is the
+    // only witness: LibreOffice names the output it failed to write.
+    const [full, good] = [await corpusFile("full.doc", "x"), await corpusFile("good.doc", "y")];
+
+    const outcomes = await convertOfficeFiles(
+      [full, good],
+      deps(fakeConverter({ outputs: {} }), {
+        runConverter: converterThat({ "good.doc": "converted words" }, async (call) =>
+          implStoreFailed(join(call.outDir, "0.pdf"))
+        ),
+      })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "converted"]);
+    expect(outcomes[0].reason).toMatch(/could not write the converted PDF/);
+    expect(outcomes[0].reason).toMatch(/impl_store/);
+  });
+
+  it("books it as infrastructure whatever error class LibreOffice gives the failed store", async () => {
+    // Measured against the real binary: a full tmpfs says Class:Access, a
+    // nearly full one Class:Space, a target that answers ENOSPC Class:Abort.
+    // The class is LibreOffice's mapping, not a signal we can draw a line on.
+    const source = await corpusFile("a.doc", "x");
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(fakeConverter({ outputs: {} }), {
+        runConverter: converterThat({}, async (call) =>
+          implStoreFailed(join(call.outDir, "0.pdf"), "Abort Code:27")
+        ),
+      })
+    );
+
+    expect(outcomes[0].status).toBe("infrastructure");
+  });
+
+  it("only for the output LibreOffice named: an unloadable neighbour is still a document failure", async () => {
+    // stderr is batch-wide, so the line is matched to the output it names.
+    // `/10.pdf` must not be read as `/0.pdf` either.
+    const sources = [];
+    for (let i = 0; i <= 10; i++) sources.push(await corpusFile(`f${i}.doc`, `x${i}`));
+
+    const outcomes = await convertOfficeFiles(
+      sources,
+      deps(fakeConverter({ outputs: {} }), {
+        batchSize: 11,
+        runConverter: converterThat(
+          {},
+          async (call) =>
+            "Error: source file could not be loaded\n" +
+            implStoreFailed(join(call.outDir, "10.pdf"))
+        ),
+      })
+    );
+
+    expect(outcomes[10].status).toBe("infrastructure");
+    expect(outcomes.slice(0, 10).map((o) => o.status)).toEqual(Array(10).fill("failed"));
+  });
+
+  it.skipIf(runningAsRoot)(
+    "books a missing PDF as infrastructure when the output directory can no longer be written",
+    async () => {
+      // No stderr line to go on (LibreOffice's stderr is capped, and a batch
+      // of 20 can outrun the cap): the module asks the volume itself. Skipped
+      // as root, which the mode bits do not stop.
+      const source = await corpusFile("a.doc", "x");
+
+      const outcomes = await convertOfficeFiles(
+        [source],
+        deps(fakeConverter({ outputs: {} }), {
+          runConverter: converterThat({}, async (call) => {
+            await chmod(call.outDir, 0o500);
+            return "";
+          }),
+        })
+      );
+
+      expect(outcomes[0].status).toBe("infrastructure");
+      expect(outcomes[0].reason).toMatch(/could not write the converted PDF: .*EACCES/);
+    }
+  );
+
+  it("books a missing PDF as infrastructure when the output directory is gone", async () => {
+    // The same question, in a shape root cannot write through either.
+    const source = await corpusFile("a.doc", "x");
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(fakeConverter({ outputs: {} }), {
+        runConverter: converterThat({}, async (call) => {
+          await rm(call.outDir, { recursive: true });
+          await writeFile(call.outDir, "not a directory");
+          return "";
+        }),
+      })
+    );
+
+    expect(outcomes[0].status).toBe("infrastructure");
+  });
+});
+
 describe("the word-count oracle's markup ceiling (fourth review, PR #1243)", () => {
   // mammoth's DOM costs up to ~300x the XML it parses: a 1.9 MB .docx with a
   // 31 MiB document part peaked at 2.9 GB. The oracle is a tripwire, not a
