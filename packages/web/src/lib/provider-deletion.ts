@@ -19,6 +19,7 @@
 import { setSetting } from "@/lib/settings";
 import { listConfiguredBuiltIns } from "@/lib/provider-count";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
+import { refusedBaseUrlReasons } from "@/lib/openai-compatible-stored-url";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
@@ -34,25 +35,45 @@ export interface RemainingCandidate {
 }
 
 /**
+ * The DELETE routes' answer when other providers are configured but none of
+ * them is usable — every remaining one is a custom provider whose base URL the
+ * SSRF guard refuses. Deleting would leave agents (and the default) nowhere to
+ * go, so the delete is refused before anything changes. The plain "last
+ * configured provider" message stays for the case with nothing else configured.
+ */
+export const LAST_USABLE_PROVIDER_ERROR =
+  "Cannot remove the last usable provider. Every other configured provider has a base URL " +
+  "that is now refused, so agents could not be moved onto it. Change one of those URLs or " +
+  "add another provider first.";
+
+/**
  * The ordered set of providers an orphaned agent can migrate onto, shared by
  * both DELETE routes so the built-ins-first ordering AND the custom-instance
  * `<slug>/<modelId>` namespacing (which must match the openclaw.json emission)
  * are single-sourced rather than byte-duplicated.
  *
  * Built-ins come first (so the all-built-ins migration path stays byte-identical
- * to before), then every custom instance. The two DELETE routes exclude the
- * just-deleted provider differently, and that is the only parameter:
+ * to before), then every custom instance whose saved base URL the SSRF guard
+ * allows. Both DELETE routes build this BEFORE they remove anything — the
+ * result is also their "is a usable provider left?" guard — so each excludes
+ * the provider it is about to delete:
  *
- * - **Built-in delete** builds candidates BEFORE removing the settings key, so
- *   the deleted built-in is still "configured" — pass `excludeBuiltInName` to
- *   skip it by name.
- * - **Custom delete** builds candidates AFTER `deleteProviderById`, so the row
- *   is already gone from `listOpenAiCompatibleProviders()` — pass nothing.
+ * - **Built-in delete** passes `excludeBuiltInName`.
+ * - **Custom delete** passes `excludeCustomId` (the route only knows the row id).
+ *
+ * A custom provider whose base URL is refused is left out: config emission
+ * points it at `REFUSED_BASE_URL` with no key (openai-compatible-stored-url.ts),
+ * so every agent moved onto it would fail, and making it `default_provider`
+ * would hand it what `PATCH /api/settings/providers/default` refuses to. The
+ * verdict is one batch call — each host looked up once, each lookup bounded by
+ * the guard's timeout, and an unresolvable name allowed (fail open), exactly as
+ * emission decides it.
  */
 export async function buildRemainingCandidates(opts?: {
   excludeBuiltInName?: string;
+  excludeCustomId?: string;
 }): Promise<RemainingCandidate[]> {
-  const excludeBuiltInName = opts?.excludeBuiltInName;
+  const { excludeBuiltInName, excludeCustomId } = opts ?? {};
   const candidates: RemainingCandidate[] = [];
   for (const builtIn of await listConfiguredBuiltIns()) {
     if (excludeBuiltInName !== undefined && builtIn.name === excludeBuiltInName) continue;
@@ -62,7 +83,12 @@ export async function buildRemainingCandidates(opts?: {
       defaultModel: builtIn.config.defaultModel,
     });
   }
-  for (const custom of await listOpenAiCompatibleProviders()) {
+  const customs = (await listOpenAiCompatibleProviders()).filter(
+    (custom) => excludeCustomId === undefined || custom.id !== excludeCustomId
+  );
+  const refused = customs.length > 0 ? await refusedBaseUrlReasons(customs) : new Map();
+  for (const custom of customs) {
+    if (refused.has(custom.slug)) continue;
     // models non-empty by create schema (.min(1))
     candidates.push({
       name: custom.slug,
@@ -107,8 +133,8 @@ export interface MigrationResult {
  * `remainingCandidates` MUST already exclude the deleted provider and be ordered
  * built-ins-first (Task 8): the first element wins as the migration target, so
  * the ordering is the policy. With no remaining candidate nothing is migrated
- * and no default is reassigned (the last-provider guard upstream prevents this
- * from stranding agents in practice).
+ * and no default is reassigned — both DELETE routes refuse that case up front
+ * ({@link LAST_USABLE_PROVIDER_ERROR}), so it does not strand agents in practice.
  */
 export async function migrateAgentsOffDeletedProvider(opts: {
   deletedPrefix: string;
@@ -169,7 +195,9 @@ export async function migrateAgentsOffDeletedProvider(opts: {
  *
  * With no remaining candidate the migration moves nothing, so neither does the
  * preview: `affectedAgents` stays empty rather than promising a move that would
- * not happen (the last-provider guard rejects that delete anyway).
+ * not happen (the DELETE refuses that case anyway). A custom provider whose
+ * base URL is refused is never the target, for the same reason it is never the
+ * migration's.
  */
 export async function previewProviderDeletion(opts: {
   providerName: string;

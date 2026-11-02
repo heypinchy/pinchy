@@ -23,6 +23,7 @@ import {
   migrateAgentsOffDeletedProvider,
   repointAgentsOffRemovedModels,
   capMigratedAgents,
+  LAST_USABLE_PROVIDER_ERROR,
 } from "@/lib/provider-deletion";
 import { assertAllowedProviderUrl, ProviderUrlBlockedError } from "@/lib/provider-url-guard";
 import { refusedBaseUrlReasons } from "@/lib/openai-compatible-stored-url";
@@ -273,7 +274,8 @@ export const GET = withAdmin(async () => {
  * its models onto a remaining provider and reassigning `default_provider` when
  * the deleted slug was it. Mirrors the built-in provider DELETE verbatim: the
  * same last-provider guard shape (`countConfiguredProviders() <= 1` → 400), the
- * built-ins-first remaining-candidate ordering (Task 8), the shared
+ * same "no usable provider would remain" refusal, the built-ins-first
+ * remaining-candidate ordering (Task 8, refused base URLs left out), the shared
  * migration/reassignment/audit-diff helper, and a `settings.deleted` audit that
  * snapshots `{ id, name }`, caps the migrated-agent diff, and NEVER carries the
  * API key. Runtime apply is best-effort (`configRegenerated`) — the row is already
@@ -297,6 +299,16 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
     );
   }
 
+  // Build the migration-target set BEFORE deleting, excluding this row by id:
+  // it doubles as the "is a usable provider left?" guard, which is worthless
+  // once the row is gone. Built-ins-first ordering, custom namespacing, and
+  // leaving out custom providers whose base URL is refused are single-sourced
+  // in buildRemainingCandidates (shared with the built-in DELETE route).
+  const remainingCandidates = await buildRemainingCandidates({ excludeCustomId: id });
+  if (remainingCandidates.length === 0) {
+    return NextResponse.json({ error: LAST_USABLE_PROVIDER_ERROR }, { status: 400 });
+  }
+
   let deleted: Awaited<ReturnType<typeof deleteProviderById>> = null;
   let wasDefault = false;
   let migratedAgents: Awaited<
@@ -309,13 +321,6 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
     if (!deleted) {
       return NextResponse.json({ error: "OpenAI-compatible provider not found." }, { status: 404 });
     }
-
-    // Build the migration-target set EXCLUDING the just-deleted slug — already
-    // gone from listOpenAiCompatibleProviders after deleteProviderById, so no
-    // built-in exclusion is passed. Built-ins-first ordering + custom namespacing
-    // are single-sourced in buildRemainingCandidates (shared with the built-in
-    // DELETE route).
-    const remainingCandidates = await buildRemainingCandidates();
 
     const previousDefault = await getSetting("default_provider");
     wasDefault = previousDefault === deleted.slug;

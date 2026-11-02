@@ -882,6 +882,16 @@ describe("POST /api/settings/providers/openai-compatible/discover", () => {
 describe("DELETE /api/settings/providers/openai-compatible", () => {
   const PROVIDER_ID = "33333333-3333-4333-8333-333333333333";
 
+  /** A usable provider that survives the delete — what countConfiguredProviders() = 2 implies. */
+  function anotherBuiltInRemains() {
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
+      {
+        name: "anthropic",
+        config: { defaultModel: "anthropic/claude-haiku-4-5-20251001" },
+      },
+    ] as any);
+  }
+
   function deleteRequest(body: object) {
     return makeNextRequest("http://localhost/api/settings/providers/openai-compatible", {
       method: "DELETE",
@@ -903,6 +913,8 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
       slug: "acme-llm",
       displayName: "Acme LLM",
     });
+    // clearAllMocks keeps implementations: undo a refusal set by an earlier test.
+    vi.mocked(assertAllowedProviderUrl).mockResolvedValue(undefined);
   });
 
   it("returns 401 when not authenticated", async () => {
@@ -947,7 +959,64 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
+  // A remaining custom provider whose saved base URL the SSRF guard refuses is
+  // emitted pointed at a reserved address with no key, so it cannot take the
+  // agents (or the default) this delete would hand it. The check runs BEFORE
+  // the row is deleted — afterwards there is nothing left to refuse.
+  it("refuses to delete when the only other provider's base URL is refused", async () => {
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      listItem({ id: PROVIDER_ID }),
+      listItem({ id: "row-id-2", slug: "cgnat", baseUrl: "http://100.100.100.200/v1" }),
+    ]);
+    vi.mocked(assertAllowedProviderUrl).mockImplementation(async (url: string) => {
+      if (url.includes("100.100.100.200")) {
+        throw new ProviderUrlBlockedError(
+          "blocked_address",
+          "That host resolves to a reserved or internal address that isn't allowed."
+        );
+      }
+    });
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toMatch(/last usable provider/i);
+    expect(deleteProviderById).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(setSetting).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("migrates past a refused custom provider onto a usable one", async () => {
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      listItem({ id: PROVIDER_ID }),
+      listItem({ id: "row-id-2", slug: "cgnat", baseUrl: "http://100.100.100.200/v1" }),
+      listItem({ id: "row-id-3", slug: "other-llm", models: [modelDef("other-large")] }),
+    ]);
+    vi.mocked(assertAllowedProviderUrl).mockImplementation(async (url: string) => {
+      if (url.includes("100.100.100.200")) {
+        throw new ProviderUrlBlockedError("blocked_address", "refused");
+      }
+    });
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "default_provider" ? "acme-llm" : null
+    );
+    vi.mocked(db.query.agents.findMany).mockResolvedValue([
+      { id: "agent-1", name: "Smithers", model: "acme-llm/acme-large" },
+    ] as any);
+    const setSpy = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith({ model: "other-llm/other-large" });
+    expect(setSetting).toHaveBeenCalledWith("default_provider", "other-llm", false);
+  });
+
   it("returns 404 when the id does not match a provider (no migration, no success audit)", async () => {
+    anotherBuiltInRemains();
     vi.mocked(deleteProviderById).mockResolvedValue(null);
 
     const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);
@@ -1133,6 +1202,7 @@ describe("DELETE /api/settings/providers/openai-compatible", () => {
   });
 
   it("still succeeds with configRegenerated:false when regenerate throws (best-effort)", async () => {
+    anotherBuiltInRemains();
     vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES"));
 
     const res = await DELETE(deleteRequest({ id: PROVIDER_ID }), routeCtx);

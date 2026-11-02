@@ -115,8 +115,10 @@ export interface OpenAiCompatibleProviderRow {
   keyHint: string;
   /**
    * Why the SSRF guard now refuses the saved base URL, or `null` when the
-   * provider is in use. A refused provider is left out of the runtime config,
-   * so its agents fail until the URL changes. Never names the address.
+   * provider is in use. A refused provider stays in the runtime config, but
+   * pointed at `REFUSED_BASE_URL` and without its key
+   * (openai-compatible-stored-url.ts), so its agents fail until the URL
+   * changes. Never names the address.
    */
   refusedReason: string | null;
 }

@@ -11,6 +11,7 @@ import {
   builtInModelPrefix,
   migrateAgentsOffDeletedProvider,
   capMigratedAgents,
+  LAST_USABLE_PROVIDER_ERROR,
 } from "@/lib/provider-deletion";
 import { parseRequestBody } from "@/lib/api-validation";
 import { deleteProviderSchema } from "@/lib/schemas/providers";
@@ -58,6 +59,13 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   // custom DELETE route). Candidates are built BEFORE deleteSetting, so the
   // deleted built-in is still "configured" and must be excluded by name.
   const remainingCandidates = await buildRemainingCandidates({ excludeBuiltInName: provider });
+
+  // Others are configured, but each is a custom provider whose base URL the
+  // SSRF guard refuses (left out of the candidates). Deleting would leave the
+  // agents and the default nowhere usable to go, so refuse before any change.
+  if (remainingCandidates.length === 0) {
+    return NextResponse.json({ error: LAST_USABLE_PROVIDER_ERROR }, { status: 400 });
+  }
 
   await deleteSetting(config.settingsKey);
   resetCache();

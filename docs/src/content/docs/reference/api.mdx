@@ -964,9 +964,9 @@ and a custom provider's to
 
 ### `DELETE /api/settings/providers`
 
-Remove a provider. Takes a JSON body: `{ "provider": "<id>" }`. Refused with `400` for the last configured provider.
+Remove a provider. Takes a JSON body: `{ "provider": "<id>" }`. Refused with `400` for the last configured provider, and for the last usable one — when every other configured provider is a custom provider whose saved base URL the address check now refuses.
 
-Every agent pinned to one of the provider's models is moved to the first remaining provider's default model, and that provider becomes the new default if the removed one was it.
+Every agent pinned to one of the provider's models is moved to the first remaining usable provider's default model, and that provider becomes the new default if the removed one was it. A custom provider whose base URL is refused is skipped (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)).
 
 **Response:** `{ "success": true, "migratedAgents": 3 }`
 
@@ -985,7 +985,7 @@ What a removal would do, without doing it — the confirmation dialog uses this 
 }
 ```
 
-The target fields are `null` when no other provider is configured (that removal is refused anyway).
+The target fields are `null` when no other usable provider is configured (that removal is refused anyway). A custom provider whose saved base URL is refused is never the target.
 
 ### `PATCH /api/settings/providers/default`
 
@@ -1017,7 +1017,7 @@ The key is encrypted at rest and never written into the OpenClaw configuration i
 
 ### `DELETE /api/settings/providers/openai-compatible`
 
-Remove a custom provider. Agents pinned to one of its models are migrated to a still-configured provider, exactly as for a built-in one.
+Remove a custom provider. Agents pinned to one of its models are migrated to a still-configured, usable provider, exactly as for a built-in one — including the `400` when no usable provider would remain.
 
 **Request body:** `{ "id": "<uuid>" }`
 
