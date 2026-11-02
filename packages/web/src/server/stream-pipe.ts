@@ -745,7 +745,17 @@ export class StreamPipe {
         // socket did NOT complete, so it must not be logged as
         // `run_completed_after_disconnect` (that event means the browser left
         // but the reply still finished server-side).
-        if (run && run.listeners.size === 0 && !sawTerminalError && !openclawDisconnected) {
+        // `!run.abortedByUser`: neither did a run that was stopped — by the
+        // stop button or by deactivation (`abort-runs.ts`). `chat.abort` ends
+        // the local stream with a plain `done`, so without this check a
+        // stopped run whose tab had already gone read as "completed".
+        if (
+          run &&
+          run.listeners.size === 0 &&
+          !sawTerminalError &&
+          !openclawDisconnected &&
+          !run.abortedByUser
+        ) {
           const auditEntry = {
             actorType: "user" as const,
             actorId: userId,

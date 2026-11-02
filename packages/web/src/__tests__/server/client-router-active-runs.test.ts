@@ -99,6 +99,7 @@ vi.mock("@/server/model-unavailable-throttle", () => ({
 }));
 
 import { ActiveRuns } from "@/server/active-runs";
+import { abortRunsOfUser } from "@/server/abort-runs";
 import { ClientRouter } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
 
@@ -493,6 +494,84 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
       (c) => (c[0] as { eventType: string }).eventType === "chat.run_completed_after_disconnect"
     );
     expect(ghost).toBeUndefined();
+  });
+
+  describe("a run that was aborted, then ended with nobody watching", () => {
+    // `chat.abort` ends the local stream with a plain `done` — no error
+    // chunk, no OpenClaw disconnect. With the tab gone (closed by
+    // deactivation, or closed right after the stop click) the run has zero
+    // listeners at that `done`, which is exactly the shape of a reply that
+    // finished for a browser that left. It didn't finish; it was stopped.
+    const sessionKey = "agent:agent-1:direct:user-1";
+
+    async function startGatedRun() {
+      let releaseDone!: () => void;
+      const doneGate = new Promise<void>((r) => (releaseDone = r));
+      mockChat.mockReturnValue(
+        (async function* (): AsyncGenerator<ChatChunk> {
+          yield { type: "text", text: "Booking the invoices…", runId: "run-stopped" };
+          await doneGate;
+          yield { type: "done", text: "", runId: "run-stopped" };
+        })()
+      );
+      const router = new ClientRouter(
+        buildClient() as never,
+        "user-1",
+        "member",
+        sessionCache,
+        activeRuns
+      );
+      const ws = createMockWs();
+      const handling = router.handleMessage(ws, {
+        type: "message",
+        content: "Book this month's invoices",
+        agentId: "agent-1",
+      });
+      await vi.waitFor(() =>
+        expect(activeRuns.get(sessionKey)?.firstChunkAt).toEqual(expect.any(Number))
+      );
+      const closeTab = () => {
+        (ws as unknown as { readyState: number }).readyState = 3; // CLOSED
+        activeRuns.removeListenerFromAll(ws);
+      };
+      return { router, ws, handling, releaseDone, closeTab };
+    }
+
+    function completedAfterDisconnectRows() {
+      return mockAppendAuditLog.mock.calls.filter(
+        (c) => (c[0] as { eventType: string }).eventType === "chat.run_completed_after_disconnect"
+      );
+    }
+
+    it("is not recorded as completed when deactivation aborted it", async () => {
+      const { handling, releaseDone, closeTab } = await startGatedRun();
+
+      // DELETE /api/users/:id: the socket closes, then the run is aborted.
+      closeTab();
+      const aborted = await abortRunsOfUser("user-1", {
+        activeRuns,
+        chatAbort: mockChatAbort,
+      });
+      expect(aborted).toHaveLength(1);
+      releaseDone();
+      await handling;
+
+      expect(mockChatAbort).toHaveBeenCalledWith(sessionKey, "run-stopped");
+      expect(completedAfterDisconnectRows()).toEqual([]);
+      expect(activeRuns.get(sessionKey)).toBeUndefined();
+    });
+
+    it("is not recorded as completed when the user stopped it and closed the tab", async () => {
+      const { router, ws, handling, releaseDone, closeTab } = await startGatedRun();
+
+      await router.handleMessage(ws, { type: "abort", agentId: "agent-1" } as never);
+      closeTab();
+      releaseDone();
+      await handling;
+
+      expect(mockChatAbort).toHaveBeenCalledWith(sessionKey, "run-stopped");
+      expect(completedAfterDisconnectRows()).toEqual([]);
+    });
   });
 
   it("deletes the entry on an `error` chunk so a follow-up retry can register a fresh run", async () => {
