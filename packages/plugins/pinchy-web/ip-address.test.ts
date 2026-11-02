@@ -60,11 +60,23 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     ["fec0::1", "private"],
     ["feff:ffff::1", "private"],
     ["fd12:3456:789a::1", "private"],
-    ["fd00:ec2::254", "private"],
+    // EC2's IPv6 instance-metadata endpoint sits inside fc00::/7, but it is a
+    // metadata service, not a server -- like 100.100.100.200 inside CGNAT, it
+    // must not open up when an operator opts into their private network.
+    ["fd00:ec2::254", "link-local"],
+    ["fd00:ec2:0:0:0:0:0:254", "link-local"],
+    ["fd00:ec2::253", "private"],
     ["ff00::1", "reserved"],
     ["ff02::1", "reserved"],
     ["ffff::1", "reserved"],
     ["2001:db8::1", "reserved"],
+    // Teredo 2001:0::/32 tunnels to an IPv4 address (obfuscated in the low
+    // groups). Never a server of its own: refuse it rather than decode it.
+    ["2001:0:a9fe:a9fe::1", "reserved"],
+    ["2001::1", "reserved"],
+    ["2001:0:ffff:ffff:ffff:ffff:ffff:ffff", "reserved"],
+    // Only 2001:0000::/32 -- its neighbours are ordinary public space.
+    ["2001:1::1", "public"],
     ["2606:4700:4700::1111", "public"],
     ["2001:4860:4860::8888", "public"],
     // IPv4-mapped, both spellings.
@@ -74,6 +86,11 @@ describe("classifyIpAddress (the table web_fetch and the web app share)", () => 
     ["::ffff:6464:64c8", "link-local"],
     ["::ffff:192.168.1.10", "private"],
     ["::ffff:8.8.8.8", "public"],
+    // SIIT IPv4-translated (::ffff:0:0:0/96, RFC 2765): a stateless translator
+    // forwards it to the embedded IPv4. Refused outright, never public.
+    ["::ffff:0:7f00:1", "reserved"],
+    ["::ffff:0:a9fe:a9fe", "reserved"],
+    ["::ffff:0:808:808", "reserved"],
     // IPv4-compatible (deprecated).
     ["::127.0.0.1", "loopback"],
     ["::7f00:1", "loopback"],

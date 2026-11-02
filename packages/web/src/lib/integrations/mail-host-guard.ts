@@ -1,9 +1,5 @@
 import { lookup } from "node:dns/promises";
-import {
-  canonicalizeIpAddress,
-  classifyIpAddress,
-  type IpAddressClass,
-} from "@/lib/integrations/url-validation";
+import { classifyIpAddress, type IpAddressClass } from "@/lib/integrations/url-validation";
 
 /**
  * SSRF guard for the IMAP/SMTP probes.
@@ -23,8 +19,10 @@ import {
  * legitimate deployment:
  *
  *   - Always blocked: loopback, unspecified, link-local (which is where cloud
- *     metadata lives) and the EC2 IPv6 metadata address. No mail server lives
- *     there, so there is nothing to trade off.
+ *     metadata lives — the shared table files the EC2 IPv6 and Alibaba Cloud
+ *     metadata addresses there too, though they sit inside private ranges) and
+ *     the reserved ranges. No mail server lives there, so there is nothing to
+ *     trade off.
  *   - Blocked unless `ALLOW_PRIVATE_MAIL_HOSTS=1`: the private ranges. The
  *     opt-in is the operator's explicit statement that reaching their own
  *     network is intended.
@@ -45,21 +43,6 @@ export class MailHostBlockedError extends Error {
 
 /** Resolves a host to its IP addresses. Injected in tests. */
 export type MailHostResolver = (host: string) => Promise<string[]>;
-
-// EC2's IPv6 instance-metadata endpoint. It sits inside fc00::/7, so the
-// private-range check already covers it — but only while the opt-in flag is
-// off, and reaching IMDS must not become collateral of an operator enabling
-// their on-premise mail server. Canonicalized so no alternate spelling of the
-// same address slips past the comparison.
-const ALWAYS_BLOCKED_ADDRESSES: ReadonlySet<string> = new Set(
-  ["fd00:ec2::254"].map((address) => {
-    const canonical = canonicalizeIpAddress(address);
-    // A typo in this list would canonicalize to null and silently stop
-    // blocking anything. Fail at import instead of shipping a dead entry.
-    if (canonical === null) throw new Error(`Not an IP address: ${address}`);
-    return canonical;
-  })
-);
 
 // Typed against IpAddressClass so a misspelt class is a compile error rather
 // than an entry that never matches — the failure mode of a security list is
@@ -123,12 +106,8 @@ export async function assertMailHostAllowed(
   for (const address of addresses) {
     const normalized = normalizeAddress(address);
     const addressClass = classifyIpAddress(normalized);
-    const canonical = canonicalizeIpAddress(normalized);
 
-    if (
-      (canonical !== null && ALWAYS_BLOCKED_ADDRESSES.has(canonical)) ||
-      (addressClass !== null && ALWAYS_BLOCKED_CLASSES.has(addressClass))
-    ) {
+    if (addressClass !== null && ALWAYS_BLOCKED_CLASSES.has(addressClass)) {
       throw new MailHostBlockedError(INTERNAL_MESSAGE);
     }
     if (addressClass === "private" && !allowPrivate) {

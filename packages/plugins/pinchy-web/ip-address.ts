@@ -1,16 +1,17 @@
 /**
  * The one table that decides whether an IP address is somewhere an outbound
- * request may go — shared, verbatim, by the two SSRF guards in Pinchy.
+ * request may go — shared, verbatim, by every SSRF guard in Pinchy.
  *
  * ── Why this file exists, and why it lives HERE ───────────────────────────
  * `web_fetch` (this plugin, OpenClaw container) fetches a URL a model chose,
- * and the web app's `url-validation.ts` / `mail-host-guard.ts` check an
- * address an admin typed. Both ask the same question — "is this internal?" —
+ * and the web app's `url-validation.ts` (Odoo), `mail-host-guard.ts` (IMAP/
+ * SMTP) and `provider-url-guard.ts` (OpenAI-compatible base URLs) check an
+ * address an admin typed. All ask the same question — "is this internal?" —
  * and for a long time each answered from its own list. The lists drifted:
- * neither knew 100.64.0.0/10 (CGNAT: Alibaba Cloud metadata at
- * 100.100.100.200, every Tailscale node), `web_fetch` matched `fe80:` as a
- * literal hextet, and neither unwrapped NAT64. A security list that exists
- * twice is wrong in one of the two places.
+ * none knew Alibaba Cloud's metadata at 100.100.100.200 (inside CGNAT, where
+ * every Tailscale node lives), `web_fetch` matched `fe80:` as a literal
+ * hextet, and none unwrapped NAT64. A security list that exists twice is
+ * wrong in one of the two places.
  *
  * So it is single-sourced. It lives in the PLUGIN because a plugin is deployed
  * as a self-contained directory and can import nothing outside itself; web is
@@ -27,12 +28,21 @@
  * What an IP address can reach. Split finer than "private or not" because
  * callers weigh the categories differently:
  *
- *   - `loopback`, `unspecified`, `link-local` (cloud metadata lives there),
- *     `reserved`: never a real server. No caller may opt into these.
- *   - `private`: RFC-1918, ULA and CGNAT (Tailscale). An on-premise Odoo or
- *     mail server legitimately lives here, so the admin-facing guards let an
- *     operator opt in; `web_fetch` blocks it unconditionally.
+ *   - `loopback`, `unspecified`, `link-local` (cloud metadata lives there,
+ *     including the two metadata addresses that sit inside private ranges),
+ *     `reserved`: never a real server. Every guard refuses these whatever the
+ *     operator sets.
+ *   - `private`: RFC-1918, ULA and CGNAT (Tailscale). An on-premise Odoo, mail
+ *     server or model endpoint legitimately lives here, so the admin-facing
+ *     guards let an operator opt in (Odoo: `ALLOW_PRIVATE_URLS`, mail:
+ *     `ALLOW_PRIVATE_MAIL_HOSTS`) or allow it by default and let a hosted
+ *     deployment opt out (OpenAI-compatible providers:
+ *     `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS`). `web_fetch` blocks it
+ *     unconditionally.
  *   - `public`: everything else.
+ *
+ * Callers branch on the class, never re-derive it: an opt-in that opens more
+ * than `private` is the bug this split exists to prevent.
  */
 export type IpAddressClass =
   "loopback" | "unspecified" | "link-local" | "private" | "reserved" | "public";
@@ -118,8 +128,9 @@ function classifyIPv4(octets: number[]): IpAddressClass {
   // 169.254.0.0/16 — link-local (cloud metadata lives at 169.254.169.254)
   if (a === 169 && b === 254) return "link-local";
   // 100.100.100.200 — Alibaba Cloud's instance-metadata endpoint. It sits in
-  // CGNAT below, which an operator may opt into for a tailnet; this one
-  // address must stay unreachable when they do.
+  // CGNAT below, which an operator may open for a tailnet (`private` is the
+  // class every opt-in unlocks); classifying it as link-local is what keeps
+  // this one address unreachable when they do.
   if (a === 100 && b === 100 && c === 100 && d === 200) return "link-local";
   // 10.0.0.0/8 — class A private
   if (a === 10) return "private";
@@ -176,6 +187,17 @@ export function classifyIpAddress(address: string): IpAddressClass | null {
   if (!groups) return null;
 
   if (groups.every((group) => group === 0)) return "unspecified";
+  // fd00:ec2::254 — EC2's IPv6 instance-metadata endpoint. Same situation as
+  // 100.100.100.200: inside a range (ULA) an operator may open, so it is
+  // named here, before that range is matched below.
+  if (
+    groups[0] === 0xfd00 &&
+    groups[1] === 0x0ec2 &&
+    groups.slice(2, 7).every((group) => group === 0) &&
+    groups[7] === 0x0254
+  ) {
+    return "link-local";
+  }
   if (groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1) return "loopback";
 
   const embeddedV4 = (high: number, low: number) =>
@@ -200,6 +222,19 @@ export function classifyIpAddress(address: string): IpAddressClass | null {
   }
   // 6to4 (2002::/16) carries the IPv4 in the two groups after the prefix.
   if (groups[0] === 0x2002) return embeddedV4(groups[1], groups[2]);
+
+  // Two more forms that carry an IPv4 address, refused outright rather than
+  // decoded — neither is ever a server of its own, so failing closed costs
+  // nothing:
+  //   ::ffff:0:a.b.c.d  SIIT IPv4-translated (::ffff:0:0:0/96, RFC 2765); a
+  //                     stateless translator forwards it to the embedded IPv4
+  //   2001:0::/32       Teredo; the client's IPv4 is in the low groups, XORed
+  // Only 2001:0000::/32 — 2001:4860:: (Google) and the rest of 2001::/16 are
+  // ordinary public space.
+  if (groups.slice(0, 4).every((group) => group === 0) && groups[4] === 0xffff && groups[5] === 0) {
+    return "reserved";
+  }
+  if (groups[0] === 0x2001 && groups[1] === 0) return "reserved";
 
   // 64:ff9b:1::/48 — local-use NAT64 (RFC 8215). Operator-defined translation,
   // so the embedded address cannot be read off; never a public destination.

@@ -119,9 +119,13 @@ This is a real risk in any system where an AI agent can both read private data a
 
 Pinchy's web fetch module blocks agents from directly requesting — or being redirected into — internal network addresses:
 
-- Private IP ranges (`10.x.x.x`, `192.168.x.x`, `172.16-31.x.x`)
-- Localhost (`127.0.0.1`, `::1`)
-- Link-local addresses
+- Private ranges: `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`, IPv6 unique-local (`fc00::/7`) and carrier-grade NAT (`100.64.0.0/10`), which is where every Tailscale node lives
+- Loopback and the unspecified address (`127.0.0.1`, `::1`, `0.0.0.0`)
+- Link-local addresses (`169.254.x.x`, `fe80::/10`) and the cloud metadata endpoints, including `100.100.100.200` and `fd00:ec2::254`
+- Multicast, broadcast and the reserved test ranges (`198.18.0.0/15`, `192.0.0.0/24`, `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `240.0.0.0/4`)
+- Any of the above wrapped in an IPv6 address: IPv4-mapped (`::ffff:127.0.0.1`), NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`) are unwrapped and checked as the IPv4 address they reach; Teredo (`2001:0::/32`) and SIIT (`::ffff:0:0:0/96`) are refused outright
+
+There's no switch to open any of these: an agent cannot fetch from your own network. The same table backs the Odoo, mail-server and model-provider checks, which do let an admin opt into the private ranges.
 
 Every redirect hop is re-resolved and re-checked, so an attacker-controlled public site cannot smuggle the agent onto a private address via a 302.
 

@@ -42,6 +42,24 @@ describe("classifyIp", () => {
     ["::ffff:127.0.0.1", "blocked"],
     ["::ffff:10.0.0.1", "private"],
     ["::ffff:8.8.8.8", "public"],
+    // The shared table (pinchy-web/ip-address.ts). This guard kept its own list
+    // and it had the same holes the others had: a cloud-metadata address inside
+    // a "private" range read as an ordinary LAN host, allowed by default, and
+    // the IPv6 forms that carry an IPv4 address were taken at face value.
+    ["100.100.100.200", "blocked"], // Alibaba Cloud metadata, inside CGNAT
+    ["fd00:ec2::254", "blocked"], // EC2 IPv6 metadata, inside ULA
+    ["64:ff9b::a9fe:a9fe", "blocked"], // NAT64 -> 169.254.169.254
+    ["64:ff9b::7f00:1", "blocked"], // NAT64 -> 127.0.0.1
+    ["2002:a9fe:a9fe::1", "blocked"], // 6to4 -> 169.254.169.254
+    ["2001:0:a9fe:a9fe::1", "blocked"], // Teredo
+    ["::ffff:0:7f00:1", "blocked"], // SIIT IPv4-translated
+    ["198.18.0.1", "blocked"], // benchmarking
+    ["192.0.2.1", "blocked"], // TEST-NET-1
+    ["2001:db8::1", "blocked"], // documentation
+    // ...while a self-hosted endpoint on the LAN or a tailnet keeps working.
+    ["100.100.100.100", "private"], // Tailscale node
+    ["64:ff9b::a00:5", "private"], // NAT64 -> 10.0.0.5
+    ["fec0::1", "private"], // deprecated site-local
   ])("classifies %s as %s", (ip, expected) => {
     expect(classifyIp(ip)).toBe(expected);
   });
@@ -78,7 +96,10 @@ describe("assertAllowedProviderUrl", () => {
 
   it("blocks when ANY resolved address is dangerous (dual-record host)", async () => {
     await expect(
-      assertAllowedProviderUrl("https://mixed.example/v1", resolveTo(["203.0.113.10", "127.0.0.1"]))
+      assertAllowedProviderUrl(
+        "https://mixed.example/v1",
+        resolveTo(["93.184.216.34", "127.0.0.1"])
+      )
     ).rejects.toMatchObject({ reason: "blocked_address" });
   });
 
@@ -148,6 +169,10 @@ describe("assertAllowedProviderUrl — address literals bypass DNS", () => {
   });
 
   it.each([
+    ["Alibaba Cloud metadata", "http://100.100.100.200/latest/meta-data/"],
+    ["EC2 IPv6 metadata", "http://[fd00:ec2::254]/latest/meta-data/"],
+    ["IMDS through NAT64", "http://[64:ff9b::a9fe:a9fe]/latest/"],
+    ["IMDS through 6to4", "http://[2002:a9fe:a9fe::]/latest/"],
     ["IPv6 loopback", "http://[::1]/v1"],
     ["IPv6 unspecified", "http://[::]/v1"],
     ["IPv6 link-local", "http://[fe80::1]/v1"],

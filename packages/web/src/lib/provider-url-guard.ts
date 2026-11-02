@@ -10,13 +10,29 @@
 // Posture (security-professional take: minimal customer friction, maximum
 // protection of the one thing that actually matters):
 //   - ALWAYS hard-block the ranges that are never a legitimate model endpoint and
-//     ARE the classic SSRF prize: link-local 169.254.0.0/16 + fe80::/10 (cloud
-//     metadata / IMDS credential theft), loopback, unspecified, multicast,
-//     reserved, and the IPv4-mapped-IPv6 forms of all of them. Blocking these
-//     costs a real deployment nothing — nobody runs an LLM on 169.254.169.254.
-//   - Private LANs (RFC1918 / ULA) are ALLOWED BY DEFAULT so self-hosted
-//     vLLM/TGI/LiteLLM on the local network works out of the box, but a hosted
-//     deployment can lock them down with PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1.
+//     ARE the classic SSRF prize: link-local 169.254.0.0/16 + fe80::/10 and the
+//     metadata services that sit inside private ranges (100.100.100.200,
+//     fd00:ec2::254) — IMDS credential theft — plus loopback, unspecified,
+//     multicast, the reserved/documentation ranges, and every IPv6 form that
+//     carries an IPv4 address (mapped, NAT64, 6to4, Teredo, SIIT). Blocking
+//     these costs a real deployment nothing — nobody runs an LLM on
+//     169.254.169.254.
+//   - Loopback stays blocked even though "Ollama on localhost" sounds like a
+//     use case: inside the Pinchy container 127.0.0.1 is Pinchy itself, never
+//     the host. A model server on the host is reached by a LAN address or a
+//     `host-gateway` alias, which Docker on Linux and Docker Desktop answer
+//     with a private address (OrbStack answers 0.250.250.254, inside 0.0.0.0/8,
+//     which was blocked before the shared table too).
+//   - Private LANs (RFC1918 / ULA / CGNAT, i.e. Tailscale) are ALLOWED BY
+//     DEFAULT so self-hosted vLLM/TGI/LiteLLM on the local network works out of
+//     the box, but a hosted deployment can lock them down with
+//     PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1.
+//
+// Which address is which comes from the table every SSRF guard in Pinchy
+// shares (`pinchy-web/ip-address.ts`, via `url-validation.ts`). This module
+// only maps its classes onto the three verdicts above; it kept a list of its
+// own once, and that list missed the metadata address inside CGNAT and every
+// translated IPv6 form.
 //   - Non-http(s) schemes (file://, gopher://, …) are rejected — z.string().url()
 //     alone lets file:///etc/passwd through.
 //   - The HOSTNAME IS RESOLVED and every resolved IP is classified, so a name
@@ -28,6 +44,7 @@
 
 import { lookup as dnsLookup } from "dns/promises";
 import { isIP } from "net";
+import { classifyIpAddress } from "@/lib/integrations/url-validation";
 
 export type ProviderUrlBlockReason = "unsupported_scheme" | "blocked_address" | "private_address";
 
@@ -44,93 +61,16 @@ export class ProviderUrlBlockedError extends Error {
 /** How an IP is treated: routable public, private LAN (env-gated), or always-blocked. */
 export type IpCategory = "public" | "private" | "blocked";
 
-function parseIpv4(ip: string): [number, number, number, number] | null {
-  const parts = ip.split(".");
-  if (parts.length !== 4) return null;
-  const nums = parts.map((p) => (/^\d{1,3}$/.test(p) ? Number(p) : NaN));
-  if (nums.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
-  return [nums[0], nums[1], nums[2], nums[3]];
-}
-
-function classifyIpv4(a: number, b: number, _c: number, _d: number): IpCategory {
-  // Always-blocked — never a legitimate model endpoint.
-  if (a === 0) return "blocked"; // 0.0.0.0/8 unspecified / "this host"
-  if (a === 127) return "blocked"; // 127.0.0.0/8 loopback
-  if (a === 169 && b === 254) return "blocked"; // 169.254.0.0/16 link-local (incl. 169.254.169.254 IMDS)
-  if (a >= 224) return "blocked"; // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved + 255.255.255.255 broadcast
-  // Private / carrier-shared — allowed unless the deployment opts out.
-  if (a === 10) return "private"; // 10.0.0.0/8
-  if (a === 172 && b >= 16 && b <= 31) return "private"; // 172.16.0.0/12
-  if (a === 192 && b === 168) return "private"; // 192.168.0.0/16
-  if (a === 100 && b >= 64 && b <= 127) return "private"; // 100.64.0.0/10 CGNAT
-  return "public";
-}
-
-/** Expand any IPv6 form (incl. `::` compression and embedded IPv4) to 8 hextets. */
-function expandIpv6(ip: string): number[] | null {
-  let s = ip.toLowerCase();
-  const pct = s.indexOf("%"); // strip zone id (fe80::1%eth0)
-  if (pct !== -1) s = s.slice(0, pct);
-
-  // Embedded IPv4 in the final group (e.g. ::ffff:1.2.3.4) → fold into two hextets.
-  const lastColon = s.lastIndexOf(":");
-  const lastGroup = s.slice(lastColon + 1);
-  if (lastGroup.includes(".")) {
-    const v4 = parseIpv4(lastGroup);
-    if (!v4) return null;
-    const h1 = (v4[0] << 8) | v4[1];
-    const h2 = (v4[2] << 8) | v4[3];
-    s = s.slice(0, lastColon + 1) + h1.toString(16) + ":" + h2.toString(16);
-  }
-
-  const halves = s.split("::");
-  if (halves.length > 2) return null;
-  const head = halves[0] ? halves[0].split(":") : [];
-  const tail = halves.length === 2 ? (halves[1] ? halves[1].split(":") : []) : null;
-
-  let groups: string[];
-  if (tail === null) {
-    groups = head;
-    if (groups.length !== 8) return null;
-  } else {
-    const missing = 8 - head.length - tail.length;
-    if (missing < 0) return null;
-    groups = [...head, ...Array<string>(missing).fill("0"), ...tail];
-  }
-
-  const hextets = groups.map((g) => (/^[0-9a-f]{1,4}$/.test(g) ? parseInt(g, 16) : NaN));
-  if (hextets.length !== 8 || hextets.some((h) => Number.isNaN(h))) return null;
-  return hextets;
-}
-
-function classifyIpv6(ip: string): IpCategory {
-  const h = expandIpv6(ip);
-  if (!h) return "blocked"; // isIP said v6 but we can't parse it — refuse rather than wave through
-
-  // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d): classify the
-  // embedded v4 so a mapped 169.254.169.254 is caught like its bare form.
-  const headAllZero = h.slice(0, 5).every((x) => x === 0);
-  if (headAllZero && (h[5] === 0xffff || h[5] === 0)) {
-    if (h[5] === 0 && h[6] === 0 && (h[7] === 0 || h[7] === 1)) return "blocked"; // :: and ::1
-    return classifyIpv4(h[6] >> 8, h[6] & 0xff, h[7] >> 8, h[7] & 0xff);
-  }
-
-  if (h.every((x) => x === 0)) return "blocked"; // :: unspecified
-  if (h.slice(0, 7).every((x) => x === 0) && h[7] === 1) return "blocked"; // ::1 loopback
-  if ((h[0] & 0xffc0) === 0xfe80) return "blocked"; // fe80::/10 link-local
-  if ((h[0] & 0xff00) === 0xff00) return "blocked"; // ff00::/8 multicast
-  if ((h[0] & 0xfe00) === 0xfc00) return "private"; // fc00::/7 unique-local (ULA)
-  return "public";
-}
-
-/** Classify a literal IPv4/IPv6 address. Non-IP input is treated as blocked. */
+/**
+ * Classify a literal IPv4/IPv6 address. Non-IP input is treated as blocked.
+ *
+ * A thin mapping over the shared table: `public` and `private` keep their
+ * meaning, and every other class — loopback, unspecified, link-local
+ * (metadata), reserved — is never a model endpoint.
+ */
 export function classifyIp(ip: string): IpCategory {
-  const version = isIP(ip);
-  if (version === 4) {
-    const q = parseIpv4(ip);
-    return q ? classifyIpv4(q[0], q[1], q[2], q[3]) : "blocked";
-  }
-  if (version === 6) return classifyIpv6(ip);
+  const addressClass = classifyIpAddress(ip);
+  if (addressClass === "public" || addressClass === "private") return addressClass;
   return "blocked";
 }
 
@@ -146,7 +86,7 @@ export function isPrivateNetworkBlockEnabled(): boolean {
  * `URL.hostname` keeps the brackets on an IPv6 host: `new URL("http://[::1]/")
  * .hostname` is `"[::1]"`, not `"::1"`. That string satisfies neither
  * `isIP()` nor `dns.lookup()`, so before this existed every IPv6 literal fell
- * straight through the resolver's fail-open catch and `classifyIpv6` was
+ * straight through the resolver's fail-open catch and IPv6 classification was
  * unreachable from URL input. `lib/integrations/url-validation.ts` has always
  * de-bracketed; this guard was written later and lost the step.
  */
@@ -155,8 +95,8 @@ function hostnameAsIpLiteral(hostname: string): string | null {
     // Bracketed means IPv6 literal (RFC 3986). No zone-id handling needed:
     // the WHATWG parser rejects `http://[fe80::1%eth0]/` as an invalid URL
     // before this is reached. It DOES normalize the embedded-IPv4 form, so
-    // `::ffff:169.254.169.254` arrives as `::ffff:a9fe:a9fe` — which
-    // `expandIpv6` folds back to the same v4 classification.
+    // `::ffff:169.254.169.254` arrives as `::ffff:a9fe:a9fe` — which the
+    // shared table folds back to the same v4 classification.
     const inner = hostname.slice(1, -1);
     return isIP(inner) === 6 ? inner : null;
   }

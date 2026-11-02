@@ -8,13 +8,9 @@ import { lookup as dnsLookup } from "node:dns/promises";
 // the pinchy-web plugin (a plugin can import nothing outside itself; web can).
 // Two lists would drift -- they did: neither knew 100.64.0.0/10. Import-free by
 // design; see ip-address.ts.
-import {
-  canonicalizeIpAddress,
-  classifyIpAddress,
-  type IpAddressClass,
-} from "../../../../plugins/pinchy-web/ip-address";
+import { classifyIpAddress, type IpAddressClass } from "../../../../plugins/pinchy-web/ip-address";
 
-export { canonicalizeIpAddress, classifyIpAddress, type IpAddressClass };
+export { classifyIpAddress, type IpAddressClass };
 
 const PRIVATE_HOSTNAMES = new Set(["localhost", "localhost.", "ip6-localhost", "ip6-loopback"]);
 
@@ -101,11 +97,19 @@ function blockMessageFor(addressClass: IpAddressClass): string {
  * Validates a user-supplied URL for server-side requests.
  * Returns the normalized origin or an error message.
  *
- * Set env var ALLOW_PRIVATE_URLS=1 to bypass private IP checks entirely
- * (useful for Docker dev/test environments with internal service hostnames,
- * e.g. the odoo-e2e and eval stacks reaching odoo-mock on the Docker-internal
- * network). The bypass short-circuits before any check below, including DNS
- * resolution.
+ * Two tiers, the same as `mail-host-guard.ts`:
+ *
+ *   - Always refused: loopback, unspecified, link-local (cloud metadata,
+ *     including 100.100.100.200 and fd00:ec2::254), and the reserved
+ *     special-purpose ranges. No Odoo server lives there.
+ *   - Refused unless `ALLOW_PRIVATE_URLS=1`: the `private` class — RFC-1918,
+ *     ULA, CGNAT (Tailscale). That is where an on-premise Odoo lives, and also
+ *     where the odoo-e2e and eval stacks reach odoo-mock on the Docker network.
+ *
+ * The flag opens that one class and nothing else. It used to switch the whole
+ * check off, which turned "my Odoo is on the tailnet" into "an Odoo admin can
+ * reach 127.0.0.1, the metadata services and the OpenClaw gateway". With the
+ * flag set, a DNS name is still resolved and classified.
  *
  * A hostname that is an IP literal, or one of the well-known private names
  * (`localhost`, …), is classified from the string alone via `classifyHostname`
@@ -145,33 +149,35 @@ export async function validateExternalUrl(
   }
 
   const allowPrivate = process.env.ALLOW_PRIVATE_URLS === "1";
-  if (!allowPrivate) {
-    const hostname = url.hostname;
-    // Address literal or well-known private name: decided from the string
-    // alone, no DNS involved.
-    const hostClass = classifyHostname(hostname);
-    if (hostClass !== null) {
-      if (hostClass !== "public") {
-        return { valid: false, error: blockMessageFor(hostClass) };
-      }
-      // A public literal is already fully classified — DNS has nothing to add.
-    } else {
-      // A genuine DNS name. The address it points at is what actually gets
-      // connected to, so resolve it and classify every answer: a name aimed at
-      // 169.254.169.254 (cloud metadata) or an RFC-1918 address must not walk
-      // past a check that only ever read the hostname string.
-      let addresses: string[];
-      try {
-        addresses = await resolver(hostname);
-      } catch {
-        addresses = []; // unresolvable name — fail open, see doc-comment above
-      }
-      for (const address of addresses) {
-        const addressClass = classifyIpAddress(address);
-        if (addressClass !== null && addressClass !== "public") {
-          return { valid: false, error: blockMessageFor(addressClass) };
-        }
-      }
+  /** The refusal for this address class, or null when it may be reached. */
+  const refusalFor = (addressClass: IpAddressClass | null): string | null => {
+    if (addressClass === null || addressClass === "public") return null;
+    if (addressClass === "private" && allowPrivate) return null;
+    return blockMessageFor(addressClass);
+  };
+
+  const hostname = url.hostname;
+  // Address literal or well-known private name: decided from the string
+  // alone, no DNS involved.
+  const hostClass = classifyHostname(hostname);
+  if (hostClass !== null) {
+    const refusal = refusalFor(hostClass);
+    if (refusal !== null) return { valid: false, error: refusal };
+    // A literal is already fully classified — DNS has nothing to add.
+  } else {
+    // A genuine DNS name. The address it points at is what actually gets
+    // connected to, so resolve it and classify every answer: a name aimed at
+    // 169.254.169.254 (cloud metadata) or an RFC-1918 address must not walk
+    // past a check that only ever read the hostname string.
+    let addresses: string[];
+    try {
+      addresses = await resolver(hostname);
+    } catch {
+      addresses = []; // unresolvable name — fail open, see doc-comment above
+    }
+    for (const address of addresses) {
+      const refusal = refusalFor(classifyIpAddress(address));
+      if (refusal !== null) return { valid: false, error: refusal };
     }
   }
 
