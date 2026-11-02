@@ -207,6 +207,50 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
   });
 
+  // The uid self-heal authenticates before the probe runs, so its failures
+  // need the same classification the probe applies: a redirect, a proxy error
+  // or a non-JSON-RPC answer says nothing about the API key, and flagging the
+  // connection auth_failed would tell the admin to re-enter a good one.
+  describe("odoo: uid self-heal failures that are not about the credentials", () => {
+    async function realOdooError(message: string, code?: number, data?: Record<string, unknown>) {
+      const { OdooError } = await vi.importActual<typeof import("odoo-node")>("odoo-node");
+      return new OdooError(message, code, data);
+    }
+
+    it.each([
+      ["a refused redirect", "Odoo answered with a redirect (HTTP 308); …", 308],
+      ["a network failure", "fetch failed", 0],
+    ])("reports %s without flagging auth_failed", async (_label, message, code) => {
+      mockOdooAuthenticate.mockRejectedValue(await realOdooError(message, code));
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-1/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+      const body = await response.json();
+
+      expect(body.success).toBe(false);
+      expect(body.error).toContain(message);
+      expect(body.error).not.toMatch(/authentication failed/i);
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    });
+
+    it("still flags auth_failed when Odoo refuses the login", async () => {
+      mockOdooAuthenticate.mockRejectedValue(await realOdooError("Authentication failed"));
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      await POST(makeRequest("/api/integrations/conn-1/test", { method: "POST" }), {
+        params: Promise.resolve({ connectionId: "conn-1" }),
+      });
+
+      expect(mockSetIntegrationAuthFailed).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: "conn-1" })
+      );
+    });
+  });
+
   describe("Microsoft: pre-refresh expired tokens + transient-failure handling", () => {
     beforeEach(() => {
       mockSelectWhere.mockResolvedValue([mockMicrosoftConnection]);

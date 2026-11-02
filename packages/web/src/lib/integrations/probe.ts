@@ -2,7 +2,7 @@ import { OdooClient } from "odoo-node";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
-import { describeOdooError } from "@/lib/integrations/odoo-error";
+import { describeOdooAuthenticateFailure } from "@/lib/integrations/odoo-error";
 import {
   testImapLogin,
   testSmtpVerify,
@@ -24,7 +24,9 @@ import { checkStoredDestination } from "@/lib/integrations/stored-destination";
  * hiccup (5xx, 429, network error — the credentials are still fine, retry
  * later). Callers must not flip a connection to `auth_failed` on a transient
  * result. A destination the SSRF guard refuses is reported as transient too:
- * it says nothing about the credentials, so it must not flag them either.
+ * it says nothing about the credentials, so it must not flag them either —
+ * and so is an Odoo URL that never gave an Odoo answer (a redirect, a proxy
+ * error, a network failure, a non-JSON-RPC body; see `isOdooAuthFailure`).
  */
 export type ProbeResult =
   | { success: true; freshCredentials?: Record<string, unknown> }
@@ -61,11 +63,7 @@ export async function probeIntegrationCredentials(
         apiKey: parsed.data.apiKey,
       });
     } catch (err) {
-      const detail = describeOdooError(err);
-      return {
-        success: false,
-        reason: `Authentication failed. Please verify your login and API key. (${detail})`,
-      };
+      return describeOdooAuthenticateFailure(err);
     }
 
     const result = await fetchOdooSchema({ ...parsed.data, uid });

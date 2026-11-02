@@ -288,6 +288,72 @@ describe("probeIntegrationCredentials", () => {
       await probeIntegrationCredentials("odoo", validOdooCreds);
       expect(fetchOdooSchema).not.toHaveBeenCalled();
     });
+
+    // The errors below come from the real OdooError class, in the shapes
+    // odoo-node builds them: a JSON-RPC error carries Odoo's `data`, a
+    // transport failure carries only a `code` (0 for the network, the HTTP
+    // status otherwise).
+    async function realOdooError(message: string, code?: number, data?: Record<string, unknown>) {
+      const { OdooError } = await vi.importActual<typeof import("odoo-node")>("odoo-node");
+      return new OdooError(message, code, data);
+    }
+
+    it("still reports a wrong login or API key as an authentication failure", async () => {
+      // odoo-node's own error when Odoo answers `uid: false`.
+      mockAuthenticate.mockRejectedValue(await realOdooError("Authentication failed"));
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      expect(res).toMatchObject({ success: false });
+      if (res.success) return;
+      expect(res.reason).toMatch(/authentication failed/i);
+      expect(res.transient).toBeFalsy();
+    });
+
+    it("reports an error Odoo itself raised during login as an authentication failure", async () => {
+      mockAuthenticate.mockRejectedValue(
+        await realOdooError("Access Denied", 200, { name: "odoo.exceptions.AccessDenied" })
+      );
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      if (res.success) throw new Error("expected failure");
+      expect(res.reason).toMatch(/authentication failed/i);
+      expect(res.transient).toBeFalsy();
+    });
+
+    // An http:// Odoo URL behind Caddy's or Traefik's default HTTP→HTTPS
+    // redirect: odoo-node 0.3.1 refuses to follow it and says so. That is a
+    // URL problem; calling it a bad API key sends the admin to fix the wrong
+    // thing, and a non-transient result flags the connection auth_failed.
+    it.each([
+      [
+        "a refused redirect",
+        "Odoo answered with a redirect (HTTP 307); enter the address Odoo is served from",
+        307,
+      ],
+      ["an HTTP error from a proxy", "HTTP 502: Bad Gateway", 502],
+      ["a network failure", "fetch failed", 0],
+    ])("does not call %s an authentication failure", async (_label, message, code) => {
+      mockAuthenticate.mockRejectedValue(await realOdooError(message, code));
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      if (res.success) throw new Error("expected failure");
+      expect(res.reason).not.toMatch(/authentication failed/i);
+      expect(res.reason).toContain(message);
+      expect(res.transient).toBe(true);
+    });
+
+    it("does not call a non-JSON-RPC answer an authentication failure, nor quote it", async () => {
+      let thrown: unknown;
+      try {
+        JSON.parse("my-ec2-role-name\n");
+      } catch (err) {
+        thrown = err;
+      }
+      mockAuthenticate.mockRejectedValue(thrown);
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      if (res.success) throw new Error("expected failure");
+      expect(res.reason).not.toMatch(/authentication failed/i);
+      expect(res.reason).not.toContain("my-ec2-role-name");
+      expect(res.reason).toContain("not a JSON-RPC response");
+      expect(res.transient).toBe(true);
+    });
   });
 
   describe("imap", () => {

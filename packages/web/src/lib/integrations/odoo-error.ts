@@ -30,3 +30,54 @@ export function describeOdooError(err: unknown): string {
   if (!message) return "Connection failed";
   return message.length > MAX_LENGTH ? `${message.slice(0, MAX_LENGTH)}…` : message;
 }
+
+/**
+ * Is this `odoo-node` failure Odoo refusing the login, as opposed to Pinchy
+ * never getting an Odoo answer to judge?
+ *
+ * Only the first is evidence about the credentials. A redirect (odoo-node
+ * 0.3.1 refuses to follow one: an http:// URL behind Caddy's or Traefik's
+ * default HTTP→HTTPS 307/308 is the common case), an HTTP error from a proxy,
+ * a network failure or a non-JSON-RPC answer say nothing about the login or
+ * API key — reporting them as an authentication failure sends the admin to
+ * fix the wrong thing, and flags a healthy connection `auth_failed`.
+ *
+ * odoo-node builds the shapes this reads: a JSON-RPC error from Odoo carries
+ * Odoo's `data`; a transport failure carries only a numeric `code` (0 for the
+ * network, the HTTP status otherwise) — and so does the one auth error
+ * odoo-node raises itself, `"Authentication failed"`, when Odoo answers
+ * `uid: false`. Anything else, including an error of a shape this does not
+ * know, keeps being treated as an authentication failure, as before.
+ */
+export function isOdooAuthFailure(err: unknown): boolean {
+  if (err instanceof SyntaxError || err instanceof TypeError) return false;
+  if (!(err instanceof Error)) return true;
+  const { code, data } = err as Error & { code?: unknown; data?: unknown };
+  const isTransport =
+    typeof code === "number" && data === undefined && err.message !== "Authentication failed";
+  return !isTransport;
+}
+
+/**
+ * The probe result for a failed `OdooClient.authenticate`. Used by the probe
+ * and by the Test-connection route's uid self-heal, which authenticates first and must
+ * classify the same failure the same way.
+ */
+export function describeOdooAuthenticateFailure(err: unknown): {
+  success: false;
+  reason: string;
+  transient?: boolean;
+} {
+  const detail = describeOdooError(err);
+  if (isOdooAuthFailure(err)) {
+    return {
+      success: false,
+      reason: `Authentication failed. Please verify your login and API key. (${detail})`,
+    };
+  }
+  return {
+    success: false,
+    transient: true,
+    reason: `Odoo didn't answer as expected, so your login and API key weren't checked. (${detail})`,
+  };
+}
