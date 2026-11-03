@@ -14,3 +14,10 @@ export const OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS = [
   "http://localhost:18789",
   "http://127.0.0.1:18789",
 ];
+
+// How long OpenClaw keeps inbound channel media under ~/.openclaw/media (see
+// the `media` block in build.ts for why Pinchy sets it at all). Shared with the
+// boot-time seed in targeted.ts: OpenClaw has no reload rule for `media`, so a
+// value the seed did not already put on disk makes the first regenerate a
+// gateway restart instead of a hot reload.
+export const OPENCLAW_MEDIA_TTL_HOURS = 48;

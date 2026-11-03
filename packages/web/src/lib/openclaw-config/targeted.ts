@@ -1,5 +1,9 @@
 import { readFileSync, existsSync } from "fs";
-import { CONFIG_PATH, OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS } from "./paths";
+import {
+  CONFIG_PATH,
+  OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
+  OPENCLAW_MEDIA_TTL_HOURS,
+} from "./paths";
 import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
 import { restartState } from "@/server/restart-state";
 import { getOrCreateGatewayToken } from "@/lib/gateway-token-source";
@@ -306,7 +310,8 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
  * Ensure Pinchy's restart-class overrides are present in openclaw.json BEFORE
  * OpenClaw starts. Writes ONLY the fields that, when missing-then-added later
  * via WS config.apply, hit OC 5.3's BASE_RELOAD_RULES_TAIL `gateway` /
- * `discovery` / `canvasHost` / `update` rules (kind:"restart") and trigger
+ * `discovery` / `canvasHost` / `update` rules (kind:"restart") — or `media`,
+ * which has no rule at all and therefore defaults to restart — and trigger
  * a SIGUSR1 → in-process restart that crashes with
  * `ConfigMutationConflictError: config changed since last load` (OC 5.3
  * stale-snapshot bug in `prepareGatewayStartupConfig → ensureGatewayStartupAuth →
@@ -346,6 +351,7 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   const mdns = (discovery.mdns as Record<string, unknown>) || {};
   const update = (existing.update as Record<string, unknown>) || {};
   const canvasHost = (existing.canvasHost as Record<string, unknown>) || {};
+  const media = (existing.media as Record<string, unknown>) || {};
 
   const needsControlUi = controlUi.enabled !== false;
   // OpenClaw seeds controlUi.allowedOrigins in memory only (never persisted),
@@ -363,6 +369,12 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   const needsMdnsOff = mdns.mode !== "off";
   const needsUpdateCheck = update.checkOnStart !== false;
   const needsCanvasHostOff = canvasHost.enabled !== false;
+  // OpenClaw has no reload rule for `media`, so it falls back to a gateway
+  // restart — and the in-process restart aborts any run in flight ("Agent run
+  // belongs to a stale gateway lifecycle"). build.ts always writes ttlHours;
+  // without it on disk first, the setup wizard's regenerate restarts the gateway
+  // right when a new user sends their first message.
+  const needsMediaTtl = media.ttlHours !== OPENCLAW_MEDIA_TTL_HOURS;
 
   if (
     !needsControlUi &&
@@ -370,7 +382,8 @@ export function seedRestartClassOverridesIfMissing(): boolean {
     !needsTerminalOff &&
     !needsMdnsOff &&
     !needsUpdateCheck &&
-    !needsCanvasHostOff
+    !needsCanvasHostOff &&
+    !needsMediaTtl
   ) {
     return false;
   }
@@ -391,6 +404,7 @@ export function seedRestartClassOverridesIfMissing(): boolean {
     discovery: { ...discovery, mdns: { ...mdns, mode: "off" } },
     update: { ...update, checkOnStart: false },
     canvasHost: { ...canvasHost, enabled: false },
+    media: { ...media, ttlHours: OPENCLAW_MEDIA_TTL_HOURS },
   };
 
   writeConfigAtomic(JSON.stringify(updated, null, 2).trimEnd() + "\n");

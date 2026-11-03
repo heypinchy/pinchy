@@ -5108,6 +5108,37 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // seed them off up front so the first regenerate isn't a missing-then-added
     // diff that triggers a SIGUSR1 restart.
     expect(written.gateway?.terminal?.enabled).toBe(false);
+    // OpenClaw has no reload rule for `media`, so the first regenerate adding
+    // ttlHours would restart the gateway — seed it up front too.
+    expect(written.media?.ttlHours).toBe(48);
+  });
+
+  it("seeds media.ttlHours when it is missing and keeps OpenClaw's media siblings", () => {
+    // Installs created before the media TTL existed carry every other override
+    // but no `media` block; the seed must add ttlHours without dropping fields
+    // OpenClaw may have enriched under `media`.
+    const existing = {
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: {
+          enabled: false,
+          allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+        },
+        terminal: { enabled: false },
+      },
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+      media: { maxBytes: 1024 },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(true);
+    const written = JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1]));
+    expect(written.media).toEqual({ maxBytes: 1024, ttlHours: 48 });
   });
 
   it("returns false (no write) when file already has all overrides — production case", () => {
@@ -5126,6 +5157,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5268,7 +5300,104 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.env).toEqual(existing.env);
     expect(written.models).toEqual(existing.models);
   });
+
+  it("leaves the first post-wizard regenerate nothing OpenClaw restarts the gateway for", async () => {
+    // The seed exists so the first real regenerate is a HOT reload. Every field
+    // it misses becomes a restart-class diff on a fresh install — and an
+    // in-process gateway restart aborts whatever run is in flight ("Agent run
+    // belongs to a stale gateway lifecycle"). `media.ttlHours` was exactly
+    // such a miss: build.ts has written it since the media-TTL change, the seed
+    // and the baked config never did, and OpenClaw has no reload rule for
+    // `media`, so it restarts. The integration suite lost a user's message to
+    // it (CI run 41569393728).
+    //
+    // A list of "the restart-class fields" is the hand-maintained mirror that
+    // missed it, so this test asks OpenClaw instead: the installed binary's own
+    // reload planner judges the diff between the seeded baseline and the first
+    // post-wizard regenerate, exactly as its config watcher would.
+    const { readFileSync: realReadFileSync } = await vi.importActual<typeof import("fs")>("fs");
+    const pathMod = await import("path");
+    const baked = realReadFileSync(
+      pathMod.resolve(__dirname, "../../../../../config/openclaw.json"),
+      "utf-8"
+    );
+
+    // Boot, in bootInits order: restart-class seed, then the gateway token.
+    let onDisk = baked;
+    mockedReadFileSync.mockImplementation(() => onDisk);
+    seedRestartClassOverridesIfMissing();
+    onDisk = findOpenClawConfigWrite(mockedWriteFileSync)?.[1]?.toString() ?? onDisk;
+    mockedWriteFileSync.mockClear();
+    await seedGatewayTokenIfMissing();
+    onDisk = findOpenClawConfigWrite(mockedWriteFileSync)?.[1]?.toString() ?? onDisk;
+    const baseline = JSON.parse(onDisk) as Record<string, unknown>;
+    mockedWriteFileSync.mockClear();
+
+    // The setup wizard's regenerate: one agent on a local Ollama provider.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        { id: "smithers", name: "Smithers", model: "ollama/llama3.2", createdAt: new Date() },
+      ]),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "ollama_local_url" ? "http://host.docker.internal:11434" : null
+    );
+    await regenerateOpenClawConfig();
+    const next = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync)) as Record<string, unknown>;
+
+    const { diffConfigPaths, buildGatewayReloadPlan } = await loadOpenClawReloadPlanner();
+    const plan = buildGatewayReloadPlan(diffConfigPaths(baseline, next));
+
+    expect(plan.restartReasons).toEqual([]);
+  });
 });
+
+/**
+ * Load OpenClaw's REAL config-reload planner from the installed `openclaw`
+ * package: `diffConfigPaths` + `buildGatewayReloadPlan`, the two functions its
+ * config watcher runs to decide hot reload vs gateway restart. They are not part
+ * of the public exports, so this finds the bundled chunk and reads the export
+ * aliases from its `export { … }` line. If a bump renames or restructures them,
+ * this throws — the signal to re-verify the contract, never a silent pass.
+ */
+async function loadOpenClawReloadPlanner(): Promise<{
+  diffConfigPaths: (prev: unknown, next: unknown) => string[];
+  buildGatewayReloadPlan: (paths: string[]) => { restartReasons: string[] };
+}> {
+  const { createRequire } = await import("module");
+  const { pathToFileURL } = await import("url");
+  const pathMod = await import("path");
+  const fsActual = await vi.importActual<typeof import("fs")>("fs");
+  const require = createRequire(import.meta.url);
+  const dist = pathMod.dirname(require.resolve("openclaw"));
+  const chunks = fsActual.readdirSync(dist).filter((n) => /^config-reload-plan-.*\.js$/.test(n));
+  if (chunks.length !== 1) {
+    throw new Error(
+      `Expected one config-reload-plan chunk in ${dist}, found ${String(chunks.length)} — re-verify the reload contract against the installed openclaw version.`
+    );
+  }
+  const file = pathMod.join(dist, chunks[0]);
+  const source = fsActual.readFileSync(file, "utf-8");
+  const alias = (name: string): string => {
+    const match = new RegExp(`\\b${name} as (\\w+)`).exec(source);
+    if (!match) {
+      throw new Error(`${chunks[0]} no longer exports ${name} — re-verify the reload contract.`);
+    }
+    return match[1];
+  };
+  const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+  const diffConfigPaths = mod[alias("diffConfigPaths")];
+  const buildGatewayReloadPlan = mod[alias("buildGatewayReloadPlan")];
+  if (typeof diffConfigPaths !== "function" || typeof buildGatewayReloadPlan !== "function") {
+    throw new Error(`${chunks[0]} exports are not functions — re-verify the reload contract.`);
+  }
+  return {
+    diffConfigPaths: diffConfigPaths as (prev: unknown, next: unknown) => string[],
+    buildGatewayReloadPlan: buildGatewayReloadPlan as (paths: string[]) => {
+      restartReasons: string[];
+    },
+  };
+}
 
 describe("seedGatewayTokenIfMissing", () => {
   // Background: OC 2026.5.12+ strictly requires gateway.auth.token in
