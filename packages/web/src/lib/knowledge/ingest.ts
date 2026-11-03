@@ -52,6 +52,7 @@ import { and, count, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
+import { errorLine, LOG_PATH_MAX, LOG_REASON_MAX, oneLine } from "@/lib/log-line";
 
 import {
   DEFAULT_ALLOWED_EXTENSIONS,
@@ -551,40 +552,6 @@ function unavailable(sourcePath: string, reason: string): ConversionOutcome {
  * key, passed on so the converter need not read the file a second time.
  */
 type ResolveArtifact = (absPath: string, contentHash?: string) => Promise<ConversionOutcome>;
-
-/** How much of a path, and of a reason, one refusal line prints. */
-const LOG_PATH_MAX = 1024;
-const LOG_REASON_MAX = 500;
-
-/**
- * Characters that end a line, or reorder one, wherever the log is read: C0 and
- * C1 controls, DEL, the Unicode line and paragraph separators, and the bidi
- * controls.
- */
-const BREAKS_A_LINE =
-  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
-
-const SHORT_ESCAPES = new Map([
-  ["\n", "\\n"],
-  ["\r", "\\r"],
-  ["\t", "\\t"],
-]);
-
-/**
- * `text` as part of one log line, at most `max` characters: whatever would
- * break or reorder the line is printed as its escape, and `…` marks a cut.
- */
-function oneLine(text: string, max: number): string {
-  let out = "";
-  for (const char of text) {
-    const piece = BREAKS_A_LINE.test(char)
-      ? (SHORT_ESCAPES.get(char) ?? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
-      : char;
-    if (out.length + piece.length > max) return `${out}…`;
-    out += piece;
-  }
-  return out;
-}
 
 /**
  * The server log's line for a file refused before anything was indexed from
@@ -1269,9 +1236,11 @@ export async function ingestPaths(
       if (!(err instanceof FileIngestError)) throw err;
       // The admin-facing counts must not name paths (audit PII rule), so this
       // server log is the only place that says WHICH file failed and why.
-      // The message names the file, so it goes through the same escaping as
-      // a refusal: a newline in a file name cannot write a line of its own.
-      console.error(`[kb-ingest] ${oneLine(err.message, LOG_PATH_MAX + 32)}`, err.cause);
+      // The message names the file, and the cause — a file-system error, a
+      // reader's — quotes it in its message and stack, so both go through the
+      // same escaping as a refusal: a newline in a file name cannot write a
+      // line of its own.
+      console.error(`[kb-ingest] ${oneLine(err.message, LOG_PATH_MAX + 32)}`, errorLine(err.cause));
       failed++;
     }
     processed++;

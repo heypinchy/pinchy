@@ -29,6 +29,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
+import { format } from "node:util";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import mammoth from "mammoth";
@@ -76,6 +77,10 @@ afterEach(() => {
 });
 
 /** Writes a corpus file (under the read-only-in-production `/data` stand-in). */
+/** What turns one log line into two, or reorders one on a terminal. */
+const BREAKS_A_LINE =
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
 async function corpusFile(relPath: string, body: string): Promise<OfficeSource> {
   const absPath = join(corpusDir, relPath);
   await mkdir(dirname(absPath), { recursive: true });
@@ -932,6 +937,46 @@ describe("preflight before conversion", () => {
     }
   });
 
+  it("logs a cut altChunk as one line, whatever the document's name holds", async () => {
+    // The name is whoever put the file on the share's choice, newlines
+    // included: escaped, it still names the document without writing a line of
+    // its own into the server log.
+    const source = await corpusFile(
+      "Angebot\n[kb-office] Lohnliste.docx: cut 9 altChunk(s) — FORGED.docx",
+      "ORIGINAL"
+    );
+    const converter = recordingConverter();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const outcomes = await convertOfficeFiles(
+        [source],
+        deps(
+          { run: converter.run, calls: [] },
+          {
+            prepareSource: async (_absPath, staged) => {
+              await writeFile(staged, "CHECKED COPY");
+              return {
+                relationshipsRemoved: 0,
+                altChunksRemoved: 2,
+                rtfGroupsRemoved: 0,
+                unpackedBytes: null,
+                contentHash: "0".repeat(64),
+              };
+            },
+          }
+        )
+      );
+      expect(outcomes[0].status).toBe("converted");
+      expect(warn).toHaveBeenCalledTimes(1);
+      const printed = format(...warn.mock.calls[0]);
+      expect(printed).not.toMatch(BREAKS_A_LINE);
+      expect(printed).toContain("Angebot\\n[kb-office] Lohnliste.docx");
+      expect(printed).toMatch(/cut 2 altChunk/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("keys the artifact on the bytes that were checked and staged, not on an earlier read of the file", async () => {
     // Keyed on a read made BEFORE the preflight's own, a file swapped in
     // between would be converted from its new bytes and stored under the old
@@ -1683,6 +1728,32 @@ describe("the word-count oracle reads in a heap-capped child", () => {
       expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(
         /unverified.*384 MB/
       );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("logs a skipped count as one line, whatever the document's name and the reason hold", async () => {
+    const path = join(
+      tmpRoot,
+      "Angebot\n[kb-convert] Lohnliste.docx: word count skipped — FORGED.docx"
+    );
+    await writeFile(path, docxWith({ documentRels: relationships() }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const countDocxWords = vi.fn(async () => {
+        throw new OfficeFileRejectedError(
+          "too_large",
+          `reading ${path} needed more than 384 MB\n${"Q".repeat(3000)}\u2028`
+        );
+      });
+      expect(await countSourceWordsWithOracle(path, { countDocxWords })).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const printed = format(...warn.mock.calls[0]);
+      expect(printed).not.toMatch(BREAKS_A_LINE);
+      expect(printed.length).toBeLessThan(2000);
+      expect(printed).toContain("Angebot\\n[kb-convert] Lohnliste.docx");
+      expect(printed).toMatch(/unverified.*384 MB/);
     } finally {
       warn.mockRestore();
     }

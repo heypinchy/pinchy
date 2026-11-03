@@ -36,6 +36,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { chmod } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { format } from "node:util";
 import { and, eq } from "drizzle-orm";
 import ExcelJS from "exceljs";
 
@@ -1845,10 +1846,50 @@ it("keeps a failed file's log entry to one bounded line, whatever its name holds
     expect(line).not.toMatch(BREAKS_A_LINE);
     expect(line.length).toBeLessThan(1100);
     expect(line).toContain("Bericht\\n[kb-ingest] Lohnliste.pdf");
+    // What the log receives is every argument as console prints it, the cause
+    // included: one line, still saying why.
+    const printed = format(...consoleError.mock.calls[0]);
+    expect(printed).not.toMatch(BREAKS_A_LINE);
+    expect(printed).toContain("Invalid PDF structure");
   } finally {
     consoleError.mockRestore();
   }
 });
+
+it.skipIf(process.getuid?.() === 0)(
+  "keeps an unreadable file's log entry to one line, though the file system's error quotes its name",
+  async () => {
+    // The cause is the file system's own error, and its message and stack
+    // quote the path as the share spells it. Printed as it stands, a newline
+    // in the name would write a line of its own. Skipped as root, whom the
+    // mode bits do not stop.
+    const pdfPath = join(tmpRoot, "Bericht\n[kb-ingest] Lohnliste.pdf: not converted — FORGED.pdf");
+    writeFileSync(pdfPath, "%PDF-1.4 unreadable");
+    await chmod(pdfPath, 0o000);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await ingestDirectory(ORG_ID, tmpRoot, {
+        embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.1))),
+        extractPdf: vi.fn(async () => {
+          throw new Error("extractPdf reached a file it could not have read");
+        }),
+        extractXlsx: neverCalledXlsx,
+        convertOffice: neverCalledConvert,
+        ocrModel: null,
+      });
+      expect(result).toEqual(counts({ failed: 1 }));
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      const printed = format(...consoleError.mock.calls[0]);
+      expect(printed).not.toMatch(BREAKS_A_LINE);
+      expect(printed).toContain("Bericht\\n[kb-ingest] Lohnliste.pdf");
+      // Still enough to act on: what failed, and how.
+      expect(printed).toContain("EACCES");
+    } finally {
+      consoleError.mockRestore();
+      await chmod(pdfPath, 0o600);
+    }
+  }
+);
 
 it("does not record a document as unreadable when the converter itself was unavailable", async () => {
   // The distinction #936 exists for: out of memory or a missing binary says

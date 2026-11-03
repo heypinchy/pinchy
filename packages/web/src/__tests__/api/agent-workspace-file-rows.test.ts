@@ -20,6 +20,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { format } from "node:util";
 import { tmpdir } from "node:os";
 import { NextRequest } from "next/server";
 import ExcelJS from "exceljs";
@@ -104,6 +105,10 @@ async function writeWorkbook(dir = allowedRoot, name = "preise.xlsx"): Promise<s
 }
 
 const ROWS = { variant: "rows", sheet: "Suppliers", from: "3", to: "4" };
+
+/** What turns one log line into two, or reorders one on a terminal. */
+const BREAKS_A_LINE =
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
 
 describe("serving the cited rows", () => {
   it("answers with exactly those rows and the sheet's own labels", async () => {
@@ -287,6 +292,32 @@ describe("when the reader is the problem, not the workbook", () => {
     const entry = mockDeferAuditLog.mock.calls[0][0];
     expect(entry.outcome).toBe("failure");
     expect(entry.detail.reason).toBe("reader_unavailable");
+  });
+
+  it("logs a failed reader as one line, whatever the workbook's name and the error hold", async () => {
+    // The name is whoever put the file on the share's choice, newlines
+    // included, and the reader's error can quote it. Neither may write a line
+    // of its own into the server log an admin reads.
+    const planted = "Preise\n[workspace-file] spreadsheet reader failed for FORGED.xlsx";
+    const path = await writeWorkbook(allowedRoot, planted);
+    await readerFails(
+      () =>
+        new Error(`the spreadsheet reader could not be started for ${planted}\n${"Q".repeat(5000)}`)
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await callGET(path, ROWS);
+
+      expect(res.status).toBe(503);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      const printed = format(...consoleError.mock.calls[0]);
+      expect(printed).not.toMatch(BREAKS_A_LINE);
+      expect(printed.length).toBeLessThan(4000);
+      expect(printed).toContain("Preise\\n[workspace-file] spreadsheet reader failed for FORGED");
+      expect(printed).toContain("could not be started");
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("answers 503 with a Retry-After when previews are already queued, and says so in the audit", async () => {

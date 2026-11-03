@@ -63,6 +63,8 @@ import { mkdir, open, rm, stat, statfs, symlink, unlink, writeFile } from "node:
 import { basename, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { LOG_PATH_MAX, LOG_REASON_MAX, oneLine } from "../log-line";
+
 import { getOfficeArtifactStore, hashFileContents, OfficeArtifactStore } from "./office-artifacts";
 import {
   countWords,
@@ -474,7 +476,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
             // Unlike a cut picture link, a cut altChunk costs text: the
             // chunk's content (HTML, a nested document) is not indexed.
             console.warn(
-              `[kb-office] ${item.absPath}: cut ${prepared.altChunksRemoved} altChunk(s) — content embedded in another format is not indexed`
+              `[kb-office] ${oneLine(item.absPath, LOG_PATH_MAX)}: cut ${prepared.altChunksRemoved} altChunk(s) — content embedded in another format is not indexed`
             );
           }
           // NOT the hash from the run's first read of the file: that read and
@@ -1119,7 +1121,9 @@ export async function countSourceWordsWithOracle(
         // reader child running out of heap — or a bomb the conversion's own
         // preflight refuses as well. Not a failure: the conversion goes on,
         // without its tripwire.
-        console.warn(`[kb-convert] ${absPath}: word count skipped, unverified — ${err.message}`);
+        console.warn(
+          `[kb-convert] ${oneLine(absPath, LOG_PATH_MAX)}: word count skipped, unverified — ${oneLine(err.message, LOG_REASON_MAX)}`
+        );
       }
       return null;
     }

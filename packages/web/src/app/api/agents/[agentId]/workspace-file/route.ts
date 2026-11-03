@@ -14,6 +14,7 @@ import type { AuditLogEntry } from "@/lib/audit";
 import { resolveAllowedFile } from "@/lib/agent-file-access";
 import { contentTypeForFile } from "@/lib/agent-file-content-type";
 import { parseRangeHeader } from "@/lib/http-range";
+import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
 import { getOfficeArtifactStore, hashFileContents } from "@/lib/knowledge/office-artifacts";
 import {
   convertedPdfName,
@@ -367,7 +368,12 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       // Answering 422 and auditing
       // `unreadable_document` would write a false statement about the
       // document into an immutable row.
-      console.error(`[workspace-file] spreadsheet reader failed for ${documentName}:`, err);
+      // The name is the share's and the error can quote it: escaped, neither
+      // writes a line of its own into the log.
+      console.error(
+        `[workspace-file] spreadsheet reader failed for ${oneLine(documentName, LOG_PATH_MAX)}:`,
+        errorLine(err)
+      );
       auditFailure("reader_unavailable");
       return NextResponse.json(
         { error: "The spreadsheet reader is unavailable right now. Try again shortly." },

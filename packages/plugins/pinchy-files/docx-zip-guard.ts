@@ -157,10 +157,20 @@ const SHORT_ESCAPES = new Map([
   ["\t", "\\t"],
 ]);
 
-function escapedForQuote(char: string): string {
-  if (char === '"' || char === "\\") return `\\${char}`;
+/**
+ * One character as it may be printed inside a line: itself, or — if it would
+ * end the line or reorder it — its JSON-style escape. The one rule for every
+ * line Pinchy prints a name into: a refusal's quote here, and the server log's
+ * lines through `packages/web/src/lib/log-line.ts`.
+ */
+export function escapeLineBreaking(char: string): string {
   if (!BREAKS_A_LINE.test(char)) return char;
   return SHORT_ESCAPES.get(char) ?? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
+}
+
+function escapedForQuote(char: string): string {
+  if (char === '"' || char === "\\") return `\\${char}`;
+  return escapeLineBreaking(char);
 }
 
 function invalidDocx(detail: string): Error {

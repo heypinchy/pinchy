@@ -26,6 +26,7 @@ import { usageRecords } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
 import { embedTexts } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
@@ -185,13 +186,13 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
         unavailableFolders++;
         skippedRoots++;
         console.warn(
-          `[kb-index-worker] job ${job.id}: skipped ${rootDir} (${reason}); nothing under it was indexed or removed`
+          `[kb-index-worker] job ${job.id}: skipped ${oneLine(rootDir, LOG_PATH_MAX)} (${reason}); nothing under it was indexed or removed`
         );
       },
       onKeptFolder: (folder) => {
         unavailableFolders++;
         console.warn(
-          `[kb-index-worker] job ${job.id}: ${folder} came up empty while the index still holds documents from it; they were kept`
+          `[kb-index-worker] job ${job.id}: ${oneLine(folder, LOG_PATH_MAX)} came up empty while the index still holds documents from it; they were kept`
         );
       },
       // A share that failed to mount is an empty directory under Docker, and
@@ -285,7 +286,7 @@ async function recordOcrUsage(job: KbIndexJob, ocr: OcrTally | null): Promise<vo
   } catch (err) {
     // Telemetry must never take down a reindex that actually happened — the
     // same call the audit write makes one line below.
-    console.error("[kb-index-worker] failed to record OCR usage:", err);
+    console.error("[kb-index-worker] failed to record OCR usage:", errorLine(err));
   }
 }
 
@@ -394,7 +395,7 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
           );
         }
       } catch (err) {
-        console.warn("[kb-index-worker] could not clear leftover Office staging:", err);
+        console.warn("[kb-index-worker] could not clear leftover Office staging:", errorLine(err));
       }
       // After a format bump, the documents indexed from the earlier format's
       // artifacts are owed a conversion under the current rules, and until
@@ -413,7 +414,7 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
       } catch (err) {
         console.warn(
           "[kb-index-worker] could not look for Office documents owed a conversion:",
-          err
+          errorLine(err)
         );
       }
       await pruneSupersededArtifacts(opts.artifactDir);
@@ -434,7 +435,7 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
       await pruneSupersededArtifacts(opts.artifactDir);
     }
   } catch (err) {
-    console.error("[kb-index-worker] job run failed:", err);
+    console.error("[kb-index-worker] job run failed:", errorLine(err));
   } finally {
     _runInFlight = false;
   }
@@ -461,7 +462,10 @@ async function queueOwedReconversion(): Promise<void> {
     // A database problem: drop the rest rather than ask again every tick.
     // The next boot, or the nightly run, converts what is left.
     _reconversionsOwed = [];
-    console.warn("[kb-index-worker] could not queue the reconversion of Office documents:", err);
+    console.warn(
+      "[kb-index-worker] could not queue the reconversion of Office documents:",
+      errorLine(err)
+    );
   }
 }
 
@@ -483,7 +487,7 @@ async function pruneSupersededArtifacts(artifactDir: string | undefined): Promis
       );
     }
   } catch (err) {
-    console.warn("[kb-index-worker] could not remove superseded Office artifacts:", err);
+    console.warn("[kb-index-worker] could not remove superseded Office artifacts:", errorLine(err));
   }
 }
 
