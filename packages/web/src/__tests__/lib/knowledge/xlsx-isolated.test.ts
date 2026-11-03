@@ -28,6 +28,7 @@ import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
 import { declaredBomb } from "@/test-helpers/office-zip";
 import { extractXlsx, readSheetRange, XlsxExtractionError } from "@/lib/knowledge/xlsx-extract";
 import {
+  checkSheetReaderQueue,
   extractXlsxIsolated,
   readSheetRangeIsolated,
   runSheetReader,
@@ -416,6 +417,26 @@ describe("a preview nobody waits for any more", () => {
     // The indexer is never turned away: it names no limit.
     reads.push(runSheetReader({ op: "extract", path: log }, { entry }));
     expect(await Promise.all(reads)).toEqual(["done", "done", "done", "done"]);
+  }, 20_000);
+
+  it("answers whether a preview would be turned away, before it does any work of its own", async () => {
+    // The rows route copies a workbook before it reads it. A preview the
+    // queue will refuse must be refused before that copy, not after it.
+    expect(() => checkSheetReaderQueue(2)).not.toThrow();
+    const log = join(tmpRoot, "order.log");
+    writeFileSync(log, "");
+    const entry = slowChild(600);
+    const reads = [
+      runSheetReader({ op: "extract", path: log }, { entry }),
+      runSheetReader({ op: "extract", path: log }, { entry, maxQueued: 2 }),
+    ];
+    await expect.poll(() => starts(log)).toBe(1);
+    expect(() => checkSheetReaderQueue(2)).not.toThrow();
+
+    reads.push(runSheetReader({ op: "extract", path: log }, { entry, maxQueued: 2 }));
+    expect(() => checkSheetReaderQueue(2)).toThrow(SheetReaderBusyError);
+    expect(await Promise.all(reads)).toEqual(["done", "done", "done"]);
+    expect(() => checkSheetReaderQueue(2)).not.toThrow();
   }, 20_000);
 });
 

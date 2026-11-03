@@ -85,6 +85,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.doUnmock(VERIFIED);
   delete process.env.KB_ARTIFACT_DIR;
   rmSync(tmpRoot, { recursive: true, force: true });
 });
@@ -111,6 +112,16 @@ async function writeWorkbook(dir = allowedRoot, name = "preise.xlsx"): Promise<s
 }
 
 const ROWS = { variant: "rows", sheet: "Suppliers", from: "3", to: "4" };
+
+const VERIFIED = "@/lib/knowledge/verified-source";
+
+/** Records every private copy the route makes; the copies are still made. */
+async function watchCopies() {
+  const actual = await vi.importActual<typeof import("@/lib/knowledge/verified-source")>(VERIFIED);
+  const copy = vi.fn(actual.copyOpenSource);
+  vi.doMock(VERIFIED, () => ({ ...actual, copyOpenSource: copy }));
+  return copy;
+}
 
 /** What turns one log line into two, or reorders one on a terminal. */
 const BREAKS_A_LINE =
@@ -261,6 +272,38 @@ describe("what it answers rather than failing", () => {
     expect(entry.outcome).toBe("failure");
     expect(entry.detail.reason).toBe("document_too_large");
   });
+
+  it("answers 413 for a workbook past the reader's limit without copying it, and audits the reason", async () => {
+    // The reader refuses it unopened anyway. Copying it first would write the
+    // whole file to the staging volume on every reload — and on a volume too
+    // full to take it, answer "reader unavailable" about a workbook that is
+    // simply too large.
+    const { truncateSync } = await import("node:fs");
+    const { XLSX_MAX_FILE_BYTES } = await import("@/lib/knowledge/office-preflight");
+    const path = join(allowedRoot, "huge.xlsx");
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- test-local path under a per-test temp dir
+    truncateSync(await writeWorkbook(allowedRoot, "huge.xlsx"), XLSX_MAX_FILE_BYTES + 1);
+    const copy = await watchCopies();
+
+    const res = await callGET(path, ROWS);
+
+    expect(res.status).toBe(413);
+    expect((await res.json()).error).toMatch(/too large to read/i);
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.outcome).toBe("failure");
+    expect(entry.detail.reason).toBe("document_too_large");
+    expect(copy).not.toHaveBeenCalled();
+  });
+
+  it("copies a workbook at most one byte past the reader's limit, so one still being written cannot outgrow it", async () => {
+    const { XLSX_MAX_FILE_BYTES } = await import("@/lib/knowledge/office-preflight");
+    const path = await writeWorkbook();
+    const copy = await watchCopies();
+
+    expect((await callGET(path, ROWS)).status).toBe(200);
+    expect(copy).toHaveBeenCalledTimes(1);
+    expect(copy.mock.calls[0][3]).toEqual({ maxBytes: XLSX_MAX_FILE_BYTES + 1 });
+  });
 });
 
 describe("when the reader is the problem, not the workbook", () => {
@@ -335,6 +378,31 @@ describe("when the reader is the problem, not the workbook", () => {
     expect(res.status).toBe(503);
     expect(res.headers.get("retry-after")).toBe("10");
     expect(mockDeferAuditLog.mock.calls[0][0].detail.reason).toBe("reader_busy");
+  });
+
+  it("turns a preview away before copying the workbook when the queue is already full", async () => {
+    // Every request would otherwise copy the workbook first and learn it was
+    // busy afterwards: reloads stacking copies on the staging volume for
+    // reads that never happen.
+    const path = await writeWorkbook();
+    const actual = await vi.importActual<Reader>(READER);
+    const read = vi.fn(actual.readSheetRangeIsolated);
+    vi.doMock(READER, () => ({
+      ...actual,
+      checkSheetReaderQueue: () => {
+        throw new actual.SheetReaderBusyError(2);
+      },
+      readSheetRangeIsolated: read,
+    }));
+    const copy = await watchCopies();
+
+    const res = await callGET(path, ROWS);
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("10");
+    expect(mockDeferAuditLog.mock.calls[0][0].detail.reason).toBe("reader_busy");
+    expect(copy).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("records a read its requester abandoned as cancelled, not as a fault of the document", async () => {

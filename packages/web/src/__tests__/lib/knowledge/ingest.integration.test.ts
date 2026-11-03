@@ -1922,6 +1922,95 @@ it("keeps a refused Office document's log entry to one bounded line, whatever it
   }
 });
 
+describe("the converter's log lines about a document", () => {
+  // The converter reads private copies on the staging volume, each under the
+  // file's own basename in a directory of its own — a name that reads like the
+  // document and is not where an admin can find it.
+  let storeRoot: string;
+
+  beforeEach(() => {
+    storeRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-names-"));
+  });
+
+  afterEach(() => {
+    rmSync(storeRoot, { recursive: true, force: true });
+  });
+
+  function namingDeps(prepareSource: PrepareSource): IngestDeps {
+    return {
+      embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05))),
+      extractPdf: vi.fn(async () => WORD_PAGES),
+      extractXlsx: neverCalledXlsx,
+      convertOffice: (sources: readonly OfficeSource[]) =>
+        convertOfficeFiles(sources, {
+          store: new OfficeArtifactStore(storeRoot),
+          prepareSource,
+          runConverter: async ({ inputs, outDir }) => {
+            for (const staged of inputs) {
+              const pdf = join(outDir, basename(staged, extname(staged)) + ".pdf");
+              writeFileSync(pdf, "%PDF-1.4\nconverted words\n");
+            }
+            return { code: 0, signal: null, stderr: "" };
+          },
+          countPdfWords: async () => 10,
+          countSourceWords: async () => null,
+        }),
+      ocrModel: null,
+      stagingDir,
+    };
+  }
+
+  it("names the share's file when an altChunk was cut — the asking document and its batch mate", async () => {
+    const first = join(tmpRoot, "Angebot.docx");
+    const second = join(tmpRoot, "Lohnliste.docx");
+    writeFileSync(first, "first-docx-bytes");
+    writeFileSync(second, "second-docx-bytes");
+    const deps = namingDeps(async (_absPath, staged) => {
+      writeFileSync(staged, "CHECKED COPY");
+      return {
+        relationshipsRemoved: 0,
+        altChunksRemoved: 1,
+        rtfGroupsRemoved: 0,
+        unpackedBytes: null,
+        contentHash: createHash("sha256").update(staged).digest("hex"),
+      };
+    });
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 2 }));
+      const cut = warn.mock.calls
+        .map((call) => format(...call))
+        .filter((line) => line.includes("altChunk"));
+      expect(cut).toHaveLength(2);
+      expect(cut.find((line) => line.includes(`${first}: cut 1 altChunk`))).toBeDefined();
+      expect(cut.find((line) => line.includes(`${second}: cut 1 altChunk`))).toBeDefined();
+      expect(cut.some((line) => line.includes(stagingDir))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("names the share's file in a refusal whose reason quotes the copy", async () => {
+    const docPath = join(tmpRoot, "Lohnliste.docx");
+    writeFileSync(docPath, "docx-bytes");
+    const deps = namingDeps(async (absPath) => {
+      throw new Error(`EACCES: permission denied, open '${absPath}'`);
+    });
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+      const lines = ingestLines(warn);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(`open '${docPath}'`);
+      expect(lines[0]).not.toContain(stagingDir);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 it("keeps a refused workbook's log entry to one bounded line, whatever its name and reason hold", async () => {
   const xlsxPath = join(tmpRoot, "Preise\n[kb-ingest] Lohnliste.xlsx: not read — FORGED.xlsx");
   writeFileSync(xlsxPath, "fake-xlsx");

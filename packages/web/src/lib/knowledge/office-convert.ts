@@ -206,6 +206,13 @@ export interface OfficeSource {
    * second read.
    */
   contentHash?: string;
+  /**
+   * What the log and the outcome's `reason` call this document, when `absPath`
+   * is a private copy of it: the path on the share. A copy keeps the file's
+   * basename in a staging directory of its own, so a line naming it reads like
+   * the document and points at a file nobody can find. Defaults to `absPath`.
+   */
+  displayPath?: string;
 }
 
 /**
@@ -304,8 +311,12 @@ export interface ConvertOptions {
   prepareSource?: PrepareSource;
   /** Words in the converted PDF. Prod: the pdfjs text layer (./pdf-extract.ts). */
   countPdfWords?: (absPath: string) => Promise<number>;
-  /** Words the INDEPENDENT extractor sees in the original, or null when there is none for this format. */
-  countSourceWords?: (absPath: string) => Promise<number | null>;
+  /**
+   * Words the INDEPENDENT extractor sees in the original, or null when there is
+   * none for this format. `absPath` is the staged copy; `displayPath` is what a
+   * log line calls the document.
+   */
+  countSourceWords?: (absPath: string, displayPath: string) => Promise<number | null>;
   batchSize?: number;
   epsilon?: number;
   onProgress?: (progress: ConvertProgress) => void | Promise<void>;
@@ -316,6 +327,8 @@ export interface ConvertOptions {
 /** One document's slot in the run, so results can be returned in input order. */
 interface WorkItem {
   absPath: string;
+  /** See `OfficeSource.displayPath`. */
+  displayPath: string;
   contentHash: string;
   /** Every input position that shares this content — two paths, one conversion. */
   positions: number[];
@@ -339,7 +352,10 @@ export async function convertOfficeFiles(
   const runConverter = options.runConverter ?? runSoffice;
   const prepareSource = options.prepareSource ?? defaultPrepareSource;
   const countPdfWords = options.countPdfWords ?? defaultCountPdfWords;
-  const countSourceWords = options.countSourceWords ?? countSourceWordsWithOracle;
+  const countSourceWords =
+    options.countSourceWords ??
+    ((absPath: string, displayPath: string) =>
+      countSourceWordsWithOracle(absPath, {}, displayPath));
   const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE);
   const epsilon = options.epsilon ?? OFFICE_VERIFY_EPSILON;
   const readSpace = options.statfs ?? ((dir: string) => statfs(dir));
@@ -355,7 +371,10 @@ export async function convertOfficeFiles(
       } catch (err) {
         // The file vanished or turned unreadable between discovery and here.
         // That is about THIS document, not the infrastructure.
-        outcomes[position] = documentFailure(source.absPath, `unreadable source: ${reasonOf(err)}`);
+        outcomes[position] = documentFailure(
+          source.absPath,
+          inOwnName(`unreadable source: ${reasonOf(err)}`, source.absPath, source.displayPath)
+        );
         continue;
       }
     }
@@ -373,7 +392,14 @@ export async function convertOfficeFiles(
 
     const existing = byHash.get(contentHash);
     if (existing) existing.positions.push(position);
-    else byHash.set(contentHash, { absPath: source.absPath, contentHash, positions: [position] });
+    else {
+      byHash.set(contentHash, {
+        absPath: source.absPath,
+        displayPath: source.displayPath ?? source.absPath,
+        contentHash,
+        positions: [position],
+      });
+    }
   }
 
   const work = [...byHash.values()];
@@ -393,7 +419,14 @@ export async function convertOfficeFiles(
 
     for (const [i, item] of batch.entries()) {
       for (const position of item.positions) {
-        outcomes[position] = { ...results[i], sourcePath: sources[position].absPath };
+        const { reason } = results[i];
+        outcomes[position] = {
+          ...results[i],
+          sourcePath: sources[position].absPath,
+          ...(reason === undefined
+            ? {}
+            : { reason: inOwnName(reason, item.absPath, sources[position].displayPath) }),
+        };
       }
     }
 
@@ -409,7 +442,7 @@ interface BatchDeps {
   runConverter: RunConverter;
   prepareSource: PrepareSource;
   countPdfWords: (absPath: string) => Promise<number>;
-  countSourceWords: (absPath: string) => Promise<number | null>;
+  countSourceWords: (absPath: string, displayPath: string) => Promise<number | null>;
   epsilon: number;
   statfs: (dir: string) => Promise<VolumeSpace>;
 }
@@ -476,7 +509,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
             // Unlike a cut picture link, a cut altChunk costs text: the
             // chunk's content (HTML, a nested document) is not indexed.
             console.warn(
-              `[kb-office] ${oneLine(item.absPath, LOG_PATH_MAX)}: cut ${prepared.altChunksRemoved} altChunk(s) — content embedded in another format is not indexed`
+              `[kb-office] ${oneLine(item.displayPath, LOG_PATH_MAX)}: cut ${prepared.altChunksRemoved} altChunk(s) — content embedded in another format is not indexed`
             );
           }
           // NOT the hash from the run's first read of the file: that read and
@@ -679,7 +712,7 @@ async function collectOne(
   // fail a document — it only removes the tripwire for this one file. It reads
   // the STAGED copy: the bytes that were checked and converted, not whatever
   // the share holds by now.
-  const sourceWords = await deps.countSourceWords(stagedSource).catch(() => null);
+  const sourceWords = await deps.countSourceWords(stagedSource, item.displayPath).catch(() => null);
 
   const verification: VerificationReport = {
     status: sourceWords === null ? "unverified" : "ok",
@@ -826,6 +859,15 @@ function documentFailure(sourcePath: string, reason: string): ConversionOutcome 
 
 function infrastructureFailure(sourcePath: string, reason: string): ConversionOutcome {
   return { sourcePath, status: "infrastructure", reason };
+}
+
+/**
+ * `reason` with every mention of the private copy at `absPath` replaced by the
+ * document's own name: a file system error quotes the path it was handed, and
+ * the copy's reads like the document while being nowhere an admin can look.
+ */
+function inOwnName(reason: string, absPath: string, displayPath: string | undefined): string {
+  return displayPath === undefined ? reason : reason.split(absPath).join(displayPath);
 }
 
 function reasonOf(err: unknown): string {
@@ -1101,10 +1143,14 @@ export interface OracleDeps {
  *
  * A missing binary is not an error: it yields null, the file is recorded
  * `unverified`, and conversion proceeds. Local dev has no catdoc.
+ *
+ * `displayPath` is what its log line calls the document: the conversion hands
+ * the oracle a staged copy (`in/0.docx`), a name that says nothing.
  */
 export async function countSourceWordsWithOracle(
   absPath: string,
-  deps: OracleDeps = {}
+  deps: OracleDeps = {},
+  displayPath: string = absPath
 ): Promise<number | null> {
   const ext = extname(absPath).toLowerCase();
 
@@ -1122,7 +1168,7 @@ export async function countSourceWordsWithOracle(
         // preflight refuses as well. Not a failure: the conversion goes on,
         // without its tripwire.
         console.warn(
-          `[kb-convert] ${oneLine(absPath, LOG_PATH_MAX)}: word count skipped, unverified — ${oneLine(err.message, LOG_REASON_MAX)}`
+          `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count skipped, unverified — ${oneLine(err.message, LOG_REASON_MAX)}`
         );
       }
       return null;

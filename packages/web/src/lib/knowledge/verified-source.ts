@@ -267,12 +267,14 @@ export async function copyVerifiedSource(
  * `copyVerifiedSource` for a descriptor the caller has already opened through
  * `openVerifiedSource` — the preview route, which tells a refused open apart
  * from a copy that could not be written. The caller still owns, and closes,
- * the descriptor.
+ * the descriptor. `maxBytes` ends the copy there: a reader with a size limit
+ * needs one byte past it to refuse a file, never the rest of it.
  */
 export async function copyOpenSource(
   source: VerifiedSource,
   sourcePath: string,
-  stagingDir: string
+  stagingDir: string,
+  { maxBytes }: { maxBytes?: number } = {}
 ): Promise<VerifiedCopy> {
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- the artifact volume's staging directory, from configuration.
   await mkdir(stagingDir, { recursive: true });
@@ -285,11 +287,15 @@ export async function copyOpenSource(
     let size = 0;
     let hash: string;
     try {
-      hash = await hashOpenFile(source.handle, async (chunk) => {
-        // A write may take less than it was given; the rest follows.
-        for (let at = 0; at < chunk.length;) at += (await copy.write(chunk, at)).bytesWritten;
-        size += chunk.length;
-      });
+      hash = await hashOpenFile(
+        source.handle,
+        async (chunk) => {
+          // A write may take less than it was given; the rest follows.
+          for (let at = 0; at < chunk.length;) at += (await copy.write(chunk, at)).bytesWritten;
+          size += chunk.length;
+        },
+        maxBytes
+      );
     } finally {
       await copy.close();
     }

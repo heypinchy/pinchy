@@ -27,7 +27,9 @@ import {
   OfficeFileRejectedError,
 } from "@/lib/knowledge/office-formats";
 import { SHEET_RANGE_MAX_ROWS, XlsxExtractionError } from "@/lib/knowledge/xlsx-extract";
+import { XLSX_MAX_FILE_BYTES } from "@/lib/knowledge/office-preflight";
 import {
+  checkSheetReaderQueue,
   readSheetRangeIsolated,
   SHEET_PREVIEW_MAX_QUEUED,
   SheetReaderBusyError,
@@ -362,11 +364,41 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     // volume: never the share's path (a link swapped in after the check would
     // be followed). The copy is streamed; the workbook reader then loads that
     // copy in its heap-capped child (xlsx-isolated.ts).
+    const tooLarge = () => {
+      auditFailure("document_too_large");
+      return NextResponse.json({ error: "The workbook is too large to read" }, { status: 413 });
+    };
+    const busy = () => {
+      auditFailure("reader_busy");
+      return NextResponse.json(
+        { error: "Too many spreadsheet previews are being read right now. Try again shortly." },
+        { status: 503, headers: { "retry-after": "10" } }
+      );
+    };
+
     const source = await openSource();
     if (!source) return new NextResponse("Not found", { status: 404 });
     let copy: VerifiedCopy;
     try {
-      copy = await copyOpenSource(source, realPath, liveStagingDirOf());
+      // Both refusals come before the copy, which writes the workbook to the
+      // staging volume. A workbook past the reader's limit is refused unopened
+      // there anyway: copied first, it would cost its full size on every
+      // reload, and on a volume too full to take it, answer "reader
+      // unavailable" about a workbook that is simply too large. A preview the
+      // queue will turn away would leave a copy for a read that never happens.
+      // The descriptor's own size: the bytes the copy would read.
+      if (source.stat.size > BigInt(XLSX_MAX_FILE_BYTES)) return tooLarge();
+      try {
+        checkSheetReaderQueue(SHEET_PREVIEW_MAX_QUEUED);
+      } catch (err) {
+        if (err instanceof SheetReaderBusyError) return busy();
+        throw err;
+      }
+      // A file still being written can grow past that check while the copy
+      // runs. One byte past the limit is all the reader needs to refuse it.
+      copy = await copyOpenSource(source, realPath, liveStagingDirOf(), {
+        maxBytes: XLSX_MAX_FILE_BYTES + 1,
+      });
     } catch (err) {
       // The workbook was opened; only the copy could not be written — the
       // staging volume is full, read-only or missing. A fact about the
@@ -406,8 +438,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
         // Refused before exceljs inflated anything (a compressed bomb costs a
         // central-directory read, not a heap), or the child reading it ran out
         // of heap. Either way the server is still standing.
-        auditFailure("document_too_large");
-        return NextResponse.json({ error: "The workbook is too large to read" }, { status: 413 });
+        return tooLarge();
       }
       if (err instanceof OfficeFileRejectedError || err instanceof XlsxExtractionError) {
         // The workbook is on disk and inside the grant but will not open. That
@@ -421,13 +452,8 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
         auditFailure("cancelled");
         return NextResponse.json({ error: "The request was cancelled" }, { status: 499 });
       }
-      if (err instanceof SheetReaderBusyError) {
-        auditFailure("reader_busy");
-        return NextResponse.json(
-          { error: "Too many spreadsheet previews are being read right now. Try again shortly." },
-          { status: 503, headers: { "retry-after": "10" } }
-        );
-      }
+      // The queue filled between the check above and this read.
+      if (err instanceof SheetReaderBusyError) return busy();
       // Anything else is the READER failing, not the document: a child that
       // could not be started, was killed by the system or ran out of time.
       // Answering 422 and auditing

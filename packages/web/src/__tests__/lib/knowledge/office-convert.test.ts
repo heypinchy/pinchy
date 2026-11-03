@@ -977,6 +977,81 @@ describe("preflight before conversion", () => {
     }
   });
 
+  describe("a source handed over as a private copy", () => {
+    // The ingest hands the converter a copy on the staging volume, never the
+    // share's path. The copy keeps the file's basename in a directory of its
+    // own, so a line naming it reads like a real file — just not the one an
+    // admin can find on the share.
+    const SHARE_PATH = "/data/Personal/Lohnliste.docx";
+
+    async function privateCopy(): Promise<OfficeSource> {
+      const copy = await corpusFile("staging/source-AbC123/Lohnliste.docx", "ORIGINAL");
+      return { ...copy, displayPath: SHARE_PATH };
+    }
+
+    it("names the share's file, not the copy, when an altChunk was cut", async () => {
+      const source = await privateCopy();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await convertOfficeFiles(
+          [source],
+          deps(
+            { run: recordingConverter().run, calls: [] },
+            {
+              prepareSource: async (_absPath, staged) => {
+                await writeFile(staged, "CHECKED COPY");
+                return {
+                  relationshipsRemoved: 0,
+                  altChunksRemoved: 2,
+                  rtfGroupsRemoved: 0,
+                  unpackedBytes: null,
+                  contentHash: "0".repeat(64),
+                };
+              },
+            }
+          )
+        );
+        expect(warn).toHaveBeenCalledTimes(1);
+        const printed = format(...warn.mock.calls[0]);
+        expect(printed).toContain(`${SHARE_PATH}: cut 2 altChunk`);
+        expect(printed).not.toContain(source.absPath);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("names the share's file, not the copy, in a reason that quotes the copy", async () => {
+      // A file system error quotes the path it was given — the copy's.
+      const source = await privateCopy();
+      const outcomes = await convertOfficeFiles(
+        [source],
+        deps(
+          { run: recordingConverter().run, calls: [] },
+          {
+            prepareSource: async (absPath) => {
+              throw new Error(`EACCES: permission denied, open '${absPath}'`);
+            },
+          }
+        )
+      );
+      expect(outcomes[0].status).toBe("failed");
+      expect(outcomes[0].reason).toContain(`open '${SHARE_PATH}'`);
+      expect(outcomes[0].reason).not.toContain(source.absPath);
+    });
+
+    it("tells the word-count oracle which file it is counting, for its log line", async () => {
+      // The oracle reads the STAGED copy (`in/0.docx`), a name that says
+      // nothing about which document skipped its count.
+      const source = await privateCopy();
+      const countSourceWords = vi.fn(async () => null);
+      await convertOfficeFiles(
+        [source],
+        deps(fakeConverter({ outputs: { "Lohnliste.docx": "words" } }), { countSourceWords })
+      );
+      expect(countSourceWords).toHaveBeenCalledWith(expect.stringMatching(/0\.docx$/), SHARE_PATH);
+    });
+  });
+
   it("keys the artifact on the bytes that were checked and staged, not on an earlier read of the file", async () => {
     // Keyed on a read made BEFORE the preflight's own, a file swapped in
     // between would be converted from its new bytes and stored under the old
@@ -1754,6 +1829,25 @@ describe("the word-count oracle reads in a heap-capped child", () => {
       expect(printed.length).toBeLessThan(2000);
       expect(printed).toContain("Angebot\\n[kb-convert] Lohnliste.docx");
       expect(printed).toMatch(/unverified.*384 MB/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("names the document it was told it is counting, not the staged copy it reads", async () => {
+    const path = join(tmpRoot, "0.docx");
+    await writeFile(path, docxWith({ documentRels: relationships() }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const countDocxWords = vi.fn(async () => {
+        throw new OfficeFileRejectedError("too_large", "reading it needed more than 384 MB");
+      });
+      expect(
+        await countSourceWordsWithOracle(path, { countDocxWords }, "/data/Lohnliste.docx")
+      ).toBeNull();
+      const printed = format(...warn.mock.calls[0]);
+      expect(printed).toContain("/data/Lohnliste.docx: word count skipped");
+      expect(printed).not.toContain(path);
     } finally {
       warn.mockRestore();
     }

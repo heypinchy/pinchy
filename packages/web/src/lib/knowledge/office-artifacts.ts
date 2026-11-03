@@ -77,15 +77,20 @@ export const SOURCE_CHUNK_BYTES = 64 * 1024;
  * `copyVerifiedSource` writes its copy in the same pass that hashes it. The
  * chunk is only valid until `eachChunk` settles. Positional reads: the
  * handle's own offset is left where it was.
+ *
+ * `maxBytes` stops the read there, however far the file runs past it — a file
+ * still being written is not followed.
  */
 export async function hashOpenFile(
   handle: FileHandle,
-  eachChunk?: (chunk: Buffer) => Promise<unknown>
+  eachChunk?: (chunk: Buffer) => Promise<unknown>,
+  maxBytes: number = Infinity
 ): Promise<string> {
   const hash = createHash("sha256");
   const buffer = Buffer.alloc(SOURCE_CHUNK_BYTES);
-  for (let position = 0; ;) {
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+  for (let position = 0; position < maxBytes;) {
+    const want = Math.min(buffer.length, maxBytes - position);
+    const { bytesRead } = await handle.read(buffer, 0, want, position);
     if (bytesRead === 0) break;
     const chunk = buffer.subarray(0, bytesRead);
     hash.update(chunk);

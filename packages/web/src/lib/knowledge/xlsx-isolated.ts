@@ -408,6 +408,18 @@ function runChild(request: SheetReaderRequest, options: SheetReaderOptions): Pro
   });
 }
 
+/**
+ * Throws `SheetReaderBusyError` when a read asking with `maxQueued` would be
+ * turned away right now. For a caller with work to do before its read — the
+ * rows preview copies the workbook first — so a request the queue will refuse
+ * is refused before that work, not after it. The read itself still checks: the
+ * queue can fill in between.
+ */
+export function checkSheetReaderQueue(maxQueued: number): void {
+  const g = gate();
+  if (g.busy && g.waiting.length >= maxQueued) throw new SheetReaderBusyError(g.waiting.length);
+}
+
 /** Runs one request in a fresh, fenced child, one child per process at a time. */
 export function runSheetReader(
   request: SheetReaderRequest,

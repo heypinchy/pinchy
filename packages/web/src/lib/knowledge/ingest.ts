@@ -524,7 +524,9 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
  * batch through the same checks as every other source read
  * (`copyVerifiedSource`). A document that cannot be copied that way is left
  * out of the batch and NOT answered: its own turn reads it again, and books
- * the refusal or the failure then, once.
+ * the refusal or the failure then, once. Each copy goes with its path on the
+ * share (`displayPath`), so what the converter logs and answers names the file
+ * an admin can find, not the copy.
  *
  * Each answer is kept with the hash of the copy it was converted from, and is
  * given only to a turn asking with that same hash. A batch mate's own turn
@@ -560,7 +562,7 @@ function officeArtifacts(
     // document in a batch is read in full and copied before the converter sees
     // it, even one the artifact store already holds.
     const batch: { path: string; hash: string }[] = [{ path: absPath, hash: contentHash }];
-    const sources: OfficeSource[] = [{ absPath: copyPath, contentHash }];
+    const sources: OfficeSource[] = [{ absPath: copyPath, contentHash, displayPath: absPath }];
     const copies: VerifiedCopy[] = [];
 
     try {
@@ -577,7 +579,7 @@ function officeArtifacts(
         }
         copies.push(copy);
         batch.push({ path: mate.absPath, hash: copy.hash });
-        sources.push({ absPath: copy.path, contentHash: copy.hash });
+        sources.push({ absPath: copy.path, contentHash: copy.hash, displayPath: mate.absPath });
       }
 
       const outcomes = await deps.convertOffice(sources);
