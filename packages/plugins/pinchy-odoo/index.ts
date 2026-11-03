@@ -3032,8 +3032,7 @@ function errorResult(
     );
   }
   // Classify on the raw message, show the described one: `describeOdooError`
-  // rewrites the failures the model cannot act on, and a parse error's quote
-  // of a response body must not reach it.
+  // rewrites the failures the model cannot act on.
   const raw = error instanceof Error ? error.message : "";
   const message = describeOdooError(error);
   // A relation field (many2one) that received a display name instead of an id

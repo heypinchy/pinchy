@@ -201,6 +201,23 @@ describe("requestCredentials", () => {
     expect(err.status).toBe(502);
     expect(err.message).toContain("502");
   });
+
+  it("names an unreadable success body as Pinchy's, without quoting it", async () => {
+    // A parse error quotes the start of what it choked on — and the caller
+    // hands the error message to the model.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("proxy-page-body", { status: 200 }))
+    );
+
+    const err = (await requestCredentials(args).catch((e: unknown) => e)) as CredentialsFetchError;
+    expect(err).toBeInstanceOf(CredentialsFetchError);
+    expect(err.status).toBe(200);
+    expect(err.message).toBe(
+      "Failed to fetch Odoo credentials for connection conn-1: " +
+        "Pinchy answered HTTP 200 with a body that is not JSON"
+    );
+  });
 });
 
 describe("postAuthFailure", () => {

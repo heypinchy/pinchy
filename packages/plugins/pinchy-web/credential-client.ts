@@ -198,7 +198,17 @@ export async function requestCredentials(args: {
     );
   }
 
-  return response.json();
+  // Parse here rather than hand back `response.json()`: a parse error quotes
+  // the start of the body, and callers pass error messages to the model.
+  try {
+    return await response.json();
+  } catch {
+    throw new CredentialsFetchError(
+      `Failed to fetch ${label} credentials for connection ${connectionId}: ` +
+        `Pinchy answered HTTP ${response.status} with a body that is not JSON`,
+      response.status
+    );
+  }
 }
 
 /**

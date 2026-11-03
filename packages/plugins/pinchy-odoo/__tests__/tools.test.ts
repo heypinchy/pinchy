@@ -3975,7 +3975,7 @@ describe("error handling", () => {
     expect(text).toContain("Settings → Integrations");
   });
 
-  it("never quotes a credentials response that is not JSON back to the model", async () => {
+  it("reports a credentials response that is not JSON as Pinchy's, without quoting it", async () => {
     // The plugin parses one body itself: Pinchy's credentials answer. A parse
     // error quotes the first characters of what it choked on.
     fetchMock.mockResolvedValueOnce(new Response("proxy-page-body", { status: 200 }) as never);
@@ -3989,6 +3989,9 @@ describe("error handling", () => {
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result)).not.toContain("proxy-page");
     expect(JSON.stringify(result)).not.toContain("Unexpected token");
+    // It was Pinchy that answered, not Odoo.
+    expect(result.content[0].text).toContain("Failed to fetch Odoo credentials");
+    expect(result.content[0].text).not.toContain("JSON-RPC");
   });
 
   it("does not quote a JSON answer of the wrong shape either (TypeError)", async () => {
