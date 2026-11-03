@@ -17,7 +17,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { constants as fsConstants, mkdtempSync, rmSync } from "node:fs";
-import { mkdir, open, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
@@ -640,6 +640,28 @@ describe("convertOfficeFiles", () => {
       await convertOfficeFiles(sources, deps(boom, { store }));
 
       expect(await listTree(join(storeDir, "staging"))).toEqual([]);
+    });
+
+    it("accepts only a regular file as the converter's output", async () => {
+      // The output directory is shared with the converter. What it leaves
+      // there is taken only if it is a plain file of its own, never by
+      // following a link to somewhere else.
+      const elsewhere = join(tmpRoot, "elsewhere.pdf");
+      await writeFile(elsewhere, "%PDF-1.4\nnot this document\n");
+      const [source] = [await corpusFile("a.doc", "x")];
+      const linking: RunConverter = async (call) => {
+        await symlink(elsewhere, join(call.outDir, "0.pdf"));
+        return { code: 0, signal: null, stderr: "" };
+      };
+
+      const [outcome] = await convertOfficeFiles([source], {
+        ...deps(fakeConverter({ outputs: {} })),
+        runConverter: linking,
+      });
+
+      expect(outcome.status).toBe("failed");
+      expect(outcome.reason).toMatch(/not a regular file/);
+      expect(await listTree(join(storeDir))).not.toContainEqual(expect.stringMatching(/\.pdf$/));
     });
 
     it("leaves the store untouched when nothing needs converting", async () => {

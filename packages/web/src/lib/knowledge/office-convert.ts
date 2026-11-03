@@ -52,7 +52,9 @@
  * text), NOT a guarantee.
  */
 import { spawn } from "node:child_process";
-import { mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, createWriteStream } from "node:fs";
+import { mkdir, open, rm, symlink, writeFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import { extname, join } from "node:path";
 
 import { getOfficeArtifactStore, hashFileContents, OfficeArtifactStore } from "./office-artifacts";
@@ -448,13 +450,62 @@ async function collectOne(
   deps: BatchDeps,
   stderr: string
 ): Promise<ConversionOutcome> {
-  const info = await stat(producedPdf).catch(() => null);
-  if (!info?.isFile() || info.size === 0) {
-    // THE failure the exit code hides. stderr is the only place LibreOffice
-    // says anything, so carry a trimmed copy for the operator log.
-    return documentFailure(item.absPath, `no artifact produced${summarise(stderr)}`);
+  const privateDir = await deps.store.createStagingDir();
+  try {
+    const taken = await takeOutput(producedPdf, join(privateDir, "converted.pdf"));
+    if (taken === "missing") {
+      // THE failure the exit code hides. stderr is the only place LibreOffice
+      // says anything, so carry a trimmed copy for the operator log.
+      return documentFailure(item.absPath, `no artifact produced${summarise(stderr)}`);
+    }
+    if (taken === "not-a-file") {
+      return documentFailure(item.absPath, "converter output is not a regular file");
+    }
+    return await verifyAndCommit(item, stagedSource, taken, deps);
+  } finally {
+    await rm(privateDir, { recursive: true, force: true });
   }
+}
 
+/**
+ * Copies the converter's output into a directory only this process writes,
+ * and hands back that copy. The output directory is shared with the
+ * converter, so its entry is opened without following links and taken only
+ * if it is a non-empty regular file; everything after this reads the copy.
+ */
+async function takeOutput(
+  producedPdf: string,
+  privatePath: string
+): Promise<string | "missing" | "not-a-file"> {
+  let handle;
+  try {
+    handle = await open(producedPdf, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return "missing";
+    if (code === "ELOOP") return "not-a-file";
+    throw err;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) return "not-a-file";
+    if (info.size === 0) return "missing";
+    await pipeline(
+      handle.createReadStream({ autoClose: false }),
+      createWriteStream(privatePath, { flags: "wx" })
+    );
+    return privatePath;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function verifyAndCommit(
+  item: WorkItem,
+  stagedSource: string,
+  producedPdf: string,
+  deps: BatchDeps
+): Promise<ConversionOutcome> {
   let pdfWords: number;
   try {
     pdfWords = await deps.countPdfWords(producedPdf);
