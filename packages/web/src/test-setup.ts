@@ -82,7 +82,7 @@ if (typeof window !== "undefined") {
 
   // Radix UI Select uses pointer capture APIs not available in jsdom
   if (!HTMLElement.prototype.hasPointerCapture) {
-    HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
+    HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
   }
   if (!HTMLElement.prototype.setPointerCapture) {
     HTMLElement.prototype.setPointerCapture = vi.fn();
@@ -115,7 +115,7 @@ if (typeof window !== "undefined") {
 if (typeof window !== "undefined") {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
-    value: vi.fn().mockImplementation((query: string) => ({
+    value: vi.fn((query: string) => ({
       matches: false,
       media: query,
       onchange: null,

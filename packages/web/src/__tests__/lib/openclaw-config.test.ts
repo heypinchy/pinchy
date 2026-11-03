@@ -127,17 +127,18 @@ vi.mock("@/server/restart-state", () => ({
 // `listOpenAiCompatibleProviders` is mocked so a test can prove regenerate
 // never consults a second read. Default to empty lists so every existing test
 // in this file (which configures no custom instances) is unaffected.
-const { mockListOpenAiCompatibleProviders, mockListProvidersWithApiKeys, mockGetDecryptedApiKey } =
-  vi.hoisted(() => ({
-    mockListOpenAiCompatibleProviders: vi.fn(async (): Promise<unknown[]> => []),
-    mockListProvidersWithApiKeys: vi.fn(async (): Promise<unknown[]> => []),
-    mockGetDecryptedApiKey: vi.fn(async (): Promise<string | null> => null),
-  }));
+const { mockListOpenAiCompatibleProviders, mockListProvidersWithApiKeys } = vi.hoisted(() => ({
+  mockListOpenAiCompatibleProviders: vi.fn<
+    typeof import("@/lib/openai-compatible-providers").listOpenAiCompatibleProviders
+  >(async () => []),
+  mockListProvidersWithApiKeys: vi.fn<
+    typeof import("@/lib/openai-compatible-providers").listProvidersWithApiKeys
+  >(async () => []),
+}));
 
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: mockListOpenAiCompatibleProviders,
   listProvidersWithApiKeys: mockListProvidersWithApiKeys,
-  getDecryptedApiKey: mockGetDecryptedApiKey,
 }));
 
 // #894 backend redesign: build.ts's model-providers emission resolves each
@@ -171,7 +172,9 @@ vi.mock("dns/promises", () => {
 });
 
 const { mockValidateBuiltConfig } = vi.hoisted(() => ({
-  mockValidateBuiltConfig: vi.fn((): { ok: boolean; errors?: string[] } => ({ ok: true })),
+  mockValidateBuiltConfig: vi.fn<
+    typeof import("@/lib/openclaw-config/validate-built-config").validateBuiltConfig
+  >(() => ({ ok: true })),
 }));
 
 vi.mock("@/lib/openclaw-config/validate-built-config", () => ({
@@ -353,8 +356,8 @@ async function drainBackgroundCoroutine(): Promise<void> {
 //     --sequence.shuffle --sequence.seed=<n>
 let envBeforeTest: NodeJS.ProcessEnv;
 beforeEach(() => {
-  vi.resetAllMocks();
   envBeforeTest = { ...process.env };
+  vi.resetAllMocks();
   // Same cross-describe class, one layer deeper. A push coroutine OUTLIVES the
   // test that spawned it — the not-connected path naps 2 s at a time for up to
   // 60 s, the rate-limit path parks 33–53 s — and on resume it calls into
@@ -8885,7 +8888,6 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     mockedDb.select.mockReturnValue({ from: mockFrom([]) } as never);
     mockListOpenAiCompatibleProviders.mockResolvedValue([]);
     mockListProvidersWithApiKeys.mockResolvedValue([]);
-    mockGetDecryptedApiKey.mockResolvedValue(null);
     mockResolveCustomProviderModels.mockImplementation(async (p: { models: unknown }) => p.models);
     mockedReadFileSync.mockImplementation(() => {
       throw new Error("ENOENT: no such file or directory");
@@ -9817,7 +9819,6 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // key-free `listOpenAiCompatibleProviders` must stay unconsulted.
     mockListOpenAiCompatibleProviders.mockResolvedValue([]);
     mockListProvidersWithApiKeys.mockResolvedValue([]);
-    mockGetDecryptedApiKey.mockResolvedValue(null);
     // Identity pass-through by default — see the mock's doc-comment above.
     mockResolveCustomProviderModels.mockImplementation(async (p: { models: unknown }) => p.models);
   });
