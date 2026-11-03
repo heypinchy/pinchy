@@ -4030,6 +4030,27 @@ describe("error handling", () => {
     expect(text).not.toContain("Odoo answered");
   });
 
+  it.each([
+    ["null", null],
+    ["an array", []],
+  ])("reports a credentials answer that is %s as Pinchy's, not Odoo's", async (_label, payload) => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(payload), { status: 200 }) as never
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("credentials API");
+    expect(text).not.toContain("JSON-RPC");
+    expect(text).not.toContain("Odoo answered");
+  });
+
   it("does not quote a JSON answer of the wrong shape either (TypeError)", async () => {
     // `{"error": {}}` makes odoo-node read `json.error.data.message` off undefined.
     let thrown: unknown;

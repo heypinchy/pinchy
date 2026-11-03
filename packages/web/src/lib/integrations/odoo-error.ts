@@ -56,8 +56,9 @@ export function describeOdooError(err: unknown): string {
  * 0.3.1 refuses to follow one: an http:// URL behind a proxy's HTTP→HTTPS
  * 307/308 — Caddy's default, common in Traefik setups — is the usual case),
  * an HTTP error from a proxy, a network failure or a non-JSON-RPC answer say
- * nothing about the login or API key — reporting them as an authentication failure sends the admin to
- * fix the wrong thing, and flags a healthy connection `auth_failed`.
+ * nothing about the login or API key — reporting them as an authentication
+ * failure sends the admin to fix the wrong thing, and flags a healthy
+ * connection `auth_failed`.
  *
  * odoo-node builds the shapes this reads: a JSON-RPC error from Odoo carries
  * Odoo's `data`; a transport failure carries only a numeric `code` (0 for the

@@ -155,7 +155,23 @@ describe("fetchOdooSchema", () => {
     expect(result.isAuthError).toBe(false);
     // The same transport failure on every model is the connection failing,
     // not missing permissions.
-    expect(result.error).toBe("Odoo did not answer successfully: ETIMEDOUT");
+    expect(result.error).toBe("Could not reach Odoo: ETIMEDOUT");
+  });
+
+  it("says Odoo could not be reached when odoo-node reports a network failure", async () => {
+    vi.useFakeTimers();
+    // odoo-node's shape for a request that never got an answer: code 0.
+    mockFields.mockRejectedValue(Object.assign(new Error("fetch failed"), { code: 0 }));
+
+    const promise = fetchOdooSchema(creds);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("Could not reach Odoo: fetch failed");
+    expect(result.isAuthError).toBe(false);
   });
 
   it("words a shared HTTP failure after retries as true for an Odoo that was reached", async () => {

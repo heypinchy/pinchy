@@ -40,18 +40,24 @@
  * Bounds every call to Pinchy's own internal API against a hung container or a
  * network blackhole with no RST. 10s matches what each plugin used before
  * these two calls moved in here; external calls (Brave, Graph) bound
- * themselves at 30s where they are made. A timeout surfaces as an AbortError,
- * which every caller already treats as an ordinary fetch failure — and which
- * `isAuthError` deliberately does not classify, so a hung endpoint never
- * flags a connection as auth_failed.
+ * themselves at 30s where they are made. In `requestCredentials` a timeout
+ * becomes a `CredentialsFetchError` with status 0; in `postAuthFailure` it is
+ * swallowed with every other error. Neither is classified by `isAuthError`,
+ * so a hung endpoint never flags a connection as auth_failed.
  */
 const FETCH_TIMEOUT_MS = 10_000;
 
 /**
- * Thrown by `requestCredentials` when the credentials API answers non-ok.
- * Carries `status` so callers can discriminate (pinchy-email gates its
- * settings-missing handling strictly on 503) without string-matching a
- * message.
+ * Thrown by `requestCredentials` whenever it cannot hand back a parsed body:
+ *
+ * - the credentials API answered non-ok — `status` is that HTTP status;
+ * - it answered ok with a body that is not JSON — `status` is that status;
+ * - no usable answer arrived: the request failed, timed out, or the body broke
+ *   off mid-stream — `status` is 0.
+ *
+ * The message never quotes the body. `status` lets callers discriminate
+ * (pinchy-email gates its settings-missing handling strictly on 503) without
+ * string-matching a message.
  */
 export class CredentialsFetchError extends Error {
   readonly status: number;
@@ -218,7 +224,7 @@ export async function requestCredentials(args: {
   try {
     return await response.json();
   } catch (err) {
-    if (!(err instanceof SyntaxError)) throw unreachable(err, response.status);
+    if (!(err instanceof SyntaxError)) throw unreachable(err, 0);
     throw new CredentialsFetchError(
       `${failed}: Pinchy answered HTTP ${response.status} with a body that is not JSON`,
       response.status

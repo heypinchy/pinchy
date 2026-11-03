@@ -216,13 +216,19 @@ async function fetchCredentials(
   connectionId: string,
   agentId: string
 ): Promise<OdooCredentials> {
-  const data = (await requestCredentials({
+  const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
     connectionId,
     agentId,
     label: "Odoo",
-  })) as { credentials?: unknown };
+  });
+  // Read `credentials` only off an object: off `null` it is a TypeError,
+  // which reads to the model like a broken Odoo answer.
+  if (!isRecord(data)) {
+    const got = data === null ? "null" : Array.isArray(data) ? "an array" : typeof data;
+    throw new Error(`pinchy-odoo: the credentials API answered ${got}, not an object`);
+  }
   assertCredentialsShape(data.credentials);
   return data.credentials;
 }

@@ -278,6 +278,16 @@ function isAccessError(error: unknown): boolean {
   );
 }
 
+/**
+ * Did an answer arrive, with an HTTP status? odoo-node puts the status in
+ * `code` (`HTTP 429: Too Many Requests` → 429) and 0 there when no answer
+ * came at all.
+ */
+function answeredWithHttpStatus(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "number" && code >= 100;
+}
+
 /** Returns true when retrying the fields_get probe could plausibly succeed. */
 function isTransientOdooProbeError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -390,9 +400,11 @@ export async function fetchOdooSchema(credentials: {
           if (!transient || attempt === MAX_RETRIES) {
             // Non-transient, or out of retries — no point in trying again.
             const described = describeOdooError(error);
-            const failure = transient
-              ? `Odoo did not answer successfully: ${described}`
-              : described;
+            const failure = !transient
+              ? described
+              : answeredWithHttpStatus(error)
+                ? `Odoo did not answer successfully: ${described}`
+                : `Could not reach Odoo: ${described}`;
             return { model, name, category, fields: [], accessible: false, failure };
           }
           await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));

@@ -246,6 +246,8 @@ describe("requestCredentials", () => {
         (e: unknown) => e
       )) as CredentialsFetchError;
       expect(err).toBeInstanceOf(CredentialsFetchError);
+      // No usable answer, exactly as when the request never got there.
+      expect(err.status).toBe(0);
       expect(err.message).toBe(
         `Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy (${cause.message})`
       );
