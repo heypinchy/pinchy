@@ -525,7 +525,7 @@ describe("shownAs: time grows with the text, not with its square", () => {
     expect(node.parts.at(-1)).toBe(text.length);
     expect(readNode(node)).toBe(node);
     // Linear, this takes tens of milliseconds; the bound leaves room for a
-    // loaded machine and still fails the per-offset walk, which took 1.9 s.
+    // loaded machine and still fails the per-offset walk, which takes 1.9 s.
     expect(elapsed).toBeLessThan(600);
   });
 });

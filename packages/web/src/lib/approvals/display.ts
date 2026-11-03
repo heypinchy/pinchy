@@ -169,7 +169,7 @@ export const ASTRAL_COST = 128;
  * Listed is what ordinary work writes: the bold and italic letters of the
  * Mathematical Alphanumeric Symbols (𝐁𝐢𝐠 𝐧𝐞𝐰𝐬), which a post drafted for
  * LinkedIn sets its headings in. At ASTRAL_COST, a value whose first 128
- * characters were such letters was refused.
+ * characters are such letters would be refused.
  */
 const LETTER_LIKE_ASTRAL: ReadonlyArray<readonly [number, number]> = [[0x1d400, 0x1d7ff]];
 

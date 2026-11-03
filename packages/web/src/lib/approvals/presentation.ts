@@ -156,7 +156,7 @@ interface Characters {
  *
  * Read once, front to back, into one flag per offset. Asked per offset
  * (`segments.containing`), the segmenter walks a run of regional indicators
- * back to its start on every question, and one 200,000-character run took
+ * back to its start on every question, and one 200,000-character run takes
  * 1.9 s to cut — on the server's one event loop.
  */
 function characters(text: string): Characters {
