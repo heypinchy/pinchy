@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { domainToASCII } from "node:url";
-import { describeRefusal, markScripts, summarizeArgs, summarizeCall } from "./summary";
+import { describeRefusal, markScripts, summarizeCall } from "./summary";
+import { summarizeArgs } from "@/test-helpers/approvals";
 import { makeRefResolver } from "./call-models";
 import {
   ASTRAL_COST,
@@ -373,9 +374,9 @@ describe("summarizeArgs", () => {
       expect(out.target).toEqual(recordRef("account.move", 42, "INV/2026/0042"));
     });
 
-    // Two invoices of the same model used to render identically — "record
-    // reference: account.move" — so approving one approved a card that could
-    // equally have described the other.
+    // Rendered by model alone — "record reference: account.move" — two
+    // invoices would read identically, so approving one would approve a card
+    // that could equally describe the other.
     it("tells two records of the same model apart", () => {
       const resolve = { refRecord: makeRefResolver(REF_KEY) };
       const a = summarizeArgs({ target: ref("account.move", 42, "INV/2026/0042") }, resolve);
@@ -976,8 +977,8 @@ describe("summarizeArgs", () => {
       expect(JSON.stringify(summarizeArgs({ deep }))).toMatch(/nested too deep/);
     });
 
-    // Filler keys before `to` used to eat the size budget, so the recipient was
-    // cut — or pushed past MAX_KEYS altogether.
+    // Filler keys before `to` must not eat the size budget, cutting the
+    // recipient or pushing it past MAX_KEYS altogether.
     // The budget is 512,000, so the filler grows past it to exhaust it.
     it("renders recipients in full even behind filler that exhausts the budget", () => {
       const filler = Object.fromEntries(
@@ -1041,8 +1042,8 @@ describe("summarizeArgs", () => {
   });
 
   describe("recipient display", () => {
-    // The probe: a familiar display name padded with braille blanks pushed the
-    // real address out of the card's preview. The address comes first now.
+    // The probe: a familiar display name padded with braille blanks would push
+    // the real address out of the card's preview. The address comes first.
     it("puts the address first and the display name after it", () => {
       const to = `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`;
       const out = summarizeArgs({ to, subject: "Rechnung", body: "Hallo" });
@@ -1853,9 +1854,9 @@ describe("summarizeArgs", () => {
       }
     });
 
-    // The old regex matched the start of a text, so free text that merely
-    // began with a URL got a false "not a valid URL" note. The parser
-    // refuses each of these, so none of them is a URL.
+    // Free text that merely begins with a URL is not a URL: a pattern matched
+    // against the start of the text would read it as one and note it as "not
+    // a valid URL". The parser refuses each of these, so none gets a note.
     it.each([
       "https://firma.at\nHi team, the new site is live.",
       "https://firma.at — new site is live",

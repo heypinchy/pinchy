@@ -118,9 +118,9 @@ describe("assertPlainPath", () => {
     ok(value);
   });
 
-  // Probe names that each draw nothing in at least one font. They were refused
-  // while the rule tried to tell them apart from the names above; now they are
-  // accepted and marked like those.
+  // Probe names that each draw nothing in at least one font. They are accepted
+  // and marked like the names above, so they read apart from the same name
+  // without the character.
   it.each([
     ["a ZWNJ after a right-joining letter", "/data/محمد‌رضا.md"],
     ["a ZWNJ with no letter after it", "/data/گزارش‌.md"],

@@ -3,14 +3,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { domainToASCII } from "node:url";
 
 import { ApprovalCard } from "../approval-card";
-import { buildApprovalPrompt, PROMPT_HOST_MAX } from "@/lib/approvals/prompt";
+import { PROMPT_HOST_MAX } from "@/lib/approvals/prompt";
+import { buildApprovalPrompt, summarizeArgs } from "@/test-helpers/approvals";
 import { makeRefResolver } from "@/lib/approvals/call-models";
-import {
-  renderText,
-  summarizeArgs,
-  summarizeCall,
-  type SummarizeOptions,
-} from "@/lib/approvals/summary";
+import { renderText, summarizeCall, type SummarizeOptions } from "@/lib/approvals/summary";
 import {
   ASTRAL_COST,
   DRAW_BUDGET,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { summarizeArgs } from "./summary";
+import { summarizeArgs } from "@/test-helpers/approvals";
 
 /**
  * U+200C (zero-width non-joiner), U+200D (zero-width joiner), U+FE0E / U+FE0F

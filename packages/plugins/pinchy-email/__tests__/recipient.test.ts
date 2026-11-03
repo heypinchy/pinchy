@@ -208,9 +208,8 @@ describe("parseSingleRecipient: joiners in Arabic-script and Indic names", () =>
     expect(parseSingleRecipient(input)).toEqual({ ok: true, address: input });
   });
 
-  // Refused while the rule tried to tell them apart from the names above;
-  // the card now marks the joiner in each, so they read apart from the same
-  // name without it.
+  // Each joiner here draws nothing in at least one font. Accepted: the card
+  // marks the joiner in each, so they read apart from the same name without it.
   it.each([
     ["a ZWNJ between Latin letters", "Ad‌a <a@x.at>"],
     ["a ZWNJ after a right-joining letter", "محمد‌رضا <m@x.ir>"],

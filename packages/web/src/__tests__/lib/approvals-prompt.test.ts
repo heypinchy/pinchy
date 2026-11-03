@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import {
-  buildApprovalPrompt,
   APPROVAL_TITLE_MAX,
   APPROVAL_DESCRIPTION_MAX,
   PROMPT_HOST_MAX,
 } from "@/lib/approvals/prompt";
+import { buildApprovalPrompt } from "@/test-helpers/approvals";
 import { makeRefResolver } from "@/lib/approvals/call-models";
 // pinchy-odoo's own encoder, so the ref below is a real one — see
 // call-models.test.ts for why this crosses the package boundary.
@@ -297,9 +297,9 @@ describe("buildApprovalPrompt", () => {
     expect(shown("/data/בא\u05BC.md")).toContain("/data/\u2066בא\u05BC\u2069.md");
   });
 
-  // A string was printed bare, so one holding `, `, `: `, `{`, `}`, `[` or `]`
-  // printed exactly like the structure it imitated — each pair below was one
-  // prompt. Every string is quoted now, at every level, so a string can only ever
+  // Printed bare, a string holding `, `, `: `, `{`, `}`, `[` or `]` would print
+  // exactly like the structure it imitates — each pair below would be one
+  // prompt. Every string is quoted, at every level, so a string can only ever
   // read as a string.
   it.each([
     [

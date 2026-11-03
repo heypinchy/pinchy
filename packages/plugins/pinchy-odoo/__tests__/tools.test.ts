@@ -7936,11 +7936,9 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
   // The candidate arrived through the NAME leg, so the case difference is real
   // rather than a fixture: only the client-side comparison can close it.
   //
-  // The name used to be "Miscellaneous" against a record called
-  // "Miscellaneous Operations" — it passed only because an explicit code
-  // ignored the name next to it, which was a bug of its
-  // own. The name now matches, so this tests what it says: the case of the
-  // code.
+  // The name matches the record's exactly — an explicit code is held to the
+  // name beside it — so the only difference left is the case of the code,
+  // which is what this tests.
   it("matches an explicit code against a record whose code differs only in case", async () => {
     mockSchema({});
     mockCandidates({
@@ -8085,9 +8083,9 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
       );
     });
 
-    // The object form `{lookup: {code, name}}`
-    // resolved on the code and ignored the name beside it, so the same
-    // contradiction the string form now refuses still booked to 6000.
+    // The object form `{lookup: {code, name}}` is held to the same rule as the
+    // string form: resolved on the code alone, this contradiction would book
+    // to 6000.
     it("refuses an explicit code whose record carries a different name", async () => {
       mockSchema({});
       mockCandidates({ "account.account": [OFFICE] });

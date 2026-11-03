@@ -16,7 +16,8 @@ import { ARM_MS, ApprovalCard } from "../approval-card";
 import type { PendingApproval } from "@/lib/approvals/client";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { summarizeArgs, summarizeCall } from "@/lib/approvals/summary";
+import { summarizeCall } from "@/lib/approvals/summary";
+import { summarizeArgs } from "@/test-helpers/approvals";
 import { PREVIEW_LEN, WHOLE_MAX, displayScalar, textOf, type Shown } from "@/lib/approvals/display";
 
 function approval(argsSummary: Record<string, unknown> | null, toolName = "email_send") {

@@ -388,10 +388,10 @@ describe("approval routes (integration, real DB)", () => {
     expect(polled.approvals[1].toolName).toBe("odoo_write");
   });
 
-  // The summaries are read in a second query, and a card settled between the two
-  // came back with `argsSummary: null` — settling drops the summary — which the
-  // inbox rendered as a card with no arguments. A card that is no longer pending
-  // by the second read is left out instead.
+  // The summaries are read in a second query, and settling drops the summary, so
+  // a card settled between the two reads has none to return. It is left out:
+  // listed with `argsSummary: null`, it would be an approvable card that shows
+  // none of its arguments.
   it("leaves out a card that settles between the list and the summary read", async () => {
     await gateCheck(gateReq(gateBody({ params: { recordId: 5 } })));
     await gateCheck(gateReq(gateBody({ params: { recordId: 6 } })));
@@ -806,10 +806,10 @@ describe("approval routes (integration, real DB)", () => {
     });
   });
 
-  // Postgres refuses a lone UTF-16 surrogate inside jsonb. The old 4,000
-  // character cut could land between the halves of an emoji, and a lone
-  // surrogate in the input went into the summary as it was.
-  it("stores a summary with an emoji across the old cut point, and with a lone surrogate", async () => {
+  // Postgres refuses a lone UTF-16 surrogate inside jsonb, so the stored summary
+  // must hold none: neither half of an emoji split by a cut at a UTF-16 index,
+  // nor a lone surrogate the input carried, which is shown as a marker.
+  it("stores a summary with an emoji across a UTF-16 cut point, and with a lone surrogate", async () => {
     // Index 3,999 splits a pair. Letters first, so the preview the card draws
     // is not emoji, which cost a card far more to draw (`DRAW_BUDGET`).
     const body = `${"a".repeat(3_999)}${"😀".repeat(50)}`;
@@ -825,9 +825,9 @@ describe("approval routes (integration, real DB)", () => {
     expect(list.approvals[0].argsSummary.subject).toBe("x⟨U+D83D⟩y");
   });
 
-  // zod's z.record dropped a top-level "__proto__" key (it rebuilds the object by
-  // assignment), so the digest and the card described a call without it while the
-  // tool received the raw JSON.
+  // zod's z.record drops a top-level "__proto__" key (it rebuilds the object by
+  // assignment), so a digest and a card built from it would describe a call
+  // without it while the tool receives the raw JSON.
   it("binds and shows a top-level __proto__ key the tool would receive", async () => {
     const params = JSON.parse('{"recordId":5,"__proto__":{"bcc":"evil@x.com"}}');
     await gateCheck(gateReq(gateBody({ params })));

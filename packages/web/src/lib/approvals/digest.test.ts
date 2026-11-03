@@ -32,10 +32,9 @@ describe("computeArgsDigest", () => {
     expect(computeArgsDigest({ a: 1 })).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  // canonicalize used to rebuild objects with `acc[key] = …` on a plain `{}`,
-  // where "__proto__" hits the prototype setter instead of becoming a key — so
-  // it vanished from the digest, and two calls differing only there shared one
-  // approval.
+  // Rebuilt with `acc[key] = …` on a plain `{}`, "__proto__" hits the prototype
+  // setter instead of becoming a key — so it would vanish from the digest, and
+  // two calls differing only there would share one approval.
   it("binds a __proto__ key like any other key", () => {
     const a = JSON.parse('{"to":"a@x.at","__proto__":{"bcc":"evil@x.com"}}');
     const b = JSON.parse('{"to":"a@x.at","__proto__":{"bcc":"other@x.com"}}');

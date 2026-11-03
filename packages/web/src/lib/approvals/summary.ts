@@ -8,10 +8,10 @@
  * THE RULE: the approver must be able to see every security-relevant value the
  * tool will receive. The digest binds the full arguments, but a digest nobody
  * can read approves nothing — if this summary is lossy, the person clicks
- * "Approve" on a view that differs from what runs. An earlier version cut
- * strings at 200 characters and printed arrays as "[3 items]" and objects as
- * "{2 fields}", which let a prompt-injected agent hide a second recipient
- * behind 200 spaces, and bank details behind "{2 fields}".
+ * "Approve" on a view that differs from what runs. A summary that cuts
+ * strings at 200 characters and prints arrays as "[3 items]" and objects as
+ * "{2 fields}" lets a prompt-injected agent hide a second recipient behind 200
+ * spaces, and bank details behind "{2 fields}".
  *
  * So this summary keeps the structure and the content. Where it has to stop —
  * past a size, width or depth bound — it says so with an explicit "… not
@@ -1001,11 +1001,4 @@ export function describeRefusal(limit: SummaryLimit): string {
           `name — send to fewer addresses or URLs per call.`
       );
   }
-}
-
-export function summarizeArgs(
-  params: unknown,
-  options: SummarizeOptions = {}
-): Record<string, unknown> {
-  return summarizeCall(params, options).summary;
 }

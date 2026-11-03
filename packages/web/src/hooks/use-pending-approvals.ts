@@ -54,9 +54,11 @@ async function poll(): Promise<void> {
       if (approval.argsSummary !== undefined && approval.argsSummary !== null)
         return [{ ...approval, argsSummary: approval.argsSummary }];
       // Never render a card without the arguments it would approve: one whose
-      // summary did not come back — or came back `null`, which is what a card
-      // settled mid-request carries — keeps the one it holds, or waits for the
-      // next poll, which asks for it.
+      // summary did not come back keeps the one it holds, or waits for the next
+      // poll, which asks for it. The route returns a summary for every pending
+      // card it does not leave out, and the gate stores one with every pending
+      // row, so `null` should not arrive here; the column is nullable, though,
+      // and a card with none is treated the same way, failing closed.
       const summary = held.get(approval.id);
       return summary ? [{ ...approval, argsSummary: summary }] : [];
     });

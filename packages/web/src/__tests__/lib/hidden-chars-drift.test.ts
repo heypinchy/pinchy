@@ -85,7 +85,7 @@ describe("hidden-chars drift guard", () => {
     }
     expect(hiddenCharIn("plain text with spaces")).toBeNull();
   });
-  // Each tool now allows one group the default refuses, and each allowance is
+  // Each tool allows one group the default refuses, and each allowance is
   // only safe because of what the card does with it.
   describe("the deliberate allowances", () => {
     const every = (pick: (char: string) => boolean) => {
@@ -299,10 +299,10 @@ describe("hidden-chars drift guard", () => {
       }
     });
 
-    // A display name refused every space separator, so a Japanese name written
-    // with an ideographic space could not be mailed. One is allowed now, as in a
-    // path, because the card marks it; a run of them is still blank space, and
-    // still refused.
+    // Refusing every space separator in a display name would leave a Japanese
+    // name written with an ideographic space unmailable. One is allowed, as in
+    // a path, because the card marks it; a run of them is blank space, and
+    // refused.
     it("a display name may carry a single space separator, and the card marks it", () => {
       for (const cp of every(isSpaceSeparator)) {
         const char = String.fromCodePoint(cp);

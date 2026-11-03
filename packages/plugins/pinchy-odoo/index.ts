@@ -1136,9 +1136,9 @@ function claimedNameText(value: string): string {
  * The record a lookup names by code and name together, once the code is known
  * to match: the `"<code> <name>"` string and the
  * explicit `{lookup: {code, name}}`. The name beside the code
- * is a claim about the record: `"6000 Bank fees"` used to book to account 6000
- * whatever it is called, so the card read "Bank fees" while the effect was
- * "Office supplies". The claim has to hold — case, spacing and one separator
+ * is a claim about the record: resolved on the code alone, `"6000 Bank fees"`
+ * would book to account 6000 whatever it is called, so the card would read
+ * "Bank fees" while the effect was "Office supplies". The claim has to hold — case, spacing and one separator
  * aside — or the lookup is refused with the name the code actually carries, so
  * the model can send the exact name or the record's ref. Two records that
  * share the code (the multi-company case) are told apart by the same name.

@@ -121,11 +121,10 @@ describe("ApprovalsInbox", () => {
     expect(screen.getByText("recordId")).toBeInTheDocument();
   });
 
-  // A card settled between the route's two reads came back with `argsSummary:
-  // null`, and the poller rendered it — an approvable card showing none of the
-  // arguments. The route now leaves such a card out; the poller also treats a
-  // `null` it does not already hold as "no summary yet", so no other path can
-  // bring the empty card back.
+  // Rendered with `argsSummary: null`, a card would be approvable while showing
+  // none of its arguments. The route leaves out a card settled between its two
+  // reads; the poller also treats a `null` it does not already hold as "no
+  // summary yet", so no other path can bring such an empty card up.
   it("does not render a card that arrives with a null summary it does not hold", async () => {
     fetchPendingApprovals.mockResolvedValueOnce({ approvals: [{ ...pending, argsSummary: null }] });
     fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });

@@ -610,7 +610,7 @@ describe("approvals gate decision service", () => {
       expect(await stored(r.requestId)).toBeNull();
     });
 
-    // A grant approved before this change still carries its summary; spending
+    // A grant approved before the upgrade still carries its summary; spending
     // it must drop it too.
     it("drops it when an approved grant is spent at the gate", async () => {
       const r = await open();

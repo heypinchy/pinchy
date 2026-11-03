@@ -1,11 +1,5 @@
 import { TOOL_REGISTRY } from "@/lib/tool-registry";
-import {
-  renderText,
-  summarizeCall,
-  type CallSummary,
-  type SummarizeOptions,
-  type SummaryLimit,
-} from "@/lib/approvals/summary";
+import { renderText, type CallSummary, type SummaryLimit } from "@/lib/approvals/summary";
 import {
   displayScalar,
   inStoredOrderPlain,
@@ -59,10 +53,10 @@ function truncate(text: string, max: number): string {
 /**
  * Renders the call's arguments as one readable clause.
  *
- * It goes through `summarizeArgs` rather than reading `params` directly, and
- * that is load-bearing: the approval prompt is delivered to every connected
- * approval surface — including chat channels — so it reaches strictly more
- * places than the in-app card does. Redacting less here than the card does
+ * It reads the summary the card draws (`summarizeCall`), never `params`
+ * directly, and that is load-bearing: the approval prompt is delivered to
+ * every connected approval surface — including chat channels — so it reaches
+ * strictly more places than the in-app card does. Redacting less here than the card does
  * would mean the safer surface hides what the riskier one prints.
  */
 function inline(value: unknown): string {
@@ -88,8 +82,8 @@ function inline(value: unknown): string {
       .join(", ")}}`;
   }
   // Every string is quoted, with its `"` and `\` escaped, so no string can print
-  // as structure. Printed bare, `name: "Acme, active: false"` read exactly like
-  // `name: "Acme", active: false`, and `ids: ["7, 8"]` like `ids: [7, 8]`. The
+  // as structure. Printed bare, `name: "Acme, active: false"` would read exactly
+  // like `name: "Acme", active: false`, and `ids: ["7, 8"]` like `ids: [7, 8]`. The
   // card needs no quotes: it draws each field and item in an element of its own.
   // Line breaks stay line breaks — everything else that could hide is a marker
   // already — and a key needs none either: it is a bare identifier or already
@@ -104,8 +98,8 @@ function describeArgs(summary: Record<string, unknown>): string {
   // order it was sent, as the card draws it: a chat client reorders
   // `/data/חוזים/2024.md` into `/data/2024/חוזים.md` exactly as a browser does.
   // That holds only where the client implements Unicode's isolates (6.3+) and
-  // overrides; one that drops them draws the text as before, and the card stays
-  // the view to decide on.
+  // overrides; one that drops them draws the text in the bidi algorithm's own
+  // order, and the card stays the view to decide on.
   return inStoredOrderPlain(
     Object.entries(summary)
       .map(([key, value]) => `${key}: ${inline(value)}`)
@@ -131,9 +125,14 @@ export interface ApprovalPrompt {
   description: string;
 }
 
-export function buildApprovalPrompt(
+/**
+ * The prompt for a call already summarized (`summarizeCall`). The gate builds
+ * the card's summary and the prompt from one summary: summarizing a large call
+ * costs real CPU on the server's one event loop, which every user shares.
+ */
+export function approvalPromptFor(
   toolName: string,
-  params: unknown,
+  call: Pick<CallSummary, "summary" | "hosts">,
   /**
    * The resources the gate resolved this call to touch (#1133). Naming them is
    * not decoration: once deletion can be gated per model, "Delete a record in
@@ -141,22 +140,6 @@ export function buildApprovalPrompt(
    * whole reason the setting exists. `null` entries are resources we could not
    * name and are left unsaid rather than printed.
    */
-  resources: (string | null)[] = [],
-  /** The same ref resolver the card's summary uses, so a real record reference
-   * reads as the record it names here too. */
-  options: SummarizeOptions = {}
-): ApprovalPrompt | { exceeded: SummaryLimit } {
-  return approvalPromptFor(toolName, summarizeCall(params, options), resources);
-}
-
-/**
- * `buildApprovalPrompt` for a call already summarized. The gate builds the
- * card's summary and the prompt from one summary: summarizing a large call
- * costs real CPU on the server's one event loop, which every user shares.
- */
-export function approvalPromptFor(
-  toolName: string,
-  call: Pick<CallSummary, "summary" | "hosts">,
   resources: (string | null)[] = []
 ): ApprovalPrompt | { exceeded: SummaryLimit } {
   const known = TOOL_REGISTRY.find((tool) => tool.id === toolName);

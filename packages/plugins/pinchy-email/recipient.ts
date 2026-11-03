@@ -8,7 +8,7 @@
  * reading it. A prompt-injected agent (web page, inbound mail, KB document)
  * can therefore add a recipient the person approving never sees.
  *
- * The confirmation card now lists every address explicitly, but the tool is the
+ * The confirmation card lists every address explicitly, but the tool is the
  * last line of defence: it accepts one address and refuses everything that
  * could be read as more than one. The model is told to send one mail per
  * recipient, which is also what the schema ("Recipient email address") says.

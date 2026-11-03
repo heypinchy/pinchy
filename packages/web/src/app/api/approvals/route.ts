@@ -58,9 +58,9 @@ export const GET = withAuth(async (req, _ctx, session) => {
   const wanted = new Set(rows.filter((row) => !known.has(row.id)).map((row) => row.id));
   // Read separately so a held card's summary is never loaded at all. Still
   // `pending` only: a card settled since the list query has had its summary
-  // dropped (settling clears it), and returning it as `argsSummary: null` gave
-  // the inbox an approvable card that showed no arguments. Such a card is left
-  // out — it is no longer open anyway.
+  // dropped (settling clears it), and listed as `argsSummary: null` it would be
+  // an approvable card that shows no arguments. Such a card is left out — it is
+  // settled, not open.
   const summaries = new Map(
     wanted.size === 0
       ? []
