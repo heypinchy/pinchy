@@ -75,9 +75,8 @@ services:
       # Pinchy probes ollama_local_url from regenerateOpenClawConfig(); the
       # selftest's fake-ollama runs on the HOST (started by eval.spec.ts, same
       # pattern as the email/odoo dispatch-probe specs), reached via the
-      # `ollama.local` alias.
+      # `ollama.local` alias, which docker-compose.yml maps on both services.
       - "host.docker.internal:host-gateway"
-      - "ollama.local:host-gateway"
 
   openclaw:
     extra_hosts:

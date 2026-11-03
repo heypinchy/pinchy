@@ -11,6 +11,8 @@ import {
   builtInModelPrefix,
   migrateAgentsOffDeletedProvider,
   capMigratedAgents,
+  LAST_CONFIGURED_PROVIDER_ERROR,
+  noUsableTargetRefusal,
 } from "@/lib/provider-deletion";
 import { parseRequestBody } from "@/lib/api-validation";
 import { deleteProviderSchema } from "@/lib/schemas/providers";
@@ -44,12 +46,7 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   // so this count spans built-ins + custom instances (see provider-count.ts).
   const totalConfigured = await countConfiguredProviders();
   if (totalConfigured <= 1) {
-    return NextResponse.json(
-      {
-        error: "Cannot remove the last configured provider. Add another provider first.",
-      },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: LAST_CONFIGURED_PROVIDER_ERROR }, { status: 400 });
   }
 
   // Build the set of providers an orphaned agent can migrate onto, EXCLUDING the
@@ -58,6 +55,30 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   // custom DELETE route). Candidates are built BEFORE deleteSetting, so the
   // deleted built-in is still "configured" and must be excluded by name.
   const remainingCandidates = await buildRemainingCandidates({ excludeBuiltInName: provider });
+
+  // Others are configured, but each is a custom provider whose base URL the
+  // SSRF guard refuses (left out of the candidates). Deleting would leave the
+  // agents and the default nowhere usable to go, so refuse before any change.
+  // The refusal comes from the SSRF guard's verdict on the other providers, so
+  // it is recorded like PATCH /default's refusal. No address in it.
+  if (remainingCandidates.length === 0) {
+    // A built-in is never refused itself, so this is the "last usable" case.
+    const refusal = await noUsableTargetRefusal();
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          action: "provider_delete_refused_no_usable_target",
+          reason: refusal.reason,
+          provider: { id: provider, name: config.name },
+        },
+      })
+    );
+    return NextResponse.json({ error: refusal.error }, { status: 400 });
+  }
 
   await deleteSetting(config.settingsKey);
   resetCache();

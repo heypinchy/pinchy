@@ -40,7 +40,7 @@ const DB_URL = process.env.DATABASE_URL ?? "";
 const EXPECTED_CHUNKS = KB_EVAL_CORPUS.reduce((n, doc) => n + doc.chunks.length, 0);
 
 describe("seedSyntheticCorpus", () => {
-  // The integration harness TRUNCATEs every application table between tests,
+  // Every application table is emptied between tests by the integration reset,
   // so each case seeds its own corpus rather than sharing one from beforeAll.
   beforeEach(async () => {
     await seedSyntheticCorpus(DB_URL);

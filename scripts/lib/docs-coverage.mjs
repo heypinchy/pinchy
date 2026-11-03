@@ -58,7 +58,7 @@ const HTTP_METHODS = [
  */
 export const API_DOC_EXEMPTIONS = {
   "/api/auth/{}":
-    "Better Auth catch-all — the library owns this surface, documented upstream",
+    "Better Auth catch-all — clients reach only sign-in/email, sign-out and get-session (allowlist in lib/auth.ts, described in guides/hardening)",
   "/api/dev/enterprise-toggle":
     "development-only helper, not present in a production build",
   "/api/internal/openclaw-config-ready":

@@ -126,7 +126,7 @@ describe("POST /api/integrations/imap/test", () => {
     mockImapClient.logout.mockResolvedValue(undefined);
     mockTransport.verify.mockResolvedValue(true);
     mockAppendAuditLog.mockResolvedValue(undefined);
-    mockDnsLookup.mockResolvedValue([{ address: "203.0.113.50", family: 4 }]);
+    mockDnsLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
     mockProbeSmtpPorts.mockReset();
     mockProbeSmtpPorts.mockResolvedValue([
       { port: 465, reachable: false },
@@ -464,7 +464,7 @@ describe("POST /api/integrations/imap/test", () => {
         mockDnsLookup.mockImplementation(async (host: string) =>
           host === validBody.imapHost
             ? [{ address: "192.168.1.10", family: 4 }]
-            : [{ address: "203.0.113.50", family: 4 }]
+            : [{ address: "93.184.216.34", family: 4 }]
         );
 
         const { POST } = await import("@/app/api/integrations/imap/test/route");

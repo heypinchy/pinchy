@@ -249,7 +249,7 @@ This is the same model as a GCP service account key or a Datadog org API key, an
 
 The plaintext key was shown exactly once, to the person who created it. Pinchy has no copy and can't tell you where theirs ended up — a password manager, a CI secret store, a text file, all three. So when someone leaves, **assume they still have every key they created**, and decide what that's worth to you.
 
-The key list has a **Created by** column for exactly this. It shows who created each key and flags the ones whose creator is no longer active:
+The key list has a **Created by** column for exactly this. It shows who created each key and flags the ones whose creator is no longer active — deactivated, deleted, or demoted from admin:
 
 1. Open **Settings → API Keys** and look for keys flagged **No longer active**.
 2. For each one, issue a replacement key with the same scopes, update whatever consumes it, then revoke the old one — in that order, so nothing goes dark in between.

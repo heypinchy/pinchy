@@ -157,3 +157,28 @@ describe("deleteOpenAiCompatibleSchema", () => {
     expect(deleteOpenAiCompatibleSchema.safeParse({ id: "nope" }).success).toBe(false);
   });
 });
+
+describe("base URL length bound", () => {
+  it("rejects a base URL longer than 2048 characters on upsert and discover, with a message on baseUrl", () => {
+    const long = `https://acme.example.com/${"a".repeat(2048)}`;
+    const upsert = upsertOpenAiCompatibleProviderSchema.safeParse({
+      displayName: "Acme",
+      baseUrl: long,
+      apiKey: "k",
+    });
+    expect(upsert.success).toBe(false);
+    if (!upsert.success) {
+      expect(upsert.error.flatten().fieldErrors.baseUrl).toEqual([
+        "The URL is too long — 2048 characters at most.",
+      ]);
+    }
+    expect(discoverSchema.safeParse({ baseUrl: long, apiKey: "k" }).success).toBe(false);
+    expect(
+      upsertOpenAiCompatibleProviderSchema.safeParse({
+        displayName: "Acme",
+        baseUrl: `https://acme.example.com/${"a".repeat(1900)}`,
+        apiKey: "k",
+      }).success
+    ).toBe(true);
+  });
+});

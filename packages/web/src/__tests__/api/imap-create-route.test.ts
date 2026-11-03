@@ -100,7 +100,7 @@ describe("POST /api/integrations/imap", () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
     mockInsertReturning.mockResolvedValue([insertedConnection]);
-    mockDnsLookup.mockResolvedValue([{ address: "203.0.113.50", family: 4 }]);
+    mockDnsLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
   });
 
   it("returns 401 when not authenticated and does not insert a row", async () => {
@@ -352,7 +352,7 @@ describe("POST /api/integrations/imap", () => {
       mockDnsLookup.mockImplementation(async (host: string) =>
         host === "smtp.example.com"
           ? [{ address: "169.254.169.254", family: 4 }]
-          : [{ address: "203.0.113.50", family: 4 }]
+          : [{ address: "93.184.216.34", family: 4 }]
       );
       const { POST } = await import("@/app/api/integrations/imap/route");
 

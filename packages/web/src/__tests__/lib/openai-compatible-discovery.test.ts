@@ -1,16 +1,31 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   validateOpenAiCompatibleProvider,
   fetchOpenAiCompatibleModels,
   resolveCustomProviderModels,
   resetCustomModelCache,
+  cachedCustomProviderModels,
   type CustomProviderModelSource,
 } from "@/lib/openai-compatible-discovery";
 import { DEFAULT_MODEL_CAPS } from "@/lib/model-catalog";
+import { PROVIDER_PROBE_TIMEOUT_MS } from "@/lib/providers";
+import { PROVIDER_DNS_LOOKUP_TIMEOUT_MS } from "@/lib/provider-url-guard";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 
 global.fetch = vi.fn();
+
+// Every request goes through the SSRF guard, which resolves hostnames. No test
+// here may touch real DNS: by default every name is unresolvable, which the
+// guard treats as allowed (fail open), so tests about HTTP behaviour are
+// unaffected. Tests about the guard give a name a concrete answer.
+const { mockLookup } = vi.hoisted(() => ({ mockLookup: vi.fn() }));
+vi.mock("dns/promises", () => ({ default: { lookup: mockLookup }, lookup: mockLookup }));
+
+beforeEach(() => {
+  mockLookup.mockReset();
+  mockLookup.mockRejectedValue(Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" }));
+});
 
 describe("validateOpenAiCompatibleProvider", () => {
   beforeEach(() => {
@@ -210,6 +225,7 @@ describe("resolveCustomProviderModels", () => {
       slug: "acme",
       baseUrl: "https://acme.example.com/v1",
       apiKey: "sk-key",
+      keyVersion: "v1",
       models: snapshot,
       ...overrides,
     };
@@ -288,6 +304,121 @@ describe("resolveCustomProviderModels", () => {
 
     expect(acme.map((m) => m.id)).toEqual(["acme-large"]);
     expect(beta.map((m) => m.id)).toEqual(["beta-large"]);
+  });
+
+  // The slug never changes, but the endpoint behind it can. Keyed by slug
+  // alone, the regenerate a re-pointing save triggers was served the OLD
+  // endpoint's cached catalog and emitted it under the NEW base URL.
+  describe("a cached list belongs to one destination and one key", () => {
+    // A queued response a cache hit never consumed must not leak into the
+    // next test (clearAllMocks keeps the once-queue).
+    beforeEach(() => {
+      vi.mocked(fetch).mockReset();
+    });
+
+    function listing(...ids: string[]) {
+      return new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 });
+    }
+
+    it("discovers afresh at the new endpoint when the provider is re-pointed", async () => {
+      vi.mocked(fetch).mockImplementation(async (url) =>
+        String(url).startsWith("https://acme.example.com/")
+          ? listing("old-endpoint-model")
+          : listing("new-endpoint-model")
+      );
+
+      const before = await resolveCustomProviderModels(source());
+      expect(before.map((m) => m.id)).toEqual(["old-endpoint-model"]);
+
+      vi.mocked(fetch).mockClear();
+      const after = await resolveCustomProviderModels(
+        source({ baseUrl: "https://new-host.example.com/v1", keyVersion: "v2" })
+      );
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe(
+        "https://new-host.example.com/v1/models"
+      );
+      expect(after.map((m) => m.id)).toEqual(["new-endpoint-model"]);
+    });
+
+    it("discovers afresh when only the path moved on the same origin", async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(listing("account-a-model"));
+      await resolveCustomProviderModels(source({ baseUrl: "https://gw.example.com/v1/a" }));
+
+      vi.mocked(fetch).mockResolvedValueOnce(listing("account-b-model"));
+      const after = await resolveCustomProviderModels(
+        source({ baseUrl: "https://gw.example.com/v1/b" })
+      );
+
+      expect(after.map((m) => m.id)).toEqual(["account-b-model"]);
+    });
+
+    it("discovers afresh when a new key was entered at the same address", async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(listing("old-key-model"));
+      await resolveCustomProviderModels(source());
+
+      vi.mocked(fetch).mockResolvedValueOnce(listing("new-key-model"));
+      const after = await resolveCustomProviderModels(source({ keyVersion: "v2" }));
+
+      expect(after.map((m) => m.id)).toEqual(["new-key-model"]);
+    });
+
+    it("still hits the cache for the same destination written with a trailing slash or upper-case host", async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(listing("acme-large"));
+      await resolveCustomProviderModels(source());
+
+      vi.mocked(fetch).mockClear();
+      const again = await resolveCustomProviderModels(
+        source({ baseUrl: "https://ACME.example.com/v1/" })
+      );
+
+      expect(fetch).not.toHaveBeenCalled();
+      expect(again.map((m) => m.id)).toEqual(["acme-large"]);
+    });
+  });
+});
+
+describe("cachedCustomProviderModels", () => {
+  // A provider whose base URL is refused is never fetched, but its emitted
+  // block must not shrink to the saved snapshot (see build.ts). The last live
+  // list is the next-best size, and reading it must not touch the network.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCustomModelCache();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("is undefined when no live list was ever fetched", () => {
+    expect(cachedCustomProviderModels("acme")).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns the last live list, even after the TTL, without fetching", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: "acme-large" }, { id: "acme-small" }] }), {
+        status: 200,
+      })
+    );
+    await resolveCustomProviderModels({
+      slug: "acme",
+      baseUrl: "https://acme.example.com/v1",
+      apiKey: "sk-key",
+      keyVersion: "0123456789abcdef",
+      models: [],
+    });
+    vi.mocked(fetch).mockClear();
+    vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000);
+
+    expect(cachedCustomProviderModels("acme")?.map((m) => m.id)).toEqual([
+      "acme-large",
+      "acme-small",
+    ]);
+    expect(cachedCustomProviderModels("beta")).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 
@@ -466,5 +597,148 @@ describe("fetchModels — redirects are re-validated", () => {
 
       expect(authHeaderOfCall(2)).toBeUndefined();
     });
+  });
+});
+
+/**
+ * The saved base URL is checked again every time Pinchy fetches it — not only
+ * when an admin saves it.
+ *
+ * The discover/save routes validate the URL, but the stored value is then read
+ * back on every `regenerateOpenClawConfig()` and every model-list fetch, both
+ * of which call in here. A provider saved under older rules, or before
+ * `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS` was set, kept being fetched — with
+ * its API key attached. Same contract as the stored Odoo URL / mail host
+ * (lib/integrations/stored-destination.ts).
+ */
+describe("fetchModels — the stored base URL itself is re-validated", () => {
+  const snapshot: OpenClawModelDefinition[] = [
+    { ...DEFAULT_MODEL_CAPS, id: "acme-snapshot", name: "Acme Snapshot" },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCustomModelCache();
+    // A fresh Response per call: a body can be read only once.
+    vi.mocked(fetch).mockImplementation(
+      async () => new Response(JSON.stringify({ data: [{ id: "acme-large" }] }), { status: 200 })
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ["the cloud metadata literal", "http://169.254.169.254/v1"],
+    ["an IPv6 loopback literal", "http://[::1]:8000/v1"],
+    ["Alibaba Cloud metadata inside CGNAT", "http://100.100.100.200/v1"],
+  ])("never requests %s", async (_label, baseUrl) => {
+    const models = await fetchOpenAiCompatibleModels(baseUrl, "sk-key");
+
+    expect(models).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("never requests a name that now resolves to a metadata address", async () => {
+    mockLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
+
+    const models = await fetchOpenAiCompatibleModels("https://llm.acme.example/v1", "sk-key");
+
+    expect(models).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports a refused base URL as unreachable, not as a bad key", async () => {
+    const result = await validateOpenAiCompatibleProvider("http://169.254.169.254/v1", "sk-key");
+
+    expect(result).toEqual({ valid: false, error: "network_error" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the saved snapshot instead of fetching a refused saved provider", async () => {
+    const models = await resolveCustomProviderModels({
+      slug: "acme",
+      baseUrl: "http://169.254.169.254/v1",
+      apiKey: "sk-key",
+      keyVersion: "0123456789abcdef",
+      models: snapshot,
+    });
+
+    expect(models).toEqual(snapshot);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("honours PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS for a provider saved before it was set", async () => {
+    vi.stubEnv("PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS", "1");
+    mockLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+
+    const models = await resolveCustomProviderModels({
+      slug: "lan",
+      baseUrl: "http://vllm.lan.example:8000/v1",
+      apiKey: "sk-key",
+      keyVersion: "0123456789abcdef",
+      models: snapshot,
+    });
+
+    expect(models).toEqual(snapshot);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("still fetches a LAN endpoint by default, and a public one", async () => {
+    mockLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+    const lan = await fetchOpenAiCompatibleModels("http://vllm.lan.example:8000/v1", "sk-key");
+    expect(lan.map((m) => m.id)).toEqual(["acme-large"]);
+
+    mockLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    const pub = await fetchOpenAiCompatibleModels("https://llm.acme.example/v1", "sk-key");
+    expect(pub.map((m) => m.id)).toEqual(["acme-large"]);
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("fetchModels — the guard's DNS lookup is inside the probe's time budget", () => {
+  // The guard resolves the host before every hop. Its lookup used to run
+  // before the hop's timeout started, so a resolver that never answered held
+  // the probe — and with it a settings save or a config regenerate — forever.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A fetch that only ever ends by its signal aborting, like a silent host. */
+  function fetchThatWaitsForAbort() {
+    vi.mocked(fetch).mockImplementation(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        })
+    );
+  }
+
+  it("goes ahead with the request once the lookup budget is spent (fail open)", async () => {
+    vi.useFakeTimers();
+    mockLookup.mockImplementation(() => new Promise(() => {}));
+    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
+
+    const result = validateOpenAiCompatibleProvider("https://api.example.com/v1", "sk-key");
+    await vi.advanceTimersByTimeAsync(PROVIDER_DNS_LOOKUP_TIMEOUT_MS);
+
+    expect(await result).toEqual({ valid: true });
+  });
+
+  it("ends the whole hop — lookup and request together — within PROVIDER_PROBE_TIMEOUT_MS", async () => {
+    vi.useFakeTimers();
+    mockLookup.mockImplementation(() => new Promise(() => {}));
+    fetchThatWaitsForAbort();
+
+    let settled: unknown = "still waiting";
+    void validateOpenAiCompatibleProvider("https://api.example.com/v1", "sk-key").then(
+      (r) => (settled = r)
+    );
+    await vi.advanceTimersByTimeAsync(PROVIDER_PROBE_TIMEOUT_MS);
+
+    expect(settled).toEqual({ valid: false, error: "network_error" });
   });
 });

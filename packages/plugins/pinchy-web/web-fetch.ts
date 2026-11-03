@@ -3,6 +3,7 @@ import { parseHTML } from "linkedom";
 import dns from "node:dns/promises";
 import net from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
+import { classifyIpAddress } from "./ip-address.js";
 
 export interface WebFetchConfig {
   allowedDomains?: string[];
@@ -10,48 +11,22 @@ export interface WebFetchConfig {
   maxChars?: number;
 }
 
-const PRIVATE_IP_PATTERNS = [
-  /^127\./,
-  /^10\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^192\.168\./,
-  /^169\.254\./,
-  /^0\./,
-  /^::1$/,
-  /^::$/, // unspecified — routes to loopback on most stacks
-  // ULA is fc00::/7, i.e. fc00: THROUGH fdff:. A literal /^fc00:/ matched only
-  // the first hextet of the first /8 and let every fd00::/8 address — the half
-  // that is actually used, since fc00::/8 is unassigned — pass as public.
-  /^f[cd][0-9a-f]{2}:/i,
-  /^fe80:/i,
-];
-
 // Allow up to 5 redirect hops beyond the initial request (6 HTTP calls total).
 const MAX_REDIRECT_HOPS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-// Detect IPv4-mapped IPv6 addresses (::ffff:0:0/96) and return the embedded
-// IPv4 in dotted-quad form. A known SSRF-bypass vector if we only match
-// IPv4 patterns against IPv4-shaped strings.
+// One classifier for every address this file looks at, shared with the web
+// app's own SSRF guards (see ip-address.ts for why it lives here). It unwraps
+// IPv4-mapped, IPv4-compatible, NAT64 and 6to4 forms and knows the
+// special-purpose ranges (CGNAT, benchmarking, multicast, ...), so this file
+// no longer keeps a regex list of its own to fall behind.
 //
-// Two forms exist in the wild:
-//   * Mixed:  ::ffff:127.0.0.1            (RFC 4291 §2.5.5 alternate form)
-//   * Hex:    ::ffff:7f00:1               (Node's URL parser canonicalises to this)
-function unwrapIPv4Mapped(ip: string): string | null {
-  const mixed = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(ip);
-  if (mixed) return mixed[1];
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(ip);
-  if (hex) {
-    const high = parseInt(hex[1], 16);
-    const low = parseInt(hex[2], 16);
-    return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
-  }
-  return null;
-}
-
+// web_fetch has no opt-in for internal networks: anything that is not
+// "public" is refused. An address the classifier cannot parse is refused too:
+// every caller passes a DNS answer or a net.isIP-validated literal, so that
+// can only be input we do not understand, and a guard fails closed.
 function isPrivateIp(ip: string): boolean {
-  const target = unwrapIPv4Mapped(ip) ?? ip;
-  return PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(target));
+  return classifyIpAddress(ip) !== "public";
 }
 
 type ResolvedHost =

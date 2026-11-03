@@ -1,9 +1,17 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   classifyIp,
   assertAllowedProviderUrl,
+  memoizeResolver,
   ProviderUrlBlockedError,
+  PROVIDER_DNS_LOOKUP_TIMEOUT_MS,
+  resolveHostAddresses,
 } from "@/lib/provider-url-guard";
+
+// Only the default-resolver tests at the bottom reach this; every other test
+// injects its resolver. No test here touches real DNS.
+const { mockLookup } = vi.hoisted(() => ({ mockLookup: vi.fn() }));
+vi.mock("dns/promises", () => ({ default: { lookup: mockLookup }, lookup: mockLookup }));
 
 describe("classifyIp", () => {
   it.each([
@@ -42,6 +50,36 @@ describe("classifyIp", () => {
     ["::ffff:127.0.0.1", "blocked"],
     ["::ffff:10.0.0.1", "private"],
     ["::ffff:8.8.8.8", "public"],
+    // The shared table (pinchy-web/ip-address.ts). This guard kept its own list
+    // and it had the same holes the others had: a cloud-metadata address inside
+    // a "private" range read as an ordinary LAN host, allowed by default, and
+    // the IPv6 forms that carry an IPv4 address were taken at face value.
+    ["100.100.100.200", "blocked"], // Alibaba Cloud metadata, inside CGNAT
+    // Azure WireServer: a public-looking address the old list let straight
+    // through, reachable only from inside an Azure VM.
+    ["168.63.129.16", "blocked"],
+    ["168.63.129.17", "public"],
+    ["fd00:ec2::254", "blocked"], // EC2 IPv6 metadata, inside ULA
+    ["fd00:ec2::23", "blocked"], // EKS Pod Identity Agent, inside ULA
+    ["fd20:ce::254", "blocked"], // GCP IPv6 metadata, inside ULA
+    ["fd00:c1::a9fe:a9fe", "blocked"], // OCI IPv6 metadata, inside ULA
+    ["64:ff9b::a9fe:a9fe", "blocked"], // NAT64 -> 169.254.169.254
+    ["64:ff9b::7f00:1", "blocked"], // NAT64 -> 127.0.0.1
+    ["2002:a9fe:a9fe::1", "blocked"], // 6to4 -> 169.254.169.254
+    ["2001:0:a9fe:a9fe::1", "blocked"], // Teredo
+    ["::ffff:0:7f00:1", "blocked"], // SIIT IPv4-translated
+    // benchmarking 198.18/15: private, not blocked -- operators reuse it
+    // internally and fake-IP DNS (Clash/Mihomo/Surge) hands it out.
+    ["198.18.0.1", "private"],
+    ["192.0.2.1", "blocked"], // TEST-NET-1
+    ["2001:db8::1", "blocked"], // documentation
+    // ...while a self-hosted endpoint on the LAN or a tailnet keeps working.
+    ["100.100.100.100", "private"], // Tailscale node
+    ["64:ff9b::a00:5", "private"], // NAT64 -> 10.0.0.5
+    // Local-use NAT64 (RFC 8215): an IPv6-only network's own translator, so a
+    // LAN endpoint behind it — allowed by default like any private address.
+    ["64:ff9b:1::a00:5", "private"],
+    ["fec0::1", "private"], // deprecated site-local
   ])("classifies %s as %s", (ip, expected) => {
     expect(classifyIp(ip)).toBe(expected);
   });
@@ -78,7 +116,10 @@ describe("assertAllowedProviderUrl", () => {
 
   it("blocks when ANY resolved address is dangerous (dual-record host)", async () => {
     await expect(
-      assertAllowedProviderUrl("https://mixed.example/v1", resolveTo(["203.0.113.10", "127.0.0.1"]))
+      assertAllowedProviderUrl(
+        "https://mixed.example/v1",
+        resolveTo(["93.184.216.34", "127.0.0.1"])
+      )
     ).rejects.toMatchObject({ reason: "blocked_address" });
   });
 
@@ -148,6 +189,14 @@ describe("assertAllowedProviderUrl — address literals bypass DNS", () => {
   });
 
   it.each([
+    ["Alibaba Cloud metadata", "http://100.100.100.200/latest/meta-data/"],
+    ["Azure WireServer", "http://168.63.129.16/machine?comp=goalstate"],
+    ["EC2 IPv6 metadata", "http://[fd00:ec2::254]/latest/meta-data/"],
+    ["EKS Pod Identity Agent", "http://[fd00:ec2::23]/v1/credentials"],
+    ["GCP IPv6 metadata", "http://[fd20:ce::254]/computeMetadata/v1/"],
+    ["OCI IPv6 metadata", "http://[fd00:c1::a9fe:a9fe]/opc/v2/instance/"],
+    ["IMDS through NAT64", "http://[64:ff9b::a9fe:a9fe]/latest/"],
+    ["IMDS through 6to4", "http://[2002:a9fe:a9fe::]/latest/"],
     ["IPv6 loopback", "http://[::1]/v1"],
     ["IPv6 unspecified", "http://[::]/v1"],
     ["IPv6 link-local", "http://[fe80::1]/v1"],
@@ -202,5 +251,79 @@ describe("assertAllowedProviderUrl — address literals bypass DNS", () => {
     await expect(
       assertAllowedProviderUrl("https://maybe-down.example/v1", unresolvable)
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("the default resolver's lookup budget", () => {
+  // The guard sits in front of request paths (the settings page's provider
+  // list, every config regenerate, every model probe). A resolver that never
+  // answers must not hold any of them: after the budget the lookup counts as
+  // failed, which the guard treats like any other unresolvable name.
+  afterEach(() => {
+    vi.useRealTimers();
+    mockLookup.mockReset();
+  });
+
+  it("gives up after PROVIDER_DNS_LOOKUP_TIMEOUT_MS", async () => {
+    vi.useFakeTimers();
+    mockLookup.mockImplementation(() => new Promise(() => {}));
+
+    const lookup = resolveHostAddresses("llm.acme.example");
+    const outcome = lookup.then(
+      () => "answered",
+      () => "gave up"
+    );
+
+    await vi.advanceTimersByTimeAsync(PROVIDER_DNS_LOOKUP_TIMEOUT_MS - 1);
+    expect(await Promise.race([outcome, Promise.resolve("waiting")])).toBe("waiting");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await outcome).toBe("gave up");
+  });
+
+  it("is a few seconds, not the resolver's own (much longer) retry schedule", () => {
+    expect(PROVIDER_DNS_LOOKUP_TIMEOUT_MS).toBeGreaterThanOrEqual(1_000);
+    expect(PROVIDER_DNS_LOOKUP_TIMEOUT_MS).toBeLessThanOrEqual(5_000);
+  });
+
+  it("lets the URL through when the lookup times out (fail open, like an unresolvable name)", async () => {
+    vi.useFakeTimers();
+    mockLookup.mockImplementation(() => new Promise(() => {}));
+
+    const verdict = assertAllowedProviderUrl("https://llm.acme.example/v1").then(
+      () => "allowed",
+      () => "refused"
+    );
+    await vi.advanceTimersByTimeAsync(PROVIDER_DNS_LOOKUP_TIMEOUT_MS);
+
+    expect(await verdict).toBe("allowed");
+  });
+
+  it("returns every address a name resolves to", async () => {
+    mockLookup.mockResolvedValue([
+      { address: "93.184.216.34", family: 4 },
+      { address: "2606:2800:220:1::1", family: 6 },
+    ]);
+
+    expect(await resolveHostAddresses("llm.acme.example")).toEqual([
+      "93.184.216.34",
+      "2606:2800:220:1::1",
+    ]);
+  });
+});
+
+describe("memoizeResolver", () => {
+  it("asks the underlying resolver once per host, failures included", async () => {
+    const base = vi.fn(async (host: string) => {
+      if (host === "down.example") throw new Error("ENOTFOUND");
+      return ["93.184.216.34"];
+    });
+    const resolver = memoizeResolver(base);
+
+    expect(await resolver("a.example")).toEqual(["93.184.216.34"]);
+    expect(await resolver("a.example")).toEqual(["93.184.216.34"]);
+    await expect(resolver("down.example")).rejects.toThrow("ENOTFOUND");
+    await expect(resolver("down.example")).rejects.toThrow("ENOTFOUND");
+
+    expect(base).toHaveBeenCalledTimes(2);
   });
 });

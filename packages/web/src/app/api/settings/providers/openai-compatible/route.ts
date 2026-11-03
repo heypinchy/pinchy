@@ -4,13 +4,24 @@ import { parseRequestBody } from "@/lib/api-validation";
 import {
   upsertOpenAiCompatibleProviderSchema,
   deleteOpenAiCompatibleSchema,
+  type OpenAiCompatibleProviderRow,
 } from "@/lib/schemas/openai-compatible-provider";
 import {
+  baseUrlDestinationChange,
+  capForAudit,
+  KEY_REQUIRED_FOR_NEW_DESTINATION,
+  SECRET_REQUIRED_FOR_NEW_DESTINATION,
+} from "@/lib/secret-destination";
+import {
   createOrUpdateProvider,
+  listOpenAiCompatibleProviders,
   listOpenAiCompatibleProvidersForAdmin,
   deleteProviderById,
-  getDecryptedKeyById,
+  getProviderSnapshotById,
+  decryptStoredKey,
   getModelsById,
+  ProviderChangedError,
+  ProviderNotFoundError,
 } from "@/lib/openai-compatible-providers";
 import { fetchOpenAiCompatibleModels } from "@/lib/openai-compatible-discovery";
 import { DEFAULT_MODEL_CAPS, lookupModelCapabilities } from "@/lib/model-catalog";
@@ -22,8 +33,11 @@ import {
   migrateAgentsOffDeletedProvider,
   repointAgentsOffRemovedModels,
   capMigratedAgents,
+  LAST_CONFIGURED_PROVIDER_ERROR,
+  noUsableTargetRefusal,
 } from "@/lib/provider-deletion";
 import { assertAllowedProviderUrl, ProviderUrlBlockedError } from "@/lib/provider-url-guard";
+import { refusedBaseUrlReasons } from "@/lib/openai-compatible-stored-url";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
@@ -41,12 +55,23 @@ import { recordAuditFailure } from "@/lib/audit-deferred";
 // that derives a `configRegenerated` flag rather than 500-ing an already-persisted
 // save (see setup/provider/route.ts + #880), `resetCache()`, and a
 // `config.changed` audit whose detail snapshots `{ id, name }` and NEVER carries
-// the API key or the full base URL (host only).
+// the API key — the base URL appears as its host, plus origin + path when an
+// update re-points it (never userinfo or query, each value capped by
+// capForAudit). On every config.changed row of an EXISTING provider the `id` is
+// its slug — the identity the other provider routes audit by — and the `name`
+// is the stored one, so one filter finds a provider's whole history.
 //
 // #894 backend redesign: POST now DISCOVERS the model list itself (server-side
 // `GET <baseUrl>/models`) instead of trusting the client's `models` array —
 // see the schema's doc-comment. `manualModelIds` is the only client-supplied
 // model input left, and it's used only when live discovery finds nothing.
+
+/** Shown for an update whose provider does not exist (or no longer does). */
+const PROVIDER_NOT_FOUND = "OpenAI-compatible provider not found.";
+
+/** Shown when a save lost the compare-and-swap against a concurrent save. */
+const PROVIDER_CHANGED_DURING_SAVE =
+  "This provider changed while you were saving. Reload and try again.";
 
 /**
  * Create (no `id`) or update (`id` present) an OpenAI-compatible provider.
@@ -78,15 +103,65 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
   // Host-only, key-free audit detail — computed up front so the failure path
   // can reuse it. `new URL(baseUrl)` is safe: the schema already validated it.
-  const baseUrlHost = new URL(input.baseUrl).host;
+  const baseUrlHost = capForAudit(new URL(input.baseUrl).host);
+
+  // A stored key is bound to the base URL it was entered for (see
+  // lib/secret-destination.ts). The admin UI never shows the key, so without
+  // this an admin (or a stolen admin session) could point the base URL at a
+  // host — or, on a shared gateway origin, a path — they control and receive
+  // the key: as the Bearer token during discovery below, and on every later
+  // chat. The SSRF guard cannot help: the attacker's host is public. So an
+  // update that changes the base URL must bring a fresh key; the stored one is
+  // never decrypted for it.
+  //
+  // The base URL and the key are read in ONE query, and that same snapshot is
+  // the condition of the write below (see createOrUpdateProvider): a save only
+  // lands on the row it was checked against, however long discovery takes.
+  const stored = input.id ? await getProviderSnapshotById(input.id) : undefined;
+  if (input.id && !stored) {
+    // Nothing to change and nothing was sent anywhere, so no audit row.
+    return NextResponse.json({ error: PROVIDER_NOT_FOUND }, { status: 404 });
+  }
+  const storedProvider = stored ? { id: stored.slug, name: stored.displayName } : undefined;
+  const baseUrlChange = stored ? baseUrlDestinationChange(stored.baseUrl, input.baseUrl) : null;
+  // The caller picks the URL, and with it the length of what lands in the audit row.
+  const auditedBaseUrlChange = baseUrlChange
+    ? { from: capForAudit(baseUrlChange.from), to: capForAudit(baseUrlChange.to) }
+    : null;
+  if (baseUrlChange && !input.apiKey) {
+    // Refused before anything left the building, but still worth a row: a
+    // repeated attempt to re-point a stored key is exactly what a CISO filters
+    // the trail for. Nothing changed, so a plain awaited append fits.
+    await appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      outcome: "failure",
+      error: { message: KEY_REQUIRED_FOR_NEW_DESTINATION },
+      detail: {
+        provider: storedProvider!,
+        authType: "openai-compatible",
+        reason: SECRET_REQUIRED_FOR_NEW_DESTINATION,
+        baseUrlChange: auditedBaseUrlChange,
+      },
+    });
+    return NextResponse.json(
+      {
+        error: KEY_REQUIRED_FOR_NEW_DESTINATION,
+        details: { formErrors: [], fieldErrors: { apiKey: [KEY_REQUIRED_FOR_NEW_DESTINATION] } },
+      },
+      { status: 422 }
+    );
+  }
 
   // Server-side model discovery (#894 backend redesign). The effective key is
-  // the freshly-supplied one, or — on an update that omitted it — the stored,
-  // decrypted key: discovery must still hit the live endpoint with SOME
-  // credential even when the admin didn't rotate it. Undefined only on a
-  // CREATE with no apiKey, which createOrUpdateProvider itself rejects below;
-  // discovery is simply skipped rather than probing with no credential.
-  const effectiveKey = input.apiKey ?? (input.id ? await getDecryptedKeyById(input.id) : undefined);
+  // the freshly-supplied one, or — on an update that omitted it and kept the
+  // same base URL — the stored, decrypted key: discovery must still hit the live
+  // endpoint with SOME credential even when the admin didn't rotate it.
+  // Undefined only on a CREATE with no apiKey, which createOrUpdateProvider
+  // itself rejects below; discovery is simply skipped rather than probing with
+  // no credential.
+  const effectiveKey = input.apiKey ?? (stored ? decryptStoredKey(stored) : undefined);
 
   let models: OpenClawModelDefinition[] = effectiveKey
     ? await fetchOpenAiCompatibleModels(input.baseUrl, effectiveKey)
@@ -122,8 +197,52 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
   let row;
   try {
-    row = await createOrUpdateProvider(input, models);
+    // An update is conditioned on the snapshot it was checked against; a create
+    // has none.
+    row = stored
+      ? await createOrUpdateProvider(input, models, stored)
+      : await createOrUpdateProvider(input, models);
   } catch (err) {
+    if (err instanceof ProviderChangedError) {
+      // Another save changed the base URL or the key after this one was
+      // checked — e.g. an admin re-entered the real key while this request's
+      // discovery was held open by the host it names. Nothing was written, so a
+      // plain awaited append fits, like the refusal above.
+      await appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        outcome: "failure",
+        error: { message: PROVIDER_CHANGED_DURING_SAVE },
+        detail: {
+          provider: storedProvider!,
+          authType: "openai-compatible",
+          reason: "provider_changed_during_save",
+          baseUrlHost,
+        },
+      });
+      return NextResponse.json({ error: PROVIDER_CHANGED_DURING_SAVE }, { status: 409 });
+    }
+    if (err instanceof ProviderNotFoundError) {
+      // The row existed when it was checked and was deleted while discovery
+      // ran. The answer is the same 404 an unknown id gets up front — but the
+      // check had passed and a key may have gone to the endpoint, so unlike
+      // that early 404 this one leaves a row.
+      await appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        outcome: "failure",
+        error: { message: PROVIDER_NOT_FOUND },
+        detail: {
+          provider: storedProvider!,
+          authType: "openai-compatible",
+          reason: "provider_deleted_during_save",
+          baseUrlHost,
+        },
+      });
+      return NextResponse.json({ error: PROVIDER_NOT_FOUND }, { status: 404 });
+    }
     // The persist itself failed (e.g. slug-unique collision, DB error, or a
     // CREATE with no apiKey at all — see createOrUpdateProvider). Record a
     // failure audit that still avoids leaking the key, then surface a 500.
@@ -134,13 +253,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       outcome: "failure",
       error: { message: err instanceof Error ? err.message : String(err) },
       detail: {
-        // On an UPDATE the slug isn't derivable (it lives on the row the failing
-        // call never returned), but `input.id` is in hand and is the only way an
-        // analyst can correlate WHICH provider row failed to save. On a CREATE
-        // there is no id yet, so snapshot the display name alone.
-        ...(input.id
-          ? { provider: { id: input.id, name: input.displayName } }
-          : { provider: { name: input.displayName } }),
+        // On an UPDATE the stored row was read before the write, so name it the
+        // way every other row for this provider does (slug + stored name). On a
+        // CREATE there is no row yet, so snapshot the display name alone.
+        provider: storedProvider ?? { name: input.displayName },
         authType: "openai-compatible",
         baseUrlHost,
         modelCount: models.length,
@@ -205,6 +321,11 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // audited flag asserts only that the regenerate did not throw — the push
   // itself is fire-and-forget, so it is deliberately NOT named
   // `runtimeApplied` (see setup/provider, #943).
+  //
+  // The model cache is cleared FIRST: the regenerate resolves this provider's
+  // live model list, and must not be served the list cached before the save —
+  // for a re-pointed provider that is the OLD endpoint's catalog.
+  resetCache();
   let configRegenerated = true;
   try {
     await regenerateOpenClawConfig();
@@ -212,7 +333,6 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     console.error("Failed to apply OpenAI-compatible provider config to the runtime:", err);
     configRegenerated = false;
   }
-  resetCache();
 
   // Cap the migrated-agent list so audit's 2KB truncateDetail can't shred the
   // structured fields (same rationale as the delete route).
@@ -228,6 +348,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         provider: { id: row.slug, name: row.displayName },
         authType: "openai-compatible",
         baseUrlHost,
+        // `baseUrlChange` is only present when an update moved the provider to a
+        // new base URL (origin + path, never userinfo or query — either can carry
+        // a credential), so an analyst can see where a key was re-pointed.
+        ...(auditedBaseUrlChange ? { baseUrlChange: auditedBaseUrlChange } : {}),
         modelCount: row.models.length,
         configRegenerated,
         // Only present when an edit actually repointed agents off removed models.
@@ -247,7 +371,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
 /**
  * List every configured OpenAI-compatible provider. Each row carries a
- * `keyHint` (last 4 chars) and NEVER the decrypted key.
+ * `keyHint` (last 4 chars) and NEVER the decrypted key, plus `refusedReason`:
+ * why the SSRF guard now refuses the saved base URL (config emission points
+ * such a provider at a reserved address — see openai-compatible-stored-url.ts),
+ * or `null`. Each host is looked up once per request, with a short timeout.
  */
 export const GET = withAdmin(async () => {
   // Read-only list, no state change — GET is outside require-audit-log's scope
@@ -255,7 +382,12 @@ export const GET = withAdmin(async () => {
   // Uses the admin accessor so each row carries a keyHint (the one decrypt
   // path — see the module).
   const providers = await listOpenAiCompatibleProvidersForAdmin();
-  return NextResponse.json(providers);
+  const refused = await refusedBaseUrlReasons(providers);
+  const rows: OpenAiCompatibleProviderRow[] = providers.map((p) => ({
+    ...p,
+    refusedReason: refused.get(p.slug) ?? null,
+  }));
+  return NextResponse.json(rows);
 });
 
 /**
@@ -263,7 +395,8 @@ export const GET = withAdmin(async () => {
  * its models onto a remaining provider and reassigning `default_provider` when
  * the deleted slug was it. Mirrors the built-in provider DELETE verbatim: the
  * same last-provider guard shape (`countConfiguredProviders() <= 1` → 400), the
- * built-ins-first remaining-candidate ordering (Task 8), the shared
+ * same "no usable provider would remain" refusal, the built-ins-first
+ * remaining-candidate ordering (Task 8, refused base URLs left out), the shared
  * migration/reassignment/audit-diff helper, and a `settings.deleted` audit that
  * snapshots `{ id, name }`, caps the migrated-agent diff, and NEVER carries the
  * API key. Runtime apply is best-effort (`configRegenerated`) — the row is already
@@ -274,17 +407,50 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   if ("error" in parsed) return parsed.error;
   const { id } = parsed.data;
 
+  // An unknown id is a 404 before any guard: otherwise a stale id would be
+  // answered — and audited — as a refused removal of a provider that does not
+  // exist. Same answer, and no audit, as the race below where the row vanishes
+  // between this lookup and the delete.
+  const row = (await listOpenAiCompatibleProviders()).find((p) => p.id === id);
+  if (!row) {
+    return NextResponse.json({ error: "OpenAI-compatible provider not found." }, { status: 404 });
+  }
+
   // A single custom instance counts as a valid sole provider, so this count
   // spans built-ins + custom instances (see provider-count.ts). Refuse to remove
   // the last one, with the exact status + message shape the built-in route uses.
   const totalConfigured = await countConfiguredProviders();
   if (totalConfigured <= 1) {
-    return NextResponse.json(
-      {
-        error: "Cannot remove the last configured provider. Add another provider first.",
-      },
-      { status: 400 }
+    return NextResponse.json({ error: LAST_CONFIGURED_PROVIDER_ERROR }, { status: 400 });
+  }
+
+  // Build the migration-target set BEFORE deleting, excluding this row by id:
+  // it doubles as the "is a usable provider left?" guard, which is worthless
+  // once the row is gone. Built-ins-first ordering, custom namespacing, and
+  // leaving out custom providers whose base URL is refused are single-sourced
+  // in buildRemainingCandidates (shared with the built-in DELETE route).
+  const remainingCandidates = await buildRemainingCandidates({ excludeCustomId: id });
+  if (remainingCandidates.length === 0) {
+    // The refusal comes from the SSRF guard's verdict on the other providers,
+    // so it is recorded like PATCH /default's refusal. No address in it. Its
+    // wording (and `reason`) depends on whether this provider is refused too.
+    const refusal = await noUsableTargetRefusal(row);
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          action: "provider_delete_refused_no_usable_target",
+          reason: refusal.reason,
+          // Keyed by slug like every other config.changed row about an
+          // existing provider (see the header), not by the row UUID.
+          provider: { id: row.slug, name: row.displayName },
+        },
+      })
     );
+    return NextResponse.json({ error: refusal.error }, { status: 400 });
   }
 
   let deleted: Awaited<ReturnType<typeof deleteProviderById>> = null;
@@ -299,13 +465,6 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
     if (!deleted) {
       return NextResponse.json({ error: "OpenAI-compatible provider not found." }, { status: 404 });
     }
-
-    // Build the migration-target set EXCLUDING the just-deleted slug — already
-    // gone from listOpenAiCompatibleProviders after deleteProviderById, so no
-    // built-in exclusion is passed. Built-ins-first ordering + custom namespacing
-    // are single-sourced in buildRemainingCandidates (shared with the built-in
-    // DELETE route).
-    const remainingCandidates = await buildRemainingCandidates();
 
     const previousDefault = await getSetting("default_provider");
     wasDefault = previousDefault === deleted.slug;

@@ -1,8 +1,3 @@
-// audit-exempt: new-user claim is a self-service action covered by the
-// inviter's `user.invited` audit row on the creation side. The reset
-// branch is NOT exempt and writes an `auth.password_reset_completed`
-// row below, because a password change is security-sensitive regardless
-// of who triggers it.
 import { NextRequest, NextResponse } from "next/server";
 import { hashPassword } from "better-auth/crypto";
 import { auth } from "@/lib/auth";
@@ -18,6 +13,7 @@ import { validatePassword } from "@/lib/validate-password";
 import { parseRequestBody } from "@/lib/api-validation";
 import { claimInviteSchema } from "@/lib/schemas/invite";
 import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 
 export async function POST(request: NextRequest) {
   const parsed = await parseRequestBody(claimInviteSchema, request);
@@ -119,6 +115,18 @@ export async function POST(request: NextRequest) {
   if (!result?.user) {
     return NextResponse.json({ error: "Failed to create user" }, { status: 500 });
   }
+
+  // The inviter's `user.invited` row says an invite was issued; this one says
+  // it became an account. Deferred: the account exists and cannot be rolled
+  // back. Actor is the new user (pseudonymized on write) — so no raw user id
+  // and no email in detail (#824).
+  deferAuditLog({
+    actorType: "user",
+    actorId: result.user.id,
+    eventType: "user.created",
+    detail: { name: name.trim(), role: invite.role, via: "invite", invite: { id: invite.id } },
+    outcome: "success",
+  });
 
   if (invite.role !== "member") {
     await db.update(users).set({ role: invite.role }).where(eq(users.id, result.user.id));

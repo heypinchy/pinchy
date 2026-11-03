@@ -1,7 +1,8 @@
 /**
  * Real-DB integration tests for ingestDirectory() (discover -> extract ->
  * chunk -> embed -> upsert). Uses a real PostgreSQL test database
- * (provisioned by global-setup.ts, truncated between tests by setup.ts) plus
+ * (provisioned by global-setup.ts, emptied between tests by the integration
+ * reset) plus
  * real filesystem I/O against a per-test temp directory. The embedder and
  * PDF extractor are dependency-injected fakes (deterministic 768-dim
  * vectors, canned page text) so the suite stays hermetic — no Ollama, no

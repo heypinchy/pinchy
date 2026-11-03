@@ -109,6 +109,9 @@ const BUILD_RELEVANT_OUTSIDE_WEB = [
   // The zip guard (#424) the knowledge base's Office preflight shares:
   // canonical in the plugin, Node built-ins only.
   /^packages\/plugins\/pinchy-files\/docx-zip-guard\.ts$/,
+  // The IP classifier the admin-facing SSRF guards share with web_fetch, so the
+  // two cannot keep separate (and drifting) lists of internal ranges.
+  /^packages\/plugins\/pinchy-web\/ip-address\.ts$/,
 ];
 
 /**

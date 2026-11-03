@@ -13,8 +13,8 @@
 // `scope: "shared"` is the type-level expression of that: there is deliberately
 // no scope that returns personal agents, because nothing may.
 //
-// Provisioned by global-setup.ts (fresh migrated DB) and truncated between tests
-// (setup.ts). Everything runs for real — no mocks.
+// Provisioned by global-setup.ts (fresh migrated DB) and emptied between tests
+// by the integration reset (setup.ts). Everything runs for real — no mocks.
 
 import { describe, it, expect } from "vitest";
 import { db } from "@/db";

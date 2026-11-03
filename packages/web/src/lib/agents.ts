@@ -22,7 +22,8 @@ import {
   recalculateTelegramAllowStores,
   clearAllowStoreForAccount,
 } from "@/lib/telegram-allow-store";
-import { deleteSetting, getSetting } from "@/lib/settings";
+import { deleteSetting } from "@/lib/settings";
+import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
 import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-presets";
 import { generateAvatarSeed } from "@/lib/avatar";
@@ -486,7 +487,7 @@ export async function createAgent(
 
   // Determine model: use template-aware resolver when modelHint is present,
   // fall back to provider default for templates without a hint (e.g. "custom").
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
+  const defaultProvider = (await getUsableDefaultProvider()) as ProviderName | null;
 
   let model: string;
   let modelSelectionSource: "template-hint" | "provider-default" = "provider-default";

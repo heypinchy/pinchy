@@ -1,7 +1,12 @@
 import { readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { isDeepStrictEqual } from "util";
-import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
+import {
+  writeSecretsFile,
+  secretRef,
+  referencedSecretIds,
+  type SecretsBundle,
+} from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -27,8 +32,12 @@ import {
   getModelCatalogForProvider,
   type OpenClawModelDefinition,
 } from "@/lib/openclaw-builtin-models";
-import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
+import {
+  REFUSED_BASE_URL,
+  refusedBaseUrlsForEmission,
+  refusedProviderModels,
+} from "@/lib/openai-compatible-stored-url";
 import {
   getOpenClawWorkspacePath,
   getAgentBootstrapSizes,
@@ -42,6 +51,7 @@ import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { readExistingConfig, pushConfigInBackground } from "./write";
 import { reloadSecretsInBackground } from "./secrets-reload";
+import { serializeRegenerates } from "./regenerate-queue";
 import {
   buildSecretsBundle,
   collectPluginSecrets,
@@ -187,7 +197,18 @@ export async function loadAgentConnectionPermissions(dbClient: typeof db): Promi
   });
 }
 
-export async function regenerateOpenClawConfig() {
+/**
+ * Rebuild openclaw.json + secrets.json from the DB and push them to OpenClaw.
+ *
+ * Serialized (see regenerate-queue.ts): at most one regenerate runs at a time,
+ * and a call made while one runs resolves only after a regenerate that started
+ * AFTER the call has completed — so the state a caller changed before calling
+ * is what that caller's await has applied, and an older run can never write
+ * after a newer one. It rejects with the error of the run the caller waited for.
+ */
+export const regenerateOpenClawConfig = serializeRegenerates(regenerateOpenClawConfigOnce);
+
+async function regenerateOpenClawConfigOnce(): Promise<void> {
   // `readExistingConfig` distinguishes two recoverable failure modes:
   //   - ENOENT / parse error → returns {} (cold start; we build the first config from scratch).
   //   - Persistent EACCES → throws (file exists but unreadable; race with OC's
@@ -246,6 +267,15 @@ export async function regenerateOpenClawConfig() {
       return;
     }
   }
+
+  // The secrets OpenClaw's RUNNING config points at. On the WS path Pinchy never
+  // writes openclaw.json itself — OpenClaw persists it when a config.apply lands
+  // — so the file read above is the config OpenClaw runs, and its SecretRefs are
+  // what a `secrets.reload` re-resolves. Taken now, before anything below can
+  // touch `existing`; writeSecretsFile keeps those values until a config that
+  // no longer names them has landed (see "values the running config still
+  // points at" there).
+  const runningSecretRefs = referencedSecretIds(existing);
 
   // Build the gateway block (see buildGatewayBlock for the mode/bind/auth and
   // Control-UI rationale). The token is resolved here because it's reused later
@@ -377,7 +407,12 @@ export async function regenerateOpenClawConfig() {
   // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
   // provider with a configured apiKey. Helper returns a fresh mutable map;
   // ollama-cloud is spliced into providerSecrets at the model-providers call site.
-  const { providers: providerSecrets } = await collectProviderSecrets();
+  // `customProviders` is this regenerate's ONE read of the OpenAI-compatible
+  // table: every use below (default-model guard, models.providers emission,
+  // live discovery) takes slug, base URL, models and key from these rows, so
+  // a save committing mid-regenerate can never pair one save's address with
+  // another save's key.
+  const { providers: providerSecrets, customProviders } = await collectProviderSecrets();
 
   // Keep agents.defaults minimal. OpenClaw enriches agents.defaults with
   // heartbeat, models, contextPruning, compaction at runtime; if Pinchy were to
@@ -450,9 +485,7 @@ export async function regenerateOpenClawConfig() {
       local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH },
     },
   };
-  // Fetched once here (reused for the models.providers emission below) so the
-  // default-model guard can recognise a custom slug without a second query.
-  const customProviders = await listOpenAiCompatibleProviders();
+  // The default-model guard recognises a custom slug from the same read.
   const defaultProvider = await getSetting("default_provider");
   // Emit the default model when `default_provider` names either a built-in OR a
   // known custom OpenAI-compatible slug (#894). `getDefaultModel` is slug-aware
@@ -461,10 +494,19 @@ export async function regenerateOpenClawConfig() {
   // AND is a prototype-injection sink (a slug like `constructor` walks the
   // prototype chain). `Object.hasOwn` + `.some()` are both prototype-safe.
   const isBuiltInDefault = defaultProvider !== null && Object.hasOwn(PROVIDERS, defaultProvider);
+  // A saved base URL the SSRF guard now refuses is neither emitted below nor
+  // the default here — one check, shared by both decisions.
+  const refusedCustomProviders = await refusedBaseUrlsForEmission(customProviders);
   const isCustomDefault =
-    defaultProvider !== null && customProviders.some((p) => p.slug === defaultProvider);
+    defaultProvider !== null &&
+    !refusedCustomProviders.has(defaultProvider) &&
+    customProviders.some((p) => p.slug === defaultProvider);
   if (defaultProvider && (isBuiltInDefault || isCustomDefault)) {
     pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };
+  } else if (customProviders.some((p) => p.slug === defaultProvider)) {
+    // A refused default: `undefined` (not omission) so the deepMerge below
+    // drops the default an earlier regenerate wrote for it.
+    pinchyDefaults.model = undefined;
   }
 
   // Vision-model chain for the built-in `pdf` and `image` tools. Both use the
@@ -1457,21 +1499,34 @@ export async function regenerateOpenClawConfig() {
   // #894 backend redesign: the emitted model list is resolved LIVE via
   // `resolveCustomProviderModels` (short-TTL cache + snapshot fallback — same
   // helper the model dropdown uses in provider-models.ts), not read off
-  // `p.models` directly. `customProviders` (fetched key-free, above) still
-  // supplies slug/baseUrl/snapshot and backs the default-provider guard;
-  // `providerSecrets` (already fetched for the secrets bundle) supplies the
-  // decrypted key discovery needs without a second DB round trip.
+  // `p.models` directly — with `p.models` as the fallback snapshot.
+  //
+  // Everything here comes from one row of `customProviders` (see above): the
+  // base URL, the key discovery authenticates with, and the key's slot, which
+  // is versioned (`<slug>@<keyVersion>`, see versionedSecretName). A new key is
+  // a new pointer, so the config that moves `baseUrl` is the only one that
+  // resolves the key entered for it — the two can never go live apart, and
+  // discovery never sends one save's key to another save's address.
+  //
+  // A saved base URL the SSRF guard now refuses keeps its entry and the model
+  // list the file already holds (so the file keeps its size — see
+  // openai-compatible-stored-url.ts) but points at REFUSED_BASE_URL, carries
+  // no key, and is never fetched.
   for (const p of customProviders) {
-    const models = await resolveCustomProviderModels({
-      slug: p.slug,
-      baseUrl: p.baseUrl,
-      apiKey: providerSecrets[p.slug]?.apiKey ?? "",
-      models: p.models,
-    });
+    const refused = refusedCustomProviders.has(p.slug);
+    const models = refused
+      ? refusedProviderModels(existing, p)
+      : await resolveCustomProviderModels({
+          slug: p.slug,
+          baseUrl: p.baseUrl,
+          apiKey: p.apiKey,
+          keyVersion: p.keyVersion,
+          models: p.models,
+        });
     modelProviders[p.slug] = {
-      baseUrl: p.baseUrl,
+      baseUrl: refused ? REFUSED_BASE_URL : p.baseUrl,
       api: "openai-completions",
-      apiKey: secretRef(`/providers/${p.slug}/apiKey`),
+      ...(refused ? {} : { apiKey: secretRef(`/providers/${p.secretSlot}/apiKey`) }),
       models: stripVision(models).map((m) => ({
         ...m,
         compat: { supportsUsageInStreaming: true },
@@ -1724,11 +1779,17 @@ export async function regenerateOpenClawConfig() {
   // early returns for exactly that reason. It costs no `config.apply` rate-limit
   // slot, so the no-op guard keeps doing the job it exists for.
   //
+  // (OpenAI-compatible providers are the deliberate exception: their key slot
+  // is versioned, so a rotation re-points the SecretRef in openclaw.json and
+  // travels with the config apply below — no reload. See writeSecretsFile.)
+  //
   // The flag is "a value was added or rotated", NOT "the file changed": a pure
-  // removal must stay silent here, because OpenClaw would re-resolve the config
-  // it is still running — which points at the key this regenerate just took
-  // away. See writeSecretsFile.
-  if (writeSecretsFile(secretsBundle)) {
+  // removal gives a reload nothing new to resolve. Neither kind of write takes
+  // away a value the running config still points at — those stay until a
+  // config without them has landed (`runningSecretRefs`), so a reload fired
+  // while a re-keyed or deleted provider's apply is still in flight resolves.
+  // See writeSecretsFile.
+  if (writeSecretsFile(secretsBundle, { stillReferenced: runningSecretRefs })) {
     reloadSecretsInBackground();
   }
 

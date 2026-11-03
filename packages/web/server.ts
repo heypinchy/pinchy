@@ -14,6 +14,7 @@ import { setOpenClawClient } from "./src/server/openclaw-client";
 import { once } from "./src/lib/once";
 import { getActiveRunsSingleton } from "./src/server/active-runs-singleton";
 import { getSessionPokeBridgeSingleton } from "./src/server/session-poke-bridge-singleton";
+import { getUserSocketRegistry } from "./src/server/user-sockets";
 import { startRunWatchdog, DEFAULT_FIRST_CHUNK_TIMEOUT_MS } from "./src/server/run-watchdog";
 import {
   ChannelHealthMonitor,
@@ -52,8 +53,17 @@ import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
-import { evaluateAuditSecretRotation, evaluateDbPasswordPolicy } from "./src/lib/secret-source";
-import { getPreviousSecret } from "./src/lib/encryption";
+import {
+  describeAuditKeyFilePersist,
+  describeIgnoredSecretEnv,
+  evaluateAuditSecretRotation,
+  evaluateDbPasswordPolicy,
+} from "./src/lib/secret-source";
+import {
+  getPreviousSecret,
+  isSecretEnvIgnored,
+  persistEnvSecretToKeyFile,
+} from "./src/lib/encryption";
 import { exitOnStartupFailure } from "./src/server/startup-failure";
 import { getTrustedProxies, stampClientIp, TRUSTED_PROXIES_ENV_VAR } from "./src/server/client-ip";
 
@@ -97,6 +107,32 @@ const dbPasswordPolicy = evaluateDbPasswordPolicy({
 });
 if (dbPasswordPolicy.action === "warn") {
   console.warn(dbPasswordPolicy.message);
+}
+
+// A key variable that is set but not 64 hex characters is ignored in favour of
+// the key file. Say so: the operator set it to be the key, and without this
+// line nothing tells them it isn't. Before the steps below, which only act on
+// a variable that is in effect.
+for (const [envVar, name] of [
+  ["ENCRYPTION_KEY", "encryption_key"],
+  ["AUDIT_HMAC_SECRET", "audit_hmac_secret"],
+] as const) {
+  const ignoredEnvLog = describeIgnoredSecretEnv({ envVar, ignored: isSecretEnvIgnored(name) });
+  if (ignoredEnvLog.action === "warn") {
+    console.warn(ignoredEnvLog.message);
+  }
+}
+
+// The earlier key Pinchy verifies against is always the key file. When
+// AUDIT_HMAC_SECRET is set and no key file exists yet, write the variable's
+// value there, so a later change of the variable keeps this key as the earlier
+// one. Never overwrites, never throws: a failed write is a warning, not a
+// reason to stay down. Runs before the notice below, which reads the same file.
+const auditKeyFileLog = describeAuditKeyFilePersist(persistEnvSecretToKeyFile("audit_hmac_secret"));
+if (auditKeyFileLog.action === "info") {
+  console.log(auditKeyFileLog.message);
+} else if (auditKeyFileLog.action === "warn") {
+  console.warn(auditKeyFileLog.message);
 }
 
 // An operator who pins AUDIT_HMAC_SECRET over the generated key changes what
@@ -172,6 +208,9 @@ const startup = app.prepare().then(async () => {
   // across all ClientRouter instances (one per ws) and the watchdog.
   const activeRuns = getActiveRunsSingleton();
   const pokeBridge = getSessionPokeBridgeSingleton();
+  // Open browser sockets per user, shared with the API routes through
+  // globalThis — deactivating an account closes its open chats (user-sockets.ts).
+  const userSockets = getUserSocketRegistry();
 
   const wss = new WebSocketServer({
     noServer: true,
@@ -285,6 +324,10 @@ const startup = app.prepare().then(async () => {
       wss.handleUpgrade(request, socket, head, (ws) => {
         wsRateLimiter.trackConnection(userId);
         sessionMap.set(ws, { userId, userRole });
+        // So DELETE /api/users/:id can close this chat when it deactivates the
+        // account: the session check above runs once, at the upgrade. A user
+        // deactivated in the moment since gets the socket closed right here.
+        userSockets.register(userId, ws);
         wss.emit("connection", ws, request);
       });
     }

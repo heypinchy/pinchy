@@ -34,7 +34,8 @@
   "devDependencies": {
     "husky": "^9.1.7",
     "lint-staged": "^17.2.0",
-    "prettier": "^3.9.6"
+    "prettier": "^3.9.6",
+    "yaml": "^2.9.0"
   },
   "pnpm": {
     "overrides": {

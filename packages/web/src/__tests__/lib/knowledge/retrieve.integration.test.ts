@@ -1,7 +1,7 @@
 /**
  * Real-DB integration tests for retrieve() (hybrid pgvector + FTS retrieval,
  * fused via Reciprocal Rank Fusion). Uses a real PostgreSQL test database
- * (provisioned by global-setup.ts, truncated between tests by setup.ts).
+ * (provisioned by global-setup.ts, emptied between tests by the integration reset).
  * kb_documents/kb_chunks rows are inserted DIRECTLY with hand-chosen
  * embeddinggemma-width embeddings and texts, so ranking is fully deterministic
  * without Ollama — the generated `tsv` column auto-populates from `chunk_text`

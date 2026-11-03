@@ -98,7 +98,7 @@ describe("isPrivateUrl", () => {
   });
 
   it("accepts public IP with HTTP", () => {
-    expect(isPrivateUrl("http://203.0.113.50:8069")).toBe(false);
+    expect(isPrivateUrl("http://93.184.216.34:8069")).toBe(false);
   });
 
   it("does not reject 172.32.x.x (outside private range)", () => {
@@ -125,7 +125,33 @@ describe("classifyIpAddress", () => {
     ["172.31.255.255", "private"],
     ["192.168.1.10", "private"],
     ["172.32.0.1", "public"],
-    ["203.0.113.50", "public"],
+    ["93.184.216.34", "public"],
+    // Special-purpose ranges -- the shared table also used by web_fetch.
+    // CGNAT is "private" so an operator can opt in for a tailnet Odoo, except
+    // 100.100.100.200, Alibaba Cloud's metadata endpoint.
+    ["100.64.0.1", "private"],
+    ["100.127.255.255", "private"],
+    ["100.100.100.200", "link-local"],
+    // 168.63.129.16, Azure's WireServer / host agent: public-looking, but only
+    // reachable from inside an Azure VM, and it hands out extension
+    // configuration including certificates. Filed with the metadata
+    // endpoints; its neighbours stay public.
+    ["168.63.129.16", "link-local"],
+    ["168.63.129.15", "public"],
+    ["168.63.129.17", "public"],
+    ["100.63.255.255", "public"],
+    ["100.128.0.1", "public"],
+    // 198.18.0.0/15 benchmarking: "private", not "reserved" -- operators number
+    // internal networks from it and fake-IP DNS (Clash/Mihomo/Surge) answers
+    // with it, so ALLOW_PRIVATE_URLS has to be able to open it.
+    ["198.18.0.1", "private"],
+    ["192.0.0.1", "reserved"],
+    ["192.0.2.1", "reserved"],
+    ["198.51.100.7", "reserved"],
+    ["203.0.113.50", "reserved"],
+    ["224.0.0.1", "reserved"],
+    ["240.0.0.1", "reserved"],
+    ["255.255.255.255", "reserved"],
   ] as const)("classifies IPv4 %s as %s", (address, expected) => {
     expect(classifyIpAddress(address)).toBe(expected);
   });
@@ -140,14 +166,34 @@ describe("classifyIpAddress", () => {
     ["feb0::1", "link-local"],
     ["fc00::1", "private"],
     ["fd12:3456:789a::1", "private"],
-    ["fd00:ec2::254", "private"],
+    // EC2's IPv6 metadata endpoint: inside ULA, but filed as link-local so
+    // that opening the private class (ALLOW_PRIVATE_URLS) never opens IMDS.
+    ["fd00:ec2::254", "link-local"],
+    // The other metadata/credential endpoints inside ULA: EKS Pod Identity,
+    // GCP metadata, OCI metadata. Same reasoning as fd00:ec2::254.
+    ["fd00:ec2::23", "link-local"],
+    ["fd20:ce::254", "link-local"],
+    ["fd00:c1::a9fe:a9fe", "link-local"],
     ["2606:4700:4700::1111", "public"],
-    ["fec0::1", "public"],
+    // fec0::/10 -- deprecated site-local (RFC 3879), still routed inside many
+    // networks. Used to be pinned "public", which asserted the bypass.
+    ["fec0::1", "private"],
+    ["feff::1", "private"],
+    ["fe90::1", "link-local"],
+    ["ff02::1", "reserved"],
+    ["64:ff9b::7f00:1", "loopback"],
+    ["64:ff9b::a9fe:a9fe", "link-local"],
+    ["64:ff9b::808:808", "public"],
+    // Local-use NAT64 (RFC 8215). Corrected expectation: it is an IPv6-only
+    // network's own translator prefix, so ALLOW_PRIVATE_URLS opens it.
+    ["64:ff9b:1::a00:5", "private"],
+    ["::ffff:100.64.0.1", "private"],
+    ["::100.100.100.200", "link-local"],
     // IPv4-mapped addresses carry an IPv4 destination; classify what they
     // actually reach, not the IPv6 wrapper.
     ["::ffff:127.0.0.1", "loopback"],
     ["::ffff:192.168.1.10", "private"],
-    ["::ffff:203.0.113.50", "public"],
+    ["::ffff:93.184.216.34", "public"],
     // ::a.b.c.d, the deprecated IPv4-compatible form. ::/96 is reserved, so
     // nothing public lives there — decode the tail rather than wave it past.
     ["::127.0.0.1", "loopback"],
@@ -237,8 +283,8 @@ describe("validateExternalUrl", () => {
   });
 
   it("accepts a public IPv4 literal without touching the resolver", async () => {
-    const result = await validateWithoutDns("https://203.0.113.10:8069");
-    expect(result).toEqual({ valid: true, url: "https://203.0.113.10:8069" });
+    const result = await validateWithoutDns("https://93.184.216.35:8069");
+    expect(result).toEqual({ valid: true, url: "https://93.184.216.35:8069" });
   });
 
   it("names the ALLOW_PRIVATE_URLS opt-out for an RFC-1918 address, and only there", async () => {
@@ -255,10 +301,121 @@ describe("validateExternalUrl", () => {
     expect(metadata).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
   });
 
+  it("treats CGNAT (Tailscale) like RFC-1918: refused, with the ALLOW_PRIVATE_URLS way out", async () => {
+    const literal = await validateWithoutDns("http://100.64.0.7:8069");
+    expect(literal).toEqual({
+      valid: false,
+      error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+    });
+
+    const viaDns = await validateExternalUrl(
+      "https://odoo.tailnet.example",
+      resolveTo(["100.101.102.103"])
+    );
+    expect(viaDns).toEqual({
+      valid: false,
+      error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+    });
+  });
+
+  it("treats 198.18.0.0/15 like RFC-1918: refused, with the ALLOW_PRIVATE_URLS way out", async () => {
+    // Benchmarking space that operators reuse internally, and that fake-IP DNS
+    // (Clash/Mihomo/Surge) hands out for every name. It used to be refused
+    // with no opt-in at all, which left such an install no way to reach Odoo.
+    const result = await validateExternalUrl(
+      "http://odoo.lan.example:8069",
+      resolveTo(["198.18.0.42"])
+    );
+    expect(result).toEqual({
+      valid: false,
+      error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+    });
+  });
+
+  it("allows a CGNAT Odoo when ALLOW_PRIVATE_URLS=1", async () => {
+    vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+    const result = await validateWithoutDns("http://100.64.0.7:8069");
+    expect(result).toEqual({ valid: true, url: "http://100.64.0.7:8069" });
+  });
+
+  it.each([
+    "http://100.100.100.200/latest/meta-data/",
+    "http://168.63.129.16/machine?comp=goalstate",
+    "http://[64:ff9b::a9fe:a9fe]/latest/meta-data/",
+    "http://[fd20:ce::254]/computeMetadata/v1/",
+    "http://240.0.0.1:8069",
+    "http://224.0.0.1:8069",
+    "http://[ff02::1]:8069",
+  ])("rejects %s with no opt-out suggested, since no Odoo server lives there", async (url) => {
+    const result = await validateWithoutDns(url);
+    expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
+  });
+
+  it("treats a local-use NAT64 address (64:ff9b:1::/48) as private: refused, then opened by the flag", async () => {
+    // An IPv6-only network whose own translator uses the RFC 8215 prefix: the
+    // Odoo server behind it is an ordinary internal host, so the admin opt-in
+    // has to be able to reach it.
+    const refused = await validateWithoutDns("http://[64:ff9b:1::a00:5]:8069");
+    expect(refused).toEqual({
+      valid: false,
+      error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+    });
+
+    vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+    const allowed = await validateWithoutDns("http://[64:ff9b:1::a00:5]:8069");
+    expect(allowed).toEqual({ valid: true, url: "http://[64:ff9b:1::a00:5]:8069" });
+  });
+
+  /**
+   * `ollama.local` is what compose maps to the Docker host (`host-gateway`).
+   * It used to be mapped in the OpenClaw container only, so Pinchy — which
+   * runs this check — could not resolve it, failed open, and the Odoo plugin
+   * in OpenClaw then connected to the Docker host. Both containers now carry
+   * the mapping (pinned by scripts/lib/compose-extra-hosts.test.mjs), so the
+   * name resolves here to whatever the engine answers for `host-gateway`, and
+   * that answer is classified like any other.
+   */
+  describe("ollama.local, resolved through the host-gateway mapping", () => {
+    it("Docker on Linux (172.17.0.1): private — refused, opened by ALLOW_PRIVATE_URLS", async () => {
+      const refused = await validateExternalUrl(
+        "http://ollama.local:8069",
+        resolveTo(["172.17.0.1"])
+      );
+      expect(refused).toEqual({
+        valid: false,
+        error: expect.stringContaining("ALLOW_PRIVATE_URLS=1"),
+      });
+
+      vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+      const allowed = await validateExternalUrl(
+        "http://ollama.local:8069",
+        resolveTo(["172.17.0.1"])
+      );
+      expect(allowed).toEqual({ valid: true, url: "http://ollama.local:8069" });
+    });
+
+    it("OrbStack (0.250.250.254): unspecified — refused even with ALLOW_PRIVATE_URLS", async () => {
+      vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+      const result = await validateExternalUrl(
+        "http://ollama.local:8069",
+        resolveTo(["0.250.250.254"])
+      );
+      expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
+    });
+  });
+
+  it("rejects a name that resolves to Alibaba Cloud metadata (100.100.100.200)", async () => {
+    const result = await validateExternalUrl(
+      "https://rebind.example.com",
+      resolveTo(["100.100.100.200"])
+    );
+    expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
+  });
+
   it("accepts HTTPS public domain (resolves to a public address)", async () => {
     const result = await validateExternalUrl(
       "https://odoo.example.com",
-      resolveTo(["203.0.113.10"])
+      resolveTo(["93.184.216.35"])
     );
     expect(result).toEqual({ valid: true, url: "https://odoo.example.com" });
   });
@@ -266,7 +423,7 @@ describe("validateExternalUrl", () => {
   it("accepts HTTPS odoo.com subdomain (resolves to a public address)", async () => {
     const result = await validateExternalUrl(
       "https://mycompany.odoo.com",
-      resolveTo(["203.0.113.10"])
+      resolveTo(["93.184.216.35"])
     );
     expect(result).toEqual({ valid: true, url: "https://mycompany.odoo.com" });
   });
@@ -274,7 +431,7 @@ describe("validateExternalUrl", () => {
   it("accepts HTTP for on-prem (resolves to a public address)", async () => {
     const result = await validateExternalUrl(
       "http://odoo.example.com:8069",
-      resolveTo(["203.0.113.10"])
+      resolveTo(["93.184.216.35"])
     );
     expect(result).toEqual({ valid: true, url: "http://odoo.example.com:8069" });
   });
@@ -282,7 +439,7 @@ describe("validateExternalUrl", () => {
   it("normalizes trailing slash", async () => {
     const result = await validateExternalUrl(
       "https://odoo.example.com/",
-      resolveTo(["203.0.113.10"])
+      resolveTo(["93.184.216.35"])
     );
     expect(result).toEqual({ valid: true, url: "https://odoo.example.com" });
   });
@@ -290,7 +447,7 @@ describe("validateExternalUrl", () => {
   it("strips path for origin-only output", async () => {
     const result = await validateExternalUrl(
       "https://odoo.example.com/web/login",
-      resolveTo(["203.0.113.10"])
+      resolveTo(["93.184.216.35"])
     );
     expect(result).toEqual({ valid: true, url: "https://odoo.example.com" });
   });
@@ -330,7 +487,7 @@ describe("validateExternalUrl", () => {
       // of them must be classified, not just the first.
       const result = await validateExternalUrl(
         "https://mixed.attacker.example",
-        resolveTo(["203.0.113.10", "127.0.0.1"])
+        resolveTo(["93.184.216.35", "127.0.0.1"])
       );
       expect(result).toEqual({ valid: false, error: expect.stringContaining("loopback") });
     });
@@ -346,7 +503,7 @@ describe("validateExternalUrl", () => {
     it("allows a hostname that resolves only to public addresses", async () => {
       const result = await validateExternalUrl(
         "https://real-odoo.example",
-        resolveTo(["203.0.113.10", "2606:4700:4700::1111"])
+        resolveTo(["93.184.216.35", "2606:4700:4700::1111"])
       );
       expect(result).toEqual({ valid: true, url: "https://real-odoo.example" });
     });
@@ -357,22 +514,88 @@ describe("validateExternalUrl", () => {
     });
   });
 
-  describe("ALLOW_PRIVATE_URLS bypass", () => {
-    it("allows private URLs when ALLOW_PRIVATE_URLS=1", async () => {
+  /**
+   * `ALLOW_PRIVATE_URLS=1` opens the `private` class and nothing else — the
+   * same two tiers as `ALLOW_PRIVATE_MAIL_HOSTS`. It used to switch the whole
+   * check off, and the upgrade note for CGNAT tells every Tailscale-Odoo
+   * install to set it: an admin who can add an Odoo connection would then reach
+   * 127.0.0.1, the cloud-metadata services and the OpenClaw gateway.
+   */
+  describe("ALLOW_PRIVATE_URLS opens the private class only", () => {
+    it("allows a private address literal when ALLOW_PRIVATE_URLS=1", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
-      const result = await validateWithoutDns("http://localhost:8069");
-      expect(result).toEqual({ valid: true, url: "http://localhost:8069" });
+      const result = await validateWithoutDns("http://10.0.0.5:8069");
+      expect(result).toEqual({ valid: true, url: "http://10.0.0.5:8069" });
     });
 
-    it("allows internal Docker hostnames when ALLOW_PRIVATE_URLS=1, without touching DNS", async () => {
+    it("allows internal Docker hostnames that resolve to a private address", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
       // odoo-e2e / eval stacks set this flag so the wizard can reach odoo-mock
-      // on the Docker-internal network, where there is no resolver answer to
-      // be had. `validateWithoutDns` fails if the bypass ever stops
-      // short-circuiting: a bare name like this one would otherwise be handed
-      // to DNS, and the resulting failure is silently allowed.
-      const result = await validateWithoutDns("http://odoo-mock:8069");
+      // on the Docker-internal network. Docker's embedded DNS answers with the
+      // container's bridge address, which is private — so the name is still
+      // resolved and classified, and passes because of the flag, not around it.
+      const resolver = vi.fn<UrlHostResolver>(async () => ["172.18.0.5"]);
+      const result = await validateExternalUrl("http://odoo-mock:8069", resolver);
+      expect(resolver).toHaveBeenCalledWith("odoo-mock");
       expect(result).toEqual({ valid: true, url: "http://odoo-mock:8069" });
+    });
+
+    it.each([
+      "http://100.64.0.7:8069",
+      "http://192.168.1.20:8069",
+      "http://[fd12:3456:789a::1]:8069",
+      "http://198.18.0.10:8069",
+    ])("allows the private literal %s when ALLOW_PRIVATE_URLS=1", async (url) => {
+      vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+      const result = await validateWithoutDns(url);
+      expect(result).toEqual({ valid: true, url: new URL(url).origin });
+    });
+
+    it.each([
+      "http://localhost:8069",
+      "http://127.0.0.1:8069",
+      "http://[::1]:8069",
+      "http://0.0.0.0:8069",
+      "http://169.254.169.254/latest/meta-data/",
+      "http://100.100.100.200/latest/meta-data/",
+      "http://168.63.129.16/machine?comp=goalstate",
+      "http://[fd00:ec2::254]/latest/meta-data/",
+      "http://[::ffff:127.0.0.1]:8069",
+      "http://[64:ff9b::a9fe:a9fe]/",
+      "http://[fd00:ec2::23]/v1/credentials",
+      "http://[fd20:ce::254]/computeMetadata/v1/",
+      "http://[fd00:c1::a9fe:a9fe]/opc/v2/instance/",
+      "http://[fd00:c1::169.254.169.254]/opc/v2/instance/",
+      "http://240.0.0.1:8069",
+      "http://224.0.0.1:8069",
+    ])("still refuses %s with ALLOW_PRIVATE_URLS=1", async (url) => {
+      vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+      const result = await validateWithoutDns(url);
+      // And the refusal does not suggest the flag the operator already set.
+      expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
+    });
+
+    it.each([
+      ["127.0.0.1"],
+      ["169.254.169.254"],
+      ["100.100.100.200"],
+      ["fd00:ec2::254"],
+      ["fd00:ec2::23"],
+      ["fd20:ce::254"],
+      ["fd00:c1::a9fe:a9fe"],
+    ])("still refuses a name that resolves to %s with ALLOW_PRIVATE_URLS=1", async (address) => {
+      vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+      const result = await validateExternalUrl(
+        "http://odoo.rebind.example:8069",
+        resolveTo(["10.0.0.5", address])
+      );
+      expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
+    });
+
+    it("still fails open for an unresolvable name with ALLOW_PRIVATE_URLS=1", async () => {
+      vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+      const result = await validateExternalUrl("http://typo-odoo:8069", unresolvable);
+      expect(result).toEqual({ valid: true, url: "http://typo-odoo:8069" });
     });
 
     it("still rejects non-HTTP schemes even with ALLOW_PRIVATE_URLS=1", async () => {

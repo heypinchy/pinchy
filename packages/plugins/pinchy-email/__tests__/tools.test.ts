@@ -859,6 +859,25 @@ describe("credential fetching", () => {
     expect(body.reason).toBeTruthy();
   });
 
+  it("does not POST report-auth-failure when the retry with fresh credentials fails for another reason", async () => {
+    // The refetched token is fine; the retry then hits a transient provider
+    // error. Only an auth error says the credentials are bad — anything else
+    // would flip a healthy connection to auth_failed with nothing to clear it.
+    mockCredentialResponse();
+    mockList
+      .mockRejectedValueOnce(new Error("HTTP 401: Invalid Credentials"))
+      .mockRejectedValueOnce(new Error("HTTP 503 Service Unavailable"));
+
+    const tools = createApi();
+    const result = await findTool(tools, "email_list", agentId)!.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(mockList).toHaveBeenCalledTimes(2);
+    expect(
+      mockFetch.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+    ).toHaveLength(0);
+  });
+
   it("does not POST report-auth-failure on a transient 5xx error", async () => {
     mockCredentialResponse();
     mockList.mockRejectedValueOnce(new Error("HTTP 503 Service Unavailable"));
