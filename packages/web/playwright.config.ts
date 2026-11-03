@@ -31,8 +31,14 @@ export default defineConfig({
   globalSetup: "./e2e/global-setup.ts",
   globalTeardown: "./e2e/global-teardown.ts",
   webServer: {
+    // ENCRYPTION_KEY_DIR: server.ts writes the AUDIT_HMAC_SECRET value into
+    // `.audit_hmac_secret` at startup. The default directory, /app/secrets,
+    // exists only in the container, so on the host every start logged "Could
+    // not write the AUDIT_HMAC_SECRET value" — a warning that matters in
+    // production, here only noise. A fresh directory per run, so nothing
+    // (key file, domain-lock flag) carries over from an earlier run.
     command:
-      "DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5433/pinchy_test BETTER_AUTH_SECRET=test-secret-for-e2e-at-least-32chars ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000001 AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef WORKSPACE_BASE_PATH=/tmp/pinchy-test-workspaces OPENCLAW_CONFIG_PATH=/tmp/pinchy-e2e-config/openclaw.json OPENCLAW_DATA_PATH=/tmp/pinchy-e2e-config OPENCLAW_SECRETS_PATH=/tmp/pinchy-e2e-secrets/secrets.json PORT=7778 node -r ./server-preload.cjs --import tsx server.ts",
+      "rm -rf /tmp/pinchy-e2e-keys && mkdir -p /tmp/pinchy-e2e-keys && ENCRYPTION_KEY_DIR=/tmp/pinchy-e2e-keys DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5433/pinchy_test BETTER_AUTH_SECRET=test-secret-for-e2e-at-least-32chars ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000001 AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef WORKSPACE_BASE_PATH=/tmp/pinchy-test-workspaces OPENCLAW_CONFIG_PATH=/tmp/pinchy-e2e-config/openclaw.json OPENCLAW_DATA_PATH=/tmp/pinchy-e2e-config OPENCLAW_SECRETS_PATH=/tmp/pinchy-e2e-secrets/secrets.json PORT=7778 node -r ./server-preload.cjs --import tsx server.ts",
     // `helpers.ts` seeds `default_provider=anthropic` with a fake key, so the
     // first `/api/templates` render calls the REAL api.anthropic.com from the
     // runner and waits out DNS + TLS + a 401 before falling back to the offline
