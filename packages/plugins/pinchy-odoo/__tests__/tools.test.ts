@@ -4006,29 +4006,34 @@ describe("error handling", () => {
           }),
           { status: 200 }
         ),
+      "the answer from Pinchy broke off",
     ],
     [
       "Pinchy being unreachable",
       () => {
         throw new TypeError("fetch failed");
       },
+      "could not reach Pinchy",
     ],
-  ])("reports %s on the credentials fetch as Pinchy's, not Odoo's", async (_label, answer) => {
-    fetchMock.mockImplementationOnce(async () => answer() as never);
+  ])(
+    "reports %s on the credentials fetch as Pinchy's, not Odoo's",
+    async (_label, answer, says) => {
+      fetchMock.mockImplementationOnce(async () => answer() as never);
 
-    const tools = createApi({ [agentId]: agentConfig });
-    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
-      model: "sale.order",
-      filters: [],
-    });
+      const tools = createApi({ [agentId]: agentConfig });
+      const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+        model: "sale.order",
+        filters: [],
+      });
 
-    expect(result.isError).toBe(true);
-    const text = result.content[0].text;
-    expect(text).toContain("Failed to fetch Odoo credentials");
-    expect(text).toContain("could not reach Pinchy");
-    expect(text).not.toContain("JSON-RPC");
-    expect(text).not.toContain("Odoo answered");
-  });
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Failed to fetch Odoo credentials");
+      expect(text).toContain(says);
+      expect(text).not.toContain("JSON-RPC");
+      expect(text).not.toContain("Odoo answered");
+    }
+  );
 
   it.each([
     ["null", null],
@@ -4049,6 +4054,24 @@ describe("error handling", () => {
     expect(text).toContain("credentials API");
     expect(text).not.toContain("JSON-RPC");
     expect(text).not.toContain("Odoo answered");
+  });
+
+  it("reports any other TypeError as an internal error, not as Odoo's answer", async () => {
+    mockSearchRead.mockRejectedValue(
+      new TypeError("Cannot read properties of undefined (reading 'map')")
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("internal error");
+    expect(text).toContain("reading 'map'");
+    expect(text).not.toContain("JSON-RPC");
   });
 
   it("does not quote a JSON answer of the wrong shape either (TypeError)", async () => {

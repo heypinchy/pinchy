@@ -278,7 +278,7 @@ The check reads the URL you enter, not where Odoo's answers point — so Pinchy 
 
 An answer that isn't JSON-RPC is never quoted back — not to you, and not to the agent or the person chatting with it: Pinchy reports its status and content type, or simply that it wasn't JSON-RPC. An error in JSON-RPC's own format is passed on, on one line and shortened, because that's Odoo saying what went wrong.
 
-When **Test connection**, or saving changes to a connection, gets no Odoo answer at all — a redirect, an error from a proxy, a network failure, or something that isn't JSON-RPC — it says your login and API key weren't checked, rather than calling them wrong, and it doesn't mark the connection as needing new credentials. The same goes when the login works but no model can be read — the Odoo user has read access to none of them, or every model call fails the same way: **Test connection** says why, and new credentials wouldn't fix it, so the connection isn't marked. Only an access error from Odoo marks it.
+When **Test connection**, or saving changes to a connection, gets no Odoo answer at all — a redirect, an error from a proxy, a network failure, or something that isn't JSON-RPC — it says your login and API key weren't checked, rather than calling them wrong, and it doesn't mark the connection as needing new credentials. The same goes when the login works but no model can be read because the Odoo user has read access to none of them, or because every model call fails: **Test connection** says why, and new credentials wouldn't fix it, so the connection isn't marked. It's marked when Odoo refuses the login, answers a model call with an access error, or fails in a way Pinchy can't classify.
 
 ## Re-syncing when Odoo permissions change
 

@@ -229,7 +229,7 @@ describe("requestCredentials", () => {
       new DOMException("The operation was aborted due to timeout", "TimeoutError"),
     ],
   ])(
-    "names %s mid-body as a failure reaching Pinchy, not a body that is not JSON",
+    "names %s mid-body as an answer that broke off, not a body that is not JSON",
     async (_label, cause) => {
       const body = new ReadableStream({
         start(controller) {
@@ -249,7 +249,7 @@ describe("requestCredentials", () => {
       // No usable answer, exactly as when the request never got there.
       expect(err.status).toBe(0);
       expect(err.message).toBe(
-        `Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy (${cause.message})`
+        `Failed to fetch Odoo credentials for connection conn-1: the answer from Pinchy broke off (${cause.message})`
       );
     }
   );
@@ -267,6 +267,43 @@ describe("requestCredentials", () => {
     expect(err.status).toBe(0);
     expect(err.message).toBe(
       "Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy (fetch failed)"
+    );
+  });
+
+  it("names undici's cause when the request never reached Pinchy", async () => {
+    const cause = Object.assign(new Error("connect ECONNREFUSED 10.0.0.2:7777"), {
+      code: "ECONNREFUSED",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("fetch failed", { cause });
+      })
+    );
+
+    const err = (await requestCredentials(args).catch((e: unknown) => e)) as CredentialsFetchError;
+    expect(err.status).toBe(0);
+    expect(err.message).toBe(
+      "Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy " +
+        "(fetch failed (ECONNREFUSED: connect ECONNREFUSED 10.0.0.2:7777))"
+    );
+  });
+
+  it.each([
+    ["null", null],
+    ["an array", []],
+    ["a string", "ok"],
+  ])("refuses a credentials answer that is %s", async (label, payload) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }))
+    );
+
+    const err = (await requestCredentials(args).catch((e: unknown) => e)) as CredentialsFetchError;
+    expect(err).toBeInstanceOf(CredentialsFetchError);
+    expect(err.status).toBe(200);
+    expect(err.message).toBe(
+      `Failed to fetch Odoo credentials for connection conn-1: Pinchy's credentials API answered ${label}, not an object`
     );
   });
 });

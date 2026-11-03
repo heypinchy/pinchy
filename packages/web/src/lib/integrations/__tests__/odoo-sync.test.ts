@@ -195,12 +195,71 @@ describe("fetchOdooSchema", () => {
     "Could not access any Odoo models. Please ensure the API user has at least " +
     "read access to the modules you want to use (e.g. Sales, Inventory, Contacts).";
 
-  it("keeps the read-access message when models fail for different reasons", async () => {
+  // No probe reported an access problem, so the message must not claim one.
+  it("names the failures, not read access, when models fail for different reasons", async () => {
     mockFields.mockImplementation((model: string) =>
       Promise.reject(
         new Error(model === "sale.order" ? "Unknown model: sale.order" : "Invalid field 'x'")
       )
     );
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toMatch(/^Could not read any Odoo model: /);
+    expect(result.error).toContain("Unknown model: sale.order");
+    expect(result.error).toContain("Invalid field 'x'");
+    expect(result.error).not.toMatch(/read access/);
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("says Odoo could not be reached when every probe failed to reach it, whatever each one said", async () => {
+    vi.useFakeTimers();
+    mockFields.mockImplementation((model: string) =>
+      Promise.reject(
+        model === "sale.order"
+          ? Object.assign(new Error("fetch failed"), { code: 0 })
+          : new Error("ETIMEDOUT")
+      )
+    );
+
+    const promise = fetchOdooSchema(creds);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toMatch(/^Could not reach Odoo: /);
+    expect(result.error).toContain("fetch failed");
+    expect(result.error).toContain("ETIMEDOUT");
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("counts Odoo's own error as an answer even though it carries a JSON-RPC code", async () => {
+    vi.useFakeTimers();
+    // Odoo's server errors carry code 200 and `data`; it did answer.
+    mockFields.mockRejectedValue(
+      Object.assign(new Error("Lock wait timeout exceeded"), {
+        code: 200,
+        data: { name: "psycopg2.errors.LockNotAvailable" },
+      })
+    );
+
+    const promise = fetchOdooSchema(creds);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("Odoo did not answer successfully: Lock wait timeout exceeded");
+  });
+
+  it("keeps the read-access message when Odoo grants read access to no model", async () => {
+    mockFields.mockResolvedValue([{ name: "id" }]);
+    mockCheckAccessRights.mockResolvedValue(false);
 
     const result = await fetchOdooSchema(creds);
 

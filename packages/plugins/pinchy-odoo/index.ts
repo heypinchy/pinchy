@@ -223,12 +223,6 @@ async function fetchCredentials(
     agentId,
     label: "Odoo",
   });
-  // Read `credentials` only off an object: off `null` it is a TypeError,
-  // which reads to the model like a broken Odoo answer.
-  if (!isRecord(data)) {
-    const got = data === null ? "null" : Array.isArray(data) ? "an array" : typeof data;
-    throw new Error(`pinchy-odoo: the credentials API answered ${got}, not an object`);
-  }
   assertCredentialsShape(data.credentials);
   return data.credentials;
 }

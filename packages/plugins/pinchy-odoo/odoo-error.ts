@@ -33,7 +33,8 @@ function redirectMessage(status: string): string {
  *
  * The model gets a sentence it can relay instead. A JSON-RPC envelope of the
  * wrong shape (`{"error": {}}`) still escapes odoo-node as a `TypeError`
- * reading `error.data.message`, which tells the model nothing either.
+ * reading `error.data.message`, which tells the model nothing either. Any
+ * other `TypeError` is a bug on our side, not Odoo's answer, and says so.
  *
  * Everything else is Odoo talking — a validation error, an access error — and
  * the model needs its words, so it passes through, collapsed to one line and
@@ -51,7 +52,12 @@ function redirectMessage(status: string): string {
  * cross-package drift guard.
  */
 export function describeOdooError(err: unknown): string {
-  if (err instanceof TypeError) return NOT_JSON_RPC_MESSAGE;
+  if (err instanceof TypeError) {
+    // odoo-node reads `json.error.data.message`; nothing else reads `message`
+    // off undefined/null on this path.
+    if (/\(reading 'message'\)$/.test(err.message)) return NOT_JSON_RPC_MESSAGE;
+    return `The Odoo tool hit an internal error (TypeError: ${err.message}); this is not about the Odoo connection.`;
+  }
   const message = (err instanceof Error ? err.message : "").replace(/\s+/g, " ").trim();
   if (!message) return "Unknown error";
   if (message.startsWith("Response is not JSON-RPC")) return NOT_JSON_RPC_MESSAGE;

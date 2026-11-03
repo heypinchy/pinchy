@@ -343,6 +343,25 @@ describe("pinchy-web plugin", () => {
       expect(result.content[0].text).toMatch(/no longer connected/i);
     });
 
+    it("reports a credentials answer that is null as the credentials API's", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({ ok: true, status: 200, statusText: "OK", json: async () => null }))
+      );
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"] },
+        })
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "test" });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("credentials API answered null, not an object");
+    });
+
     it("aborts a hung credentials fetch via AbortSignal.timeout(10_000) instead of blocking forever", async () => {
       // Simulates a Pinchy container that never answers Pinchy's own internal
       // credentials route (mid-deploy, network blackhole) — the mock only

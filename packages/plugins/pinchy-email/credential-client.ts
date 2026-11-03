@@ -48,10 +48,11 @@
 const FETCH_TIMEOUT_MS = 10_000;
 
 /**
- * Thrown by `requestCredentials` whenever it cannot hand back a parsed body:
+ * Thrown by `requestCredentials` whenever it cannot hand back a parsed object:
  *
  * - the credentials API answered non-ok — `status` is that HTTP status;
- * - it answered ok with a body that is not JSON — `status` is that status;
+ * - it answered ok with a body that is not JSON, or JSON that is not an
+ *   object — `status` is that status;
  * - no usable answer arrived: the request failed, timed out, or the body broke
  *   off mid-stream — `status` is 0.
  *
@@ -170,17 +171,15 @@ export async function requestCredentials(args: {
   connectionId: string;
   agentId: string;
   label: string;
-}): Promise<unknown> {
+}): Promise<Record<string, unknown>> {
   const { apiBaseUrl, gatewayToken, connectionId, agentId, label } = args;
   const failed = `Failed to fetch ${label} credentials for connection ${connectionId}`;
   // A transport failure on the way to Pinchy names Pinchy. Left bare, a
   // TypeError("fetch failed") reaches the model looking like the third-party
-  // service's own failure, and is classified like one.
-  const unreachable = (err: unknown, status: number) =>
-    new CredentialsFetchError(
-      `${failed}: could not reach Pinchy (${err instanceof Error ? err.message : String(err)})`,
-      status
-    );
+  // service's own failure, and is classified like one. Status 0: no usable
+  // answer arrived.
+  const transportFailure = (what: string, err: unknown) =>
+    new CredentialsFetchError(`${failed}: ${what} (${describeTransportError(err)})`, 0);
   let response: Response;
   try {
     response = await fetch(
@@ -192,7 +191,7 @@ export async function requestCredentials(args: {
       }
     );
   } catch (err) {
-    throw unreachable(err, 0);
+    throw transportFailure("could not reach Pinchy", err);
   }
 
   if (!response.ok) {
@@ -221,15 +220,40 @@ export async function requestCredentials(args: {
   // the start of the body, and callers pass error messages to the model. A
   // connection that drops or times out while the body arrives is a transport
   // failure, not a body that is not JSON.
+  let body: unknown;
   try {
-    return await response.json();
+    body = await response.json();
   } catch (err) {
-    if (!(err instanceof SyntaxError)) throw unreachable(err, 0);
+    if (!(err instanceof SyntaxError))
+      throw transportFailure("the answer from Pinchy broke off", err);
     throw new CredentialsFetchError(
       `${failed}: Pinchy answered HTTP ${response.status} with a body that is not JSON`,
       response.status
     );
   }
+  // Every caller reads fields off the answer; off `null` that is a TypeError,
+  // which reads to the model like the third-party service failing.
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    const got = body === null ? "null" : Array.isArray(body) ? "an array" : `a ${typeof body}`;
+    throw new CredentialsFetchError(
+      `${failed}: Pinchy's credentials API answered ${got}, not an object`,
+      response.status
+    );
+  }
+  return body as Record<string, unknown>;
+}
+
+/**
+ * undici collapses every transport failure into `TypeError: fetch failed` and
+ * hangs the reason — the errno, DNS or TLS failure — off `.cause`. Name it, so
+ * "Pinchy is down" and "Pinchy's name does not resolve" read differently.
+ */
+function describeTransportError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = err.cause;
+  if (!(cause instanceof Error)) return err.message;
+  const code = (cause as Error & { code?: unknown }).code;
+  return `${err.message} (${typeof code === "string" ? `${code}: ${cause.message}` : cause.message})`;
 }
 
 /**
