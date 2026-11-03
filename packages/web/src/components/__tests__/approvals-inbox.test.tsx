@@ -32,8 +32,26 @@ const pending = {
 async function review(index = 0) {
   fireEvent.click(screen.getAllByRole("button", { name: /review/i }).at(index)!);
   const approve = screen.getByRole("button", { name: /approve/i });
-  await waitFor(() => expect(approve).toBeEnabled(), { timeout: ARM_MS + 1000 });
+  await waitFor(() => expect(approve).not.toHaveAttribute("aria-disabled", "true"), {
+    timeout: ARM_MS + 1000,
+  });
   return approve;
+}
+
+/**
+ * Draws the corner as the browser does: the stack is anchored to the bottom,
+ * so a card sits one card height higher for every card below it.
+ */
+function bottomAnchoredStack() {
+  const spy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const card = this.closest("[role=region] > *");
+    let below = 0;
+    for (let next = card?.nextElementSibling; next; next = next.nextElementSibling) below++;
+    return new DOMRect(0, 700 - 100 * below, 80, 32);
+  });
+  return () => spy.mockRestore();
 }
 
 describe("ApprovalsInbox", () => {
@@ -307,6 +325,35 @@ describe("ApprovalsInbox", () => {
       const reviews = screen.getAllByRole("button", { name: /review/i });
       expect(reviews).toHaveLength(19);
       await waitFor(() => expect(document.activeElement).toBe(reviews[0]));
+    });
+
+    // C below the open card leaves — it expired, or was answered in another
+    // tab — and the open card drops into its place: its Approve now sits where
+    // C's Review was, under the pointer that was about to click it.
+    it("does not approve with a click aimed at a card below that has just left", async () => {
+      const restore = bottomAnchoredStack();
+      try {
+        fetchPendingApprovals.mockResolvedValue({ approvals: [newer, older] });
+        submitApprovalDecision.mockResolvedValue({ ok: true, status: "approved", resumed: true });
+        render(<ApprovalsInbox />);
+        await screen.findByText(/Agent 1 needs your confirmation/i);
+        const approve = await review(0);
+
+        await poll([newer]);
+        await waitFor(() => expect(screen.queryByText(/Agent 1 needs/i)).toBeNull());
+        fireEvent.click(approve);
+        expect(submitApprovalDecision).not.toHaveBeenCalled();
+
+        await waitFor(() => expect(approve).not.toHaveAttribute("aria-disabled", "true"), {
+          timeout: ARM_MS + 1000,
+        });
+        fireEvent.click(approve);
+        await waitFor(() =>
+          expect(submitApprovalDecision).toHaveBeenCalledWith("req-0", { decision: "approve" })
+        );
+      } finally {
+        restore();
+      }
     });
 
     it("opens nothing when the open card is decided elsewhere", async () => {

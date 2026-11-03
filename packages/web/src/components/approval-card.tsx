@@ -2,12 +2,14 @@
 
 import {
   Fragment,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { Button } from "@/components/ui/button";
 import type { PendingApproval } from "@/lib/approvals/client";
@@ -366,14 +368,51 @@ function ArgFields({ fields }: { fields: Record<string, unknown> }) {
 }
 
 /**
- * How long a card's details are on screen before its Approve and Deny act.
- * In the corner the stack is anchored to the bottom, so a card that opens
- * grows upward and its Approve lands on the pixels its Review button just
- * held: without this, the second click of a double click on Review would
- * approve what the card had not yet shown. Operating systems take two clicks
- * up to 500 ms apart as a double click by default.
+ * How long Approve and Deny stay in one place on screen before they act.
+ * A pointer or a finger rests where the person aimed it, and a button can
+ * arrive under it: in the corner the stack is anchored to the bottom, so a
+ * card that opens grows upward and its Approve lands on the pixels its Review
+ * button just held, and a card below the open one that leaves — expired, or
+ * answered in another tab — drops the open card onto that card's Review; in
+ * the thread a card arriving above pushes the open one down. Whatever moved
+ * them, the click aimed at what was there must not approve. Operating systems
+ * take two clicks up to 500 ms apart as a double click by default.
  */
 export const ARM_MS = 1000;
+
+/**
+ * Whether `element` has stayed where it is on screen for `ARM_MS`, as state
+ * for drawing, and as a check to make at the moment it is pressed. The
+ * position is read every frame rather than worked out from what might move
+ * it, because anything can: a card leaving, one arriving, a scroll, a resize.
+ * The check reads it once more, so a press in the same frame as a move — before
+ * any frame has seen it — still finds it moved.
+ */
+function useStill(element: RefObject<HTMLElement | null>): [boolean, () => boolean] {
+  const [still, setStill] = useState(false);
+  // Where the element was last seen, and since when it has been there.
+  const seen = useRef<{ at: string; since: number } | null>(null);
+
+  const check = useCallback(() => {
+    const box = element.current?.getBoundingClientRect();
+    const at = box ? `${box.left} ${box.top} ${box.width} ${box.height}` : "";
+    const now = performance.now();
+    if (seen.current?.at !== at) seen.current = { at, since: now };
+    const result = now - seen.current.since >= ARM_MS;
+    setStill(result);
+    return result;
+  }, [element]);
+
+  useEffect(() => {
+    let frame = requestAnimationFrame(function watch() {
+      check();
+      frame = requestAnimationFrame(watch);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [check]);
+
+  return [still, check];
+}
 
 /** A closed card's Review button, which is where focus goes next. */
 const REVIEW = "[data-approval-review]";
@@ -442,9 +481,15 @@ export function ApprovalCard({
 }
 
 /**
- * The open card: its details, and Approve and Deny once those have been on
- * screen for `ARM_MS`. Mounted afresh each time the card opens, so every
- * opening waits again.
+ * The open card: its details, and Approve and Deny once those have stayed in
+ * one place for `ARM_MS` (`useStill`). Mounted afresh each time the card
+ * opens, so every opening waits again, and every move waits again too.
+ *
+ * While they wait, the two buttons stay in the tab order — disabled, they
+ * would drop out of it, and a Tab right after Review would land on the next
+ * card's Review — and say they will be available in a moment. The note keeps
+ * its place when it is hidden: if it took its line with it, the buttons would
+ * move, and wait again.
  */
 function OpenCard({
   approval,
@@ -462,12 +507,18 @@ function OpenCard({
   const hasArgs = approval.argsSummary && Object.keys(approval.argsSummary).length > 0;
   const card = useRef<HTMLDivElement>(null);
   const details = useRef<HTMLDivElement>(null);
-  const [armed, setArmed] = useState(false);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setArmed(true), ARM_MS);
-    return () => clearTimeout(timer);
-  }, []);
+  const buttons = useRef<HTMLDivElement>(null);
+  const hintId = useId();
+  const [armed, stillNow] = useStill(buttons);
+  const decide = (decision: "approve" | "deny") => {
+    if (!busy && stillNow()) onDecide(approval, decision);
+  };
+  const waiting = {
+    size: "sm",
+    className: "aria-disabled:cursor-not-allowed aria-disabled:opacity-50",
+    "aria-disabled": busy || !armed || undefined,
+    "aria-describedby": armed ? undefined : hintId,
+  } as const;
 
   // Review unmounts with the closed card, so the focus it held moves to what
   // it opened instead of falling to the page.
@@ -476,8 +527,7 @@ function OpenCard({
   }, [takeFocus]);
 
   // The card leaves once decided — here or in another tab — and with it the
-  // focus on its button (or none: a busy button is disabled, and a browser
-  // drops the focus of a disabled one). Hand it to the next card's Review,
+  // focus on its button, if it was there. Hand it to the next card's Review,
   // in this list first, rather than to the page. Layout cleanup runs while
   // the card is still in the document, so it can still see where focus is.
   useLayoutEffect(() => {
@@ -513,18 +563,22 @@ function OpenCard({
           </div>
         ) : null}
       </div>
-      <div className="mt-3 flex justify-end gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy || !armed}
-          onClick={() => onDecide(approval, "deny")}
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <p
+          id={hintId}
+          className="mr-auto text-xs text-muted-foreground"
+          style={armed ? { visibility: "hidden" } : undefined}
         >
-          Deny
-        </Button>
-        <Button size="sm" disabled={busy || !armed} onClick={() => onDecide(approval, "approve")}>
-          Approve
-        </Button>
+          Available in a moment
+        </p>
+        <div ref={buttons} className="flex gap-2">
+          <Button variant="outline" {...waiting} onClick={() => decide("deny")}>
+            Deny
+          </Button>
+          <Button {...waiting} onClick={() => decide("approve")}>
+            Approve
+          </Button>
+        </div>
       </div>
     </div>
   );

@@ -15,6 +15,7 @@ const mockParams = vi.fn();
 vi.mock("next/navigation", () => ({ useParams: () => mockParams() }));
 
 import { ThreadApprovals } from "../thread-approvals";
+import { ARM_MS } from "../approval-card";
 import { ApprovalsInbox } from "../approvals-inbox";
 import { AgentIdContext } from "../chat";
 
@@ -206,5 +207,54 @@ describe("approval card placement", () => {
         .find((region) => within(region).queryByText(/Smithers/));
       expect(within(thread!).getByRole("button", { name: /review/i })).toBeInTheDocument();
     });
+  });
+
+  // The thread is anchored to its top, so a card arriving above the open one
+  // pushes it down by one card height — its Approve onto the pixels where the
+  // card below it had its Review, under the pointer about to click it.
+  it("does not approve with a click aimed at a card below when a card arrives above", async () => {
+    const spy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element
+    ) {
+      const card = this.closest("[role=region] > *");
+      let above = 0;
+      for (let prev = card?.previousElementSibling; prev; prev = prev.previousElementSibling)
+        above++;
+      return new DOMRect(0, 100 + 100 * above, 80, 32);
+    });
+    try {
+      const open = approval();
+      const below = approval({ id: "req-3", argsSummary: { y: 2 } });
+      const newer = approval({ id: "req-2", argsSummary: { x: 1 } });
+      fetchPendingApprovals.mockResolvedValue({ approvals: [open, below] });
+      submitApprovalDecision.mockResolvedValue({ ok: true, status: "approved", resumed: true });
+      render(
+        <AgentIdContext.Provider value="a1">
+          <ThreadApprovals />
+        </AgentIdContext.Provider>
+      );
+      await screen.findAllByText(/needs your confirmation/i);
+      fireEvent.click(screen.getAllByRole("button", { name: /review/i })[0]);
+      const approve = screen.getByRole("button", { name: /approve/i });
+      await waitFor(() => expect(approve).not.toHaveAttribute("aria-disabled", "true"), {
+        timeout: ARM_MS + 1000,
+      });
+
+      fetchPendingApprovals.mockResolvedValue({ approvals: [newer, open, below] });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(screen.getAllByText(/needs your confirmation/i)).toHaveLength(3));
+      fireEvent.click(approve);
+      expect(submitApprovalDecision).not.toHaveBeenCalled();
+
+      await waitFor(() => expect(approve).not.toHaveAttribute("aria-disabled", "true"), {
+        timeout: ARM_MS + 1000,
+      });
+      fireEvent.click(approve);
+      await waitFor(() =>
+        expect(submitApprovalDecision).toHaveBeenCalledWith("req-1", { decision: "approve" })
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

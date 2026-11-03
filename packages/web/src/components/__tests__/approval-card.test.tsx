@@ -821,6 +821,11 @@ describe("ApprovalCard shows what will actually run", () => {
   });
 });
 
+/** Whether `button` acts when pressed — it stays in the tab order either way. */
+function offered(button: HTMLElement) {
+  return button.getAttribute("aria-disabled") !== "true";
+}
+
 /**
  * A card opens where the person clicked: in the corner the stack is anchored
  * to the bottom, so a card that opens grows upward and its Approve lands on
@@ -854,9 +859,33 @@ describe("opening a card", () => {
     fireEvent.click(screen.getByRole("button", { name: "Deny" }));
     expect(onDecide).not.toHaveBeenCalled();
 
-    await waitFor(() => expect(approve).toBeEnabled(), { timeout: ARM_MS + 1000 });
+    await waitFor(() => expect(offered(approve)).toBe(true), { timeout: ARM_MS + 1000 });
     fireEvent.click(approve);
     expect(onDecide).toHaveBeenCalledWith(pending, "approve");
+  });
+
+  // Disabled, the two buttons would leave the tab order: a Tab right after
+  // Review would skip them and land on the next card's Review.
+  it("keeps Approve and Deny in the tab order while they wait, and says so", async () => {
+    const user = userEvent.setup();
+    render(<Reviewable onDecide={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /review/i }));
+
+    const deny = screen.getByRole("button", { name: "Deny" });
+    const approve = screen.getByRole("button", { name: "Approve" });
+    await user.tab();
+    expect(document.activeElement).toBe(deny);
+    for (const button of [deny, approve]) {
+      expect(button).not.toBeDisabled();
+      expect(offered(button)).toBe(false);
+      expect(button).toHaveAccessibleDescription(/available in a moment/i);
+    }
+    expect(screen.getByText(/available in a moment/i)).toBeVisible();
+
+    await waitFor(() => expect(offered(approve)).toBe(true), { timeout: ARM_MS + 1000 });
+    expect(offered(deny)).toBe(true);
+    expect(screen.getByText(/available in a moment/i)).not.toBeVisible();
+    expect(approve).not.toHaveAccessibleDescription(/available in a moment/i);
   });
 
   it("ignores Approve and Deny for a moment on a card drawn open, too", () => {
@@ -885,5 +914,75 @@ describe("opening a card", () => {
   it("does not take focus when it is drawn open without being asked to", () => {
     render(<ApprovalCard approval={pending} busy={false} onDecide={vi.fn()} />);
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+/**
+ * An open card moves when something around it changes: in the corner, a card
+ * below it leaving (expired, or answered in another tab) drops it by one card
+ * height, onto the pixels where that card's Review was; in the thread, a
+ * message or card arriving above pushes it down. Approve and Deny act only
+ * once they have stayed where they are for a moment, so a click aimed at what
+ * was there never lands on them.
+ */
+describe("a card that moves", () => {
+  const pending = approval({ to: "a@b.c" });
+
+  /** Where every element is drawn — the test moves the page by changing it. */
+  function layout() {
+    const at = { top: 0 };
+    const spy = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(() => new DOMRect(0, at.top, 80, 32));
+    return { at, restore: () => spy.mockRestore() };
+  }
+
+  it("ignores Approve and Deny for a moment after they move", async () => {
+    const page = layout();
+    try {
+      const onDecide = vi.fn();
+      render(<ApprovalCard approval={pending} busy={false} onDecide={onDecide} />);
+      const approve = screen.getByRole("button", { name: "Approve" });
+      const deny = screen.getByRole("button", { name: "Deny" });
+      await waitFor(() => expect(offered(approve)).toBe(true), { timeout: ARM_MS + 1000 });
+
+      // The click lands before the next frame has seen the move.
+      page.at.top = 120;
+      fireEvent.click(approve);
+      fireEvent.click(deny);
+      expect(onDecide).not.toHaveBeenCalled();
+      expect(offered(approve)).toBe(false);
+      expect(screen.getByText(/available in a moment/i)).toBeVisible();
+
+      await waitFor(() => expect(offered(approve)).toBe(true), { timeout: ARM_MS + 1000 });
+      fireEvent.click(approve);
+      expect(onDecide).toHaveBeenCalledWith(pending, "approve");
+    } finally {
+      page.restore();
+    }
+  });
+
+  it("waits the full moment from where they stopped, not from when they first moved", async () => {
+    const page = layout();
+    try {
+      const onDecide = vi.fn();
+      render(<ApprovalCard approval={pending} busy={false} onDecide={onDecide} />);
+      const approve = screen.getByRole("button", { name: "Approve" });
+      await waitFor(() => expect(offered(approve)).toBe(true), { timeout: ARM_MS + 1000 });
+
+      // A scroll: moving a little at a time, then resting.
+      page.at.top += 1;
+      await waitFor(() => expect(offered(approve)).toBe(false));
+      const start = performance.now();
+      while (performance.now() - start < ARM_MS * 0.6) {
+        page.at.top += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const stopped = performance.now();
+      await waitFor(() => expect(offered(approve)).toBe(true), { timeout: ARM_MS + 1000 });
+      expect(performance.now() - stopped).toBeGreaterThanOrEqual(ARM_MS - 100);
+    } finally {
+      page.restore();
+    }
   });
 });
