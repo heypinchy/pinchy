@@ -36,6 +36,18 @@ describe("describeOdooError", () => {
     expect(describeOdooError(shapeError)).toMatch(/not a JSON-RPC response/);
   });
 
+  it("reports any other TypeError as an internal error, not as Odoo's answer", () => {
+    const bug = new TypeError("Cannot read properties of undefined (reading 'map')");
+
+    const message = describeOdooError(bug);
+
+    expect(message).not.toMatch(/JSON-RPC/);
+    expect(message).toBe(
+      "Pinchy hit an internal error while talking to Odoo (TypeError: Cannot read properties " +
+        "of undefined (reading 'map')). This is not a problem with the connection's settings."
+    );
+  });
+
   it("collapses a multi-line message to one line and caps its length", () => {
     const message = describeOdooError(new Error(`first\n\nsecond ${"x".repeat(1000)}`));
 

@@ -223,14 +223,15 @@ describe("requestCredentials", () => {
   // bare TypeError("fetch failed") would otherwise reach the model as if Odoo
   // (or the mail or search provider) had failed.
   it.each([
-    ["a connection reset", new TypeError("terminated")],
+    ["a connection reset", new TypeError("terminated"), "request failed"],
     [
       "the request timing out",
       new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+      "TimeoutError",
     ],
   ])(
     "names %s mid-body as an answer that broke off, not a body that is not JSON",
-    async (_label, cause) => {
+    async (_label, cause, named) => {
       const body = new ReadableStream({
         start(controller) {
           controller.enqueue(new TextEncoder().encode('{"credentials":'));
@@ -249,7 +250,7 @@ describe("requestCredentials", () => {
       // No usable answer, exactly as when the request never got there.
       expect(err.status).toBe(0);
       expect(err.message).toBe(
-        `Failed to fetch Odoo credentials for connection conn-1: the answer from Pinchy broke off (${cause.message})`
+        `Failed to fetch Odoo credentials for connection conn-1: the answer from Pinchy broke off (${named})`
       );
     }
   );
@@ -266,11 +267,33 @@ describe("requestCredentials", () => {
     expect(err).toBeInstanceOf(CredentialsFetchError);
     expect(err.status).toBe(0);
     expect(err.message).toBe(
-      "Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy (fetch failed)"
+      "Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy (request failed)"
     );
   });
 
-  it("names undici's cause when the request never reached Pinchy", async () => {
+  // The message goes to the model and into the audit trail, so it carries a
+  // fixed vocabulary only: undici's header check quotes the header value — the
+  // gateway token — and a connect error names the internal address.
+  it("never repeats a transport error's own text", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError(
+          'Headers.append: "Bearer sek\u0000rit-token" is an invalid header value.'
+        );
+      })
+    );
+
+    const err = (await requestCredentials(args).catch((e: unknown) => e)) as CredentialsFetchError;
+    expect(err.status).toBe(0);
+    expect(err.message).not.toContain("sek");
+    expect(err.message).not.toContain("Bearer");
+    expect(err.message).toBe(
+      "Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy (request failed)"
+    );
+  });
+
+  it("names undici's error code, and only the code, when the request never reached Pinchy", async () => {
     const cause = Object.assign(new Error("connect ECONNREFUSED 10.0.0.2:7777"), {
       code: "ECONNREFUSED",
     });
@@ -284,9 +307,9 @@ describe("requestCredentials", () => {
     const err = (await requestCredentials(args).catch((e: unknown) => e)) as CredentialsFetchError;
     expect(err.status).toBe(0);
     expect(err.message).toBe(
-      "Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy " +
-        "(fetch failed (ECONNREFUSED: connect ECONNREFUSED 10.0.0.2:7777))"
+      "Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy (ECONNREFUSED)"
     );
+    expect(err.message).not.toContain("10.0.0.2");
   });
 
   it.each([

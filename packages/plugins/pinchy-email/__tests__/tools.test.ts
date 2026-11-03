@@ -705,7 +705,14 @@ describe("credential fetching", () => {
   });
 
   it("returns error when credential fetch throws network error", async () => {
-    mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+    // undici's shape: a bare "fetch failed" with the errno on `.cause`.
+    mockFetch.mockRejectedValue(
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error("connect ECONNREFUSED 172.18.0.3:7777"), {
+          code: "ECONNREFUSED",
+        }),
+      })
+    );
 
     const tools = createApi();
     const tool = findTool(tools, "email_list", agentId)!;
@@ -713,6 +720,7 @@ describe("credential fetching", () => {
     const result = await tool.execute("call-1", {});
 
     expect(result.content[0].text).toContain("ECONNREFUSED");
+    expect(result.content[0].text).not.toContain("172.18.0.3");
     expect(result.isError).toBe(true);
   });
 

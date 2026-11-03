@@ -24,7 +24,8 @@ export function odooRedirectRefusedMessage(status: number | string): string {
  * the URL does not point at Odoo — keeping status and content type. A
  * JSON-RPC envelope of the wrong shape (`{"error": {}}`) still escapes as a
  * `TypeError` reading `error.data.message`, which says nothing useful, so it
- * gets the plain sentence alone. odoo-node's refused-redirect message names
+ * gets the plain sentence alone; any other `TypeError` is a bug on our side
+ * and says so. odoo-node's refused-redirect message names
  * the library; the admin gets `odooRedirectRefusedMessage` instead, the same
  * sentence listing databases shows.
  *
@@ -35,7 +36,15 @@ export function odooRedirectRefusedMessage(status: number | string): string {
 export function describeOdooError(err: unknown): string {
   const notOdoo = "Check that the URL points at the Odoo server itself.";
   if (err instanceof TypeError) {
-    return `Odoo answered with something that is not a JSON-RPC response. ${notOdoo}`;
+    // odoo-node reads `json.error.data.message`; nothing else reads `message`
+    // off undefined/null on this path. Any other TypeError is our bug.
+    if (/\(reading 'message'\)$/.test(err.message)) {
+      return `Odoo answered with something that is not a JSON-RPC response. ${notOdoo}`;
+    }
+    return (
+      `Pinchy hit an internal error while talking to Odoo (TypeError: ${err.message}). ` +
+      "This is not a problem with the connection's settings."
+    );
   }
   const message = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim();
   const notJsonRpc = /^Response is not JSON-RPC (\(.*\))$/.exec(message);

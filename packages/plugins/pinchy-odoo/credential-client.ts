@@ -244,16 +244,21 @@ export async function requestCredentials(args: {
 }
 
 /**
- * undici collapses every transport failure into `TypeError: fetch failed` and
- * hangs the reason — the errno, DNS or TLS failure — off `.cause`. Name it, so
- * "Pinchy is down" and "Pinchy's name does not resolve" read differently.
+ * What a transport failure is called in a message that reaches the model and
+ * the audit trail — from a fixed vocabulary, never the error's own text:
+ * undici's header check quotes the header value (the gateway token), and a
+ * connect error names the internal address. undici hangs the errno off
+ * `.cause` (`ECONNREFUSED`, `ENOTFOUND`, `UND_ERR_SOCKET`, …); a timeout or
+ * abort is named by its DOMException name; anything else is "request failed".
  */
 function describeTransportError(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
-  const cause = err.cause;
-  if (!(cause instanceof Error)) return err.message;
-  const code = (cause as Error & { code?: unknown }).code;
-  return `${err.message} (${typeof code === "string" ? `${code}: ${cause.message}` : cause.message})`;
+  for (const candidate of [err, err instanceof Error ? err.cause : undefined]) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const { code, name } = candidate as { code?: unknown; name?: unknown };
+    if (typeof code === "string" && /^[A-Z][A-Z0-9_]+$/.test(code)) return code;
+    if (name === "TimeoutError" || name === "AbortError") return name;
+  }
+  return "request failed";
 }
 
 /**
