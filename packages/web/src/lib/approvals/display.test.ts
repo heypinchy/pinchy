@@ -4,14 +4,9 @@ import { resolve } from "node:path";
 import {
   FULL_VIEW_KEYS,
   displayScalar,
-  drawnOf,
   inStoredOrder,
   inStoredOrderPlain,
-  partOf,
-  previewOf,
   readNode,
-  readShown,
-  type Previewed,
 } from "./display";
 
 describe("displayScalar: one rendering per type, so no value passes for another", () => {
