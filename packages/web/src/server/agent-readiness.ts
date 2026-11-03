@@ -26,19 +26,22 @@
 // rejects all of them with `unknown agent id`. CI run 41569393728 hit exactly
 // this: the gate said "ready" and the dispatch kept racing.
 //
-// `dispatchableAgentIds` closes that gap with two independent signals, either
-// of which proves an entry came from the configured list:
+// `dispatchableAgentIds` closes that gap. It accepts an entry if either of two
+// signals says it came from the configured list:
 //   1. `defaultId` is not `main`. With a non-empty configured list OC's default
 //      is a configured agent (Pinchy ids are UUIDs, never `main`) and the
-//      response is already filtered down to configured ids, so every entry is
-//      dispatchable. With an empty list the default is `main`.
+//      response is already filtered down to configured ids. With an empty list
+//      the default is `main`.
 //   2. The entry carries the configured `name` / `identity` (Pinchy always
 //      writes `name`). A disk-only entry has neither.
-// A single signal would tie the gate to one undocumented detail of OC's
-// response; with both, a future OC has to change both before the gate breaks.
-// If it ever does, the gate never reports "ready": a chat then waits out the
-// whole retry budget and fails, and the inbox sweep defers every email. That is
-// loud, not lossless — and is why the two signals are pinned by tests.
+// In OC 2026.7.1 signal 1 alone decides; signal 2 is the backup. The OR is a
+// trade: a future OC must break BOTH signals before the gate stops ever saying
+// "ready", but breaking EITHER one (a non-`main` default for an empty list, or
+// an identity on disk-only entries) brings back a false "ready". That direction
+// is bounded by the retry loop, which trusts a contradicted "ready" only once
+// (chat-dispatch-retry.ts). The other direction is loud, not lossless: a gate
+// that never says "ready" makes a chat wait out the whole retry budget and
+// fail, and makes the inbox sweep defer every email.
 //
 // Polling cost is safe under contention: `agents.list` is a READ. Verified
 // against OC 2026.5.28's method descriptors — `config.apply` carries
@@ -67,17 +70,17 @@ import type { AgentsListResult } from "openclaw-node";
 const OPENCLAW_FALLBACK_AGENT_ID = "main";
 
 /**
- * The ids from an `agents.list` result that OC's `agent` dispatch handler will
- * accept: entries from the configured runtime list, not agent directories OC
- * found on disk. See the file header for why the two differ.
+ * The configured (Pinchy) agent ids from an `agents.list` result — the ones
+ * OC's `agent` dispatch handler accepts — never agent directories OC found on
+ * disk, and never the `main` fallback OC answers with while the configured list
+ * is empty (Pinchy never dispatches to `main`). See the file header for why
+ * `agents.list` and the dispatch handler differ.
  */
 export function dispatchableAgentIds(result: AgentsListResult): string[] {
   const configuredListIsNonEmpty =
     typeof result.defaultId === "string" && result.defaultId !== OPENCLAW_FALLBACK_AGENT_ID;
   return result.agents
-    .filter(
-      (agent) => configuredListIsNonEmpty || Boolean(agent.name) || agent.identity !== undefined
-    )
+    .filter((agent) => configuredListIsNonEmpty || Boolean(agent.name) || agent.identity != null)
     .map((agent) => agent.id);
 }
 

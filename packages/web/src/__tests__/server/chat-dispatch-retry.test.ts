@@ -349,6 +349,33 @@ describe("chatWithDispatchRaceRetry", () => {
       expect(awaitAgentReady).toHaveBeenCalledWith(90000);
     });
 
+    it("keeps trusting the gate after a 'not ready' answer", async () => {
+      // Only a contradicted "ready" ends the trust. A gate that timed out and
+      // later confirms readiness still earns an immediate retry.
+      const successful: ChatChunk[] = [{ type: "done", text: "", runId: "r1" }];
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(got).toEqual(successful);
+      expect(awaitAgentReady).toHaveBeenCalledTimes(2);
+      // Backoff after the "not ready" only; the confirmed retry is immediate.
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([500]);
+    });
+
     it("falls back to capped blind backoff when the gate reports not-ready (unobservable / timeout)", async () => {
       const chat = vi
         .fn()

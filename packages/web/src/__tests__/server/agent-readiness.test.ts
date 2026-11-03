@@ -178,9 +178,10 @@ describe("waitForAgentInRuntime", () => {
 // they derive different id sets from it. While the runtime `agents.list` is
 // EMPTY (e.g. right after a gateway restart, before Pinchy's agents apply),
 // `agents.list` falls back to every directory under `<stateDir>/agents/` —
-// Pinchy's agents included — whereas dispatch accepts only the default `main`.
-// An entry that came from the configured list carries its `name` (Pinchy
-// always writes one); a disk-only entry does not. CI run 41569393728.
+// Pinchy's agents included — whereas dispatch accepts only the default `main`,
+// which Pinchy never dispatches to. A configured entry is recognised by a
+// non-`main` defaultId, or by its `name`/`identity` (Pinchy always writes a
+// name); a disk-only entry has neither. CI run 41569393728.
 describe("dispatchableAgentIds", () => {
   it("keeps entries that come from the configured runtime agents.list", () => {
     expect(
@@ -214,12 +215,13 @@ describe("dispatchableAgentIds", () => {
           { id: "agent-1", name: "Smithers" },
           { id: "agent-2" },
           { id: "agent-3", identity: { emoji: "🦞" } },
+          { id: "agent-4", identity: null },
         ],
       } as unknown as AgentsListResult)
     ).toEqual(["agent-1", "agent-3"]);
   });
 
-  it("drops disk-discovered entries, which the dispatch handler rejects", () => {
+  it("drops disk-discovered entries and the `main` fallback while the configured list is empty", () => {
     // Runtime agents.list empty: OC lists `main` plus the agent directories.
     expect(
       dispatchableAgentIds({
