@@ -126,13 +126,16 @@ export async function officeFormatVersionInUse(version: number): Promise<boolean
 const RECENT_RUN_MS = 24 * 60 * 60 * 1000;
 
 /**
- * The folders a run SUCCEEDED over within the last day — any run: the nightly
- * one, an admin's, or one of ours. Each read its folders whole and converted
- * what it could, so a document still superseded under them is one a run of
- * ours would not convert today either. Read from `kb_index_jobs`, so a restart
- * remembers it, and a run that failed — and read nothing — does not count.
- * A run still pending or running needs no entry here: it holds the
- * instance's one job slot, so nothing is queued until it finishes.
+ * The folders a run SUCCEEDED over within the last day, under the current
+ * conversion rules — any such run: the nightly one, an admin's, or one of
+ * ours. Each read its folders whole and converted what it could, so a document
+ * still superseded under them is one a run of ours would not convert today
+ * either. Read from `kb_index_jobs`, so a restart remembers it. A run that
+ * failed — and read nothing — does not count, and neither does one finished
+ * under earlier rules (`artifact_format_version`, null on a run finished
+ * before it was recorded): the nightly run before an upgrade converted nothing
+ * under the new ones. A run still pending or running needs no entry here: it
+ * holds the instance's one job slot, so nothing is queued until it finishes.
  */
 async function recentlyRunPaths(): Promise<string[]> {
   const jobs = await db
@@ -142,6 +145,7 @@ async function recentlyRunPaths(): Promise<string[]> {
       and(
         eq(kbIndexJobs.orgId, DEFAULT_ORG_ID),
         eq(kbIndexJobs.status, "succeeded"),
+        eq(kbIndexJobs.artifactFormatVersion, OFFICE_ARTIFACT_FORMAT_VERSION),
         gte(kbIndexJobs.finishedAt, new Date(Date.now() - RECENT_RUN_MS))
       )
     );
@@ -150,7 +154,8 @@ async function recentlyRunPaths(): Promise<string[]> {
 
 /**
  * Does anything under `paths` still need converting again — anything outside
- * `alreadyRun`, the folders a run went through within the last day?
+ * `alreadyRun`, the folders a run under the current rules went through within
+ * the last day?
  */
 async function owesReconversion(
   paths: readonly string[],
@@ -176,8 +181,8 @@ async function owesReconversion(
 /**
  * The searching agents whose granted folders hold an Office document still
  * read from an earlier artifact format, oldest first — the agents a reindex
- * would convert them again for. A document in a folder a run went through
- * within the last day does not count.
+ * would convert them again for. A document in a folder a run under the current
+ * rules went through within the last day does not count.
  */
 export async function agentsOwedReconversion(): Promise<string[]> {
   const alreadyRun = await recentlyRunPaths();
@@ -199,8 +204,9 @@ export type ReconversionOutcome = { status: "queued" | "busy" | "skipped" };
  * instance's one job slot is taken, so ask again once it is free. Re-checked
  * here rather than trusted from the worker's list: an agent deleted, stripped
  * of its folders or of `knowledge_search` since has nothing to run, and an
- * agent whose superseded documents all lie in folders a run went through
- * within the last day has nothing a run of its own would change. That second
+ * agent whose superseded documents all lie in folders a run under the current
+ * rules went through within the last day has nothing a run of its own would
+ * change. That second
  * check is not the same as asking the rows again: a document whose conversion
  * ended `infrastructure` (out of memory, a timeout, LibreOffice down) is still
  * superseded after the run, and every other agent granted its folder would

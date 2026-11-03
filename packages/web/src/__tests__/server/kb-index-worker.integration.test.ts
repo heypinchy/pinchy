@@ -1081,6 +1081,69 @@ describe("kb index worker tick", () => {
         expect(squeezed.convertOffice).toHaveBeenCalledTimes(1);
       });
 
+      /** A run over `corpus` that succeeded three hours before boot, under `version`'s rules. */
+      async function ranBeforeBoot(
+        agent: { id: string; name: string },
+        corpus: string,
+        artifactFormatVersion: number | null
+      ) {
+        await db.insert(kbIndexJobs).values({
+          orgId: DEFAULT_ORG_ID,
+          agentId: agent.id,
+          agentName: agent.name,
+          requestedBy: "kb-index-scheduler",
+          paths: [corpus],
+          trigger: "scheduled",
+          status: "succeeded",
+          startedAt: hoursAfterBoot(-4),
+          finishedAt: hoursAfterBoot(-3),
+          artifactFormatVersion,
+        });
+      }
+
+      it.each([
+        ["before its version was recorded", null],
+        ["under the earlier rules", OFFICE_ARTIFACT_FORMAT_VERSION - 1],
+      ])(
+        "converts them at boot although a run %s went through the folder within the day",
+        async (_, artifactFormatVersion) => {
+          // The nightly run before the upgrade converted nothing under the new
+          // rules. Counting it would leave the folder's documents hidden from
+          // search for the rest of the day, with nothing queued to convert them.
+          const artifactDir = join(tmpRoot, "artifacts");
+          const corpus = join(tmpRoot, "corpus");
+          await indexedBeforeTheBump(corpus, artifactDir);
+          const agent = await knowledgeAgent(corpus);
+          await ranBeforeBoot(agent, corpus, artifactFormatVersion);
+
+          await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+
+          expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({
+            status: "succeeded",
+            trigger: "upgrade",
+            paths: [corpus],
+            artifactFormatVersion: OFFICE_ARTIFACT_FORMAT_VERSION,
+          });
+          const [doc] = await db.select().from(kbDocuments);
+          expect(doc.artifactFormatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
+          expect(await documentText()).toContain(CLEAN);
+        }
+      );
+
+      it("leaves a folder alone that a run under the current rules went through before boot, within the day", async () => {
+        const artifactDir = join(tmpRoot, "artifacts");
+        const corpus = join(tmpRoot, "corpus");
+        await indexedBeforeTheBump(corpus, artifactDir);
+        const agent = await knowledgeAgent(corpus);
+        await ranBeforeBoot(agent, corpus, OFFICE_ARTIFACT_FORMAT_VERSION);
+
+        await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+
+        expect((await db.select().from(kbIndexJobs)).map((job) => job.trigger)).toEqual([
+          "scheduled",
+        ]);
+      });
+
       it("runs a folder holding a document that cannot be converted at most once a day, whatever starts the run", async () => {
         // The nightly run and the worker's hourly look both reach the folder.
         // A document that ends `infrastructure` every time stays owed, and

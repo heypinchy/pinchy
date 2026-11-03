@@ -554,6 +554,13 @@
       "when": 1793667814209,
       "tag": "0078_kb_index_job_upgrade_trigger",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1793682372444,
+      "tag": "0079_kb_index_job_artifact_format_version",
+      "breakpoints": true
     }
   ]
 }

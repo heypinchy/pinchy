@@ -1391,6 +1391,13 @@ export const kbIndexJobs = pgTable(
     // only evidence of how far the run got.
     counts: jsonb("counts").$type<IngestResult>(),
     error: text("error"),
+    // The Office artifact format version (OFFICE_ARTIFACT_FORMAT_VERSION) the
+    // run converted under, written when it reaches a terminal state; null on a
+    // job that has not, and on every job finished before this was recorded. A
+    // run under earlier rules converted nothing under the current ones, so it
+    // does not excuse its folders from the run a format bump owes them
+    // (office-format-upgrade.ts).
+    artifactFormatVersion: integer("artifact_format_version"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     startedAt: timestamp("started_at"),
     finishedAt: timestamp("finished_at"),
