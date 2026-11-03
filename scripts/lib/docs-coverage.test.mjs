@@ -19,6 +19,7 @@ import {
   findUndocumentedTools,
   normalizeRoute,
 } from "./docs-coverage.mjs";
+import { openNextUpgradeSection } from "./release-logic.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const APP_API = join(REPO_ROOT, "packages/web/src/app/api");
@@ -315,6 +316,70 @@ test("findMigrationNoteDrift is quiet when the list matches the journal", () => 
   );
 });
 
+// What `pnpm release v1.2.0` leaves behind: the section it froze, and above it
+// the skeleton it opened for the next cycle.
+const AFTER_RELEASE = openNextUpgradeSection(
+  UPGRADING("`0005`–`0007` run automatically on startup.").replace(
+    "%%PINCHY_VERSION%%",
+    "v1.2.0",
+  ),
+  "1.1.0",
+  "1.2.0",
+);
+
+test("findMigrationNoteDrift sends a migration after a release to the open section, not the released one", () => {
+  // The released section is immutable; the only correct home for the next
+  // migration is the section the release opened, which has no migration list
+  // of its own yet.
+  const notes = extractUpgradeMigrationNotes(AFTER_RELEASE);
+  assert.deepEqual(
+    findMigrationNoteDrift(notes, ["0005_b", "0006_c", "0007_d", "0008_e"]),
+    [
+      'migration 0008 (0008_e) runs after "Upgrading from v1.1.0 to v1.2.0", but ' +
+        '"Upgrading from v1.2.0 to %%PINCHY_VERSION%%" has no Database migrations — ' +
+        "add a `### Database migrations` subsection to it in docs/src/content/docs/guides/upgrading.mdx",
+    ],
+  );
+});
+
+test("findMigrationNoteDrift is quiet about an open section with no migrations to list", () => {
+  const notes = extractUpgradeMigrationNotes(AFTER_RELEASE);
+  assert.deepEqual(
+    findMigrationNoteDrift(notes, ["0005_b", "0006_c", "0007_d"]),
+    [],
+  );
+});
+
+test("extractUpgradeMigrationNotes reads a single migration as a range of one", () => {
+  const mdx = AFTER_RELEASE.replace(
+    "## Upgrading from v1.1.0 to v1.2.0",
+    "### Database migrations\n\nThe migration `0008` runs automatically on startup.\n\n" +
+      "- `0008` — one column.\n\n## Upgrading from v1.1.0 to v1.2.0",
+  );
+  const notes = extractUpgradeMigrationNotes(mdx);
+  assert.deepEqual(notes, {
+    section: "Upgrading from v1.2.0 to %%PINCHY_VERSION%%",
+    from: "0008",
+    to: "0008",
+    listed: ["0008"],
+  });
+  assert.deepEqual(
+    findMigrationNoteDrift(notes, ["0006_c", "0007_d", "0008_e"]),
+    [],
+  );
+});
+
+test("extractUpgradeMigrationNotes does not end a section at a heading quoted in a code fence", () => {
+  const mdx = UPGRADING("`0005`–`0007` run automatically on startup.").replace(
+    "### Database migrations",
+    "```markdown\n## Document Access\n```\n\n### Database migrations",
+  );
+  assert.equal(
+    extractUpgradeMigrationNotes(mdx).section,
+    "Upgrading from v1.1.0 to %%PINCHY_VERSION%%",
+  );
+});
+
 test("findUndocumentedTools points at the page the reader would look on", () => {
   const problems = findUndocumentedTools(
     ["knowledge_search"],
@@ -443,10 +508,17 @@ test("the newest upgrade notes list every database migration it runs", () => {
   const notes = extractUpgradeMigrationNotes(
     readFileSync(join(DOCS, "guides/upgrading.mdx"), "utf8"),
   );
-  assert.ok(
-    notes.listed.length > 5,
-    `expected the newest section's full list, found ${notes.listed.length}`,
-  );
+  // The open section of a new cycle may list one migration, or none yet; a
+  // list that is short of the journal is findMigrationNoteDrift's to report.
+  // What must hold is that the reader found a list to compare against.
+  if ("missing" in notes) {
+    assert.match(notes.previous.to, /^\d{4}$/);
+  } else {
+    assert.ok(
+      notes.listed.length > 0,
+      `expected the newest section's list, found ${notes.listed.length}`,
+    );
+  }
   assert.deepEqual(findMigrationNoteDrift(notes, journal), []);
 });
 

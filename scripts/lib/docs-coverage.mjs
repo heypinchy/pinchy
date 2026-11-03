@@ -37,6 +37,8 @@
  * `pnpm test:scripts` runs it in CI's `quality` job. No new CI wiring.
  */
 
+import { maskFencedBlocks, sliceSectionBody } from "./mdx-fences.mjs";
+
 const HTTP_METHODS = [
   "GET",
   "POST",
@@ -364,51 +366,56 @@ const UPGRADING_PAGE = "docs/src/content/docs/guides/upgrading.mdx";
  * The database migrations the newest upgrade section says it runs.
  *
  * `guides/upgrading.mdx` keeps one `## Upgrading from …` section per release,
- * newest first, and the newest one with a `Database migrations` subsection is
- * the one the next migration belongs in. Its first paragraph names the range
- * (`` `0056`–`0078` ``), and each bullet opens with the migrations it
- * describes (`` - `0061`, `0062` — … ``). Only that label counts: a bullet's
- * prose may name another migration in passing — the release branch's own
- * number for the same change, say.
+ * newest first. The newest one is the only place the next migration may go:
+ * every older section describes a release that already shipped and must not
+ * change (AGENTS.md § "A Released Upgrade Section Is Immutable").
+ *
+ * Its `Database migrations` subsection opens with the range in its first
+ * paragraph (`` `0056`–`0078` ``, or a single `` `0079` ``), and each bullet
+ * opens with the migrations it describes (`` - `0061`, `0062` — … ``). Only
+ * that label counts: a bullet's prose may name another migration in passing —
+ * the release branch's own number for the same change, say.
+ *
+ * The section `pnpm release` opens for the next cycle has no such subsection
+ * until a migration needs one. Then the result carries `missing: true` and the
+ * newest older section that does list migrations, so `findMigrationNoteDrift`
+ * can tell whether anything ran after it.
  *
  * Throws on a subsection it cannot read rather than returning a short list:
  * a range rewritten out of shape, or a bullet whose label names no migration,
  * is a list the guard would otherwise stop checking without a word.
  *
  * @param {string} mdx contents of guides/upgrading.mdx
- * @returns {{section: string, from: string, to: string, listed: string[]}}
+ * @returns {{section: string, from: string, to: string, listed: string[]}
+ *   | {section: string, missing: true, previous: {section: string, to: string}}}
  */
 export function extractUpgradeMigrationNotes(mdx) {
-  for (const section of mdx.split(/^## /m).slice(1)) {
-    const heading = section.slice(0, section.indexOf("\n")).trim();
-    if (!heading.startsWith("Upgrading from")) continue;
-    const start = /^#{3,4} Database migrations\s*$/m.exec(section);
-    if (!start) continue;
-    const rest = section.slice(start.index + start[0].length);
-    const next = /^#{2,4} /m.exec(rest);
-    const body = next ? rest.slice(0, next.index) : rest;
-
-    const range = /`(\d{4})`–`(\d{4})`/.exec(body);
-    if (!range) {
-      throw new Error(
-        `${UPGRADING_PAGE}: "${heading}" → Database migrations names no range ` +
-          "like `0056`–`0078` this guard can read",
-      );
+  const mask = maskFencedBlocks(mdx);
+  const sections = [];
+  for (const heading of mask.matchAll(/^## (Upgrading from .*)$/gm)) {
+    const bodyStart = heading.index + heading[0].length;
+    const { body } = sliceSectionBody(mdx, bodyStart, mask);
+    sections.push({
+      heading: heading[1].trim(),
+      body,
+      mask: mask.slice(bodyStart, bodyStart + body.length),
+    });
+  }
+  const [newest, ...older] = sections;
+  if (!newest) {
+    throw new Error(`${UPGRADING_PAGE}: no "## Upgrading from …" section`);
+  }
+  const notes = readMigrationSubsection(newest);
+  if (notes) return notes;
+  for (const section of older) {
+    const previous = readMigrationSubsection(section);
+    if (previous) {
+      return {
+        section: newest.heading,
+        missing: true,
+        previous: { section: previous.section, to: previous.to },
+      };
     }
-    const listed = [];
-    for (const line of body.split("\n")) {
-      if (!line.startsWith("- ")) continue;
-      const label = line.slice(2).split(" — ")[0];
-      const numbers = [...label.matchAll(/`(\d{4})`/g)].map((m) => m[1]);
-      if (numbers.length === 0) {
-        throw new Error(
-          `${UPGRADING_PAGE}: a bullet under "${heading}" → Database migrations ` +
-            `names no migration before its " — ": ${JSON.stringify(line)}`,
-        );
-      }
-      listed.push(...numbers);
-    }
-    return { section: heading, from: range[1], to: range[2], listed };
   }
   throw new Error(
     `${UPGRADING_PAGE}: no "## Upgrading from …" section has a Database migrations subsection`,
@@ -416,17 +423,74 @@ export function extractUpgradeMigrationNotes(mdx) {
 }
 
 /**
+ * @param {{heading: string, body: string, mask: string}} section
+ * @returns {{section: string, from: string, to: string, listed: string[]} | null}
+ */
+function readMigrationSubsection({ heading, body: section, mask }) {
+  const start = /^#{3,4} Database migrations\s*$/m.exec(mask);
+  if (!start) return null;
+  const restStart = start.index + start[0].length;
+  const next = /^#{2,4} /m.exec(mask.slice(restStart));
+  const body = section.slice(
+    restStart,
+    next ? restStart + next.index : section.length,
+  );
+
+  const firstBullet = /^- /m.exec(body);
+  const intro = firstBullet ? body.slice(0, firstBullet.index) : body;
+  const range = /`(\d{4})`(?:–`(\d{4})`)?/.exec(intro);
+  if (!range) {
+    throw new Error(
+      `${UPGRADING_PAGE}: "${heading}" → Database migrations names no range ` +
+        "like `0056`–`0078` (or a single `0079`) this guard can read",
+    );
+  }
+  const listed = [];
+  for (const line of body.split("\n")) {
+    if (!line.startsWith("- ")) continue;
+    const label = line.slice(2).split(" — ")[0];
+    const numbers = [...label.matchAll(/`(\d{4})`/g)].map((m) => m[1]);
+    if (numbers.length === 0) {
+      throw new Error(
+        `${UPGRADING_PAGE}: a bullet under "${heading}" → Database migrations ` +
+          `names no migration before its " — ": ${JSON.stringify(line)}`,
+      );
+    }
+    listed.push(...numbers);
+  }
+  return {
+    section: heading,
+    from: range[1],
+    to: range[2] ?? range[1],
+    listed,
+  };
+}
+
+/**
  * Compares the newest upgrade section's migration list with the migration
  * journal: its range must end at the newest migration, and its bullets must
- * name every migration in the range and nothing outside it.
+ * name every migration in the range and nothing outside it. A newest section
+ * without a list is fine until the journal holds a migration past the previous
+ * section's range; then each such migration is named, pointing at the
+ * subsection to add.
  *
- * @param {{section: string, from: string, to: string, listed: string[]}} notes
+ * @param {ReturnType<typeof extractUpgradeMigrationNotes>} notes
  * @param {string[]} journalTags `entries[].tag` of packages/web/drizzle/meta/_journal.json
  * @returns {string[]} problems (empty = ok)
  */
 export function findMigrationNoteDrift(notes, journalTags) {
   const problems = [];
   const migrations = journalTags.map((tag) => ({ id: tag.slice(0, 4), tag }));
+  if ("missing" in notes) {
+    return migrations
+      .filter((m) => m.id > notes.previous.to)
+      .map(
+        ({ id, tag }) =>
+          `migration ${id} (${tag}) runs after "${notes.previous.section}", but ` +
+          `"${notes.section}" has no Database migrations — add a ` +
+          `\`### Database migrations\` subsection to it in ${UPGRADING_PAGE}`,
+      );
+  }
   const newest = migrations[migrations.length - 1];
   if (newest.id !== notes.to) {
     problems.push(
