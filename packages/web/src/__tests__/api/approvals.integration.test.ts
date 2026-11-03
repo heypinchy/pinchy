@@ -711,6 +711,19 @@ describe("approval routes (integration, real DB)", () => {
       expect(res.approval).toBeDefined();
     });
 
+    // Headings set in mathematical bold (𝐖𝐞 𝐚𝐫𝐞 𝐡𝐢𝐫𝐢𝐧𝐠) are ordinary in a post
+    // drafted for LinkedIn, and lie outside the Basic Multilingual Plane.
+    it("opens a card for a post whose preview is set in mathematical bold", async () => {
+      const bold = [..."we are hiring "].map((c) =>
+        c === " " ? c : String.fromCodePoint(0x1d41a + c.charCodeAt(0) - 97)
+      );
+      const body = `${bold.join("").repeat(20)}\n\nJoin us.`;
+      const res = await (
+        await gateCheck(gateReq(gateBody({ params: { to: "a@b.at", subject: "s", body } })))
+      ).json();
+      expect(res.approval).toBeDefined();
+    });
+
     it("refuses a 250,000-character text, naming the value and the limit, without 'split'", async () => {
       agent = await seedAgent(user.id, ["pinchy_write"]);
       const params = { path: "/data/out/dump.txt", content: "x".repeat(250_000) };

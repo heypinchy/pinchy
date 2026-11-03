@@ -1491,6 +1491,22 @@ describe("summarizeArgs", () => {
       expect(cost("🏳".repeat(flags + 1))).toBe(8 + 1 + (flags + 1) * ASTRAL_COST);
     });
 
+    // Bold or italic letters from the Mathematical Alphanumeric Symbols block
+    // (𝐁𝐢𝐠 𝐧𝐞𝐰𝐬) are how a post drafted for LinkedIn sets a heading. They lie
+    // outside the Basic Multilingual Plane, yet both engines lay them out like
+    // Latin letters, cold and warm: the cost of a character outside it sits
+    // in emoji, flags and the fonts loaded on first use (`ASTRAL_COST`).
+    it("charges a mathematical letter like a letter, so a styled post is not refused", () => {
+      const bold = (text: string) =>
+        [...text]
+          .map((c) => (/[a-z]/.test(c) ? String.fromCodePoint(0x1d41a + c.charCodeAt(0) - 97) : c))
+          .join("");
+      const post = `${bold("big news for our whole team ").repeat(12)}\n\nWe are hiring.`;
+      expect(drawCost(bold("abc"))).toBe(1 + 3);
+      expect(summarizeCall({ body: post }).exceeded).toBeNull();
+      expect(summarizeCall({ targets: ["\u{1D400}".repeat(8_000)] }).exceeded).toBeNull();
+    });
+
     it("counts a previewed text by its preview, however long the text", () => {
       // 80 texts of 6,000 characters, 200 drawn of each.
       const { exceeded } = summarizeCall({

@@ -90,7 +90,8 @@ export const PREVIEW_LEN = 200;
 /**
  * What drawing one collapsed card may cost, over everything it draws: one for
  * every key, value and note, plus one for each of their characters — a
- * character outside the Basic Multilingual Plane ASTRAL_COST. The summary
+ * character outside the Basic Multilingual Plane ASTRAL_COST, but for the
+ * letter-like ones (`LETTER_LIKE_ASTRAL`). The summary
  * counts it (`drawCost`, on what the card draws: a previewed text by its
  * preview, `drawnOf`) and refuses a call past this bound. The card draws the
  * cuts the summary stored and charged (`Previewed`), and decides none of its
@@ -118,11 +119,12 @@ export const PREVIEW_LEN = 200;
  * this way, a unit of the Basic Multilingual Plane costs at most 5–8 µs (an
  * isolate per right-to-left word, a list item per one-letter value); a
  * character outside it up to ~1 ms, 128 times as much: Chromium resolves the
- * font of an emoji, a regional indicator, an ideograph of the CJK extensions
- * or a historic script per run, and the white flag or a regional indicator in
- * a value of its own costs about 0.5 ms for each of the two elements it is
- * drawn in (the value and the copy read to assistive technology). Hence
- * ASTRAL_COST.
+ * font of an emoji or a regional indicator per run, and the white flag or a
+ * regional indicator in a value of its own costs about 0.5 ms for each of the
+ * two elements it is drawn in (the value and the copy read to assistive
+ * technology); the fonts of the CJK extensions and of SignWriting cost as
+ * much on first use. Hence ASTRAL_COST — and the letters outside the plane
+ * that draw like any other (`LETTER_LIKE_ASTRAL`) cost one.
  *
  * Measured at this bound, same machine and load: 16,374 alternating Hebrew
  * letters and digits in two targets drawn whole (8,187 isolates) 88–138 ms;
@@ -147,13 +149,47 @@ export const DRAW_BUDGET = 16_384;
 export const ASTRAL_COST = 128;
 
 /**
+ * The ranges outside the Basic Multilingual Plane that cost one, like a
+ * letter, and not ASTRAL_COST: an allow-list, so a range nobody has measured
+ * keeps the cost that bounds the worst one.
+ *
+ * Measured per character (headless Chromium and WebKit on macOS, a fresh
+ * browser per range), the cost outside the plane is not spread over it.
+ * Warm, Chromium spends ~1.1 ms on a value of one regional indicator or one
+ * pictograph whose default presentation is text (U+1F3F7 🏷, U+1F5B1 🖱 —
+ * 140 code points of U+1F000–U+1FAFF), against 25–50 µs for any other one-
+ * character value; WebKit spends nothing extra on either. Cold, the fonts
+ * loaded on first use cost per character: CJK Extensions B–G 150–430 µs per
+ * distinct ideograph in WebKit and 280–730 µs per value in Chromium,
+ * SignWriting ~2.5 ms either way. Everything else measured — Mathematical
+ * Alphanumeric Symbols, Egyptian, Cuneiform, Linear B, Gothic, Adlam —
+ * draws like the Basic Multilingual Plane, cold and warm: 2–3 µs per
+ * character in one run, 40–60 µs per one-character value.
+ *
+ * Listed is what ordinary work writes: the bold and italic letters of the
+ * Mathematical Alphanumeric Symbols (𝐁𝐢𝐠 𝐧𝐞𝐰𝐬), which a post drafted for
+ * LinkedIn sets its headings in. At ASTRAL_COST, a value whose first 128
+ * characters were such letters was refused.
+ */
+const LETTER_LIKE_ASTRAL: ReadonlyArray<readonly [number, number]> = [[0x1d400, 0x1d7ff]];
+
+/** What one character costs to draw: one, or ASTRAL_COST outside the plane but for LETTER_LIKE_ASTRAL. */
+function charCost(char: string): number {
+  if (char.length === 1) return 1;
+  const code = char.codePointAt(0)!;
+  return LETTER_LIKE_ASTRAL.some(([low, high]) => code >= low && code <= high) ? 1 : ASTRAL_COST;
+}
+
+/**
  * What drawing `text` as one key, value or note costs against DRAW_BUDGET:
  * one for its element, one for each character, ASTRAL_COST for each outside
- * the Basic Multilingual Plane.
+ * the Basic Multilingual Plane but a letter-like one (`LETTER_LIKE_ASTRAL`).
+ * One rule, read by the summary that charges a card and by the card that
+ * checks the cuts it was handed (`readNode`).
  */
 export function drawCost(text: string): number {
   let cost = 1;
-  for (const char of text) cost += char.length > 1 ? ASTRAL_COST : 1;
+  for (const char of text) cost += charCost(char);
   return cost;
 }
 

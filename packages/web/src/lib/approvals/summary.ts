@@ -992,7 +992,8 @@ export function describeRefusal(limit: SummaryLimit): string {
         `Its confirmation card would cost ${count(limit.cost)} to draw, and a card may cost at ` +
           `most ${count(limit.limit)}: every field and value counts one, and each of its ` +
           `characters one more — an emoji or another character outside the Basic Multilingual ` +
-          `Plane ${ASTRAL_COST} — send fewer or shorter values per call.`
+          `Plane ${ASTRAL_COST}, except a mathematical bold or italic letter — send fewer or ` +
+          `shorter values per call.`
       );
     case "too-many-hosts":
       return split(
