@@ -6,16 +6,16 @@ import type { PendingApproval } from "@/lib/approvals/client";
 import {
   FULL_VIEW_KEYS,
   displayScalar,
-  drawnText,
   inStoredOrder,
   modelText,
-  previewEndsInside,
+  partOf,
   previewOf,
-  previewed,
   quoted,
   readNode,
+  readShown,
   secretText,
-  textWindow,
+  type Previewed,
+  type Shown,
   type SummaryNode,
   type SummaryNote,
   type TextWindow,
@@ -52,12 +52,13 @@ function StoredOrder({ text }: { text: string }) {
  * What is drawn, hidden from assistive technology, and what is read in its
  * place. The dashed label that sets an annotation apart from a value, and the
  * element boundary that sets one value apart from the next, are seen, not
- * read: a screen reader got `record reference res.partner #7 "Acme GmbH"` for
- * a real record reference and for a string of those words alike. So the card says it in words, as the prompt does: a string
- * is read `quoted()`, its own `"` escaped, and an annotation as a note that
- * says it is Pinchy's. The read copy can't be selected, so a copied value is
- * still the drawn one, and it is held left to right in one override: left to
- * the bidi algorithm, 8,192 alternating Hebrew letters and digits took
+ * read: without words for them, a screen reader would read `record reference
+ * res.partner #7 "Acme GmbH"` for a real record reference and for a string of
+ * those words alike. So the card says it in words, as the prompt does: a
+ * string is read `quoted()`, its own `"` escaped, and an annotation as a note
+ * that says it is Pinchy's. The read copy can't be selected, so a copied value
+ * is still the drawn one, and it is held left to right in one override: left
+ * to the bidi algorithm, 8,192 alternating Hebrew letters and digits take
  * Chromium another 60 ms to lay out, unseen. The order a screen reader reads
  * in is the stored one either way.
  */
@@ -73,7 +74,7 @@ function Spoken({ drawn, spoken }: { drawn: ReactNode; spoken: string }) {
 }
 
 /**
- * What the card says where a part is cut inside one character (`textWindow`):
+ * What the card says where a part is cut inside one character (`Previewed.inside`):
  * its two pieces draw differently than the whole character, so the approver
  * is told they are pieces.
  */
@@ -86,86 +87,81 @@ function splitNote({ startsInside, endsInside }: TextWindow): string {
 }
 
 /**
- * A string value as the summary stored it: whitespace kept (`pre-wrap`), a
- * string that would read as a literal shown quoted (`displayScalar`), and a
- * long text previewed — unless `full`, for the fields that say who an action
- * reaches or where it lands, which are short and are the decision, or unless
- * the value itself is an email address or a URL, at any key: its host is the
- * decision too, and it sits at the END of an address, exactly where a preview
- * cuts. Those are drawn whole up to WHOLE_MAX. Whether a value is previewed is
- * `previewed`'s answer, the one the summary asks too: wherever it says yes to
- * a URL or an address, the summary has named its host in a note beside it.
+ * A string value as the summary stored it (`Shown`): whitespace kept
+ * (`pre-wrap`), a string that would read as a literal shown quoted
+ * (`displayScalar`). A plain string is drawn whole; a `Previewed` one as its
+ * preview, with "Show full text" revealing the rest one part at a time, and
+ * only one part on the card at once — every cut where the summary made it and
+ * charged for it. The card decides none of them: asked again here, in the
+ * approver's browser, each difference between its URL parser or segmenter and
+ * the server's would be a value drawn larger than the summary charged.
  *
- * "Show full text" reveals the rest one part at a time (`textWindow`), each
- * costing no more to draw than a target drawn whole, and only one part is on
- * the card at once: drawn whole, a 200,000-character value froze the tab for
- * as long as 28 s, and again on every relayout. Every character is a few
- * clicks away, and the card says which of them are shown.
+ * What is read to assistive technology is the same stretch of the value as
+ * what is drawn, quoted (`Spoken`).
  *
- * Everything in `text` is the value's own: the card reads no marker out of it.
- * The gate refuses any call the summary would have to cut, so a value that
- * ends in "… [truncated: …]" typed it, and it is drawn and read as the rest of
- * the value is — inside it, inside its quotes.
+ * Everything in the text is the value's own: the card reads no marker out of
+ * it. The gate refuses any call the summary would have to cut, so a value
+ * that ends in "… [truncated: …]" typed it, and it is drawn and read as the
+ * rest of the value is — inside it, inside its quotes.
  */
-function TextValue({ text, full }: { text: string; full: boolean }) {
-  // Where each part shown since "Show full text" starts, the one on screen
-  // last; `null` while the value is collapsed to its preview.
-  const [starts, setStarts] = useState<number[] | null>(null);
-  const shown = displayScalar(text);
-  if (!previewed(text, full)) {
+function TextValue({ shown }: { shown: Shown }) {
+  if (typeof shown === "string") {
     return (
       <span className="break-words">
         <Spoken
           drawn={
             <span className="whitespace-pre-wrap">
-              <StoredOrder text={shown} />
+              <StoredOrder text={displayScalar(shown)} />
             </span>
           }
-          spoken={quoted(text)}
+          spoken={quoted(shown)}
         />
       </span>
     );
   }
+  return <PreviewedValue node={shown} />;
+}
+
+function PreviewedValue({ node }: { node: Previewed }) {
+  // The part on screen since "Show full text"; `null` while the value is
+  // collapsed to its preview.
+  const [index, setIndex] = useState<number | null>(null);
   const toggle = (
     <Button
       type="button"
       variant="link"
       size="sm"
       className="h-auto p-0 align-baseline text-xs"
-      aria-expanded={starts !== null}
-      onClick={() => setStarts(starts ? null : [0])}
+      aria-expanded={index !== null}
+      onClick={() => setIndex(index === null ? 0 : null)}
     >
-      {starts ? "Show less" : "Show full text"}
+      {index === null ? "Show full text" : "Show less"}
     </Button>
   );
-  if (!starts) {
-    // Cut between two characters as a person reads them (`previewOf`), so the
-    // preview never ends in half a flag or a letter without its accent — and
-    // where it cannot be, the card says so, as it does for a part.
-    const preview = drawnText(text, full);
+  if (index === null) {
+    const preview = previewOf(node);
     return (
       <span className="break-words">
         <Spoken
           drawn={
             <span className="whitespace-pre-wrap">
-              <StoredOrder text={`${preview}…`} />
+              <StoredOrder text={`${preview.drawn}…`} />
             </span>
           }
-          spoken={`${quoted(previewOf(text))}…`}
+          spoken={`${quoted(node.text.slice(0, node.preview))}…`}
         />
         <span className="text-muted-foreground">
           {" "}
-          ({[...shown].length - [...preview].length} more characters hidden
-          {previewEndsInside(shown) && "; the last character shown may go on past the preview"})
+          ({preview.hidden} more characters hidden
+          {preview.endsInside && "; the last character shown may go on past the preview"})
         </span>{" "}
         {toggle}
       </span>
     );
   }
-  const part = textWindow(text, starts[starts.length - 1]);
-  const before = part.start > 0 ? "…" : "";
-  const after = part.end < text.length ? "…" : "";
-  const whole = !before && !after;
+  const part = partOf(node, index);
+  const before = index > 0 ? "…" : "";
+  const after = index < node.parts.length - 1 ? "…" : "";
   const step = (label: string, disabled: boolean, onClick: () => void) => (
     <Button
       type="button"
@@ -186,9 +182,9 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
             <StoredOrder text={`${before}${part.drawn}${after}`} />
           </span>
         }
-        spoken={`${before}${quoted(text.slice(part.start, part.end))}${after}`}
+        spoken={`${before}${quoted(node.text.slice(part.start, part.end))}${after}`}
       />
-      {!whole && (
+      {node.parts.length > 1 && (
         <>
           <span className="text-muted-foreground">
             {" "}
@@ -196,8 +192,8 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
             {part.total.toLocaleString("en-US")}
             {splitNote(part)})
           </span>{" "}
-          {step("Show previous part", !before, () => setStarts(starts.slice(0, -1)))}{" "}
-          {step("Show next part", !after, () => setStarts([...starts, part.end]))}
+          {step("Show previous part", !before, () => setIndex(index - 1))}{" "}
+          {step("Show next part", !after, () => setIndex(index + 1))}
         </>
       )}{" "}
       {toggle}
@@ -208,11 +204,11 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
 /**
  * What Pinchy says about a value, as an element of its own beside it: never
  * part of the value's text run, never inside its preview. Written into the
- * text, `boss@fіrma.at (xn--frma-l9d.at)` read exactly like a value typed with
- * those characters, and past the preview bound the note sat behind "Show full
- * text". A value's text can't draw this element.
- * Nor can it be read as one: it is a `note`, read as Pinchy's, while a value
- * is read in quotes (`Spoken`).
+ * text, `boss@fіrma.at (xn--frma-l9d.at)` would read exactly like a value
+ * typed with those characters, and past the preview bound the note would sit
+ * behind "Show full text". A value's text can't draw this element. Nor can it
+ * be read as one: it is a `note`, read as Pinchy's, while a value is read in
+ * quotes (`Spoken`).
  */
 function Annotation({ kind, children }: { kind: string; children: ReactNode }) {
   return (
@@ -228,7 +224,22 @@ function Annotation({ kind, children }: { kind: string; children: ReactNode }) {
   );
 }
 
-function Note({ note, full }: { note: SummaryNote; full: boolean }) {
+/** What the card says where it cannot read a value: it is not guessed at. */
+function Unreadable() {
+  return (
+    <Annotation kind="unreadable">
+      a value this version of Pinchy cannot show — deny, then ask the agent again
+    </Annotation>
+  );
+}
+
+/** A summary string, or a value said to be one, as the card can show it. */
+function StoredText({ value }: { value: unknown }) {
+  const shown = readShown(value);
+  return shown === null ? <Unreadable /> : <TextValue shown={shown} />;
+}
+
+function Note({ note }: { note: SummaryNote }) {
   switch (note.kind) {
     case "host":
       return (
@@ -239,18 +250,16 @@ function Note({ note, full }: { note: SummaryNote; full: boolean }) {
     case "name":
       return (
         <Annotation kind="name">
-          name <TextValue text={note.name} full={full} />
+          name <TextValue shown={note.name} />
         </Annotation>
       );
-    case "not-a-url":
-      return <Annotation kind="not-a-url">not a valid URL</Annotation>;
     case "not-a-domain":
       return <Annotation kind="not-a-domain">not a valid domain name</Annotation>;
   }
 }
 
-/** A value the summary annotated (`SummaryNode`). */
-function NodeValue({ node, full }: { node: SummaryNode; full: boolean }) {
+/** A value the summary annotated, or previewed (`SummaryNode`). */
+function NodeValue({ node }: { node: SummaryNode }) {
   switch (node["@"]) {
     case "ref":
       return (
@@ -265,12 +274,14 @@ function NodeValue({ node, full }: { node: SummaryNode; full: boolean }) {
       );
     case "secret":
       return <Annotation kind="secret">{secretText(node)}</Annotation>;
+    case "previewed":
+      return <TextValue shown={node} />;
     case "noted":
       return (
         <span>
-          <TextValue text={node.text} full={full} />
+          <TextValue shown={node.text} />
           {node.notes.map((note, index) => (
-            <Note key={index} note={note} full={full} />
+            <Note key={index} note={note} />
           ))}
         </span>
       );
@@ -279,9 +290,9 @@ function NodeValue({ node, full }: { node: SummaryNode; full: boolean }) {
 
 /**
  * An empty list or object, drawn as the prompt prints it — `[]`, `{}` — and
- * read in words. Both used to be "(none)", so `values: []` and `values: {}`
- * were one card; and a string can't draw either, since `"[]"` reads as a
- * literal and is drawn quoted (`displayScalar`).
+ * read in words, so `values: []` and `values: {}` are two cards; and a string
+ * can't draw either, since `"[]"` reads as a literal and is drawn quoted
+ * (`displayScalar`).
  */
 function Empty({ list }: { list: boolean }) {
   return (
@@ -299,31 +310,25 @@ function Empty({ list }: { list: boolean }) {
  * values print as their literal (`false`, `1`, `null`), so a string "false"
  * (shown `"false"`) cannot pass for the boolean.
  */
-function ArgValue({ value, full }: { value: unknown; full: boolean }) {
-  if (typeof value === "string") return <TextValue text={value} full={full} />;
+function ArgValue({ value }: { value: unknown }) {
+  if (typeof value === "string") return <StoredText value={value} />;
   const node = readNode(value);
-  if (node === "unreadable") {
-    return (
-      <Annotation kind="unreadable">
-        a value this version of Pinchy cannot show — deny, then ask the agent again
-      </Annotation>
-    );
-  }
-  if (node) return <NodeValue node={node} full={full} />;
+  if (node === "unreadable") return <Unreadable />;
+  if (node) return <NodeValue node={node} />;
   if (Array.isArray(value)) {
     if (value.length === 0) return <Empty list />;
     return (
       <ul className="list-disc space-y-0.5 pl-4">
         {value.map((item, index) => (
           <li key={index}>
-            <ArgValue value={item} full={full} />
+            <ArgValue value={item} />
           </li>
         ))}
       </ul>
     );
   }
   if (value !== null && typeof value === "object") {
-    return <ArgFields fields={value as Record<string, unknown>} full={full} />;
+    return <ArgFields fields={value as Record<string, unknown>} />;
   }
   return <span className="font-mono">{displayScalar(value)}</span>;
 }
@@ -333,7 +338,7 @@ function ArgValue({ value, full }: { value: unknown; full: boolean }) {
  * first too, but Postgres stores a jsonb object with its keys re-sorted, so
  * that order does not survive the round trip — it is restored here.
  */
-function ArgFields({ fields, full }: { fields: Record<string, unknown>; full: boolean }) {
+function ArgFields({ fields }: { fields: Record<string, unknown> }) {
   const entries = Object.entries(fields).sort(
     ([a], [b]) => Number(FULL_VIEW_KEYS.has(b)) - Number(FULL_VIEW_KEYS.has(a))
   );
@@ -344,7 +349,7 @@ function ArgFields({ fields, full }: { fields: Record<string, unknown>; full: bo
         <div key={key}>
           <dt className="font-mono text-xs text-muted-foreground">{key}</dt>
           <dd className="ml-3">
-            <ArgValue value={value} full={full || FULL_VIEW_KEYS.has(key)} />
+            <ArgValue value={value} />
           </dd>
         </div>
       ))}
@@ -373,7 +378,7 @@ export function ApprovalCard({
       </p>
       {hasArgs ? (
         <div className="mt-2 max-h-64 overflow-y-auto rounded-md bg-muted/50 p-2 text-sm">
-          <ArgFields fields={approval.argsSummary as Record<string, unknown>} full={false} />
+          <ArgFields fields={approval.argsSummary as Record<string, unknown>} />
         </div>
       ) : null}
       <div className="mt-3 flex justify-end gap-2">

@@ -4,7 +4,10 @@
  * chat-channel prompt (`prompt.ts`).
  *
  * Import-free on purpose: the card is a Client Component, and `summary.ts`
- * pulls in `node:url`, which must not reach the client bundle.
+ * pulls in `node:url`, which must not reach the client bundle. And free of
+ * anything whose answer depends on where it runs — a URL parser, a grapheme
+ * segmenter: the summary makes those decisions on the server
+ * (`presentation.ts`) and stores them, and the card only reads them.
  */
 
 /**
@@ -62,102 +65,21 @@ export const TARGET_KEYS: ReadonlySet<string> = new Set([
  */
 export const FULL_VIEW_KEYS: ReadonlySet<string> = new Set([...RECIPIENT_KEYS, ...TARGET_KEYS]);
 
-/** An email address: no whitespace, one `@`, nothing that makes it a list. */
-export const EMAIL_SHAPED = /^[^\s@<>,;/]+@([^\s@<>,;/:?#]+)$/u;
-
-/**
- * A display name and the address in angle brackets after it, as the mail tool
- * accepts one (`parseSingleRecipient` in pinchy-email): quoted, with no `@`,
- * quote, backslash or bracket inside; or bare, with none of the characters
- * that would make it a second mailbox, a comment or a group. No line break
- * either way: a mailbox is one line.
- */
-const MAILBOX = /^(?:"[^"\\@<>[\]\p{Cc}]*"\s?|[^<>"@,;:()[\]\\\p{Cc}]*)<([^<>]*)>$/u;
-
-/**
- * The address a value names when the whole value is one mailbox, read the way
- * the mail tool reads it: trimmed, and taken out of `Name <…>`. `null` for
- * anything else — free text that merely holds an address included.
- */
-export function mailboxAddress(text: string): string | null {
-  const trimmed = text.trim();
-  const named = MAILBOX.exec(trimmed);
-  const address = named ? named[1].trim() : trimmed;
-  return EMAIL_SHAPED.test(address) ? address : null;
-}
-
-/** The schemes the URL parser gives a host to, and the only ones a tool fetches. */
-const SPECIAL_SCHEMES: ReadonlySet<string> = new Set([
-  "ftp:",
-  "file:",
-  "http:",
-  "https:",
-  "ws:",
-  "wss:",
-]);
-/** What the URL parser strips from both ends of its input: C0 controls and space. */
-const URL_PADDING = /^[\u0000-\u0020]+|[\u0000-\u0020]+$/g;
-
-/** A value the URL parser accepts, as it reads it. */
-export interface UrlRead {
-  /** The host the parser resolves — the one a tool connects to. */
-  host: string;
-  /**
-   * Does the text show that host, literally, right after `scheme://`, with no
-   * userinfo in front of it? Only then does a person read the host the URL
-   * reaches.
-   */
-  showsHost: boolean;
-  /** No whitespace once the parser's own padding is stripped: the whole value is the URL. */
-  oneToken: boolean;
-}
-
-/**
- * Reads `text` as a URL with the parser the tools use (`new URL`, WHATWG) —
- * not with a pattern. The parser accepts far more than `scheme://host`: no
- * slashes (`https:fіrma.at`), one, backslashes, percent-encoding, a leading
- * control character it strips, tabs and line breaks it drops. Every one of
- * those reaches a host the text does not show after `//`. `null` for text the
- * parser refuses, and for a scheme without a host (`mailto:`, `urn:`), which
- * no tool fetches.
- */
-export function readUrl(text: string): UrlRead | null {
-  let url: URL;
-  try {
-    url = new URL(text);
-  } catch {
-    return null;
-  }
-  if (!SPECIAL_SCHEMES.has(url.protocol)) return null;
-  const stripped = text.replace(URL_PADDING, "");
-  const shown = `${url.protocol}//${url.hostname}`;
-  // ASCII case only: a non-ASCII letter that lowercases to an ASCII one (the
-  // Kelvin sign) is not the letter it imitates.
-  const head = stripped.slice(0, shown.length).replace(/[A-Z]/g, (c) => c.toLowerCase());
-  const next = stripped.charAt(shown.length);
-  return {
-    host: url.hostname,
-    showsHost:
-      !url.username && !url.password && head === shown && (next === "" || "/?#:".includes(next)),
-    oneToken: !/\s/u.test(stripped),
-  };
-}
-
 /**
  * A target or an address is drawn whole on the card up to this many
  * characters, as shown. It holds every real one: pinchy-files caps a path at
  * 1,024 characters, and the widest a character is shown is an
  * eight-character marker (`⟨U+200D⟩`). Past it, the value is previewed like
- * any long text, with the rest revealed a part at a time. Unbounded, it froze the
- * approver's tab: Chromium lays out a long mixed-direction text in time that
+ * any long text, with the rest revealed a part at a time. Unbounded, it would
+ * freeze the approver's tab: Chromium lays out a long mixed-direction text in time that
  * grows faster than its length — 13 s for one 200,000-character value
  * in Chromium. At this size one value lays out in 38–47 ms in headless
  * Chromium for the worst shape measured, 8,192 alternating Hebrew letters and
  * digits (one isolate per letter), against 6–8 ms for a Hebrew or Arabic path
  * of the same length. This bounds one value, not a card: sixty such targets
  * took about a second. DRAW_BUDGET bounds the card, and this bounds each part
- * "Show full text" reveals of a longer text (`textWindow`). Wherever the card
- * previews an address, the summary names its host beside it (`previewed`),
+ * "Show full text" reveals of a longer text (`shownAs` in `presentation.ts`).
+ * Wherever an address is previewed, the summary names its host beside it,
  * since the host sits at the end, behind the preview.
  */
 export const WHOLE_MAX = 8_192;
@@ -166,49 +88,13 @@ export const WHOLE_MAX = 8_192;
 export const PREVIEW_LEN = 200;
 
 /**
- * Is this value an email address or a URL — the shapes whose host is the
- * decision? The card draws one whole up to WHOLE_MAX: a 217-character address
- * whose `@evil.com` sits past the cut reads as the familiar name its local
- * part spells. Only when the WHOLE value is one:
- * a URL the parser accepts with nothing after it (`readUrl`), or one mailbox
- * (`mailboxAddress`). Free text that merely begins with a URL — "https://…
- * — the new site is live" — is previewed like any text. Tested on the value's
- * own text: the note naming its host is a separate node (`SummaryNode`).
- */
-export function isAddressShaped(text: string): boolean {
-  return readUrl(text)?.oneToken === true || mailboxAddress(text) !== null;
-}
-
-/**
- * Does the card cut this text to a preview, its end behind "Show full text"?
- * `text` is a summary string as stored — markers included — and `full` says
- * whether it sits under a recipient or target key (`FULL_VIEW_KEYS`), at any
- * depth. Counted as drawn: quoted where it would read as a literal
- * (`displayScalar`).
- *
- * The one answer to that question. The card asks it to draw the value; the
- * summary asks it to know when the host a value reaches must be named beside
- * it, since the host sits at the end, where a preview cuts. Each used to ask
- * in its own words — the summary by length alone, the card of the text as
- * drawn — and where they disagreed a URL or address was previewed with no
- * host named: one ending in `⟨4 × U+200B⟩` (a marker with spaces in it, so
- * not one token), one that reads as a JSON string and grows by its quotes,
- * one the URL parser accepts with words after it.
- */
-export function previewed(text: string, full: boolean): boolean {
-  const length = [...displayScalar(text)].length;
-  if (length <= PREVIEW_LEN) return false;
-  return !((full || isAddressShaped(text)) && length <= WHOLE_MAX);
-}
-
-/**
  * What drawing one collapsed card may cost, over everything it draws: one for
  * every key, value and note, plus one for each of their characters — a
  * character outside the Basic Multilingual Plane ASTRAL_COST. The summary
- * counts it (`drawCost`, on what the card draws: a previewed text by the code
- * points any browser's preview of it may draw, `chargedText`) and refuses a
- * call past this bound; the card draws no more than the summary accepted, so
- * the count is one decision.
+ * counts it (`drawCost`, on what the card draws: a previewed text by its
+ * preview, `drawnOf`) and refuses a call past this bound. The card draws the
+ * cuts the summary stored and charged (`Previewed`), and decides none of its
+ * own, so the count is one decision in every browser.
  *
  * It counts the card before "Show full text" is clicked, and only then. Behind
  * that button a text of up to 200,000 characters waits, and drawn whole one of
@@ -216,16 +102,16 @@ export function previewed(text: string, full: boolean): boolean {
  * blocked Chromium for 13.6–28.7 s, again on every relayout. So the button
  * reveals the text a part at a time, by the same count: a part ends where its
  * characters would cost more than WHOLE_MAX, what one target drawn whole may
- * (`textWindow`), and only one part is on the card at once. Measured on the
+ * (`Previewed.parts`), and only one part is on the card at once. Measured on the
  * card itself in headless Chromium (load 10–30): the first two clicks on that
  * text 105–142 ms while the page warms up, every later one 29–41 ms through
  * all 25 parts, and a relayout after the last 2 ms — the card holds one part,
  * so nothing grows. The same card drawing one such target whole: 60 ms.
  *
  * What a character costs the browser varies by orders of magnitude, so a
- * bound on size alone (MAX_TOTAL_CHARS in `summary.ts`) did not bound the
+ * bound on size alone (MAX_TOTAL_CHARS in `summary.ts`) does not bound the
  * time. Measured in headless Chromium on macOS (load 9–16, three runs each),
- * cards the gate accepted before this bound: 500 previews of emoji sequences
+ * cards within every bound but this one: 500 previews of emoji sequences
  * holding the white flag U+1F3F3 (🏳️‍🌈) 2.10–2.14 s; 2,500 short Arabic or
  * Devanagari values 203–243 ms; sixty 4,096-character targets of alternating
  * Hebrew letters and digits, one isolate per letter, about a second. Counted
@@ -272,67 +158,30 @@ export function drawCost(text: string): number {
 }
 
 /**
- * What the collapsed card draws of `text` — a value, or a display name beside
- * one: the whole text as `displayScalar` shows it, or its preview where the
- * card previews it (`previewed`).
+ * A text the card previews, and every cut the card makes in it, as the
+ * summary decided them (`shownAs` in `presentation.ts`) and charged for. The
+ * card reads them and decides nothing: whether a value is a URL, and where a
+ * character ends, have different answers in different browsers, and each
+ * difference was a card that drew more than the summary charged.
+ *
+ * - `text`: the value, rendered like any summary string.
+ * - `preview`: where the preview ends, as a UTF-16 offset into `text`.
+ * - `parts`: where each part "Show full text" reveals ends, in order; the
+ *   last is `text.length`.
+ * - `inside`: the offsets among those at which the cut falls inside one
+ *   character as a person reads it, whose two pieces draw differently than
+ *   the whole character.
  */
-export function drawnText(text: string, full: boolean): string {
-  const shown = displayScalar(text);
-  return previewed(text, full) ? previewOf(shown) : shown;
+export interface Previewed {
+  "@": "previewed";
+  text: string;
+  preview: number;
+  parts: number[];
+  inside: number[];
 }
 
-/**
- * What the summary charges for drawing `text` (`drawCost`): the whole text as
- * `displayScalar` shows it, or, where the card previews it, its first
- * PREVIEW_LEN code points, uncut. Not `drawnText`, which cuts the preview back
- * to where a character begins — and where that is depends on the browser
- * (`characters`). Charged by the server's cut, one character of an emoji and
- * 250 skin tones cost 2 as the preview `é`, while a browser without
- * Intl.Segmenter drew 200 code points of it, at 25,474; a card of fifty such
- * values took 5 s to draw there. Every preview is a prefix of these code
- * points, in every browser, so what this costs bounds what any card draws.
- */
-export function chargedText(text: string, full: boolean): string {
-  const shown = displayScalar(text);
-  return previewed(text, full) ? shown.slice(0, previewLimit(shown)) : shown;
-}
-
-/** The offset after the first PREVIEW_LEN code points of `text`, or its length. */
-function previewLimit(text: string): number {
-  let limit = 0;
-  for (let count = 0; count < PREVIEW_LEN && limit < text.length; count++) {
-    limit += text.codePointAt(limit)! > 0xffff ? 2 : 1;
-  }
-  return limit;
-}
-
-/**
- * The preview of `text`: its first PREVIEW_LEN characters (code points), cut
- * back to a boundary between two characters as a person reads them, and never
- * inside a `⟨…⟩` marker (`partEnd`). Cut by code point, the preview of `Café`
- * ended `Cafe`, and of a flag in a lone regional indicator: a letter or a sign
- * the value does not contain there. Never longer than those code points
- * (`chargedText`); where no boundary is known among them, cut inside a
- * character, which the card then says (`previewEndsInside`).
- */
-export function previewOf(text: string): string {
-  const limit = previewLimit(text);
-  if (limit >= text.length) return text;
-  return text.slice(0, partEnd(text, 0, limit, characters(text), false));
-}
-
-/**
- * Does the preview of `text` (`previewOf`) end where it cannot tell that a
- * character ends — inside one character as a person reads them? Then its last
- * piece draws differently than the whole character, as a part's does
- * (`TextWindow.endsInside`): one character longer than the preview, thousands
- * of accents on one letter, or, in a browser without Intl.Segmenter, a cut
- * among characters it cannot tell apart.
- */
-export function previewEndsInside(text: string): boolean {
-  const end = previewOf(text).length;
-  return end < text.length && !characters(text).startsAt(end);
-}
+/** A summary text as the card shows it: drawn whole when a string, else previewed. */
+export type Shown = string | Previewed;
 
 /**
  * One part of a long text, as the card reveals it after "Show full text".
@@ -341,8 +190,7 @@ export function previewEndsInside(text: string): boolean {
  * closing quote on the first or last part, where the text is drawn quoted);
  * `first`, `last` and `total` count characters as drawn, from 1.
  * `startsInside` and `endsInside` say that the cut before or after the part
- * may fall inside one character as a person reads it (`textWindow`), which
- * then draws differently on either side of it.
+ * falls inside one character (`Previewed.inside`).
  */
 export interface TextWindow {
   start: number;
@@ -360,181 +208,32 @@ function escaped(text: string, literal: boolean): string {
   return literal ? JSON.stringify(text).slice(1, -1) : text;
 }
 
-/** Absent before Firefox 125 (`characters`). */
-const GRAPHEMES =
-  typeof Intl.Segmenter === "function"
-    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
-    : null;
-
-/** Nothing is drawn across these: no letter joins, no mark or flag reaches over one. */
-const SPACING = new Set([" ", "\t", "\n"]);
 /**
- * What belongs to the character in front of it, whatever that is (UAX #29
- * GB9, GB9a): marks, joiners, skin tones, and Thai and Lao AM.
+ * The stretch of `text` from `start` to `end` as the card draws it: escaped
+ * where the text is drawn quoted, with the opening quote where the stretch
+ * starts the text and the closing one where it ends it.
  */
-const CLINGS = /^[\p{M}\p{Grapheme_Extend}\p{Emoji_Modifier}\u200C\u200D\u0E33\u0EB3]/u;
-/** Printable ASCII: nothing after one belongs to it but what CLINGS. */
-const ASCII = /^[\x20-\x7E]$/;
-
-/** Where the characters of a text, as a person reads them, begin. */
-interface Characters {
-  /** Does a character begin at offset `at` (0 < at < length)? */
-  startsAt(at: number): boolean;
-  /** The last offset after `floor` and at or before `at` where one begins, or -1. */
-  lastStart(at: number, floor: number): number;
+function drawnStretch(text: string, start: number, end: number): string {
+  const literal = readsAsLiteral(text);
+  const open = literal && start === 0 ? '"' : "";
+  const close = literal && end === text.length ? '"' : "";
+  return `${open}${escaped(text.slice(start, end), literal)}${close}`;
 }
 
 /**
- * The characters of `text` as a person reads them: its grapheme clusters
- * (UAX #29), read with the WHOLE text — never with a part of it. Whether two
- * regional indicators are one flag depends on how many stand before them in
- * their run, wherever before the part it began.
- *
- * Without Intl.Segmenter (Firefox before 125) a character is known to begin
- * only where the text around it shows it: after or before a line break or
- * tab, and after a printable ASCII character — a space included — unless what
- * follows CLINGS to it. Anywhere else it may or may not.
+ * What the collapsed card draws of a value: the whole text as `displayScalar`
+ * shows it, or its preview, without the `…` after it. The summary charges
+ * exactly this (`drawCost`), and the card draws exactly this.
  */
-function characters(text: string): Characters {
-  if (GRAPHEMES) {
-    const segments = GRAPHEMES.segment(text);
-    return {
-      startsAt: (at) => segments.containing(at)!.index === at,
-      lastStart(at, floor) {
-        const index = segments.containing(at)!.index;
-        return index > floor ? index : -1;
-      },
-    };
-  }
-  const startsAt = (at: number) => {
-    const before = text.charAt(at - 1);
-    const after = text.charAt(at);
-    if (before === "\n" || before === "\t" || after === "\n" || after === "\t") return true;
-    return ASCII.test(before) && !CLINGS.test(text.slice(at, at + 2));
-  };
-  return {
-    startsAt,
-    lastStart(at, floor) {
-      for (; at > floor; at--) if (startsAt(at)) return at;
-      return -1;
-    },
-  };
+export function drawnOf(shown: Shown): string {
+  return typeof shown === "string"
+    ? displayScalar(shown)
+    : drawnStretch(shown.text, 0, shown.preview);
 }
 
-/** Is offset `at` inside a `⟨…⟩` marker? Every `⟨` opens one Pinchy wrote. */
-function insideMarker(text: string, at: number): boolean {
-  const open = text.lastIndexOf("⟨", at - 1);
-  return open !== -1 && text.slice(open, at).indexOf("⟩") === -1;
-}
-
-/** Is the code point at `at` a regional indicator — half of a flag? */
-function isIndicator(text: string, at: number): boolean {
-  const code = text.codePointAt(at)!;
-  return code >= 0x1f1e6 && code <= 0x1f1ff;
-}
-
-/**
- * Where a stretch of `text` from `start` that may reach as far as `limit`
- * (start < limit < text.length) ends. THE RULE: a cut changes nothing about
- * how the text on either side of it is drawn — each side draws exactly the
- * characters the whole text draws there, so what the parts show, one after
- * the other, is what the whole shows, and no part shows a sign the whole does
- * not. Cut between the two regional indicators of a flag, the next part
- * paired every later indicator with the wrong partner: 🇦🇹🇩🇪🇺🇸 read 🇹🇩 (Chad),
- * 🇪🇺 and a lone S. So a stretch ends:
- *
- * 1. with `afterSpace`, after the last space, tab or line break that fits:
- *    nothing is drawn across one — no Arabic letter joins over it, no
- *    conjunct, accent or flag reaches over it. A cut inside a word changes
- *    the forms of the letters at it.
- * 2. Else between two characters as a person reads them (`characters`): a
- *    flag and its two indicators, a letter and its accents, a Hangul syllable
- *    and its jamo, a conjunct, an emoji with its skin tone stay together, as
- *    the whole text has them. Only a word longer than a part is cut here, and
- *    letters that join across the cut, as Arabic ones do, take the forms they
- *    have where a word ends and begins: the same letters, with the card's `…`
- *    beside them saying the word goes on.
- * 3. Else — one character alone costs more than a part, thousands of accents
- *    on one letter — inside it, at the last code point that fits, and never
- *    between the two indicators of a flag: it counts the indicators back to
- *    the start of their run, before `start` too, so the ones after the cut
- *    pair as they do in the whole text. Its two pieces still draw differently
- *    from the whole character, so the card says so (`TextWindow.endsInside`).
- *
- * Never inside a `⟨…⟩` marker. Right-to-left words need nothing here: the
- * card draws one part at a time, each held in stored order on its own
- * (`inStoredOrder`), so no reordering reaches across a cut.
- */
-function partEnd(
-  text: string,
-  start: number,
-  limit: number,
-  chars: Characters,
-  afterSpace: boolean
-): number {
-  if (afterSpace) {
-    for (let at = limit; at > start; at--) {
-      const spaced = SPACING.has(text.charAt(at - 1));
-      if (spaced && chars.startsAt(at) && !insideMarker(text, at)) return at;
-    }
-  }
-  for (let at = chars.lastStart(limit, start); at > start; at = chars.lastStart(at - 1, start)) {
-    if (!insideMarker(text, at)) return at;
-  }
-  let end = limit;
-  const open = text.lastIndexOf("⟨", end - 1);
-  if (open > start && insideMarker(text, end)) end = open;
-  let indicators = 0;
-  while (end - 2 * indicators >= 2 && isIndicator(text, end - 2 * indicators - 2)) indicators++;
-  return indicators % 2 === 1 && end - 2 > start ? end - 2 : end;
-}
-
-/**
- * The part of `text` the card draws from offset `start` (the end of the part
- * before, or 0): as much as one target drawn whole may cost, its characters
- * at most WHOLE_MAX (`drawCost`). Drawn whole, one 200,000-character value of
- * alternating Hebrew letters and digits blocked Chromium for 13–28 s, and
- * again on every relayout; the preview was within DRAW_BUDGET, the text behind
- * "Show full text" was not.
- *
- * Where a part ends is `partEnd`: after a space where one fits, else between
- * two characters as a person reads them, and inside one only where it alone
- * costs more than a part — which the part then says. Never inside a `⟨…⟩`
- * marker, nor inside an escape of a text drawn quoted, which is escaped per
- * code point. The parts, drawn one after the other, are `displayScalar(text)`.
- */
-export function textWindow(text: string, start: number): TextWindow {
-  const literal = displayScalar(text) !== text;
-  let budget = WHOLE_MAX - (literal ? 2 : 0);
-  let end = start;
-  while (end < text.length) {
-    const width = text.codePointAt(end)! > 0xffff ? 2 : 1;
-    const cost = drawCost(escaped(text.slice(end, end + width), literal)) - 1;
-    if (cost > budget && end > start) break;
-    budget -= cost;
-    end += width;
-  }
-  const chars = characters(text);
-  if (end < text.length) end = partEnd(text, start, end, chars, true);
-  const drawn = `${literal && start === 0 ? '"' : ""}${escaped(text.slice(start, end), literal)}${
-    literal && end === text.length ? '"' : ""
-  }`;
-  // Drawn quoted, what comes before a later part is the opening quote and the
-  // text before it escaped: its JSON string without the closing quote.
-  const before =
-    literal && start > 0
-      ? codePoints(JSON.stringify(text.slice(0, start))) - 1
-      : codePoints(text.slice(0, start));
-  return {
-    start,
-    end,
-    drawn,
-    first: before + 1,
-    last: before + codePoints(drawn),
-    total: codePoints(displayScalar(text)),
-    startsInside: start > 0 && !chars.startsAt(start),
-    endsInside: end < text.length && !chars.startsAt(end),
-  };
+/** The whole text of a value, whether it is drawn whole or previewed. */
+export function textOf(shown: Shown): string {
+  return typeof shown === "string" ? shown : shown.text;
 }
 
 /** How many characters (code points) `text` has, without spreading it into an array. */
@@ -544,17 +243,46 @@ function codePoints(text: string): number {
   return count;
 }
 
+/** The preview of a previewed text as drawn, how many characters it hides, and whether it ends inside one. */
+export function previewOf(node: Previewed): { drawn: string; hidden: number; endsInside: boolean } {
+  const drawn = drawnOf(node);
+  return {
+    drawn,
+    hidden: codePoints(displayScalar(node.text)) - codePoints(drawn),
+    endsInside: node.inside.includes(node.preview),
+  };
+}
+
+/** Part `index` of a previewed text, as the summary cut it (`Previewed.parts`). */
+export function partOf(node: Previewed, index: number): TextWindow {
+  const { text, parts, inside } = node;
+  const start = index === 0 ? 0 : parts[index - 1];
+  const end = parts[index];
+  const drawn = drawnStretch(text, start, end);
+  // Drawn quoted, what comes before a later part is the opening quote and the
+  // text before it escaped: its JSON string without the closing quote.
+  const before =
+    readsAsLiteral(text) && start > 0
+      ? codePoints(JSON.stringify(text.slice(0, start))) - 1
+      : codePoints(text.slice(0, start));
+  return {
+    start,
+    end,
+    drawn,
+    first: before + 1,
+    last: before + codePoints(drawn),
+    total: codePoints(displayScalar(text)),
+    startsInside: start > 0 && inside.includes(start),
+    endsInside: end < text.length && inside.includes(end),
+  };
+}
+
 /**
  * What Pinchy says ABOUT a value, beside it: the host an address or URL really
  * reaches, that a domain does not parse, or the display name of a recipient.
- * `not-a-url` is no longer written — a value the URL parser refuses is not a
- * URL, and no tool fetches it — but summaries stored before still carry it.
  */
 export type SummaryNote =
-  | { kind: "host"; host: string }
-  | { kind: "not-a-url" }
-  | { kind: "not-a-domain" }
-  | { kind: "name"; name: string };
+  { kind: "host"; host: string } | { kind: "not-a-domain" } | { kind: "name"; name: Shown };
 
 /**
  * A summary value that carries an annotation. Written INTO the value's text —
@@ -568,19 +296,21 @@ export type SummaryNote =
  *   and nothing of its text is shown. `label` is cut at 200 characters,
  *   `labelCut` says how many more there were.
  * - `secret`: text under a secret-like key, hidden; only its length is shown.
- * - `noted`: a string value (`text`, rendered like any other) with what
- *   Pinchy says about it (`notes`).
+ * - `noted`: a string value (`text`, rendered like any other, and drawn whole
+ *   or previewed as a `Shown`) with what Pinchy says about it (`notes`).
+ * - `previewed`: a string value the card previews (`Previewed`).
  *
  * A node is an object with the key `@`, which no summary object can have: a
  * key is labelled bare only when it is `[A-Za-z0-9_.-]+`, and quoted
  * otherwise. A plain string in a summary is always the value's own text and
- * nothing else. Summaries stored before nodes existed hold none, and read as
- * they always did.
+ * nothing else, drawn whole. Summaries stored before nodes existed hold none,
+ * and read as they always did.
  */
 export type SummaryNode =
   | { "@": "ref"; model: string; id: number; label: string; labelCut: number }
   | { "@": "secret"; length: number }
-  | { "@": "noted"; text: string; notes: SummaryNote[] };
+  | { "@": "noted"; text: Shown; notes: SummaryNote[] }
+  | Previewed;
 
 /** The key that marks a summary node. */
 export const NODE_KEY = "@";
@@ -589,8 +319,45 @@ function isNote(note: unknown): note is SummaryNote {
   if (!note || typeof note !== "object") return false;
   const { kind, host, name } = note as Record<string, unknown>;
   if (kind === "host") return typeof host === "string";
-  if (kind === "name") return typeof name === "string";
-  return kind === "not-a-url" || kind === "not-a-domain";
+  if (kind === "name") return readShown(name) !== null;
+  return kind === "not-a-domain";
+}
+
+/** Is `at` an offset strictly inside `text`, and not between the halves of a surrogate pair? */
+function isCut(text: string, at: unknown): at is number {
+  if (!Number.isSafeInteger(at)) return false;
+  const offset = at as number;
+  if (offset <= 0 || offset >= text.length) return false;
+  const low = text.charCodeAt(offset);
+  const high = text.charCodeAt(offset - 1);
+  return !(low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff);
+}
+
+/** Does `node` hold every cut of a `Previewed`, each one inside its text and in order? */
+function isPreviewed(node: Record<string, unknown>): boolean {
+  const { text, preview, parts, inside } = node;
+  if (typeof text !== "string" || !Array.isArray(parts) || !Array.isArray(inside)) return false;
+  const cuts = parts.slice(0, -1);
+  return (
+    isCut(text, preview) &&
+    parts.at(-1) === text.length &&
+    cuts.every((at, index) => isCut(text, at) && (index === 0 || at > cuts[index - 1])) &&
+    inside.every((at) => at === preview || cuts.includes(at))
+  );
+}
+
+/**
+ * A summary text as the card can show it, or `null` where it cannot: a plain
+ * string is drawn whole, and the summary stores none longer than WHOLE_MAX as
+ * drawn — every longer one is `Previewed` — so a longer one, or a previewed
+ * node missing a cut, is not guessed at.
+ */
+export function readShown(value: unknown): Shown | null {
+  if (typeof value === "string") {
+    return codePoints(displayScalar(value)) <= WHOLE_MAX ? value : null;
+  }
+  const node = readNode(value);
+  return node !== "unreadable" && node?.[NODE_KEY] === "previewed" ? node : null;
 }
 
 /**
@@ -612,8 +379,10 @@ export function readNode(value: unknown): SummaryNode | "unreadable" | null {
         : "unreadable";
     case "secret":
       return Number.isSafeInteger(node.length) ? (node as SummaryNode) : "unreadable";
+    case "previewed":
+      return isPreviewed(node) ? (node as unknown as Previewed) : "unreadable";
     case "noted":
-      return typeof node.text === "string" &&
+      return readShown(node.text) !== null &&
         Array.isArray(node.notes) &&
         node.notes.length > 0 &&
         node.notes.every(isNote)
@@ -636,9 +405,7 @@ export function noteText(note: SummaryNote): string {
     case "host":
       return `host: ${quoted(note.host)}`;
     case "name":
-      return `name: ${quoted(note.name)}`;
-    case "not-a-url":
-      return "not a valid URL";
+      return `name: ${quoted(textOf(note.name))}`;
     case "not-a-domain":
       return "not a valid domain name";
   }

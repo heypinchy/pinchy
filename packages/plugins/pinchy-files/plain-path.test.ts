@@ -151,7 +151,7 @@ describe("assertPlainPath", () => {
     ok(value);
   });
 
-  // The path rule no longer asks whether a selector sits inside an emoji: the
+  // The path rule does not ask whether a selector sits inside an emoji: the
   // server's Unicode data cannot say what the approver's font draws.
   it("accepts a selector inside an emoji and outside one alike", () => {
     ok("/data/notes/⚠️ offen.md");

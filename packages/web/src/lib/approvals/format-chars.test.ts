@@ -30,8 +30,8 @@ const formatChars = (text: string) =>
  * to one of these draws something kept finding scripts and fonts where it draws
  * nothing (Tamil க்‌ம, Thai กฺ‍ม, Myanmar က်‍မ, Sinhala ක්‍ම, Gurmukhi ਕ੍‍ਮ,
  * Malayalam ക്‌മ, even Devanagari क्‍म in Devanagari MT, each pixel-identical to
- * the same name without it). The card no longer asks: next to every one of them
- * the joiner is marked.
+ * the same name without it). So the card does not ask: next to every one of
+ * them the joiner is marked.
  */
 const UNICODE_16_VIRAMAS = [
   0x94d, 0x9cd, 0xa4d, 0xacd, 0xb4d, 0xbcd, 0xc4d, 0xccd, 0xd3b, 0xd3c, 0xd4d, 0xdca, 0xe3a, 0xeba,
@@ -92,8 +92,9 @@ describe("the card's marking: mid-word probes", () => {
   });
 });
 
-// Cases the old per-script rule showed raw. None of them is shown raw any more.
-describe("the card's marking: joiners the old per-script rule showed raw", () => {
+// Cases a rule that asked script by script whether a joiner draws something
+// would show raw. Every one of them is marked.
+describe("the card's marking: joiners a per-script rule would show raw", () => {
   it.each([
     ["ZWNJ after a virama", "क्\u200Cष"],
     ["ZWJ after a virama", "ශ\u0DCA\u200Dරී"],

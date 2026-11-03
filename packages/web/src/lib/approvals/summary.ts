@@ -58,8 +58,8 @@
  *   halves of a surrogate pair.
  * - Keys are never merged. A key that is not a plain identifier is shown
  *   quoted and escaped, so `"to "` (trailing space) is its own row next to
- *   `to` — trimming it into `to` once let a second, look-alike key overwrite
- *   the row the tool actually reads. Labels are unique by construction.
+ *   `to` — trimmed into `to`, a second, look-alike key would overwrite the
+ *   row the tool actually reads. Labels are unique by construction.
  * - Arrays and objects keep their actual contents, to a bounded depth, width
  *   and total size. Anything cut off is replaced by an explicit "… not shown"
  *   marker, so a reader can tell that something was left out.
@@ -79,9 +79,9 @@
  *   the same way a `to` does. What is a URL is decided by the WHATWG parser
  *   the tools use, not by a pattern, and its host is the one that parser
  *   resolves — what the tool connects to — named whenever the text does not
- *   show exactly that host right after `scheme://`. Wherever the card
- *   previews such a value (`previewed`, the card's own answer), its host is
- *   named whatever it looks like, since a preview cuts the end where the host
+ *   show exactly that host right after `scheme://`. Wherever such a value is
+ *   previewed (`shownAs`, the decision the card draws), its host is named
+ *   whatever it looks like, since a preview cuts the end where the host
  *   sits. Recipient and target keys
  *   (`FULL_VIEW_KEYS`) are rendered before anything else, so no filler in front of them can starve
  *   them of the size budget or push them past MAX_KEYS.
@@ -107,19 +107,18 @@ import {
   DRAW_BUDGET,
   FULL_VIEW_KEYS,
   TARGET_KEYS,
-  chargedText,
   drawCost,
-  mailboxAddress,
+  drawnOf,
   modelText,
   noteText,
-  previewed,
   quoted,
-  readUrl,
   refText,
   secretText,
+  type Shown,
   type SummaryNode,
   type SummaryNote,
 } from "./display";
+import { mailboxAddress, readUrl, shownAs } from "./presentation";
 
 const SECRET_KEY = /(token|secret|password|passwd|api[-_]?key|authorization|cookie|credential)/i;
 /** A record id or a list of them, whatever the rest of the key says. */
@@ -148,9 +147,9 @@ const RECIPIENT_KEY = /^(to|cc|bcc)$/i;
  * back without their summary.
  *
  * Drawing: what the collapsed card draws — every key, value and note, a
- * previewed text by the code points its preview may draw in any browser
- * (`chargedText`) — is counted against DRAW_BUDGET (`display.ts`), which
- * bounds the time the approver's browser takes to lay the card out.
+ * previewed text by its preview (`drawnOf`, the cut `shownAs` made and the
+ * card draws) — is counted against DRAW_BUDGET (`display.ts`), which bounds
+ * the time the approver's browser takes to lay the card out.
  */
 /** Longest string stored whole, in characters as sent (code points): a
  * report of ~60 pages, or a long mail body with room to spare. */
@@ -347,10 +346,9 @@ function codePoint(char: string): string {
 /**
  * A run of hidden characters, every one of them named. Only a stretch of ONE
  * repeated character is counted (`⟨180 × U+2800⟩`); a mixed run names each
- * character in order. It used to collapse into one marker naming its first
- * three, so `a` + four joiners and `a` + three joiners and a non-joiner were
- * one card: a marker that drops a character
- * drops the difference between two values.
+ * character in order. A marker naming only the first three would draw `a` +
+ * four joiners and `a` + three joiners and a non-joiner as one card: a marker
+ * that drops a character drops the difference between two values.
  */
 function escapeRun(run: string[]): string {
   let out = "";
@@ -492,32 +490,26 @@ function describeRef(record: RefRecord, budget: Budget): SummaryNode {
   return node;
 }
 
-/** What a note is charged besides its fixed wording (`chargedText`). */
-function noteDrawn(note: SummaryNote, full: boolean): string {
+/** What a note is charged besides its fixed wording (`drawnOf`). */
+function noteDrawn(note: SummaryNote): string {
   if (note.kind === "host") return note.host;
-  if (note.kind === "name") return chargedText(note.name, full);
+  if (note.kind === "name") return drawnOf(note.name);
   return "";
 }
 
 /**
- * A string with what Pinchy says about it, or the plain string when there is
- * nothing to say. The notes are charged as the prompt prints them, and the
- * text and its notes by what the card draws of them (`full`: as the card
- * draws a value under a recipient or target key).
+ * A text as the card shows it (`shownAs`), with what Pinchy says about it, or
+ * alone when there is nothing to say. The notes are charged as the prompt
+ * prints them, and the text and its notes by what the card draws of them.
  */
-function noted(
-  text: string,
-  notes: SummaryNote[],
-  budget: Budget,
-  full: boolean
-): string | SummaryNode {
-  budget.drawn += drawCost(chargedText(text, full));
-  if (notes.length === 0) return text;
+function noted(shown: Shown, notes: SummaryNote[], budget: Budget): Shown | SummaryNode {
+  budget.drawn += drawCost(drawnOf(shown));
+  if (notes.length === 0) return shown;
   for (const note of notes) {
     budget.chars -= noteText(note).length + 3;
-    budget.drawn += drawCost(noteDrawn(note, full));
+    budget.drawn += drawCost(noteDrawn(note));
   }
-  return { "@": "noted", text, notes };
+  return { "@": "noted", text: shown, notes };
 }
 
 /**
@@ -593,22 +585,16 @@ function reachOf(value: string): Reach | null {
 
 /**
  * The notes beside a value that reaches somewhere. The host is named whenever
- * the text does not show it plainly — and whenever the card previews the
- * value (`previewed`), since the host sits at its end, behind "Show full
- * text": an ASCII host reads as it resolves, so `…@firma.at.<pad>.evil.com`
- * and `…@firma.at.<pad>.evil.org` collapsed to one card. `shown` is the value
- * as stored, what the card draws. Every host reached is recorded for the
- * prompt.
+ * the text does not show it plainly — and whenever the value is previewed
+ * (`shown` is a `Previewed`), since the host sits at its end, behind "Show
+ * full text": an ASCII host reads as it resolves, so without the note
+ * `…@firma.at.<pad>.evil.com` and `…@firma.at.<pad>.evil.org` would draw one
+ * card. Every host reached is recorded for the prompt.
  */
-function reachNotes(
-  reach: Reach | null,
-  shown: string,
-  place: Place,
-  budget: Budget
-): SummaryNote[] {
+function reachNotes(reach: Reach | null, shown: Shown, budget: Budget): SummaryNote[] {
   if (!reach) return [];
   if (reach.note.kind === "host") budget.hosts.push(reach.note.host);
-  return !reach.plain || previewed(shown, place.full) ? [reach.note] : [];
+  return !reach.plain || typeof shown !== "string" ? [reach.note] : [];
 }
 
 /** Length in code points — characters as a person counts them. */
@@ -643,7 +629,7 @@ function summarizeString(
   budget: Budget,
   path: string,
   place: Place
-): string | SummaryNode {
+): Shown | SummaryNode {
   if (isCanonicalRef(value)) {
     // An opaque ref is 200+ characters of base64 that mean nothing to a reader.
     // What it points AT is what matters — which record, not just which kind:
@@ -667,13 +653,8 @@ function summarizeString(
     const head = renderText(headCodePoints(value, MAX_STRING_LEN), place.target);
     return bounded(head, budget) + truncationMarker(length - MAX_STRING_LEN);
   }
-  const shown = renderText(value, place.target);
-  return noted(
-    bounded(shown, budget),
-    reachNotes(reachOf(value), shown, place, budget),
-    budget,
-    place.full
-  );
+  const shown = shownAs(bounded(renderText(value, place.target), budget), place.full);
+  return noted(shown, reachNotes(reachOf(value), shown, budget), budget);
 }
 
 /**
@@ -716,19 +697,19 @@ const ENTRY_PADDING = /^[ \t\r\n]+|[ \t\r\n]+$/g;
  * preview, and written into the text, `(name: "X")` read like an address that
  * merely carried those characters.
  */
-function describeRecipient(entry: string, budget: Budget, place: Place): string | SummaryNode {
+function describeRecipient(entry: string, budget: Budget, place: Place): Shown | SummaryNode {
   const named = /^([^<>]*)<([^<>]*)>$/.exec(entry);
   const address = named ? named[2].replace(ENTRY_PADDING, "") : entry;
   const at = address.lastIndexOf("@");
-  const shown = renderText(address);
+  const shown = shownAs(bounded(renderText(address), budget), place.full);
   const reach = at < 0 ? null : domainReach(address.slice(at + 1));
-  const notes = reachNotes(reach, shown, place, budget);
+  const notes = reachNotes(reach, shown, budget);
   let name = named ? named[1].replace(ENTRY_PADDING, "") : "";
   if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) {
     name = name.slice(1, -1).replace(/\\([\s\S])/gu, "$1");
   }
-  if (name) notes.push({ kind: "name", name: renderText(name) });
-  return noted(bounded(shown, budget), notes, budget, place.full);
+  if (name) notes.push({ kind: "name", name: shownAs(renderText(name), place.full) });
+  return noted(shown, notes, budget);
 }
 
 function summarizeRecipients(

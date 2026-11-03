@@ -410,11 +410,10 @@ describe("buildApprovalPrompt", () => {
       );
     });
 
-    // Naming the hosts that fit and eliding the rest left out whichever came
-    // last — and the order is the call's: decoys under `target` and
-    // `destination` ahead of `url` took the room, and the host the fetch
-    // reached went unnamed. A prompt that cannot name every host is not
-    // offered at all.
+    // Naming only the hosts that fit would leave out whichever came last —
+    // and the order is the call's: decoys under `target` and `destination`
+    // ahead of `url` would take the room, and the host the fetch reaches would
+    // go unnamed. A prompt that cannot name every host is not offered at all.
     it("refuses a call whose hosts do not all fit, rather than leave one out", () => {
       const hosts = Array.from({ length: 6 }, (_, i) => `${String(i).repeat(60)}.example`);
       expect(buildApprovalPrompt("email_send", { to: hosts.map((host) => `x@${host}`) })).toEqual({

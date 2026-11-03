@@ -13,6 +13,7 @@ import {
   readNode,
   refText,
   secretText,
+  textOf,
 } from "@/lib/approvals/display";
 
 /**
@@ -73,8 +74,12 @@ function inline(value: unknown): string {
   if (node?.["@"] === "ref") return refText(node);
   if (node?.["@"] === "secret") return secretText(node);
   if (node?.["@"] === "noted") {
-    return [quoted(node.text), ...node.notes.map((note) => `(${noteText(note)})`)].join(" ");
+    return [quoted(textOf(node.text)), ...node.notes.map((note) => `(${noteText(note)})`)].join(
+      " "
+    );
   }
+  // The prompt prints every text whole; only the card previews one.
+  if (node?.["@"] === "previewed") return quoted(node.text);
   if (Array.isArray(value)) return `[${value.map(inline).join(", ")}]`;
   if (value && typeof value === "object") {
     return `{${Object.entries(value)
@@ -167,10 +172,10 @@ export function buildApprovalPrompt(
   // Cut, it can end anywhere — inside the address itself, past
   // `https://www.firma.at.` and before the domain it reaches, or in a long
   // text before it. So it names every host the call reaches first, and only
-  // the arguments after them are cut. Every host, or no prompt: naming the
-  // hosts that fit and eliding the rest left out whichever came last, and the
-  // order is the call's to choose — decoys under `target` and `destination`
-  // ahead of a fetch's `url` took the room, and the host it reached went
+  // the arguments after them are cut. Every host, or no prompt: naming only
+  // the hosts that fit would leave out whichever came last, and the order is
+  // the call's to choose — decoys under `target` and `destination` ahead of a
+  // fetch's `url` would take the room, and the host it reaches would go
   // unnamed. So a call whose hosts do not all fit is refused, like one too
   // large for the card (`describeRefusal`): split, each part names its own.
   const reaches = reachesClause(hosts);

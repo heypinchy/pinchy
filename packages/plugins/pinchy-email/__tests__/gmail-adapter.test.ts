@@ -1137,7 +1137,8 @@ describe("GmailAdapter", () => {
     });
 
     // RFC 2047 §2: a header line carrying encoded-words is at most 76
-    // characters. A long non-ASCII name used to be one line of several words.
+    // characters, so a long non-ASCII name is folded rather than written as
+    // one line of several words.
     it("folds a long encoded name so no header line exceeds 76 characters", async () => {
       mockSend.mockResolvedValue({ data: { id: "s1" } });
       const name = "\u5C71\u7530\u592A\u90CE".repeat(16); // 64 CJK code points

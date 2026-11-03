@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { domainToASCII } from "node:url";
 import { describeRefusal, markScripts, summarizeArgs, summarizeCall } from "./summary";
 import { makeRefResolver } from "./call-models";
@@ -7,9 +7,12 @@ import {
   DRAW_BUDGET,
   WHOLE_MAX,
   drawCost,
-  drawnText,
+  drawnOf,
   inStoredOrder,
   readNode,
+  readShown,
+  textOf,
+  type Shown,
 } from "./display";
 // The pinchy-odoo encoder, so the ref rendering is tested against real refs —
 // see call-models.test.ts for why this crosses the package boundary.
@@ -41,6 +44,20 @@ const hosted = (text: string, host: string) => ({
   text,
   notes: [{ kind: "host", host }],
 });
+/** The text of a summary value, whether the card draws it whole or previews it. */
+const textIn = (value: unknown): string => textOf(value as Shown);
+
+/** A summary with every previewed text replaced by the text itself: the call as sent. */
+function plain(value: unknown): unknown {
+  const node = readNode(value);
+  if (node !== "unreadable" && node?.["@"] === "previewed") return node.text;
+  if (Array.isArray(value)) return value.map(plain);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, plain(v)]));
+  }
+  return value;
+}
+
 beforeAll(() => {
   process.env.PINCHY_REF_TOKEN_KEY = REF_KEY;
   _resetKeyCacheForTest();
@@ -111,7 +128,9 @@ describe("summarizeArgs", () => {
 
   it("keeps a long string whole up to the stored limit, so the card can offer the full text", () => {
     const body = "a".repeat(500);
-    expect(summarizeArgs({ body })).toEqual({ body });
+    expect(summarizeArgs({ body })).toEqual({
+      body: expect.objectContaining({ "@": "previewed", text: body }),
+    });
   });
 
   // The stored limit is 200,000 characters of the text as sent, so an
@@ -291,7 +310,7 @@ describe("summarizeArgs", () => {
     // ref would be the very string an agent could send instead, which
     // pinchy-odoo resolves by NAME. The ref is a node; the text stays the
     // plain string it is.
-    it("stores a ref as a node, and the text it used to render as as text", () => {
+    it("stores a ref as a node, and the text that spells it out as text", () => {
       const out = summarizeArgs(
         {
           partner_id: ref("res.partner", 7, "Acme GmbH"),
@@ -416,9 +435,9 @@ describe("summarizeArgs", () => {
       const out = summarizeArgs(
         { to: "kunde@example.com", body },
         { refRecord: makeRefResolver(REF_KEY) }
-      ) as { body: string };
-      expect(out.body).not.toContain("record reference");
-      expect(out.body).toContain("AT00 1234 5678 9012");
+      );
+      expect(textIn(out.body)).not.toContain("record reference");
+      expect(textIn(out.body)).toContain("AT00 1234 5678 9012");
     });
 
     it("shows a padded ref as text, not as the record", () => {
@@ -433,9 +452,9 @@ describe("summarizeArgs", () => {
     it("does not let a lenient resolver turn trailing text into a record", () => {
       const anything = () => ({ model: "res.partner", id: 7, label: "Raimund Korber" });
       const body = `${partner()}=\n\n${hidden}`;
-      const out = summarizeArgs({ body }, { refRecord: anything }) as { body: string };
-      expect(out.body).toContain("AT00 1234 5678 9012");
-      expect(out.body).not.toContain("record reference");
+      const out = summarizeArgs({ body }, { refRecord: anything });
+      expect(textIn(out.body)).toContain("AT00 1234 5678 9012");
+      expect(textIn(out.body)).not.toContain("record reference");
     });
 
     it("counts the trailing text against the length limit", () => {
@@ -1158,7 +1177,7 @@ describe("summarizeArgs", () => {
       };
       const { summary, incomplete } = summarizeCall(params);
       expect(incomplete).toBe(false);
-      expect(summary).toEqual(params);
+      expect(plain(summary)).toEqual(params);
     });
 
     it.each([
@@ -1272,9 +1291,9 @@ describe("summarizeArgs", () => {
         const out = summarizeArgs({
           a: "z".repeat(199_000),
           body: `${lead}${"😀".repeat(199_000)}`,
-        }) as { body: string };
-        expect(out.body).toMatch(/not shown\]$/);
-        expect(LONE.test(out.body)).toBe(false);
+        });
+        expect(textIn(out.body)).toMatch(/not shown\]$/);
+        expect(LONE.test(textIn(out.body))).toBe(false);
         expect(JSON.stringify(out)).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i);
       }
     });
@@ -1318,7 +1337,7 @@ describe("summarizeArgs", () => {
       });
       expect(incomplete).toBe(false);
       expect(exceeded).toBeNull();
-      expect(summary.content).toBe(content);
+      expect(textIn(summary.content)).toBe(content);
     });
 
     it("measures a text by its own length, not by the markers it is shown with", () => {
@@ -1328,7 +1347,7 @@ describe("summarizeArgs", () => {
       expect([...body].length).toBe(18_000);
       const { summary, incomplete } = summarizeCall({ to: "a@b.at", subject: "s", body });
       expect(incomplete).toBe(false);
-      expect(summary.body).toBe(body.replaceAll(" ", "⟨U+00A0⟩"));
+      expect(textIn(summary.body)).toBe(body.replaceAll(" ", "⟨U+00A0⟩"));
     });
 
     it("refuses a 250,000-character text, and says which value, how long, and the limit", () => {
@@ -1480,20 +1499,10 @@ describe("summarizeArgs", () => {
       expect(exceeded).toBeNull();
     });
 
-    describe("in a browser without Intl.Segmenter too", () => {
-      afterEach(() => vi.resetModules());
-
-      /** `display.ts` as a browser without Intl.Segmenter (Firefox before 125) loads it. */
-      async function withoutSegmenter(): Promise<typeof import("./display")> {
-        vi.resetModules();
-        vi.stubGlobal("Intl", Object.create(Intl, { Segmenter: { value: undefined } }));
-        try {
-          return await import("./display");
-        } finally {
-          vi.unstubAllGlobals();
-        }
-      }
-
+    // The summary stores where the card cuts each preview (`Previewed`), and
+    // charges exactly what that cut draws: the card decides nothing of its
+    // own, so no browser's segmenter or URL parser can draw more.
+    describe("charges exactly what the card draws", () => {
       /** A stream of numbers in [0, 1) from `seed`, the same on every run (mulberry32). */
       function seeded(seed: number): () => number {
         return () => {
@@ -1505,11 +1514,10 @@ describe("summarizeArgs", () => {
       }
 
       /**
-       * Pieces that make one long character as read, where a browser without
-       * Intl.Segmenter cannot see a boundary between two characters: an
-       * emoji and its skin tones, an accent stack on a non-ASCII letter, a
-       * flag, Malayalam dot rephs (they prepend to what follows), Hangul jamo,
-       * a Devanagari conjunct.
+       * Pieces that make one long character as read: an emoji and its skin
+       * tones, an accent stack on a non-ASCII letter, a flag, Malayalam dot
+       * rephs (they prepend to what follows), Hangul jamo, a Devanagari
+       * conjunct.
        */
       const PIECES = ["é", "👍", "🏽", "́", "🇦🇹", "ൎ", "ᄀ", "ᅡ", "ᆨ", "क्", "ष", "x"];
 
@@ -1533,27 +1541,23 @@ describe("summarizeArgs", () => {
         return (exceeded as { cost: number }).cost - (1 + 7) - 2 * (1 + WHOLE_MAX);
       }
 
-      it("charges a previewed text at least what such a browser draws of it", async () => {
-        const client = await withoutSegmenter();
-        // One character as read: Intl.Segmenter cuts its preview back to "é",
-        // a browser without it draws 200 code points, 199 of them skin tones.
+      it("charges a value what the card draws of it, as the summary stored it", () => {
         const values = ["é👍" + "🏽".repeat(250)];
         const next = seeded(1_242_021);
         for (let round = 0; round < 300; round++) values.push(hostile(next));
-        let longer = 0;
+        let previews = 0;
         for (const value of values) {
-          const shown = summarizeCall({ note: value }).summary.note as string;
-          const drawn = client.drawCost(client.drawnText(shown, false));
-          expect(drawn).toBeLessThanOrEqual(charged({ note: value }) - (1 + 4));
-          if (drawn > drawCost(drawnText(shown, false))) longer++;
+          const shown = readShown(summarizeCall({ note: value }).summary.note);
+          expect(shown).not.toBeNull();
+          expect(drawCost(drawnOf(shown!))).toBe(charged({ note: value }) - (1 + 4));
+          if (typeof shown !== "string") previews++;
         }
-        // The values are hostile: such a browser draws more of many of them
-        // than one with Intl.Segmenter does.
-        expect(longer).toBeGreaterThan(50);
+        expect(previews).toBeGreaterThan(250);
       });
 
-      it("refuses a card such a browser would take seconds to draw", async () => {
-        const client = await withoutSegmenter();
+      // One character as read, longer than the preview: its preview is the
+      // letter in front of it, in every browser, so fifty of them draw cheaply.
+      it("previews an emoji under hundreds of skin tones as the letter before it", () => {
         const value = "é👍" + "🏽".repeat(250);
         const params = {
           model: "res.partner",
@@ -1562,11 +1566,11 @@ describe("summarizeArgs", () => {
           ),
         };
         const { exceeded, summary } = summarizeCall(params);
-        const drawn = Object.values(summary.values as Record<string, string[]>)
+        expect(exceeded).toBeNull();
+        const drawn = Object.values(summary.values as Record<string, unknown[]>)
           .flat()
-          .reduce((sum, text) => sum + client.drawCost(client.drawnText(text, false)), 0);
-        expect(drawn).toBeGreaterThan(DRAW_BUDGET);
-        expect(exceeded).toMatchObject({ kind: "too-costly-to-draw" });
+          .map((shown) => drawnOf(readShown(shown)!));
+        expect(new Set(drawn)).toEqual(new Set(["é"]));
       });
     });
 

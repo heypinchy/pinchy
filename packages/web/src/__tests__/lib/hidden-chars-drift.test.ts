@@ -48,11 +48,11 @@ describe("hidden-chars drift guard", () => {
     for (const copy of rest) expect(copy).toBe(first);
   });
 
-  // A copy of the joiner rule once lived in pinchy-email and in pinchy-files (for
-  // the path check and the card). It is gone: which sequences are one emoji is
-  // the server's Unicode data, and whether one is DRAWN as one is the approver's
-  // font. So neither the card nor a tool asks any more, and nothing may bring it
-  // back.
+  // No rule asks which format characters sit inside an emoji — not the path
+  // check, not the recipient check, not the card: which sequences are one emoji
+  // is the server's Unicode data, and whether one is DRAWN as one is the
+  // approver's font. A tool that kept a joiner raw inside an emoji would show
+  // `❤️‍🔥.md` as `❤️🔥.md` wherever the font draws two glyphs.
   it("neither the card nor a tool asks whether a format character is part of an emoji", () => {
     for (const copy of copiesOf("emoji-sequence.ts")) expect(existsSync(copy)).toBe(false);
     const sources = [
@@ -122,10 +122,9 @@ describe("hidden-chars drift guard", () => {
       ).not.toThrow();
     });
 
-    // The card once kept the joiner and the presentation selectors raw
-    // everywhere, so a stray one read as nothing on the card. The path rule
-    // accepts every selector, so the card must mark every one — pinned here so
-    // the two cannot drift.
+    // Kept raw, a joiner or presentation selector reads as nothing on the
+    // card. The path rule accepts every selector, so the card must mark every
+    // one — pinned here so the two cannot drift.
     it("the card marks every selector in a path the path rule accepts", () => {
       const names = [
         "⚠️ offen",
@@ -166,9 +165,9 @@ describe("hidden-chars drift guard", () => {
       expect(names.some((name) => !/[\uFE0E\uFE0F]/.test(name))).toBe(true);
     });
 
-    // A per-script rule once kept a joiner raw where it was said to shape the
-    // text, and let through joiners that draw nothing (Tamil க்‌ம, Thai กฺ‍ม,
-    // Myanmar က်‍မ, Sinhala ක්‍ම, Gurmukhi ਕ੍‍ਮ, and 📄‍📄). One rule now: the path
+    // A rule that kept a joiner raw where a script is said to shape with it
+    // would let through joiners that draw nothing (Tamil க்‌ம, Thai กฺ‍ม,
+    // Myanmar က်‍မ, Sinhala ක්‍ම, Gurmukhi ਕ੍‍ਮ, and 📄‍📄). One rule: the path
     // check and the recipient check accept a joiner anywhere, and the card — for
     // a path and a recipient alike — marks every one, an emoji's included
     // (whether ❤️‍🔥 is drawn as one glyph is the approver's font).

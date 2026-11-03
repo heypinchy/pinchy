@@ -5,8 +5,10 @@ import userEvent from "@testing-library/user-event";
 
 import { ApprovalCard } from "../approval-card";
 import type { PendingApproval } from "@/lib/approvals/client";
-import { summarizeArgs } from "@/lib/approvals/summary";
-import { WHOLE_MAX, displayScalar } from "@/lib/approvals/display";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { summarizeArgs, summarizeCall } from "@/lib/approvals/summary";
+import { PREVIEW_LEN, WHOLE_MAX, displayScalar, textOf, type Shown } from "@/lib/approvals/display";
 
 function approval(argsSummary: Record<string, unknown> | null, toolName = "email_send") {
   return {
@@ -100,9 +102,9 @@ describe("ApprovalCard shows what will actually run", () => {
     expect(items.map(spokenText)).toEqual(['"chef@firma.at"', '"angreifer@evil.com"']);
   });
 
-  // End to end from the raw call: a trailing-space "to " key used to be merged
-  // over the real `to`, so the card named the boss while the tool, reading
-  // `to`, mailed the attacker.
+  // End to end from the raw call: merged over the real `to`, a trailing-space
+  // "to " key would make the card name the boss while the tool, reading `to`,
+  // mailed the attacker.
   it("shows both a key and its look-alike, labelled apart", () => {
     const params = JSON.parse(
       '{"to":"attacker@evil.com","subject":"Q3","body":"hi","to ":"boss@firma.at"}'
@@ -130,7 +132,7 @@ describe("ApprovalCard shows what will actually run", () => {
   it("shows a long text as a preview that says it is shortened, and reveals all of it on demand", async () => {
     const tail = "THE-END-OF-THE-BODY";
     const body = `${"word ".repeat(100)}${tail}`;
-    renderCard({ body });
+    renderCard(summarizeArgs({ body }));
 
     expect(screen.queryByText(new RegExp(tail))).not.toBeInTheDocument();
     expect(screen.getByText(/more characters hidden/i)).toBeInTheDocument();
@@ -152,10 +154,10 @@ describe("ApprovalCard shows what will actually run", () => {
   });
 
   // The gate refuses every call it would have to cut, so no summary the card
-  // is shown carries a real truncation marker. The card used to split one off
-  // the end of any value anyway — so an agent that TYPED "… [truncated: 9 more
-  // characters not shown]" after a path had it drawn as Pinchy's marker,
-  // outside the value, and read outside its quotes. Typed text is the value's.
+  // is shown carries a real truncation marker. A card that split one off the
+  // end of any value anyway would draw an agent's TYPED "… [truncated: 9 more
+  // characters not shown]" after a path as Pinchy's marker, outside the value,
+  // and read it outside its quotes. Typed text is the value's.
   it("keeps a typed truncation marker inside the value it was typed in", () => {
     const { container } = renderCard({
       path: "/data/x.md… [truncated: 9 more characters not shown]",
@@ -170,7 +172,9 @@ describe("ApprovalCard shows what will actually run", () => {
   });
 
   it("previews a long value that ends in a typed marker like any long text", async () => {
-    renderCard({ body: `${"a".repeat(4000)}… [truncated: 6000 more characters not shown]` });
+    renderCard(
+      summarizeArgs({ body: `${"a".repeat(4000)}… [truncated: 6000 more characters not shown]` })
+    );
     expect(screen.getByRole("button", { name: /show full text/i })).toHaveAttribute(
       "aria-expanded",
       "false"
@@ -278,7 +282,7 @@ describe("ApprovalCard shows what will actually run", () => {
   });
 
   it("never cuts the preview between the halves of an emoji", () => {
-    renderCard({ body: `a${"😀".repeat(300)}` });
+    renderCard(summarizeArgs({ body: `a${"😀".repeat(300)}` }));
     const preview = screen.getByText(/😀/);
     expect(preview.textContent).not.toMatch(
       /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
@@ -332,12 +336,12 @@ describe("ApprovalCard shows what will actually run", () => {
     it.each([
       ["a target", { path: `/data/${"x".repeat(8200)}END` }],
       ["an address at any key", { note: `https://x.at/${"y".repeat(8200)}END` }],
-    ])("previews %s past that, and shows all of it on demand", async (_label, summary) => {
-      const { container } = renderCard(summary);
+    ])("previews %s past that, and shows all of it on demand", async (_label, params) => {
+      const { container } = renderCard(summarizeArgs(params));
       expect(screen.queryByText(/END$/)).not.toBeInTheDocument();
       expect(screen.getByText(/more characters hidden/i)).toBeInTheDocument();
       const { drawn } = await showEveryPart(container);
-      expect(drawn.map(withoutEllipses).join("")).toBe(Object.values(summary)[0]);
+      expect(drawn.map(withoutEllipses).join("")).toBe(Object.values(params)[0]);
       expect(drawn.at(-1)).toMatch(/END$/);
     });
   });
@@ -366,17 +370,18 @@ describe("ApprovalCard shows what will actually run", () => {
     ])(
       "draws and reads every character of %s across its parts, and never half a marker",
       async (_name, text) => {
-        const body = summarizeArgs({ body: text }).body as string;
+        const { body } = summarizeArgs({ body: text });
         const { container } = renderCard({ body });
+        const stored = textOf(body as Shown);
         const { drawn, spoken } = await showEveryPart(container);
         expect(drawn.length).toBeGreaterThan(2);
-        expect(drawn.map(withoutEllipses).join("")).toBe(displayScalar(body));
-        expect(spoken.map(unquoted).join("")).toBe(body);
+        expect(drawn.map(withoutEllipses).join("")).toBe(displayScalar(stored));
+        expect(spoken.map(unquoted).join("")).toBe(stored);
         for (const part of drawn) {
           expect(part).not.toMatch(/⟨[^⟩]*$/u);
           expect(part).not.toMatch(/^[^⟨]*⟩/u);
         }
-        const total = [...displayScalar(body)].length.toLocaleString("en-US");
+        const total = [...displayScalar(stored)].length.toLocaleString("en-US");
         expect(
           screen.getByText(new RegExp(`characters [\\d,]+–${total} of ${total}`))
         ).toBeInTheDocument();
@@ -385,7 +390,7 @@ describe("ApprovalCard shows what will actually run", () => {
 
     it("says which part is shown, steps back, and collapses to the preview again", async () => {
       const body = `${"a".repeat(WHOLE_MAX)}SECOND-PART`;
-      renderCard({ body });
+      renderCard(summarizeArgs({ body }));
       await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
       expect(screen.getByText(/characters 1–8,192 of 8,203/)).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /show previous part/i })).toBeDisabled();
@@ -408,8 +413,7 @@ describe("ApprovalCard shows what will actually run", () => {
     // — and is then split. Its two pieces draw differently than the whole
     // character, so the card says where that happens.
     it("says when a part ends or starts inside a character too long for one part", async () => {
-      const body = summarizeArgs({ body: `a${"\u0301".repeat(9_000)} ok` }).body as string;
-      renderCard({ body });
+      renderCard(summarizeArgs({ body: `a${"\u0301".repeat(9_000)} ok` }));
       await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
       expect(
         screen.getByText(/the last character shown may go on in the next part/)
@@ -424,25 +428,25 @@ describe("ApprovalCard shows what will actually run", () => {
     // A character longer than the preview — a letter under 300 accents — is
     // cut inside it, like a part, and the preview says so as a part does.
     it("says when the preview ends inside a character longer than it", () => {
-      renderCard({ body: summarizeArgs({ body: `a${"́".repeat(300)} ok` }).body as string });
+      renderCard(summarizeArgs({ body: `a${"́".repeat(300)} ok` }));
       expect(
         screen.getByText(/the last character shown may go on past the preview/)
       ).toBeInTheDocument();
     });
 
     it("says nothing about characters where the preview ends between two of them", () => {
-      renderCard({ body: `${"a".repeat(200)}SECRET-TAIL` });
+      renderCard(summarizeArgs({ body: `${"a".repeat(200)}SECRET-TAIL` }));
       expect(screen.queryByText(/may go on past the preview/)).not.toBeInTheDocument();
     });
 
     it("says nothing about characters where a part ends between two of them", async () => {
-      renderCard({ body: `${"a".repeat(WHOLE_MAX)}SECOND-PART` });
+      renderCard(summarizeArgs({ body: `${"a".repeat(WHOLE_MAX)}SECOND-PART` }));
       await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
       expect(screen.queryByText(/may go on in the next part/)).not.toBeInTheDocument();
     });
 
     it("offers no parts for a text that fits in one", async () => {
-      renderCard({ body: "a".repeat(WHOLE_MAX) });
+      renderCard(summarizeArgs({ body: "a".repeat(WHOLE_MAX) }));
       await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
       expect(screen.getByText("a".repeat(WHOLE_MAX))).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /show next part/i })).not.toBeInTheDocument();
@@ -517,7 +521,7 @@ describe("ApprovalCard shows what will actually run", () => {
 
     it("holds each line of a long text in order, in the preview and in full", async () => {
       const body = `${"שורה 1\n".repeat(60)}סוף 2`;
-      renderCard({ body });
+      renderCard(summarizeArgs({ body }));
       expect(screen.getAllByText((_, el) => el?.tagName === "BDO").length).toBeGreaterThan(1);
       await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
       expect(drawn("סוף 2")).toBe("[סוף] 2");
@@ -672,18 +676,132 @@ describe("ApprovalCard shows what will actually run", () => {
     // Cut by code point, the preview of "Café" ended "Cafe": a letter the
     // value does not contain there.
     it("previews a text up to a character boundary, and counts what it hides from there", () => {
-      const { container } = renderCard({ body: `${"x".repeat(199)}e\u0301${"y".repeat(100)}` });
+      const { container } = renderCard(
+        summarizeArgs({ body: `${"x".repeat(199)}e\u0301${"y".repeat(100)}` })
+      );
       const spoken = spokenText(container);
       expect(spoken).toContain(`"${"x".repeat(199)}"…`);
       expect(spoken).toContain("(102 more characters hidden)");
     });
 
     it("reads only the preview of a collapsed text, quoted, and says the rest is hidden", () => {
-      const { container } = renderCard({ body: `${"a".repeat(200)}SECRET-TAIL` });
+      const { container } = renderCard(summarizeArgs({ body: `${"a".repeat(200)}SECRET-TAIL` }));
       const spoken = spokenText(container);
       expect(spoken).toContain(`"${"a".repeat(200)}"…`);
       expect(spoken).toContain("(11 more characters hidden)");
       expect(spoken).not.toContain("SECRET-TAIL");
+    });
+  });
+
+  /**
+   * Whether a value is drawn whole or previewed, where the preview ends, and
+   * where each part of "Show full text" ends are decided once, by the summary,
+   * which charges the draw budget for exactly that. Asked again in the
+   * approver's browser, every difference between its URL parser or its
+   * Intl.Segmenter and the server's would be a card that draws more than it
+   * was charged: Chromium and WebKit accept a host such as `xn--a` that Node
+   * refuses, so sixty values priced as previews would be drawn whole, 8,000
+   * characters of right-to-left text each, and the card would take seconds to
+   * appear. The card reads every decision from the stored summary.
+   */
+  describe("draws what the summary decided, whatever the browser", () => {
+    /** A URL parser that accepts the invalid punycode labels Node refuses, as Chromium's does. */
+    class LenientURL extends URL {
+      constructor(input: string | URL, base?: string | URL) {
+        try {
+          super(input, base);
+        } catch {
+          super(String(input).replace(/xn--[^./:]*/giu, "xn--zca"), base);
+        }
+      }
+    }
+
+    function inBrowser(stub: () => void, draw: () => void) {
+      stub();
+      try {
+        draw();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+
+    it("previews a URL the server's parser refuses, though the browser's accepts it", () => {
+      const value = `https://xn--a.com/${"a".repeat(180)}${"א1".repeat(3_995)}`;
+      const values = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`f${i}`, value]));
+      const { summary, exceeded } = summarizeCall({ model: "res.partner", ids: [7], values });
+      expect(exceeded).toBeNull();
+      inBrowser(
+        () => vi.stubGlobal("URL", LenientURL),
+        () => {
+          const { container } = renderCard(summary, "odoo_write");
+          const drawn = [...container.querySelectorAll("dd dd [aria-hidden='true']")];
+          expect(drawn).toHaveLength(60);
+          for (const value of drawn) {
+            expect([...value.textContent!].length).toBeLessThanOrEqual(PREVIEW_LEN + 1);
+          }
+          expect(screen.getAllByRole("button", { name: /show full text/i })).toHaveLength(60);
+        }
+      );
+    });
+
+    it("cuts a preview and its parts where the summary did, without Intl.Segmenter too", async () => {
+      const body = summarizeArgs({ body: `${"x".repeat(199)}é${"🇦🇹".repeat(200)}` }).body;
+      const withSegmenter = render(
+        <ApprovalCard approval={approval({ body })} busy={false} onDecide={vi.fn()} />
+      );
+      const preview = drawnText(withSegmenter.container);
+      const parts = (await showEveryPart(withSegmenter.container)).drawn;
+      cleanup();
+      vi.stubGlobal("Intl", Object.create(Intl, { Segmenter: { value: undefined } }));
+      try {
+        const { container } = renderCard({ body });
+        expect(drawnText(container)).toBe(preview);
+        expect((await showEveryPart(container)).drawn).toEqual(parts);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    // The read copy is cut where the drawn one is: a text that reads as a
+    // JSON literal is drawn escaped, so the same stretch of it is drawn in
+    // more characters than it is read in.
+    it("reads exactly the stretch of a quote-dense text it draws", () => {
+      const body = summarizeArgs({ body: `[${Array(100).fill('"😀"').join(",")}]` }).body;
+      const { container } = renderCard({ body });
+      const drawn = container.querySelector("dd [aria-hidden='true']")!.textContent!;
+      const spoken = container.querySelector("dd .sr-only")!.textContent!;
+      expect(drawn.endsWith("…")).toBe(true);
+      expect(JSON.stringify(unquoted(spoken)).slice(0, -1)).toBe(withoutEllipses(drawn));
+      const emoji = (text: string) => [...text].filter((c) => c === "😀").length;
+      expect(emoji(spoken)).toBe(emoji(drawn));
+    });
+
+    // A summary the card cannot read every decision from is not guessed at:
+    // the approver is told to deny.
+    it.each([
+      [
+        "a previewed text without its parts",
+        { "@": "previewed", text: "a".repeat(300), preview: 200 },
+      ],
+      [
+        "a previewed text whose parts do not reach its end",
+        { "@": "previewed", text: "a".repeat(300), preview: 200, parts: [250], inside: [] },
+      ],
+      ["a plain text longer than any text is drawn whole", "a".repeat(WHOLE_MAX + 1)],
+    ])("says it cannot show %s", (_name, value) => {
+      renderCard({ body: value });
+      expect(document.querySelector('[data-annotation="unreadable"]')).not.toBeNull();
+      expect(screen.queryByText(/a{200}/)).not.toBeInTheDocument();
+    });
+
+    it("contains no parsing or segmentation that differs between browsers", () => {
+      for (const file of ["../approval-card.tsx", "../../lib/approvals/display.ts"]) {
+        const code = readFileSync(resolve(import.meta.dirname, file), "utf8")
+          .split("\n")
+          .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+          .join("\n");
+        expect(code, file).not.toMatch(/new URL\b|URL\.(parse|canParse)|Intl\.Segmenter/);
+      }
     });
   });
 

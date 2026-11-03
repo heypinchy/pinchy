@@ -64,6 +64,7 @@ import { MAX_PENDING_PER_REQUESTER, linkApproval } from "@/lib/approvals/service
 import { setInstancePolicy } from "@/lib/instance-policy";
 import { computeArgsDigest } from "@/lib/approvals/digest";
 import { MAX_KNOWN_APPROVALS } from "@/lib/schemas/approvals";
+import { textOf, type Shown } from "@/lib/approvals/display";
 import { getOrCreatePluginSecret } from "@/lib/plugin-secrets-source";
 // pinchy-odoo's own encoder, so the refs below are real ones minted under the
 // key the gate reads from the settings DB.
@@ -538,7 +539,7 @@ describe("approval routes (integration, real DB)", () => {
       expect(res.decision).toBe("block");
       expect(res.approval.description).not.toContain("record reference");
       const [row] = await db.select().from(toolApproval);
-      const comment = (row.argsSummary as { values: { comment: string } }).values.comment;
+      const comment = textOf((row.argsSummary as { values: { comment: Shown } }).values.comment);
       expect(comment).not.toContain("record reference");
       expect(comment).toContain("AT00 1234 5678 9012");
     });
@@ -557,9 +558,9 @@ describe("approval routes (integration, real DB)", () => {
   });
 
   // The prompt is what every approval surface shows, and "allow" there runs
-  // the tool. Naming the hosts that fit and eliding the rest left out the last
-  // one — and decoys under `target`, `destination` and `targets` ahead of a
-  // fetch's `url` made that the host it fetched. A call whose hosts the prompt
+  // the tool. Naming only the hosts that fit would leave out the last one —
+  // and decoys under `target`, `destination` and `targets` ahead of a fetch's
+  // `url` would make that the host it fetches. A call whose hosts the prompt
   // cannot all name gets no confirmation at all.
   describe("a call whose hosts the prompt cannot all name", () => {
     const params = () => ({
@@ -674,7 +675,7 @@ describe("approval routes (integration, real DB)", () => {
       const list = await (
         await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
       ).json();
-      expect(list.approvals[0].argsSummary.content).toBe(content);
+      expect(textOf(list.approvals[0].argsSummary.content)).toBe(content);
     });
 
     it("opens a card for an 18,000-character mail body full of no-break spaces", async () => {
@@ -782,7 +783,7 @@ describe("approval routes (integration, real DB)", () => {
     const list = await (
       await listApprovals(new NextRequest("http://localhost/api/approvals"), {})
     ).json();
-    expect(list.approvals[0].argsSummary.body).toBe(body);
+    expect(textOf(list.approvals[0].argsSummary.body)).toBe(body);
     expect(list.approvals[0].argsSummary.subject).toBe("x⟨U+D83D⟩y");
   });
 
