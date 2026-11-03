@@ -59,7 +59,7 @@
 //     `models.*` is hot-reloadable (restart-heartbeat only, no gateway
 //     restart), it re-resolves the config's SecretRefs — all resolvable — and
 //     promotes it to last-known-good;
-//   - only key references and credentials leave, so it stays far above half
+//   - only key references and the addresses on file leave, so it stays far above half
 //     of the file it replaces: OpenClaw's write-side size check does not
 //     object, nor — while every earlier Pinchy write stayed above half of
 //     OpenClaw's last-known-good, which writeConfigAtomic enforces — its
@@ -154,22 +154,37 @@ export function withRemovedKeyPlaceholders(config: unknown, bundle: SecretsBundl
 /**
  * The file to write before `bundle` replaces secrets.json: `onDisk` with every
  * provider that names a SecretRef `bundle` cannot resolve replaced by its
- * key-less stub (inert baseUrl, api, all its models — see providerStub).
+ * key-less stub (api and all its models — see providerStub).
  * Null when every SecretRef in `onDisk` resolves: nothing to bridge.
+ *
+ * The stub's address is never the one on file. That address was saved under
+ * whatever rules held then, and the bridge is written to OpenClaw's file: a
+ * provider whose saved base URL the SSRF guard now refuses (a metadata
+ * address) loses its key in `bundle` exactly like a re-keyed one, and its file
+ * entry still names that address. So a provider `target` keeps gets the
+ * target's baseUrl — REFUSED_BASE_URL for that one — and a deleted one the
+ * inert REMOVED_PROVIDER_BASE_URL (also what a missing `target` means).
  *
  * Pinchy emits SecretRefs only at `models.providers.*.apiKey`; a dangling one
  * anywhere else is reported by regenerateOpenClawConfig, not bridged.
  */
-export function keylessBridge(onDisk: Json, bundle: SecretsBundle): Json | null {
+export function keylessBridge(onDisk: Json, bundle: SecretsBundle, target: Json = {}): Json | null {
   if (unresolvedSecretRefs(onDisk, bundle).length === 0) return null;
   const models = isRecord(onDisk.models) ? onDisk.models : {};
   const providers = isRecord(models.providers) ? models.providers : {};
+  const targetProviders = providersOf(target);
   const bridged = Object.fromEntries(
-    Object.entries(providers).map(([key, provider]) =>
-      isRecord(provider) && unresolvedSecretRefs(provider, bundle).length > 0
-        ? [key, { ...providerStub(provider), models: provider.models ?? [] }]
-        : [key, provider]
-    )
+    Object.entries(providers).map(([key, provider]) => {
+      if (!isRecord(provider) || unresolvedSecretRefs(provider, bundle).length === 0) {
+        return [key, provider];
+      }
+      const kept = Object.hasOwn(targetProviders, key) ? targetProviders[key] : undefined;
+      const stub =
+        isRecord(kept) && typeof kept.baseUrl === "string"
+          ? providerStub(provider, kept.baseUrl)
+          : providerStub(provider);
+      return [key, { ...stub, models: provider.models ?? [] }];
+    })
   );
   return { ...onDisk, models: { ...models, providers: bridged } };
 }

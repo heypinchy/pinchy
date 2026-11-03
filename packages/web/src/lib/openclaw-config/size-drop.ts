@@ -167,40 +167,30 @@ export function parseSizeDropRejection(message: string): SizeDropRejection | nul
  * its api, and `models: []` (a step re-adds models one at a time; the
  * key-less bridge keeps them all — keyless-bridge.ts).
  *
- * Everything else is dropped, and the baseUrl loses userinfo, query and
- * fragment. `ocProvider` comes from `config.get`, which REDACTS credentials —
- * and `config.apply` restores a redacted value from the file at the same path
- * (`restoreRedactedValues`, verified against 2026.7.1). A stub that echoes a
- * redacted `apiKey`, `headers` entry or credential-bearing baseUrl back would
- * have OpenClaw re-write the deleted provider's secret into openclaw.json for
- * every step. `apiKey` would also no longer resolve: secrets.json has lost it.
+ * Nothing of the provider's address on file survives: the stub's baseUrl is
+ * {@link REMOVED_PROVIDER_BASE_URL}, or — for a provider the target keeps, in
+ * the key-less bridge — the target's own. A stub carries no key, so its address
+ * serves nothing — and the address on file was saved under whatever rules held
+ * then. One the SSRF guard now refuses (a metadata address) is replaced by
+ * REFUSED_BASE_URL in the target (openai-compatible-stored-url.ts); a stub
+ * echoing the file's copy would put it back in front of OpenClaw, in every
+ * bridge and every step. `ocProvider` also comes from `config.get`, which
+ * REDACTS credentials — and `config.apply` restores a redacted value from the
+ * file at the same path (`restoreRedactedValues`, verified against 2026.7.1),
+ * so echoing a redacted `apiKey`, `headers` entry or credential-bearing
+ * baseUrl back would have OpenClaw re-write the deleted provider's secret into
+ * openclaw.json for every step. `apiKey` would also no longer resolve:
+ * secrets.json has lost it.
  */
-export function providerStub(ocProvider: Json): Json {
-  const stub: Json = { baseUrl: inertBaseUrl(ocProvider.baseUrl) };
+export function providerStub(ocProvider: Json, baseUrl = REMOVED_PROVIDER_BASE_URL): Json {
+  const stub: Json = { baseUrl };
   if (typeof ocProvider.api === "string") stub.api = ocProvider.api;
   stub.models = [];
   return stub;
 }
 
-/** Stands in for a baseUrl that is redacted or unparseable. `.invalid` never resolves (RFC 2606). */
-const REMOVED_PROVIDER_BASE_URL = "https://removed-provider.invalid/v1";
-
-function inertBaseUrl(baseUrl: unknown): string {
-  if (typeof baseUrl !== "string") return REMOVED_PROVIDER_BASE_URL;
-  let url: URL;
-  try {
-    url = new URL(baseUrl);
-  } catch {
-    // e.g. OpenClaw's `__OPENCLAW_REDACTED__` sentinel for a URL with credentials.
-    return REMOVED_PROVIDER_BASE_URL;
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return REMOVED_PROVIDER_BASE_URL;
-  url.username = "";
-  url.password = "";
-  url.search = "";
-  url.hash = "";
-  return url.toString().replace(/\/$/, "");
-}
+/** Every stub's baseUrl. `.invalid` never resolves (RFC 2606). */
+export const REMOVED_PROVIDER_BASE_URL = "https://removed-provider.invalid/v1";
 
 /**
  * One step of a provider deletion: `target`, plus back as little of the

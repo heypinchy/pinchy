@@ -166,6 +166,7 @@ import { LAST_GOOD_BOUND_PATH } from "@/lib/openclaw-config/last-good-bound";
 import { keylessBridge } from "@/lib/openclaw-config/keyless-bridge";
 import { referencedSecretIds, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { endPinchyProcess } from "@/test-helpers/pinchy-restart";
+import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
 
 const SECRETS_PATH = process.env.OPENCLAW_SECRETS_PATH || "/openclaw-secrets/secrets.json";
 
@@ -395,6 +396,90 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
     }
     expect(writes.flatMap((w) => w.dangling)).toEqual([]);
   });
+  // A saved address the SSRF guard now refuses (a metadata address accepted
+  // under older rules) is the target's decision: the provider points at
+  // REFUSED_BASE_URL, without its key. Neither the key-less bridge nor the
+  // re-keyed write nor a push may put the file's copy of that address back in
+  // front of OpenClaw — whether the provider is kept or deleted.
+  describe("a base URL the target refuses", () => {
+    const METADATA = "http://100.100.100.200/v1";
+    const catalogue = Array.from({ length: 40 }, (_, i) => ({
+      id: `rebound-model-${i}-with-a-realistically-long-identifier`,
+      name: `Rebound Model ${i}`,
+      contextWindow: 128000,
+    }));
+
+    /**
+     * openclaw.json as an older Pinchy left it: the address accepted, and the
+     * key in its unversioned slot, which this bundle no longer holds — so the
+     * entry is bridged.
+     */
+    function seedFileAtMetadataAddress(): void {
+      files.set(
+        CONFIG_PATH,
+        JSON.stringify(
+          {
+            gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
+            models: {
+              providers: {
+                "acme-llm": {
+                  baseUrl: METADATA,
+                  api: "openai-completions",
+                  apiKey: { source: "file", provider: "pinchy", id: "/providers/acme-llm/apiKey" },
+                  models: catalogue,
+                },
+              },
+            },
+          },
+          null,
+          2
+        )
+      );
+    }
+
+    /** Every openclaw.json written and every config.apply payload sent, landing each. */
+    async function regenerateAndCollect(): Promise<string[]> {
+      const seen: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        await regenerateOpenClawConfig();
+        await drain();
+        seen.push(...pendingApplies.map((p) => p.payload));
+        land();
+        await drain();
+      }
+      // `writes` records openclaw.json after a write of EITHER file; only its
+      // own writes are Pinchy's (the seeded file is what OpenClaw had before).
+      return [...seen, ...writes.filter((w) => w.path === CONFIG_PATH).map((w) => w.config)];
+    }
+
+    it("never writes or applies the file's copy of it for a provider the target keeps", async () => {
+      seedFileAtMetadataAddress();
+      customProviders[0] = { ...customProviders[0], baseUrl: METADATA, models: catalogue };
+      connectGateway();
+
+      const seen = await regenerateAndCollect();
+
+      expect(seen.length).toBeGreaterThan(0);
+      for (const config of seen) expect(config).not.toContain("100.100.100.200");
+      const acme = JSON.parse(files.get(CONFIG_PATH)!).models.providers["acme-llm"];
+      expect(acme.baseUrl).toBe(REFUSED_BASE_URL);
+      expect(acme).not.toHaveProperty("apiKey");
+      expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+    });
+
+    it("never writes or applies it for a provider the target deletes", async () => {
+      seedFileAtMetadataAddress();
+      customProviders.length = 0;
+      connectGateway();
+
+      const seen = await regenerateAndCollect();
+
+      expect(seen.length).toBeGreaterThan(0);
+      for (const config of seen) expect(config).not.toContain("100.100.100.200");
+      expect(writes.flatMap((w) => w.dangling)).toEqual([]);
+    });
+  });
+
   // A re-key to an address that serves a much smaller catalogue: the payload
   // shrinks a KEPT provider, so the #311 guard refuses it, as it refuses any
   // kept provider's catalogue shrink under half the file. The refusal still
@@ -794,6 +879,11 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
     }
     const bytes = (s: string) => Buffer.byteLength(s, "utf-8");
     const serialize = (c: unknown) => JSON.stringify(c, null, 2).trimEnd() + "\n";
+    /** One model, named at length on file and briefly once re-keyed. */
+    const longNamedModel = { id: "acme-model", name: `Acme ${"m".repeat(400)}` };
+    const shortNamedModel = { id: "acme-model", name: "Acme" };
+    /** The target as the bridge sees it: the provider kept, at `baseUrl`. */
+    const targetAt = (baseUrl: string) => ({ models: { providers: { "acme-llm": { baseUrl } } } });
     async function waitFor(condition: () => boolean, what: string) {
       for (let i = 0; i < 1000 && !condition(); i++) await new Promise((r) => setTimeout(r, 5));
       expect(condition(), what).toBe(true);
@@ -889,18 +979,17 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
     });
 
     it("sends the re-keyed entry over config.apply when its file write is refused, and lands the re-key", async () => {
-      // An address long enough that the re-keyed entry, pointing at a short
-      // one, is smaller than the bridge that keeps the long one.
-      customProviders[0] = {
-        ...customProviders[0],
-        baseUrl: `https://api.acme.example/${"v".repeat(400)}/v1`,
-      };
+      // A model whose name on file is long enough that the re-keyed entry,
+      // whose list names it briefly, is smaller than the bridge that keeps the
+      // file's list.
+      customProviders[0] = { ...customProviders[0], models: [longNamedModel] };
       const installed = await install();
       const bridgeBytes = bytes(
         serialize(
           keylessBridge(
             JSON.parse(installed),
-            bundleResolving(installed, `/providers/${OLD_SLOT}/apiKey`)
+            bundleResolving(installed, `/providers/${OLD_SLOT}/apiKey`),
+            targetAt("https://s.example/v1")
           )
         )
       );
@@ -913,6 +1002,7 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       customProviders[0] = {
         ...customProviders[0],
         baseUrl: "https://s.example/v1",
+        models: [shortNamedModel],
         apiKey: "sk-acme-new",
         keyVersion: NEW_VERSION,
       };
@@ -1034,16 +1124,14 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
     // that is what OpenClaw then runs. The regenerate the re-keyed entry
     // carried never runs, so nothing gave the provider its key back.
     it("gives the provider its entry when a targeted write supersedes the deferred re-keyed entry", async () => {
-      customProviders[0] = {
-        ...customProviders[0],
-        baseUrl: `https://api.acme.example/${"v".repeat(400)}/v1`,
-      };
+      customProviders[0] = { ...customProviders[0], models: [longNamedModel] };
       const installed = await install();
       const bridgeBytes = bytes(
         serialize(
           keylessBridge(
             JSON.parse(installed),
-            bundleResolving(installed, `/providers/${OLD_SLOT}/apiKey`)
+            bundleResolving(installed, `/providers/${OLD_SLOT}/apiKey`),
+            targetAt("https://s.example/v1")
           )
         )
       );
@@ -1064,6 +1152,7 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
       customProviders[0] = {
         ...customProviders[0],
         baseUrl: "https://s.example/v1",
+        models: [shortNamedModel],
         apiKey: "sk-acme-new",
         keyVersion: NEW_VERSION,
       };

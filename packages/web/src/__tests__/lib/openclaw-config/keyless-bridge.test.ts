@@ -15,12 +15,13 @@
 // openclaw-config.test.ts, OpenClaw's acceptance of it in
 // integration/openclaw-config-size-drop-against-oc.test.ts.
 import { describe, it, expect } from "vitest";
+import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
 import {
   keylessBridge,
   rekeyedBridge,
   unresolvedSecretRefs,
 } from "@/lib/openclaw-config/keyless-bridge";
-import { expectsSizeDropRefusal } from "@/lib/openclaw-config/size-drop";
+import { expectsSizeDropRefusal, REMOVED_PROVIDER_BASE_URL } from "@/lib/openclaw-config/size-drop";
 
 const ref = (id: string) => ({ source: "file", provider: "pinchy", id });
 
@@ -107,7 +108,7 @@ describe("keylessBridge", () => {
     const providers = (bridge as { models: { providers: Record<string, unknown> } }).models
       .providers;
     expect(providers["acme-llm"]).toEqual({
-      baseUrl: "https://acme.example/v1",
+      baseUrl: REMOVED_PROVIDER_BASE_URL,
       api: "openai-completions",
       models,
     });
@@ -140,6 +141,40 @@ describe("keylessBridge", () => {
       (bridge as { models: { providers: Record<string, { models: unknown }> } }).models.providers
         .ollama.models
     ).toEqual([{ id: "qwen3" }]);
+  });
+
+  it("never carries the stubbed provider's address — the stub's models are all it keeps", () => {
+    // A provider whose saved address the SSRF guard now refuses (a metadata
+    // address saved under older rules) loses its key in the bundle; its file
+    // entry still names that address. The bridge is written to OpenClaw's
+    // file, so carrying the address would put it back in front of OpenClaw.
+    const atMetadata = { ...acme, baseUrl: "http://100.100.100.200/v1" };
+    const bridge = keylessBridge(config({ anthropic, "acme-llm": atMetadata }), bundleWithoutAcme);
+
+    expect(JSON.stringify(bridge)).not.toContain("100.100.100.200");
+    expect(
+      (bridge as { models: { providers: Record<string, unknown> } }).models.providers["acme-llm"]
+    ).toEqual({ baseUrl: REMOVED_PROVIDER_BASE_URL, api: "openai-completions", models });
+  });
+
+  it("gives a provider the target keeps the target's address, never the file's", () => {
+    // The target's address decision wins: for a provider whose saved base URL
+    // is refused, that is REFUSED_BASE_URL.
+    const atMetadata = { ...acme, baseUrl: "http://100.100.100.200/v1" };
+    const target = config({
+      anthropic,
+      "acme-llm": { baseUrl: REFUSED_BASE_URL, api: "openai-completions", models: [] },
+    });
+    const bridge = keylessBridge(
+      config({ anthropic, "acme-llm": atMetadata }),
+      bundleWithoutAcme,
+      target
+    );
+
+    expect(JSON.stringify(bridge)).not.toContain("100.100.100.200");
+    expect(
+      (bridge as { models: { providers: Record<string, unknown> } }).models.providers["acme-llm"]
+    ).toEqual({ baseUrl: REFUSED_BASE_URL, api: "openai-completions", models });
   });
 
   it("stays over half of the file it replaces, so neither of OpenClaw's size guards objects", () => {

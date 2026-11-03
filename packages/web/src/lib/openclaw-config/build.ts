@@ -1965,10 +1965,11 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       // When the file still names a key the bundle lacks — a deletion or a
       // re-key not yet handed over — the key-less bridge below goes first,
       // exactly as for a payload that passes. It is built from the on-disk
-      // file and the bundle, never from the refused payload: it keeps every
-      // model of every provider (an empty Ollama catalogue stays out of it)
-      // and only drops key references and URL credentials, so it stays far
-      // above half the file this guard protects. A re-keyed provider then
+      // file and the bundle; of the refused payload it takes only each kept
+      // provider's address, never its models: it keeps every model of every
+      // provider (an empty Ollama catalogue stays out of it) and only drops
+      // key references and the addresses on file, so it stays far above half
+      // the file this guard protects. A re-keyed provider then
       // takes its entry from the payload, as below: one provider's saved
       // state, whose models fall back to the snapshot stored with it, never
       // to `[]` (resolveCustomProviderModels). When a re-key is what this
@@ -2030,7 +2031,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // (writeFileOrApply), and openclaw.json still names the key, so
     // secrets.json keeps it until the regenerate that runs once the bridge has
     // landed. Unless secrets.json is gone (keepOnDiskConfigResolvable).
-    bridge = onDiskConfig ? keylessBridge(onDiskConfig, secretsBundle) : null;
+    bridge = onDiskConfig ? keylessBridge(onDiskConfig, secretsBundle, config) : null;
     if (bridge && onDiskConfig) {
       const dangling = unresolvedSecretRefs(bridge, secretsBundle);
       if (dangling.length > 0) {

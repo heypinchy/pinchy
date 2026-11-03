@@ -11,6 +11,7 @@ import {
   planShrinkPush,
   utf8Bytes,
   expectsSizeDropRefusal,
+  REMOVED_PROVIDER_BASE_URL,
 } from "@/lib/openclaw-config/size-drop";
 
 type Json = Record<string, unknown>;
@@ -162,8 +163,23 @@ describe("buildProviderShrinkStep", () => {
       "apiKey"
     );
     expect((step.models as { providers: { acme: Json } }).providers.acme.baseUrl).toBe(
-      "https://acme.example/v1"
+      REMOVED_PROVIDER_BASE_URL
     );
+  });
+
+  it("never carries the deleted provider's address — a stub reaches no endpoint", () => {
+    // The address was saved under whatever rules held then; a metadata address
+    // a later SSRF rule refuses must not reach OpenClaw again through a step.
+    const atMetadata = config({
+      anthropic,
+      acme: provider(40, { baseUrl: "http://100.100.100.200/v1" }),
+    });
+    const step = buildProviderShrinkStep(target, atMetadata, utf8Bytes(serialize(atMetadata)) / 2)!;
+    expect((step.models as { providers: { acme: Json } }).providers.acme.baseUrl).toBe(
+      REMOVED_PROVIDER_BASE_URL
+    );
+    expect(serialize(step)).not.toContain("100.100.100.200");
+    expect(new URL(REMOVED_PROVIDER_BASE_URL).hostname).toMatch(/\.invalid$/);
   });
 
   it("leaves everything outside models.providers exactly as the target has it", () => {
@@ -214,7 +230,7 @@ describe("buildProviderShrinkStep", () => {
     });
     const step = buildProviderShrinkStep(target, withCreds, utf8Bytes(serialize(withCreds)) / 2)!;
     const stub = (step.models as { providers: { acme: Json } }).providers.acme;
-    expect(stub.baseUrl).toBe("https://acme.example/v1");
+    expect(stub.baseUrl).toBe(REMOVED_PROVIDER_BASE_URL);
     expect(Object.keys(stub).sort()).toEqual(["api", "baseUrl", "models"]);
     expect(JSON.stringify(step)).not.toMatch(/s3cret|QQQ|hdr-secret/);
 
