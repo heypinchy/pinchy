@@ -1061,6 +1061,20 @@ describe("summarizeArgs", () => {
       }
     });
 
+    // An address that ends at its `@` names no domain at all: nothing is
+    // reached, and the card can still read every node the summary writes.
+    it.each([
+      ["a bare recipient", { to: "boss@" }],
+      ["a named recipient", { to: "Boss <boss@>" }],
+      ["a nested `to`", { values: { to: "meet @" } }],
+    ])("writes no domain note for %s with an empty domain", (_label, args) => {
+      const { summary, hosts, exceeded } = summarizeCall(args);
+      expect(exceeded).toBeNull();
+      expect(hosts).toEqual([]);
+      expect(JSON.stringify(summary)).not.toContain("not-a-domain");
+      for (const value of Object.values(summary)) expect(readNode(value)).not.toBe("unreadable");
+    });
+
     it("notes a URL whose host the parser refuses, and records that host as reached", () => {
       const url = "https://user@XN--A.Evil.com:8080/x";
       const { summary, hosts } = summarizeCall({ website: url });

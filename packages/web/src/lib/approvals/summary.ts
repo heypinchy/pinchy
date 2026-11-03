@@ -556,9 +556,11 @@ interface Reach {
  * form, yet a mail library sends to it and a browser opens it as written. So
  * it reaches the domain it spells, named as written (ASCII case aside, every
  * hidden character marked), and the card names it and says it is no domain
- * name: an ASCII one reads as a plain domain.
+ * name: an ASCII one reads as a plain domain. An empty domain reaches nothing.
  */
-function domainReach(domain: string): Reach {
+function domainReach(domain: string): Reach | null {
+  // An address that ends at its `@` names no domain: nothing to reach or name.
+  if (domain === "") return null;
   const ascii = domainToASCII(domain);
   if (!ascii) {
     const written = renderText(domain.replace(/[A-Z]/g, (c) => c.toLowerCase()));
