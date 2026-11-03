@@ -251,7 +251,10 @@ export async function* chatWithDispatchRaceRetry(
   // agent-readiness.ts: OC 2026.7.1's `agents.list` lists agent directories
   // from disk while the runtime agents.list is empty), and every further
   // "ready" would be an instant retry — CI run 41569393728 sent ~4,800
-  // dispatches in 19 s that way. From then on the loop uses the capped backoff.
+  // dispatches in 19 s that way. From then on, for the rest of this call, the
+  // loop skips the gate and uses the capped backoff — a later genuine "ready"
+  // then costs up to `maxDelayMs` per retry instead of a 500 ms poll, which is
+  // bounded and far cheaper than trusting a gate already shown to be wrong.
   let gateTrusted = true;
   let lastRetryWasGateReady = false;
   for (let attempt = 0; ; attempt++) {
@@ -310,8 +313,10 @@ export async function* chatWithDispatchRaceRetry(
     }
 
     // Deterministic readiness gate (preferred) — AGENT race only: poll OC's
-    // runtime agents.list (the same view the dispatch handler checks) until the
-    // agent is present, bounded by the remaining budget. On success, re-dispatch
+    // runtime agents.list (the same view the dispatch handler checks, filtered
+    // to the ids it accepts) until the agent is present, bounded by the
+    // remaining budget. Skipped for the rest of this call once a "ready" was
+    // contradicted (`gateTrusted`). On success, re-dispatch
     // immediately into a ready runtime instead of sleeping a backoff window.
     //
     // The MODEL race deliberately skips this gate: the agent is ALREADY present

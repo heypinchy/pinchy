@@ -295,11 +295,14 @@ describe("chatWithDispatchRaceRetry", () => {
       // every further retry waits the capped backoff: 1000, 2000, 2000, ...
       expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([1000, 2000, 2000, 2000, 2000, 1000]);
       expect(chat).toHaveBeenCalledTimes(8);
+      // Once contradicted, the gate is not consulted again for this call.
+      expect(awaitAgentReady).toHaveBeenCalledTimes(1);
     });
 
-    it("trusts only the first 'ready', so a contradicted one waits the backoff", async () => {
-      // The gate answers "ready" twice before the agent truly lands: only the
-      // first answer earns an immediate retry; the contradicted second one waits.
+    it("trusts the gate's 'ready' once, then waits the backoff when it was wrong", async () => {
+      // The gate answers "ready" but the agent lands one retry later: the first
+      // answer earns an immediate retry; once that retry races too, the gate is
+      // no longer asked and the next retry waits the backoff.
       const successful: ChatChunk[] = [{ type: "done", text: "", runId: "r1" }];
       const chat = vi
         .fn()
@@ -320,6 +323,7 @@ describe("chatWithDispatchRaceRetry", () => {
 
       expect(got).toEqual(successful);
       expect(chat).toHaveBeenCalledTimes(3);
+      expect(awaitAgentReady).toHaveBeenCalledTimes(1);
       expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([1000]);
     });
 

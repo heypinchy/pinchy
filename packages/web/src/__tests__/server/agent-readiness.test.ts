@@ -16,6 +16,7 @@
 // Docker E2E dispatch probes.
 
 import { describe, it, expect, vi } from "vitest";
+import type { AgentsListResult } from "openclaw-node";
 import { dispatchableAgentIds, waitForAgentInRuntime } from "@/server/agent-readiness";
 
 /**
@@ -191,6 +192,27 @@ describe("dispatchableAgentIds", () => {
         ],
       })
     ).toEqual(["agent-1", "agent-2"]);
+  });
+
+  it("keeps every entry when the configured list is non-empty, even without names", () => {
+    // A non-empty configured list makes OC's default a configured agent (never
+    // `main`) and filters `agents.list` down to configured ids, so every entry
+    // is dispatchable. This keeps the gate working if a future OC stops
+    // echoing the configured `name`.
+    expect(
+      dispatchableAgentIds({
+        defaultId: "agent-1",
+        agents: [{ id: "agent-1" }, { id: "agent-2" }],
+      })
+    ).toEqual(["agent-1", "agent-2"]);
+  });
+
+  it("falls back to the name signal when the result carries no defaultId", () => {
+    expect(
+      dispatchableAgentIds({
+        agents: [{ id: "agent-1", name: "Smithers" }, { id: "agent-2" }],
+      } as unknown as AgentsListResult)
+    ).toEqual(["agent-1"]);
   });
 
   it("drops disk-discovered entries, which the dispatch handler rejects", () => {
