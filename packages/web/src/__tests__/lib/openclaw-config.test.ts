@@ -5597,8 +5597,10 @@ async function readEntrypointSeed(): Promise<Record<string, unknown>> {
  * longest-matching plugin rule is a restart. As of 2026.7.1 that is canvas
  * (`plugins.enabled/allow/deny`, `plugins.entries.canvas`) and browser
  * (`browser`, whose rules live in a sibling chunk — hence importing the entry
- * rather than reading its source). Third-party plugins Pinchy loads declare no
- * reload rules.
+ * rather than reading its source). The loader throws if either stops declaring
+ * static rules, so a rename or a move to runtime `registerReload()` is a red
+ * test rather than a quietly smaller check. Third-party plugins Pinchy loads
+ * declare no reload rules.
  *
  * This is a deliberate over-approximation: it assumes every default-enabled
  * plugin is loaded, while Pinchy's own `plugins.allow` keeps canvas out of a
@@ -5644,6 +5646,7 @@ async function loadOpenClawReloadPlanner(): Promise<{
 
   type PluginRule = { prefix: string; restart: boolean };
   const pluginRules: PluginRule[] = [];
+  const pluginsWithRules = new Set<string>();
   const extensions = pathMod.join(dist, "extensions");
   for (const dir of fsActual.readdirSync(extensions)) {
     const manifestPath = pathMod.join(extensions, dir, "openclaw.plugin.json");
@@ -5670,6 +5673,17 @@ async function loadOpenClawReloadPlanner(): Promise<{
         );
       }
       for (const prefix of prefixes as string[]) pluginRules.push({ prefix, restart });
+      if ((prefixes as string[]).length > 0) pluginsWithRules.add(dir);
+    }
+  }
+  // The plugins known to declare static reload rules in 2026.7.1. One of them
+  // renaming its entry, dropping `reload`, or moving its rules into a runtime
+  // `registerReload()` would otherwise shrink this check without failing it.
+  for (const expected of ["browser", "canvas"]) {
+    if (!pluginsWithRules.has(expected)) {
+      throw new Error(
+        `extensions/${expected} no longer declares static reload rules — re-verify the reload contract.`
+      );
     }
   }
   if (!pluginRules.some((rule) => rule.restart)) {
