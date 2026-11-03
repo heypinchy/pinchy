@@ -54,13 +54,21 @@ export async function hashFileContents(absPath: string): Promise<string> {
 /**
  * Bump this whenever a change makes the converter produce a materially
  * different PDF for the same input — a different LibreOffice major version, a
- * changed filter or font set, a different `--convert-to` invocation. Every
- * stored artifact is invalidated, and #939's preview serves the new output.
+ * changed filter or font set, a different `--convert-to` invocation, a change
+ * to what the preflight lets through. Every stored artifact is invalidated,
+ * and #939's preview serves the new output.
+ *
+ * The store alone does not get an unchanged document there: its hash matches
+ * and it has chunks, so the ingest never asks for its artifact. The ingest
+ * records this version on each Office document's row and converts and reads
+ * again every document whose version is not this one (ingest.ts), so after a
+ * bump the artifact a citation opens AND the chunks the search finds both come
+ * from the current rules — once per document.
+ *
+ * 2: the preflight's relationship allow-list. An artifact converted without it
+ * may hold what an altChunk or an SVG picture read from the server's disk, and
+ * so may the chunks read from it.
  */
-// 2: the preflight's relationship allow-list. An
-// artifact converted before it may hold what an altChunk or an SVG picture
-// read from the server's disk — and the store is keyed on content, so the same
-// file would be served that artifact forever. Bumping re-converts it once.
 export const OFFICE_ARTIFACT_FORMAT_VERSION = 2;
 
 /**

@@ -806,10 +806,10 @@ describe("preflight before conversion", () => {
   });
 
   it("keys the artifact on the bytes that were checked and staged, not on an earlier read of the file", async () => {
-    // The hash used to come from a read BEFORE the preflight's own read. A
-    // file swapped in between was converted from its new bytes and stored
-    // under the old bytes' hash — so the preview of the old content served
-    // the new one, for as long as the artifact lived.
+    // Keyed on a read made BEFORE the preflight's own, a file swapped in
+    // between would be converted from its new bytes and stored under the old
+    // bytes' hash — so the preview of the old content would serve the new
+    // one, for as long as the artifact lived.
     const source = await corpusFile("swapped.doc", "{\\rtf1 FIRST}");
     const store = new OfficeArtifactStore(storeDir);
     const echoing: RunConverter = async (call) => {

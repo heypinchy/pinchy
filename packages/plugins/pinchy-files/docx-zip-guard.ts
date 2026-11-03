@@ -12,9 +12,8 @@
 // can declare 1000 bytes and inflate to a gigabyte, and the readers we feed
 // (mammoth and exceljs, both through JSZip) inflate the whole entry before
 // they compare it with the declared size — measured at 1.43 GB RSS for one
-// such workbook. An earlier version of this comment
-// called that gap acceptable because "mainstream readers treat lying archives
-// as corrupt"; they do, but only after the memory is spent. So every entry is
+// such workbook. Mainstream readers do treat a lying archive as corrupt, but
+// only after the memory is spent. So every entry is
 // inflated HERE first, by zlib, with its declared size as the hard ceiling,
 // and the output is thrown away as it streams. Then the reader is handed a
 // fresh archive built from the verified entries alone — so it can never see a
@@ -54,8 +53,8 @@ export const MAX_DOCX_DECOMPRESSED_BYTES = 500 * 1024 * 1024;
 // This is NOT what bounds the memory. mammoth runs in a child whose heap is
 // capped (`DOCX_READER_HEAP_MB` in docx-extract.ts, `SHEET_READER_HEAP_MB` for
 // the knowledge base's word count), and that cap holds whatever this scan
-// predicts — predicting how mammoth reads a part kept proving wrong, one
-// spelling at a time. So the ceiling only turns away, early
+// predicts — a prediction of how mammoth reads a part can miss a spelling of
+// it. So the ceiling only turns away, early
 // and with a precise message, a document the child could not read anyway. It
 // sits below where WORD-SHAPED markup — revision ids, run properties, a
 // sentence split over several runs — exhausts that heap, measured in the

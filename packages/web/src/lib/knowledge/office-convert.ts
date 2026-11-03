@@ -151,8 +151,8 @@ export function batchTimeoutMs(fileCount: number): number {
  * PDF is 5,758 KiB: converts with 11,592 KiB free, fails the store with
  * 11,336 KiB (exit 0, no PDF, `impl_store … failed: 0x20d`) and leaves the
  * volume free again — and twice the PDF is 11,516 KiB, between the two.
- * Counting the PDF once judged a changed 12 MB `.ppt` with a 14 MB PDF, on
- * 26 MiB free, as the document's fault. So a document that came out without
+ * Counted once, a changed 12 MB `.ppt` with a 14 MB PDF, on 26 MiB free,
+ * would be judged the document's fault. So a document that came out without
  * a PDF is never held against it on a volume with less than 32 MiB left —
  * a volume that is nearly full, not one that is merely in use.
  *
@@ -648,8 +648,8 @@ async function collectOne(
  * answering ENOSPC `Class:Abort`. But the same line comes out when the export
  * fails for the DOCUMENT's sake: a .pptx whose every slide is hidden gives
  * `Class:Write Code:16` on a disk with gigabytes free. Taken as "the volume is
- * full", that deck was converted again every run, never listed unsearchable,
- * and the operator was sent after a disk that was fine. So the
+ * full", that deck would be converted again every run, never listed
+ * unsearchable, and the operator sent after a disk that is fine. So the
  * volume decides (`probeWritable`, `outputVolumeFault`), and this line is only
  * quoted once it has. It is matched to the output it names — stderr is
  * batch-wide.

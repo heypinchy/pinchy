@@ -55,8 +55,8 @@
  * and what a cut leaves is held to the same rules as what came in, because
  * the text either side of a cut can join into a new element.
  *
- * **Every** external relationship goes, hyperlinks included. A first version
- * spared `hyperlink` and was wrong: LibreOffice resolves an `r:link` id
+ * **Every** external relationship goes, hyperlinks included. Sparing
+ * `hyperlink` would be wrong: LibreOffice resolves an `r:link` id
  * WITHOUT checking the relationship's Type, so a hyperlink-labelled
  * relationship used as a picture link fetched exactly like an image one
  * (measured, 3 requests). The same fact is why a kept relationship's TARGET is
@@ -203,8 +203,7 @@ function exceljsParses(name: string): boolean {
  *
  * 32 MiB keeps a single picture below what a sheet at the part cap costs
  * (350 MB), and many of them do not add up: seven 32 MiB pictures peaked at
- * 432 MB, fifteen of 16 MiB — what the old cap let through — at 438 MB. A
- * phone photo is a few MB; a workbook past this is refused by its size.
+ * 432 MB, fifteen of 16 MiB at 438 MB. A phone photo is a few MB; a workbook past this is refused by its size.
  */
 export const XLSX_MAX_ENTRY_BYTES = 32 * MiB;
 
@@ -235,9 +234,9 @@ const MAMMOTH_LIMITS: ZipLimits = {
 /**
  * The largest single Office XML part the preflight reads — and therefore the
  * largest it lets through to LibreOffice. Relationship parts and the
- * content-types part are held to it too: a 4 MiB cap of their own refused a
- * real catalogue whose 25 000 hyperlinks make a 5.1 MB relationship part, and
- * the filter that reads them is one forward pass. Each one is inflated whole
+ * content-types part are held to it too, not to a tighter cap of their own: a
+ * real catalogue's 25 000 hyperlinks make a 5.1 MB relationship part, and the
+ * filter that reads them is one forward pass. Each one is inflated whole
  * into the web process to be checked; the archive's total limit (500 MiB) does not
  * bound that, and a 400 MiB `document.xml` built to stay under the ratio rule
  * took the preflight to 1.3 GB RSS. A thousand-page
@@ -319,9 +318,9 @@ async function readCapped(absPath: string, maxBytes: number): Promise<Buffer> {
  *
  * FAIL CLOSED. A limit violation, a lie about a size, and a central directory
  * this cannot parse are all refusals; none of them is ever handed on to a
- * reader to "diagnose". The earlier version handed parse failures on, and a
- * bomb behind 64 junk bytes is a parse failure here while JSZip opens it
- * without complaint (measured: 989 MB RSS from a 465 KB file).
+ * reader to "diagnose": a bomb behind 64 junk bytes is a parse failure here
+ * while JSZip opens it without complaint (measured: 989 MB RSS from a 465 KB
+ * file).
  */
 async function verifiedCopy(buffer: Buffer, limits: ZipLimits, what: string): Promise<Buffer> {
   try {
@@ -748,8 +747,8 @@ function filterRelationships(
 /**
  * Removes every relationship that is not plainly internal from a `.rels` part.
  *
- * **Every** external relationship goes, hyperlinks included. A first version
- * spared `hyperlink` and was wrong: LibreOffice resolves an `r:link` id
+ * **Every** external relationship goes, hyperlinks included. Sparing
+ * `hyperlink` would be wrong: LibreOffice resolves an `r:link` id
  * WITHOUT checking the relationship's Type, so a hyperlink-labelled
  * relationship used as a picture link fetched exactly like an image one
  * (measured, 3 requests). The package sanitizer below goes further still.
@@ -933,8 +932,8 @@ const OOXML_ROOT_NAMES = new Set([
  *
  * EXACTLY `svg`, for a prefixed name: `<asvg:svgBlip>` is what Office 365 and
  * LibreOffice write next to every SVG picture (and every PowerPoint Icon),
- * and the first version of this pattern — `svg` after ANY prefix, as a prefix
- * of the local name — refused every such document.
+ * and a looser pattern — `svg` after ANY prefix, as a prefix of the local
+ * name — would refuse every such document.
  * Unprefixed, `<svg` stays a byte match, as it is for LibreOffice: `<svgx>`
  * is taken for SVG too.
  */

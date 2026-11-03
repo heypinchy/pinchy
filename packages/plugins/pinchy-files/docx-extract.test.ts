@@ -201,11 +201,10 @@ describe("extractDocxText — the markup mammoth parses is capped, the pictures 
 });
 
 describe("extractDocxText — a long document is read, not refused", () => {
-  // The ceiling used to be 2 MiB: a LibreOffice-written report of 118 pages
-  // is 1.72 MB of markup, so a document of ~140 pages was refused — a
-  // regression, since main read it. The heap-capped child is what bounds the
-  // memory now; the ceiling only turns away what the child could not read
-  // anyway. Each run of these fixtures is one real child, so they get room.
+  // A LibreOffice-written report of 118 pages is 1.72 MB of markup, so a
+  // ceiling of 2 MiB would refuse a document of ~140 pages that main reads.
+  // The heap-capped child is what bounds the memory; the ceiling only turns
+  // away what the child could not read anyway. Each run of these fixtures is one real child, so they get room.
   const LONG_DOCUMENT_TIMEOUT_MS = 60_000;
 
   it(

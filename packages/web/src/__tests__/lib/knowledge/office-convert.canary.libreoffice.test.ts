@@ -596,7 +596,8 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     // An "EMF+ Dual" EMF — what Office and LibreOffice write —
     // draws everything twice. When only its EMF+ layer carries the picture,
     // that layer is dropped and the EMF records stay: the same drawing, its
-    // words included, which a cut used to take out of the index.
+    // words included, which cutting the whole picture would take out of the
+    // index.
     planted(
       "emfplus-dual-svg.docx",
       metafilePicture(

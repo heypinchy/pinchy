@@ -32,11 +32,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { chmod } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { and, eq } from "drizzle-orm";
+import ExcelJS from "exceljs";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
@@ -52,7 +53,7 @@ import {
   type IngestResult,
 } from "@/lib/knowledge/ingest";
 import { OfficeFileRejectedError, StagedCopyWriteError } from "@/lib/knowledge/office-formats";
-import type { XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
+import { extractXlsx as realExtractXlsx, type XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
 import {
   convertOfficeFiles,
   type ConversionOutcome,
@@ -61,7 +62,10 @@ import {
   type PrepareSource,
   type RunConverter,
 } from "@/lib/knowledge/office-convert";
-import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
+import {
+  OFFICE_ARTIFACT_FORMAT_VERSION,
+  OfficeArtifactStore,
+} from "@/lib/knowledge/office-artifacts";
 import { stageOfficeSourceIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 
@@ -1467,6 +1471,36 @@ it("books a workbook refused as too large as unsearchable — listed, final, and
   expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
 });
 
+it("books a workbook refused for its content as unsearchable, and leaves it alone while it is unchanged", async () => {
+  // Through the real reader: a number format no spreadsheet application
+  // writes is refused before exceljs sees it. That is a verdict on these
+  // bytes, as final as a bomb's — not a reader that broke, to be read again on
+  // every run and never named in the unreadable list.
+  const xlsxPath = join(tmpRoot, "formats.xlsx");
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Prices");
+  sheet.addRow(["Item", "Price"]);
+  sheet.addRow(["A-1", 0.15]).getCell(2).numFmt = `0%${"[".repeat(64)}`;
+  await workbook.xlsx.writeFile(xlsxPath);
+
+  const { deps } = fakeDeps();
+  const extractXlsx = vi.fn((path: string) => realExtractXlsx(path));
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+  try {
+    const run = () => ingestDirectory(ORG_ID, tmpRoot, { ...deps, extractXlsx });
+    expect(await run()).toEqual(counts({ unsearchable: 1 }));
+    expect(await run()).toEqual(counts({ skipped: 1 }));
+    expect(extractXlsx).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("formats.xlsx"));
+  } finally {
+    warn.mockRestore();
+  }
+
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
+  expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
+});
+
 it("keeps a changed workbook's indexed version when its reader is killed without a verdict, and reads it again", async () => {
   // The container's OOM killer, aimed at the reader child by its
   // oom_score_adj, says nothing about THIS workbook — the memory may have been
@@ -2019,6 +2053,139 @@ it("spends one converter attempt per batch when the converter never answers at a
   expect(convertOffice).toHaveBeenCalledTimes(1);
   expect(extractPdf).not.toHaveBeenCalled();
   expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
+});
+
+describe("an Office document converted under an earlier artifact format", () => {
+  // AGENTS.md § "Test Migrations Against Pre-Existing Data". Changing the
+  // conversion rules bumps OFFICE_ARTIFACT_FORMAT_VERSION, which moves the
+  // store to a new directory — but an UNCHANGED document never asks the store
+  // for anything: its hash matches and it has chunks. The upgrade state is a
+  // document whose chunks came from the old artifact, read by code with new
+  // rules, and every test that starts from an empty database is blind to it.
+  //
+  // What the earlier conversion produced is what makes this matter: an
+  // artifact converted before the relationship allow-list may hold text a
+  // planted document drew in from the server's disk.
+  const LEAKED = "root:x:0:0:root:/root:/bin/bash daemon:x:1:1:daemon:/usr/sbin";
+  const CLEAN = "Every delivery is checked against the order before it goes into storage.";
+  let storeRoot: string;
+
+  beforeEach(() => {
+    storeRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-format-"));
+  });
+
+  afterEach(() => {
+    rmSync(storeRoot, { recursive: true, force: true });
+  });
+
+  /**
+   * The real converter over a store at `formatVersion` (the current one when
+   * omitted), with LibreOffice replaced by a stand-in that writes `text` as
+   * every PDF, and the extractor reading that text back.
+   */
+  function converterDeps(
+    formatVersion: number | undefined,
+    text: string,
+    prepareSource: PrepareSource = async () => null
+  ) {
+    const store = new OfficeArtifactStore(storeRoot, formatVersion ? { formatVersion } : {});
+    const runConverter = vi.fn<RunConverter>(async ({ inputs, outDir }) => {
+      for (const staged of inputs) {
+        const pdf = join(outDir, basename(staged, extname(staged)) + ".pdf");
+        writeFileSync(pdf, `%PDF-1.4\n${text}\n`);
+      }
+      return { code: 0, signal: null, stderr: "" };
+    });
+    const deps: IngestDeps = {
+      embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05))),
+      extractPdf: vi.fn(async (artifact: string) => [
+        { page: 1, text: readFileSync(artifact, "utf8").replace("%PDF-1.4", "").trim() },
+      ]),
+      extractXlsx: neverCalledXlsx,
+      convertOffice: (sources: readonly OfficeSource[]) =>
+        convertOfficeFiles(sources, {
+          store,
+          runConverter,
+          prepareSource,
+          countPdfWords: async () => 10,
+          countSourceWords: async () => null,
+        }),
+      ocrModel: null,
+    };
+    return { deps, store, runConverter };
+  }
+
+  /** `docPath`, indexed under format version 1, its chunks carrying `LEAKED`. */
+  async function indexedUnderFormatOne(docPath: string) {
+    writeFileSync(docPath, "{\\rtf1 Angebot}");
+    const earlier = converterDeps(1, LEAKED);
+    expect(await ingestDirectory(ORG_ID, tmpRoot, earlier.deps)).toEqual(counts({ indexed: 1 }));
+    expect(await earlier.store.get(sha256(docPath))).not.toBeNull();
+
+    // The row as the upgrade finds it: written before the version its chunks
+    // were read from was recorded on it.
+    await db
+      .update(kbDocuments)
+      .set({ artifactFormatVersion: null })
+      .where(eq(kbDocuments.orgId, ORG_ID));
+
+    const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+    const chunks = await chunksFor(doc.id);
+    expect(chunks.map((chunk) => chunk.chunkText).join("\n")).toContain(LEAKED);
+    return { doc, chunks };
+  }
+
+  function sha256(path: string): string {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
+  }
+
+  it("converts it again under the current rules and replaces the chunks the earlier artifact gave", async () => {
+    const docPath = join(tmpRoot, "Angebot.doc");
+    const { doc: before, chunks: chunksBefore } = await indexedUnderFormatOne(docPath);
+
+    const current = converterDeps(undefined, CLEAN);
+    expect(await ingestDirectory(ORG_ID, tmpRoot, current.deps)).toEqual(counts({ indexed: 1 }));
+
+    // Converted again, into the store the preview reads.
+    expect(current.runConverter).toHaveBeenCalledTimes(1);
+    expect(current.store.formatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
+    expect(await current.store.get(sha256(docPath))).not.toBeNull();
+
+    // Same document, new chunks: none of the earlier ones survive.
+    const [after] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+    expect(after.id).toBe(before.id);
+    const chunksAfter = await chunksFor(after.id);
+    expect(chunksAfter.length).toBeGreaterThan(0);
+    const earlierIds = new Set(chunksBefore.map((chunk) => chunk.id));
+    expect(chunksAfter.some((chunk) => earlierIds.has(chunk.id))).toBe(false);
+    const text = chunksAfter.map((chunk) => chunk.chunkText).join("\n");
+    expect(text).toContain(CLEAN);
+    expect(text).not.toContain(LEAKED);
+
+    // Once is enough: the next run finds it current and leaves it alone.
+    expect(await ingestDirectory(ORG_ID, tmpRoot, current.deps)).toEqual(counts({ skipped: 1 }));
+    expect(current.runConverter).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the earlier artifact's chunks when the current rules refuse the document", async () => {
+    // The case the bump exists for: a document the new rules will not convert
+    // at all. Keeping the chunks the old conversion gave would keep exactly
+    // what the new rules refuse searchable.
+    const docPath = join(tmpRoot, "Angebot.doc");
+    const { doc: before } = await indexedUnderFormatOne(docPath);
+
+    const current = converterDeps(undefined, CLEAN, async () => {
+      throw new OfficeFileRejectedError("unexpected_content", "not what its name says");
+    });
+    expect(await ingestDirectory(ORG_ID, tmpRoot, current.deps)).toEqual(
+      counts({ unsearchable: 1 })
+    );
+
+    expect(current.runConverter).not.toHaveBeenCalled();
+    const [after] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+    expect(after.id).toBe(before.id);
+    expect(await chunksFor(after.id)).toHaveLength(0);
+  });
 });
 
 it("leaves PDFs indexed before Office support was added exactly as they were", async () => {

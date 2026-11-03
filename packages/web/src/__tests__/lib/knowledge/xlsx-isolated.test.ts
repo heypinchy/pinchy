@@ -108,14 +108,21 @@ describe("the isolated reader answers exactly what the in-process reader answers
     expect(await readSheetRangeIsolated(path, "Nope", 1, 2)).toBeNull();
   });
 
-  it("carries the reader's own diagnoses across: unreadable stays unreadable, a bomb stays too large", async () => {
-    const notAWorkbook = join(tmpRoot, "not.xlsx");
-    await writeFile(notAWorkbook, "just text");
-    const unreadable = await rejection(extractXlsxIsolated(notAWorkbook));
+  it("carries the reader's own diagnoses across: unreadable stays unreadable, a refusal stays a refusal", async () => {
+    const vanished = join(tmpRoot, "vanished.xlsx");
+    const unreadable = await rejection(extractXlsxIsolated(vanished));
     expect(unreadable).toBeInstanceOf(XlsxExtractionError);
     expect(unreadable.message).toBe(
-      `Cannot read spreadsheet ${notAWorkbook}: the file could not be opened as a workbook`
+      `Cannot read spreadsheet ${vanished}: the file could not be opened as a workbook`
     );
+
+    // Refused for its content: the same verdict on the file on this side of
+    // the boundary, which the ingest lists as unsearchable rather than retries.
+    const notAWorkbook = join(tmpRoot, "not.xlsx");
+    await writeFile(notAWorkbook, "just text");
+    const refused = await rejection(extractXlsxIsolated(notAWorkbook));
+    expect(refused).toBeInstanceOf(OfficeFileRejectedError);
+    expect((refused as OfficeFileRejectedError).code).toBe("unexpected_content");
 
     const bomb = join(tmpRoot, "bomb.xlsx");
     await writeFile(bomb, declaredBomb(1024 * MiB));
@@ -296,9 +303,9 @@ describe("the fence itself", () => {
 
 describe("a preview nobody waits for any more", () => {
   // Every rows preview queues behind the one reader child, and so does the
-  // indexer. Twenty reloads of a preview used to queue twenty reads of up to
-  // two minutes each — none of them wanted any more — in front of the
-  // nightly reindex. A preview carries its request's signal; the indexer
+  // indexer. Without a way out, twenty reloads of a preview would queue twenty
+  // reads of up to two minutes each — none of them wanted any more — in front
+  // of the nightly reindex. A preview carries its request's signal; the indexer
   // carries none and is never cut short by somebody else's abort.
 
   /** A child that logs `start <path>` and answers after `ms`; the parent's request names the log in `path`. */

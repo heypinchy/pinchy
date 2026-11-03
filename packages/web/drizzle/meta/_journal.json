@@ -540,6 +540,13 @@
       "when": 1793563042935,
       "tag": "0076_session_impersonated_by",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1793665593434,
+      "tag": "0077_kb_doc_artifact_format_version",
+      "breakpoints": true
     }
   ]
 }

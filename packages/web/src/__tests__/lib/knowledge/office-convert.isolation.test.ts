@@ -1,12 +1,12 @@
 /**
  * The server never holds an Office file it converts.
  *
- * Staging a checked copy used to read the file into the web process and hold
- * it three times over — the original, the verified copy, the sanitized copy —
- * plus once more for the word-count oracle: one ~190 MB deck cost the server
- * +560–600 MB before LibreOffice started, and with the embedding model loaded
- * during a reindex that OOM-killed a 1 GB container. A boot-requeued run then
- * killed it again. So the preflight, the staging and the oracle's guarded read
+ * Staging a checked copy holds the file three times over — the original, the
+ * verified copy, the sanitized copy — plus once more for the word-count
+ * oracle: measured in the web process, one ~190 MB deck cost +560–600 MB
+ * before LibreOffice started, and with the embedding model loaded during a
+ * reindex that OOM-kills a 1 GB container. A boot-requeued run then kills it
+ * again. So the preflight, the staging and the oracle's guarded read
  * run in the heap-capped reader child (`xlsx-isolated.ts`), and this process
  * gets back metadata, never bytes.
  *

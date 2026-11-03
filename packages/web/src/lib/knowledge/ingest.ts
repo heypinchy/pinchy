@@ -75,7 +75,7 @@ import {
   OFFICE_CONVERT_BATCH_SIZE,
 } from "./office-formats";
 import type { ChunkLocator } from "./locator";
-import { hashFileContents } from "./office-artifacts";
+import { hashFileContents, OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
 import type { IngestPage, IngestResult } from "./types";
@@ -427,6 +427,22 @@ interface ExtractedDocument {
   reader: "pdf" | "sheets" | "converter";
 }
 
+/**
+ * The artifact format version a document's chunks are read from: the current
+ * one for an Office document the converter turns into a PDF, none for every
+ * other format.
+ *
+ * Recorded on the row (`kb_documents.artifact_format_version`) and compared on
+ * every run, because the artifact store alone cannot carry a change of rules
+ * to an unchanged document: its hash matches, it has chunks, and it never asks
+ * the store for anything. A row whose version is not this one is converted and
+ * read again — its chunks, and the artifact a citation opens, then both come
+ * from the current rules.
+ */
+function artifactFormatVersionFor(absPath: string): number | null {
+  return isOfficeFile(absPath) ? OFFICE_ARTIFACT_FORMAT_VERSION : null;
+}
+
 /** The fields every page-shaped extraction derives from its pages alike. */
 function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text" | "incomplete"> {
   return {
@@ -563,11 +579,12 @@ async function extractDocument(
   if (isSpreadsheetFile(absPath)) {
     const extraction = await deps.extractXlsx(absPath).catch((err: unknown) => {
       if (!(err instanceof OfficeFileRejectedError)) throw err;
-      // Refused unread: too large to load into this process (a compressed bomb
-      // is the case that matters). That is a verdict on THIS file, and a final
-      // one — retrying reads the same bytes — so it becomes a row with no
-      // chunks, which is exactly how the unreadable list (unsearchable.ts)
-      // finds it, with its reason in the server log.
+      // Refused unread: too large to load (a compressed bomb is the case that
+      // matters), or not the workbook its name says (a broken archive, a
+      // number format exceljs would choke on). That is a verdict on THIS file,
+      // and a final one — retrying reads the same bytes — so it becomes a row
+      // with no chunks, which is exactly how the unreadable list
+      // (unsearchable.ts) finds it, with its reason in the server log.
       console.warn(`[kb-ingest] ${absPath}: not read — ${err.message}`);
       return null;
     });
@@ -771,7 +788,11 @@ function ocrSetup(deps: IngestDeps): string {
 }
 
 /** What a read leaves on its document row (`kb_documents`). */
-type ExtractionRecord = { emptyExtractionBy: string | null; incompleteReads: number };
+type ExtractionRecord = {
+  emptyExtractionBy: string | null;
+  incompleteReads: number;
+  artifactFormatVersion: number | null;
+};
 
 /**
  * What to record about a read, given how many reads before it in a row did
@@ -784,6 +805,7 @@ type ExtractionRecord = { emptyExtractionBy: string | null; incompleteReads: num
  * it is still rebuilt.
  */
 function extractionRecord(
+  absPath: string,
   extracted: ExtractedDocument,
   deps: IngestDeps,
   previousIncompleteReads: number
@@ -795,6 +817,7 @@ function extractionRecord(
     emptyExtractionBy:
       extracted.chunks.length === 0 && settled ? `${EXTRACTION_VERSION}|${reader}` : null,
     incompleteReads,
+    artifactFormatVersion: artifactFormatVersionFor(absPath),
   };
 }
 
@@ -854,11 +877,18 @@ async function ingestFile(
       await db.update(kbDocuments).set({ status }).where(eq(kbDocuments.id, existing.id));
     }
 
+    // Chunks read from an artifact the current conversion rules did not make
+    // are owed a new read, whatever else is on record: the rules changed
+    // because of what such an artifact may hold.
+    const current = existing.artifactFormatVersion === artifactFormatVersionFor(absPath);
+    // Retries already spent were spent under the earlier rules.
+    const previousIncompleteReads = current ? existing.incompleteReads : 0;
+
     // A read that did not finish is owed another one, chunks or not: a scan
     // with a typed cover sheet has chunks of its own even when every vision
     // call behind it failed.
     const retryOwed =
-      existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS;
+      !current || (existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS);
 
     // A file with no text at all: the last read found nothing. Reading it
     // again with the same setup would find the same nothing — and under the
@@ -884,7 +914,8 @@ async function ingestFile(
     // Robustness case: a document row survives with zero chunks and no
     // empty read on record (a prior ingest crashed after the document insert
     // but before chunk writes, an operator hand-deleted kb_chunks rows, or
-    // the row predates the record), or its last read is owed a retry. The
+    // the row predates the record), or its last read is owed a retry — which
+    // a read from an earlier artifact format always is. The
     // content hash still matches the file on disk, so a naive "hash matches ->
     // skip" would leave this document unsearchable while silently reporting
     // success. We read it again instead and rebuild its chunks in place (same
@@ -893,10 +924,12 @@ async function ingestFile(
       extractDocument(absPath, deps, resolveArtifact, contentHash)
     );
     // A retry that fails worse than the read before it must not cost the text
-    // that read found: an outage that returned keeps what is stored.
+    // that read found: an outage that returned keeps what is stored. Never
+    // chunks from an earlier artifact format, though — what the current rules
+    // refuse must not stay searchable through what the earlier ones made.
     const keepStored =
-      storedChunks > 0 && extracted.incomplete && extracted.chunks.length < storedChunks;
-    const record = extractionRecord(extracted, deps, existing.incompleteReads);
+      current && storedChunks > 0 && extracted.incomplete && extracted.chunks.length < storedChunks;
+    const record = extractionRecord(absPath, extracted, deps, previousIncompleteReads);
     const written = await writeChunks(
       existing.id,
       orgId,
@@ -944,7 +977,7 @@ async function ingestFile(
       // window in which a crash could leave it claiming a read that did not
       // finish. A crash before the chunks leaves a row the zero-chunk branch
       // rebuilds.
-      ...extractionRecord(extracted, deps, 0),
+      ...extractionRecord(absPath, extracted, deps, 0),
     })
     .returning();
 

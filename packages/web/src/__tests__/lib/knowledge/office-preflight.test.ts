@@ -5,7 +5,7 @@
  * LibreOffice go and fetch something.
  *
  * Everything here is deterministic and runs on every PR; the matching proof
- * that LibreOffice itself no longer fetches is the gated
+ * that LibreOffice itself does not fetch is the gated
  * `office-convert.libreoffice.test.ts`.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -558,9 +558,9 @@ describe("readWorkbookBuffer", () => {
 
   it("refuses a bomb hidden behind a junk prefix — the parse failure is a refusal, not a hand-off", async () => {
     // Truthful about its 450 MiB, so the ratio rule refuses it bare. With 64
-    // bytes in front the central directory no longer parses; that used to be
-    // swallowed and the file handed to exceljs, whose JSZip skips the prefix
-    // and inflated it (measured: 989 MB RSS from a 465 KB file).
+    // bytes in front the central directory does not parse; handed to exceljs
+    // anyway, its JSZip skips the prefix and inflates it (measured: 989 MB RSS
+    // from a 465 KB file).
     const truthful = replaceEntry(
       await realWorkbook(),
       "xl/worksheets/sheet1.xml",
@@ -622,7 +622,7 @@ describe("relationship and content-types parts are held to the per-part XML limi
     );
   }, 60_000);
 
-  it("reads a content-types part past the old 4 MiB cap", async () => {
+  it("reads a content-types part over 4 MiB", async () => {
     const overrides = Array.from(
       { length: 40_000 },
       (_, i) =>
@@ -1435,7 +1435,8 @@ describe("a kept part is vetted by what it IS, not by its relationship's Type", 
   // detects a picture's format from its bytes. So a part kept as a FONT, or
   // as Office XML, is drawn as an SVG if its bytes say SVG — and an SVG reads
   // local files under the locked profile. Measured against LibreOffice 26.2,
-  // every vector below put a local file's text into the PDF before this.
+  // every vector below puts a local file's text into the PDF when it is not
+  // cut.
   const gzip = (text: string) => gzipSync(Buffer.from(text));
   const reachingSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="400" height="200"><image width="400" height="60" xlink:href="file:///etc/hostname"/></svg>`;
 

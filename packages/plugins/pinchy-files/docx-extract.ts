@@ -5,11 +5,11 @@
  * mammoth builds a DOM at up to ~300x the markup it parses, and the OpenClaw
  * container gets 2 GB. The zip guard (`docx-zip-guard.ts`) bounds that markup
  * before mammoth sees it — but it does so by PREDICTING which parts mammoth
- * parses, and that prediction kept proving wrong, one spelling at a time: an
- * entity, a character the XML parser normalises, a prefixed attribute, a name
- * JSZip resolves. Each one was a 13 KB file that took this process past 1 GB. The guard now refuses every one of those
- * shapes, and stays as the cheap first layer; what bounds the memory no
- * longer depends on it being right.
+ * parses, and a prediction can miss a spelling: an entity, a character the XML
+ * parser normalises, a prefixed attribute, a name JSZip resolves. Each of
+ * those is a 13 KB file that takes the process reading it past 1 GB
+ * (measured). The guard refuses every such shape it knows and stays as the
+ * cheap first layer; what bounds the memory does not depend on it being right.
  *
  * So the conversion runs in its own `node`, fenced three ways — the same
  * fence the knowledge base puts around its spreadsheet reader

@@ -274,7 +274,9 @@ describe("cell values", () => {
     // every `[` with no `]` after it: 100 000 of them made exceljs's load
     // take 4 s, 400 000 two minutes, before our own code saw a cell. Excel
     // caps a format at 255 characters, so a workbook with one like this was
-    // not written by Excel; it is refused, as fast as the guard reads it.
+    // not written by Excel; it is refused, as fast as the guard reads it —
+    // as a refusal, a verdict on the file that ingest lists as unsearchable,
+    // not as a reader that broke and is retried every run.
     const path = await buildWorkbook("hostile-format.xlsx", (workbook) => {
       const sheet = workbook.addWorksheet("Formats");
       sheet.addRow(["Kind", "Value"]);
@@ -283,8 +285,10 @@ describe("cell values", () => {
     });
 
     const started = Date.now();
-    await expect(extractXlsx(path)).rejects.toBeInstanceOf(XlsxExtractionError);
+    const err = await extractXlsx(path).catch((e: unknown) => e);
     expect(Date.now() - started).toBeLessThan(3000);
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("unexpected_content");
   });
 
   it("still strips quoted runs, escapes and closed brackets from a number format", async () => {
@@ -458,22 +462,28 @@ describe("chunking", () => {
 });
 
 describe("unreadable files fail at document level", () => {
-  it("throws with a reason for a file that is not a zip at all", async () => {
+  it("refuses a file that is not a zip at all as not what its name says, with a reason", async () => {
+    // The same bytes every run: a verdict on the file, which the ingest lists
+    // as unsearchable instead of reading it again every night.
     const path = join(tmpRoot, "corrupt.xlsx");
     await writeFile(path, "this is plain text, not a workbook");
 
-    await expect(extractXlsx(path)).rejects.toThrow(XlsxExtractionError);
-    await expect(extractXlsx(path)).rejects.toThrow(/corrupt\.xlsx/);
+    const err = await extractXlsx(path).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("unexpected_content");
+    expect((err as Error).message).toMatch(/not a valid workbook archive/);
   });
 
-  it("throws for a legacy binary .xls, which exceljs cannot read", async () => {
+  it("refuses a legacy binary .xls, which exceljs cannot read", async () => {
     // exceljs reads .xlsx as a zip, so no OLE2 container gets past the opener,
     // whatever its BIFF payload — legacy Excel is out of scope for this
     // extractor and has to say so loudly.
     const path = join(tmpRoot, "legacy.xls");
     await writeFile(path, Buffer.concat([OLE2_MAGIC, Buffer.alloc(512)]));
 
-    await expect(extractXlsx(path)).rejects.toThrow(XlsxExtractionError);
+    const err = await extractXlsx(path).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("unexpected_content");
   });
 
   it("throws for a missing file", async () => {
@@ -512,8 +522,9 @@ describe("unreadable files fail at document level", () => {
   });
 
   it("keeps the source path on the error so the caller can name the document", async () => {
-    const path = join(tmpRoot, "corrupt.xlsx");
-    await writeFile(path, "nope");
+    // A file that is gone by the time it is read says nothing about its
+    // content: unreadable, not refused.
+    const path = join(tmpRoot, "vanished.xlsx");
 
     const error = await extractXlsx(path).catch((err: unknown) => err);
     expect(error).toBeInstanceOf(XlsxExtractionError);
@@ -832,7 +843,7 @@ describe("a workbook that lies about its size, or hides behind a prefix, never r
     }
   });
 
-  it("refuses a bomb behind a junk prefix as unreadable: exceljs never called, memory flat", async () => {
+  it("refuses a bomb behind a junk prefix as not a workbook: exceljs never called, memory flat", async () => {
     const truthful = replaceEntry(
       await baseWorkbook(),
       "xl/worksheets/sheet1.xml",
@@ -846,9 +857,10 @@ describe("a workbook that lies about its size, or hides behind a prefix, never r
     await writeFile(path, Buffer.concat([Buffer.alloc(64, 0x41), truthful]));
 
     const { err, growth, excelCalls } = await readBomb(path, extractXlsx);
-    // A malformed archive keeps the existing "cannot read this workbook"
-    // contract (XlsxExtractionError) — it is just never handed to exceljs.
-    expect(err).toBeInstanceOf(XlsxExtractionError);
+    // A malformed archive is refused like any other file that is not what its
+    // name says — and never handed to exceljs.
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("unexpected_content");
     expect(excelCalls).toBe(0);
     expect(growth).toBeLessThan(128 * MiB);
   });

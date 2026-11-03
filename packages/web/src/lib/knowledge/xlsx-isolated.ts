@@ -22,10 +22,11 @@
  *  - A timeout, after which the child is killed.
  *
  * Only ONE of those ends is a verdict on this file: V8's own "heap out of
- * memory" banner, which says the heap cap was reached reading it. That — and
- * a refusal the child diagnosed itself — is thrown as
- * `OfficeFileRejectedError("too_large")`, which ingest books as a document
- * with no chunks and the rows route answers with 413. Everything else is
+ * memory" banner, which says the heap cap was reached reading it. That is
+ * thrown as `OfficeFileRejectedError("too_large")`, and a refusal the child
+ * diagnosed itself crosses as the `OfficeFileRejectedError` it was, code and
+ * all; ingest books either as a document with no chunks, and the rows route
+ * answers 413 for too large and 422 for the rest. Everything else is
  * thrown as a plain error: a SIGKILL without the banner is the container's
  * OOM killer, which `oom_score_adj` aims at the child whatever filled the
  * memory; a timeout can be a host under load; a crash or a child that never
@@ -47,21 +48,21 @@
  * The same child also counts a `.docx`'s words for the conversion's oracle
  * (`countDocxWordsIsolated`). mammoth builds a DOM at
  * up to ~300x the markup it parses, and the markup ceiling in front of it
- * (`MAX_DOCX_MARKUP_BYTES`) is a PREDICTION of which parts mammoth parses —
- * one that kept proving wrong, one spelling at a time, each time a 13 KB
- * file worth ~900 MB in the web process. Behind this fence, a
- * wrong prediction costs the child, never the server. It shares the gate, so
+ * (`MAX_DOCX_MARKUP_BYTES`) is a PREDICTION of which parts mammoth parses: a
+ * part it misses is a 13 KB file worth ~900 MB (measured) in whatever
+ * process parses it. Behind this fence, a wrong prediction costs the child,
+ * never the server. It shares the gate, so
  * the memory one child may use is still the memory all of them use.
  *
  * And it stages every Word and PowerPoint file for conversion
  * (`stageOfficeSourceIsolated`): reads it, checks
  * it, writes the checked copy where the converter will find it, and answers
- * with what it did — never with the bytes. In the web process that staging
- * held a file up to three times over (the original, the verified copy, the
- * sanitized one, each up to 200 MB) and the oracle read it once more: one
- * ~190 MB deck cost the server +570 MB before LibreOffice started, which
- * beside the embedding model OOM-killed a 1 GB container — and a run requeued
- * at boot killed it again. Those copies are Buffers, which the heap cap does
+ * with what it did — never with the bytes. Staging holds a file up to three
+ * times over (the original, the verified copy, the sanitized one, each up to
+ * 200 MB) and the oracle reads it once more: measured in the web process, one
+ * ~190 MB deck cost +570 MB before LibreOffice started, which beside the
+ * embedding model OOM-kills a 1 GB container — and a run requeued at boot
+ * kills it again. Those copies are Buffers, which the heap cap does
  * not bound; what keeps them off the server is that they are never in it, and
  * `oom_score_adj` is what makes the CHILD the one the kernel kills when they
  * do not fit. A child that stops without the heap banner throws
@@ -416,8 +417,8 @@ export function runSheetReader(
 }
 
 /**
- * `extractXlsx`, in a child process. Same result, same errors — plus a
- * refusal (`OfficeFileRejectedError("too_large")`) for a workbook whose read
+ * `extractXlsx`, in a child process. Same result, same errors, refusals
+ * included — plus a refusal (`OfficeFileRejectedError("too_large")`) for a workbook whose read
  * ran out of heap, and a plain error for a reader that died any other way.
  */
 export async function extractXlsxIsolated(
