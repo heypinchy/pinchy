@@ -506,3 +506,25 @@ describe("shownAs: every cut the card makes, stored in the node", () => {
     }
   });
 });
+
+// Where a character begins is read once, front to back. Asked per offset, a
+// run of regional indicators is walked back to its start on every question —
+// whether two indicators are a flag depends on how many stand before them —
+// and the summary of one 200,000-character value took seconds of the server's
+// one event loop, for every user at once.
+describe("shownAs: time grows with the text, not with its square", () => {
+  const indicators = (count: number) =>
+    Array.from({ length: count }, (_, i) => String.fromCodePoint(0x1f1e6 + (i % 26))).join("");
+
+  it("cuts 200,000 characters of one run of regional indicators in well under a second", () => {
+    const text = `${"a".repeat(100)}${indicators(199_900)}`;
+    shownAs(text, false);
+    const started = performance.now();
+    const node = shownAs(text, false) as Previewed;
+    const elapsed = performance.now() - started;
+    expect(node.parts.at(-1)).toBe(text.length);
+    // Linear, this takes tens of milliseconds; the bound leaves room for a
+    // loaded machine and still fails the per-offset walk, which took 1.9 s.
+    expect(elapsed).toBeLessThan(600);
+  });
+});

@@ -6,7 +6,7 @@ import { gateCheckSchema } from "@/lib/schemas/approvals";
 import { decideGate } from "@/lib/approvals/service";
 import { computeArgsDigest } from "@/lib/approvals/digest";
 import { describeRefusal, summarizeCall, type SummaryLimit } from "@/lib/approvals/summary";
-import { buildApprovalPrompt } from "@/lib/approvals/prompt";
+import { approvalPromptFor } from "@/lib/approvals/prompt";
 import { resolveConfirmation, toolIsConfigured } from "@/lib/approvals/policy";
 import { collectCallModels, makeRefResolver } from "@/lib/approvals/call-models";
 import { readPluginSecret } from "@/lib/plugin-secrets-source";
@@ -92,7 +92,8 @@ export async function POST(request: NextRequest) {
 
   const argsDigest = computeArgsDigest(params);
   const refRecord = makeRefResolver(refKey);
-  const { summary: argsSummary, exceeded } = summarizeCall(params, { refRecord });
+  const call = summarizeCall(params, { refRecord });
+  const { summary: argsSummary, exceeded } = call;
   const requesterName = async () => {
     const [requester] = await db
       .select({ name: users.name })
@@ -137,8 +138,10 @@ export async function POST(request: NextRequest) {
 
   // The wording every approval surface shows, and where "allow" runs the tool
   // as surely as the card's Approve does. Built before anything is opened: a
-  // call whose hosts it cannot all name is refused here (`buildApprovalPrompt`).
-  const approval = buildApprovalPrompt(toolName, params, resources, { refRecord });
+  // call whose hosts it cannot all name is refused here (`approvalPromptFor`).
+  // From the summary above: summarized again, a large call would cost the
+  // server's one event loop twice.
+  const approval = approvalPromptFor(toolName, call, resources);
   if ("exceeded" in approval) return refuse(approval.exceeded);
 
   const result = await decideGate({

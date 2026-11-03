@@ -48,6 +48,19 @@ vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => ({ request: gatewayRequest }),
 }));
 
+// Counted, not replaced: every call goes through to the real summary.
+const { summarizeSpy } = vi.hoisted(() => ({ summarizeSpy: { calls: 0 } }));
+vi.mock("@/lib/approvals/summary", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/approvals/summary")>();
+  return {
+    ...actual,
+    summarizeCall: (...args: Parameters<typeof actual.summarizeCall>) => {
+      summarizeSpy.calls++;
+      return actual.summarizeCall(...args);
+    },
+  };
+});
+
 const mockGetSession = vi.fn();
 vi.mock("@/lib/auth", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
@@ -273,6 +286,18 @@ describe("approval routes (integration, real DB)", () => {
     // confirmation into a failed tool call rather than an ugly card.
     expect(res.approval.title.length).toBeLessThanOrEqual(80);
     expect(res.approval.description.length).toBeLessThanOrEqual(256);
+  });
+
+  // Summarizing a large call costs real CPU on the server's one event loop,
+  // which every user shares: the card's summary and the prompt are built from
+  // one summary, not two.
+  it("summarizes a gated call once for both the card and the prompt", async () => {
+    summarizeSpy.calls = 0;
+    const res = await (
+      await gateCheck(gateReq(gateBody({ toolName: "odoo_write", params: { recordId: 5 } })))
+    ).json();
+    expect(res.approval.description).toContain("5");
+    expect(summarizeSpy.calls).toBe(1);
   });
 
   it("sends no prompt text when nothing is being confirmed", async () => {

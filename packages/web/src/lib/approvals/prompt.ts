@@ -2,6 +2,7 @@ import { TOOL_REGISTRY } from "@/lib/tool-registry";
 import {
   renderText,
   summarizeCall,
+  type CallSummary,
   type SummarizeOptions,
   type SummaryLimit,
 } from "@/lib/approvals/summary";
@@ -145,6 +146,19 @@ export function buildApprovalPrompt(
    * reads as the record it names here too. */
   options: SummarizeOptions = {}
 ): ApprovalPrompt | { exceeded: SummaryLimit } {
+  return approvalPromptFor(toolName, summarizeCall(params, options), resources);
+}
+
+/**
+ * `buildApprovalPrompt` for a call already summarized. The gate builds the
+ * card's summary and the prompt from one summary: summarizing a large call
+ * costs real CPU on the server's one event loop, which every user shares.
+ */
+export function approvalPromptFor(
+  toolName: string,
+  call: Pick<CallSummary, "summary" | "hosts">,
+  resources: (string | null)[] = []
+): ApprovalPrompt | { exceeded: SummaryLimit } {
   const known = TOOL_REGISTRY.find((tool) => tool.id === toolName);
 
   // An unknown tool still gets a card, and the card still has to say something.
@@ -162,7 +176,7 @@ export function buildApprovalPrompt(
     APPROVAL_TITLE_MAX
   );
 
-  const { summary, hosts } = summarizeCall(params, options);
+  const { summary, hosts } = call;
   const args = describeArgs(summary);
   const lead = known?.description ?? `The agent wants to run ${toolName}.`;
   const whole = args ? `${lead} — ${args}` : lead;

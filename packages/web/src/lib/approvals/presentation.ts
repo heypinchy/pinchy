@@ -144,6 +144,8 @@ interface Characters {
   startsAt(at: number): boolean;
   /** The last offset after `floor` and at or before `at` where one begins, or -1. */
   lastStart(at: number, floor: number): number;
+  /** Is offset `at` inside a `⟨…⟩` marker? Every `⟨` opens one Pinchy wrote. */
+  insideMarker(at: number): boolean;
 }
 
 /**
@@ -151,22 +153,31 @@ interface Characters {
  * (UAX #29), read with the WHOLE text — never with a part of it. Whether two
  * regional indicators are one flag depends on how many stand before them in
  * their run, wherever before the part it began.
+ *
+ * Read once, front to back, into one flag per offset. Asked per offset
+ * (`segments.containing`), the segmenter walks a run of regional indicators
+ * back to its start on every question, and one 200,000-character run took
+ * 1.9 s to cut — on the server's one event loop.
  */
 function characters(text: string): Characters {
-  const segments = GRAPHEMES.segment(text);
+  const starts = new Uint8Array(text.length + 1);
+  for (const { index } of GRAPHEMES.segment(text)) starts[index] = 1;
+  const marked = new Uint8Array(text.length + 1);
+  let open = false;
+  for (let at = 1; at <= text.length; at++) {
+    const char = text.charAt(at - 1);
+    if (char === "⟨") open = true;
+    else if (char === "⟩") open = false;
+    marked[at] = open ? 1 : 0;
+  }
   return {
-    startsAt: (at) => segments.containing(at)!.index === at,
+    startsAt: (at) => starts[at] === 1,
     lastStart(at, floor) {
-      const index = segments.containing(at)!.index;
-      return index > floor ? index : -1;
+      for (let index = at; index > floor; index--) if (starts[index] === 1) return index;
+      return -1;
     },
+    insideMarker: (at) => marked[at] === 1,
   };
-}
-
-/** Is offset `at` inside a `⟨…⟩` marker? Every `⟨` opens one Pinchy wrote. */
-function insideMarker(text: string, at: number): boolean {
-  const open = text.lastIndexOf("⟨", at - 1);
-  return open !== -1 && text.slice(open, at).indexOf("⟩") === -1;
 }
 
 /** Is the code point at `at` a regional indicator — half of a flag? */
@@ -217,15 +228,17 @@ function partEnd(
   if (afterSpace) {
     for (let at = limit; at > start; at--) {
       const spaced = SPACING.has(text.charAt(at - 1));
-      if (spaced && chars.startsAt(at) && !insideMarker(text, at)) return at;
+      if (spaced && chars.startsAt(at) && !chars.insideMarker(at)) return at;
     }
   }
   for (let at = chars.lastStart(limit, start); at > start; at = chars.lastStart(at - 1, start)) {
-    if (!insideMarker(text, at)) return at;
+    if (!chars.insideMarker(at)) return at;
   }
   let end = limit;
-  const open = text.lastIndexOf("⟨", end - 1);
-  if (open > start && insideMarker(text, end)) end = open;
+  if (chars.insideMarker(end)) {
+    const open = text.lastIndexOf("⟨", end - 1);
+    if (open > start) end = open;
+  }
   let indicators = 0;
   while (end - 2 * indicators >= 2 && isIndicator(text, end - 2 * indicators - 2)) indicators++;
   return indicators % 2 === 1 && end - 2 > start ? end - 2 : end;
