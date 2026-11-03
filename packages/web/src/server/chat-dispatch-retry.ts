@@ -171,6 +171,27 @@ export interface DispatchRetryDeps {
    * where `config.get` is not.
    */
   awaitAgentReady?: (budgetMs: number) => Promise<boolean>;
+  /**
+   * Has this run been stopped (the stop button, or deactivation) since it was
+   * dispatched? Checked between attempts only: after a race error, after the
+   * readiness gate and after every backoff — never while an attempt streams,
+   * because a run that is actually running is OpenClaw's to end.
+   *
+   * Between attempts nothing is running on OpenClaw, so the abort for this
+   * still-pending run (`abortSessionRun`, by session only) answers
+   * `aborted: false` and stops nothing. Without this check the next attempt
+   * would dispatch the very reply that was just stopped — tools included, up
+   * to `maxTotalMs` later. When it reports true the wrapper returns without
+   * calling `chat()` again and without yielding the race error: the run was
+   * ended on purpose, not by the agent failing.
+   */
+  shouldStop?: () => boolean;
+  /**
+   * Called once when the wrapper returns because `shouldStop` reported the run
+   * stopped — awaited before it returns, so the caller can record that the
+   * stop took effect.
+   */
+  onStopped?: () => Promise<void> | void;
 }
 
 /**
@@ -188,6 +209,8 @@ export interface DispatchRetryDeps {
  *   - Never retries on errors arriving AFTER model output has started, or on any
  *     error not matching a dispatch-race pattern — those are real downstream
  *     failures the caller's error path must handle.
+ *   - Stops without another dispatch, and without yielding anything, once
+ *     `shouldStop` reports the run stopped between attempts.
  *
  * Why "before model output" and not "first chunk": a client-originated message
  * carries a `clientMessageId`, so OpenClaw ACKs an accepted dispatch with a
@@ -208,6 +231,12 @@ export async function* chatWithDispatchRaceRetry(
   const { baseDelayMs, maxDelayMs, maxTotalMs } = { ...DEFAULT_POLICY, ...policy };
   const delay = deps.delay ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = deps.now ?? Date.now;
+
+  const stopped = async (): Promise<boolean> => {
+    if (!deps.shouldStop?.()) return false;
+    await deps.onStopped?.();
+    return true;
+  };
 
   const start = now();
   for (let attempt = 0; ; attempt++) {
@@ -254,6 +283,9 @@ export async function* chatWithDispatchRaceRetry(
       deps.onDispatchRaceObserved?.({ providerError: raceError.text, attempt });
     }
 
+    // Stopped while this attempt was being turned away: nothing to wait for.
+    if (await stopped()) return;
+
     const elapsed = now() - start;
     const remaining = maxTotalMs - elapsed;
     if (remaining <= 0) {
@@ -274,6 +306,7 @@ export async function* chatWithDispatchRaceRetry(
     // model race relies on the capped backoff below.
     if (raceKind === "agent" && deps.awaitAgentReady) {
       const ready = await deps.awaitAgentReady(remaining);
+      if (await stopped()) return;
       if (ready) continue;
       // Not confirmed within the window (timeout, or unobservable on an older
       // Gateway). Fall through to the capped backoff so we keep making bounded
@@ -290,5 +323,6 @@ export async function* chatWithDispatchRaceRetry(
     }
     const backoff = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
     await delay(Math.min(backoff, remainingAfterGate));
+    if (await stopped()) return;
   }
 }

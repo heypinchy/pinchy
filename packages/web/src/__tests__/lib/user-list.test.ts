@@ -19,8 +19,27 @@ describe("mergeUserList", () => {
         role: "member",
         status: "active",
         groups: [],
+        unknownOrigin: false,
       },
     ]);
+  });
+
+  it("carries the unknown-origin flag the API sets on a user", () => {
+    const result = mergeUserList(
+      [
+        {
+          id: "u1",
+          name: "Mallory",
+          email: "m@test.com",
+          role: "member",
+          banned: false,
+          unknownOrigin: true,
+        },
+      ],
+      [],
+      now
+    );
+    expect(result[0]).toMatchObject({ kind: "user", unknownOrigin: true });
   });
 
   it("maps banned users to deactivated status", () => {

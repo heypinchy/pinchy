@@ -5,6 +5,7 @@ import React from "react";
 import "@testing-library/jest-dom";
 import { sendingOpacityClass } from "@/components/assistant-ui/thread";
 import type { MessageState } from "@assistant-ui/react";
+import { holdResults } from "@/test-helpers/hold-results";
 
 // Mutable AuiIf state — lets individual tests flip thread.isRunning so we can
 // exercise the Send/Cancel mutual-exclusion path covered by issue #207.
@@ -557,7 +558,8 @@ describe("AssistantMessage retryable error bubble", () => {
     // the component takes its no-agent shortcut and the test would pass while
     // proving nothing about the read-only case.
     const { apiGet } = await import("@/lib/api-client");
-    vi.mocked(apiGet).mockResolvedValue({ sideEffects: false });
+    const gate = holdResults();
+    vi.mocked(apiGet).mockImplementation(() => gate.resolveWith({ sideEffects: false }));
 
     const mockRetryContinue = vi.fn();
     const { RetryContinueContext, AgentIdContext } = await import("@/components/chat");
@@ -571,7 +573,10 @@ describe("AssistantMessage retryable error bubble", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
-    await waitFor(() => expect(mockRetryContinue).toHaveBeenCalledTimes(1));
+    // The retry fires inside the gate's handler, before React has committed
+    // what that handler set — so wait until the gate's answer is fully applied.
+    await gate.release();
+    expect(mockRetryContinue).toHaveBeenCalledTimes(1);
     expect(apiGet).toHaveBeenCalledWith("/api/agents/agent-1/retry-gate");
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });

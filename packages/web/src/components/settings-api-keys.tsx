@@ -58,8 +58,8 @@ function scopeLabel(scope: ApiKeyScope): string {
  * and keeps working after this person leaves, which is exactly why the column
  * exists: it's how an admin answers "whose key is this, and do we rotate it
  * now they're gone?" `name` is a snapshot (so it survives their user row
- * being deleted); `active` is resolved live and is false once they're banned
- * or gone.
+ * being deleted); `active` is resolved live and is false once they're banned,
+ * demoted from admin, or gone.
  */
 interface ApiKeyCreator {
   id: string;

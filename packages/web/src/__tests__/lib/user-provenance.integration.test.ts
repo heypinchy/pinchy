@@ -1,0 +1,296 @@
+// Real-DB tests for account provenance (lib/user-provenance.ts).
+//
+// Until the client allowlist in lib/auth.ts, any client could self-register
+// through Better Auth's `/sign-up/email`. Pinchy itself creates accounts in
+// exactly two places: the setup wizard (the first admin) and a claimed invite
+// (`invites.type = 'invite'`, `claimed_by_user_id`). An account that neither
+// explains came in through the open endpoint, and an upgrade does nothing to
+// it — password sign-in is allowlisted, so it keeps working. These tests pin
+// the rule that finds such accounts, and the boot-time audit row that reports
+// each one exactly once.
+
+import { describe, it, expect } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
+import { db } from "@/db";
+import { users, invites, auditLog } from "@/db/schema";
+import { createInvite } from "@/lib/invites";
+import { appendAuditLog } from "@/lib/audit";
+import {
+  REPORT_BATCH_SIZE,
+  findUnknownOriginUsers,
+  reportUnknownOriginUsers,
+} from "@/lib/user-provenance";
+
+let seq = 0;
+async function insertUser(opts: {
+  name: string;
+  role?: "admin" | "member";
+  createdAt: Date;
+  banned?: boolean;
+}) {
+  seq++;
+  const [row] = await db
+    .insert(users)
+    .values({
+      name: opts.name,
+      email: `${opts.name.toLowerCase().replace(/\s+/g, "-")}-${seq}@test.local`,
+      role: opts.role ?? "member",
+      banned: opts.banned ?? false,
+      createdAt: opts.createdAt,
+    })
+    .returning();
+  return row;
+}
+
+async function claimedInvite(
+  createdBy: string,
+  claimedBy: string,
+  type: "invite" | "reset" = "invite"
+) {
+  const { tokenHash } = await createInvite({
+    role: "member",
+    type,
+    createdBy,
+  });
+  await db
+    .update(invites)
+    .set({ claimedAt: new Date(), claimedByUserId: claimedBy })
+    .where(eq(invites.tokenHash, tokenHash));
+}
+
+const t = (minute: number) => new Date(Date.UTC(2026, 5, 1, 9, minute));
+
+describe("findUnknownOriginUsers", () => {
+  it("flags neither the setup admin nor an invite-claimed user, and flags a user with neither", async () => {
+    const admin = await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const invited = await insertUser({ name: "Invited Member", createdAt: t(1) });
+    await claimedInvite(admin.id, invited.id);
+    const stranger = await insertUser({ name: "Stranger", createdAt: t(2) });
+
+    const flagged = await findUnknownOriginUsers();
+
+    expect(flagged.map((u) => u.id)).toEqual([stranger.id]);
+    expect(flagged[0]).toMatchObject({ name: "Stranger", role: "member", banned: false });
+  });
+
+  it("does not count a claimed password-reset invite as an account's origin", async () => {
+    // A reset invite is issued for an account that already exists; claiming
+    // one says nothing about where that account came from.
+    const admin = await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const stranger = await insertUser({ name: "Reset Stranger", createdAt: t(1) });
+    await claimedInvite(admin.id, stranger.id, "reset");
+
+    const flagged = await findUnknownOriginUsers();
+
+    expect(flagged.map((u) => u.id)).toEqual([stranger.id]);
+  });
+
+  it("still recognises the setup admin when a self-registration predates setup", async () => {
+    // A fresh public instance accepted sign-ups before the wizard ran, so the
+    // earliest account is not necessarily the setup admin. Setup is the first
+    // account to become admin — sign-up only ever produced members.
+    const early = await insertUser({ name: "Early Bird", createdAt: t(0) });
+    const admin = await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(5) });
+
+    const flagged = await findUnknownOriginUsers();
+
+    expect(flagged.map((u) => u.id)).toEqual([early.id]);
+    expect(flagged.map((u) => u.id)).not.toContain(admin.id);
+  });
+
+  it("does not flag an admin who claimed an admin invite, and flags an admin who didn't", async () => {
+    const setup = await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const invitedAdmin = await insertUser({
+      name: "Invited Admin",
+      role: "admin",
+      createdAt: t(1),
+    });
+    await claimedInvite(setup.id, invitedAdmin.id);
+    const promoted = await insertUser({
+      name: "Promoted Stranger",
+      role: "admin",
+      createdAt: t(2),
+    });
+
+    const flagged = await findUnknownOriginUsers();
+
+    expect(flagged.map((u) => u.id)).toEqual([promoted.id]);
+  });
+
+  it("includes deactivated accounts, marked as banned", async () => {
+    await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const gone = await insertUser({ name: "Already Deactivated", createdAt: t(1), banned: true });
+
+    const flagged = await findUnknownOriginUsers();
+
+    expect(flagged).toEqual([expect.objectContaining({ id: gone.id, banned: true })]);
+  });
+
+  it("does not flag an account that created an invite, even after it was demoted", async () => {
+    // Only admins can create invites, and invites.created_by is never
+    // rewritten. A setup admin who was demoted is no longer the earliest admin,
+    // but the invites they sent still vouch for them.
+    const setup = await insertUser({ name: "Former Setup Admin", createdAt: t(0) });
+    const invited = await insertUser({ name: "Invited Admin", role: "admin", createdAt: t(1) });
+    await claimedInvite(setup.id, invited.id);
+    // A pending (unclaimed) invite counts as well — creating it is the signal.
+    await createInvite({ role: "member", type: "invite", createdBy: invited.id });
+
+    expect(await findUnknownOriginUsers()).toEqual([]);
+  });
+
+  it("does not flag an account an admin acknowledged, and only that one", async () => {
+    const admin = await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const known = await insertUser({ name: "Known Stranger", createdAt: t(1) });
+    const other = await insertUser({ name: "Other Stranger", createdAt: t(2) });
+
+    // What POST /api/users/:id/acknowledge-origin writes
+    // (user-acknowledge-origin.integration.test.ts runs the route itself).
+    await appendAuditLog({
+      actorType: "user",
+      actorId: admin.id,
+      eventType: "user.origin_acknowledged",
+      resource: `user:${known.id}`,
+      detail: { user: { name: known.name } },
+      outcome: "success",
+    });
+
+    expect((await findUnknownOriginUsers()).map((u) => u.id)).toEqual([other.id]);
+  });
+
+  it("does not count a failed acknowledgement row", async () => {
+    // The audit trail is where the acknowledgement lives; only a success row
+    // is one.
+    const admin = await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const stranger = await insertUser({ name: "Stranger", createdAt: t(1) });
+    await appendAuditLog({
+      actorType: "user",
+      actorId: admin.id,
+      eventType: "user.origin_acknowledged",
+      resource: `user:${stranger.id}`,
+      detail: { user: { name: stranger.name } },
+      outcome: "failure",
+      error: { message: "boom" },
+    });
+
+    expect((await findUnknownOriginUsers()).map((u) => u.id)).toEqual([stranger.id]);
+  });
+
+  it("returns nothing on an instance where every account is accounted for", async () => {
+    const admin = await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const a = await insertUser({ name: "Member A", createdAt: t(1) });
+    const b = await insertUser({ name: "Member B", createdAt: t(2) });
+    await claimedInvite(admin.id, a.id);
+    await claimedInvite(admin.id, b.id);
+
+    expect(await findUnknownOriginUsers()).toEqual([]);
+  });
+});
+
+describe("reportUnknownOriginUsers", () => {
+  async function detectionRows() {
+    return db.select().from(auditLog).where(eq(auditLog.eventType, "user.unknown_origin_detected"));
+  }
+
+  it("writes one system audit row per unknown-origin account, without the email", async () => {
+    await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const stranger = await insertUser({ name: "Stranger", createdAt: t(1) });
+
+    const written = await reportUnknownOriginUsers();
+
+    expect(written).toBe(1);
+    const rows = await detectionRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorType: "system",
+      actorId: "system",
+      resource: `user:${stranger.id}`,
+      outcome: "success",
+    });
+    expect(rows[0].detail).toMatchObject({
+      user: { id: stranger.id, name: "Stranger" },
+      role: "member",
+    });
+    expect(JSON.stringify(rows[0].detail)).not.toContain(stranger.email);
+  });
+
+  it("does not report the same account again on the next boot", async () => {
+    await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    await insertUser({ name: "Stranger", createdAt: t(1) });
+
+    expect(await reportUnknownOriginUsers()).toBe(1);
+    expect(await reportUnknownOriginUsers()).toBe(0);
+
+    expect(await detectionRows()).toHaveLength(1);
+  });
+
+  it("reports an account it has not reported before, and only that one", async () => {
+    await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    const first = await insertUser({ name: "First Stranger", createdAt: t(1) });
+    await reportUnknownOriginUsers();
+
+    const second = await insertUser({ name: "Second Stranger", createdAt: t(2) });
+    expect(await reportUnknownOriginUsers()).toBe(1);
+
+    const rows = await detectionRows();
+    expect(rows.map((r) => r.resource).sort()).toEqual(
+      [`user:${first.id}`, `user:${second.id}`].sort()
+    );
+    const secondRows = await db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.eventType, "user.unknown_origin_detected"),
+          eq(auditLog.resource, `user:${second.id}`)
+        )
+      );
+    expect(secondRows).toHaveLength(1);
+  });
+
+  it("handles more flagged accounts than a query can bind parameters for", async () => {
+    // Postgres caps a statement at 65,535 bind parameters. An instance a bot
+    // filled with sign-ups can have more flagged accounts than that, and the
+    // "already reported?" lookup used to pass one parameter per account — so
+    // every boot threw before writing a single row. 70k accounts, all but a
+    // batch and a bit already reported (so the writes cross a batch boundary),
+    // seeded in two set-based statements.
+    const BULK = 70_000;
+    const UNREPORTED = REPORT_BATCH_SIZE + 5;
+    await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+    await db.execute(sql`
+      INSERT INTO "user" (id, name, email, created_at)
+      SELECT 'bulk-' || g, 'Bulk ' || g, 'bulk-' || g || '@bots.example',
+             TIMESTAMP '2026-06-02 00:00:00' + g * INTERVAL '1 second'
+      FROM generate_series(1, ${BULK}) AS g`);
+    // Placeholder hashes: these rows stand in for earlier boots' reports and
+    // only the lookup reads them. The table is truncated after each test.
+    await db.execute(sql`
+      INSERT INTO audit_log (actor_type, actor_id, event_type, resource, detail, outcome, version, row_hmac)
+      SELECT 'system', 'system', 'user.unknown_origin_detected', 'user:bulk-' || g,
+             '{}'::jsonb, 'success', 3, 'seeded-' || g
+      FROM generate_series(1, ${BULK - UNREPORTED}) AS g`);
+
+    expect(await reportUnknownOriginUsers()).toBe(UNREPORTED);
+
+    const fresh = await db
+      .select({ resource: auditLog.resource })
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.eventType, "user.unknown_origin_detected"),
+          sql`${auditLog.rowHmac} NOT LIKE 'seeded-%'`
+        )
+      );
+    expect(fresh.map((r) => r.resource).sort()).toEqual(
+      Array.from({ length: UNREPORTED }, (_, i) => `user:bulk-${BULK - UNREPORTED + 1 + i}`).sort()
+    );
+  }, 120_000);
+
+  it("writes nothing when every account is accounted for", async () => {
+    await insertUser({ name: "Setup Admin", role: "admin", createdAt: t(0) });
+
+    expect(await reportUnknownOriginUsers()).toBe(0);
+    expect(await detectionRows()).toHaveLength(0);
+  });
+});

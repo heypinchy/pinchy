@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { users } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
+import { getUserSocketRegistry } from "@/server/user-sockets";
 
 export async function POST(
   request: NextRequest,
@@ -24,6 +25,10 @@ export async function POST(
   if (!reactivated) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
+
+  // Deactivation told the WebSocket layer to refuse this user; lift that, or
+  // their next chat would be closed the moment it opened.
+  getUserSocketRegistry().restore(userId);
 
   after(() =>
     appendAuditLog({

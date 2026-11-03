@@ -310,14 +310,38 @@ fi
 # =====================================================
 # 8. Create users (directly in DB for active status)
 # =====================================================
+# Every account here must look the way a real one does: the setup admin first,
+# everyone else through an invite they claimed. Settings → Users flags any
+# other account as one "nobody invited" (lib/user-provenance.ts), and the
+# capture would photograph that banner into user-management.png.
+# scripts/lib/screenshots-seed-provenance.test.mjs fails if a user inserted
+# here has no claimed invite.
 echo "👥 Creating demo users..."
 
 docker compose exec -T db psql -U pinchy -d pinchy <<'SQL'
+-- Monty ran setup on day 1 of the audit-trail story below, before anyone
+-- else joined. /api/setup stamps him NOW(); move him to where the story has him.
+UPDATE "user" SET created_at = NOW() - interval '14 days 3 hours'
+  WHERE email = 'monty@snpp.com';
+
 INSERT INTO "user" (id, name, email, role, email_verified, created_at, updated_at) VALUES
-  ('usr_carl_carlson', 'Carl Carlson', 'carl@snpp.com', 'admin', true, NOW() - interval '14 days', NOW() - interval '2 hours'),
+  ('usr_carl_carlson', 'Carl Carlson', 'carl@snpp.com', 'admin', true, NOW() - interval '12 days 20 hours', NOW() - interval '2 hours'),
   ('usr_homer_jay', 'Homer Jay', 'homer@snpp.com', 'member', true, NOW() - interval '10 days', NOW() - interval '1 day'),
-  ('usr_lenny_leonard', 'Lenny Leonard', 'lenny@snpp.com', 'member', true, NOW() - interval '7 days', NOW() - interval '3 days')
+  ('usr_lenny_leonard', 'Lenny Leonard', 'lenny@snpp.com', 'member', true, NOW() - interval '6 days 20 hours', NOW() - interval '3 days')
 ON CONFLICT (email) DO NOTHING;
+
+-- The invites they claimed, sent by Monty at the times the audit trail shows.
+INSERT INTO invites (id, token_hash, email, role, type, created_by, created_at, expires_at, claimed_at, claimed_by_user_id) VALUES
+  ('inv_carl', 'hash_carl', 'carl@snpp.com', 'admin', 'invite',
+   (SELECT id FROM "user" WHERE email = 'monty@snpp.com'),
+   NOW() - interval '13 days', NOW() - interval '6 days', NOW() - interval '12 days 20 hours', 'usr_carl_carlson'),
+  ('inv_homer', 'hash_homer', 'homer@snpp.com', 'member', 'invite',
+   (SELECT id FROM "user" WHERE email = 'monty@snpp.com'),
+   NOW() - interval '12 days', NOW() - interval '5 days', NOW() - interval '10 days', 'usr_homer_jay'),
+  ('inv_lenny', 'hash_lenny', 'lenny@snpp.com', 'member', 'invite',
+   (SELECT id FROM "user" WHERE email = 'monty@snpp.com'),
+   NOW() - interval '7 days', NOW(), NOW() - interval '6 days 20 hours', 'usr_lenny_leonard')
+ON CONFLICT DO NOTHING;
 
 -- Pending invite (Frank hasn't joined yet)
 INSERT INTO invites (id, token_hash, email, role, type, created_by, created_at, expires_at) VALUES

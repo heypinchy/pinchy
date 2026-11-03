@@ -7,7 +7,7 @@
 // (which would otherwise silently overwrite the user's name on submit).
 //
 // Exercised against a freshly migrated Postgres test DB (global-setup.ts),
-// truncated between cases (setup.ts).
+// emptied between cases by the integration reset.
 
 import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";

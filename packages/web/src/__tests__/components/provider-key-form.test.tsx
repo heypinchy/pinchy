@@ -32,6 +32,7 @@ function previewResponse(overrides: Partial<DeletionPreviewResponse> = {}): Resp
       { id: "a2", name: "Booker" },
       { id: "a3", name: "Reader" },
     ],
+    refusal: null,
     ...overrides,
   };
   return jsonResponse(body);
@@ -618,6 +619,44 @@ describe("ProviderKeyForm", () => {
         expect(dialog).toHaveTextContent(/Removes your Anthropic API key\./);
       });
 
+      // Every other provider is a custom one whose base URL is refused, so the
+      // DELETE would answer 400. Say so in the dialog and keep Remove disabled,
+      // rather than letting the admin click into a toast.
+      it("states the refusal inline and disables Remove when the DELETE would refuse", async () => {
+        const refusal =
+          "Cannot remove the last usable provider. Every other configured provider has a base URL that is now refused, so agents could not be moved onto it. Change one of those URLs or add another provider first.";
+        vi.mocked(global.fetch).mockImplementation(async (input) =>
+          String(input).includes("deletion-preview")
+            ? previewResponse({
+                targetProvider: null,
+                targetProviderLabel: null,
+                targetModel: null,
+                affectedAgents: [],
+                refusal,
+              })
+            : jsonResponse({})
+        );
+
+        render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+        fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+        fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+        const dialog = await screen.findByRole("alertdialog");
+        await waitFor(() => {
+          expect(dialog).toHaveTextContent(refusal);
+        });
+        expect(dialog).not.toHaveTextContent(/another configured provider/i);
+        const remove = screen.getByRole("button", { name: /^remove$/i });
+        expect(remove).toBeDisabled();
+        fireEvent.click(remove);
+        expect(global.fetch).not.toHaveBeenCalledWith(
+          "/api/settings/providers",
+          expect.objectContaining({ method: "DELETE" })
+        );
+        expect(toast.error).not.toHaveBeenCalled();
+      });
+
       it("falls back to the generic sentence when the preview fails", async () => {
         vi.mocked(global.fetch).mockImplementation(async (input) =>
           String(input).includes("deletion-preview")
@@ -1180,6 +1219,65 @@ describe("ProviderKeyForm", () => {
       expect((screen.getByLabelText(/^name$/i) as HTMLInputElement).value).toBe("Acme LLM");
     });
 
+    it("marks a provider whose saved base URL is now refused, and says why once it's selected", async () => {
+      // Config emission points such a provider at a reserved address, so its agents fail. The
+      // notice is the admin's only sign of it in the UI, so it must not be a
+      // toast that's gone in a few seconds.
+      const refusedReason =
+        "That host resolves to a reserved or internal address that isn't allowed.";
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([
+            { ...acmeRow, refusedReason: null },
+            {
+              ...acmeRow,
+              id: "row-id-2",
+              slug: "rebound",
+              displayName: "Rebound",
+              baseUrl: "https://rebound.example.com/v1",
+              refusedReason,
+            },
+          ]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      const reboundTile = await screen.findByRole("button", { name: /rebound/i });
+      expect(reboundTile).toHaveTextContent(/not in use/i);
+      expect(screen.getByRole("button", { name: /acme llm/i })).not.toHaveTextContent(
+        /not in use/i
+      );
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      fireEvent.click(reboundTile);
+
+      const notice = screen.getByRole("alert");
+      expect(notice).toHaveTextContent(/not in use/i);
+      expect(notice).toHaveTextContent(/its base url is now refused/i);
+      expect(notice).toHaveTextContent(refusedReason);
+      expect(notice).toHaveTextContent(/change the url to use it again/i);
+      expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it("shows no refusal notice on a selected provider that's in use", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([{ ...acmeRow, refusedReason: null }]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      fireEvent.click(await screen.findByRole("button", { name: /acme llm/i }));
+
+      expect(screen.queryByText(/not in use/i)).not.toBeInTheDocument();
+    });
+
     it("shows a configured check on a custom tile, and 'Default' when it's the default", async () => {
       vi.mocked(global.fetch).mockImplementation(async (input) => {
         const url = String(input);
@@ -1304,6 +1402,69 @@ describe("ProviderKeyForm", () => {
       });
     });
 
+    it("offers no Set as default on a provider whose saved base URL is now refused", async () => {
+      // It is never the runtime's default while refused, and the server
+      // refuses the request — so the button would only promise something.
+      vi.mocked(global.fetch).mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([
+            { ...acmeRow, refusedReason: "That host resolves to a private network address." },
+          ]);
+        }
+        return jsonResponse({});
+      });
+
+      render(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="anthropic" />
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: /acme llm/i }));
+
+      expect(screen.getByRole("alert")).toHaveTextContent(/not in use/i);
+      expect(screen.queryByRole("button", { name: /set as default/i })).not.toBeInTheDocument();
+    });
+
+    it("shows the refusal on the provider, not as a toast, when the server turns Set as default down", async () => {
+      // The list was loaded while the URL was still allowed (or the network
+      // policy changed since). The server's answer carries the reason; the
+      // panel then shows the same persistent notice as a refused provider
+      // loaded fresh, and the button goes away.
+      const refusedReason = "That host resolves to a private network address.";
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/api/settings/providers/openai-compatible")) {
+          return jsonResponse([{ ...acmeRow, refusedReason: null }]);
+        }
+        if (url.endsWith("/api/settings/providers/default") && method === "PATCH") {
+          return jsonResponse(
+            {
+              error: `Its base URL is now refused, so it can't be the default. ${refusedReason}`,
+              refusedReason,
+            },
+            { ok: false, status: 400 }
+          );
+        }
+        return jsonResponse({});
+      });
+
+      render(
+        <ProviderKeyForm onSuccess={onSuccess} manageCustomProviders defaultProvider="anthropic" />
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: /acme llm/i }));
+      fireEvent.click(await screen.findByRole("button", { name: /set as default/i }));
+
+      const notice = await screen.findByRole("alert");
+      expect(notice).toHaveTextContent(/not in use/i);
+      expect(notice).toHaveTextContent(refusedReason);
+      expect(screen.queryByRole("button", { name: /set as default/i })).not.toBeInTheDocument();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(onSuccess).not.toHaveBeenCalled();
+    });
+
     it("removes a custom provider via the delete confirmation, calling DELETE with its id", async () => {
       vi.mocked(global.fetch).mockImplementation(async (input, init) => {
         const url = String(input);
@@ -1339,6 +1500,47 @@ describe("ProviderKeyForm", () => {
         );
         expect(onSuccess).toHaveBeenCalled();
       });
+    });
+
+    it("states the refusal inline and disables Remove for a custom provider the DELETE would refuse", async () => {
+      const refusal = "Cannot remove the last usable provider. Change one of those URLs first.";
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.includes("deletion-preview")) {
+          return previewResponse({
+            targetProvider: null,
+            targetProviderLabel: null,
+            targetModel: null,
+            affectedAgents: [],
+            refusal,
+          });
+        }
+        if (url.endsWith("/api/settings/providers/openai-compatible") && method === "GET") {
+          return jsonResponse([acmeRow]);
+        }
+        return jsonResponse({});
+      });
+
+      render(<ProviderKeyForm onSuccess={onSuccess} manageCustomProviders />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /acme llm/i })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /acme llm/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove provider/i }));
+
+      const dialog = await screen.findByRole("alertdialog");
+      await waitFor(() => {
+        expect(dialog).toHaveTextContent(refusal);
+      });
+      const remove = screen.getByRole("button", { name: /^remove$/i });
+      expect(remove).toBeDisabled();
+      fireEvent.click(remove);
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/settings/providers/openai-compatible",
+        expect.objectContaining({ method: "DELETE" })
+      );
     });
 
     // #949 — the custom path carries the same disclosure as the built-in one:
