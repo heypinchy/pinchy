@@ -1041,6 +1041,45 @@ describe("summarizeArgs", () => {
     });
   });
 
+  // A label that starts `xn--` and does not decode — `xn--a` — is no domain
+  // name: Node refuses it, so there is no resolved form to name. The text as
+  // written is what reaches the mail library or the browser, so that is what
+  // the call is said to reach, and the card says the domain does not parse.
+  // An ASCII one included: `boss@xn--a.evil.com` reads as a plain domain.
+  describe("hosts that are not a valid domain name", () => {
+    const notADomain = (text: string) => ({
+      "@": "noted",
+      text,
+      notes: [{ kind: "not-a-domain" }],
+    });
+
+    it("notes a mailbox's domain and records it, as written, as reached", () => {
+      for (const key of ["to", "email"]) {
+        const { summary, hosts } = summarizeCall({ [key]: "Boss@XN--A.Evil.com" });
+        expect(summary[key]).toEqual(notADomain("Boss@XN--A.Evil.com"));
+        expect(hosts).toEqual(["xn--a.evil.com"]);
+      }
+    });
+
+    it("notes a URL whose host the parser refuses, and records that host as reached", () => {
+      const url = "https://user@XN--A.Evil.com:8080/x";
+      const { summary, hosts } = summarizeCall({ website: url });
+      expect(summary.website).toEqual(notADomain(url));
+      expect(hosts).toEqual(["xn--a.evil.com"]);
+    });
+
+    it("shows any hidden character in such a host as the marker the card shows", () => {
+      const { hosts } = summarizeCall({ to: "boss@xn--a.evil​.com" });
+      expect(hosts).toEqual(["xn--a.evil⟨U+200B⟩.com"]);
+    });
+
+    it("leaves free text that only starts with such a URL alone", () => {
+      const { summary, hosts } = summarizeCall({ note: "https://xn--a.evil.com see above" });
+      expect(summary.note).toBe("https://xn--a.evil.com see above");
+      expect(hosts).toEqual([]);
+    });
+  });
+
   describe("recipient display", () => {
     // The probe: a familiar display name padded with braille blanks would push
     // the real address out of the card's preview. The address comes first.

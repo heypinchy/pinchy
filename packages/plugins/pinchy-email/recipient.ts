@@ -14,6 +14,7 @@
  * recipient, which is also what the schema ("Recipient email address") says.
  */
 
+import { domainToASCII } from "node:url";
 import { hiddenCharIn, isEmojiFormatChar, isJoiner } from "./hidden-chars.js";
 
 export type ParsedRecipient = { ok: true; address: string } | { ok: false; error: string };
@@ -71,6 +72,26 @@ function quoted(name: string, address: string): string {
 function mailbox(name: string, address: string): string {
   if (!name) return address;
   return NEEDS_QUOTES.test(name) ? quoted(name, address) : `${name} <${address}>`;
+}
+
+/**
+ * The recipient, unless its domain is no domain name. A label that starts
+ * `xn--` and does not decode (`xn--a`) has no resolved form: Node refuses it,
+ * so the confirmation can only name it as written, while the mail library
+ * sends to it unchanged. No real address needs one, so it is refused, by the
+ * same check the approval summary makes (`recipient-domain-drift.test.ts`).
+ */
+function accepted(recipient: string, address: string): ParsedRecipient {
+  const domain = address.slice(address.lastIndexOf("@") + 1);
+  if (domainToASCII(domain) === "") {
+    return {
+      ok: false,
+      error:
+        `Invalid recipient: "${domain}" is not a valid domain name. ` +
+        "Check the address and send it again with the domain spelled correctly.",
+    };
+  }
+  return { ok: true, address: recipient };
 }
 
 function checkName(name: string): string | null {
@@ -143,14 +164,14 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
         `(such as a fullwidth "\uFF20" instead of "@"). ${ONLY_ONE}`,
     };
   }
-  if (BARE_ADDRESS.test(text)) return { ok: true, address: text };
+  if (BARE_ADDRESS.test(text)) return accepted(text, text);
 
   const quotedName = QUOTED_ADDRESS.exec(text);
   if (quotedName) {
     const name = quotedName[1].trim();
     const tooLong = checkName(name);
     if (tooLong) return { ok: false, error: tooLong };
-    return { ok: true, address: mailbox(name, quotedName[2]) };
+    return accepted(mailbox(name, quotedName[2]), quotedName[2]);
   }
 
   const named = NAMED_ADDRESS.exec(text);
@@ -182,7 +203,7 @@ export function parseSingleRecipient(value: unknown): ParsedRecipient {
     if (!/[:[\]\\]/.test(name)) {
       const tooLong = checkName(name);
       if (tooLong) return { ok: false, error: tooLong };
-      return { ok: true, address: mailbox(name, named[2]) };
+      return accepted(mailbox(name, named[2]), named[2]);
     }
   }
   return { ok: false, error: `Invalid recipient: it is not a single plain address. ${ONLY_ONE}` };

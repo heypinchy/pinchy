@@ -1646,6 +1646,21 @@ describe("recipient hardening: one address per call (approval card must show wha
     }
   );
 
+  it.each(["email_send", "email_draft"])(
+    "%s refuses a domain that is not a valid domain name and never reaches the provider",
+    async (name) => {
+      const tool = findTool(createApi(writeConfig), name, agentId)!;
+      const pad = [..."abc"].map((c) => c.repeat(63)).join(".");
+      const to = `boss@firma.at.${pad}.${"d".repeat(30)}.xn--a.evil.com`;
+      const result = await tool.execute("call-1", { to, subject: "s", body: "b" });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/not a valid domain name/i);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockDraft).not.toHaveBeenCalled();
+    }
+  );
+
   it.each(["email_send", "email_draft"])("%s refuses a list passed as an array", async (name) => {
     const tool = findTool(createApi(writeConfig), name, agentId)!;
     const result = await tool.execute("call-1", {

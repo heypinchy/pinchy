@@ -118,7 +118,7 @@ import {
   type SummaryNode,
   type SummaryNote,
 } from "./display";
-import { mailboxAddress, readUrl, shownAs } from "./presentation";
+import { mailboxAddress, readUrl, shownAs, urlHostAsWritten } from "./presentation";
 
 const SECRET_KEY = /(token|secret|password|passwd|api[-_]?key|authorization|cookie|credential)/i;
 /** A record id or a list of them, whatever the rest of the key says. */
@@ -541,6 +541,8 @@ function bounded(text: string, budget: Budget): string {
 /** Where a value reaches, as a note, and whether its own text already says so. */
 interface Reach {
   note: SummaryNote;
+  /** The host the call is said to reach. */
+  host: string;
   /** The text shows that very host, readable as it resolves. */
   plain: boolean;
 }
@@ -548,14 +550,20 @@ interface Reach {
 /**
  * Where a mail domain reaches. A non-ASCII one is named in punycode:
  * `boss@fіrma.at` with a Cyrillic "і" renders exactly like the real domain,
- * and its ASCII form (`xn--…`) is what shows that it is not.
+ * and its ASCII form (`xn--…`) is what shows that it is not. One that does
+ * not parse — a label such as `xn--a` that does not decode — has no resolved
+ * form, yet a mail library sends to it and a browser opens it as written. So
+ * it reaches the domain it spells, named as written (ASCII case aside, every
+ * hidden character marked), and the card says it is no domain name: an ASCII
+ * one reads as a plain domain.
  */
 function domainReach(domain: string): Reach {
   const ascii = domainToASCII(domain);
-  return {
-    note: ascii ? { kind: "host", host: ascii } : { kind: "not-a-domain" },
-    plain: /^[\x00-\x7F]*$/.test(domain),
-  };
+  if (!ascii) {
+    const written = renderText(domain.replace(/[A-Z]/g, (c) => c.toLowerCase()));
+    return { note: { kind: "not-a-domain" }, host: written, plain: false };
+  }
+  return { note: { kind: "host", host: ascii }, host: ascii, plain: /^[\x00-\x7F]*$/.test(domain) };
 }
 
 /**
@@ -569,16 +577,19 @@ function domainReach(domain: string): Reach {
  * backslashed slashes and a stripped leading control character all reach a
  * host the text does not show. For a value that is one mailbox, read the way
  * the mail tool reads it (`mailboxAddress`: trimmed, out of `Name <…>`), its
- * domain. `null` for a URL with no host (`file:///…`), for free text the
- * parser refuses — "https://firma.at, see above" — and for text that merely
- * holds an address.
+ * domain. For one URL the parser refuses (`urlHostAsWritten`), the host it
+ * spells, read like a mail domain. `null` for a URL with no host
+ * (`file:///…`), for free text the parser refuses — "https://firma.at, see
+ * above" — and for text that merely holds an address.
  */
 function reachOf(value: string): Reach | null {
   const url = readUrl(value);
   if (url) {
     if (url.host === "") return null;
-    return { note: { kind: "host", host: url.host }, plain: url.showsHost };
+    return { note: { kind: "host", host: url.host }, host: url.host, plain: url.showsHost };
   }
+  const written = urlHostAsWritten(value);
+  if (written !== null) return domainReach(written);
   const address = mailboxAddress(value);
   return address === null ? null : domainReach(address.slice(address.lastIndexOf("@") + 1));
 }
@@ -593,7 +604,7 @@ function reachOf(value: string): Reach | null {
  */
 function reachNotes(reach: Reach | null, shown: Shown, budget: Budget): SummaryNote[] {
   if (!reach) return [];
-  if (reach.note.kind === "host") budget.hosts.push(reach.note.host);
+  budget.hosts.push(reach.host);
   return !reach.plain || typeof shown !== "string" ? [reach.note] : [];
 }
 

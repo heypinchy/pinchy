@@ -144,6 +144,34 @@ describe("parseSingleRecipient", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/one recipient per call/i);
   });
+
+  // A label that starts `xn--` but does not decode is no domain name: Node
+  // refuses it, so the confirmation can name no server for it, while a mail
+  // library sends to it unchanged. No real address needs one.
+  describe("a domain that is not a valid domain name", () => {
+    const pad = [..."abc"].map((c) => c.repeat(63)).join(".");
+    const labels = ["xn--", "xn--a", "xn---", "xn--ab-cd", "XN--A", "Xn--a"];
+
+    it.each(labels)("refuses a domain with the label %j, in every form", (label) => {
+      for (const domain of [`${label}.evil.com`, `firma.at.${pad}.${label}.evil.com`]) {
+        for (const input of [
+          `boss@${domain}`,
+          `Boss <boss@${domain}>`,
+          `"Boss, The" <boss@${domain}>`,
+        ]) {
+          const result = parseSingleRecipient(input);
+          expect(result.ok, input).toBe(false);
+          if (!result.ok) expect(result.error).toMatch(/not a valid domain name/i);
+        }
+      }
+    });
+
+    it("still accepts an internationalised domain, in Unicode or in its ASCII form", () => {
+      for (const address of ["boss@fіrma.at", "boss@xn--frma-l9d.at", "BOSS@FIRMA.AT"]) {
+        expect(parseSingleRecipient(address)).toEqual({ ok: true, address });
+      }
+    });
+  });
 });
 
 // RFC 5322 lets a display name carry a comma or parentheses inside double

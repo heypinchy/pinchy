@@ -106,6 +106,24 @@ export function readUrl(text: string): UrlRead | null {
 }
 
 /**
+ * The host a value spells when it is one URL — a scheme the parser gives a
+ * host to, then the host, no whitespace — that the parser refuses. Node's
+ * refuses a host with a label that does not decode (`xn--a`); Chromium's and
+ * WebKit's accept it, so a link to it still opens the host it spells. Read
+ * where the parser would read the host: past any slashes and backslashes and
+ * any userinfo, up to the path, query, fragment or port. `null` for anything
+ * else.
+ */
+export function urlHostAsWritten(text: string): string | null {
+  const stripped = text.replace(URL_PADDING, "");
+  if (/\s/u.test(stripped)) return null;
+  const url = /^([A-Za-z][A-Za-z0-9+.-]*):[\\/]*([^\\/?#]*)/.exec(stripped);
+  if (!url || !SPECIAL_SCHEMES.has(`${url[1].toLowerCase()}:`)) return null;
+  const host = url[2].slice(url[2].lastIndexOf("@") + 1).replace(/:[0-9]*$/, "");
+  return host === "" ? null : host;
+}
+
+/**
  * Is this value an email address or a URL — the shapes whose host is the
  * decision? Such a value is drawn whole up to WHOLE_MAX: a 217-character
  * address whose `@evil.com` sits past the cut reads as the familiar name its

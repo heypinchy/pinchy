@@ -437,6 +437,45 @@ describe("buildApprovalPrompt", () => {
       }
     });
 
+    // A label such as `xn--a` does not decode, so Node gives the domain no
+    // resolved form — and the mail library sends to it, and a browser opens
+    // it, as written. The domain at its end is still where it goes.
+    it("names the end of a mail domain that is not a valid domain name", () => {
+      const pad = [..."abc"].map((c) => c.repeat(63)).join(".");
+      const domain = `firma.at.${pad}.${"d".repeat(30)}.xn--a.evil.com`;
+      const { description } = promptFor("email_send", { to: `boss@${domain}` });
+      expect(description.length).toBeLessThanOrEqual(APPROVAL_DESCRIPTION_MAX);
+      expect(description).toContain(`reaches "…${domain.slice(-PROMPT_HOST_MAX)}" — to:`);
+    });
+
+    describe("names every host with a label that does not decode", () => {
+      const pad = [..."abc"].map((c) => c.repeat(63)).join(".");
+      const labels = ["xn--", "xn--a", "xn---", "xn--ab-cd", "XN--A", "Xn--a"];
+      const shapes: [string, (host: string) => Record<string, unknown>][] = [
+        ["a recipient", (host) => ({ to: `boss@${host}` })],
+        ["a named recipient", (host) => ({ to: `Boss <boss@${host}>` })],
+        ["a mailbox at any key", (host) => ({ values: { email: `boss@${host}` } })],
+        ["a URL", (host) => ({ url: `https://${host}/x` })],
+        ["a URL with userinfo and a port", (host) => ({ url: `https://u@${host}:8080/x` })],
+        ["a URL without slashes", (host) => ({ url: `https:${host}/x` })],
+      ];
+      for (const label of labels) {
+        it.each(shapes)(`%s, with the label ${JSON.stringify(label)}`, (_shape, call) => {
+          for (const host of [`${label}.evil.com`, `firma.at.${pad}.${label}.evil.com`]) {
+            const { description } = promptFor("pinchy_web_fetch", {
+              note: "x ".repeat(100),
+              ...call(host),
+            });
+            expect(description.length).toBeLessThanOrEqual(APPROVAL_DESCRIPTION_MAX);
+            const reaches = /— reaches ("[^"]*"(?:, "[^"]*")*) — /.exec(description);
+            expect(reaches?.[1]).toBe(
+              `"${host.length > PROMPT_HOST_MAX ? "…" : ""}${host.toLowerCase().slice(-PROMPT_HOST_MAX)}"`
+            );
+          }
+        });
+      }
+    });
+
     it("leaves a hidden secret's host unsaid", () => {
       const { description } = promptFor("odoo_write", {
         values: { comment: "x ".repeat(200), api_key: "https://secret.example/" },
