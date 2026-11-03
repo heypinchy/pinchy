@@ -742,8 +742,10 @@ export class ClientRouter {
         // accepts) until this agent is present, instead of blind-sleeping a
         // backoff window. Reading the runtime list — not `config.get` (the FILE,
         // which leads the runtime) — is what makes this reliable. Bounded by the
-        // remaining retry budget; never throws, so a probe miss only costs a
-        // little latency (the backoff retry remains the backstop). Requires
+        // remaining retry budget and never throws. A gate that never confirms
+        // therefore spends that whole budget and the chat surfaces the race
+        // error; a "ready" the next dispatch contradicts is trusted only once
+        // (see chat-dispatch-retry.ts). Requires
         // openclaw-node >= 0.12.0; `hasMethod` guards older Gateways.
         awaitAgentReady: (budgetMs) =>
           waitForAgentInRuntime(

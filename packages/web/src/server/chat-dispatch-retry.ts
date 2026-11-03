@@ -247,14 +247,16 @@ export async function* chatWithDispatchRaceRetry(
   const start = now();
   // The readiness gate earns an immediate re-dispatch only until a dispatch
   // contradicts it. If the gate said "ready" and the very next dispatch still
-  // raced, the gate is reading a different view than the dispatch handler (see
-  // agent-readiness.ts: OC 2026.7.1's `agents.list` lists agent directories
-  // from disk while the runtime agents.list is empty), and every further
-  // "ready" would be an instant retry — CI run 41569393728 sent ~4,800
-  // dispatches in 19 s that way. From then on, for the rest of this call, the
-  // loop skips the gate and uses the capped backoff — a later genuine "ready"
-  // then costs up to `maxDelayMs` per retry instead of a 500 ms poll, which is
-  // bounded and far cheaper than trusting a gate already shown to be wrong.
+  // raced, either the gate is reading a different view than the dispatch
+  // handler (see agent-readiness.ts: OC 2026.7.1's `agents.list` lists agent
+  // directories from disk while the runtime agents.list is empty) or the
+  // runtime changed again in between (another restart or config.apply). In the
+  // first case every further "ready" would be an instant retry — CI run
+  // 41569393728 sent ~4,800 dispatches in 19 s that way. Either way, for the
+  // rest of this call the loop skips the gate and uses the capped backoff. A
+  // later genuine "ready" then costs up to `maxDelayMs` per retry instead of a
+  // 500 ms poll: bounded, and far cheaper than trusting a gate whose last
+  // answer was contradicted.
   let gateTrusted = true;
   let lastRetryWasGateReady = false;
   for (let attempt = 0; ; attempt++) {

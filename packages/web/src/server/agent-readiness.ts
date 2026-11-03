@@ -51,9 +51,12 @@
 //   - Gateway without agents.list (older OC)  → returns false immediately.
 //   - agents.list RPC errors transiently      → treated as "not yet present".
 //   - agent never appears within the deadline  → returns false.
-// In every false case the caller dispatches anyway; `chatWithDispatchRaceRetry`
-// remains the backstop, so a readiness-probe miss can only ever cost a little
-// latency, never a dropped message.
+// A false answer never drops a message silently: `chatWithDispatchRaceRetry`
+// then backs off and re-dispatches while budget remains, and surfaces the race
+// error once it runs out. Note the chat path hands this helper the WHOLE
+// remaining retry budget as its deadline, so a gate that never confirms uses up
+// that budget in one wait and the chat fails with the race error — the
+// "loud, not lossless" case described above.
 
 import type { AgentsListResult } from "openclaw-node";
 

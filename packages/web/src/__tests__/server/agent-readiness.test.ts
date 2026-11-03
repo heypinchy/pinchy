@@ -207,12 +207,16 @@ describe("dispatchableAgentIds", () => {
     ).toEqual(["agent-1", "agent-2"]);
   });
 
-  it("falls back to the name signal when the result carries no defaultId", () => {
+  it("falls back to the name/identity signal when the result carries no defaultId", () => {
     expect(
       dispatchableAgentIds({
-        agents: [{ id: "agent-1", name: "Smithers" }, { id: "agent-2" }],
+        agents: [
+          { id: "agent-1", name: "Smithers" },
+          { id: "agent-2" },
+          { id: "agent-3", identity: { emoji: "🦞" } },
+        ],
       } as unknown as AgentsListResult)
-    ).toEqual(["agent-1"]);
+    ).toEqual(["agent-1", "agent-3"]);
   });
 
   it("drops disk-discovered entries, which the dispatch handler rejects", () => {
