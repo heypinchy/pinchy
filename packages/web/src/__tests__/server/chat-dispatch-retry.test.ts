@@ -349,6 +349,37 @@ describe("chatWithDispatchRaceRetry", () => {
       expect(awaitAgentReady).toHaveBeenCalledWith(90000);
     });
 
+    it("does not count a model race after a 'ready' as contradicting the gate", async () => {
+      // The dispatch after the gate's "ready" was ACCEPTED (it failed on the
+      // model, not the agent id), so the gate was right and stays trusted.
+      const successful: ChatChunk[] = [{ type: "done", text: "", runId: "r1" }];
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(
+          makeStream([{ type: "error", text: "Unknown model: google/gemini-2.5-pro", runId: "r0" }])
+        )
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn(async () => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(got).toEqual(successful);
+      expect(chat).toHaveBeenCalledTimes(4);
+      // Both agent races consult the gate; only the model race backs off.
+      expect(awaitAgentReady).toHaveBeenCalledTimes(2);
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([1000]);
+    });
+
     it("keeps trusting the gate after a 'not ready' answer", async () => {
       // Only a contradicted "ready" ends the trust. A gate that timed out and
       // later confirms readiness still earns an immediate retry.

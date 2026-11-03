@@ -164,8 +164,10 @@ export interface DispatchRetryDeps {
    *   - `true`  → the target agent is now present in OpenClaw's RUNTIME
    *               `agents.list` (the same view the dispatch handler checks), so
    *               the next dispatch should land; retry immediately, no sleep.
-   *               Trusted once: if that retry races too, later retries use the
-   *               capped backoff whatever the gate says.
+   *               Trusted until contradicted: if that retry hits the agent
+   *               race again, later retries use the capped backoff whatever
+   *               the gate says. (A model race does not contradict it — the
+   *               agent was accepted.)
    *   - `false` → readiness could not be confirmed within the window (timeout,
    *               or unobservable on an older Gateway without `agents.list`); the
    *               wrapper falls back to its capped blind backoff so the bounded
@@ -246,8 +248,9 @@ export async function* chatWithDispatchRaceRetry(
 
   const start = now();
   // The readiness gate earns an immediate re-dispatch only until a dispatch
-  // contradicts it. If the gate said "ready" and the very next dispatch still
-  // raced, either the gate is reading a different view than the dispatch
+  // contradicts it. If the gate said "ready" and the very next dispatch hit the
+  // agent race again (a model race does not count: OC accepted the agent),
+  // either the gate is reading a different view than the dispatch
   // handler (see agent-readiness.ts: OC 2026.7.1's `agents.list` lists agent
   // directories from disk while the runtime agents.list is empty) or the
   // runtime changed again in between (another restart or config.apply). In the
