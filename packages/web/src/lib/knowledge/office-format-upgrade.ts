@@ -14,8 +14,16 @@
  *   - The index worker queues that run at boot rather than waiting for a
  *     nightly reindex that may be switched off (`agentsOwedReconversion`,
  *     `queueReconversion`).
- *   - A superseded artifact directory stays on the volume while a row still
- *     names its version (`officeFormatVersionInUse`).
+ *   - A superseded artifact directory stays on the volume while a row a
+ *     searching agent's folder holds still names its version
+ *     (`officeFormatVersionInUse`).
+ *
+ * Only agents with `knowledge_search` count, as for the nightly run
+ * (`isScheduledIndexAgent`): search is scoped by their folders, so a row no
+ * such folder holds is one no search reaches and no run converts again. It
+ * stays on record, hidden, and is converted on the first run of a searching
+ * agent granted its folder later — but it holds back neither a run nor the
+ * removal of the directory it names.
  *
  * The rows are recognised by their path, with the same rule `isOfficeFile`
  * applies, because the version column alone cannot tell them apart: a row
@@ -30,7 +38,7 @@ import { recordAuditFailure } from "@/lib/audit-deferred";
 
 import { DEFAULT_ORG_ID } from "./constants";
 import { enqueueIndexJob, findActiveIndexJob } from "./index-jobs";
-import { grantedKnowledgePaths } from "./index-schedule";
+import { grantedKnowledgePaths, isScheduledIndexAgent } from "./index-schedule";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import { OFFICE_EXTENSIONS } from "./office-formats";
 import { buildPathFilter } from "./path-filter";
@@ -69,17 +77,38 @@ const supersededDocument = readFromSupersededArtifact(
   sql`${kbDocuments.artifactFormatVersion}`
 );
 
+/** The agents that search the index, oldest first, each with its folders. */
+async function searchingAgents(): Promise<{ id: string; paths: string[] }[]> {
+  const rows = await db
+    .select({
+      id: agents.id,
+      deletedAt: agents.deletedAt,
+      allowedTools: agents.allowedTools,
+      pluginConfig: agents.pluginConfig,
+    })
+    .from(agents)
+    .where(isNull(agents.deletedAt))
+    .orderBy(asc(agents.createdAt));
+  return rows
+    .filter(isScheduledIndexAgent)
+    .map((row) => ({ id: row.id, paths: grantedKnowledgePaths(row.pluginConfig) }));
+}
+
 /**
- * Is any Office document still on record as read from an artifact of
- * `version`? Asked of every org: the artifact volume is the instance's.
+ * Is any Office document a searching agent's folder holds still on record as
+ * read from an artifact of `version`? Asked of every org: the artifact volume
+ * is the instance's.
  */
 export async function officeFormatVersionInUse(version: number): Promise<boolean> {
+  const paths = (await searchingAgents()).flatMap((agent) => agent.paths);
+  if (paths.length === 0) return false;
   const [row] = await db
     .select({ id: kbDocuments.id })
     .from(kbDocuments)
     .where(
       and(
         isOfficePath(sql`${kbDocuments.sourcePath}`),
+        buildPathFilter(paths, sql`${kbDocuments.sourcePath}`),
         sql`coalesce(${kbDocuments.artifactFormatVersion}, ${sql.raw(
           String(UNRECORDED_ARTIFACT_FORMAT_VERSION)
         )}) = ${version}`
@@ -115,23 +144,14 @@ async function owesReconversion(
 }
 
 /**
- * The agents whose granted folders hold an Office document still read from an
- * earlier artifact format, oldest first — the agents a reindex would convert
- * them again for.
- *
- * Every agent with folders, not only those that search: the rows exist because
- * a run indexed them, and until they are converted again the volume keeps the
- * directory they name.
+ * The searching agents whose granted folders hold an Office document still
+ * read from an earlier artifact format, oldest first — the agents a reindex
+ * would convert them again for.
  */
 export async function agentsOwedReconversion(): Promise<string[]> {
-  const rows = await db
-    .select({ id: agents.id, pluginConfig: agents.pluginConfig })
-    .from(agents)
-    .where(isNull(agents.deletedAt))
-    .orderBy(asc(agents.createdAt));
   const owed: string[] = [];
-  for (const row of rows) {
-    if (await owesReconversion(grantedKnowledgePaths(row.pluginConfig))) owed.push(row.id);
+  for (const agent of await searchingAgents()) {
+    if (await owesReconversion(agent.paths)) owed.push(agent.id);
   }
   return owed;
 }
@@ -147,8 +167,8 @@ export type ReconversionOutcome =
  * `queued` (with the folders the run will go through) and `skipped` both mean
  * "this agent is done"; `busy` means the instance's one job slot is taken, so
  * ask again once it is free. Re-checked here rather than trusted from the
- * boot-time list: an agent deleted or stripped of its folders since has
- * nothing to run, and an agent whose superseded documents all lie in
+ * boot-time list: an agent deleted, stripped of its folders or of
+ * `knowledge_search` since has nothing to run, and an agent whose superseded documents all lie in
  * `alreadyRun` — folders an upgrade run already went through since this boot
  * — has nothing a run of its own would change. That second check is not the
  * same as asking the rows again: a document whose conversion ended
@@ -167,12 +187,13 @@ export async function queueReconversion(
       id: agents.id,
       name: agents.name,
       deletedAt: agents.deletedAt,
+      allowedTools: agents.allowedTools,
       pluginConfig: agents.pluginConfig,
     })
     .from(agents)
     .where(eq(agents.id, agentId))
     .limit(1);
-  if (!agent || agent.deletedAt !== null) return { status: "skipped" };
+  if (!agent || !isScheduledIndexAgent(agent)) return { status: "skipped" };
   const paths = grantedKnowledgePaths(agent.pluginConfig);
   if (!(await owesReconversion(paths, alreadyRun))) return { status: "skipped" };
 

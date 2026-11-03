@@ -24,6 +24,7 @@ import {
 } from "@/server/kb-index-worker";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
+import { queueReconversion } from "@/lib/knowledge/office-format-upgrade";
 
 const ORG_ID = "org-kb-worker-test";
 
@@ -884,6 +885,60 @@ describe("kb index worker tick", () => {
         [elsewhere.id, [own]],
       ]);
       expect(squeezed.convertOffice).toHaveBeenCalledTimes(2);
+    });
+
+    it("converts them for the agents that search, never through an agent that only reads files", async () => {
+      // An agent without knowledge_search never looks at the index, so the
+      // nightly run skips it. Running its folders here would embed — and send
+      // to the vision model — everything it can read, for nobody.
+      const artifactDir = join(tmpRoot, "artifacts");
+      const data = join(tmpRoot, "data");
+      const projects = join(data, "Projekte");
+      await indexedBeforeTheBump(projects, artifactDir);
+      writePdf(data, "handbook.pdf");
+      const [reader] = await db
+        .insert(agents)
+        .values({
+          name: "Reader",
+          model: "test-model",
+          greetingMessage: "Hi",
+          allowedTools: ["pinchy_read"],
+          pluginConfig: { "pinchy-files": { allowed_paths: [data] } },
+        })
+        .returning();
+      const searcher = await knowledgeAgent(projects);
+      const deps = officeDeps(CLEAN);
+
+      await runKbIndexWorkerTick({ deps, artifactDir });
+
+      const jobs = await db.select().from(kbIndexJobs);
+      expect(jobs.map((job) => [job.agentId, job.paths])).toEqual([[searcher.id, [projects]]]);
+      expect(deps.extractPdf).toHaveBeenCalledTimes(1);
+      expect(await queueReconversion(reader.id)).toEqual({ status: "skipped" });
+    });
+
+    it("lets the earlier format's directory go once no searching agent's folder holds a document read from it", async () => {
+      // Nothing would ever convert those documents again — no run reaches a
+      // folder no searching agent is granted — and no search reaches them
+      // either. They stay on record, still hidden; a searching agent granted
+      // the folder later converts them on its first run.
+      const artifactDir = join(tmpRoot, "artifacts");
+      const corpus = join(tmpRoot, "corpus");
+      await indexedBeforeTheBump(corpus, artifactDir);
+      await db.insert(agents).values({
+        name: "Reader",
+        model: "test-model",
+        greetingMessage: "Hi",
+        allowedTools: ["pinchy_read"],
+        pluginConfig: { "pinchy-files": { allowed_paths: [corpus] } },
+      });
+
+      await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+
+      expect(await db.select().from(kbIndexJobs)).toEqual([]);
+      expect(existsSync(join(artifactDir, "v1"))).toBe(false);
+      const [doc] = await db.select().from(kbDocuments);
+      expect(doc.artifactFormatVersion).toBeNull();
     });
 
     it("asks once per boot, so a conversion that cannot finish now waits for the next run", async () => {
