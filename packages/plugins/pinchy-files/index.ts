@@ -22,6 +22,7 @@ import { generateFile, type GenerateFileFormat } from "./generate-file";
 import { normalizeDeliverableBasename } from "./deliverable-filename";
 import { assertPlainPath } from "./plain-path";
 import { refusingUnknownParams } from "./unknown-params";
+import { openVerified } from "./verified-open";
 
 // The Pinchy web process runs as uid/gid 999 in the container and must own a
 // generated file to serve it back to the user as a download (#703). Chowning
@@ -239,7 +240,9 @@ function getCache(): PdfCache {
 async function readPdf(
   realPath: string,
   stats: { size: number; mtimeMs: number },
-  visionConfig: VisionApiConfig | null
+  visionConfig: VisionApiConfig | null,
+  /** Reads the bytes from the descriptor `openVerified` checked — never the path again. */
+  readBytes: () => Promise<Buffer>
 ): Promise<{ content: ContentBlock[]; visionUsage: AggregatedVisionUsage }> {
   const pdfCache = getCache();
   const zeroUsage: AggregatedVisionUsage = { inputTokens: 0, outputTokens: 0 };
@@ -251,7 +254,7 @@ async function readPdf(
   }
 
   // Cache miss or mtime changed — read file and compute hash
-  const fileBuffer = await readFile(realPath);
+  const fileBuffer = await readBytes();
   const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
 
   // Slow path: check if content hash matches (mtime changed but content didn't)
@@ -429,54 +432,64 @@ const plugin = {
 
               // PDF detection
               if (isPdf) {
-                const stats = statSync(realPath);
-                if (stats.size > MAX_PDF_FILE_SIZE) {
-                  return toolError(
-                    `File too large (${stats.size} bytes). Maximum: ${MAX_PDF_FILE_SIZE} bytes.`
-                  );
-                }
-
-                // Resolve agent name + model from OpenClaw config in one walk.
-                // The model drives vision API calls; the name makes rows on
-                // the Usage Dashboard readable (agentId alone is opaque).
-                let visionConfig: VisionApiConfig | null = null;
-                let resolvedAgentName: string | undefined;
-                if (modelAuth && loadConfig) {
-                  const cfg = loadConfig();
-                  const agentInfo = resolveAgentInfo(cfg, agentId);
-                  resolvedAgentName = agentInfo.name;
-                  // Prefer Pinchy's dedicated, live-resolved vision model; fall
-                  // back to the agent's own model only when none was emitted.
-                  const visionModel = visionModelOverride ?? agentInfo.model;
-                  if (visionModel) {
-                    visionConfig = createVisionConfig({
-                      modelAuth,
-                      cfg,
-                      model: visionModel,
-                    });
+                // Opened once, without following a link, and checked to be
+                // the file at realPath (verified-open.ts): the size gate, the
+                // cache key and the bytes all come from this descriptor, so a
+                // link swapped in after validateAccess is never read.
+                const { handle, stats } = await openVerified(realPath);
+                try {
+                  if (stats.size > MAX_PDF_FILE_SIZE) {
+                    return toolError(
+                      `File too large (${stats.size} bytes). Maximum: ${MAX_PDF_FILE_SIZE} bytes.`
+                    );
                   }
-                }
-                const pdfResult = await readPdf(realPath, stats, visionConfig);
 
-                // Fire-and-forget: report any vision API tokens to Pinchy's
-                // internal usage endpoint so they show up on the Usage
-                // Dashboard. We intentionally do not await — telemetry must
-                // never block or fail a PDF read.
-                if (apiBaseUrl && gatewayToken && visionConfig) {
-                  void reportUsage(
-                    {
-                      agentId,
-                      agentName: resolvedAgentName ?? agentId,
-                      sessionKey: "plugin:pinchy-files",
-                      model: visionConfig.model,
-                      inputTokens: pdfResult.visionUsage.inputTokens,
-                      outputTokens: pdfResult.visionUsage.outputTokens,
-                    },
-                    { apiBaseUrl, gatewayToken }
+                  // Resolve agent name + model from OpenClaw config in one walk.
+                  // The model drives vision API calls; the name makes rows on
+                  // the Usage Dashboard readable (agentId alone is opaque).
+                  let visionConfig: VisionApiConfig | null = null;
+                  let resolvedAgentName: string | undefined;
+                  if (modelAuth && loadConfig) {
+                    const cfg = loadConfig();
+                    const agentInfo = resolveAgentInfo(cfg, agentId);
+                    resolvedAgentName = agentInfo.name;
+                    // Prefer Pinchy's dedicated, live-resolved vision model; fall
+                    // back to the agent's own model only when none was emitted.
+                    const visionModel = visionModelOverride ?? agentInfo.model;
+                    if (visionModel) {
+                      visionConfig = createVisionConfig({
+                        modelAuth,
+                        cfg,
+                        model: visionModel,
+                      });
+                    }
+                  }
+                  const pdfResult = await readPdf(realPath, stats, visionConfig, () =>
+                    handle.readFile()
                   );
-                }
 
-                return { content: pdfResult.content };
+                  // Fire-and-forget: report any vision API tokens to Pinchy's
+                  // internal usage endpoint so they show up on the Usage
+                  // Dashboard. We intentionally do not await — telemetry must
+                  // never block or fail a PDF read.
+                  if (apiBaseUrl && gatewayToken && visionConfig) {
+                    void reportUsage(
+                      {
+                        agentId,
+                        agentName: resolvedAgentName ?? agentId,
+                        sessionKey: "plugin:pinchy-files",
+                        model: visionConfig.model,
+                        inputTokens: pdfResult.visionUsage.inputTokens,
+                        outputTokens: pdfResult.visionUsage.outputTokens,
+                      },
+                      { apiBaseUrl, gatewayToken }
+                    );
+                  }
+
+                  return { content: pdfResult.content };
+                } finally {
+                  await handle.close();
+                }
               }
 
               // Non-PDF (.docx, images, text): open the file once and read it
@@ -484,11 +497,12 @@ const plugin = {
               // SAME open handle. Binding the size check and the read to one fd
               // closes the time-of-check/time-of-use window (CodeQL
               // js/file-system-race): a file swapped after the check can no
-              // longer be read in its place.
-              const fh = await open(realPath, "r");
+              // longer be read in its place. And the open itself refuses to
+              // follow a link swapped in after validateAccess (verified-open.ts).
+              const { handle: fh, stats: opened } = await openVerified(realPath);
               let buffer: Buffer;
               try {
-                const { size } = await fh.stat();
+                const { size } = opened;
                 const sizeLimit = isDocx ? MAX_DOCX_FILE_SIZE : MAX_FILE_SIZE;
                 if (size > sizeLimit) {
                   return toolError(`File too large (${size} bytes). Maximum: ${sizeLimit} bytes.`);
