@@ -99,7 +99,8 @@ export function KnowledgeUnsearchableList({
           ? "1 document in this agent's folders is indexed but holds no searchable text"
           : `${result.total} documents in this agent's folders are indexed but hold no searchable text`}{" "}
         — nearly always scans. Your agent won&apos;t find anything in them, so it will answer that
-        it found nothing. Reading text from scans is on the roadmap.
+        it found nothing. A scan lands here when no vision model was available to read it; make one
+        available and the next run reads it again.
       </p>
       {awaitingConversion && (
         <p className="text-sm text-muted-foreground">
