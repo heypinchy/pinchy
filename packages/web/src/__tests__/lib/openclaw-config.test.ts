@@ -5301,68 +5301,126 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.models).toEqual(existing.models);
   });
 
-  it("leaves the first post-wizard regenerate nothing OpenClaw restarts the gateway for", async () => {
-    // The seed exists so the first real regenerate is a HOT reload. Every field
-    // it misses becomes a restart-class diff on a fresh install — and an
-    // in-process gateway restart aborts whatever run is in flight ("Agent run
-    // belongs to a stale gateway lifecycle"). `media.ttlHours` was exactly
-    // such a miss: build.ts has written it since the media-TTL change, the seed
-    // and the baked config never did, and OpenClaw has no reload rule for
-    // `media`, so it restarts. The integration suite lost a user's message to
-    // it (CI run 41569393728).
-    //
-    // A list of "the restart-class fields" is the hand-maintained mirror that
-    // missed it, so this test asks OpenClaw instead: the installed binary's own
-    // reload planner judges the diff between the seeded baseline and the first
-    // post-wizard regenerate. The planner loaded here has no plugin registry, so
-    // the restart prefixes that OpenClaw's default-enabled bundled plugins
-    // register at startup (canvas: `plugins.allow`, `plugins.entries.canvas`, …)
-    // are checked separately below — in production those rules sort ahead of
-    // the hot `plugins` rule.
-    const { readFileSync: realReadFileSync } = await vi.importActual<typeof import("fs")>("fs");
-    const pathMod = await import("path");
-    const baked = realReadFileSync(
-      pathMod.resolve(__dirname, "../../../../../config/openclaw.json"),
-      "utf-8"
-    );
+  // The seed exists so the first real regenerate is a HOT reload. Every field it
+  // misses becomes a restart-class diff on a fresh install — and an in-process
+  // gateway restart aborts whatever run is in flight ("Agent run belongs to a
+  // stale gateway lifecycle"). `media.ttlHours` was exactly such a miss: build.ts
+  // has written it since the media-TTL change, the seed and the baked config never
+  // did, and OpenClaw has no reload rule for `media`, so it restarts. The
+  // integration suite lost a user's message to it (CI run 41569393728).
+  //
+  // A list of "the restart-class fields" is the hand-maintained mirror that
+  // missed it, so these tests ask OpenClaw instead: the installed binary's own
+  // reload planner, plus the reload rules of its default-enabled bundled plugins,
+  // judge the diff between the booted baseline and the first post-wizard
+  // regenerate.
+  describe("first post-wizard regenerate is not restart-class (OpenClaw's own reload planner)", () => {
+    const readBaked = async (): Promise<Record<string, unknown>> => {
+      const fsActual = await vi.importActual<typeof import("fs")>("fs");
+      const pathMod = await import("path");
+      return JSON.parse(
+        fsActual.readFileSync(
+          pathMod.resolve(__dirname, "../../../../../config/openclaw.json"),
+          "utf-8"
+        )
+      ) as Record<string, unknown>;
+    };
 
-    // Boot, in bootInits order: restart-class seed, then the gateway token.
-    let onDisk = baked;
-    mockedReadFileSync.mockImplementation(() => onDisk);
-    seedRestartClassOverridesIfMissing();
-    onDisk = findOpenClawConfigWrite(mockedWriteFileSync)?.[1]?.toString() ?? onDisk;
-    mockedWriteFileSync.mockClear();
-    await seedGatewayTokenIfMissing();
-    onDisk = findOpenClawConfigWrite(mockedWriteFileSync)?.[1]?.toString() ?? onDisk;
-    const baseline = JSON.parse(onDisk) as Record<string, unknown>;
-    mockedWriteFileSync.mockClear();
+    // What is on the volume before Pinchy's boot seeds run.
+    const startingFiles: Array<{
+      name: string;
+      file: () => Promise<Record<string, unknown> | null>;
+      // What OpenClaw's own first start adds to the file before Pinchy's first
+      // regenerate. Evidence for the empty-volume case: in CI run 41569393728
+      // the volume started empty (both seeds wrote), OpenClaw's first boot logged
+      // `Bind: lan`, and the reload that later fired named only `media` — so
+      // gateway.mode/bind were already in its compare baseline.
+      openClawFirstStart?: (cfg: Record<string, unknown>) => Record<string, unknown>;
+    }> = [
+      { name: "the baked config/openclaw.json (image copy-up)", file: readBaked },
+      {
+        name: "an empty volume (no openclaw.json yet)",
+        file: async () => null,
+        openClawFirstStart: (cfg) => ({
+          ...cfg,
+          gateway: { mode: "local", bind: "lan", ...(cfg.gateway as Record<string, unknown>) },
+        }),
+      },
+      {
+        // An install created before the media TTL: every other override present.
+        // The seed is the only thing that adds `media` here — this case fails if
+        // the seed stops doing so, which the baked-config case cannot see.
+        name: "a pre-media-TTL config (upgrade)",
+        file: async () => {
+          const { media: _media, ...rest } = await readBaked();
+          return rest;
+        },
+      },
+    ];
 
-    // The setup wizard's regenerate: one agent on a local Ollama provider.
-    mockedDb.select.mockReturnValue({
-      from: mockFrom([
-        { id: "smithers", name: "Smithers", model: "ollama/llama3.2", createdAt: new Date() },
-      ]),
-    } as never);
-    mockedGetSetting.mockImplementation(async (key: string) =>
-      key === "ollama_local_url" ? "http://host.docker.internal:11434" : null
-    );
-    await regenerateOpenClawConfig();
-    const next = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync)) as Record<string, unknown>;
+    const wizardProviders: Array<{ name: string; model: string; setting: Record<string, string> }> =
+      [
+        {
+          name: "local Ollama",
+          model: "ollama/llama3.2",
+          setting: { ollama_local_url: "http://host.docker.internal:11434" },
+        },
+        {
+          name: "Anthropic with an API key",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          setting: { anthropic_api_key: "sk-ant-decrypted" },
+        },
+      ];
 
-    const { diffConfigPaths, buildGatewayReloadPlan, pluginRestartPrefixes } =
-      await loadOpenClawReloadPlanner();
-    const changedPaths = diffConfigPaths(baseline, next);
-    const plan = buildGatewayReloadPlan(changedPaths);
+    for (const start of startingFiles) {
+      for (const provider of wizardProviders) {
+        it(`starting from ${start.name}, wizard on ${provider.name}`, async () => {
+          // Boot, in bootInits order: restart-class seed, then the gateway token.
+          const initial = await start.file();
+          let onDisk: string | null = initial === null ? null : JSON.stringify(initial);
+          mockedReadFileSync.mockImplementation(() => {
+            if (onDisk === null) {
+              throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+            }
+            return onDisk;
+          });
+          const persistSeedWrite = () => {
+            const write = findOpenClawConfigWrite(mockedWriteFileSync);
+            if (write) onDisk = String(write[1]);
+            mockedWriteFileSync.mockClear();
+          };
+          seedRestartClassOverridesIfMissing();
+          persistSeedWrite();
+          await seedGatewayTokenIfMissing();
+          persistSeedWrite();
+          const seeded = JSON.parse(onDisk ?? "{}") as Record<string, unknown>;
+          const baseline = start.openClawFirstStart?.(seeded) ?? seeded;
+          onDisk = JSON.stringify(baseline);
 
-    // The scenario must be real: a regenerate that rebuilt the baseline unchanged
-    // would make the restart assertions below pass on an empty diff.
-    expect(changedPaths).toEqual(expect.arrayContaining(["agents", "models"]));
-    expect(plan.restartReasons).toEqual([]);
-    expect(
-      changedPaths.filter((path) =>
-        pluginRestartPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}.`))
-      )
-    ).toEqual([]);
+          // The setup wizard's regenerate: Smithers on the chosen provider.
+          mockedDb.select.mockReturnValue({
+            from: mockFrom([
+              { id: "smithers", name: "Smithers", model: provider.model, createdAt: new Date() },
+            ]),
+          } as never);
+          mockedGetSetting.mockImplementation(async (key: string) => provider.setting[key] ?? null);
+          await regenerateOpenClawConfig();
+          const next = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync)) as Record<
+            string,
+            unknown
+          >;
+
+          const planner = await loadOpenClawReloadPlanner();
+          const changedPaths = planner.diffConfigPaths(baseline, next);
+
+          // The scenario must be real: a regenerate that rebuilt the baseline
+          // unchanged would make the restart assertions pass on an empty diff.
+          expect(changedPaths).toEqual(expect.arrayContaining(["agents", "models"]));
+          expect(planner.buildGatewayReloadPlan(changedPaths).restartReasons).toEqual([]);
+          expect(changedPaths.filter(planner.restartsViaPluginRule)).toEqual([]);
+        });
+      }
+    }
   });
 });
 
@@ -5374,17 +5432,25 @@ describe("seedRestartClassOverridesIfMissing", () => {
  * aliases from its `export { … }` line. If a bump renames or restructures them,
  * this throws — the signal to re-verify the contract, never a silent pass.
  *
- * `pluginRestartPrefixes` covers what that planner cannot see without a running
- * gateway: the `reload.restartPrefixes` of every bundled plugin OpenClaw enables
- * by default (`enabledByDefault: true` in its manifest), which its watcher merges
- * into the rules. Found by reading each such plugin's `index.js` for the field —
- * a declaration moved into a sibling chunk would escape this, so at least one
- * declaring plugin must be found (canvas, as of 2026.7.1).
+ * The chunk's planner sees no plugin registry, but a running gateway merges the
+ * `reload` rules of the plugins it loads, sorted with the base rules by prefix
+ * length — so canvas's `plugins.allow` restart rule beats the hot `plugins` one.
+ * `restartsViaPluginRule` covers that: it imports every bundled plugin OpenClaw
+ * enables by default (`enabledByDefault: true`) and reports a path whose
+ * longest-matching plugin rule is a restart. As of 2026.7.1 that is canvas
+ * (`plugins.enabled/allow/deny`, `plugins.entries.canvas`) and browser
+ * (`browser`, whose rules live in a sibling chunk — hence importing the entry
+ * rather than reading its source). Third-party plugins Pinchy loads declare no
+ * reload rules.
+ *
+ * Today's first regenerate diffs `plugins` as a whole (the booted file has no
+ * `plugins` block), which no plugin rule matches; the check guards the day a
+ * `plugins` block reaches the baseline first.
  */
 async function loadOpenClawReloadPlanner(): Promise<{
   diffConfigPaths: (prev: unknown, next: unknown) => string[];
   buildGatewayReloadPlan: (paths: string[]) => { restartReasons: string[] };
-  pluginRestartPrefixes: string[];
+  restartsViaPluginRule: (path: string) => boolean;
 }> {
   const { createRequire } = await import("module");
   const { pathToFileURL } = await import("url");
@@ -5414,8 +5480,9 @@ async function loadOpenClawReloadPlanner(): Promise<{
     throw new Error(`${chunks[0]} exports are not functions — re-verify the reload contract.`);
   }
 
+  type PluginRule = { prefix: string; restart: boolean };
+  const pluginRules: PluginRule[] = [];
   const extensions = pathMod.join(dist, "extensions");
-  const pluginRestartPrefixes: string[] = [];
   for (const dir of fsActual.readdirSync(extensions)) {
     const manifestPath = pathMod.join(extensions, dir, "openclaw.plugin.json");
     const indexPath = pathMod.join(extensions, dir, "index.js");
@@ -5424,22 +5491,40 @@ async function loadOpenClawReloadPlanner(): Promise<{
       enabledByDefault?: boolean;
     };
     if (manifest.enabledByDefault !== true) continue;
-    if (!fsActual.readFileSync(indexPath, "utf-8").includes("restartPrefixes")) continue;
     const entry = (await import(pathToFileURL(indexPath).href)) as {
-      default?: { reload?: { restartPrefixes?: unknown } };
+      default?: { reload?: Record<string, unknown> };
     };
-    const prefixes = entry.default?.reload?.restartPrefixes;
-    if (!Array.isArray(prefixes) || prefixes.some((p) => typeof p !== "string")) {
-      throw new Error(
-        `extensions/${dir} mentions restartPrefixes but exports none — re-verify the reload contract.`
-      );
+    const reload = entry.default?.reload;
+    if (reload === undefined) continue;
+    for (const [key, restart] of [
+      ["restartPrefixes", true],
+      ["hotPrefixes", false],
+      ["noopPrefixes", false],
+    ] as const) {
+      const prefixes = reload[key] ?? [];
+      if (!Array.isArray(prefixes) || prefixes.some((p) => typeof p !== "string")) {
+        throw new Error(
+          `extensions/${dir} reload.${key} is not a string[] — re-verify the reload contract.`
+        );
+      }
+      for (const prefix of prefixes as string[]) pluginRules.push({ prefix, restart });
     }
-    pluginRestartPrefixes.push(...(prefixes as string[]));
   }
-  if (pluginRestartPrefixes.length === 0) {
+  if (!pluginRules.some((rule) => rule.restart)) {
     throw new Error(
       `No default-enabled bundled plugin in ${extensions} declares reload.restartPrefixes — re-verify the reload contract.`
     );
+  }
+  const restartsViaPluginRule = (path: string): boolean => {
+    const matching = pluginRules
+      .filter((rule) => path === rule.prefix || path.startsWith(`${rule.prefix}.`))
+      .sort((a, b) => b.prefix.length - a.prefix.length);
+    return matching[0]?.restart === true;
+  };
+  // The matcher must flag at least one rule it was handed, or the assertion
+  // that uses it could never fail.
+  if (!pluginRules.some((rule) => rule.restart && restartsViaPluginRule(rule.prefix))) {
+    throw new Error("restartsViaPluginRule flags none of the plugin restart rules it loaded.");
   }
 
   return {
@@ -5447,7 +5532,7 @@ async function loadOpenClawReloadPlanner(): Promise<{
     buildGatewayReloadPlan: buildGatewayReloadPlan as (paths: string[]) => {
       restartReasons: string[];
     },
-    pluginRestartPrefixes,
+    restartsViaPluginRule,
   };
 }
 
