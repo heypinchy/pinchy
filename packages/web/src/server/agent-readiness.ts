@@ -9,14 +9,30 @@
 // `config.apply` rate-limit it can balloon to ~100 s (see chat-dispatch-retry.ts
 // and reference_config_apply_rate_limit_drop in project memory).
 //
-// `agents.list` (openclaw-node >= 0.12.0) is backed by the SAME runtime view
-// (`getRuntimeConfig()`) that OC's chat-dispatch handler checks before accepting
-// a message. Verified against OC 2026.5.28: both the `agent` dispatch handler
-// (`knownAgents = listAgentIds(getRuntimeConfig())`) and the `agents.list`
-// handler (`listAgentsForGateway(getRuntimeConfig())`) read that one view. So
-// polling `agents.list` until the agent id appears is an AUTHORITATIVE,
-// deterministic readiness signal — the gate `config.get` could never be, because
-// `config.get` reads the config FILE, which leads the applied runtime.
+// `agents.list` (openclaw-node >= 0.12.0) and OC's `agent` dispatch handler
+// read the SAME runtime view: re-verified against OC 2026.7.1, the dispatch
+// handler checks `listAgentIds(context.getRuntimeConfig())` and `agents.list`
+// answers `listAgentsForGateway(context.getRuntimeConfig())`. That is what makes
+// it a better gate than `config.get`, which reads the config FILE and leads the
+// applied runtime.
+//
+// Same view, different predicate. `listAgentIds` returns the configured
+// `agents.list` ids (or just `main` when that list is empty).
+// `listAgentsForGateway` adds every directory under `<stateDir>/agents/` and
+// filters them back down to the configured ids — but ONLY when the configured
+// list is non-empty. While the runtime list is empty (right after a gateway
+// restart, before Pinchy's agents apply), `agents.list` therefore reports every
+// agent that has ever had a directory on disk, while the dispatch handler
+// rejects all of them with `unknown agent id`. CI run 41569393728 hit exactly
+// this: the gate said "ready" and the dispatch kept racing.
+//
+// `dispatchableAgentIds` closes that gap: it keeps only entries that came from
+// the configured list, which OC marks by carrying the configured `name` /
+// `identity` (Pinchy always writes `name`). A disk-only entry has neither. So
+// polling `dispatchableAgentIds(agents.list)` until the id appears mirrors the
+// dispatch handler's own predicate. If a future OC drops `name` from configured
+// entries, the gate degrades to "never ready" — the dispatch-race backoff then
+// carries the retry, costing latency but never a message.
 //
 // Polling cost is safe under contention: `agents.list` is a READ. Verified
 // against OC 2026.5.28's method descriptors — `config.apply` carries
@@ -33,13 +49,26 @@
 // remains the backstop, so a readiness-probe miss can only ever cost a little
 // latency, never a dropped message.
 
+import type { AgentsListResult } from "openclaw-node";
+
+/**
+ * The ids from an `agents.list` result that OC's `agent` dispatch handler will
+ * accept: entries from the configured runtime list, not agent directories OC
+ * found on disk. See the file header for why the two differ.
+ */
+export function dispatchableAgentIds(result: AgentsListResult): string[] {
+  return result.agents
+    .filter((agent) => Boolean(agent.name) || agent.identity !== undefined)
+    .map((agent) => agent.id);
+}
+
 export interface AgentRuntimeReadinessDeps {
   /** Whether the connected Gateway advertises the `agents.list` RPC. */
   hasAgentsListRpc: () => boolean;
   /**
-   * Resolve the agent ids currently present in OC's RUNTIME config (i.e. the
-   * `id`s returned by `agents.list`). Rejections are caught by the caller and
-   * treated as "agent not yet present".
+   * Resolve the agent ids OC's dispatch handler currently accepts — pass the
+   * `agents.list` result through `dispatchableAgentIds`, not its raw ids.
+   * Rejections are caught by the caller and treated as "agent not yet present".
    */
   listRuntimeAgentIds: () => Promise<string[]>;
   /** Sleep helper, injectable so tests don't wait real time. */

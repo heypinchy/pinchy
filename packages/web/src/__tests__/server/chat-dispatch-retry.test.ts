@@ -244,13 +244,69 @@ describe("chatWithDispatchRaceRetry", () => {
       const chat = vi
         .fn()
         .mockImplementationOnce(makeStream(raceError()))
-        .mockImplementationOnce(makeStream(raceError()))
         .mockImplementationOnce(makeStream(successful));
 
       const clock = fakeClock();
-      // The gate confirms readiness each time (the agent is present in the
-      // runtime agents.list). It models the deterministic poll: no need for the
-      // wrapper's blind backoff.
+      // The gate confirms readiness (the agent is present in the runtime
+      // agents.list) and the dispatch that follows lands. It models the
+      // deterministic poll: no need for the wrapper's blind backoff.
+      const awaitAgentReady = vi.fn(async () => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(got).toEqual(successful);
+      expect(chat).toHaveBeenCalledTimes(2);
+      // Gate consulted for the race; blind backoff NOT used.
+      expect(awaitAgentReady).toHaveBeenCalledTimes(1);
+      expect(clock.delay).not.toHaveBeenCalled();
+    });
+
+    it("backs off instead of hot-looping when the gate says ready but the dispatch still races", async () => {
+      // CI run 41569393728: OpenClaw's `agents.list` reported the agent (it
+      // lists agent directories from disk while the runtime agents.list is
+      // empty) while the `agent` dispatch handler kept rejecting the id. With
+      // an immediate re-dispatch after every "ready", Pinchy sent ~4,800
+      // dispatches in 19 s. A gate the next dispatch contradicts is not
+      // evidence of readiness, so the loop must fall back to the capped backoff.
+      const chat = vi.fn(makeStream(raceError("a")));
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn(async () => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 2000, maxTotalMs: 10000 }
+        )
+      );
+
+      // Still bounded and still surfaces the race error at the end.
+      expect(got).toHaveLength(1);
+      assertErrorChunk(got[0]);
+      // First "ready" is trusted (immediate retry); once that retry races too,
+      // every further retry waits the capped backoff: 1000, 2000, 2000, ...
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([1000, 2000, 2000, 2000, 2000, 1000]);
+      expect(chat).toHaveBeenCalledTimes(8);
+    });
+
+    it("trusts only the first 'ready', so a contradicted one waits the backoff", async () => {
+      // The gate answers "ready" twice before the agent truly lands: only the
+      // first answer earns an immediate retry; the contradicted second one waits.
+      const successful: ChatChunk[] = [{ type: "done", text: "", runId: "r1" }];
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      const clock = fakeClock();
       const awaitAgentReady = vi.fn(async () => true);
 
       const got = await collect(
@@ -264,9 +320,7 @@ describe("chatWithDispatchRaceRetry", () => {
 
       expect(got).toEqual(successful);
       expect(chat).toHaveBeenCalledTimes(3);
-      // Gate consulted once per race; blind backoff NOT used.
-      expect(awaitAgentReady).toHaveBeenCalledTimes(2);
-      expect(clock.delay).not.toHaveBeenCalled();
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([1000]);
     });
 
     it("passes the REMAINING wall-clock budget to the readiness gate", async () => {

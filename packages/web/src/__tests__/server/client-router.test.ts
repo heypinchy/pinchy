@@ -296,7 +296,10 @@ describe("ClientRouter", () => {
     mockSessionsHistory.mockResolvedValue({ messages: [] });
     // Default: the agent is present in OC's runtime agents.list, so the
     // dispatch-race readiness gate confirms readiness on the first poll.
-    mockAgentsList.mockResolvedValue({ defaultId: "agent-1", agents: [{ id: "agent-1" }] });
+    mockAgentsList.mockResolvedValue({
+      defaultId: "agent-1",
+      agents: [{ id: "agent-1", name: "Smithers" }],
+    });
   });
 
   describe("computeSessionKey", () => {

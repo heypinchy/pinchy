@@ -6,7 +6,7 @@ import type {
   AgentWaitResult,
 } from "openclaw-node";
 import { chatWithDispatchRaceRetry } from "@/server/chat-dispatch-retry";
-import { waitForAgentInRuntime } from "@/server/agent-readiness";
+import { dispatchableAgentIds, waitForAgentInRuntime } from "@/server/agent-readiness";
 import type { WebSocket } from "ws";
 import {
   assertAgentAccess,
@@ -738,7 +738,8 @@ export class ClientRouter {
         },
         // Deterministic readiness gate: on a dispatch-race, poll OC's RUNTIME
         // `agents.list` (the same `getRuntimeConfig()` view the dispatch handler
-        // checks) until this agent is present, instead of blind-sleeping a
+        // checks, filtered by `dispatchableAgentIds` to the ids that handler
+        // accepts) until this agent is present, instead of blind-sleeping a
         // backoff window. Reading the runtime list — not `config.get` (the FILE,
         // which leads the runtime) — is what makes this reliable. Bounded by the
         // remaining retry budget; never throws, so a probe miss only costs a
@@ -750,7 +751,7 @@ export class ClientRouter {
             {
               hasAgentsListRpc: () => this.openclawClient.hasMethod("agents.list"),
               listRuntimeAgentIds: async () =>
-                (await this.openclawClient.agents.list()).agents.map((a) => a.id),
+                dispatchableAgentIds(await this.openclawClient.agents.list()),
               onWaitObserved: ({ waitedMs, ready, polls }) => {
                 if (process.env.PINCHY_E2E_CHAT_TRACE === "1") {
                   console.log(
