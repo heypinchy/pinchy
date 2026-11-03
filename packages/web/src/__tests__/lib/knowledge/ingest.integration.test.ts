@@ -1821,6 +1821,35 @@ it("keeps a refused workbook's log entry to one bounded line, whatever its name 
   }
 });
 
+it("keeps a failed file's log entry to one bounded line, whatever its name holds", async () => {
+  // The per-file failure line names the file, and a file name can carry a
+  // newline: escaped, it still names the file without writing a line of its own.
+  const pdfPath = join(tmpRoot, "Bericht\n[kb-ingest] Lohnliste.pdf: FORGED.pdf");
+  writeFileSync(pdfPath, "corrupt-bytes");
+  const extractPdf = vi.fn(async () => {
+    throw new Error("Invalid PDF structure");
+  });
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const result = await ingestDirectory(ORG_ID, tmpRoot, {
+      embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.1))),
+      extractPdf,
+      extractXlsx: neverCalledXlsx,
+      convertOffice: neverCalledConvert,
+      ocrModel: null,
+    });
+    expect(result).toEqual(counts({ failed: 1 }));
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    const line = String(consoleError.mock.calls[0][0]);
+    expect(line).not.toMatch(BREAKS_A_LINE);
+    expect(line.length).toBeLessThan(1100);
+    expect(line).toContain("Bericht\\n[kb-ingest] Lohnliste.pdf");
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
 it("does not record a document as unreadable when the converter itself was unavailable", async () => {
   // The distinction #936 exists for: out of memory or a missing binary says
   // nothing about the document. Recording it would brand a perfectly good file

@@ -1269,7 +1269,9 @@ export async function ingestPaths(
       if (!(err instanceof FileIngestError)) throw err;
       // The admin-facing counts must not name paths (audit PII rule), so this
       // server log is the only place that says WHICH file failed and why.
-      console.error(`[kb-ingest] ${err.message}`, err.cause);
+      // The message names the file, so it goes through the same escaping as
+      // a refusal: a newline in a file name cannot write a line of its own.
+      console.error(`[kb-ingest] ${oneLine(err.message, LOG_PATH_MAX + 32)}`, err.cause);
       failed++;
     }
     processed++;
