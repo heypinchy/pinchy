@@ -10,7 +10,8 @@
  * stopped through buildShutdownSteps so SIGTERM doesn't hang. That single-
  * container assumption is also what makes requeueOrphanedIndexJobs() safe at
  * boot — see its doc comment — and clearStagedBatches(), which frees the disk
- * an interrupted Office conversion left behind.
+ * an interrupted Office conversion left behind. The same boot step removes
+ * artifacts of a superseded format version (pruneOtherFormatVersions).
  *
  * A run can take hours (a ~2k-PDF corpus is 1.5-7h of CPU-only embedding), so
  * the interval is a poll for NEW work, not a run cadence: the re-entrancy guard
@@ -27,7 +28,7 @@ import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 import { extractXlsxIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
-import { clearStagedBatches } from "@/lib/knowledge/office-artifacts";
+import { clearStagedBatches, pruneOtherFormatVersions } from "@/lib/knowledge/office-artifacts";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
   claimNextIndexJob,
@@ -124,7 +125,7 @@ export const FOLDERS_UNAVAILABLE_ERROR =
 export interface RunIndexJobOptions {
   /** Test seam: injects a deterministic embedder/extractor. Production resolves them from the bundled in-process embeddinggemma GGUF. */
   deps?: IngestDeps;
-  /** Test seam: the artifact volume whose leftover staging the first tick clears. Production uses the store's default. */
+  /** Test seam: the artifact volume the first tick clears leftover staging and superseded format versions from. Production uses the store's default. */
   artifactDir?: string;
 }
 
@@ -371,6 +372,20 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
         }
       } catch (err) {
         console.warn("[kb-index-worker] could not clear leftover Office staging:", err);
+      }
+      // After a format bump, the previous version's artifacts are unreachable
+      // (the preview resolves only the current one) but still on the volume,
+      // holding what the weaker conversion drew in. Nothing reads them, so
+      // deleting them cannot break a read; housekeeping, like the above.
+      try {
+        const pruned = await pruneOtherFormatVersions(opts.artifactDir);
+        if (pruned > 0) {
+          console.log(
+            `[kb-index-worker] removed ${pruned} converted Office document(s) of a superseded format version`
+          );
+        }
+      } catch (err) {
+        console.warn("[kb-index-worker] could not remove superseded Office artifacts:", err);
       }
     }
 

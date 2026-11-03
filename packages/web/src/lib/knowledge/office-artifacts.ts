@@ -31,7 +31,7 @@
  * (`pruneOtherFormatVersions`) instead of a table scan.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, mkdirSync } from "node:fs";
+import { createReadStream, mkdirSync, type Dirent } from "node:fs";
 import { mkdir, readdir, rename, rm, stat, utimes } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -180,27 +180,6 @@ export class OfficeArtifactStore {
     return removed;
   }
 
-  /**
-   * Removes every artifact belonging to a DIFFERENT format version. Called
-   * after a converter change so the volume does not carry a generation of
-   * artifacts nothing will ever read again.
-   */
-  async pruneOtherFormatVersions(): Promise<number> {
-    let removed = 0;
-    for (const entry of await this.listDir(this.rootDir)) {
-      // Only version directories are ours to delete. `staging/` holds a batch
-      // that may be converting RIGHT NOW.
-      if (!/^v\d+$/.test(entry)) continue;
-      if (entry === `v${this.formatVersion}`) continue;
-      const dir = join(this.rootDir, entry);
-      for (const shard of await this.listDir(dir)) {
-        removed += (await this.listDir(join(dir, shard))).length;
-      }
-      await rm(dir, { recursive: true, force: true });
-    }
-    return removed;
-  }
-
   /** readdir that answers [] for a directory that does not exist yet. */
   private async listDir(dir: string): Promise<string[]> {
     try {
@@ -243,6 +222,47 @@ export async function clearStagedBatches(rootDir: string = DEFAULT_ARTIFACT_DIR)
     await rm(join(stagingDir, batch), { recursive: true, force: true });
   }
   return batches.length;
+}
+
+/**
+ * Removes every artifact of a format version other than `keepVersion` and
+ * returns how many there were.
+ *
+ * After a bump nothing reads them again — `pathFor` resolves only the current
+ * version, so the preview cannot reach them — but they still hold whatever the
+ * earlier, weaker conversion drew into its PDFs, and they cost disk. The index
+ * worker calls this once at boot, next to `clearStagedBatches`.
+ *
+ * Deletes only real directories named `v<n>` directly under `rootDir`: never
+ * `staging/` (a batch may be converting into it), never a symlink, whatever
+ * it is named. A function of the directory for the same reason as
+ * `clearStagedBatches`: a store would create its version directory, and a
+ * missing volume should cost nothing here.
+ */
+export async function pruneOtherFormatVersions(
+  rootDir: string = DEFAULT_ARTIFACT_DIR,
+  keepVersion: number = OFFICE_ARTIFACT_FORMAT_VERSION
+): Promise<number> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(rootDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw err;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^v\d+$/.test(entry.name)) continue;
+    if (entry.name === `v${keepVersion}`) continue;
+    const dir = join(rootDir, entry.name);
+    for (const shard of await readdir(dir, { withFileTypes: true })) {
+      if (!shard.isDirectory()) continue;
+      removed += (await readdir(join(dir, shard.name))).length;
+    }
+    // `rm` removes a symlink inside the tree, never what it points at.
+    await rm(dir, { recursive: true, force: true });
+  }
+  return removed;
 }
 
 let sharedStore: OfficeArtifactStore | null = null;

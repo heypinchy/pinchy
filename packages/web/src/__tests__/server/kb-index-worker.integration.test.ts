@@ -22,6 +22,7 @@ import {
   _resetKbIndexWorkerForTest,
 } from "@/server/kb-index-worker";
 import type { IngestDeps } from "@/lib/knowledge/ingest";
+import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
 
 const ORG_ID = "org-kb-worker-test";
 
@@ -670,6 +671,43 @@ describe("kb index worker tick", () => {
     expect(leftoverWhenClaimed).toEqual([false]);
     expect(readdirSync(join(artifactDir, "staging"))).toEqual([]);
     expect(existsSync(artifact)).toBe(true);
+    expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({ status: "succeeded" });
+  });
+
+  it("removes the artifacts of superseded format versions, before it claims anything", async () => {
+    // After a format bump the preview resolves only the current version, so
+    // the old directory is unreachable — but it still holds what the earlier,
+    // weaker conversion drew into its PDFs, and it costs disk.
+    const artifactDir = join(tmpRoot, "artifacts");
+    const superseded = join(artifactDir, `v${OFFICE_ARTIFACT_FORMAT_VERSION - 1}`, "ab", "old.pdf");
+    const current = join(artifactDir, `v${OFFICE_ARTIFACT_FORMAT_VERSION}`, "ab", "kept.pdf");
+    for (const path of [superseded, current]) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "bytes");
+    }
+    const corpus = join(tmpRoot, "corpus");
+    writePdf(corpus, "handbook.pdf");
+    const agent = await makeAgent();
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [corpus],
+    });
+    const deps = fakeDeps();
+    const supersededWhenClaimed: boolean[] = [];
+    const extractPdf = deps.extractPdf;
+    deps.extractPdf = async (...args) => {
+      supersededWhenClaimed.push(existsSync(superseded));
+      return extractPdf(...args);
+    };
+
+    await runKbIndexWorkerTick({ deps, artifactDir });
+
+    expect(supersededWhenClaimed).toEqual([false]);
+    expect(readdirSync(artifactDir).sort()).toEqual([`v${OFFICE_ARTIFACT_FORMAT_VERSION}`]);
+    expect(existsSync(current)).toBe(true);
     expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({ status: "succeeded" });
   });
 
