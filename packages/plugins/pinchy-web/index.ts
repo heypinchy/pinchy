@@ -1,3 +1,4 @@
+import { refusingUnknownParams } from "./unknown-params.js";
 import { braveSearch, type BraveSearchConfig } from "./brave-search.js";
 import { webFetch, type WebFetchConfig } from "./web-fetch.js";
 import {
@@ -121,7 +122,9 @@ const plugin = {
   name: "Pinchy Web",
   description: "Web search and page fetching with domain filtering.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const config = api.pluginConfig;
     const apiBaseUrl = config?.apiBaseUrl ?? "";
     const gatewayToken = config?.gatewayToken ?? "";

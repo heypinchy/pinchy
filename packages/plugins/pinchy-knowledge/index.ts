@@ -9,6 +9,7 @@
  * of Pinchy's governance logic already lives.
  */
 
+import { refusingUnknownParams } from "./unknown-params";
 import { formatLocator, type ChunkLocator } from "./locator";
 
 // Bounds the call to Pinchy's own internal API against a hung container /
@@ -212,7 +213,9 @@ const plugin = {
     },
   },
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const config = api.pluginConfig;
     if (!config?.apiBaseUrl || !config?.gatewayToken) {
       api.logger?.warn?.("[pinchy-knowledge] plugin config is missing apiBaseUrl or gatewayToken");

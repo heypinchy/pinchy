@@ -3544,6 +3544,12 @@ describe("odoo_delete", () => {
     });
   });
 
+  // pinchy#1078: raw ids were how a hallucinated delete reached Odoo. `ids:
+  // [40]` needs no prior read, so nothing tied a delete to a record the model
+  // had actually seen. The schema declares no `ids`, so the call is refused
+  // like any undeclared parameter (unknown-params.ts) — loudly, and never
+  // quietly accepted alongside `targets`, which would be a one-parameter route
+  // back to the hole.
   it("refuses raw numeric ids and names the ref parameter to use instead", async () => {
     const result = await deleteTool().execute("call-4", {
       model: "res.partner",
@@ -3551,9 +3557,17 @@ describe("odoo_delete", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
+    expect(result.content[0].text).toContain('does not take the parameter "ids"');
     expect(result.content[0].text).toContain("targets");
     expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  // Most runtimes refuse an undeclared `ids` against the schema before the
+  // tool's own message can name `targets`, so the description says it first.
+  it("says in its description that it takes no `ids`, only `targets`", () => {
+    const { description } = deleteTool();
+    expect(description).toContain("There is no `ids` parameter");
+    expect(description).toContain("`targets`");
   });
 
   it("refuses a ref minted for another Odoo connection", async () => {
@@ -7111,6 +7125,65 @@ describe("odoo_schedule_activity", () => {
     expect(result.content[0].text).toContain("assignee");
     expect(mockCreate).not.toHaveBeenCalled();
   });
+
+  // The assignee was trimmed BEFORE the ref was
+  // decoded, so `" " + ref` or `ref + "\n"` assigned the activity to the
+  // record the ref names — while the confirmation card (which shows a ref as
+  // its record only when the string IS the ref) showed opaque text, and the
+  // gate's model check never saw res.users. A padded ref is refused instead.
+  it.each([
+    ["a leading space", (ref: string) => ` ${ref}`],
+    ["a trailing line break", (ref: string) => `${ref}\n`],
+    ["a leading tab and trailing space", (ref: string) => `\t${ref} `],
+  ])("refuses an assignee ref with %s instead of acting on it", async (_label, pad) => {
+    const userRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.users",
+      id: 7,
+      label: "Mallory",
+    });
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "x",
+      dueDate: "2026-06-30",
+      assignee: pad(userRef),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("assignee");
+    expect(result.content[0].text).toMatch(/whitespace/i);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("still trims the whitespace around an assignee NAME", async () => {
+    mockSearchRead.mockImplementation(async (model: string) => {
+      if (model === "res.users") return { records: [{ id: 2 }], total: 1, limit: 2, offset: 0 };
+      if (model === "ir.model") return { records: [{ id: 5 }], total: 1, limit: 1, offset: 0 };
+      return { records: [], total: 0, limit: 0, offset: 0 };
+    });
+    mockCreate.mockResolvedValue(11);
+    const tools = createApi({ [agentId]: activityConfig });
+    const tool = findTool(tools, "odoo_schedule_activity", agentId)!;
+
+    const result = await tool.execute("c", {
+      target: leadRef(),
+      summary: "x",
+      dueDate: "2026-06-30",
+      assignee: " Mitch Admin\n",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockSearchRead).toHaveBeenCalledWith(
+      "res.users",
+      [["name", "=", "Mitch Admin"]],
+      expect.anything()
+    );
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({ user_id: 2 });
+  });
 });
 
 describe("odoo_complete_activity", () => {
@@ -7252,6 +7325,32 @@ describe("odoo_reschedule_activity", () => {
     const tool = findTool(tools, "odoo_reschedule_activity", agentId)!;
     const result = await tool.execute("c", { target: activityRef() });
     expect(result.isError).toBe(true);
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  // A padded assignee ref is refused here too — see the matching
+  // odoo_schedule_activity test.
+  it.each([
+    ["a leading space", (ref: string) => ` ${ref}`],
+    ["a trailing line break", (ref: string) => `${ref}\n`],
+    ["a leading tab", (ref: string) => `\t${ref}`],
+  ])("refuses an assignee ref with %s instead of reassigning", async (_label, pad) => {
+    const userRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.users",
+      id: 7,
+      label: "Mallory",
+    });
+    mockWrite.mockResolvedValue(true);
+    const tools = createApi({ [agentId]: cfg });
+    const tool = findTool(tools, "odoo_reschedule_activity", agentId)!;
+
+    const result = await tool.execute("c", { target: activityRef(), assignee: pad(userRef) });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("assignee");
+    expect(result.content[0].text).toMatch(/whitespace/i);
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
@@ -7997,6 +8096,10 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
 
   // The candidate arrived through the NAME leg, so the case difference is real
   // rather than a fixture: only the client-side comparison can close it.
+  //
+  // The name matches the record's exactly — an explicit code is held to the
+  // name beside it — so the only difference left is the case of the code,
+  // which is what this tests.
   it("matches an explicit code against a record whose code differs only in case", async () => {
     mockSchema({});
     mockCandidates({
@@ -8005,7 +8108,7 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
 
     const result = await create({
       name: "x",
-      journal_id: { lookup: { code: "bnk1", name: "Miscellaneous" } },
+      journal_id: { lookup: { code: "bnk1", name: "Miscellaneous Operations" } },
     });
 
     expect(result.isError).toBeFalsy();
@@ -8027,6 +8130,233 @@ describe("many2one natural-key lookup, edge cases (#1206 review)", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Raw numeric IDs are not accepted");
     expect(mockSearchRead.mock.calls.filter((c) => c[0] === "res.country")).toHaveLength(0);
+  });
+
+  // The leading token was matched against `code` and
+  // the rest of the input ignored, so `"6000 Bank fees"` booked to account
+  // 6000 whatever it is called. The card shows "Bank fees"; the effect was
+  // "Office supplies". A name after the code is a claim about the record, and
+  // a claim the record contradicts is refused rather than overridden.
+  describe("the name after a code", () => {
+    const OFFICE = { id: 60, name: "Office supplies", code: "6000" };
+
+    it("refuses a code whose record carries a different name", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: "x", account_id: "6000 Bank fees" });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Could not resolve account_id");
+      expect(text).toContain('"Office supplies"');
+      expect(text).toContain('"Bank fees"');
+      expect(text).toMatch(/exact Account name or ref/);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("resolves when the name matches, ignoring case and spacing", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000   office  SUPPLIES " });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    it("still resolves a bare code, which makes no claim about the name", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000" });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    // Models write the code and the name the way a chart of accounts lists
+    // them: "600000 - Expenses". The separator is not part of the name.
+    it.each([
+      ["a hyphen", "6000 - Office supplies"],
+      ["an en dash", "6000 – Office supplies"],
+      ["an em dash", "6000 — Office supplies"],
+      ["a colon", "6000 : Office supplies"],
+      ["a pipe", "6000 | Office supplies"],
+      ["a slash", "6000 / Office supplies"],
+      ["a hyphen without a space after it", "6000 -Office supplies"],
+    ])("resolves a name after %s", async (_label, account) => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: account });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    it("still refuses a contradicting name after a separator", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000 - Bank fees" });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain('"Office supplies"');
+      expect(text).toContain('"Bank fees"');
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    // A separator written onto the code makes it part of the code token, which
+    // no account carries: refused, never booked to 6000 on a guess
+    // (`guides/connect-odoo` says so).
+    it("refuses a separator written onto the code", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6000: Office supplies" });
+
+      expect(result.isError).toBe(true);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    // Only one separator is the form's punctuation; a second is the name's.
+    it("strips one separator, not every one", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [{ id: 61, name: "- Misc", code: "6100" }] });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "6100 - - Misc" });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 61 })
+      );
+    });
+
+    // The object form `{lookup: {code, name}}` is held to the same rule as the
+    // string form: resolved on the code alone, this contradiction would book
+    // to 6000.
+    it("refuses an explicit code whose record carries a different name", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000", name: "Bank fees" } },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Could not resolve account_id");
+      expect(text).toContain('"Office supplies"');
+      expect(text).toContain('"Bank fees"');
+      expect(text).toMatch(/exact Account name or ref/);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("resolves an explicit code whose name matches, ignoring case and spacing", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000", name: " office   Supplies" } },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 60 })
+      );
+    });
+
+    it("tells two records that share an explicit code apart by the name", async () => {
+      mockSchema({});
+      mockCandidates({
+        "account.account": [
+          { id: 40, name: "Bank Helmcraft", code: "1800" },
+          { id: 41, name: "Bank Clemens", code: "1800" },
+        ],
+      });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "1800", name: "Bank Clemens" } },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 41 })
+      );
+    });
+
+    // A code no record carries fell through to the
+    // exact-name branch, so `{code: "6000", name: "Bank fees"}` booked to
+    // whichever account is called "Bank fees" — 6100 — while the card read
+    // 6000. The string form "6000 Bank fees" was refused for the same input.
+    // A code is a claim too: when it names no record, the lookup is refused.
+    it("refuses an explicit code no record carries, even when the name exists", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [{ id: 61, name: "Bank fees", code: "6100" }] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000", name: "Bank fees" } },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Could not resolve account_id");
+      expect(text).toContain("no Account has code 6000");
+      expect(text).toContain('"Bank fees" is 6100');
+      expect(text).toMatch(/exact Account name or ref/);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("refuses an explicit code no record carries when the name is unknown too", async () => {
+      mockSchema({});
+      mockCandidates({ "account.account": [OFFICE] });
+
+      const result = await create({
+        name: WRITTEN_LABEL,
+        account_id: { lookup: { code: "6000x", name: "Bank fees" } },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("no Account has code 6000x");
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    // Two companies share the code; the name after it says which one.
+    it("picks the record whose name matches when two share the code", async () => {
+      mockSchema({});
+      mockCandidates({
+        "account.account": [
+          { id: 40, name: "Bank Helmcraft", code: "1800" },
+          { id: 41, name: "Bank Clemens", code: "1800" },
+        ],
+      });
+
+      const result = await create({ name: WRITTEN_LABEL, account_id: "1800 Bank Clemens" });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalledWith(
+        "account.move.line",
+        expect.objectContaining({ account_id: 41 })
+      );
+    });
   });
 });
 
