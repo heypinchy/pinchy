@@ -101,9 +101,9 @@ export interface PendingApprovalsView {
   /**
    * The one card whose arguments and Approve/Deny are drawn; every other card
    * is a line with a button to review it. The card the person chose while it
-   * waits, else the first waiting. One card's body is bounded (DRAW_BUDGET),
+   * waits, else the first listed — the newest. One card's body is bounded (DRAW_BUDGET),
    * a stack of them is not: a person may have dozens waiting across agents,
-   * and twenty at that bound took Chromium 1.8 s to draw and WebKit 3.7 s.
+   * and twenty at that bound took Chromium 1.7–1.8 s to draw and WebKit 3.5–3.7 s.
    * Nothing can be approved unseen — only the open card has the buttons.
    */
   openId: string | null;
