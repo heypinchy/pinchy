@@ -11,9 +11,9 @@
  * container assumption is also what makes requeueOrphanedIndexJobs() safe at
  * boot — see its doc comment — and clearStagedBatches(), which frees the disk
  * an interrupted Office conversion left behind. After an update that changed
- * how Office documents are converted, the same boot step queues the reindex
- * that converts the documents indexed the old way again
- * (office-format-upgrade.ts), and every boot and every finished run removes
+ * how Office documents are converted, the worker queues the reindex that
+ * converts the documents indexed the old way again (office-format-upgrade.ts)
+ * — at boot, and hourly after — and every boot and every finished run removes
  * an artifact format directory no document is read from any more
  * (pruneOtherFormatVersions).
  *
@@ -344,16 +344,31 @@ let _pollInterval: ReturnType<typeof setInterval> | null = null;
 // overlapping tick. The DB claim would refuse the double-run anyway; this keeps
 // us from hammering it every 10s for hours to find that out.
 let _runInFlight = false;
-// Agents whose folders held Office documents converted under an earlier
-// artifact format at boot, not yet queued. Read once per boot, and each one is
-// queued at most once: a document whose conversion cannot finish now (a
-// memory squeeze) waits for the next boot or the nightly run rather than
-// being retried in a loop.
+/**
+ * How often to look for Office documents owed a conversion under the current
+ * artifact format. At boot, and then hourly: an agent granted
+ * `knowledge_search` or a folder after boot is owed that run too, and with the
+ * nightly reindex switched off nothing else would give it one before the next
+ * restart.
+ */
+const RECONVERSION_LOOK_INTERVAL_MS = 60 * 60 * 1000;
+/**
+ * How long a folder an upgrade run went through is passed over. What one run
+ * could not convert (a memory squeeze, LibreOffice down), another run over the
+ * same folder right after would not either — but the next day it may.
+ */
+const RECONVERTED_FOLDER_PAUSE_MS = 24 * 60 * 60 * 1000;
+
+// Agents whose folders hold Office documents converted under an earlier
+// artifact format, not yet queued.
 let _reconversionsOwed: string[] = [];
-// The folders those queued runs go through. An agent whose superseded
-// documents all lie in them is passed over: what one run could not convert,
-// another run over the same folder would not either.
-let _reconvertedPaths: string[] = [];
+// When the worker last looked for them; null until the first tick.
+let _reconversionLookedAt: number | null = null;
+// The folders those queued runs went through, with when each was queued. An
+// agent whose superseded documents all lie in folders run within the last day
+// is passed over, so a document that cannot be converted costs its folder at
+// most one run a day.
+const _reconvertedPaths = new Map<string, number>();
 // Whether this process has already cleaned up after its predecessor. See the
 // requeue in runKbIndexWorkerTick for why doing it exactly once is not an
 // optimization but a correctness condition.
@@ -397,28 +412,10 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
       } catch (err) {
         console.warn("[kb-index-worker] could not clear leftover Office staging:", errorLine(err));
       }
-      // After a format bump, the documents indexed from the earlier format's
-      // artifacts are owed a conversion under the current rules, and until
-      // they get it their chunks answer no search and their previews cannot
-      // open. The nightly run would do it — unless it is switched off — so the
-      // agents whose folders hold them are queued from here, one at a time,
-      // once per boot. A failure is logged and leaves it to the next boot or
-      // the next run; the queue still runs.
-      try {
-        _reconversionsOwed = await agentsOwedReconversion();
-        if (_reconversionsOwed.length > 0) {
-          console.log(
-            `[kb-index-worker] ${_reconversionsOwed.length} agent(s) hold Office documents converted under an earlier format; reindexing them`
-          );
-        }
-      } catch (err) {
-        console.warn(
-          "[kb-index-worker] could not look for Office documents owed a conversion:",
-          errorLine(err)
-        );
-      }
       await pruneSupersededArtifacts(opts.artifactDir);
     }
+
+    await lookForOwedReconversions();
 
     // Drains the queue rather than running one job per tick. Pinchy is
     // single-tenant (DEFAULT_ORG_ID) and the active-job index is per org, so
@@ -450,23 +447,72 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
 async function queueOwedReconversion(): Promise<void> {
   try {
     while (_reconversionsOwed.length > 0) {
-      const outcome = await queueReconversion(_reconversionsOwed[0], _reconvertedPaths);
+      const outcome = await queueReconversion(_reconversionsOwed[0], recentlyReconvertedPaths());
       if (outcome.status === "busy") return;
       _reconversionsOwed.shift();
       if (outcome.status === "queued") {
-        _reconvertedPaths.push(...outcome.paths);
+        const queuedAt = Date.now();
+        for (const path of outcome.paths) _reconvertedPaths.set(path, queuedAt);
         return;
       }
     }
   } catch (err) {
     // A database problem: drop the rest rather than ask again every tick.
-    // The next boot, or the nightly run, converts what is left.
+    // The next look, within the hour, finds what is left.
     _reconversionsOwed = [];
     console.warn(
       "[kb-index-worker] could not queue the reconversion of Office documents:",
       errorLine(err)
     );
   }
+}
+
+/**
+ * After a format bump, the documents indexed from the earlier format's
+ * artifacts are owed a conversion under the current rules, and until they get
+ * it their chunks answer no search and their previews cannot open. The nightly
+ * run would do it — unless it is switched off — so the agents whose folders
+ * hold them are queued from here, one at a time: at boot, and then hourly,
+ * which also reaches an agent granted `knowledge_search` or a folder since.
+ * Folders an upgrade run went through within the last day are left out, so a
+ * document that cannot be converted now does not send its folder round in a
+ * loop. A failure is logged and leaves it to the next look; the queue still
+ * runs.
+ */
+async function lookForOwedReconversions(): Promise<void> {
+  const now = Date.now();
+  if (
+    _reconversionLookedAt !== null &&
+    now - _reconversionLookedAt < RECONVERSION_LOOK_INTERVAL_MS
+  ) {
+    return;
+  }
+  _reconversionLookedAt = now;
+  try {
+    const owed = (await agentsOwedReconversion(recentlyReconvertedPaths())).filter(
+      (agentId) => !_reconversionsOwed.includes(agentId)
+    );
+    if (owed.length > 0) {
+      _reconversionsOwed.push(...owed);
+      console.log(
+        `[kb-index-worker] ${owed.length} agent(s) hold Office documents converted under an earlier format; reindexing them`
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[kb-index-worker] could not look for Office documents owed a conversion:",
+      errorLine(err)
+    );
+  }
+}
+
+/** The folders an upgrade run went through within the last day. */
+function recentlyReconvertedPaths(): string[] {
+  const now = Date.now();
+  for (const [path, queuedAt] of _reconvertedPaths) {
+    if (now - queuedAt >= RECONVERTED_FOLDER_PAUSE_MS) _reconvertedPaths.delete(path);
+  }
+  return [..._reconvertedPaths.keys()];
 }
 
 /**
@@ -521,6 +567,7 @@ export function _isKbIndexWorkerRunning(): boolean {
 export function _resetKbIndexWorkerForTest(): void {
   _orphansRequeued = false;
   _reconversionsOwed = [];
-  _reconvertedPaths = [];
+  _reconversionLookedAt = null;
+  _reconvertedPaths.clear();
   _runInFlight = false;
 }

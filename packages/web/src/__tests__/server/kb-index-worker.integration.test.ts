@@ -719,7 +719,7 @@ describe("kb index worker tick", () => {
     // from PDFs the earlier conversion made. The ingest converts them again
     // on its next run — but the nightly run can be switched off, and until
     // then their previews cannot open and their chunks answer no search. So
-    // the worker queues that run itself, at boot.
+    // the worker queues that run itself, at boot and hourly after.
     const LEAKED = "root:x:0:0:root:/root:/bin/bash daemon:x:1:1:daemon";
     const CLEAN = "Every delivery is checked against the order before it goes into storage.";
 
@@ -858,7 +858,7 @@ describe("kb index worker tick", () => {
       expect(await reindexAuditRows()).toEqual([]);
     });
 
-    it("converts a folder several agents share once per boot, even when a document in it cannot be converted now", async () => {
+    it("converts a folder several agents share once, even when a document in it cannot be converted now", async () => {
       // A conversion that ends `infrastructure` (out of memory, a timeout,
       // LibreOffice down) leaves its row superseded. Every other agent granted
       // the same folder would still find it owed, and run the same folder
@@ -941,7 +941,7 @@ describe("kb index worker tick", () => {
       expect(doc.artifactFormatVersion).toBeNull();
     });
 
-    it("asks once per boot, so a conversion that cannot finish now waits for the next run", async () => {
+    it("runs a folder once, so a conversion that cannot finish now waits for a later run", async () => {
       const artifactDir = join(tmpRoot, "artifacts");
       const corpus = join(tmpRoot, "corpus");
       const earlierArtifact = await indexedBeforeTheBump(corpus, artifactDir);
@@ -965,6 +965,88 @@ describe("kb index worker tick", () => {
       await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
       expect(await db.select().from(kbIndexJobs)).toHaveLength(2);
       expect(existsSync(join(artifactDir, "v1"))).toBe(false);
+    });
+
+    describe("after boot", () => {
+      // The worker never reads the nightly schedule: only its own ticks run
+      // here, exactly as on an instance with the schedule switched off. So
+      // whatever converts these documents without a restart is the worker's
+      // own look for them, not a nightly run.
+      const BOOT = new Date("2026-11-03T09:00:00Z");
+      const hoursAfterBoot = (hours: number) => new Date(BOOT.getTime() + hours * 3_600_000);
+
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(BOOT);
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("converts them for an agent granted knowledge_search after boot, without a restart", async () => {
+        const artifactDir = join(tmpRoot, "artifacts");
+        const corpus = join(tmpRoot, "corpus");
+        await indexedBeforeTheBump(corpus, artifactDir);
+        const [agent] = await db
+          .insert(agents)
+          .values({
+            name: "Reader",
+            model: "test-model",
+            greetingMessage: "Hi",
+            allowedTools: ["pinchy_read"],
+            pluginConfig: { "pinchy-files": { allowed_paths: [corpus] } },
+          })
+          .returning();
+
+        await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+        expect(await db.select().from(kbIndexJobs)).toEqual([]);
+
+        await db
+          .update(agents)
+          .set({ allowedTools: ["pinchy_read", "knowledge_search"] })
+          .where(eq(agents.id, agent.id));
+        vi.setSystemTime(hoursAfterBoot(1));
+        await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+
+        expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({
+          status: "succeeded",
+          trigger: "upgrade",
+          paths: [corpus],
+        });
+        const [doc] = await db.select().from(kbDocuments);
+        expect(doc.artifactFormatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
+        expect(await documentText()).toContain(CLEAN);
+      });
+
+      it("tries a folder whose conversion could not finish again the next day, and not before", async () => {
+        const artifactDir = join(tmpRoot, "artifacts");
+        const corpus = join(tmpRoot, "corpus");
+        await indexedBeforeTheBump(corpus, artifactDir);
+        await knowledgeAgent(corpus);
+        const squeezed = officeDeps(CLEAN, "infrastructure");
+
+        await runKbIndexWorkerTick({ deps: squeezed, artifactDir });
+        expect(await db.select().from(kbIndexJobs)).toHaveLength(1);
+
+        // Looked at again within the day, the document is still owed — and its
+        // folder was run for it already, so nothing is queued.
+        for (const hours of [1, 2, 12, 23]) {
+          vi.setSystemTime(hoursAfterBoot(hours));
+          await runKbIndexWorkerTick({ deps: squeezed, artifactDir });
+        }
+        expect(await db.select().from(kbIndexJobs)).toHaveLength(1);
+
+        vi.setSystemTime(hoursAfterBoot(25));
+        await runKbIndexWorkerTick({ deps: squeezed, artifactDir });
+        vi.setSystemTime(hoursAfterBoot(27));
+        await runKbIndexWorkerTick({ deps: squeezed, artifactDir });
+
+        const jobs = await db.select().from(kbIndexJobs);
+        expect(jobs).toHaveLength(2);
+        expect(jobs.every((job) => job.trigger === "upgrade")).toBe(true);
+        expect(squeezed.convertOffice).toHaveBeenCalledTimes(2);
+      });
     });
   });
 

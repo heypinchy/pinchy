@@ -11,9 +11,9 @@
  *   - Their chunks answer no search (`readFromSupersededArtifact`, used by
  *     retrieve.ts): the text may be exactly what the new rules refuse, and the
  *     preview cannot open their artifact any more anyway.
- *   - The index worker queues that run at boot rather than waiting for a
- *     nightly reindex that may be switched off (`agentsOwedReconversion`,
- *     `queueReconversion`).
+ *   - The index worker queues that run itself — at boot, and hourly after —
+ *     rather than waiting for a nightly reindex that may be switched off
+ *     (`agentsOwedReconversion`, `queueReconversion`).
  *   - A superseded artifact directory stays on the volume while a row a
  *     searching agent's folder holds still names its version
  *     (`officeFormatVersionInUse`).
@@ -21,9 +21,9 @@
  * Only agents with `knowledge_search` count, as for the nightly run
  * (`isScheduledIndexAgent`): search is scoped by their folders, so a row no
  * such folder holds is one no search reaches and no run converts again. It
- * stays on record, hidden, and is converted on the first run of a searching
- * agent granted its folder later — but it holds back neither a run nor the
- * removal of the directory it names.
+ * stays on record, hidden, and is converted once a searching agent is granted
+ * its folder — the worker's next hourly look queues that run — but it holds
+ * back neither a run nor the removal of the directory it names.
  *
  * The rows are recognised by their path, with the same rule `isOfficeFile`
  * applies, because the version column alone cannot tell them apart: a row
@@ -146,12 +146,15 @@ async function owesReconversion(
 /**
  * The searching agents whose granted folders hold an Office document still
  * read from an earlier artifact format, oldest first — the agents a reindex
- * would convert them again for.
+ * would convert them again for. A document in `alreadyRun`, folders an upgrade
+ * run recently went through, does not count.
  */
-export async function agentsOwedReconversion(): Promise<string[]> {
+export async function agentsOwedReconversion(
+  alreadyRun: readonly string[] = []
+): Promise<string[]> {
   const owed: string[] = [];
   for (const agent of await searchingAgents()) {
-    if (await owesReconversion(agent.paths)) owed.push(agent.id);
+    if (await owesReconversion(agent.paths, alreadyRun)) owed.push(agent.id);
   }
   return owed;
 }
@@ -167,14 +170,14 @@ export type ReconversionOutcome =
  * `queued` (with the folders the run will go through) and `skipped` both mean
  * "this agent is done"; `busy` means the instance's one job slot is taken, so
  * ask again once it is free. Re-checked here rather than trusted from the
- * boot-time list: an agent deleted, stripped of its folders or of
- * `knowledge_search` since has nothing to run, and an agent whose superseded documents all lie in
- * `alreadyRun` — folders an upgrade run already went through since this boot
- * — has nothing a run of its own would change. That second check is not the
- * same as asking the rows again: a document whose conversion ended
- * `infrastructure` (out of memory, a timeout, LibreOffice down) is still
- * superseded after the run, and every other agent granted its folder would
- * otherwise run the whole folder again, every boot.
+ * worker's list: an agent deleted, stripped of its folders or of
+ * `knowledge_search` since has nothing to run, and an agent whose superseded
+ * documents all lie in `alreadyRun` — folders an upgrade run went through
+ * within the last day — has nothing a run of its own would change. That
+ * second check is not the same as asking the rows again: a document whose
+ * conversion ended `infrastructure` (out of memory, a timeout, LibreOffice
+ * down) is still superseded after the run, and every other agent granted its
+ * folder would otherwise run the whole folder again, every hour.
  */
 export async function queueReconversion(
   agentId: string,
@@ -217,8 +220,9 @@ export async function queueReconversion(
       trigger: "upgrade",
     });
   } catch (err) {
-    // A database problem, recorded once and left for the next boot or the
-    // nightly run — the same call the scheduler makes, for the same reason.
+    // A database problem, recorded once and left for the worker's next look
+    // or the nightly run — the same call the scheduler makes, for the same
+    // reason.
     await audit(
       reindexAuditEntry({
         ...base,
