@@ -8,6 +8,8 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type MouseEvent,
+  type PointerEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -377,12 +379,16 @@ function ArgFields({ fields }: { fields: Record<string, unknown> }) {
  * the thread a card arriving above pushes the open one down. Whatever moved
  * them, the click aimed at what was there must not approve. Operating systems
  * take two clicks up to 500 ms apart as a double click by default.
+ *
+ * A press with a pointer is aimed when it starts, so it counts only if the
+ * buttons had stayed put for this long both when it started and when it ends:
+ * holding a press that landed on a button just arrived does not make it count.
  */
 export const ARM_MS = 1000;
 
 /**
  * Whether `element` has stayed where it is on screen for `ARM_MS`, as state
- * for drawing, and as a check to make at the moment it is pressed. The
+ * for drawing, and as a check to make when a press starts and when it acts. The
  * position is read every frame rather than worked out from what might move
  * it, because anything can: a card leaving, one arriving, a scroll, a resize.
  * The check reads it once more, so a press in the same frame as a move — before
@@ -413,6 +419,8 @@ function useStill(element: RefObject<HTMLElement | null>): [boolean, () => boole
 
   return [still, check];
 }
+
+type Decision = "approve" | "deny";
 
 /** A closed card's Review button, which is where focus goes next. */
 const REVIEW = "[data-approval-review]";
@@ -510,8 +518,38 @@ function OpenCard({
   const buttons = useRef<HTMLDivElement>(null);
   const hintId = useId();
   const [armed, stillNow] = useStill(buttons);
-  const decide = (decision: "approve" | "deny") => {
-    if (!busy && stillNow()) onDecide(approval, decision);
+  // The pointer press on Approve or Deny, if one is under way or just ended,
+  // and whether the buttons were still when it started.
+  const press = useRef<{ decision: Decision; still: boolean; down: boolean } | null>(null);
+  /** Which of the two buttons an event is on — each carries its decision as its value. */
+  const decisionOf = (event: { currentTarget: HTMLButtonElement }) =>
+    event.currentTarget.value as Decision;
+  const pressing = {
+    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
+      press.current = { decision: decisionOf(event), still: stillNow(), down: true };
+    },
+    // Released somewhere else, it never clicks this button.
+    onPointerUp: (event: PointerEvent<HTMLButtonElement>) => {
+      press.current =
+        press.current?.decision === decisionOf(event) ? { ...press.current, down: false } : null;
+    },
+    // A pointer that left while still pressed is a drag, not a press. A finger
+    // leaves only once lifted, before the click arrives — that keeps the press.
+    onPointerLeave: () => {
+      if (press.current?.down) press.current = null;
+    },
+    onPointerCancel: () => {
+      press.current = null;
+    },
+    onClick: (event: MouseEvent<HTMLButtonElement>) => {
+      const decision = decisionOf(event);
+      const started = press.current;
+      press.current = null;
+      // A click from the keyboard has no press, and says so with a `detail` of
+      // 0; a pointer's counts only with a press that started here, while still.
+      const aimed = event.detail === 0 || (started?.decision === decision && started.still);
+      if (!busy && aimed && stillNow()) onDecide(approval, decision);
+    },
   };
   const waiting = {
     size: "sm",
@@ -572,10 +610,10 @@ function OpenCard({
           Available in a moment
         </p>
         <div ref={buttons} className="flex gap-2">
-          <Button variant="outline" {...waiting} onClick={() => decide("deny")}>
+          <Button variant="outline" value="deny" {...waiting} {...pressing}>
             Deny
           </Button>
-          <Button {...waiting} onClick={() => decide("approve")}>
+          <Button value="approve" {...waiting} {...pressing}>
             Approve
           </Button>
         </div>

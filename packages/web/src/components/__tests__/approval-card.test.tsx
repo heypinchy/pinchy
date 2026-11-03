@@ -985,4 +985,89 @@ describe("a card that moves", () => {
       page.restore();
     }
   });
+
+  // The pointer was resting where the person aimed it; Approve arrived under
+  // it and they pressed straight away. Holding the press until Approve has
+  // stood still for long enough does not make it a press aimed at Approve.
+  it("ignores a press that started while they were moving, however long it is held", async () => {
+    const page = layout();
+    try {
+      const onDecide = vi.fn();
+      render(<ApprovalCard approval={pending} busy={false} onDecide={onDecide} />);
+      const approve = screen.getByRole("button", { name: "Approve" });
+      await waitFor(() => expect(offered(approve)).toBe(true), { timeout: ARM_MS + 1000 });
+
+      page.at.top = 120;
+      fireEvent.pointerDown(approve);
+      await waitFor(() => expect(offered(approve)).toBe(true), { timeout: ARM_MS + 1000 });
+      fireEvent.pointerUp(approve);
+      fireEvent.click(approve, { detail: 1 });
+      expect(onDecide).not.toHaveBeenCalled();
+
+      await userEvent.click(approve);
+      expect(onDecide).toHaveBeenCalledWith(pending, "approve");
+    } finally {
+      page.restore();
+    }
+  });
+});
+
+/**
+ * A pointer press counts only if it both starts and ends on a button that has
+ * stayed in place; the keyboard, which has no press to start, is checked when
+ * it acts.
+ */
+describe("pressing Approve", () => {
+  const pending = approval({ to: "a@b.c" });
+
+  async function armed() {
+    const onDecide = vi.fn();
+    render(<ApprovalCard approval={pending} busy={false} onDecide={onDecide} />);
+    const approve = screen.getByRole("button", { name: "Approve" });
+    await waitFor(() => expect(offered(approve)).toBe(true), { timeout: ARM_MS + 1000 });
+    return { onDecide, approve };
+  }
+
+  it("approves on a pointer press that starts and ends on it while it is still", async () => {
+    const { onDecide, approve } = await armed();
+    await userEvent.click(approve);
+    expect(onDecide).toHaveBeenCalledWith(pending, "approve");
+  });
+
+  it("approves on a tap, whose pointer leaves before the click arrives", async () => {
+    const { onDecide, approve } = await armed();
+    fireEvent.pointerDown(approve, { pointerType: "touch" });
+    fireEvent.pointerUp(approve, { pointerType: "touch" });
+    fireEvent.pointerLeave(approve, { pointerType: "touch" });
+    fireEvent.click(approve, { detail: 1 });
+    expect(onDecide).toHaveBeenCalledWith(pending, "approve");
+  });
+
+  it("approves from the keyboard, which has no press", async () => {
+    const { onDecide, approve } = await armed();
+    approve.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(onDecide).toHaveBeenCalledWith(pending, "approve");
+  });
+
+  // A press that started somewhere else — on a button that has since left the
+  // page, say — and was released on Approve.
+  it("ignores a pointer click whose press did not start on it", async () => {
+    const { onDecide, approve } = await armed();
+    fireEvent.pointerUp(approve);
+    fireEvent.click(approve, { detail: 1 });
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["leaves it", fireEvent.pointerLeave],
+    ["is cancelled", fireEvent.pointerCancel],
+  ])("ignores a press whose pointer %s before it is released", async (_, interrupt) => {
+    const { onDecide, approve } = await armed();
+    fireEvent.pointerDown(approve);
+    interrupt(approve);
+    fireEvent.pointerUp(approve);
+    fireEvent.click(approve, { detail: 1 });
+    expect(onDecide).not.toHaveBeenCalled();
+  });
 });
