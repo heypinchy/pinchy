@@ -118,6 +118,7 @@ import {
   assembleZip,
   deflatedPart,
   inflatePart,
+  quoteName,
   rawPart,
   readZipEntries,
   zipChunks,
@@ -970,7 +971,8 @@ function looksLikeSvg(head: Buffer): boolean {
  * caller (`vetXmlPart`): a cut can join the text around it into a new element.
  */
 function removeAltChunks(xml: string, partName: string): { xml: string; removed: number } {
-  const malformed = () => unexpected(`part "${partName}" has an altChunk that is not well-formed`);
+  const malformed = () =>
+    unexpected(`part ${quoteName(partName)} has an altChunk that is not well-formed`);
   let out = "";
   let cursor = 0;
   let removed = 0;
@@ -1428,11 +1430,11 @@ function sanitizedParts(buffer: Buffer): {
     if (entry.uncompressedSize > MAX_XML_PART_BYTES) {
       throw new OfficeFileRejectedError(
         "too_large",
-        `part "${entry.name}" is ${entry.uncompressedSize} bytes, past the ${MAX_XML_PART_BYTES}-byte limit for one part`
+        `part ${quoteName(entry.name)} is ${entry.uncompressedSize} bytes, past the ${MAX_XML_PART_BYTES}-byte limit for one part`
       );
     }
     const notOoxml = (what: string) =>
-      unexpected(`part "${entry.name}" should be Office XML but ${what}`);
+      unexpected(`part ${quoteName(entry.name)} should be Office XML but ${what}`);
     const source = utf8XmlText(inflatePart(buffer, entry, MAX_XML_PART_BYTES));
     if (source === null) throw notOoxml("is not UTF-8 text");
     /** Every check on the part's text, then its altChunks cut. */
@@ -1459,7 +1461,7 @@ function sanitizedParts(buffer: Buffer): {
       // an altChunk (LibreOffice 26.2 imported one from a staged copy), and
       // `<!DOC` + [a cut] + `TYPE` into a DTD.
       if (vetted(result.xml).removed > 0) {
-        throw unexpected(`part "${entry.name}" spells a new altChunk once another is cut`);
+        throw unexpected(`part ${quoteName(entry.name)} spells a new altChunk once another is cut`);
       }
       altChunksRemoved += result.removed;
       rewritten.set(entry, Buffer.from(result.xml, "latin1"));
@@ -1500,7 +1502,8 @@ function sanitizedParts(buffer: Buffer): {
   for (const entry of entries) {
     if (!/\.rels$/i.test(entry.name)) continue;
     const text = utf8XmlText(inflatePart(buffer, entry, MAX_XML_PART_BYTES));
-    if (text === null) throw unexpected(`relationship part "${entry.name}" is not UTF-8 text`);
+    if (text === null)
+      throw unexpected(`relationship part ${quoteName(entry.name)} is not UTF-8 text`);
 
     let owner: FontOwner | null | undefined;
     const result = filterRelationships(text, (attributes) => {

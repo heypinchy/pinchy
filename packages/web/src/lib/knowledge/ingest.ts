@@ -552,6 +552,53 @@ function unavailable(sourcePath: string, reason: string): ConversionOutcome {
  */
 type ResolveArtifact = (absPath: string, contentHash?: string) => Promise<ConversionOutcome>;
 
+/** How much of a path, and of a reason, one refusal line prints. */
+const LOG_PATH_MAX = 1024;
+const LOG_REASON_MAX = 500;
+
+/**
+ * Characters that end a line, or reorder one, wherever the log is read: C0 and
+ * C1 controls, DEL, the Unicode line and paragraph separators, and the bidi
+ * controls.
+ */
+const BREAKS_A_LINE =
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
+const SHORT_ESCAPES = new Map([
+  ["\n", "\\n"],
+  ["\r", "\\r"],
+  ["\t", "\\t"],
+]);
+
+/**
+ * `text` as part of one log line, at most `max` characters: whatever would
+ * break or reorder the line is printed as its escape, and `…` marks a cut.
+ */
+function oneLine(text: string, max: number): string {
+  let out = "";
+  for (const char of text) {
+    const piece = BREAKS_A_LINE.test(char)
+      ? (SHORT_ESCAPES.get(char) ?? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
+      : char;
+    if (out.length + piece.length > max) return `${out}…`;
+    out += piece;
+  }
+  return out;
+}
+
+/**
+ * The server log's line for a file refused before anything was indexed from
+ * it. The path is whatever name the file was given on the share, newlines
+ * included, and a reason can quote the file or the file system — so neither is
+ * printed as it stands: one refusal is one bounded line, and cannot pass for
+ * another.
+ */
+function logRefusal(absPath: string, verdict: string, reason: string): void {
+  console.warn(
+    `[kb-ingest] ${oneLine(absPath, LOG_PATH_MAX)}: ${verdict} — ${oneLine(reason, LOG_REASON_MAX)}`
+  );
+}
+
 /**
  * Reads one file into chunks with locators, dispatching on its extension.
  *
@@ -585,7 +632,7 @@ async function extractDocument(
       // and a final one — retrying reads the same bytes — so it becomes a row
       // with no chunks, which is exactly how the unreadable list
       // (unsearchable.ts) finds it, with its reason in the server log.
-      console.warn(`[kb-ingest] ${absPath}: not read — ${err.message}`);
+      logRefusal(absPath, "not read", err.message);
       return null;
     });
     if (extraction === null) {
@@ -660,10 +707,11 @@ async function extractOfficeDocument(
     //
     // The unreadable list never says why, and the admin-facing counts must not
     // name paths, so this is the only place an operator learns which document
-    // was refused and for what. The outcome is final here — the converter has
-    // already ruled out its own volume — and its reason never carries document
-    // content.
-    console.warn(`[kb-ingest] ${absPath}: not converted — ${outcome.reason ?? "unknown"}`);
+    // was refused and for what — logged on every run that refuses it, not only
+    // the last. The reason holds no document text, but it can quote names read
+    // from the file and the file's own path, so `logRefusal` keeps it to one
+    // line.
+    logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
     return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
   }
 

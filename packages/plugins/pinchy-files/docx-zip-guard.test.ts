@@ -9,6 +9,7 @@ import {
   MAX_DOCX_DECOMPRESSED_BYTES,
   readZipEntries,
   assertZipWithinLimits,
+  quoteName,
   verifiedZipCopy,
   ZipFormatError,
   ZipLimitError,
@@ -538,6 +539,100 @@ describe("verifiedZipCopy", () => {
     expect(await refusal(verifiedZipCopy(Buffer.from("not a zip at all"), LIMITS))).toBeInstanceOf(
       ZipFormatError
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A name read from the archive is quoted, never pasted
+// ---------------------------------------------------------------------------
+
+/**
+ * The characters that end a line, or reorder one, wherever a refusal is
+ * printed: C0 and C1 controls, DEL, the Unicode line and paragraph separators,
+ * and the bidi controls.
+ */
+const BREAKS_A_LINE =
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
+/**
+ * An entry name is up to 65,535 bytes the archive's author chose. This one
+ * forges a log line of its own, and carries every character that breaks or
+ * reorders a line.
+ */
+const FORGING_NAME =
+  "word/x\n[kb-ingest] /data/hr/ok.docx: not converted — FORGED " +
+  "Q".repeat(3000) +
+  "\r\u2028\u0085\u202e\n.xml";
+
+describe("quoteName", () => {
+  it("quotes an ordinary part name and changes nothing else", () => {
+    expect(quoteName("word/document.xml")).toBe('"word/document.xml"');
+  });
+
+  it("escapes quotes, backslashes and every character that breaks or reorders a line", () => {
+    expect(quoteName('a"b\\c\n\r\t\u2028\u2029\u0085\u007f\u202e\u2066')).toBe(
+      '"a\\"b\\\\c\\n\\r\\t\\u2028\\u2029\\u0085\\u007f\\u202e\\u2066"'
+    );
+  });
+
+  it("keeps the letters of any script as they are", () => {
+    expect(quoteName("word/Übersicht–Ärger.xml")).toBe('"word/Übersicht–Ärger.xml"');
+  });
+
+  it("bounds a long name and marks where it was cut", () => {
+    const quoted = quoteName("Q".repeat(3000));
+    expect(quoted.length).toBeLessThanOrEqual(130);
+    expect(quoted).toMatch(/^"Q+"…$/);
+  });
+
+  it("never cuts an escape in half", () => {
+    // 120 characters of escapes is 60 newlines; the 61st would overrun.
+    expect(quoteName("\n".repeat(100))).toBe(`"${"\\n".repeat(60)}"…`);
+  });
+});
+
+describe("verifiedZipCopy — a refusal quotes an entry name, it never pastes it", () => {
+  /** A refusal message as it would land in a log line or a tool result. */
+  function expectOneBoundedLine(message: string) {
+    expect(message).not.toMatch(BREAKS_A_LINE);
+    expect(message.length).toBeLessThan(400);
+    expect(message).toContain('"word');
+  }
+
+  const body = "<w:document/>";
+  it.each<[string, () => RawEntry[]]>([
+    [
+      "a name a reader would resolve to another",
+      () => [honest(FORGING_NAME.replace("/", "\\"), body)],
+    ],
+    ["an encrypted entry", () => [{ ...honest(FORGING_NAME, body), flags: 0x0001 }]],
+    ["an unsupported compression method", () => [{ ...honest(FORGING_NAME, body), method: 12 }]],
+    [
+      "a checksum that does not match",
+      () => [{ ...honest(FORGING_NAME, body), crc32: (crcOf(Buffer.from(body)) ^ 1) >>> 0 }],
+    ],
+    [
+      "two entries of the same name",
+      () => [honest(FORGING_NAME, body), honest(FORGING_NAME, body)],
+    ],
+    [
+      "an entry that inflates past what it declares",
+      () => [
+        {
+          ...honest(FORGING_NAME, `<w:document>${" ".repeat(4000)}</w:document>`),
+          uncompressedSize: 10,
+        },
+      ],
+    ],
+    [
+      "an entry declared past the ceiling for one entry",
+      () => [{ ...honest(FORGING_NAME, body), uncompressedSize: 40 * 1024 * 1024 }],
+    ],
+  ])("for %s", async (_, entries) => {
+    const zip = rawZip([honest("[Content_Types].xml", "<Types/>"), ...entries()]);
+    const err = await refusal(verifiedZipCopy(zip, { ...LIMITS, maxEntryBytes: 32 * 1024 * 1024 }));
+    expect(err).toBeInstanceOf(Error);
+    expectOneBoundedLine(err.message);
   });
 });
 

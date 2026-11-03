@@ -241,7 +241,12 @@ export interface ConversionOutcome {
   artifactPath?: string;
   /** Set for `converted` only. */
   verification?: VerificationReport;
-  /** Diagnostic. Never carries document content — it is safe to log. */
+  /**
+   * Diagnostic. Holds no document text, but it can quote names read from the
+   * file (a part's, an entry's — escaped and cut short where they are quoted)
+   * and the file system's own words, which may name the source path. A log
+   * line built from it must still keep it to one line.
+   */
   reason?: string;
 }
 

@@ -1762,6 +1762,65 @@ it("names a refused Office document and the reason in the server log, once", asy
   }
 });
 
+/** What turns one log line into two, or reorders one on a terminal. */
+const BREAKS_A_LINE =
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
+/** The `[kb-ingest]` lines `warn` received, each as printed. */
+const ingestLines = (warn: { mock: { calls: unknown[][] } }) =>
+  warn.mock.calls.map(([line]) => String(line)).filter((line) => line.startsWith("[kb-ingest]"));
+
+it("keeps a refused Office document's log entry to one bounded line, whatever its name and reason hold", async () => {
+  // A file name is chosen by whoever put the file on the share — newlines
+  // included — and a reason can quote what the file or the file system said.
+  // Neither may write a line of its own into the server log, nor flood it.
+  const docPath = join(tmpRoot, "Angebot\n[kb-ingest] Lohnliste.docx: not converted — FORGED.doc");
+  writeFileSync(docPath, "fake-doc-bytes");
+  const reason = `unreadable source: open '${docPath}'\n${"Q".repeat(3000)}\r\u2028\u0085\u202e`;
+
+  const { deps } = officeDeps(
+    (absPath) => ({ sourcePath: absPath, status: "failed", reason }),
+    () => WORD_PAGES
+  );
+
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+    const lines = ingestLines(warn);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toMatch(BREAKS_A_LINE);
+    expect(lines[0].length).toBeLessThan(1000);
+    // Still names the file, escaped rather than dropped.
+    expect(lines[0]).toContain("Angebot\\n[kb-ingest] Lohnliste.docx");
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it("keeps a refused workbook's log entry to one bounded line, whatever its name and reason hold", async () => {
+  const xlsxPath = join(tmpRoot, "Preise\n[kb-ingest] Lohnliste.xlsx: not read — FORGED.xlsx");
+  writeFileSync(xlsxPath, "fake-xlsx");
+  const { deps, extractXlsx } = fakeDeps();
+  extractXlsx.mockRejectedValue(
+    new OfficeFileRejectedError(
+      "unexpected_content",
+      `the sheet reader stopped: ${"Q".repeat(3000)}\n[kb-ingest] FORGED\u2028`
+    )
+  );
+
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+    const lines = ingestLines(warn);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toMatch(BREAKS_A_LINE);
+    expect(lines[0].length).toBeLessThan(1000);
+    expect(lines[0]).toContain("Preise\\n[kb-ingest] Lohnliste.xlsx");
+  } finally {
+    warn.mockRestore();
+  }
+});
+
 it("does not record a document as unreadable when the converter itself was unavailable", async () => {
   // The distinction #936 exists for: out of memory or a missing binary says
   // nothing about the document. Recording it would brand a perfectly good file

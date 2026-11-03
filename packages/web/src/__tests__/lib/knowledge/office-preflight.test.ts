@@ -303,6 +303,73 @@ describe("sanitizeOoxmlPackage", () => {
   });
 });
 
+describe("a refusal quotes a name read from the package, it never pastes it", () => {
+  // A part name is the file author's: up to 65,535 bytes, newlines included.
+  // The refusal is the reason the knowledge-base ingest logs, one line per
+  // file — pasted verbatim, a name writes lines of its own there.
+  const BREAKS_A_LINE =
+    /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+  const FORGED = `[kb-ingest] /data/hr/ok.docx: not converted — FORGED ${"Q".repeat(3000)}`;
+
+  function expectOneBoundedLine(err: OfficeFileRejectedError) {
+    expect(err.message).not.toMatch(BREAKS_A_LINE);
+    expect(err.message.length).toBeLessThan(400);
+    expect(err.message).toContain('"word');
+  }
+
+  function refusedWith(pkg: Buffer): OfficeFileRejectedError {
+    try {
+      sanitizeOoxmlPackage(pkg);
+    } catch (err) {
+      expect(err).toBeInstanceOf(OfficeFileRejectedError);
+      return err as OfficeFileRejectedError;
+    }
+    throw new Error("expected the package to be refused");
+  }
+
+  it("for a relationship part that is not UTF-8 text", () => {
+    const pkg = docxWith({
+      documentRels: relationships(),
+      parts: { [`word/_rels/x\n${FORGED}\n.rels`]: Buffer.from([0xff, 0xfe, 0x00, 0xc3]) },
+    });
+    expectOneBoundedLine(refusedWith(pkg));
+  });
+
+  it("for a relationship part that is encrypted", () => {
+    const rels = Buffer.from(relationships());
+    const encrypted: ZipPart = {
+      ...deflatedPart(`word/_rels/x\n${FORGED}\n.rels`, rels),
+      flags: 0x0001,
+    };
+    const base = docxWith({ documentRels: relationships() });
+    const pkg = assembleZip([
+      ...readZipEntries(base).map((entry) => rawPart(base, entry)),
+      encrypted,
+    ]);
+    expectOneBoundedLine(refusedWith(pkg));
+  });
+
+  it("for a part a relationship points at that is not Office XML", () => {
+    // A target that breaks a line is cut, never followed — but nothing stops
+    // one from being thousands of characters long.
+    const target = `h${"Q".repeat(3000)}.xml`;
+    const pkg = docxWith({
+      documentRels: relationships(rel("rIdH", relType("header"), target)),
+      parts: { [`word/${target}`]: "not XML at all" },
+    });
+    expectOneBoundedLine(refusedWith(pkg));
+  });
+
+  it("for an entry whose name a reader would resolve to another, as the whole preflight reports it", async () => {
+    const pkg = docxWith({
+      documentRels: relationships(),
+      parts: { [`word\\x\n${FORGED}\n.xml`]: Buffer.from([0xff]) },
+    });
+    const err = await rejection(prepareOfficeSource(file("forged.docx", pkg)));
+    expectOneBoundedLine(err);
+  });
+});
+
 describe("prepareOfficeSource", () => {
   const OLE2 = Buffer.concat([
     Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),

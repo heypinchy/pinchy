@@ -120,6 +120,49 @@ export class ZipFormatError extends Error {
   }
 }
 
+/** How much of a name a refusal quotes, counted in the characters it prints. */
+const QUOTED_NAME_MAX = 120;
+
+/**
+ * Characters that end a line, or reorder one, wherever a message is printed:
+ * C0 and C1 controls, DEL, the Unicode line and paragraph separators, and the
+ * bidi controls.
+ */
+const BREAKS_A_LINE =
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+
+/**
+ * A name read from inside a file — an entry, a part — as a refusal quotes it.
+ *
+ * The name is the file author's: up to 65,535 bytes of whatever they chose,
+ * newlines included. A refusal is logged on the server and handed to the
+ * agent as a tool result, so pasted verbatim a name could write lines of its
+ * own into either. Quoted, every character that breaks or reorders a line is
+ * an escape, a quote or backslash cannot end the quote early, and the whole
+ * stays short; `…` after the closing quote marks a name that was cut.
+ */
+export function quoteName(name: string): string {
+  let quoted = "";
+  for (const char of name) {
+    const piece = escapedForQuote(char);
+    if (quoted.length + piece.length > QUOTED_NAME_MAX) return `"${quoted}"…`;
+    quoted += piece;
+  }
+  return `"${quoted}"`;
+}
+
+const SHORT_ESCAPES = new Map([
+  ["\n", "\\n"],
+  ["\r", "\\r"],
+  ["\t", "\\t"],
+]);
+
+function escapedForQuote(char: string): string {
+  if (char === '"' || char === "\\") return `\\${char}`;
+  if (!BREAKS_A_LINE.test(char)) return char;
+  return SHORT_ESCAPES.get(char) ?? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
+}
+
 function invalidDocx(detail: string): Error {
   return new ZipFormatError(`Not a valid .docx archive: ${detail}`);
 }
@@ -297,7 +340,7 @@ function assertDeclaredWithinLimits(buffer: Buffer, entries: ZipEntryInfo[], lim
         : limits.maxEntryBytes;
     if (limit !== undefined && entry.uncompressedSize > limit) {
       throw new ZipLimitError(
-        `Archive entry "${entry.name}" declares ${entry.uncompressedSize} bytes, past the ${limit}-byte limit for one entry.`
+        `Archive entry ${quoteName(entry.name)} declares ${entry.uncompressedSize} bytes, past the ${limit}-byte limit for one entry.`
       );
     }
   }
@@ -378,11 +421,11 @@ export function locateEntryData(
 ): Buffer {
   const at = entry.localHeaderOffset;
   if (at + 30 > end || archive.readUInt32LE(at) !== LOCAL_HEADER_SIGNATURE) {
-    throw invalidZip(`entry "${entry.name}" has no local header where the directory says`);
+    throw invalidZip(`entry ${quoteName(entry.name)} has no local header where the directory says`);
   }
   const start = at + 30 + archive.readUInt16LE(at + 26) + archive.readUInt16LE(at + 28);
   const stop = start + entry.compressedSize;
-  if (stop > end) throw invalidZip(`entry "${entry.name}" runs past its archive`);
+  if (stop > end) throw invalidZip(`entry ${quoteName(entry.name)} runs past its archive`);
   return archive.subarray(start, stop);
 }
 
@@ -409,20 +452,20 @@ function verifyDeflated(entry: ZipEntryInfo, data: Buffer): Promise<void> {
       if (produced > entry.uncompressedSize) {
         fail(
           new ZipLimitError(
-            `Archive entry "${entry.name}" inflates past the ${entry.uncompressedSize} bytes it declares. The file may be a decompression bomb.`
+            `Archive entry ${quoteName(entry.name)} inflates past the ${entry.uncompressedSize} bytes it declares. The file may be a decompression bomb.`
           )
         );
         return;
       }
       crc = crc32(chunk, crc);
     });
-    inflater.on("error", () => fail(invalidZip(`entry "${entry.name}" does not inflate`)));
+    inflater.on("error", () => fail(invalidZip(`entry ${quoteName(entry.name)} does not inflate`)));
     inflater.on("end", () => {
       if (settled) return;
       if (produced !== entry.uncompressedSize) {
-        fail(invalidZip(`entry "${entry.name}" inflates to less than it declares`));
+        fail(invalidZip(`entry ${quoteName(entry.name)} inflates to less than it declares`));
       } else if (crc !== entry.crc32) {
-        fail(invalidZip(`entry "${entry.name}" does not match its checksum`));
+        fail(invalidZip(`entry ${quoteName(entry.name)} does not match its checksum`));
       } else {
         settled = true;
         resolve();
@@ -451,10 +494,10 @@ function assertPlainEntryName(entry: ZipEntryInfo): void {
     name.includes("\\") ||
     segments.some((segment) => segment === "" || segment === "." || segment === "..")
   ) {
-    throw invalidZip(`entry "${name}" has a name a reader would resolve to another one`);
+    throw invalidZip(`entry ${quoteName(name)} has a name a reader would resolve to another one`);
   }
   if (directory && entry.uncompressedSize !== 0) {
-    throw invalidZip(`directory entry "${name}" holds data`);
+    throw invalidZip(`directory entry ${quoteName(name)} holds data`);
   }
 }
 
@@ -514,7 +557,7 @@ export async function verifiedZipCopy(buffer: Buffer, limits: ZipLimits): Promis
   for (const entry of entries) {
     assertPlainEntryName(entry);
     const key = entry.name.toLowerCase();
-    if (seen.has(key)) throw invalidZip(`two entries are both named "${entry.name}"`);
+    if (seen.has(key)) throw invalidZip(`two entries are both named ${quoteName(entry.name)}`);
     seen.add(key);
   }
 
@@ -523,26 +566,26 @@ export async function verifiedZipCopy(buffer: Buffer, limits: ZipLimits): Promis
   const parts: ZipPart[] = [];
   for (const entry of entries) {
     if (entry.flags & (FLAG_ENCRYPTED | FLAG_STRONG_ENCRYPTION)) {
-      throw invalidZip(`entry "${entry.name}" is encrypted`);
+      throw invalidZip(`entry ${quoteName(entry.name)} is encrypted`);
     }
     // Entry data must sit before the central directory, which is where every
     // writer puts it — and where the junk prefix a lenient reader forgives
     // sends these offsets wrong.
     const data = locateEntryData(buffer, entry, cdOffset);
     if (buffer.readUInt16LE(entry.localHeaderOffset + 8) !== entry.method) {
-      throw invalidZip(`entry "${entry.name}" names two compression methods`);
+      throw invalidZip(`entry ${quoteName(entry.name)} names two compression methods`);
     }
     if (entry.method === METHOD_STORED) {
       if (data.length !== entry.uncompressedSize) {
-        throw invalidZip(`stored entry "${entry.name}" declares two different sizes`);
+        throw invalidZip(`stored entry ${quoteName(entry.name)} declares two different sizes`);
       }
       if (crc32(data) !== entry.crc32) {
-        throw invalidZip(`entry "${entry.name}" does not match its checksum`);
+        throw invalidZip(`entry ${quoteName(entry.name)} does not match its checksum`);
       }
     } else if (entry.method === METHOD_DEFLATED) {
       await verifyDeflated(entry, data);
     } else {
-      throw invalidZip(`entry "${entry.name}" uses an unsupported compression method`);
+      throw invalidZip(`entry ${quoteName(entry.name)} uses an unsupported compression method`);
     }
     parts.push({
       name: entry.name,
@@ -605,20 +648,23 @@ function assertEntriesOwnTheirBytes(
   let free = 0;
   for (const entry of byOffset) {
     const at = entry.localHeaderOffset;
-    if (at < free) throw invalidZip(`entry "${entry.name}" shares bytes with another entry`);
+    if (at < free)
+      throw invalidZip(`entry ${quoteName(entry.name)} shares bytes with another entry`);
     if (at + 30 > cdOffset || archive.readUInt32LE(at) !== LOCAL_HEADER_SIGNATURE) {
-      throw invalidZip(`entry "${entry.name}" has no local header where the directory says`);
+      throw invalidZip(
+        `entry ${quoteName(entry.name)} has no local header where the directory says`
+      );
     }
     const nameEnd = at + 30 + archive.readUInt16LE(at + 26);
     if (nameEnd > cdOffset || archive.toString("utf8", at + 30, nameEnd) !== entry.name) {
-      throw invalidZip(`entry "${entry.name}" is named differently in its local header`);
+      throw invalidZip(`entry ${quoteName(entry.name)} is named differently in its local header`);
     }
     let end = nameEnd + archive.readUInt16LE(at + 28) + entry.compressedSize;
     if (entry.flags & FLAG_DATA_DESCRIPTOR) {
       const signed = end + 4 <= cdOffset && archive.readUInt32LE(end) === DATA_DESCRIPTOR_SIGNATURE;
       end += signed ? 16 : 12;
     }
-    if (end > cdOffset) throw invalidZip(`entry "${entry.name}" runs past its archive`);
+    if (end > cdOffset) throw invalidZip(`entry ${quoteName(entry.name)} runs past its archive`);
     free = end;
   }
 }
