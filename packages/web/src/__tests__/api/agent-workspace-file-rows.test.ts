@@ -59,6 +59,9 @@ beforeEach(() => {
   outsideDir = join(tmpRoot, "outside");
   mkdirSync(allowedRoot, { recursive: true });
   mkdirSync(outsideDir, { recursive: true });
+  // The rows are read from a private copy on the artifact volume's staging
+  // area (verified-source.ts), never from the share's path.
+  process.env.KB_ARTIFACT_DIR = join(tmpRoot, "artifacts");
 
   mockGetSession.mockResolvedValue({ user: { id: "user-1", role: "member" } });
   mockGetAgentWithAccess.mockResolvedValue({
@@ -68,7 +71,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => rmSync(tmpRoot, { recursive: true, force: true }));
+afterEach(() => {
+  delete process.env.KB_ARTIFACT_DIR;
+  rmSync(tmpRoot, { recursive: true, force: true });
+});
 
 async function callGET(requestedPath: string, extraParams: Record<string, string> = {}) {
   const { GET } = await import("@/app/api/agents/[agentId]/workspace-file/route");

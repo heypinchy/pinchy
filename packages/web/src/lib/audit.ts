@@ -983,6 +983,8 @@ export type AuditLogEntry =
         archived?: number;
         ocr?: { model: string; documents: number; pages: number; skippedPages: number };
         unavailableFolders?: number;
+        // Files refused because their path no longer led to a regular file in the folder (a swapped link); also in `failed`.
+        refusedFiles?: number;
         reason?: string;
       };
     })

@@ -59,6 +59,33 @@ export interface ReindexAuditArgs {
    * read.
    */
   unavailableFolders?: number;
+  /**
+   * How many files the run refused to read because their path no longer led
+   * to a regular file inside the folder — the file swapped for a symbolic link
+   * or for something that is not a file, or reached through a folder swapped
+   * for a link (verified-source.ts `SourceRefusal`). A file merely saved again
+   * since it was listed is read, not counted here. They are ALSO in
+   * `failed`; counted apart because someone with write access to a mounted
+   * folder pointing the index at a file they may not see is a security event,
+   * not a corrupt PDF. A count, never the files — see `pathCount`. Absent
+   * when nothing was refused.
+   */
+  refusedFiles?: number;
+}
+
+type ReindexDetail = Extract<AuditLogEntry, { eventType: "knowledge.reindex" }>["detail"];
+
+/**
+ * The detail, unchanged — typed so that every key it is built with must be
+ * declared on the audit type in `audit.ts`. The optional fields below are
+ * conditional spreads, and a spread escapes TypeScript's excess-property
+ * check: a key written that way reached the signed row without a declaration
+ * once. Through this, an undeclared key is a compile error.
+ */
+export function reindexDetail<T extends ReindexDetail>(
+  detail: T & Record<Exclude<keyof T, keyof ReindexDetail>, never>
+): ReindexDetail {
+  return detail;
 }
 
 export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
@@ -68,7 +95,7 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
     eventType: "knowledge.reindex",
     resource: `agent:${args.agent.id}`,
     outcome: args.outcome,
-    detail: {
+    detail: reindexDetail({
       agent: args.agent,
       pathCount: args.pathCount,
       ...(args.jobId !== undefined ? { jobId: args.jobId } : {}),
@@ -106,7 +133,8 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
       ...(args.unavailableFolders !== undefined
         ? { unavailableFolders: args.unavailableFolders }
         : {}),
+      ...(args.refusedFiles !== undefined ? { refusedFiles: args.refusedFiles } : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
-    },
+    }),
   };
 }

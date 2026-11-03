@@ -8,8 +8,17 @@
  * embedder + extractor), so no Ollama and no real PDFs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { eq } from "drizzle-orm";
 
@@ -53,6 +62,8 @@ function fakeDeps(): IngestDeps {
       throw new Error("convertOffice must not be called for a PDF");
     }),
     ocrModel: null,
+    // Hidden, so a run over tmpRoot never lists its own copies.
+    stagingDir: join(tmpRoot, ".kb-artifacts", "staging"),
   };
 }
 
@@ -423,6 +434,76 @@ describe("kb index worker", () => {
     expect(row.detail).toMatchObject({ indexed: 1, unavailableFolders: 1 });
   });
 
+  // A file swapped for a link after the folder was listed is refused, not read
+  // (lib/knowledge/verified-source.ts). That is a security-relevant event, so
+  // the outcome row counts it apart from ordinary unreadable files — and, like
+  // every other count here, never names the file.
+  it("counts files refused as swapped links on the outcome row, without naming them", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "a.pdf", "first");
+    writePdf(tmpRoot, "b.pdf", "second");
+    const otherTeam = `${tmpRoot}-other-team`;
+    writePdf(otherTeam, "board.pdf", "TOP SECRET");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    // Whichever file is read first swaps the OTHER one for a link, between
+    // discovery and its read — the window an author of the share would use.
+    const deps = fakeDeps();
+    let swapped = false;
+    const seen: string[] = [];
+    deps.extractPdf = vi.fn(async (path: string) => {
+      seen.push(readFileSync(path, "utf8"));
+      if (!swapped) {
+        swapped = true;
+        const other = join(tmpRoot, basename(path) === "a.pdf" ? "b.pdf" : "a.pdf");
+        rmSync(other);
+        symlinkSync(join(otherTeam, "board.pdf"), other);
+      }
+      return [{ page: 1, text: "Onboarding starts on day one and every hire receives a laptop." }];
+    });
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await runNextIndexJob({ deps });
+    } finally {
+      consoleError.mockRestore();
+      consoleWarn.mockRestore();
+      rmSync(otherTeam, { recursive: true, force: true });
+    }
+
+    expect(seen).not.toContain("TOP SECRET");
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job).toMatchObject({ status: "succeeded" });
+    expect(job?.counts).toMatchObject({ indexed: 1, failed: 1 });
+    const [row] = await reindexAuditRows();
+    expect(row.detail).toMatchObject({ indexed: 1, failed: 1, refusedFiles: 1 });
+    expect(JSON.stringify(row.detail)).not.toContain(tmpRoot);
+  });
+
+  it("leaves refusedFiles off the outcome row when nothing was refused", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "handbook.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const [row] = await reindexAuditRows();
+    expect(row.detail).not.toHaveProperty("refusedFiles");
+  });
+
   // The audit row is not where an admin looks. A run that indexed one share and
   // could not read the other is a success with a hole in it, and the Index
   // section has to be able to say so — from the job, not the trail.
@@ -630,6 +711,48 @@ describe("kb index worker tick", () => {
 
     await runKbIndexWorkerTick({ deps: fakeDeps() });
 
+    expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({ status: "succeeded" });
+  });
+
+  it("clears the staged copies an interrupted run left behind, before it claims anything", async () => {
+    // A batch removes its staging directory when it finishes, and a read
+    // removes its private copy of the document; one that never finishes — a
+    // restart, an upgrade, an OOM kill mid-reindex — leaves them on the
+    // artifact volume, plaintext, and nothing else ever removes them. Same
+    // boot act as the requeue, for the same reason it is sound: this process
+    // is the only worker and has not started a batch or a read yet, so
+    // whatever wrote them is gone.
+    const artifactDir = join(tmpRoot, ".kb-artifacts");
+    const leftover = join(artifactDir, "staging", "batch-of-a-dead-process", "in", "0.pptx");
+    const leftoverCopy = join(artifactDir, "staging", "source-of-a-dead-read", "board.pdf");
+    const artifact = join(artifactDir, "v2", "ab", "kept.pdf");
+    for (const path of [leftover, leftoverCopy, artifact]) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "bytes");
+    }
+    const corpus = join(tmpRoot, "corpus");
+    writePdf(corpus, "handbook.pdf");
+    const agent = await makeAgent();
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [corpus],
+    });
+    const deps = fakeDeps();
+    const leftoverWhenClaimed: boolean[] = [];
+    const extractPdf = deps.extractPdf;
+    deps.extractPdf = async (...args) => {
+      leftoverWhenClaimed.push(existsSync(leftover) || existsSync(leftoverCopy));
+      return extractPdf(...args);
+    };
+
+    await runKbIndexWorkerTick({ deps, artifactDir });
+
+    expect(leftoverWhenClaimed).toEqual([false]);
+    expect(readdirSync(join(artifactDir, "staging"))).toEqual([]);
+    expect(existsSync(artifact)).toBe(true);
     expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({ status: "succeeded" });
   });
 

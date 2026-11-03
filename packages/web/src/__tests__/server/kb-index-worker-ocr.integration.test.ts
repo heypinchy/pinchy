@@ -13,7 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { and, eq, like } from "drizzle-orm";
 
@@ -32,6 +32,13 @@ vi.mock("@/lib/knowledge/embeddings", async (importOriginal) => ({
   embedTexts: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.01))),
 }));
 vi.mock("@/lib/knowledge/kb-ocr", () => ({ resolveKbOcr: vi.fn() }));
+// The production deps stage their source copies on the artifact volume, which
+// exists only in the container. Here it is a directory of the test's own.
+const artifactVolume = vi.hoisted(() => ({ staging: "" }));
+vi.mock("@/lib/knowledge/office-artifacts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/knowledge/office-artifacts")>()),
+  stagingDirOf: () => artifactVolume.staging,
+}));
 vi.mock("@/lib/knowledge/pdf-extract", () => ({ extractPdfPages: vi.fn() }));
 // Only reached by the case that runs the REAL resolveKbOcr: a vision model is
 // available, so the operator's switch is the only thing that can stop OCR.
@@ -51,6 +58,7 @@ let tmpRoot: string;
 
 beforeEach(async () => {
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-worker-ocr-test-"));
+  artifactVolume.staging = join(tmpRoot, ".kb-artifacts", "staging");
   await db.delete(kbIndexJobs);
   await db.delete(usageRecords).where(like(usageRecords.sessionKey, "kb-index:%"));
   _resetKbIndexWorkerForTest();
@@ -215,6 +223,21 @@ describe("without a vision model", () => {
     // Absent, not zeroed: a missing field reads as "nothing was sent".
     const detail = await outcomeAuditDetail(job.id);
     expect(detail).not.toHaveProperty("ocr");
+  });
+
+  it("hands the extractor a copy staged on the artifact volume, never one in os.tmpdir()", async () => {
+    // A run killed mid-read never removes its copy. In the container's /tmp
+    // that copy — a full plaintext document — would survive every restart on
+    // the writable layer; on the volume, the next worker start clears it.
+    let handed = "";
+    mockExtractPdfPages.mockImplementation(async (absPath) => {
+      handed = absPath;
+      return [{ page: 1, text: "a certificate" }];
+    });
+
+    await enqueueAndRun();
+
+    expect(dirname(dirname(handed))).toBe(artifactVolume.staging);
   });
 });
 
