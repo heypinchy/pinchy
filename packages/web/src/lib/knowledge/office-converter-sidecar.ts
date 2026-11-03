@@ -90,7 +90,10 @@ const INPUT_NAME = new RegExp(
 );
 const MAX_INPUTS = 1000;
 const MAX_REQUEST_BYTES = 64 * 1024;
-/** An answer is a few fields and at most 8 KB of stderr; anything bigger is not one. */
+/**
+ * An answer is a few fields and at most 8 KB of stderr (office-soffice.ts),
+ * which JSON escapes to at most six times that. Anything bigger is not one.
+ */
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
 /**

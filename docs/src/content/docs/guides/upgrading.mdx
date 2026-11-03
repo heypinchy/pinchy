@@ -227,7 +227,10 @@ Keys we issued are unaffected. Nothing about them changed, and there is nothing 
 
 ### Upgrade notes
 
-This release adds a service to `docker-compose.yml` — the [Office converter](#word-and-powerpoint-files-are-converted-in-a-container-of-their-own) — so fetch the new file along with the version bump:
+This release adds a service to `docker-compose.yml` — the [Office converter](#word-and-powerpoint-files-are-converted-in-a-container-of-their-own) — so fetch the new file along with the version bump. Two things to check first:
+
+- The new file also passes `AUDIT_HMAC_SECRET` from `.env` into Pinchy. If you pinned a value there, read [that note](#audit_hmac_secret-in-env-now-actually-does-something) before you restart.
+- Fetching the file replaces it. If you edited `docker-compose.yml` itself, move those changes into a `docker-compose.override.yml` first — see [Customizing your deployment](/guides/customizing-deployment/).
 
 ```bash
 cd /opt/pinchy
@@ -266,12 +269,7 @@ Nothing changes for your existing agents on upgrade — no tool is gated until y
 
 Pinchy has always read this variable, but the `docker-compose.yml` we ship never passed it into the container — so if you pinned it the way the hardening guide describes, it had no effect and Pinchy kept signing with the key it generated into the `pinchy-secrets` volume. It's forwarded now.
 
-It takes effect the first time you start with the new compose file, so nothing changes until you re-fetch it:
-
-```bash
-cd /opt/pinchy
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
-```
+It takes effect the first time you start with the new compose file, which this release's [upgrade notes](#upgrade-notes) have you fetch.
 
 **If you already have a value in `.env`, that switches the key your audit trail is signed with.** Entries written before the switch keep their old signature, and they're neither lost nor damaged: Pinchy still holds the previous key in the `pinchy-secrets` volume, so integrity verification reports those rows as signed with an earlier secret instead of flagging them as tampered. The hash chain is unaffected either way — it links each row to its predecessor's stored signature, whichever key produced it.
 
@@ -331,7 +329,7 @@ What you may notice: a Word or PowerPoint file that linked a picture, a template
 
 #### Word and PowerPoint files are converted in a container of their own
 
-Converting a Word document or slide deck to PDF used to happen inside the `pinchy` container, next to its secrets and with its network. It now happens in a new service, `office-converter`, that has neither. Its only network interface is its own loopback, so there is no route to your Docker network, your host or the internet, and the only thing it can see is a hand-over folder where Pinchy puts the copies to convert — no configuration, no secrets, no mounted documents. It runs as a user of its own: it can read those copies and write the converted PDFs back, but not change or remove anything Pinchy put there. If a conversion ever leaves a process running in it, the converter restarts itself; the documents of that batch count as `failed` in that reindex report and are converted on the next one. The safeguards in the note above stay in place. This is what still holds if a file ever gets past them: there is nowhere to send a request and nothing to read.
+Converting a Word document or slide deck to PDF used to happen inside the `pinchy` container, next to its secrets and with its network. It now happens in a new service, `office-converter`, that has neither. Its only network interface is its own loopback, so there is no route to your Docker network, your host or the internet, and of your data it sees only a hand-over folder where Pinchy puts the copies to convert — no configuration, no secrets, no mounted documents. It runs as a user of its own: it can read those copies and write the converted PDFs back, but not change or remove anything Pinchy put there. If a conversion ever leaves a process running in it, the converter restarts itself; the documents of that batch count as `failed` in that reindex report and are converted on the next one. The safeguards in the note above stay in place. This is what still holds if a file ever gets past them: there is nowhere to send a request and nothing to read.
 
 There is nothing extra to pull: the converter runs from the same image as `pinchy`. It gets its own memory ceiling, `OFFICE_CONVERTER_MEM_LIMIT` (default `1g`), so a large conversion no longer competes with the web app — see [Memory when the knowledge base indexes Office documents](/guides/customizing-deployment/#memory-when-the-knowledge-base-indexes-office-documents).
 

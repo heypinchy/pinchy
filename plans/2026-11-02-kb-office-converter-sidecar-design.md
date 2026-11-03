@@ -64,7 +64,10 @@ already at a staged name is ever written through.
 The converter runs with umask `007`, so its output is group-writable, and it
 empties `profile/` itself after each batch and, for every batch in the spool,
 when it starts (LibreOffice picks the modes of the directories it creates
-there, and a converter that died mid-batch leaves them). It does not empty
+there, and a converter that died mid-batch leaves them). LibreOffice's
+`TMPDIR` is `profile/tmp`: it removes its temp files only on a clean exit, and
+the container's `/tmp` is a tmpfs that outlives every batch and counts against
+its memory. It does not empty
 `out/` when it starts: a PDF there may be one the web process is about to take.
 
 The converter can create entries of its own in the spool root, `out/` and
@@ -126,9 +129,10 @@ containers that mount the spool.
 4. Response: `{code, signal, stderr, timedOut}` — the existing `ConverterResult`.
    OOM and timeouts keep their meaning: the sidecar reports the SIGKILL it saw,
    and a sidecar that dies mid-request is a connection error → `infrastructure`.
-5. Web reads `<spool>/<uuid>/out/<n>.pdf`, verifies it and moves it into the
-   artifact store. The store is a different volume, so `put()` falls back from
-   `rename` to copy-then-rename on `EXDEV` — the commit stays atomic.
+5. Web copies `<spool>/<uuid>/out/<n>.pdf` into a private directory inside the
+   artifact store (below), verifies that copy and renames it into place — one
+   volume, one atomic rename. `put()` still falls back to copy-then-rename on
+   `EXDEV` for a caller that hands it a path on another volume.
 
 The `RunConverter` seam is unchanged; `ConvertOptions` gains
 `createStagingDir`, because where a batch is staged is now the converter's

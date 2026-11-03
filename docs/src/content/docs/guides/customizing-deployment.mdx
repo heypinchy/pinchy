@@ -129,7 +129,7 @@ Without a limit, a single runaway container — a leaking process, a model call 
 
 ### Sizing your host
 
-The defaults add up to roughly 5 GB of memory ceiling across the four containers (1 + 1 + 2 + 1). The Office converter's share is only ever used while the knowledge base converts a Word or PowerPoint file. That's a ceiling, not a reservation — containers use less at idle — but your host needs headroom **above** that total for the OS, Docker itself, and any reverse proxy you run alongside Pinchy. We recommend a host with meaningfully more than 4 GB, e.g. **6–8 GB or more**, so the limits are a backstop rather than a wall you hit during normal operation.
+The defaults add up to roughly 5 GB of memory ceiling across the four containers (1 + 1 + 2 + 1). The Office converter's share is only ever used while the knowledge base converts a Word or PowerPoint file. That's a ceiling, not a reservation — containers use less at idle — but your host needs headroom **above** that total for the OS, Docker itself, and any reverse proxy you run alongside Pinchy. We recommend a host with meaningfully more than 5 GB, e.g. **8 GB or more**, so the limits are a backstop rather than a wall you hit during normal operation.
 
 If you're intentionally running on a constrained 4 GB VPS — a real scenario, not just a hypothetical — lower the limits in `.env` so the containers leave the OS enough room to breathe:
 

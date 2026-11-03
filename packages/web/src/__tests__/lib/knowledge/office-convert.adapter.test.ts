@@ -103,6 +103,19 @@ describe("runSoffice", () => {
     // HOME must match the private profile: LibreOffice writes into $HOME too,
     // and pointing it anywhere else puts state outside the staging directory.
     expect(env.HOME).toBe(profileDir);
+    // Its temp files too: LibreOffice removes its temp directory only on a
+    // clean exit, and a killed batch must not leave one in the converter's
+    // memory-backed /tmp. Inside the profile, it goes with the batch.
+    expect(env.TMPDIR).toBe(join(profileDir, "tmp"));
+  });
+
+  it("gives the converter a temp directory inside its private profile", async () => {
+    const record = join(tmpRoot, "tmpdir");
+    process.env.KB_SOFFICE_BIN = stub("soffice-tmp", `test -d "$TMPDIR" && echo ok > ${record}\n`);
+
+    await run();
+
+    expect(await readFile(record, "utf8")).toBe("ok\n");
   });
 
   describe("the locked-down profile (release review v0.10.0, finding 1)", () => {
@@ -176,6 +189,21 @@ describe("runSoffice", () => {
 
     expect(result.stderr.length).toBeLessThan(64 * 1024);
     expect(result.stderr).toContain("could not be loaded");
+  });
+
+  it("caps stderr at exactly 8 KB, however large the chunk it arrives in", async () => {
+    // A pipe read can deliver 64 KB at once; the cap has to hold for the
+    // chunk that crosses it, or the answer outgrows what the web side reads.
+    const big = join(tmpRoot, "big");
+    writeFileSync(big, "\u0001".repeat(200_000));
+    process.env.KB_SOFFICE_BIN = stub("soffice-burst", `cat ${big} >&2\n`);
+
+    const result = await run();
+
+    expect(result.stderr.length).toBe(8 * 1024);
+    // Even escaped six-fold, as JSON does with control characters, the
+    // answer stays under the 64 KB the web side accepts.
+    expect(JSON.stringify(result).length).toBeLessThan(64 * 1024);
   });
 
   it("rejects rather than resolving when the binary is missing", async () => {

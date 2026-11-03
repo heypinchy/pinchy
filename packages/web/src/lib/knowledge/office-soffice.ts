@@ -152,9 +152,21 @@ ${[
 </oor:items>
 `;
 
+/**
+ * LibreOffice's temp directory, inside the private profile. It removes its
+ * temp files only on a clean exit; in the sidecar the default `/tmp` is a
+ * tmpfs that outlives every batch and counts against the container's memory,
+ * so a killed conversion would leave them there for good. In the profile they
+ * go with the batch.
+ */
+function tmpDirOf(profileDir: string): string {
+  return join(profileDir, "tmp");
+}
+
 async function writeLockedDownProfile(profileDir: string): Promise<void> {
   const userDir = join(profileDir, "user");
   await mkdir(userDir, { recursive: true });
+  await mkdir(tmpDirOf(profileDir), { recursive: true });
   await writeFile(join(userDir, "registrymodifications.xcu"), LOCKED_DOWN_PROFILE);
 }
 
@@ -194,7 +206,11 @@ const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =
         outDir,
         ...inputs,
       ],
-      { stdio: ["ignore", "ignore", "pipe"], env: childEnv(profileDir), detached: true }
+      {
+        stdio: ["ignore", "ignore", "pipe"],
+        env: { ...childEnv(profileDir), TMPDIR: tmpDirOf(profileDir) },
+        detached: true,
+      }
     );
 
     let stderr = "";
@@ -202,7 +218,11 @@ const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =
     let settled = false;
     let drain: NodeJS.Timeout | undefined;
     child.stderr.on("data", (chunk: Buffer) => {
-      if (stderr.length < MAX_STDERR_BYTES) stderr += chunk.toString("utf8");
+      // Sliced, not just checked: one pipe read can be 64 KB, and the cap is
+      // what keeps the sidecar's answer inside what the web side reads.
+      if (stderr.length < MAX_STDERR_BYTES) {
+        stderr = (stderr + chunk.toString("utf8")).slice(0, MAX_STDERR_BYTES);
+      }
     });
 
     const timer = setTimeout(() => {

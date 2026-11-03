@@ -134,10 +134,11 @@ export class OfficeArtifactStore {
    * becomes visible once conversion AND verification are behind it, so a
    * reader can never be handed a half-written file.
    *
-   * A batch staged in the office-converter's spool sits on a DIFFERENT volume,
-   * and `rename()` cannot cross one (EXDEV). Then the PDF is copied to a
-   * temporary name beside the artifact and renamed from there — the commit is
-   * still one atomic rename, inside the store.
+   * office-convert hands it a private copy staged inside the store, so this is
+   * normally a rename on one volume. A path on another volume — `rename()`
+   * cannot cross one (EXDEV) — is copied to a temporary name beside the
+   * artifact and renamed from there, so the commit is still one atomic rename,
+   * inside the store.
    */
   async put(contentHash: string, stagedPdfPath: string): Promise<string> {
     const path = this.pathFor(contentHash);
