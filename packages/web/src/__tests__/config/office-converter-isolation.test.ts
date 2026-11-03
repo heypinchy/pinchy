@@ -78,6 +78,13 @@ function spoolDirOf(dockerfile: string): string | undefined {
 const converter = serviceBlock(COMPOSE, SERVICE);
 const pinchy = serviceBlock(COMPOSE, "pinchy")!;
 const SPOOL = spoolDirOf("Dockerfile.pinchy");
+const DOCKERFILE = read("Dockerfile.pinchy");
+/** The web process's uid and gid, as the image creates them. */
+const PINCHY_UID = DOCKERFILE.match(
+  /useradd [^\n]*-u (\d+) -g pinchy [^\n]*\bpinchy(?![-\w])/
+)?.[1];
+const PINCHY_GID = DOCKERFILE.match(/groupadd [^\n]*-g (\d+) pinchy\b/)?.[1];
+const CONVERTER_UID = "998";
 
 describe("office-converter sidecar isolation (docker-compose.yml)", () => {
   it("exists, and the production image tells the web process to use it", () => {
@@ -107,11 +114,33 @@ describe("office-converter sidecar isolation (docker-compose.yml)", () => {
 
   it("runs unprivileged on a read-only root filesystem", () => {
     expect(scalar(converter!, "read_only")).toBe("true");
-    expect(scalar(converter!, "user")).toBe('"999:999"');
+    expect(scalar(converter!, "user")).toBe(`"${CONVERTER_UID}:${PINCHY_GID}"`);
     expect(list(converter!, "cap_drop")).toEqual(["ALL"]);
     expect(list(converter!, "security_opt")).toContain("no-new-privileges:true");
     expect(hasKey(converter!, "privileged")).toBe(false);
     expect(hasKey(converter!, "cap_add")).toBe(false);
+  });
+
+  it("runs as a user of its own, in the web process's group", () => {
+    // Its own uid: the web process owns every batch directory, and the
+    // converter can write only where the web process lets its group write
+    // (out/ and profile/, sticky) — never rename or remove what it did not
+    // create. Same gid: that group is how it reads in/ and reaches the socket.
+    // A shared uid would make every one of those modes meaningless.
+    expect(PINCHY_UID).toBeDefined();
+    expect(CONVERTER_UID).not.toBe(PINCHY_UID);
+    expect(DOCKERFILE).toMatch(
+      new RegExp(`useradd [^\\n]*-u ${CONVERTER_UID} -g pinchy [^\\n]*\\bpinchy-office\\b`)
+    );
+  });
+
+  it("gets a spool it can create its socket in, but where it cannot touch the web process's batches", () => {
+    // Sticky and group-writable: the converter may create (and remove) its
+    // own socket, never a batch directory the web process owns. The image
+    // seeds a fresh volume (Docker copies the mode); the entrypoint repairs
+    // one that already exists.
+    expect(DOCKERFILE).toMatch(new RegExp(`chmod 1770 ${SPOOL}\\b`));
+    expect(read("entrypoint.sh")).toMatch(new RegExp(`^chmod 1770 ${SPOOL} `, "m"));
   });
 
   it("runs under an init that reaps what a killed conversion leaves behind", () => {

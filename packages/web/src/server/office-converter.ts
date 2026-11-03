@@ -11,9 +11,10 @@
  * database, no settings, no secrets to load.
  */
 import {
-  createOfficeConverterServer,
-  listenOfficeConverter,
   converterSocketPath,
+  createOfficeConverterServer,
+  leftoverProcesses,
+  listenOfficeConverter,
 } from "../lib/knowledge/office-converter-sidecar";
 import { runSoffice } from "../lib/knowledge/office-soffice";
 import { rm } from "node:fs/promises";
@@ -27,6 +28,11 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // It runs as its own uid, in the web process's group, and the web process
+  // removes each batch afterwards — including what LibreOffice wrote into it.
+  // Group-writable output is what lets it.
+  process.umask(0o007);
+
   const server = createOfficeConverterServer({
     spoolDir,
     runConverter: async (run) => {
@@ -37,6 +43,16 @@ async function main(): Promise<void> {
         `[office-converter] batch of ${run.inputs.length}: exit ${result.code ?? result.signal}${result.timedOut ? " (timed out)" : ""} in ${Date.now() - started} ms`
       );
       return result;
+    },
+    leftovers: () => leftoverProcesses(),
+    onLeftovers: (pids) => {
+      // Something of the converter's outlived its batch and could still write
+      // into the next one. Exit: the restart policy brings up a clean
+      // container, and the init and everything left go with this one.
+      console.error(
+        `[office-converter] ${pids.length} process(es) outlived the batch — exiting so the container restarts`
+      );
+      process.exit(1);
     },
   });
 

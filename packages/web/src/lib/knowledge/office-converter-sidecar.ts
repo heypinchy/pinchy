@@ -28,11 +28,21 @@
  * that dies or hangs — rejects, which office-convert books as `infrastructure`:
  * retryable, never "this document is unreadable".
  *
+ * ## Who may write what
+ *
+ * The sidecar runs as its own uid in the web process's group
+ * (docker-compose.yml). The web process owns the spool and every batch
+ * directory in it; the modes in `BATCH_MODES` let the converter read `in/`
+ * and write `out/` and `profile/`, and nothing else. The spool root and the
+ * two writable directories are sticky, so the converter can remove or rename
+ * only entries it created itself — its socket, its own output. It cannot
+ * swap a staged input, nor touch another batch.
+ *
  * Node built-ins only: the sidecar imports this, and it must not drag the web
  * app's dependency graph into a container whose point is to hold nothing.
  */
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { createServer, request, type IncomingMessage, type Server } from "node:http";
 import { basename, dirname, join } from "node:path";
 
@@ -73,6 +83,20 @@ const INPUT_NAME = new RegExp(
 );
 const MAX_INPUTS = 1000;
 const MAX_REQUEST_BYTES = 64 * 1024;
+
+/**
+ * Modes of a staged batch (see "Who may write what" above). Set with `chmod`,
+ * not through `mkdir`'s mode, which the process umask would cut.
+ */
+export const BATCH_MODES = {
+  batch: 0o750,
+  in: 0o750,
+  out: 0o1770,
+  profile: 0o1770,
+} as const;
+
+/** The socket: the web process's group connects, nobody else. */
+const SOCKET_MODE = 0o660;
 
 interface ConvertRequest {
   batch: string;
@@ -117,9 +141,17 @@ export function sidecarConverter(
   return {
     async createStagingDir() {
       await pruneStaleBatches(spoolDir, staleAfterMs);
-      const dir = join(spoolDir, randomUUID());
-      await mkdir(dir, { recursive: true });
-      return dir;
+      const paths = batchPaths(spoolDir, randomUUID());
+      for (const [key, path] of [
+        ["batch", paths.dir],
+        ["in", paths.inDir],
+        ["out", paths.outDir],
+        ["profile", paths.profileDir],
+      ] as const) {
+        await mkdir(path);
+        await chmod(path, BATCH_MODES[key]);
+      }
+      return paths.dir;
     },
 
     async runConverter(run) {
@@ -239,6 +271,16 @@ export interface OfficeConverterServerOptions {
   spoolDir: string;
   runConverter: RunConverter;
   maxTimeoutMs?: number;
+  /**
+   * Processes left running in the container, asked after every batch. The
+   * default finds none; the entrypoint reads /proc (`leftoverProcesses`).
+   */
+  leftovers?: () => Promise<number[]>;
+  /**
+   * Called once the answer to such a batch is sent. The entrypoint exits, so
+   * the restart policy starts a clean container.
+   */
+  onLeftovers?: (pids: number[]) => void;
 }
 
 export function createOfficeConverterServer(options: OfficeConverterServerOptions): Server {
@@ -267,6 +309,7 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
           return;
         }
         const paths = batchPaths(options.spoolDir, parsed.batch);
+        let answer: [number, unknown];
         try {
           const result = await options.runConverter({
             inputs: parsed.inputs.map((name) => join(paths.inDir, name)),
@@ -274,10 +317,23 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
             profileDir: paths.profileDir,
             timeoutMs: Math.min(parsed.timeoutMs, maxTimeoutMs),
           });
-          reply(200, result);
+          answer = [200, result];
         } catch (err) {
-          reply(500, { error: err instanceof Error ? err.message : String(err) });
+          answer = [500, { error: err instanceof Error ? err.message : String(err) }];
         }
+        // The profile is the converter's, made of directories with modes
+        // LibreOffice picks. Emptied here, by the uid that created it, so the
+        // web process can always remove the batch.
+        await clearDirectory(paths.profileDir);
+        const left = (await options.leftovers?.()) ?? [];
+        if (left.length > 0) {
+          res.once("finish", () => options.onLeftovers?.(left));
+          reply(500, {
+            error: `the converter left ${left.length} process(es) running after the batch; the office-converter restarts`,
+          });
+          return;
+        }
+        reply(...answer);
       })
       .catch((err: unknown) => {
         reply(400, { error: err instanceof Error ? err.message : String(err) });
@@ -325,6 +381,74 @@ export async function listenOfficeConverter(server: Server, spoolDir: string): P
       resolve();
     });
   });
+  // The web process connects as another uid, through the group.
+  await chmod(socketPath, SOCKET_MODE);
+}
+
+/** Removes everything inside `dir`, leaving `dir` itself. Best effort. */
+async function clearDirectory(dir: string): Promise<void> {
+  const entries = await readdir(dir).catch(() => [] as string[]);
+  for (const entry of entries) {
+    await rm(join(dir, entry), { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+export interface LeftoverProcessOptions {
+  procDir?: string;
+  /** The server's own pid. */
+  self?: number;
+  /** How long a process on its way out gets to finish dying. */
+  graceMs?: number;
+  intervalMs?: number;
+}
+
+/**
+ * The processes left running in the converter's container, by pid — empty
+ * when there are none. Asked after every batch.
+ *
+ * The container runs under an init (`init: true` in docker-compose.yml, kept
+ * there by the drift guard): PID 1, with this server as its child. A process
+ * whose parent is the init and that is not this server is an orphan — the
+ * kind a batch leaves when a group kill misses something, or something moves
+ * out of its group. Children of this server are not counted: `soffice` has
+ * exited by the time a batch answers, and what stays is tsx's `esbuild`,
+ * which lives as long as the server (both seen in the image). Processes
+ * `docker exec` starts — the healthcheck — have no parent inside the
+ * container, and a zombie is about to be reaped; neither counts.
+ *
+ * Without /proc (a developer machine) there is nothing to read, and it finds
+ * nothing.
+ */
+export async function leftoverProcesses(options: LeftoverProcessOptions = {}): Promise<number[]> {
+  const deadline = Date.now() + (options.graceMs ?? 2_000);
+  for (;;) {
+    const left = await orphans(options);
+    if (left.length === 0 || Date.now() >= deadline) return left;
+    await new Promise((resolve) => setTimeout(resolve, options.intervalMs ?? 100));
+  }
+}
+
+async function orphans(options: LeftoverProcessOptions): Promise<number[]> {
+  const procDir = options.procDir ?? "/proc";
+  const self = options.self ?? process.pid;
+  const entries = await readdir(procDir).catch(() => [] as string[]);
+  const left: number[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === 1 || pid === self) continue;
+    const stat = await readFile(join(procDir, entry, "stat"), "utf8").catch(() => null);
+    if (stat === null) continue; // gone since the listing
+    // `pid (comm) state ppid …` — comm may hold spaces and parentheses, so
+    // read the fields after the LAST ')'.
+    const [state, ppid] = stat
+      .slice(stat.lastIndexOf(")") + 1)
+      .trim()
+      .split(/\s+/);
+    if (state === "Z" || state === "X") continue;
+    if (Number(ppid) === 1) left.push(pid);
+  }
+  return left.sort((a, b) => a - b);
 }
 
 function readBody(stream: IncomingMessage, limit = Number.POSITIVE_INFINITY): Promise<string> {

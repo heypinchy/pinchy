@@ -11,7 +11,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, readdir, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { request, type Server } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import {
   converterSocketPath,
   createOfficeConverterServer,
+  leftoverProcesses,
   listenOfficeConverter,
   sidecarConverter,
 } from "@/lib/knowledge/office-converter-sidecar";
@@ -42,10 +43,17 @@ afterEach(async () => {
   rmSync(spool, { recursive: true, force: true });
 });
 
-async function startServer(maxTimeoutMs?: number): Promise<void> {
+async function startServer(
+  maxTimeoutMs?: number,
+  extra: {
+    leftovers?: () => Promise<number[]>;
+    onLeftovers?: (pids: number[]) => void;
+  } = {}
+): Promise<void> {
   server = createOfficeConverterServer({
     spoolDir: spool,
     maxTimeoutMs,
+    ...extra,
     runConverter: async (run) => {
       seen.push(run);
       return answer(run);
@@ -271,5 +279,116 @@ describe("office-converter sidecar protocol", () => {
     expect(left).toContain("not-a-batch");
     expect(left).toContain("converter.sock");
     expect((await stat(fresh)).isDirectory()).toBe(true);
+  });
+
+  it("stages a batch the converter can read and write into, but not rearrange", async () => {
+    // The converter runs as its own uid in the web process's group. It reads
+    // in/, writes out/ and profile/, and the sticky bit keeps it from
+    // renaming or removing anything there it did not create itself.
+    const dir = await sidecarConverter(spool).createStagingDir();
+    const mode = async (path: string) => (await stat(path)).mode & 0o7777;
+
+    expect(await mode(dir)).toBe(0o750);
+    expect(await mode(join(dir, "in"))).toBe(0o750);
+    expect(await mode(join(dir, "out"))).toBe(0o1770);
+    expect(await mode(join(dir, "profile"))).toBe(0o1770);
+  });
+
+  it("opens its socket to the web process's group and to nobody else", async () => {
+    await startServer();
+    expect((await stat(converterSocketPath(spool))).mode & 0o777).toBe(0o660);
+  });
+
+  it("clears the batch's profile after the run, so the web process can remove the batch", async () => {
+    // LibreOffice fills the profile with directories of its own; one the web
+    // process cannot enter would make it fail to clean up the batch.
+    answer = async (run) => {
+      await mkdir(join(run.profileDir, "user", "cache"), { recursive: true });
+      await writeFile(join(run.profileDir, "user", "registrymodifications.xcu"), "x");
+      await chmod(join(run.profileDir, "user"), 0o700);
+      return { code: 0, signal: null, stderr: "", timedOut: false };
+    };
+    await startServer();
+    const { converter, run } = await stagedBatch(["0.docx"]);
+
+    await converter.runConverter(run);
+
+    expect(await readdir(run.profileDir)).toEqual([]);
+  });
+
+  it("refuses the batch and recycles itself when the converter left processes running", async () => {
+    // A process that outlives its batch can still write into the batch the
+    // web process is about to read, and into the next one. The answer says
+    // so (infrastructure: retried later), and the container restarts.
+    const recycled: number[][] = [];
+    await startServer(undefined, {
+      leftovers: async () => [4242],
+      onLeftovers: (pids) => recycled.push(pids),
+    });
+    const { converter, run } = await stagedBatch(["0.docx"]);
+
+    await expect(converter.runConverter(run)).rejects.toThrow(/left 1 process/);
+    expect(recycled).toEqual([[4242]]);
+  });
+
+  it("does not recycle itself after a batch that left nothing behind", async () => {
+    const recycled: number[][] = [];
+    await startServer(undefined, {
+      leftovers: async () => [],
+      onLeftovers: (pids) => recycled.push(pids),
+    });
+    const { converter, run } = await stagedBatch(["0.docx"]);
+
+    await expect(converter.runConverter(run)).resolves.toMatchObject({ code: 0 });
+    expect(recycled).toEqual([]);
+  });
+});
+
+describe("leftoverProcesses", () => {
+  let proc: string;
+
+  beforeEach(async () => {
+    proc = mkdtempSync(join(tmpdir(), "kb-proc-"));
+  });
+
+  afterEach(() => {
+    rmSync(proc, { recursive: true, force: true });
+  });
+
+  /** One /proc/<pid>/stat line: `pid (comm) state ppid …`. */
+  async function processEntry(pid: number, comm: string, state: string, ppid: number) {
+    await mkdir(join(proc, String(pid)));
+    await writeFile(
+      join(proc, String(pid), "stat"),
+      `${pid} (${comm}) ${state} ${ppid} 1 1 0 -1\n`
+    );
+  }
+
+  it("names the orphans handed to the init, not the server, its children or a `docker exec`", async () => {
+    await processEntry(1, "docker-init", "S", 0);
+    await processEntry(7, "node", "S", 1); // the server itself
+    await processEntry(14, "esbuild", "S", 7); // tsx's, alive as long as the server
+    await processEntry(40, "soffice.bin) (x", "S", 1); // an orphan, with a hostile name
+    await processEntry(41, "oosplash", "S", 40); // its child: the orphan is the one to name
+    await processEntry(60, "node", "S", 0); // a healthcheck, started by `docker exec`
+    await processEntry(61, "sh", "S", 60);
+    await processEntry(70, "soffice.bin", "Z", 1); // dead, waiting for the init to reap it
+    await mkdir(join(proc, "self"));
+
+    expect(await leftoverProcesses({ procDir: proc, self: 7, graceMs: 0 })).toEqual([40]);
+  });
+
+  it("waits a moment for a process that is on its way out", async () => {
+    await processEntry(1, "docker-init", "S", 0);
+    await processEntry(40, "soffice.bin", "S", 1);
+    setTimeout(() => void rm(join(proc, "40"), { recursive: true, force: true }), 50);
+
+    expect(
+      await leftoverProcesses({ procDir: proc, self: 7, graceMs: 2_000, intervalMs: 20 })
+    ).toEqual([]);
+  });
+
+  it("finds nothing where there is no /proc to read", async () => {
+    expect(await leftoverProcesses({ procDir: join(proc, "missing"), self: 7 })).toEqual([]);
   });
 });

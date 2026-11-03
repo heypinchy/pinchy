@@ -83,7 +83,10 @@ services:
     # Reaps the grandchildren a timed-out conversion leaves (soffice forks
     # soffice.bin); node as PID 1 would keep them as zombies.
     init: true
-    user: "999:999"
+    # Its own user (pinchy-office), in pinchy's group: it reads what the web
+    # process staged and writes only the output and its profile, never
+    # anything it did not create (Dockerfile.pinchy, entrypoint.sh).
+    user: "998:999"
     read_only: true
     tmpfs:
       - /tmp

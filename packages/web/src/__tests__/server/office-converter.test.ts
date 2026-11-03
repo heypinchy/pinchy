@@ -10,10 +10,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+
+import { sidecarConverter } from "@/lib/knowledge/office-converter-sidecar";
 
 const WEB_ROOT = resolve(__dirname, "../../..");
 
@@ -88,5 +91,36 @@ describe("office-converter entrypoint", () => {
 
     expect(code).toBe(0);
     expect(await health()).toBe(0);
+  });
+
+  it("leaves what a conversion writes group-writable, so the web process can clean up after it", async () => {
+    // The converter runs as its own uid, in the web process's group. A PDF it
+    // writes with the default umask (022) could be read but not removed by
+    // that group from a directory the converter created.
+    const stub = join(spool, "soffice-stub.sh");
+    writeFileSync(
+      stub,
+      `#!/bin/sh\nwhile [ "$1" != "--outdir" ]; do shift; done\nmkdir "$2/sub"\necho pdf > "$2/0.pdf"\n`
+    );
+    chmodSync(stub, 0o755);
+    child = start({ KB_OFFICE_SPOOL_DIR: spool, KB_SOFFICE_BIN: stub });
+    const deadline = Date.now() + 15_000;
+    while ((await health()) !== 200 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    const converter = sidecarConverter(spool);
+    const dir = await converter.createStagingDir();
+    await writeFile(join(dir, "in", "0.docx"), "bytes");
+    const result = await converter.runConverter({
+      inputs: [join(dir, "in", "0.docx")],
+      outDir: join(dir, "out"),
+      profileDir: join(dir, "profile"),
+      timeoutMs: 10_000,
+    });
+
+    expect(result.code).toBe(0);
+    expect(statSync(join(dir, "out", "0.pdf")).mode & 0o070).toBe(0o060);
+    expect(statSync(join(dir, "out", "sub")).mode & 0o070).toBe(0o070);
   });
 });

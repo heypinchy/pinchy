@@ -17,7 +17,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { constants as fsConstants, mkdtempSync, rmSync } from "node:fs";
-import { mkdir, open, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
@@ -990,6 +999,71 @@ describe("the word-count oracle's markup ceiling (fourth review, PR #1243)", () 
       })
     );
     expect(await countSourceWordsWithOracle(withPhoto)).toBe(3);
+  });
+});
+
+describe("a batch shared with a converter that runs as another user", () => {
+  const checked = (contentHash: string) => async () => ({
+    data: Buffer.from("CHECKED COPY"),
+    relationshipsRemoved: 0,
+    altChunksRemoved: 0,
+    rtfGroupsRemoved: 0,
+    contentHash,
+  });
+
+  it("creates each staged input exclusively, never writing through an entry already in its place", async () => {
+    // Inside the spool another process can create entries. Whatever sits at
+    // a staged name before the copy is written is refused, not followed.
+    const source = await corpusFile("a.docx", "ORIGINAL");
+    const elsewhere = join(tmpRoot, "elsewhere.docx");
+    await writeFile(elsewhere, "UNTOUCHED");
+    const staging = join(tmpRoot, "staging");
+    const converter = fakeConverter({ outputs: {} });
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(converter, {
+        prepareSource: checked("1".repeat(64)),
+        createStagingDir: async () => {
+          await mkdir(join(staging, "in"), { recursive: true });
+          await symlink(elsewhere, join(staging, "in", "0.docx"));
+          return staging;
+        },
+      })
+    );
+
+    expect(outcomes[0]).toMatchObject({ status: "failed" });
+    expect(outcomes[0].reason).toMatch(/could not stage source/);
+    expect(await readFile(elsewhere, "utf8")).toBe("UNTOUCHED");
+    expect(converter.calls).toHaveLength(0);
+  });
+
+  it("keeps a conversion that worked when the converter left something it cannot remove", async () => {
+    // The converter owns what it writes. A directory of its own that the web
+    // process cannot enter must cost a leftover, not the run's results.
+    const source = await corpusFile("a.docx", "x");
+    let trap = "";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const run: RunConverter = async (call) => {
+      await writeFile(join(call.outDir, "0.pdf"), "%PDF-1.4\nconverted words\n");
+      trap = join(call.outDir, "trap");
+      await mkdir(trap);
+      await writeFile(join(trap, "stuck"), "x");
+      await chmod(trap, 0o500);
+      return { code: 0, signal: null, stderr: "" };
+    };
+    try {
+      const outcomes = await convertOfficeFiles(
+        [source],
+        deps({ run, calls: [] }, { prepareSource: checked("2".repeat(64)) })
+      );
+
+      expect(outcomes[0].status).toBe("converted");
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/could not remove the staged batch/));
+    } finally {
+      warn.mockRestore();
+      if (trap) await chmod(trap, 0o700);
+    }
   });
 });
 

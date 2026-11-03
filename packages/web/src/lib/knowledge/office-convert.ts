@@ -380,7 +380,10 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
               `[kb-office] ${item.absPath}: cut ${prepared.altChunksRemoved} altChunk(s) — content embedded in another format is not indexed`
             );
           }
-          await writeFile(staged, prepared.data);
+          // Exclusive create: in the sidecar's spool another process may make
+          // entries, and whatever already sits at this name is refused, never
+          // written through.
+          await writeFile(staged, prepared.data, { flag: "wx" });
           // NOT the hash from the run's first read of the file: that read and
           // this one can see different bytes, and the artifact must be filed
           // under the content it was converted from.
@@ -435,7 +438,12 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
 
     return outcomes;
   } finally {
-    await rm(stagingDir, { recursive: true, force: true });
+    // The converter owns what it wrote into the batch. Should it leave
+    // something this process cannot remove, that costs a leftover in the
+    // spool, not the batch's results.
+    await rm(stagingDir, { recursive: true, force: true }).catch((err: unknown) => {
+      console.warn(`[kb-office] could not remove the staged batch ${stagingDir}: ${reasonOf(err)}`);
+    });
   }
 }
 

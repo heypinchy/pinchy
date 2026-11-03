@@ -1076,8 +1076,9 @@ jobs:
           # with the sidecar stopped, the same conversion must come back
           # `infrastructure` — if the web container quietly converted on its
           # own, LibreOffice would be back next to the secrets and nothing else
-          # would notice. Run as the pinchy user: the converter is uid 999 too
-          # and must be able to write into the batch.
+          # would notice. Run as the pinchy user, like the web process: the
+          # converter (its own uid, pinchy's group) writes into the batch
+          # through the modes that user's batches carry.
           wait_converter() {
             for i in $(seq 1 30); do
               [ "$(docker compose ps office-converter --format '{{.Health}}')" = "healthy" ] && return 0

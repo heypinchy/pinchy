@@ -2,8 +2,8 @@
  * Converts one small Word document through the knowledge base's real
  * conversion path — the one ingest uses — and reports what came back.
  *
- * Run inside a running `pinchy` container, as the pinchy user (the converter
- * runs as the same uid and must be able to write into the batch):
+ * Run inside a running `pinchy` container, as the pinchy user — the user the
+ * web process stages batches as, whose group the converter writes through:
  *
  *   docker compose exec -T --user pinchy pinchy \
  *     node --import tsx scripts/check-office-converter.ts --expect converted

@@ -30,8 +30,47 @@ A separate Compose service, `office-converter`, runs `soffice`:
 | volumes             | `pinchy-office-spool` only             | No `/openclaw-config`, no secrets, no `/data`, no artifact store.           |
 | `environment`       | none                                   | Nothing secret to inherit.                                                  |
 | `read_only`         | `true` (+ tmpfs `/tmp`)                | A compromised converter cannot persist anything in the container.           |
-| `cap_drop` / `user` | `ALL` / `999:999`, `no-new-privileges` | No root, no capabilities.                                                   |
+| `cap_drop` / `user` | `ALL` / `998:999`, `no-new-privileges` | No root, no capabilities, and not the web process's uid (see below).        |
 | image               | the **Pinchy image**, other entrypoint | See below.                                                                  |
+| `init`              | `true`                                 | Reaps what a killed conversion leaves; makes orphans recognisable.          |
+
+### Its own uid, the web process's group
+
+The converter runs as `pinchy-office` (uid 998), in the `pinchy` group (gid
+999); the web process is `pinchy` (uid 999). With one shared uid every mode in
+the spool would be meaningless: the converter could rewrite a staged input
+between the preflight and the conversion, rename another batch, or replace
+anything the web process reads back. With its own uid the web process owns the
+spool and every batch directory, and the group grants exactly what the
+converter needs:
+
+| Path                     | Mode   | Converter can                                            |
+| ------------------------ | ------ | -------------------------------------------------------- |
+| `<spool>`                | `1770` | create (and replace) its own socket; not touch a batch   |
+| `<spool>/<uuid>`         | `0750` | enter and list; not create, rename or remove anything    |
+| `<spool>/<uuid>/in`      | `0750` | read the staged copies; not change or replace them       |
+| `<spool>/<uuid>/out`     | `1770` | write the PDFs; remove only what it wrote                |
+| `<spool>/<uuid>/profile` | `1770` | write its LibreOffice profile; remove only what it wrote |
+| `<spool>/converter.sock` | `0660` | (its own) — the web process connects through the group   |
+
+The modes are set with `chmod` after `mkdir`, since the process umask would cut
+a mode passed to `mkdir`. The image creates the spool `1770`, and a fresh named
+volume copies that mode (checked); `entrypoint.sh` sets it again on every start
+for a volume that already exists, and removes a socket a converter of an older
+build left under another uid, which the converter could not replace in a sticky
+directory. Staged inputs are written with exclusive create (`wx`), so nothing
+already at a staged name is ever written through.
+
+The converter runs with umask `007`, so its output is group-writable, and it
+empties `profile/` itself after each batch (LibreOffice picks the modes of the
+directories it creates there). The web process removes the batch afterwards;
+should the converter leave something it cannot remove, that costs a leftover
+in the spool and a warning, not the batch's results.
+
+Verified against the real image, as the two uids: the converter's
+`mv`/`rm` of a batch, of a staged input and of a file the web process put in
+`out/` fail; writing `in/` fails; writing `out/` works; the web process
+converts a document through the sidecar and removes the whole batch.
 
 ### Why the Pinchy image and not a new one
 
@@ -64,7 +103,8 @@ containers that mount the spool.
 3. The sidecar validates the request (uuid, `<n>.<office ext>` names, bounded
    timeout) and derives every path itself — it never takes an absolute path
    from the request — then writes the locked profile and runs `soffice`, exactly
-   the code that ran in-process before (`office-soffice.ts`).
+   the code that ran in-process before (`office-soffice.ts`). Afterwards it
+   empties the profile and checks that nothing it ran is still running (below).
 4. Response: `{code, signal, stderr, timedOut}` — the existing `ConverterResult`.
    OOM and timeouts keep their meaning: the sidecar reports the SIGKILL it saw,
    and a sidecar that dies mid-request is a connection error → `infrastructure`.
@@ -88,6 +128,19 @@ business, not the store's.
   embedder. The OOM reason names that variable.
 - **Crash leftovers in the spool** are pruned after 24 h when the next batch is
   staged (a batch's own budget is minutes).
+- **A process outlives its batch** (a group kill that missed one, something that
+  moved out of its group): it could still write into the batch the web process
+  is about to read, or into the next one. After every batch the sidecar reads
+  `/proc` for orphans — processes whose parent is the init (`init: true`) and
+  that are not the server — with a two-second grace for one on its way out. If
+  one is left, the batch is answered with an error (`infrastructure`, retried
+  on the next run) and the sidecar exits; the restart policy brings up a clean
+  container. The server's own children are not counted: `soffice` has exited
+  by the time a batch answers, and tsx keeps an `esbuild` child for the
+  server's whole life. Processes `docker exec` starts (the healthcheck) have no
+  parent inside the container and are not counted either. Verified in the
+  image: a planted orphan turns the next batch into `infrastructure` and one
+  restart; the batch after converts.
 
 ### What stays in the web container
 
@@ -104,11 +157,15 @@ Nothing secret, but not nothing:
   `node_modules`, the embedding model, `/etc`. The paths the web container
   mounts config, secrets, workspaces and the corpus at exist only as the
   image's empty mountpoints. The canary asserts that.
-- **The spool** — its own batch, and in principle any other batch staged at
-  the same moment. Ingest converts one batch at a time per instance (one
-  index job per org, sequential batches), and a batch directory is a random
-  UUID a document cannot know. A `file://` reference into the spool can
-  therefore only reach the document's own staged copy.
+- **The spool** — read-only, except for what it writes itself. It can read
+  its own batch's staged copies and, in principle, those of another batch
+  staged at the same moment; it cannot change, replace, rename or remove any
+  of them, nor anything else the web process put there. Ingest converts one
+  batch at a time per instance (one index job per org, sequential batches),
+  and a batch directory is a random UUID a document cannot know, so a
+  `file://` reference into the spool can in practice only reach the
+  document's own staged copy. What it writes is limited to `out/` and
+  `profile/` of a batch, and its socket.
 
 The #1243 review found a reference the profile does not stop: an INTERNAL
 `aFChunk` relationship. With this LibreOffice the HTML-chunk form does not
@@ -129,8 +186,10 @@ leaks, the shipped service converts the same documents with nothing.
 - `docker-smoke` also converts a document through the **running** production
   stack, stops the sidecar and proves the next conversion becomes
   `infrastructure` — i.e. the web container really does not convert on its own.
-- Unit tests pin the protocol (both sides), the default wiring, the `EXDEV`
-  commit, and a Compose drift guard pins the service's isolation properties.
+- Unit tests pin the protocol (both sides), the batch modes, the socket mode,
+  the leftover check, the default wiring, the `EXDEV` commit, and a Compose
+  drift guard pins the service's isolation properties — the separate uid and
+  shared gid, and the spool's mode in the image and the entrypoint among them.
 
 ## Not done
 
