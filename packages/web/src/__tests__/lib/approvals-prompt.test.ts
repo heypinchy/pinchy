@@ -5,6 +5,7 @@ import {
   PROMPT_HOST_MAX,
 } from "@/lib/approvals/prompt";
 import { buildApprovalPrompt } from "@/test-helpers/approvals";
+import { inStoredOrderPlain } from "@/lib/approvals/display";
 import { makeRefResolver } from "@/lib/approvals/call-models";
 // pinchy-odoo's own encoder, so the ref below is a real one — see
 // call-models.test.ts for why this crosses the package boundary.
@@ -510,6 +511,23 @@ describe("buildApprovalPrompt", () => {
     expect(description).toBe(
       'Download and read content from web pages — url: "https://evil.com/x"'
     );
+  });
+
+  // A host named as written can hold right-to-left letters. Printed bare,
+  // `xn--a.שלום.2024` and `xn--a.2024.שלום` draw alike; in stored order, as
+  // the card draws them, they do not.
+  it("names a host with right-to-left letters in stored order", () => {
+    for (const domain of [
+      "xn--a.\u05E9\u05DC\u05D5\u05DD.2024",
+      "xn--a.2024.\u05E9\u05DC\u05D5\u05DD",
+    ]) {
+      const { description } = promptFor("odoo_create", {
+        model: "res.partner",
+        values: { comment: "x".repeat(400), email: `boss@${domain}` },
+      });
+      expect(description).toContain(inStoredOrderPlain(`"${domain}"`));
+      expect(description).toContain("\u2066\u202D");
+    }
   });
 
   // A host is named by its end; the cut counts characters, not UTF-16

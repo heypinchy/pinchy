@@ -122,7 +122,11 @@ function endOf(text: string, max: number): string {
  * domain it reaches is. Empty when it reaches none.
  */
 function reachesClause(hosts: string[]): string {
-  const named = [...new Set(hosts)].map((host) => quoted(endOf(host, PROMPT_HOST_MAX)));
+  // In stored order, as the card draws a host: a host named as written can
+  // hold right-to-left letters, and printed bare two different ones draw alike.
+  const named = [...new Set(hosts)].map((host) =>
+    inStoredOrderPlain(quoted(endOf(host, PROMPT_HOST_MAX)))
+  );
   return named.length > 0 ? `reaches ${named.join(", ")} — ` : "";
 }
 
