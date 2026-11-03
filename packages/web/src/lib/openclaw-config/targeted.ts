@@ -343,7 +343,21 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   let existing: Record<string, unknown>;
   try {
     existing = readExistingConfig();
-  } catch {
+  } catch (err) {
+    // EACCES means the file exists but is unreadable right now (OpenClaw's
+    // 0600 restart-write window). Seeding onto `{}` would replace every field
+    // the file carries — agents, models, plugins, secrets, the gateway token —
+    // with these overrides. Skip; the next boot (or regenerate) heals it. Same
+    // defence as seedGatewayTokenIfMissing.
+    if ((err as NodeJS.ErrnoException)?.code === "EACCES") {
+      console.error(
+        "[openclaw-config] seedRestartClassOverridesIfMissing skipped: openclaw.json " +
+          "is currently EACCES (likely OC's 0600 restart-write race). Skipping rather " +
+          "than clobbering existing state."
+      );
+      return false;
+    }
+    // ENOENT / parse-error means a true cold start with no usable file.
     existing = {};
   }
 

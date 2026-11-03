@@ -28,6 +28,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { OPENCLAW_MEDIA_TTL_HOURS } from "@/lib/openclaw-config/paths";
 
 describe("config/openclaw.json (baked-in config)", () => {
   let config: Record<string, unknown>;
@@ -102,6 +103,6 @@ describe("config/openclaw.json (baked-in config)", () => {
     // in-process gateway restart that aborts the run in flight.
     const media = config.media as Record<string, unknown> | undefined;
     expect(media, "config.media must exist").toBeDefined();
-    expect(media!.ttlHours).toBe(48);
+    expect(media!.ttlHours).toBe(OPENCLAW_MEDIA_TTL_HOURS);
   });
 });

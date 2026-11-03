@@ -5080,7 +5080,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
     mockedExistsSync.mockReturnValue(true);
   });
 
-  it("writes overrides when the file is empty / missing all four fields", () => {
+  it("writes every override when the file is empty / missing", () => {
     // Bind-mount-empty scenario: e.g. Pinchy on the host writing into
     // /tmp/pinchy-integration-openclaw before OC's first start, where the
     // bind-mount target doesn't carry the image's baked-in config.
@@ -5144,6 +5144,85 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(changed).toBe(true);
     const written = JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1]));
     expect(written.media).toEqual({ maxBytes: 1024, ttlHours: 48 });
+  });
+
+  // One fixture per guard condition: every override correct except one. Each row
+  // fails if its condition is dropped from the seed's skip check — a fixture
+  // that misses two fields would stay green with either condition gone.
+  const allOverridesCorrect = () => ({
+    gateway: {
+      mode: "local",
+      bind: "lan",
+      controlUi: {
+        enabled: false,
+        allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+      },
+      terminal: { enabled: false },
+    },
+    discovery: { mdns: { mode: "off" } },
+    update: { checkOnStart: false },
+    canvasHost: { enabled: false },
+    media: { ttlHours: 48 },
+  });
+  type Fixture = ReturnType<typeof allOverridesCorrect>;
+  const onlyOneOverrideOff: Array<{
+    field: string;
+    breakIt: (cfg: Fixture) => void;
+    expectFixed: (written: Fixture) => void;
+  }> = [
+    {
+      field: "gateway.mode (missing)",
+      breakIt: (c) => delete (c.gateway as Partial<Fixture["gateway"]>).mode,
+      expectFixed: (w) => expect(w.gateway.mode).toBe("local"),
+    },
+    {
+      field: "gateway.bind",
+      breakIt: (c) => (c.gateway.bind = "loopback"),
+      expectFixed: (w) => expect(w.gateway.bind).toBe("lan"),
+    },
+    {
+      field: "gateway.controlUi.enabled",
+      breakIt: (c) => (c.gateway.controlUi.enabled = true),
+      expectFixed: (w) => expect(w.gateway.controlUi.enabled).toBe(false),
+    },
+    {
+      field: "discovery.mdns.mode",
+      breakIt: (c) => (c.discovery.mdns.mode = "auto"),
+      expectFixed: (w) => expect(w.discovery.mdns.mode).toBe("off"),
+    },
+    {
+      field: "update.checkOnStart",
+      breakIt: (c) => (c.update.checkOnStart = true),
+      expectFixed: (w) => expect(w.update.checkOnStart).toBe(false),
+    },
+    {
+      field: "canvasHost.enabled",
+      breakIt: (c) => (c.canvasHost.enabled = true),
+      expectFixed: (w) => expect(w.canvasHost.enabled).toBe(false),
+    },
+  ];
+  for (const row of onlyOneOverrideOff) {
+    it(`writes when only ${row.field} is off`, () => {
+      const existing = allOverridesCorrect();
+      row.breakIt(existing);
+      mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+      expect(seedRestartClassOverridesIfMissing()).toBe(true);
+      row.expectFixed(JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1])));
+    });
+  }
+
+  it("refuses to seed (no write) when openclaw.json is EACCES", () => {
+    // readExistingConfig throws on a persistent EACCES (OpenClaw's 0600
+    // restart-write window) precisely so callers don't treat the file as empty:
+    // writing the overrides onto `{}` would replace agents, models, plugins,
+    // secrets and the gateway token with seven fields.
+    mockedReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
+
+    expect(seedRestartClassOverridesIfMissing()).toBe(false);
+    expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
   });
 
   it("returns false (no write) when file already has all overrides — production case", () => {
@@ -5381,15 +5460,25 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // startup writes nothing to it (2026.7.1: `loadGatewayStartupConfigSnapshot`
     // never persists, and an empty file stops it with "existing config is missing
     // gateway.mode"), so the seeded file IS the baseline its first reload diffs.
+    //
+    // All four converge on the same seeded baseline — that convergence is the
+    // point. Each case still guards something different: the pre-media one is
+    // the only case that fails if the seed stops adding `media`, the baked one
+    // pins config/openclaw.json to the seed.
     const startingFiles: Array<{
       name: string;
       file: () => Promise<Record<string, unknown> | null>;
+      expectNoSeedWrite?: boolean;
     }> = [
       // A production-image fresh install: pinchy mounts the shared volume first,
       // so the OpenClaw image's baked file never reaches it, and entrypoint.sh
       // writes its minimal seed. CI run 41569393728 started from this.
       { name: "entrypoint.sh's minimal seed (production image)", file: readEntrypointSeed },
-      { name: "the baked config/openclaw.json (image copy-up)", file: readBaked },
+      {
+        name: "the baked config/openclaw.json (image copy-up)",
+        file: readBaked,
+        expectNoSeedWrite: true,
+      },
       // The dev image and a host-run Pinchy have no entrypoint seed.
       { name: "no openclaw.json (dev image / host-run Pinchy)", file: async () => null },
       {
@@ -5436,8 +5525,11 @@ describe("seedRestartClassOverridesIfMissing", () => {
             if (write) onDisk = String(write[1]);
             mockedWriteFileSync.mockClear();
           };
-          seedRestartClassOverridesIfMissing();
+          const seedWrote = seedRestartClassOverridesIfMissing();
           persistSeedWrite();
+          // The baked file must already be what the seed would produce, or the
+          // two have drifted apart.
+          if (start.expectNoSeedWrite) expect(seedWrote).toBe(false);
           await seedGatewayTokenIfMissing();
           persistSeedWrite();
           const baseline = JSON.parse(onDisk ?? "{}") as Record<string, unknown>;
