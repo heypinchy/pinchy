@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -56,6 +56,7 @@ describe("approval card placement", () => {
     );
 
     await screen.findByText(/needs your confirmation/i);
+    fireEvent.click(screen.getByRole("button", { name: /review/i }));
     expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
   });
 
@@ -165,8 +166,45 @@ describe("approval card placement", () => {
       bothSurfaces("a1");
 
       await screen.findByText(/Odoo needs your confirmation/i);
+      expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: /review .* for Smithers/i }));
       expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
       expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(1);
+
+      fireEvent.click(screen.getByRole("button", { name: /review .* for Odoo/i }));
+      expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
+      expect(screen.getByText("x")).toBeInTheDocument();
+      expect(screen.queryByText("recordId")).toBeNull();
+    });
+
+    // A newer confirmation in the open thread must not take over from the card
+    // the person is reading in the corner: its Approve would land where theirs was.
+    it("keeps the corner card open when a newer confirmation arrives in the thread", async () => {
+      const corner = approval({
+        id: "req-2",
+        agentId: "other",
+        agentName: "Odoo",
+        argsSummary: { x: 1 },
+      });
+      fetchPendingApprovals.mockResolvedValue({ approvals: [corner] });
+
+      bothSurfaces("a1");
+
+      await screen.findByText(/Odoo needs your confirmation/i);
+      fireEvent.click(screen.getByRole("button", { name: /review/i }));
+      const approve = screen.getByRole("button", { name: /approve/i });
+
+      fetchPendingApprovals.mockResolvedValue({ approvals: [approval(), corner] });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await screen.findByText(/Smithers needs your confirmation/i);
+
+      expect(screen.getByRole("button", { name: /approve/i })).toBe(approve);
+      expect(screen.getByText("x")).toBeInTheDocument();
+      const thread = screen
+        .getAllByRole("region", { name: /pending approvals/i })
+        .find((region) => within(region).queryByText(/Smithers/));
+      expect(within(thread!).getByRole("button", { name: /review/i })).toBeInTheDocument();
     });
   });
 });

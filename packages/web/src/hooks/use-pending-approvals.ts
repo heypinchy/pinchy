@@ -27,9 +27,9 @@ const POLL_MS = 5000;
 let snapshot: PendingApproval[] = [];
 const EMPTY: PendingApproval[] = [];
 /**
- * The card the person asked to review. Shared like the list: the thread and
- * the corner are one screen, and together they draw one card's arguments at a
- * time (`openId`).
+ * The card the person opened with its Review button. Shared like the list: the
+ * thread and the corner are one screen, and together they draw one card's
+ * arguments at a time (`openId`).
  */
 let chosen: string | null = null;
 const listeners = new Set<() => void>();
@@ -100,11 +100,16 @@ export interface PendingApprovalsView {
   approvals: PendingApproval[];
   /**
    * The one card whose arguments and Approve/Deny are drawn; every other card
-   * is a line with a button to review it. The card the person chose while it
-   * waits, else the first listed — the newest. One card's body is bounded (DRAW_BUDGET),
-   * a stack of them is not: a person may have dozens waiting across agents,
-   * and twenty at that bound took Chromium 1.7–1.8 s to draw and WebKit 3.5–3.7 s.
-   * Nothing can be approved unseen — only the open card has the buttons.
+   * is a line with a button to review it. One card's body is bounded
+   * (DRAW_BUDGET), a stack of them is not: a person may have dozens waiting
+   * across agents, and twenty at that bound took Chromium 1.7–1.8 s to draw
+   * and WebKit 3.5–3.7 s.
+   *
+   * It is the card the person opened, while it waits — and otherwise none.
+   * Nothing opens a card on its own: not a newer one arriving, not deciding
+   * the open one, not one decided in another tab. A card opened by anything
+   * but the person's own click would draw its Approve where they were about
+   * to click something else.
    */
   openId: string | null;
   open: (id: string) => void;
@@ -124,7 +129,7 @@ export function usePendingApprovals(): PendingApprovalsView {
     () => chosen,
     () => null
   );
-  const openId = approvals.some((a) => a.id === picked) ? picked : (approvals[0]?.id ?? null);
+  const openId = approvals.some((a) => a.id === picked) ? picked : null;
   const [busy, setBusy] = useState<string | null>(null);
 
   const decide = useCallback(async (approval: PendingApproval, decision: "approve" | "deny") => {
@@ -134,6 +139,7 @@ export function usePendingApprovals(): PendingApprovalsView {
       // Off the list either way: the row is settled, so a second click can
       // only 409 — leaving a card that looks actionable would be its own lie.
       snapshot = snapshot.filter((a) => a.id !== approval.id);
+      if (chosen === approval.id) chosen = null;
       emit();
       if (!result.resumed) {
         toast.error(result.resumeError ?? "Your decision did not reach the agent.");

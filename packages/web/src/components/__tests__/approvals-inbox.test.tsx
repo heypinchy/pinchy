@@ -12,6 +12,7 @@ vi.mock("@/lib/approvals/client", () => ({
 }));
 
 import { ApprovalsInbox } from "../approvals-inbox";
+import { ARM_MS } from "../approval-card";
 
 const pending = {
   id: "req-1",
@@ -24,6 +25,17 @@ const pending = {
   expiresAt: "",
 };
 
+/**
+ * Opens a card the way the person does — with its Review button — and waits
+ * until its decision is offered.
+ */
+async function review(index = 0) {
+  fireEvent.click(screen.getAllByRole("button", { name: /review/i }).at(index)!);
+  const approve = screen.getByRole("button", { name: /approve/i });
+  await waitFor(() => expect(approve).toBeEnabled(), { timeout: ARM_MS + 1000 });
+  return approve;
+}
+
 describe("ApprovalsInbox", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -34,11 +46,15 @@ describe("ApprovalsInbox", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("shows a pending card with the tool and a summary", async () => {
+  it("shows a pending card with the tool, and its summary once asked to", async () => {
     fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
     render(<ApprovalsInbox />);
     await screen.findByText(/Smithers needs your confirmation/i);
     expect(screen.getByText(/odoo_write/)).toBeInTheDocument();
+    expect(screen.queryByText("recordId")).toBeNull();
+    expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+
+    await review();
     expect(screen.getByText("recordId")).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
   });
@@ -52,7 +68,9 @@ describe("ApprovalsInbox", () => {
     const { argsSummary: _held, ...withoutSummary } = pending;
     fetchPendingApprovals.mockResolvedValue({ approvals: [withoutSummary] });
     render(<ApprovalsInbox />);
-    await screen.findByText("recordId");
+    await screen.findByText(/needs your confirmation/i);
+    fireEvent.click(screen.getByRole("button", { name: /review/i }));
+    expect(screen.getByText("recordId")).toBeInTheDocument();
     expect(fetchPendingApprovals).toHaveBeenLastCalledWith([]);
 
     document.dispatchEvent(new Event("visibilitychange"));
@@ -80,7 +98,9 @@ describe("ApprovalsInbox", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(2));
     expect(fetchPendingApprovals).toHaveBeenLastCalledWith([]);
-    await screen.findByText("recordId");
+    await screen.findByText(/needs your confirmation/i);
+    fireEvent.click(screen.getByRole("button", { name: /review/i }));
+    expect(screen.getByText("recordId")).toBeInTheDocument();
   });
 
   // A card settled between the route's two reads came back with `argsSummary:
@@ -100,7 +120,9 @@ describe("ApprovalsInbox", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(2));
     expect(fetchPendingApprovals).toHaveBeenLastCalledWith([]);
-    await screen.findByText("recordId");
+    await screen.findByText(/needs your confirmation/i);
+    fireEvent.click(screen.getByRole("button", { name: /review/i }));
+    expect(screen.getByText("recordId")).toBeInTheDocument();
   });
 
   it("approves a request and removes it from the list", async () => {
@@ -109,7 +131,7 @@ describe("ApprovalsInbox", () => {
     render(<ApprovalsInbox />);
     await screen.findByText(/needs your confirmation/i);
 
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+    fireEvent.click(await review());
     await waitFor(() =>
       expect(submitApprovalDecision).toHaveBeenCalledWith("req-1", { decision: "approve" })
     );
@@ -126,7 +148,7 @@ describe("ApprovalsInbox", () => {
     render(<ApprovalsInbox />);
     await screen.findByText(/needs your confirmation/i);
 
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+    fireEvent.click(await review());
 
     const { toast } = await import("sonner");
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
@@ -148,7 +170,7 @@ describe("ApprovalsInbox", () => {
     render(<ApprovalsInbox />);
     await screen.findByText(/needs your confirmation/i);
 
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+    fireEvent.click(await review());
 
     const { toast } = await import("sonner");
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
@@ -182,7 +204,11 @@ describe("ApprovalsInbox", () => {
   // cards waiting, and drawn all at once twenty at that bound took Chromium
   // 1.8 s and WebKit 3.7 s. So the screen draws one card's arguments and its
   // Approve/Deny at a time; every other card is a line naming the agent and
-  // the tool, with a button to review it. Nothing is approved unseen.
+  // the tool, with a button to review it.
+  //
+  // Which card is open is the person's choice alone. A card that opened by
+  // itself — the newest, or the next once one is decided — would put its
+  // Approve on the pixels where the person was about to click another card's.
   describe("with many confirmations waiting", () => {
     const many = Array.from({ length: 20 }, (_, i) => ({
       ...pending,
@@ -191,13 +217,33 @@ describe("ApprovalsInbox", () => {
       agentName: `Agent ${i}`,
       argsSummary: { [`field${i}`]: `value ${i}` },
     }));
+    const [newer, older] = many;
 
-    it("draws the arguments and the decision of one card at a time", async () => {
+    /** The next poll answers with `approvals`. */
+    async function poll(approvals: typeof many) {
+      const calls = fetchPendingApprovals.mock.calls.length;
+      fetchPendingApprovals.mockResolvedValue({ approvals });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(calls + 1));
+    }
+
+    it("opens no card by itself", async () => {
       fetchPendingApprovals.mockResolvedValue({ approvals: many });
       render(<ApprovalsInbox />);
       await screen.findByText(/Agent 0 needs your confirmation/i);
 
       expect(screen.getAllByText(/needs your confirmation/i)).toHaveLength(20);
+      for (let i = 0; i < 20; i++) expect(screen.queryByText(`field${i}`)).toBeNull();
+      expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+      expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(20);
+    });
+
+    it("draws the arguments and the decision of one card at a time", async () => {
+      fetchPendingApprovals.mockResolvedValue({ approvals: many });
+      render(<ApprovalsInbox />);
+      await screen.findByText(/Agent 0 needs your confirmation/i);
+      await review(0);
+
       expect(screen.getByText("field0")).toBeInTheDocument();
       for (let i = 1; i < 20; i++) expect(screen.queryByText(`field${i}`)).toBeNull();
       expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
@@ -209,29 +255,71 @@ describe("ApprovalsInbox", () => {
       fetchPendingApprovals.mockResolvedValue({ approvals: many });
       submitApprovalDecision.mockResolvedValue({ ok: true, status: "approved", resumed: true });
       render(<ApprovalsInbox />);
-      await screen.findByText("field0");
+      await screen.findByText(/Agent 0 needs your confirmation/i);
+      await review(0);
 
-      fireEvent.click(screen.getAllByRole("button", { name: /review/i })[4]);
+      const approve = await review(4);
       expect(screen.getByText("field5")).toBeInTheDocument();
       expect(screen.queryByText("field0")).toBeNull();
       expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
 
-      fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+      fireEvent.click(approve);
       await waitFor(() =>
         expect(submitApprovalDecision).toHaveBeenCalledWith("req-5", { decision: "approve" })
       );
     });
 
-    it("opens the next card once the open one is decided", async () => {
+    it("keeps the open card open when a newer confirmation arrives", async () => {
+      fetchPendingApprovals.mockResolvedValue({ approvals: [older] });
+      submitApprovalDecision.mockResolvedValue({ ok: true, status: "approved", resumed: true });
+      render(<ApprovalsInbox />);
+      await screen.findByText(/Agent 1 needs your confirmation/i);
+      const approve = await review();
+
+      await poll([newer, older]);
+      await screen.findByText(/Agent 0 needs your confirmation/i);
+      expect(screen.getByText("field1")).toBeInTheDocument();
+      expect(screen.queryByText("field0")).toBeNull();
+      expect(screen.getByRole("button", { name: /approve/i })).toBe(approve);
+      expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(1);
+
+      fireEvent.click(approve);
+      await waitFor(() =>
+        expect(submitApprovalDecision).toHaveBeenCalledWith("req-1", { decision: "approve" })
+      );
+      expect(submitApprovalDecision).toHaveBeenCalledTimes(1);
+    });
+
+    it("opens nothing once the open card is decided, and hands focus to the next card's Review", async () => {
       fetchPendingApprovals.mockResolvedValue({ approvals: many });
       submitApprovalDecision.mockResolvedValue({ ok: true, status: "denied", resumed: true });
       render(<ApprovalsInbox />);
-      await screen.findByText("field0");
+      await screen.findByText(/Agent 0 needs your confirmation/i);
+      await review(0);
 
-      fireEvent.click(screen.getByRole("button", { name: /deny/i }));
-      await screen.findByText("field1");
+      const deny = screen.getByRole("button", { name: /deny/i });
+      deny.focus();
+      fireEvent.click(deny);
+      await waitFor(() => expect(screen.queryByText(/Agent 0 needs/i)).toBeNull());
+
+      expect(screen.queryByText("field1")).toBeNull();
+      expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+      const reviews = screen.getAllByRole("button", { name: /review/i });
+      expect(reviews).toHaveLength(19);
+      await waitFor(() => expect(document.activeElement).toBe(reviews[0]));
+    });
+
+    it("opens nothing when the open card is decided elsewhere", async () => {
+      fetchPendingApprovals.mockResolvedValue({ approvals: [newer, older] });
+      render(<ApprovalsInbox />);
+      await screen.findByText(/Agent 1 needs your confirmation/i);
+      await review(1);
+
+      await poll([newer]);
+      await waitFor(() => expect(screen.queryByText(/Agent 1 needs/i)).toBeNull());
       expect(screen.queryByText("field0")).toBeNull();
-      expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
+      expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+      expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(1);
     });
   });
 
@@ -240,6 +328,7 @@ describe("ApprovalsInbox", () => {
     submitApprovalDecision.mockResolvedValue({ ok: true, status: "denied", resumed: true });
     render(<ApprovalsInbox />);
     await screen.findByText(/needs your confirmation/i);
+    await review();
 
     fireEvent.click(screen.getByRole("button", { name: /deny/i }));
     await waitFor(() =>

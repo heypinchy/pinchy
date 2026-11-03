@@ -1,6 +1,14 @@
 "use client";
 
-import { Fragment, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Button } from "@/components/ui/button";
 import type { PendingApproval } from "@/lib/approvals/client";
 import {
@@ -358,13 +366,26 @@ function ArgFields({ fields }: { fields: Record<string, unknown> }) {
 }
 
 /**
+ * How long a card's details are on screen before its Approve and Deny act.
+ * In the corner the stack is anchored to the bottom, so a card that opens
+ * grows upward and its Approve lands on the pixels its Review button just
+ * held: without this, the second click of a double click on Review would
+ * approve what the card had not yet shown. Operating systems take two clicks
+ * up to 500 ms apart as a double click by default.
+ */
+export const ARM_MS = 1000;
+
+/** A closed card's Review button, which is where focus goes next. */
+const REVIEW = "[data-approval-review]";
+
+/**
  * One pending confirmation, rendered the same whether it sits in the thread
  * that raised it or in the corner (#1132). Only the container differs.
  *
  * Closed (`open={false}`), it names the agent and the tool and offers to
  * review it, and draws none of the arguments and neither Approve nor Deny:
  * the screen draws one card's arguments at a time (`openId` in
- * `use-pending-approvals`), and nothing is decided unseen.
+ * `use-pending-approvals`), and only the person opens one.
  */
 export function ApprovalCard({
   approval,
@@ -379,7 +400,10 @@ export function ApprovalCard({
   open?: boolean;
   onOpen?: () => void;
 }) {
-  const hasArgs = approval.argsSummary && Object.keys(approval.argsSummary).length > 0;
+  const detailsId = useId();
+  // Focus follows a card the person opened, not one drawn open — say, the
+  // open card moving from the corner into its thread when they navigate there.
+  const [reviewed, setReviewed] = useState(false);
   if (!open) {
     return (
       <div className="rounded-lg border bg-background p-3 shadow-lg">
@@ -392,7 +416,13 @@ export function ApprovalCard({
             size="sm"
             variant="outline"
             aria-label={`Review the request to run ${approval.toolName} for ${approval.agentName}`}
-            onClick={onOpen}
+            aria-expanded={false}
+            aria-controls={detailsId}
+            data-approval-review=""
+            onClick={() => {
+              setReviewed(true);
+              onOpen?.();
+            }}
           >
             Review
           </Button>
@@ -401,27 +431,98 @@ export function ApprovalCard({
     );
   }
   return (
-    <div className="rounded-lg border bg-background p-3 shadow-lg">
+    <OpenCard
+      approval={approval}
+      busy={busy}
+      onDecide={onDecide}
+      detailsId={detailsId}
+      takeFocus={reviewed}
+    />
+  );
+}
+
+/**
+ * The open card: its details, and Approve and Deny once those have been on
+ * screen for `ARM_MS`. Mounted afresh each time the card opens, so every
+ * opening waits again.
+ */
+function OpenCard({
+  approval,
+  busy,
+  onDecide,
+  detailsId,
+  takeFocus,
+}: {
+  approval: PendingApproval;
+  busy: boolean;
+  onDecide: (approval: PendingApproval, decision: "approve" | "deny") => void;
+  detailsId: string;
+  takeFocus: boolean;
+}) {
+  const hasArgs = approval.argsSummary && Object.keys(approval.argsSummary).length > 0;
+  const card = useRef<HTMLDivElement>(null);
+  const details = useRef<HTMLDivElement>(null);
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setArmed(true), ARM_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Review unmounts with the closed card, so the focus it held moves to what
+  // it opened instead of falling to the page.
+  useEffect(() => {
+    if (takeFocus) details.current?.focus();
+  }, [takeFocus]);
+
+  // The card leaves once decided — here or in another tab — and with it the
+  // focus on its button (or none: a busy button is disabled, and a browser
+  // drops the focus of a disabled one). Hand it to the next card's Review,
+  // in this list first, rather than to the page. Layout cleanup runs while
+  // the card is still in the document, so it can still see where focus is.
+  useLayoutEffect(() => {
+    const root = card.current;
+    return () => {
+      const focused = document.activeElement;
+      if (focused && focused !== document.body && !root?.contains(focused)) return;
+      const list = root?.closest("[role=region]");
+      const next =
+        list?.querySelector<HTMLElement>(REVIEW) ?? document.querySelector<HTMLElement>(REVIEW);
+      next?.focus();
+    };
+  }, []);
+
+  return (
+    <div ref={card} className="rounded-lg border bg-background p-3 shadow-lg">
       <p className="text-sm font-medium">{approval.agentName} needs your confirmation</p>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Run <span className="font-mono">{approval.toolName}</span>
-        {hasArgs ? " with:" : "?"}
-      </p>
-      {hasArgs ? (
-        <div className="mt-2 max-h-64 overflow-y-auto rounded-md bg-muted/50 p-2 text-sm">
-          <ArgFields fields={approval.argsSummary as Record<string, unknown>} />
-        </div>
-      ) : null}
+      <div
+        ref={details}
+        id={detailsId}
+        role="group"
+        aria-label={`Request to run ${approval.toolName} for ${approval.agentName}`}
+        tabIndex={-1}
+        className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        <p className="mt-1 text-sm text-muted-foreground">
+          Run <span className="font-mono">{approval.toolName}</span>
+          {hasArgs ? " with:" : "?"}
+        </p>
+        {hasArgs ? (
+          <div className="mt-2 max-h-64 overflow-y-auto rounded-md bg-muted/50 p-2 text-sm">
+            <ArgFields fields={approval.argsSummary as Record<string, unknown>} />
+          </div>
+        ) : null}
+      </div>
       <div className="mt-3 flex justify-end gap-2">
         <Button
           size="sm"
           variant="outline"
-          disabled={busy}
+          disabled={busy || !armed}
           onClick={() => onDecide(approval, "deny")}
         >
           Deny
         </Button>
-        <Button size="sm" disabled={busy} onClick={() => onDecide(approval, "approve")}>
+        <Button size="sm" disabled={busy || !armed} onClick={() => onDecide(approval, "approve")}>
           Approve
         </Button>
       </div>

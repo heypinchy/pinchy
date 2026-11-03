@@ -1,9 +1,18 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { cleanup, configure, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
+import {
+  cleanup,
+  configure,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ApprovalCard } from "../approval-card";
+import { ARM_MS, ApprovalCard } from "../approval-card";
 import type { PendingApproval } from "@/lib/approvals/client";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -809,5 +818,72 @@ describe("ApprovalCard shows what will actually run", () => {
     renderCard({ to: "a@b.c" });
     expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
+  });
+});
+
+/**
+ * A card opens where the person clicked: in the corner the stack is anchored
+ * to the bottom, so a card that opens grows upward and its Approve lands on
+ * the pixels its Review button just held. The second click of a double click
+ * on Review must not approve what it has not shown yet.
+ */
+describe("opening a card", () => {
+  const pending = approval({ to: "a@b.c" });
+
+  /** A card the test opens the way the person does — with Review. */
+  function Reviewable({ onDecide }: { onDecide: () => void }) {
+    const [open, setOpen] = useState(false);
+    return (
+      <ApprovalCard
+        approval={pending}
+        busy={false}
+        open={open}
+        onOpen={() => setOpen(true)}
+        onDecide={onDecide}
+      />
+    );
+  }
+
+  it("ignores Approve and Deny until its details have been on screen for a moment", async () => {
+    const onDecide = vi.fn();
+    render(<Reviewable onDecide={onDecide} />);
+    fireEvent.click(screen.getByRole("button", { name: /review/i }));
+
+    const approve = screen.getByRole("button", { name: "Approve" });
+    fireEvent.click(approve);
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+    expect(onDecide).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(approve).toBeEnabled(), { timeout: ARM_MS + 1000 });
+    fireEvent.click(approve);
+    expect(onDecide).toHaveBeenCalledWith(pending, "approve");
+  });
+
+  it("ignores Approve and Deny for a moment on a card drawn open, too", () => {
+    const onDecide = vi.fn();
+    render(<ApprovalCard approval={pending} busy={false} onDecide={onDecide} />);
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
+  it("says what Review opens, and moves focus to what it opened", () => {
+    render(<Reviewable onDecide={vi.fn()} />);
+    const review = screen.getByRole("button", { name: /review/i });
+    expect(review).toHaveAttribute("aria-expanded", "false");
+    const controls = review.getAttribute("aria-controls");
+    expect(controls).toBeTruthy();
+
+    review.focus();
+    fireEvent.click(review);
+
+    const details = screen.getByRole("group", { name: /request to run email_send for smithers/i });
+    expect(details.id).toBe(controls);
+    expect(document.activeElement).toBe(details);
+    expect(within(details).getByText("a@b.c")).toBeInTheDocument();
+  });
+
+  it("does not take focus when it is drawn open without being asked to", () => {
+    render(<ApprovalCard approval={pending} busy={false} onDecide={vi.fn()} />);
+    expect(document.activeElement).toBe(document.body);
   });
 });
