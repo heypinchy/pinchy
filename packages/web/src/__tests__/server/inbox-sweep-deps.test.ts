@@ -84,8 +84,8 @@ describe("createAgentReadinessGate", () => {
   it("reports NOT ready for an agent OpenClaw only found on disk", async () => {
     // While OC's runtime agents.list is empty, `agents.list` lists every agent
     // directory under its state dir — without a name — and the dispatch handler
-    // still rejects those ids. Reading them as ready would claim the email and
-    // fail the run on `unknown agent id`.
+    // still rejects those ids. Reading them as ready would dispatch the already
+    // claimed email into the race and fail the run on `unknown agent id`.
     const client = makeClient({
       agents: {
         list: vi.fn().mockResolvedValue({
