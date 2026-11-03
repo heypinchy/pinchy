@@ -4,6 +4,7 @@ import { withAdmin } from "@/lib/api-auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { parseRequestBody } from "@/lib/api-validation";
 import { listDatabasesSchema } from "@/lib/schemas/integrations";
+import { odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
 
 export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(listDatabasesSchema, request);
@@ -31,9 +32,7 @@ export const POST = withAdmin(async (request) => {
       await response.body?.cancel();
       return NextResponse.json({
         success: false,
-        error:
-          `Odoo answered with a redirect (HTTP ${response.status}), and Pinchy does not ` +
-          "follow redirects. Enter the address Odoo is actually served from.",
+        error: odooRedirectRefusedMessage(response.status),
       });
     }
 

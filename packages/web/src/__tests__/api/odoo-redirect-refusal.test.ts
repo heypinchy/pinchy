@@ -27,6 +27,30 @@ vi.mock("@/lib/integrations/url-validation", () => ({
   validateExternalUrl: async (url: string) => ({ valid: true, url: new URL(url).origin }),
 }));
 
+// The schema-sync route reads a stored connection. Only storage and the
+// auth-state writes are stubbed; the sync itself runs the real odoo-node.
+let storedCredentials: Record<string, unknown> = {};
+vi.mock("@/db", () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: async () => [{ id: "conn-1", type: "odoo", name: "Odoo", credentials: "enc" }],
+      }),
+    }),
+    update: () => ({ set: () => ({ where: async () => undefined }) }),
+  },
+}));
+vi.mock("@/lib/encryption", () => ({
+  decrypt: () => JSON.stringify(storedCredentials),
+  getOrCreateSecret: () => Buffer.alloc(32),
+}));
+const mockSetIntegrationAuthFailed = vi.fn();
+vi.mock("@/lib/integrations/auth-state", () => ({
+  setIntegrationAuthFailed: (...args: unknown[]) => mockSetIntegrationAuthFailed(...args),
+  clearIntegrationAuthError: vi.fn(),
+}));
+vi.mock("@/lib/audit-deferred", () => ({ deferAuditLog: vi.fn() }));
+
 /** A body the admin must never see echoed back: what an internal host answers. */
 const SECRET = "SECRET-METADATA-TOKEN";
 
@@ -80,6 +104,7 @@ afterAll(() => {
 beforeEach(() => {
   internalHits = 0;
   redirectStatus = 307;
+  mockSetIntegrationAuthFailed.mockClear();
   mockGetSession.mockResolvedValue(mockSession());
 });
 
@@ -179,6 +204,57 @@ describe("probeIntegrationCredentials (odoo) against a redirecting Odoo", () => 
       expect(JSON.stringify(result)).not.toContain(SECRET);
     }
   );
+});
+
+// A schema sync does not authenticate first: every model probe meets the
+// redirect. That is one failure of the connection, not missing permissions on
+// each model.
+describe("schema sync against a redirecting Odoo", () => {
+  const credentials = () => ({
+    url: redirecting.origin,
+    db: "prod",
+    login: "admin",
+    apiKey: "key",
+    uid: 2,
+  });
+
+  function expectRedirectNamed(body: { success: boolean; error?: string }, status: number) {
+    expect(internalHits).toBe(0);
+    expect(body.success).toBe(false);
+    expect(body.error).toContain(`HTTP ${status}`);
+    expect(body.error).toMatch(/redirect/i);
+    expect(body.error).not.toMatch(/read access/i);
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+  }
+
+  it.each([302, 307, 308])(
+    "POST /api/integrations/[id]/sync names a %i and does not flag auth_failed",
+    async (status) => {
+      redirectStatus = status;
+      storedCredentials = credentials();
+      const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+
+      const response = await POST(
+        post("/api/integrations/conn-1/sync", {}),
+        routeContext({ connectionId: "conn-1" })
+      );
+
+      expectRedirectNamed(await response.json(), status);
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([302, 307, 308])("POST /api/integrations/sync-preview names a %i", async (status) => {
+    redirectStatus = status;
+    const { POST } = await import("@/app/api/integrations/sync-preview/route");
+
+    const response = await POST(
+      post("/api/integrations/sync-preview", { type: "odoo", credentials: credentials() }),
+      routeContext()
+    );
+
+    expectRedirectNamed(await response.json(), status);
+  });
 });
 
 describe("POST /api/integrations/test-credentials against a non-JSON-RPC answer", () => {

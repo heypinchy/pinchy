@@ -46,6 +46,7 @@ import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 import { resetInsecureMockWarningsForTest } from "@/lib/integrations/insecure-mock-base-url";
+import { odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -318,24 +319,27 @@ describe("probeIntegrationCredentials", () => {
       expect(res.transient).toBeFalsy();
     });
 
-    // An http:// Odoo URL behind Caddy's or Traefik's default HTTP→HTTPS
-    // redirect: odoo-node 0.3.1 refuses to follow it and says so. That is a
-    // URL problem; calling it a bad API key sends the admin to fix the wrong
-    // thing, and a non-transient result flags the connection auth_failed.
+    // An http:// Odoo URL behind a proxy's HTTP→HTTPS redirect (Caddy's
+    // default, common in Traefik setups): odoo-node 0.3.1 refuses to follow it
+    // and says so. That is a URL problem; calling it a bad API key sends the
+    // admin to fix the wrong thing, and a non-transient result flags the
+    // connection auth_failed.
     it.each([
       [
         "a refused redirect",
-        "Odoo answered with a redirect (HTTP 307); enter the address Odoo is served from",
+        "Odoo answered with a redirect (HTTP 307); odoo-node does not follow redirects. " +
+          "Use the address Odoo is actually served from.",
         307,
+        odooRedirectRefusedMessage(307),
       ],
-      ["an HTTP error from a proxy", "HTTP 502: Bad Gateway", 502],
-      ["a network failure", "fetch failed", 0],
-    ])("does not call %s an authentication failure", async (_label, message, code) => {
+      ["an HTTP error from a proxy", "HTTP 502: Bad Gateway", 502, "HTTP 502: Bad Gateway"],
+      ["a network failure", "fetch failed", 0, "fetch failed"],
+    ])("does not call %s an authentication failure", async (_label, message, code, shown) => {
       mockAuthenticate.mockRejectedValue(await realOdooError(message, code));
       const res = await probeIntegrationCredentials("odoo", validOdooCreds);
       if (res.success) throw new Error("expected failure");
       expect(res.reason).not.toMatch(/authentication failed/i);
-      expect(res.reason).toContain(message);
+      expect(res.reason).toContain(shown);
       expect(res.transient).toBe(true);
     });
 

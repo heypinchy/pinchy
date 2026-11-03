@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { OdooError } from "odoo-node";
-import { describeOdooError } from "@/lib/integrations/odoo-error";
+import { describeOdooError, odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
 
 describe("describeOdooError", () => {
   it("passes an Odoo error message through", () => {
@@ -13,6 +13,20 @@ describe("describeOdooError", () => {
     expect(describeOdooError(notJsonRpc)).toBe(
       "Odoo answered with something that is not a JSON-RPC response (HTTP 200, text/html). " +
         "Check that the URL points at the Odoo server itself."
+    );
+  });
+
+  it("says Pinchy refused a redirect, naming the status, as listing databases does", () => {
+    const redirect = new OdooError(
+      "Odoo answered with a redirect (HTTP 308); odoo-node does not follow redirects. " +
+        "Use the address Odoo is actually served from.",
+      308
+    );
+
+    expect(describeOdooError(redirect)).toBe(odooRedirectRefusedMessage(308));
+    expect(odooRedirectRefusedMessage(308)).toBe(
+      "Odoo answered with a redirect (HTTP 308), and Pinchy does not follow redirects. " +
+        "Enter the address Odoo is actually served from — for an http:// URL, usually its https:// address."
     );
   });
 

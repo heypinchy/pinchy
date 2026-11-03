@@ -2,6 +2,18 @@
 const MAX_LENGTH = 300;
 
 /**
+ * What an admin is told when Odoo answered with a redirect. Pinchy follows
+ * none: its URL check reads the address entered, and a 307/308 would re-send
+ * the API key to wherever the redirect points.
+ */
+export function odooRedirectRefusedMessage(status: number | string): string {
+  return (
+    `Odoo answered with a redirect (HTTP ${status}), and Pinchy does not follow redirects. ` +
+    "Enter the address Odoo is actually served from — for an http:// URL, usually its https:// address."
+  );
+}
+
+/**
  * The message an admin is shown when an `odoo-node` call fails.
  *
  * `odoo-node` wraps network failures, HTTP errors (`HTTP 502: Bad Gateway`),
@@ -12,7 +24,9 @@ const MAX_LENGTH = 300;
  * the URL does not point at Odoo — keeping status and content type. A
  * JSON-RPC envelope of the wrong shape (`{"error": {}}`) still escapes as a
  * `TypeError` reading `error.data.message`, which says nothing useful, so it
- * gets the plain sentence alone.
+ * gets the plain sentence alone. odoo-node's refused-redirect message names
+ * the library; the admin gets `odooRedirectRefusedMessage` instead, the same
+ * sentence listing databases shows.
  *
  * Everything else passes through, collapsed to one line and capped, so even
  * an Odoo-shaped error from a misbehaving server cannot fill a toast with a
@@ -28,6 +42,8 @@ export function describeOdooError(err: unknown): string {
   if (notJsonRpc) {
     return `Odoo answered with something that is not a JSON-RPC response ${notJsonRpc[1]}. ${notOdoo}`;
   }
+  const redirect = /^Odoo answered with a redirect \(HTTP (\d{3})\)/.exec(message);
+  if (redirect) return odooRedirectRefusedMessage(redirect[1]);
   if (!message) return "Connection failed";
   return message.length > MAX_LENGTH ? `${message.slice(0, MAX_LENGTH)}…` : message;
 }
@@ -37,10 +53,10 @@ export function describeOdooError(err: unknown): string {
  * never getting an Odoo answer to judge?
  *
  * Only the first is evidence about the credentials. A redirect (odoo-node
- * 0.3.1 refuses to follow one: an http:// URL behind Caddy's or Traefik's
- * default HTTP→HTTPS 307/308 is the common case), an HTTP error from a proxy,
- * a network failure or a non-JSON-RPC answer say nothing about the login or
- * API key — reporting them as an authentication failure sends the admin to
+ * 0.3.1 refuses to follow one: an http:// URL behind a proxy's HTTP→HTTPS
+ * 307/308 — Caddy's default, common in Traefik setups — is the usual case),
+ * an HTTP error from a proxy, a network failure or a non-JSON-RPC answer say
+ * nothing about the login or API key — reporting them as an authentication failure sends the admin to
  * fix the wrong thing, and flags a healthy connection `auth_failed`.
  *
  * odoo-node builds the shapes this reads: a JSON-RPC error from Odoo carries

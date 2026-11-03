@@ -1,5 +1,6 @@
 import { OdooClient } from "odoo-node";
 import { runWithConcurrency } from "@/lib/concurrency";
+import { describeOdooError } from "@/lib/integrations/odoo-error";
 
 /**
  * Curated list of common Odoo models organized by category.
@@ -307,7 +308,9 @@ function isTransientOdooProbeError(error: unknown): boolean {
 /**
  * Fetch schema from an Odoo instance by probing curated models via fields_get().
  * Does NOT require admin/ir.model access — only needs read access on individual models.
- * Models the user cannot access are silently skipped.
+ * Models the user cannot access are silently skipped. When every probe fails
+ * the same way for another reason (a refused redirect, a proxy error), that is
+ * the connection failing, and its described error is returned instead.
  * Retries transient errors (timeouts, rate limits, 5xx) up to MAX_RETRIES times.
  * Limits concurrency to MAX_CONCURRENCY to avoid overwhelming the server.
  * Does NOT save anything — returns the data for the caller to handle.
@@ -340,6 +343,8 @@ export async function fetchOdooSchema(credentials: {
     accessible: boolean;
     access?: AccessRights;
     hadAccessError?: boolean;
+    /** Why the probe failed, when it failed for a reason other than access. */
+    failure?: string;
   };
 
   const tasks = ALL_KNOWN_MODELS.map(({ model, name, category }) => {
@@ -381,12 +386,10 @@ export async function fetchOdooSchema(credentials: {
             // auth_failed) from transient errors.
             return { model, name, category, fields: [], accessible: false, hadAccessError: true };
           }
-          if (!isTransientOdooProbeError(error)) {
+          if (!isTransientOdooProbeError(error) || attempt === MAX_RETRIES) {
             // Non-transient, non-access error — no point in retrying.
-            return { model, name, category, fields: [], accessible: false };
-          }
-          if (attempt === MAX_RETRIES) {
-            return { model, name, category, fields: [], accessible: false };
+            const failure = describeOdooError(error);
+            return { model, name, category, fields: [], accessible: false, failure };
           }
           await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
         }
@@ -400,6 +403,13 @@ export async function fetchOdooSchema(credentials: {
   const accessibleModels = results.filter((r) => r.accessible && r.fields.length > 0);
 
   if (accessibleModels.length === 0) {
+    // Every probe failing the same way is one failure of the connection — a
+    // refused redirect, a proxy error — not missing permissions on each model.
+    const failures = new Set(results.map((r) => r.failure));
+    const [only] = failures;
+    if (failures.size === 1 && only) {
+      return { success: false, error: only, isAuthError: false };
+    }
     const anyAccessError = results.some((r) => r.hadAccessError);
     return {
       success: false,

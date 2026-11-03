@@ -105,6 +105,7 @@ vi.mock("@/lib/integrations/microsoft-refresh", () => ({
 }));
 
 import { NextRequest } from "next/server";
+import { odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
 
 const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
 
@@ -218,9 +219,15 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
     }
 
     it.each([
-      ["a refused redirect", "Odoo answered with a redirect (HTTP 308); …", 308],
-      ["a network failure", "fetch failed", 0],
-    ])("reports %s without flagging auth_failed", async (_label, message, code) => {
+      [
+        "a refused redirect",
+        "Odoo answered with a redirect (HTTP 308); odoo-node does not follow redirects. " +
+          "Use the address Odoo is actually served from.",
+        308,
+        odooRedirectRefusedMessage(308),
+      ],
+      ["a network failure", "fetch failed", 0, "fetch failed"],
+    ])("reports %s without flagging auth_failed", async (_label, message, code, shown) => {
       mockOdooAuthenticate.mockRejectedValue(await realOdooError(message, code));
       const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
 
@@ -231,7 +238,7 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       const body = await response.json();
 
       expect(body.success).toBe(false);
-      expect(body.error).toContain(message);
+      expect(body.error).toContain(shown);
       expect(body.error).not.toMatch(/authentication failed/i);
       expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
       expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
