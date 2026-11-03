@@ -10,12 +10,11 @@
  * stopped through buildShutdownSteps so SIGTERM doesn't hang. That single-
  * container assumption is also what makes requeueOrphanedIndexJobs() safe at
  * boot — see its doc comment — and clearStagedBatches(), which frees the disk
- * an interrupted Office conversion left behind. After an update that changed
- * how Office documents are converted, the worker queues the reindex that
- * converts the documents indexed the old way again (office-format-upgrade.ts)
- * — at boot, and hourly after — and every boot and every finished run removes
- * an artifact format directory no document is read from any more
- * (pruneOtherFormatVersions).
+ * an interrupted run left behind. After an update that changed how Office
+ * documents are converted, the worker queues the reindex that converts the
+ * documents indexed the old way again (office-format-upgrade.ts) — at boot, and
+ * hourly after — and every boot and every finished run removes an artifact
+ * format directory no document is read from any more (pruneOtherFormatVersions).
  *
  * A run can take hours (a ~2k-PDF corpus is 1.5-7h of CPU-only embedding), so
  * the interval is a poll for NEW work, not a run cadence: the re-entrancy guard
@@ -37,6 +36,7 @@ import {
   clearStagedBatches,
   OFFICE_ARTIFACT_FORMAT_VERSION,
   pruneOtherFormatVersions,
+  stagingDirOf,
 } from "@/lib/knowledge/office-artifacts";
 import {
   agentsOwedReconversion,
@@ -125,6 +125,8 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
     extractXlsx: (absPath) => extractXlsxIsolated(absPath),
     convertOffice: (sources) => convertOfficeFiles(sources),
     ocrModel: ocr?.model ?? null,
+    // The artifact volume, not the container's /tmp: see IngestDeps.stagingDir.
+    stagingDir: stagingDirOf(),
   };
 }
 
@@ -139,7 +141,7 @@ export const FOLDERS_UNAVAILABLE_ERROR =
 export interface RunIndexJobOptions {
   /** Test seam: injects a deterministic embedder/extractor. Production resolves them from the bundled in-process embeddinggemma GGUF. */
   deps?: IngestDeps;
-  /** Test seam: the artifact volume the first tick clears leftover staging and superseded format versions from. Production uses the store's default. */
+  /** Test seam: the artifact volume the first tick clears leftover staging (batches and source copies) and superseded format versions from. Production uses the store's default. */
   artifactDir?: string;
 }
 
@@ -170,6 +172,12 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   // run read anything at all.
   let unavailableFolders = 0;
   let skippedRoots = 0;
+  // Files refused because their path no longer led to a regular file inside
+  // the folder (swapped for a link or a non-file, or reached through a folder
+  // swapped for a link) — never a file merely saved again since the walk.
+  // Already in `failed`; counted apart because a refusal is a security
+  // finding, not a broken file. Named in the server log only.
+  let refusedFiles = 0;
 
   try {
     // Resolved per run, not per process: the route's precheck only covers the
@@ -187,6 +195,12 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
         skippedRoots++;
         console.warn(
           `[kb-index-worker] job ${job.id}: skipped ${oneLine(rootDir, LOG_PATH_MAX)} (${reason}); nothing under it was indexed or removed`
+        );
+      },
+      onRefusedFile: (absPath, refusal) => {
+        refusedFiles++;
+        console.warn(
+          `[kb-index-worker] job ${job.id}: refused to read ${oneLine(absPath, LOG_PATH_MAX)} (${refusal}); it was not indexed, and any version indexed before was kept`
         );
       },
       onKeptFolder: (folder) => {
@@ -233,6 +247,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
       reason,
       ocr: ocrTally.current,
       unavailableFolders,
+      refusedFiles,
     });
     return { ...job, status: "failed", counts, error: reason, unavailableFolders };
   }
@@ -249,6 +264,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     counts,
     ocr: ocrTally.current,
     unavailableFolders,
+    refusedFiles,
   });
   return { ...job, status: "succeeded", counts, unavailableFolders };
 }
@@ -305,6 +321,7 @@ async function auditOutcome(args: {
   reason?: string;
   ocr: OcrTally | null;
   unavailableFolders: number;
+  refusedFiles: number;
 }): Promise<void> {
   const entry = reindexAuditEntry({
     actorType: "system",
@@ -324,6 +341,7 @@ async function auditOutcome(args: {
     // "nothing was sent" rather than "we did not look".
     ocr: args.ocr && args.ocr.documents > 0 ? args.ocr : undefined,
     unavailableFolders: args.unavailableFolders > 0 ? args.unavailableFolders : undefined,
+    refusedFiles: args.refusedFiles > 0 ? args.refusedFiles : undefined,
   });
   try {
     await appendAuditLog(entry);
@@ -388,18 +406,20 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
         console.log(`[kb-index-worker] requeued ${requeued} job(s) orphaned by a restart`);
       }
       // The same premise frees the disk the dead run held: an Office batch
-      // that never finished left its checked copies (up to 20 × 200 MB) in
-      // the artifact volume's `staging/`, and no batch of ours exists yet.
-      // Housekeeping, so a failure is logged and the queue still runs.
+      // that never finished left its copies in the artifact volume's
+      // `staging/`, and so did a document whose read was cut short — a full
+      // plaintext copy of it, which nothing else would ever remove. No batch
+      // or read of ours exists yet. Housekeeping, so a failure is logged and
+      // the queue still runs.
       try {
         const cleared = await clearStagedBatches(opts.artifactDir);
         if (cleared > 0) {
           console.log(
-            `[kb-index-worker] cleared ${cleared} Office conversion batch(es) left by an interrupted run`
+            `[kb-index-worker] cleared ${cleared} staged batch(es) and source copies left by an interrupted run`
           );
         }
       } catch (err) {
-        console.warn("[kb-index-worker] could not clear leftover Office staging:", errorLine(err));
+        console.warn("[kb-index-worker] could not clear leftover staging:", errorLine(err));
       }
       await pruneSupersededArtifacts(opts.artifactDir);
     }

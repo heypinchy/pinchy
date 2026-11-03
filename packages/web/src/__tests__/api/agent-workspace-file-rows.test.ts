@@ -18,8 +18,8 @@
  * reader would assert nothing about the cells actually served.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { basename, join, sep } from "node:path";
 import { format } from "node:util";
 import { tmpdir } from "node:os";
 import { NextRequest } from "next/server";
@@ -72,6 +72,9 @@ beforeEach(() => {
   outsideDir = join(tmpRoot, "outside");
   mkdirSync(allowedRoot, { recursive: true });
   mkdirSync(outsideDir, { recursive: true });
+  // The rows are read from a private copy on the artifact volume's staging
+  // area (verified-source.ts), never from the share's path.
+  process.env.KB_ARTIFACT_DIR = join(tmpRoot, "artifacts");
 
   mockGetSession.mockResolvedValue({ user: { id: "user-1", role: "member" } });
   mockGetAgentWithAccess.mockResolvedValue({
@@ -81,7 +84,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => rmSync(tmpRoot, { recursive: true, force: true }));
+afterEach(() => {
+  delete process.env.KB_ARTIFACT_DIR;
+  rmSync(tmpRoot, { recursive: true, force: true });
+});
 
 async function callGET(requestedPath: string, extraParams: Record<string, string> = {}) {
   const { GET } = await import("@/app/api/agents/[agentId]/workspace-file/route");
@@ -357,10 +363,18 @@ describe("when the reader is the problem, not the workbook", () => {
     } as unknown as Parameters<typeof GET>[1]);
 
     expect(res.status).toBe(200);
-    expect(read).toHaveBeenCalledWith(realpathSync(path), "Suppliers", 3, 4, {
+    expect(read).toHaveBeenCalledWith(expect.any(String), "Suppliers", 3, 4, {
       signal: expect.any(AbortSignal),
       maxQueued: actual.SHEET_PREVIEW_MAX_QUEUED,
     });
+    // The reader is handed the private copy streamed from the verified open,
+    // under the source's name on the artifact volume — never the share's path
+    // — and the copy is gone once it answered.
+    const handed = (read.mock.calls[0] as unknown[])[0] as string;
+    expect(handed).not.toBe(realpathSync(path));
+    expect(basename(handed)).toBe(basename(path));
+    expect(handed.startsWith(join(process.env.KB_ARTIFACT_DIR!, "staging") + sep)).toBe(true);
+    expect(existsSync(handed)).toBe(false);
     const passed = (read.mock.calls[0] as unknown[])[4] as { signal: AbortSignal };
     expect(passed.signal.aborted).toBe(false);
     client.abort();

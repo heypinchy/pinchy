@@ -2,9 +2,17 @@
  * The `knowledge.reindex` audit entry builder — specifically the shape of what
  * lands on the HMAC-signed row, which is immutable once written.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
-import { KB_INDEX_WORKER_ACTOR, reindexAuditEntry } from "@/lib/knowledge/reindex-audit";
+import type { AuditLogEntry } from "@/lib/audit";
+import {
+  KB_INDEX_WORKER_ACTOR,
+  reindexAuditEntry,
+  reindexDetail,
+} from "@/lib/knowledge/reindex-audit";
+
+/** The `knowledge.reindex` detail as `audit.ts` declares it — where every reader looks it up. */
+type ReindexDetail = Extract<AuditLogEntry, { eventType: "knowledge.reindex" }>["detail"];
 
 const agent = { id: "agent-1", name: "Smithers" };
 
@@ -96,5 +104,43 @@ describe("the trigger", () => {
     });
 
     expect(entry.detail).toMatchObject({ trigger: "scheduled", sweepId: "sweep-1" });
+  });
+});
+
+describe("refusedFiles", () => {
+  const base = {
+    actorType: "system" as const,
+    actorId: KB_INDEX_WORKER_ACTOR,
+    agent,
+    outcome: "success" as const,
+    pathCount: 1,
+    jobId: "job-1",
+    trigger: "manual" as const,
+  };
+
+  it("records how many files were refused as swapped links, as a bare count", () => {
+    const entry = reindexAuditEntry({ ...base, refusedFiles: 2 });
+    expect((entry.detail as Record<string, unknown>).refusedFiles).toBe(2);
+  });
+
+  it("is absent when nothing was refused", () => {
+    expect(reindexAuditEntry(base).detail).not.toHaveProperty("refusedFiles");
+  });
+
+  it("is declared on the audit type the row is read against", () => {
+    expectTypeOf<ReindexDetail["refusedFiles"]>().toEqualTypeOf<number | undefined>();
+  });
+});
+
+describe("the detail's keys", () => {
+  it("must all be declared on the audit type, even when written through a spread", () => {
+    // The builder writes its optional fields as conditional spreads, and a
+    // spread escapes TypeScript's excess-property check: `refusedFiles` once
+    // reached the signed row without `audit.ts` declaring it. Building the
+    // detail through `reindexDetail` makes an undeclared key a compile error.
+    expectTypeOf(reindexDetail({ agent, pathCount: 1 })).toEqualTypeOf<ReindexDetail>();
+    const undeclared = { agent, pathCount: 1, ...(agent ? { refusedPaths: ["/data/x"] } : {}) };
+    // @ts-expect-error -- `refusedPaths` is not declared on the knowledge.reindex detail.
+    reindexDetail(undeclared);
   });
 });

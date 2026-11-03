@@ -198,7 +198,7 @@ Pinchy does not rely on any single layer for security. Five layers work together
 2. **Allow-list enforcement** — only tools an admin explicitly enables are available to the agent
 3. **Runtime tool allow-list** — Pinchy emits an absolute `tools.allow` to OpenClaw, so built-ins Pinchy never surfaces (shell, raw file access, `cron`, gateway control, the native browser, …) are unreachable even if a plugin or future OpenClaw version would otherwise expose them
 4. **Plugin path validation** — the `pinchy-files` plugin checks every requested path against the agent's allowed directories
-5. **Symlink resolution** — paths are resolved to their real location before validation, preventing symlink-based escapes
+5. **Symlink resolution** — paths are resolved to their real location before validation, preventing symlink-based escapes. The file is then opened without following any link and checked to be the file at that location, so a link swapped in after the check is refused rather than followed
 
 If any one layer fails, the others still prevent unauthorized access.
 
