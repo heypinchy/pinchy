@@ -21,7 +21,7 @@
  * applies, because the version column alone cannot tell them apart: a row
  * written before the column existed carries null, exactly like a PDF does.
  */
-import { and, asc, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, isNull, not, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/db";
 import { agents, kbDocuments } from "@/db/schema";
@@ -89,9 +89,16 @@ export async function officeFormatVersionInUse(version: number): Promise<boolean
   return row !== undefined;
 }
 
-/** Does anything under `paths` still need converting again? */
-async function owesReconversion(paths: readonly string[]): Promise<boolean> {
+/**
+ * Does anything under `paths` still need converting again — anything outside
+ * `alreadyRun`, the folders an upgrade run has already gone through?
+ */
+async function owesReconversion(
+  paths: readonly string[],
+  alreadyRun: readonly string[] = []
+): Promise<boolean> {
   if (paths.length === 0) return false;
+  const sourcePath = sql`${kbDocuments.sourcePath}`;
   const [row] = await db
     .select({ id: kbDocuments.id })
     .from(kbDocuments)
@@ -99,7 +106,8 @@ async function owesReconversion(paths: readonly string[]): Promise<boolean> {
       and(
         eq(kbDocuments.orgId, DEFAULT_ORG_ID),
         supersededDocument,
-        buildPathFilter(paths, sql`${kbDocuments.sourcePath}`)
+        buildPathFilter(paths, sourcePath),
+        alreadyRun.length > 0 ? not(buildPathFilter(alreadyRun, sourcePath)) : undefined
       )
     )
     .limit(1);
@@ -128,19 +136,31 @@ export async function agentsOwedReconversion(): Promise<string[]> {
   return owed;
 }
 
+export type ReconversionOutcome =
+  { status: "queued"; paths: string[] } | { status: "busy" } | { status: "skipped" };
+
 /**
  * Queues the reindex that converts an agent's superseded Office documents
  * again — an ordinary `kb_index_jobs` row, run, counted and audited like any
  * other, with trigger `upgrade`.
  *
- * `queued` and `skipped` both mean "this agent is done"; `busy` means the
- * instance's one job slot is taken, so ask again once it is free. Re-checked
- * here rather than trusted from the boot-time list: an agent whose folders
- * overlap one reindexed a moment ago has nothing left to convert, and an
- * agent deleted or stripped of its folders since has nothing to run.
+ * `queued` (with the folders the run will go through) and `skipped` both mean
+ * "this agent is done"; `busy` means the instance's one job slot is taken, so
+ * ask again once it is free. Re-checked here rather than trusted from the
+ * boot-time list: an agent deleted or stripped of its folders since has
+ * nothing to run, and an agent whose superseded documents all lie in
+ * `alreadyRun` — folders an upgrade run already went through since this boot
+ * — has nothing a run of its own would change. That second check is not the
+ * same as asking the rows again: a document whose conversion ended
+ * `infrastructure` (out of memory, a timeout, LibreOffice down) is still
+ * superseded after the run, and every other agent granted its folder would
+ * otherwise run the whole folder again, every boot.
  */
-export async function queueReconversion(agentId: string): Promise<"queued" | "busy" | "skipped"> {
-  if (await findActiveIndexJob(DEFAULT_ORG_ID)) return "busy";
+export async function queueReconversion(
+  agentId: string,
+  alreadyRun: readonly string[] = []
+): Promise<ReconversionOutcome> {
+  if (await findActiveIndexJob(DEFAULT_ORG_ID)) return { status: "busy" };
 
   const [agent] = await db
     .select({
@@ -152,9 +172,9 @@ export async function queueReconversion(agentId: string): Promise<"queued" | "bu
     .from(agents)
     .where(eq(agents.id, agentId))
     .limit(1);
-  if (!agent || agent.deletedAt !== null) return "skipped";
+  if (!agent || agent.deletedAt !== null) return { status: "skipped" };
   const paths = grantedKnowledgePaths(agent.pluginConfig);
-  if (!(await owesReconversion(paths))) return "skipped";
+  if (!(await owesReconversion(paths, alreadyRun))) return { status: "skipped" };
 
   const agentRef: EntityRef = { id: agent.id, name: agent.name };
   const base = {
@@ -185,12 +205,12 @@ export async function queueReconversion(agentId: string): Promise<"queued" | "bu
         reason: safeProviderError(err instanceof Error ? err.message : "enqueue_failed"),
       })
     );
-    return "skipped";
+    return { status: "skipped" };
   }
-  if (enqueued.status === "busy") return "busy";
+  if (enqueued.status === "busy") return { status: "busy" };
 
   await audit(reindexAuditEntry({ ...base, outcome: "success", jobId: enqueued.job.id }));
-  return "queued";
+  return { status: "queued", paths };
 }
 
 /** Writes an audit row outside any request — the AGENTS.md non-request pattern. */

@@ -11,7 +11,9 @@ import {
   extractDocumentedEndpoints,
   extractGrantableTools,
   extractRouteHandlers,
+  extractUpgradeMigrationNotes,
   findGhostEndpoints,
+  findMigrationNoteDrift,
   findUndocumentedAuditEvents,
   findUndocumentedEndpoints,
   findUndocumentedTools,
@@ -217,6 +219,102 @@ test("extractGrantableTools unions the registry with the plugin manifests", () =
   );
 });
 
+const UPGRADING = (migrations) => `## Standard upgrade
+
+Pull and restart.
+
+## Upgrading from v1.1.0 to %%PINCHY_VERSION%%
+
+### Upgrade notes
+
+#### Something changed
+
+Prose that names \`0007\` in passing.
+
+### Database migrations
+
+The migrations ${migrations}
+
+- \`0005\` — a table, built on the release branch's own \`0003\`.
+- \`0006\`, \`0007\` — two columns.
+
+## Upgrading from v1.0.0 to v1.1.0
+
+### Database migrations
+
+- \`0004\` — older.
+`;
+
+test("extractUpgradeMigrationNotes reads the newest section's range and the migrations its bullets name", () => {
+  assert.deepEqual(
+    extractUpgradeMigrationNotes(
+      UPGRADING("`0005`–`0007` run automatically on startup."),
+    ),
+    {
+      section: "Upgrading from v1.1.0 to %%PINCHY_VERSION%%",
+      from: "0005",
+      to: "0007",
+      listed: ["0005", "0006", "0007"],
+    },
+  );
+});
+
+test("extractUpgradeMigrationNotes throws when the range cannot be read", () => {
+  // A sentence rewritten so the range no longer parses must not read as a
+  // section with nothing to check.
+  assert.throws(
+    () => extractUpgradeMigrationNotes(UPGRADING("run automatically.")),
+    /range/,
+  );
+});
+
+test("extractUpgradeMigrationNotes throws when a bullet names no migration", () => {
+  assert.throws(
+    () =>
+      extractUpgradeMigrationNotes(
+        UPGRADING("`0005`–`0007` run.").replace(
+          "- `0006`, `0007` — two columns.",
+          "- 0006 and 0007 — two columns.",
+        ),
+      ),
+    /0006 and 0007/,
+  );
+});
+
+test("findMigrationNoteDrift names a migration the list stops short of", () => {
+  const notes = extractUpgradeMigrationNotes(
+    UPGRADING("`0005`–`0007` run automatically on startup."),
+  );
+  const journal = ["0004_a", "0005_b", "0006_c", "0007_d", "0008_e"];
+  assert.deepEqual(findMigrationNoteDrift(notes, journal), [
+    'the newest migration is 0008, but "Upgrading from v1.1.0 to %%PINCHY_VERSION%%" ' +
+      "says its migrations end at 0007 — extend the range in docs/src/content/docs/guides/upgrading.mdx",
+    'migration 0008 (0008_e) has no bullet under "Upgrading from v1.1.0 to %%PINCHY_VERSION%%" → Database migrations in docs/src/content/docs/guides/upgrading.mdx',
+  ]);
+});
+
+test("findMigrationNoteDrift names a bullet for a migration the range or the journal does not hold", () => {
+  const notes = extractUpgradeMigrationNotes(
+    UPGRADING("`0006`–`0007` run automatically on startup."),
+  );
+  assert.deepEqual(
+    findMigrationNoteDrift(notes, ["0005_b", "0006_c", "0007_d"]),
+    [
+      'docs/src/content/docs/guides/upgrading.mdx lists migration 0005 under "Upgrading from v1.1.0 to %%PINCHY_VERSION%%", outside its range 0006–0007',
+    ],
+  );
+});
+
+test("findMigrationNoteDrift is quiet when the list matches the journal", () => {
+  const notes = extractUpgradeMigrationNotes(
+    UPGRADING("`0005`–`0007` run automatically on startup."),
+  );
+  assert.deepEqual(
+    findMigrationNoteDrift(notes, ["0004_a", "0005_b", "0006_c", "0007_d"]),
+    [],
+  );
+});
+
 test("findUndocumentedTools points at the page the reader would look on", () => {
   const problems = findUndocumentedTools(
     ["knowledge_search"],
@@ -329,6 +427,27 @@ test("every grantable tool is in the agent-permissions reference", () => {
     ),
     [],
   );
+});
+
+test("the newest upgrade notes list every database migration it runs", () => {
+  const journal = JSON.parse(
+    readFileSync(
+      join(REPO_ROOT, "packages/web/drizzle/meta/_journal.json"),
+      "utf8",
+    ),
+  ).entries.map((entry) => entry.tag);
+  assert.ok(
+    journal.length > 50,
+    `expected the full migration journal, found ${journal.length}`,
+  );
+  const notes = extractUpgradeMigrationNotes(
+    readFileSync(join(DOCS, "guides/upgrading.mdx"), "utf8"),
+  );
+  assert.ok(
+    notes.listed.length > 5,
+    `expected the newest section's full list, found ${notes.listed.length}`,
+  );
+  assert.deepEqual(findMigrationNoteDrift(notes, journal), []);
 });
 
 test("no exemption outlives the thing it exempts", () => {

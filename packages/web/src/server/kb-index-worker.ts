@@ -349,6 +349,10 @@ let _runInFlight = false;
 // memory squeeze) waits for the next boot or the nightly run rather than
 // being retried in a loop.
 let _reconversionsOwed: string[] = [];
+// The folders those queued runs go through. An agent whose superseded
+// documents all lie in them is passed over: what one run could not convert,
+// another run over the same folder would not either.
+let _reconvertedPaths: string[] = [];
 // Whether this process has already cleaned up after its predecessor. See the
 // requeue in runKbIndexWorkerTick for why doing it exactly once is not an
 // optimization but a correctness condition.
@@ -445,10 +449,13 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
 async function queueOwedReconversion(): Promise<void> {
   try {
     while (_reconversionsOwed.length > 0) {
-      const outcome = await queueReconversion(_reconversionsOwed[0]);
-      if (outcome === "busy") return;
+      const outcome = await queueReconversion(_reconversionsOwed[0], _reconvertedPaths);
+      if (outcome.status === "busy") return;
       _reconversionsOwed.shift();
-      if (outcome === "queued") return;
+      if (outcome.status === "queued") {
+        _reconvertedPaths.push(...outcome.paths);
+        return;
+      }
     }
   } catch (err) {
     // A database problem: drop the rest rather than ask again every tick.
@@ -510,5 +517,6 @@ export function _isKbIndexWorkerRunning(): boolean {
 export function _resetKbIndexWorkerForTest(): void {
   _orphansRequeued = false;
   _reconversionsOwed = [];
+  _reconvertedPaths = [];
   _runInFlight = false;
 }

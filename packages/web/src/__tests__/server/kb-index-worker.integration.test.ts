@@ -736,15 +736,17 @@ describe("kb index worker tick", () => {
       return deps;
     }
 
-    async function knowledgeAgent(corpus: string) {
+    async function knowledgeAgent(corpus: string | readonly string[], name = "Archivist") {
       const [agent] = await db
         .insert(agents)
         .values({
-          name: "Archivist",
+          name,
           model: "test-model",
           greetingMessage: "Hi",
           allowedTools: ["knowledge_search"],
-          pluginConfig: { "pinchy-files": { allowed_paths: [corpus] } },
+          pluginConfig: {
+            "pinchy-files": { allowed_paths: typeof corpus === "string" ? [corpus] : [...corpus] },
+          },
         })
         .returning();
       return agent;
@@ -834,6 +836,54 @@ describe("kb index worker tick", () => {
 
       expect(await db.select().from(kbIndexJobs)).toEqual([]);
       expect(await reindexAuditRows()).toEqual([]);
+    });
+
+    it("queues nothing for an agent whose other folders hold only current documents", async () => {
+      // The superseded rows are looked for under ALL of an agent's folders at
+      // once — and only rows that are both superseded and under one of them
+      // count, however many folders it has.
+      const offices = join(tmpRoot, "offices");
+      mkdirSync(offices, { recursive: true });
+      writeFileSync(join(offices, "Angebot.docx"), "docx-bytes");
+      await ingestPaths(DEFAULT_ORG_ID, [offices], officeDeps(CLEAN));
+      const handbooks = join(tmpRoot, "handbooks");
+      writePdf(handbooks, "handbook.pdf");
+      await ingestPaths(DEFAULT_ORG_ID, [handbooks], fakeDeps());
+      await knowledgeAgent([offices, handbooks]);
+
+      await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir: join(tmpRoot, "a") });
+
+      expect(await db.select().from(kbIndexJobs)).toEqual([]);
+      expect(await reindexAuditRows()).toEqual([]);
+    });
+
+    it("converts a folder several agents share once per boot, even when a document in it cannot be converted now", async () => {
+      // A conversion that ends `infrastructure` (out of memory, a timeout,
+      // LibreOffice down) leaves its row superseded. Every other agent granted
+      // the same folder would still find it owed, and run the same folder
+      // again for nothing.
+      const artifactDir = join(tmpRoot, "artifacts");
+      const shared = join(tmpRoot, "shared");
+      const contracts = join(shared, "contracts");
+      const own = join(tmpRoot, "own");
+      await indexedBeforeTheBump(contracts, artifactDir);
+      await indexedBeforeTheBump(own, artifactDir);
+      const first = await knowledgeAgent(shared, "Archivist");
+      await knowledgeAgent(shared, "Clerk");
+      // A folder inside the one already run holds nothing it did not cover.
+      await knowledgeAgent(contracts, "Intern");
+      // A folder of its own still gets its run.
+      const elsewhere = await knowledgeAgent(own, "Auditor");
+      const squeezed = officeDeps(CLEAN, "infrastructure");
+
+      await runKbIndexWorkerTick({ deps: squeezed, artifactDir });
+
+      const jobs = await db.select().from(kbIndexJobs).orderBy(kbIndexJobs.createdAt);
+      expect(jobs.map((job) => [job.agentId, job.paths])).toEqual([
+        [first.id, [shared]],
+        [elsewhere.id, [own]],
+      ]);
+      expect(squeezed.convertOffice).toHaveBeenCalledTimes(2);
     });
 
     it("asks once per boot, so a conversion that cannot finish now waits for the next run", async () => {
