@@ -334,9 +334,10 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
  * This function is idempotent: if the file already has all the overrides
  * with their expected values, no write happens. The skip path covers a volume
  * populated from the OpenClaw image's baked-in `config/openclaw.json`, which
- * already carries these fields. A compose install whose volume the `pinchy`
- * container created first starts empty instead, and this seed is what gives
- * that install its baseline.
+ * already carries these fields. A production-image fresh install usually never
+ * gets that file (pinchy mounts the shared volume first); it starts from
+ * entrypoint.sh's minimal `{gateway:{mode,bind}}` seed, and this function
+ * supplies the rest of its baseline.
  */
 export function seedRestartClassOverridesIfMissing(): boolean {
   let existing: Record<string, unknown>;
@@ -355,10 +356,10 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   const canvasHost = (existing.canvasHost as Record<string, unknown>) || {};
   const media = (existing.media as Record<string, unknown>) || {};
 
-  // An empty volume (the usual compose fresh install: the `pinchy` container
-  // creates the shared volume, so the OpenClaw image's baked config never lands
-  // on it) has no gateway.mode — OpenClaw refuses to start on that, and the
-  // regenerate adding mode/bind later is a restart-class `gateway` diff.
+  // The production image's entrypoint.sh already writes mode/bind into an empty
+  // volume. The dev image and a host-run Pinchy do not, and OpenClaw refuses to
+  // start on a config without gateway.mode; the regenerate adding mode/bind
+  // later would also be a restart-class `gateway` diff.
   const needsGatewayMode =
     gateway.mode !== OPENCLAW_GATEWAY_MODE || gateway.bind !== OPENCLAW_GATEWAY_BIND;
   const needsControlUi = controlUi.enabled !== false;

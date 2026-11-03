@@ -258,6 +258,7 @@ import {
   MEMORY_EMBEDDING_MODEL_PATH,
 } from "@/lib/openclaw-config";
 import { MAX_EFFECTIVE_CONTEXT_TOKENS } from "@/lib/openclaw-config/effective-context";
+import { OPENCLAW_GATEWAY_BIND, OPENCLAW_GATEWAY_MODE } from "@/lib/openclaw-config/paths";
 import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
 import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
@@ -5176,12 +5177,18 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // Pre-2026.5.28 Pinchy wrote controlUi.enabled=false WITHOUT allowedOrigins.
     // On upgrade, OpenClaw seeds allowedOrigins in memory only; if Pinchy never
     // persists it, the next regenerate drops the field and OC restarts. The seed
-    // must add it even when the other four overrides are already correct.
+    // must add it even when every other override is already correct.
     const existing = {
-      gateway: { mode: "local", bind: "lan", controlUi: { enabled: false } },
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: { enabled: false },
+        terminal: { enabled: false },
+      },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5214,6 +5221,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5225,15 +5233,54 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.gateway.terminal.enabled).toBe(false);
   });
 
-  it("preserves existing fields outside the four restart-class paths", () => {
-    // Don't clobber other Pinchy/OC state — only flip the four restart-class
+  it("pins gateway.mode/bind when they differ and every other override is correct", () => {
+    // OpenClaw refuses to start on a config without gateway.mode, and a
+    // regenerate that changes mode/bind is a restart-class `gateway` diff.
+    // buildGatewayBlock always writes local/lan, so the seed must too.
+    const existing = {
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        controlUi: {
+          enabled: false,
+          allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+        },
+        terminal: { enabled: false },
+      },
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(true);
+    const written = JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1]));
+    expect(written.gateway.mode).toBe("local");
+    expect(written.gateway.bind).toBe("lan");
+  });
+
+  it("matches entrypoint.sh's minimal seed to the gateway constants the regenerate writes", async () => {
+    // The production image's entrypoint writes a minimal openclaw.json when the
+    // volume has none (pinchy mounts the volume first, so the OpenClaw image's
+    // baked config never lands). If its mode/bind drift from what
+    // buildGatewayBlock writes, the first regenerate is a gateway restart.
+    expect(await readEntrypointSeed()).toEqual({
+      gateway: { mode: OPENCLAW_GATEWAY_MODE, bind: OPENCLAW_GATEWAY_BIND },
+    });
+  });
+
+  it("preserves existing fields outside the restart-class paths", () => {
+    // Don't clobber other Pinchy/OC state — only flip the restart-class
     // overrides. The agents/plugins/secrets/models blocks must round-trip
     // unchanged.
     const existing = {
       meta: { version: "5.3.0", lastTouchedAt: "T1" },
       gateway: {
         mode: "local",
-        bind: "lan",
+        bind: "loopback", // needs flip
         auth: { mode: "token", token: "preserved-token" },
         controlUi: { enabled: true, allowedOrigins: ["http://localhost:18789"] },
       },
@@ -5250,6 +5297,8 @@ describe("seedRestartClassOverridesIfMissing", () => {
     const written = JSON.parse(String(writtenAtomic![1]));
 
     // Restart-class overrides flipped to Pinchy values:
+    expect(written.gateway.mode).toBe("local");
+    expect(written.gateway.bind).toBe("lan");
     expect(written.gateway.controlUi.enabled).toBe(false);
     expect(written.discovery.mdns.mode).toBe("off");
     expect(written.update.checkOnStart).toBe(false);
@@ -5257,8 +5306,6 @@ describe("seedRestartClassOverridesIfMissing", () => {
 
     // Non-restart-class fields preserved byte-for-byte:
     expect(written.meta).toEqual(existing.meta);
-    expect(written.gateway.mode).toBe("local");
-    expect(written.gateway.bind).toBe("lan");
     expect(written.gateway.auth).toEqual(existing.gateway.auth);
     expect(written.gateway.controlUi.allowedOrigins).toEqual(["http://localhost:18789"]);
     expect(written.agents).toEqual(existing.agents);
@@ -5338,10 +5385,13 @@ describe("seedRestartClassOverridesIfMissing", () => {
       name: string;
       file: () => Promise<Record<string, unknown> | null>;
     }> = [
+      // A production-image fresh install: pinchy mounts the shared volume first,
+      // so the OpenClaw image's baked file never reaches it, and entrypoint.sh
+      // writes its minimal seed. CI run 41569393728 started from this.
+      { name: "entrypoint.sh's minimal seed (production image)", file: readEntrypointSeed },
       { name: "the baked config/openclaw.json (image copy-up)", file: readBaked },
-      // A compose install usually starts here: the `pinchy` container creates the
-      // shared volume first, so the OpenClaw image's baked file never reaches it.
-      { name: "an empty volume (no openclaw.json yet)", file: async () => null },
+      // The dev image and a host-run Pinchy have no entrypoint seed.
+      { name: "no openclaw.json (dev image / host-run Pinchy)", file: async () => null },
       {
         // The seed baseline as it looked before the media TTL: every other
         // override present, no `media`. The seed is the only thing that adds it
@@ -5418,6 +5468,25 @@ describe("seedRestartClassOverridesIfMissing", () => {
     }
   });
 });
+
+/**
+ * The minimal openclaw.json that entrypoint.sh writes when the shared volume has
+ * none — read from the script itself, so a change there is tested here. Throws if
+ * the seed line can no longer be found.
+ */
+async function readEntrypointSeed(): Promise<Record<string, unknown>> {
+  const fsActual = await vi.importActual<typeof import("fs")>("fs");
+  const pathMod = await import("path");
+  const script = fsActual.readFileSync(
+    pathMod.resolve(__dirname, "../../../../../entrypoint.sh"),
+    "utf-8"
+  );
+  const match = /printf '(\{.*\})\\n' > \/openclaw-config\/openclaw\.json/.exec(script);
+  if (!match) {
+    throw new Error("entrypoint.sh no longer seeds openclaw.json with a printf'd JSON literal.");
+  }
+  return JSON.parse(match[1]) as Record<string, unknown>;
+}
 
 /**
  * Load OpenClaw's REAL config-reload planner from the installed `openclaw`

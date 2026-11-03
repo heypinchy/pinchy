@@ -25,6 +25,8 @@ export const OPENCLAW_MEDIA_TTL_HOURS = 48;
 // The gateway's run mode and bind interface. Pinchy always runs OpenClaw as a
 // local gateway reached over the Docker network. Shared with the boot-time seed
 // in targeted.ts: OpenClaw refuses to start on a config without gateway.mode,
-// and adding mode/bind later is a restart-class `gateway` diff.
+// and adding mode/bind later is a restart-class `gateway` diff. entrypoint.sh
+// writes the same pair as a shell literal; a test in openclaw-config.test.ts
+// holds the two together.
 export const OPENCLAW_GATEWAY_MODE = "local";
 export const OPENCLAW_GATEWAY_BIND = "lan";
