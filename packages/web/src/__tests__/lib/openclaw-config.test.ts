@@ -81,7 +81,7 @@ const { mockGetSetting, mockGetSettingsByPrefix, mockGetSettingsByKeys } = vi.ho
     "admin-smithers",
     "agent-id-with-bot",
   ];
-  const getSetting = vi.fn<(key: string) => Promise<string | null>>(async () => null);
+  const getSetting = vi.fn<typeof import("@/lib/settings").getSetting>(async () => null);
   return {
     mockGetSetting: getSetting,
     mockGetSettingsByPrefix: vi.fn(async (prefix: string) => {
