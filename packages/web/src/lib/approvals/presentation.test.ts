@@ -11,7 +11,15 @@ import {
   type Previewed,
   type TextWindow,
 } from "./display";
-import { isAddressShaped, mailboxAddress, previewed, readUrl, shownAs } from "./presentation";
+import {
+  isAddressShaped,
+  mailboxAddress,
+  previewed,
+  readUrl,
+  shownAs,
+  urlHostAsWritten,
+} from "./presentation";
+import browserUrlHosts from "./browser-url-hosts.json";
 
 // A URL is what the parser the tool uses accepts, read the way that parser
 // reads it.
@@ -48,6 +56,31 @@ describe("readUrl", () => {
     expect(readUrl("https://firma.at/x")?.oneToken).toBe(true);
     expect(readUrl("  https://firma.at/x ")?.oneToken).toBe(true);
     expect(readUrl("https://firma.at/ is live")?.oneToken).toBe(false);
+  });
+});
+
+// Where Node's parser refuses a URL, the host is read off the text the way a
+// browser reads it: Chromium and WebKit open `https://xn--a.evil.com/x y`,
+// `ht\ttps://xn--a.evil.com/` and the rest. Checked against the hosts the
+// browsers themselves resolve (`scripts/generate-browser-url-hosts.mjs`), not
+// against a reading of the spec. A host Chromium only percent-escapes
+// (`evil.com%20see%20above`) is no name DNS can look up: it reaches nothing.
+describe("urlHostAsWritten", () => {
+  const refused = browserUrlHosts.rows.filter((row) => row.node === null);
+
+  it.each(refused)("reads $text as a browser does", (row) => {
+    const reached = [row.chromium, row.webkit].filter(
+      (host): host is string => !!host && !host.includes("%")
+    );
+    const host = urlHostAsWritten(row.text)?.toLowerCase() ?? null;
+    if (reached.length === 0) expect(host).toBeNull();
+    else expect(reached).toContain(host);
+  });
+
+  it("covers both answers", () => {
+    const opened = refused.filter((row) => urlHostAsWritten(row.text) !== null);
+    expect(opened.length).toBeGreaterThan(50);
+    expect(refused.length - opened.length).toBeGreaterThan(30);
   });
 });
 

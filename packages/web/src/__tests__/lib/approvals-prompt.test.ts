@@ -458,6 +458,20 @@ describe("buildApprovalPrompt", () => {
         ["a URL", (host) => ({ url: `https://${host}/x` })],
         ["a URL with userinfo and a port", (host) => ({ url: `https://u@${host}:8080/x` })],
         ["a URL without slashes", (host) => ({ url: `https:${host}/x` })],
+        ["a URL with a tab in its path", (host) => ({ url: `https://${host}/x\ty` })],
+        ["a URL with a space in its path", (host) => ({ url: `https://${host}/x y` })],
+        [
+          "a URL with a no-break space in its path",
+          (host) => ({ url: `https://${host}/x\u00a0y` }),
+        ],
+        ["a URL with a tab in its scheme", (host) => ({ url: `ht\ttps://${host}/` })],
+        ["a URL with words after it", (host) => ({ url: `https://${host}/ see above` })],
+        [
+          "a URL with a long user name in front",
+          (host) => ({
+            values: { website: `https://www.firma.at.${"a".repeat(250)}@${host}/\tx` },
+          }),
+        ],
       ];
       for (const label of labels) {
         it.each(shapes)(`%s, with the label ${JSON.stringify(label)}`, (_shape, call) => {

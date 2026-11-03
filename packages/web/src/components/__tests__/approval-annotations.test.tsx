@@ -428,6 +428,22 @@ describe("the host a value reaches, when the card previews it", () => {
   });
 });
 
+// A host Node's parser refuses — `xn--a` does not decode — that Chromium and
+// WebKit still open. Whatever follows it, a tab or words, the card says it is
+// no domain name, beside the preview rather than behind "Show full text".
+describe("a previewed URL whose host is not a valid domain name", () => {
+  it.each([
+    `https://www.firma.at.${"a".repeat(250)}@xn--a.evil.com/\tx`,
+    `https://www.firma.at.${"a".repeat(250)}@xn--a.evil.com/x y`,
+    `https://xn--a.evil.com/${"x".repeat(250)} see above`,
+  ])("is noted on the collapsed card: %s", (website) => {
+    const html = card({ values: { website } });
+    expect(html).toMatch(/Show full text/);
+    expect(html).toContain('data-annotation="not-a-domain"');
+    expect(prompt({ website })).toContain('reaches "xn--a.evil.com"');
+  });
+});
+
 /**
  * The general claim: whatever a hostile value is wrapped in — a run of hidden
  * characters, the quotes that make it read as a JSON string, padding, words

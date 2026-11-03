@@ -577,10 +577,11 @@ function domainReach(domain: string): Reach {
  * backslashed slashes and a stripped leading control character all reach a
  * host the text does not show. For a value that is one mailbox, read the way
  * the mail tool reads it (`mailboxAddress`: trimmed, out of `Name <…>`), its
- * domain. For one URL the parser refuses (`urlHostAsWritten`), the host it
- * spells, read like a mail domain. `null` for a URL with no host
- * (`file:///…`), for free text the parser refuses — "https://firma.at, see
- * above" — and for text that merely holds an address.
+ * domain. For a URL the parser refuses that a browser still opens
+ * (`urlHostAsWritten`), the host the browser opens, read like a mail domain —
+ * whatever follows it. `null` for a URL with no host (`file:///…`), for free
+ * text no parser reads a host from — "https://firma.at, see above" — and for
+ * text that merely holds an address.
  */
 function reachOf(value: string): Reach | null {
   const url = readUrl(value);

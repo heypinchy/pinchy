@@ -106,21 +106,59 @@ export function readUrl(text: string): UrlRead | null {
 }
 
 /**
- * The host a value spells when it is one URL — a scheme the parser gives a
- * host to, then the host, no whitespace — that the parser refuses. Node's
- * refuses a host with a label that does not decode (`xn--a`); Chromium's and
- * WebKit's accept it, so a link to it still opens the host it spells. Read
- * where the parser would read the host: past any slashes and backslashes and
- * any userinfo, up to the path, query, fragment or port. `null` for anything
- * else.
+ * What a URL parser refuses in a host once it is percent-decoded: the
+ * forbidden domain code points of the WHATWG URL standard.
+ */
+const FORBIDDEN_IN_HOST = /[\u0000-\u0020#%/:<>?@[\\\]^|\u007f]/;
+
+/**
+ * The host a URL spells that Node's parser refuses but a browser opens.
+ * Node's refuses a host with a label that does not decode (`xn--a`);
+ * Chromium's and WebKit's check no such label in a host that is all ASCII,
+ * so a link to it opens the host it spells. Read the way the parser reads
+ * one — the WHATWG URL standard: padding stripped from both ends, every tab
+ * and line break deleted, a scheme that has a host, then past any slashes
+ * and backslashes and any userinfo, up to the port, path, query or fragment.
+ * What follows the host does not matter: a space in the path, or words after
+ * it, still opens it. Percent-decoded, as the parser decodes it. `null` for
+ * anything else, and for a host a browser refuses too — one with a character
+ * no host may hold, a port that is no number, or a non-ASCII letter, which
+ * sends a browser through the full IDNA check that refuses `xn--a` as well.
  */
 export function urlHostAsWritten(text: string): string | null {
-  const stripped = text.replace(URL_PADDING, "");
-  if (/\s/u.test(stripped)) return null;
-  const url = /^([A-Za-z][A-Za-z0-9+.-]*):[\\/]*([^\\/?#]*)/.exec(stripped);
-  if (!url || !SPECIAL_SCHEMES.has(`${url[1].toLowerCase()}:`)) return null;
-  const host = url[2].slice(url[2].lastIndexOf("@") + 1).replace(/:[0-9]*$/, "");
-  return host === "" ? null : host;
+  const input = text.replace(URL_PADDING, "").replace(/[\t\n\r]/g, "");
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(input);
+  if (!scheme || !SPECIAL_SCHEMES.has(`${scheme[1].toLowerCase()}:`)) return null;
+  const rest = input.slice(scheme[0].length);
+  let host: string;
+  if (scheme[1].toLowerCase() === "file") {
+    // A file URL has a host only after exactly two slashes, and no userinfo
+    // or port: an `@` or `:` in it is refused below.
+    const file = /^[\\/]{2}([^\\/?#]*)/.exec(rest);
+    if (!file || /^[A-Za-z][:|]$/.test(file[1])) return null;
+    host = file[1];
+  } else {
+    const authority = /^[\\/]*([^\\/?#]*)/.exec(rest)![1];
+    const hostAndPort = authority.slice(authority.lastIndexOf("@") + 1);
+    const colon = hostAndPort.indexOf(":");
+    const port = colon === -1 ? "" : hostAndPort.slice(colon + 1);
+    if (!/^[0-9]*$/.test(port) || Number(port) > 65_535) return null;
+    host = colon === -1 ? hostAndPort : hostAndPort.slice(0, colon);
+  }
+  const decoded = host.replace(/%([0-9A-Fa-f]{2})/g, (_, hex: string) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
+  if (decoded === "" || !/^[\x00-\x7f]*$/.test(decoded) || FORBIDDEN_IN_HOST.test(decoded)) {
+    return null;
+  }
+  // Everything else Node checks as a browser does — a last label that reads
+  // as a number makes the host an IPv4 address that must parse — so ask it,
+  // with each label it would refuse to decode replaced by one it accepts.
+  const decodable = decoded
+    .split(".")
+    .map((label) => (/^xn--/i.test(label) ? "a" : label))
+    .join(".");
+  return URL.canParse(`https://${decodable}/`) ? decoded : null;
 }
 
 /**

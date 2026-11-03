@@ -1068,6 +1068,26 @@ describe("summarizeArgs", () => {
       expect(hosts).toEqual(["xn--a.evil.com"]);
     });
 
+    // The parser deletes a tab or line break anywhere and takes a space in the
+    // path, query or fragment, so Chromium and WebKit open each of these at
+    // xn--a.evil.com. What follows the host does not change where it goes.
+    it.each([
+      ["a tab in the path", "https://xn--a.evil.com/x\ty"],
+      ["a space in the path", "https://xn--a.evil.com/x y"],
+      ["a no-break space in the path", "https://xn--a.evil.com/x\u00a0y"],
+      ["a tab in the host", "https://xn--a.ev\til.com/"],
+      ["a tab in the scheme", "ht\ttps://xn--a.evil.com/"],
+      ["words after it", "https://xn--a.evil.com/ see above"],
+      ["a long user name in front", `https://www.firma.at.${"a".repeat(250)}@xn--a.evil.com/\tx`],
+    ])("notes such a URL with %s, and records its host as reached", (_shape, url) => {
+      const { summary, hosts } = summarizeCall({ values: { website: url } });
+      expect((summary.values as Record<string, unknown>).website).toMatchObject({
+        "@": "noted",
+        notes: [{ kind: "not-a-domain" }],
+      });
+      expect(hosts).toEqual(["xn--a.evil.com"]);
+    });
+
     it("shows any hidden character in such a host as the marker the card shows", () => {
       const { hosts } = summarizeCall({ to: "boss@xn--a.evil​.com" });
       expect(hosts).toEqual(["xn--a.evil⟨U+200B⟩.com"]);
