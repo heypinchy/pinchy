@@ -8,6 +8,8 @@ import { apiGet } from "@/lib/api-client";
 interface UnsearchableDocument {
   sourcePath: string;
   status: "active" | "archived";
+  /** `awaiting_conversion`: a Word or PowerPoint file search leaves out until it is converted again. */
+  reason: "no_text" | "awaiting_conversion";
 }
 
 interface UnsearchableResponse {
@@ -83,6 +85,7 @@ export function KnowledgeUnsearchableList({
   }
 
   const hidden = result.total - result.documents.length;
+  const awaitingConversion = result.documents.some((doc) => doc.reason === "awaiting_conversion");
 
   return (
     <div className="space-y-2">
@@ -98,6 +101,13 @@ export function KnowledgeUnsearchableList({
         — nearly always scans. Your agent won&apos;t find anything in them, so it will answer that
         it found nothing. Reading text from scans is on the roadmap.
       </p>
+      {awaitingConversion && (
+        <p className="text-sm text-muted-foreground">
+          Files marked “waiting to be converted again” are Word or PowerPoint files an update to
+          Pinchy converts differently. Pinchy converts them again on its own; search leaves them out
+          until it has.
+        </p>
+      )}
       <ul className="max-h-48 space-y-1 overflow-y-auto rounded-md border p-2">
         {result.documents.map((doc) => (
           <li key={doc.sourcePath} className="flex items-baseline gap-2 text-sm">
@@ -106,6 +116,11 @@ export function KnowledgeUnsearchableList({
             <span className="font-mono text-xs break-all">{doc.sourcePath}</span>
             {doc.status === "archived" && (
               <span className="text-muted-foreground shrink-0 text-xs">archived</span>
+            )}
+            {doc.reason === "awaiting_conversion" && (
+              <span className="text-muted-foreground shrink-0 text-xs">
+                waiting to be converted again
+              </span>
             )}
           </li>
         ))}

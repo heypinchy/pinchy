@@ -13,6 +13,13 @@
  * Office conversion lands, a document whose conversion failed lands in this
  * list too, with nothing to wire up.
  *
+ * One more kind of document is listed although it has chunks: an Office
+ * document whose chunks were read from an artifact of an earlier format.
+ * Search leaves it out until it is converted again (office-format-upgrade.ts,
+ * retrieve.ts), and a conversion that keeps failing would otherwise leave it
+ * out with no trace — found by no search, named by no list. It carries
+ * `reason: "awaiting_conversion"`, every other entry `"no_text"`.
+ *
  * What it does NOT cover is the ingest counter of the other name: a `failed`
  * file (unreadable/corrupt) usually has no document row at all, because ingest
  * extracts BEFORE inserting — so it cannot appear here. The two counters
@@ -29,6 +36,7 @@ import { sql } from "drizzle-orm";
 
 import { db } from "@/db";
 
+import { readFromSupersededArtifact } from "./office-format-upgrade";
 import { buildPathFilter } from "./path-filter";
 
 export interface UnsearchableDocument {
@@ -36,7 +44,15 @@ export interface UnsearchableDocument {
   sourcePath: string;
   /** `archived` means the document sits under an OLD/Archive folder (archive-paths.ts) and is already out of everyday search. */
   status: "active" | "archived";
+  /**
+   * `no_text`: indexed, but it produced no searchable text. `awaiting_conversion`:
+   * a Word or PowerPoint document search leaves out until it is converted again
+   * under the current conversion rules.
+   */
+  reason: UnsearchableReason;
 }
+
+export type UnsearchableReason = "no_text" | "awaiting_conversion";
 
 export interface UnsearchableDocumentsResult {
   /** At most `limit` documents, active ones first, then by path. */
@@ -51,6 +67,7 @@ export const DEFAULT_UNSEARCHABLE_LIMIT = 100;
 interface UnsearchableRow extends Record<string, unknown> {
   source_path: string;
   status: "active" | "archived";
+  reason: UnsearchableReason;
   total: string | number;
 }
 
@@ -72,10 +89,12 @@ export async function listUnsearchableDocuments(
 
   const limit = opts.limit ?? DEFAULT_UNSEARCHABLE_LIMIT;
   const pathFilter = buildPathFilter(allowedPaths, sql`d.source_path`);
+  const superseded = readFromSupersededArtifact(sql`d.source_path`, sql`d.artifact_format_version`);
 
   const rows = await db.execute<UnsearchableRow>(sql`
     SELECT d.source_path,
            d.status,
+           CASE WHEN ${superseded} THEN 'awaiting_conversion' ELSE 'no_text' END AS reason,
            -- The pre-LIMIT count, in the same pass: the cap truncates the
            -- list, never the number. A window function beats a second query
            -- here because both would have to agree, and a separate COUNT can
@@ -88,7 +107,8 @@ export async function listUnsearchableDocuments(
       -- two disagree exactly when two documents share a path, which
       -- (org_id, source_path) being unique makes an ACL duplicate across orgs;
       -- matching by path would let one org's text vouch for another's scan.
-      AND NOT EXISTS (SELECT 1 FROM kb_chunks c WHERE c.document_id = d.id)
+      AND (NOT EXISTS (SELECT 1 FROM kb_chunks c WHERE c.document_id = d.id)
+           OR ${superseded})
     -- Archived documents last: they are already out of everyday search
     -- (archive-paths.ts), so a capped window should fill with the ones a
     -- question is actually going to hit.
@@ -97,7 +117,11 @@ export async function listUnsearchableDocuments(
   `);
 
   return {
-    documents: rows.map((row) => ({ sourcePath: row.source_path, status: row.status })),
+    documents: rows.map((row) => ({
+      sourcePath: row.source_path,
+      status: row.status,
+      reason: row.reason,
+    })),
     total: rows.length > 0 ? Number(rows[0].total) : 0,
   };
 }

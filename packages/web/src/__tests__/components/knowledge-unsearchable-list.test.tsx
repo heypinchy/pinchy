@@ -118,6 +118,42 @@ describe("KnowledgeUnsearchableList", () => {
     expect(screen.getByText(/archived/i)).toBeInTheDocument();
   });
 
+  // Such a document has text, so "holds no searchable text" alone would send
+  // an admin looking at the wrong problem.
+  it("marks a document search leaves out until it is converted again, and says why", async () => {
+    mockGet.mockResolvedValue({
+      documents: [
+        {
+          sourcePath: "/data/offers/Angebot.docx",
+          status: "active",
+          reason: "awaiting_conversion",
+        },
+        { sourcePath: "/data/offers/Scan.pdf", status: "active", reason: "no_text" },
+      ],
+      total: 2,
+    });
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() => expect(screen.getByText("/data/offers/Angebot.docx")).toBeInTheDocument());
+    const items = screen.getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent(/waiting to be converted again/i);
+    expect(items[1]).not.toHaveTextContent(/converted again/i);
+    expect(screen.getByText(/search leaves them out until/i)).toBeInTheDocument();
+  });
+
+  it("says nothing about conversion when no listed document is waiting for one", async () => {
+    mockGet.mockResolvedValue({
+      documents: [{ sourcePath: "/data/certs/Scan.pdf", status: "active", reason: "no_text" }],
+      total: 1,
+    });
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() => expect(screen.getByText("/data/certs/Scan.pdf")).toBeInTheDocument());
+    expect(screen.queryByText(/converted again/i)).not.toBeInTheDocument();
+  });
+
   // A truncated list that doesn't say it's truncated understates exactly the
   // gap it exists to expose.
   it("says how many it is not showing when the list is capped", async () => {
