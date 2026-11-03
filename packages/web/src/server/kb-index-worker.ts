@@ -459,12 +459,14 @@ async function queueOwedReconversion(): Promise<void> {
  * run would do it — unless it is switched off — so the agents whose folders
  * hold them are queued from here, one at a time: at boot, and then hourly,
  * which also reaches an agent granted `knowledge_search` or a folder since.
- * Folders a run — any run — succeeded over within the last day are left out,
- * so a document that cannot be converted now costs its folder at most one run
- * a day, across restarts; a folder a run failed over is left out for six
- * hours, so a share that stays unmounted costs four failed runs a day, not 24.
- * A failure to look is logged and leaves it to the next look;
- * the queue still runs.
+ * Folders a run — any run — read whole and succeeded over, started within
+ * the last day, are left out, so a document that cannot be converted now costs
+ * its folder at most one run a day, across restarts; a folder a run failed
+ * over, or had to leave as it was, is left out for six hours from its start,
+ * so a share that stays unmounted costs four failed runs a day, not 24. While
+ * the bundled embedding model is missing nothing is queued — every run could
+ * only fail — and the look says so instead. A failure to look is logged and
+ * leaves it to the next look; the queue still runs.
  */
 async function lookForOwedReconversions(): Promise<void> {
   const now = Date.now();
@@ -479,12 +481,17 @@ async function lookForOwedReconversions(): Promise<void> {
     const owed = (await agentsOwedReconversion()).filter(
       (agentId) => !_reconversionsOwed.includes(agentId)
     );
-    if (owed.length > 0) {
-      _reconversionsOwed.push(...owed);
-      console.log(
-        `[kb-index-worker] ${owed.length} agent(s) hold Office documents converted under an earlier format; reindexing them`
+    if (owed.length === 0) return;
+    if (!kbEmbedderAvailable()) {
+      console.warn(
+        `[kb-index-worker] ${owed.length} agent(s) hold Office documents converted under an earlier format; their reindex is held until the bundled embedding model is back`
       );
+      return;
     }
+    _reconversionsOwed.push(...owed);
+    console.log(
+      `[kb-index-worker] ${owed.length} agent(s) hold Office documents converted under an earlier format; reindexing them`
+    );
   } catch (err) {
     console.warn(
       "[kb-index-worker] could not look for Office documents owed a conversion:",

@@ -29,7 +29,7 @@
  * applies, because the version column alone cannot tell them apart: a row
  * written before the column existed carries null, exactly like a PDF does.
  */
-import { and, asc, eq, gte, isNull, not, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, not, or, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/db";
 import { agents, kbDocuments, kbIndexJobs } from "@/db/schema";
@@ -120,32 +120,47 @@ export async function officeFormatVersionInUse(version: number): Promise<boolean
 }
 
 /**
- * How long a folder a run went through is passed over. What one run could not
+ * How long a folder a run read whole is passed over. What one run could not
  * convert (a memory squeeze, LibreOffice down), another run over the same
  * folder right after would not either — but the next day it may.
  */
 const RECENT_RUN_MS = 24 * 60 * 60 * 1000;
 
 /**
- * How long a folder a run FAILED over is passed over. A failed run is no
- * evidence its folders were converted, so it holds them back for less than a
- * day — but the share that did not mount, or the database that went away,
- * would fail the next hourly run too.
+ * How long a folder any other finished run went through is passed over: one
+ * that FAILED, or one that succeeded but had to leave a folder as it was. That
+ * run is no evidence its folders were converted, so it holds them back for
+ * less than a day — but the share that did not mount, or the database that
+ * went away, would fail the next hourly run too.
  */
 const RECENT_FAILURE_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * SQL: the job started after `cutoff`. Both holds count from the start, so a
+ * run that took an hour to fail does not push the next one an hour later.
+ * `created_at` stands in for a job that never recorded a start.
+ */
+function startedAfter(cutoff: Date): SQL | undefined {
+  return or(
+    gt(kbIndexJobs.startedAt, cutoff),
+    and(isNull(kbIndexJobs.startedAt), gt(kbIndexJobs.createdAt, cutoff))
+  );
+}
+
+/**
  * The folders a run under the current conversion rules went through recently
  * — any such run: the nightly one, an admin's, or one of ours. One that
- * succeeded within the last day read its folders whole and converted what it
- * could, so a document still superseded under them is one a run of ours would
- * not convert today either; one that failed counts for six hours only. Read
- * from `kb_index_jobs`, so a restart remembers it. A run finished under
- * earlier rules does not count (`artifact_format_version`, null on a run
- * finished before it was recorded): the nightly run before an upgrade
- * converted nothing under the new ones. A run still pending or running needs
- * no entry here: it holds the instance's one job slot, so nothing is queued
- * until it finishes.
+ * succeeded and read every folder, started within the last day, converted
+ * what it could, so a document still superseded under them is one a run of
+ * ours would not convert today either; any other finished run counts for six
+ * hours from its start. That includes a run that succeeded but had to leave a
+ * folder as it was (`unavailable_folders`): it never read that folder, and
+ * which one it was is in the server log only. Read from `kb_index_jobs`, so a
+ * restart remembers it. A run finished under earlier rules does not count
+ * (`artifact_format_version`, null on a run finished before it was recorded):
+ * the nightly run before an upgrade converted nothing under the new ones. A
+ * run still pending or running needs no entry here: it holds the instance's
+ * one job slot, so nothing is queued until it finishes.
  */
 async function recentlyRunPaths(): Promise<string[]> {
   const now = Date.now();
@@ -159,11 +174,12 @@ async function recentlyRunPaths(): Promise<string[]> {
         or(
           and(
             eq(kbIndexJobs.status, "succeeded"),
-            gte(kbIndexJobs.finishedAt, new Date(now - RECENT_RUN_MS))
+            eq(kbIndexJobs.unavailableFolders, 0),
+            startedAfter(new Date(now - RECENT_RUN_MS))
           ),
           and(
-            eq(kbIndexJobs.status, "failed"),
-            gte(kbIndexJobs.finishedAt, new Date(now - RECENT_FAILURE_MS))
+            inArray(kbIndexJobs.status, ["succeeded", "failed"]),
+            startedAfter(new Date(now - RECENT_FAILURE_MS))
           )
         )
       )

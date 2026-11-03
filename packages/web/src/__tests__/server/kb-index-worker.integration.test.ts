@@ -8,10 +8,18 @@
  * embedder + extractor), so no Ollama and no real PDFs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { agents, auditLog, kbChunks, kbDocuments, kbIndexJobs } from "@/db/schema";
@@ -1035,16 +1043,19 @@ describe("kb index worker tick", () => {
         expect(existsSync(join(artifactDir, "v1"))).toBe(false);
       });
 
-      it("tries a folder again some hours after its run failed outright, not on the next hourly look", async () => {
+      it("tries a folder again six hours after its failed run started, not on the next hourly look", async () => {
         // A failed run is no evidence its folders were converted, so it does
         // not hold the folder back for a day. It does hold it back for a few
-        // hours: the same outage would fail the next hourly run as well.
+        // hours: the same outage would fail the next hourly run as well. The
+        // hours count from when the run started, so however long it took to
+        // fail, the next look six hours on runs the folder again.
         const artifactDir = join(tmpRoot, "artifacts");
         const corpus = join(tmpRoot, "corpus");
         await indexedBeforeTheBump(corpus, artifactDir);
         const agent = await knowledgeAgent(corpus);
         const outage = officeDeps(CLEAN);
         outage.embed = async () => {
+          vi.setSystemTime(Date.now() + 40 * 60_000);
           throw new Error("connect ECONNREFUSED ollama.local:11434");
         };
 
@@ -1053,11 +1064,13 @@ describe("kb index worker tick", () => {
           expect.objectContaining({ status: "failed", trigger: "upgrade" }),
         ]);
 
-        vi.setSystemTime(hoursAfterBoot(1));
-        await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+        for (const hours of [1, 5]) {
+          vi.setSystemTime(hoursAfterBoot(hours));
+          await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+        }
         expect(await db.select().from(kbIndexJobs)).toHaveLength(1);
 
-        vi.setSystemTime(hoursAfterBoot(7));
+        vi.setSystemTime(hoursAfterBoot(6));
         await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
 
         expect(await db.select().from(kbIndexJobs)).toHaveLength(2);
@@ -1069,28 +1082,78 @@ describe("kb index worker tick", () => {
         expect(doc.artifactFormatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
       });
 
-      it("runs a folder whose runs keep failing four times a day, not every hour", async () => {
+      it("runs a folder whose runs keep failing every six hours, four times a day, not every hour", async () => {
         // A share that failed to mount stays unmounted until someone fixes it.
         // Every run over it fails, and each writes two audit rows and replaces
-        // the agent's last-run status: hourly, that is 24 runs a day.
+        // the agent's last-run status: hourly, that is 24 runs a day. Each of
+        // these runs takes a while to fail, and the six hours still count
+        // from its start — so it is four a day, every day, not a run that
+        // slips an hour later each time.
         const artifactDir = join(tmpRoot, "artifacts");
         const corpus = join(tmpRoot, "corpus");
         await indexedBeforeTheBump(corpus, artifactDir);
         await knowledgeAgent(corpus);
         rmSync(join(corpus, "Angebot.docx"));
 
-        for (let hours = 0; hours < 24; hours++) {
+        for (let hours = 0; hours < 48; hours++) {
           vi.setSystemTime(hoursAfterBoot(hours));
           await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+          await db
+            .update(kbIndexJobs)
+            .set({ finishedAt: sql`${kbIndexJobs.startedAt} + interval '40 minutes'` });
         }
 
-        const jobs = await db.select().from(kbIndexJobs);
-        expect(jobs).toHaveLength(4);
+        const jobs = await db.select().from(kbIndexJobs).orderBy(kbIndexJobs.startedAt);
+        const startedAtHour = jobs.map(
+          (job) => (job.startedAt!.getTime() - BOOT.getTime()) / 3_600_000
+        );
+        expect(startedAtHour).toEqual([0, 6, 12, 18, 24, 30, 36, 42]);
+        expect(startedAtHour.filter((hour) => hour < 24)).toHaveLength(4);
         for (const job of jobs) {
           expect(job).toMatchObject({ status: "failed", trigger: "upgrade" });
           expect(job.error).toContain("check that it is mounted");
         }
-        expect(await reindexAuditRows()).toHaveLength(8);
+        expect(await reindexAuditRows()).toHaveLength(16);
+      });
+
+      it("tries a folder again six hours on when a successful run could not read it", async () => {
+        // A run that succeeded over its other folders never looked inside one
+        // it had to leave as it was — a share that was briefly unmounted. That
+        // folder's documents are as owed as before, so the run holds it back
+        // only as long as a failed one would.
+        const artifactDir = join(tmpRoot, "artifacts");
+        const away = join(tmpRoot, "away");
+        const reachable = join(tmpRoot, "reachable");
+        const briefly = join(tmpRoot, "briefly");
+        await indexedBeforeTheBump(briefly, artifactDir);
+        await indexedBeforeTheBump(reachable, artifactDir);
+        const agent = await knowledgeAgent([briefly, reachable]);
+        renameSync(briefly, away);
+
+        await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+        expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({
+          status: "succeeded",
+          trigger: "upgrade",
+          unavailableFolders: 1,
+        });
+        renameSync(away, briefly);
+
+        for (const hours of [1, 5]) {
+          vi.setSystemTime(hoursAfterBoot(hours));
+          await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+        }
+        expect(await db.select().from(kbIndexJobs)).toHaveLength(1);
+
+        vi.setSystemTime(hoursAfterBoot(6));
+        await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+
+        expect(await db.select().from(kbIndexJobs)).toHaveLength(2);
+        const docs = await db.select().from(kbDocuments);
+        expect(docs).toHaveLength(2);
+        expect(docs.map((doc) => doc.artifactFormatVersion)).toEqual([
+          OFFICE_ARTIFACT_FORMAT_VERSION,
+          OFFICE_ARTIFACT_FORMAT_VERSION,
+        ]);
       });
 
       it("queues nothing and records nothing while the embedding model is missing, and runs once it is back", async () => {
@@ -1102,12 +1165,22 @@ describe("kb index worker tick", () => {
         await indexedBeforeTheBump(corpus, artifactDir);
         const agent = await knowledgeAgent(corpus);
         mockKbEmbedderAvailable.mockReturnValue(false);
+        const log = vi.spyOn(console, "log");
+        const warn = vi.spyOn(console, "warn");
 
         await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
         expect(await queueReconversion(agent.id)).toEqual({ status: "skipped" });
 
         expect(await db.select().from(kbIndexJobs)).toEqual([]);
         expect(await reindexAuditRows()).toEqual([]);
+        // The server log says why nothing runs, rather than that it does.
+        const logged = [...log.mock.calls, ...warn.mock.calls].map((call) => String(call[0]));
+        expect(logged).toContain(
+          "[kb-index-worker] 1 agent(s) hold Office documents converted under an earlier format; their reindex is held until the bundled embedding model is back"
+        );
+        expect(logged.filter((line) => line.includes("reindexing them"))).toEqual([]);
+        log.mockRestore();
+        warn.mockRestore();
 
         mockKbEmbedderAvailable.mockReturnValue(true);
         vi.setSystemTime(hoursAfterBoot(1));
@@ -1248,6 +1321,14 @@ describe("kb index worker tick", () => {
         await indexedBeforeTheBump(corpus, artifactDir);
         await knowledgeAgent(corpus);
         const squeezed = officeDeps(CLEAN, "infrastructure");
+        const convert = squeezed.convertOffice;
+        // Each run takes a while: the clock moves on while it converts.
+        squeezed.convertOffice = vi.fn(
+          async (sources: Parameters<IngestDeps["convertOffice"]>[0]) => {
+            vi.setSystemTime(Date.now() + 40 * 60_000);
+            return convert(sources);
+          }
+        );
 
         await runKbIndexWorkerTick({ deps: squeezed, artifactDir });
         expect(await db.select().from(kbIndexJobs)).toHaveLength(1);
@@ -1260,8 +1341,10 @@ describe("kb index worker tick", () => {
         }
         expect(await db.select().from(kbIndexJobs)).toHaveLength(1);
 
-        vi.setSystemTime(hoursAfterBoot(25));
+        // The day counts from when the run started, however long it took.
+        vi.setSystemTime(hoursAfterBoot(24));
         await runKbIndexWorkerTick({ deps: squeezed, artifactDir });
+        expect(await db.select().from(kbIndexJobs)).toHaveLength(2);
         vi.setSystemTime(hoursAfterBoot(27));
         await runKbIndexWorkerTick({ deps: squeezed, artifactDir });
 
