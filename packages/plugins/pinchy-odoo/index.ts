@@ -5313,7 +5313,7 @@ const plugin = {
           name: "odoo_delete",
           label: "Odoo Delete",
           description:
-            "Permanently delete records from Odoo. Pass the `_pinchy_ref` of every record to delete in `targets` (from `odoo_read` or `odoo_create`) — raw numeric IDs are NOT accepted, so you can only delete records you have actually looked up. Deleting cannot be undone: read the records first, show the user what you are about to remove, and delete only after they confirm.",
+            "Permanently delete records from Odoo. Pass the `_pinchy_ref` of every record to delete in `targets` (from `odoo_read` or `odoo_create`) — raw numeric IDs are NOT accepted, so you can only delete records you have actually looked up. There is no `ids` parameter. Deleting cannot be undone: read the records first, show the user what you are about to remove, and delete only after they confirm.",
           parameters: {
             type: "object",
             properties: {

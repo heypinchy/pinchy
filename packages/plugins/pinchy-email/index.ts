@@ -1074,7 +1074,7 @@ const plugin = {
           name: "email_search",
           label: "Email Search",
           description:
-            "Search emails using structured DSL fields. All fields are optional — combine them to narrow results. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
+            "Search emails using structured DSL fields. All fields are optional — combine them to narrow results. There is no `query` parameter: use `text` for a free-text match, and `from`, `to`, `subject`, `unread`, `sinceDays`, `folder` and `limit` to filter. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
           parameters: {
             type: "object",
             properties: {

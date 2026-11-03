@@ -3562,6 +3562,14 @@ describe("odoo_delete", () => {
     expect(mockUnlink).not.toHaveBeenCalled();
   });
 
+  // Most runtimes refuse an undeclared `ids` against the schema before the
+  // tool's own message can name `targets`, so the description says it first.
+  it("says in its description that it takes no `ids`, only `targets`", () => {
+    const { description } = deleteTool();
+    expect(description).toContain("There is no `ids` parameter");
+    expect(description).toContain("`targets`");
+  });
+
   it("refuses a ref minted for another Odoo connection", async () => {
     const result = await deleteTool().execute("call-5", {
       model: "res.partner",

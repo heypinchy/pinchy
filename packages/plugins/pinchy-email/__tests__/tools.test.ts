@@ -1318,6 +1318,27 @@ describe("email_search", () => {
     expect(mockSearch).not.toHaveBeenCalled();
   });
 
+  // Most runtimes refuse an undeclared `query` against the schema before the
+  // tool's own message can name the fields, so the description says it first.
+  it("says in its description that there is no `query` parameter, and what to use instead", () => {
+    const tools = createApi();
+    const { description } = findTool(tools, "email_search", agentId)!;
+
+    expect(description).toContain("There is no `query` parameter");
+    for (const field of [
+      "text",
+      "from",
+      "to",
+      "subject",
+      "unread",
+      "sinceDays",
+      "folder",
+      "limit",
+    ]) {
+      expect(description).toContain(`\`${field}\``);
+    }
+  });
+
   // The tool does not read `query`, so an empty one is refused like any other
   // undeclared parameter: a call carries nothing the tool does not read.
   it("refuses an empty-string `query` too, naming the fields it does take", async () => {
