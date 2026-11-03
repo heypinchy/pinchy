@@ -357,18 +357,49 @@ function ArgFields({ fields }: { fields: Record<string, unknown> }) {
   );
 }
 
-/** One pending confirmation, rendered the same whether it sits in the thread
- * that raised it or in the corner (#1132). Only the container differs. */
+/**
+ * One pending confirmation, rendered the same whether it sits in the thread
+ * that raised it or in the corner (#1132). Only the container differs.
+ *
+ * Closed (`open={false}`), it names the agent and the tool and offers to
+ * review it, and draws none of the arguments and neither Approve nor Deny:
+ * the screen draws one card's arguments at a time (`openId` in
+ * `use-pending-approvals`), and nothing is decided unseen.
+ */
 export function ApprovalCard({
   approval,
   busy,
   onDecide,
+  open = true,
+  onOpen,
 }: {
   approval: PendingApproval;
   busy: boolean;
   onDecide: (approval: PendingApproval, decision: "approve" | "deny") => void;
+  open?: boolean;
+  onOpen?: () => void;
 }) {
   const hasArgs = approval.argsSummary && Object.keys(approval.argsSummary).length > 0;
+  if (!open) {
+    return (
+      <div className="rounded-lg border bg-background p-3 shadow-lg">
+        <p className="text-sm font-medium">{approval.agentName} needs your confirmation</p>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <p className="text-sm text-muted-foreground">
+            Run <span className="font-mono">{approval.toolName}</span>
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label={`Review the request to run ${approval.toolName} for ${approval.agentName}`}
+            onClick={onOpen}
+          >
+            Review
+          </Button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="rounded-lg border bg-background p-3 shadow-lg">
       <p className="text-sm font-medium">{approval.agentName} needs your confirmation</p>

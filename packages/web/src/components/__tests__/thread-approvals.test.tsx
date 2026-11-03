@@ -151,5 +151,22 @@ describe("approval card placement", () => {
       await screen.findByText(/Odoo needs your confirmation/i);
       expect(screen.getAllByText(/needs your confirmation/i)).toHaveLength(2);
     });
+
+    // The thread and the corner are one screen: between them they draw one
+    // card's arguments and decision at a time, never one per surface.
+    it("opens one card across both surfaces", async () => {
+      fetchPendingApprovals.mockResolvedValue({
+        approvals: [
+          approval(),
+          approval({ id: "req-2", agentId: "other", agentName: "Odoo", argsSummary: { x: 1 } }),
+        ],
+      });
+
+      bothSurfaces("a1");
+
+      await screen.findByText(/Odoo needs your confirmation/i);
+      expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(1);
+    });
   });
 });
