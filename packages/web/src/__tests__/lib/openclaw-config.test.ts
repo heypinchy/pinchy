@@ -55,7 +55,7 @@ vi.mock("@/db", () => ({
     select: vi.fn(() => ({
       from: vi.fn(() =>
         Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockReturnValue(
+          innerJoin: vi.fn(() =>
             Object.assign(Promise.resolve([]), {
               where: vi.fn(async () => []),
             })
