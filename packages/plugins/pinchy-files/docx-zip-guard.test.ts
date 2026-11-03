@@ -847,10 +847,10 @@ describe("verifiedZipCopy — a ZIP64 end record nothing needed", () => {
 // ---------------------------------------------------------------------------
 
 describe("verifiedZipCopy — what mammoth reads differently is not guessed at", () => {
-  // The markup ceiling was bypassed again and again the same way: this
-  // scanner and mammoth (xmldom + JSZip) disagreed about which parts are
-  // parsed. These shapes are not predicted any more; they are refused, or
-  // every part counts. No Office writer produces any of them.
+  // This scanner and mammoth (xmldom + JSZip) can disagree about which parts
+  // are parsed. On these shapes the scanner does not predict mammoth's
+  // reading: it refuses them, or counts every part. No Office writer produces
+  // any of them.
   const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
   const LIMITS_2K = { ...LIMITS, maxMarkupBytes: 2000 };
   const markupBehindPng = Buffer.concat([

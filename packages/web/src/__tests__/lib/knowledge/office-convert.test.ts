@@ -1616,11 +1616,10 @@ describe("the word-count oracle's markup ceiling", () => {
 });
 
 describe("the word-count oracle reads in a heap-capped child", () => {
-  // The markup ceiling was bypassed again and again because its scan
-  // and mammoth disagreed about which parts are parsed; through the oracle
-  // that reached ~900 MB in the web process. The scan stays the first layer.
-  // What bounds the memory now is the reader child's heap cap, shared with
-  // the spreadsheet reader — whatever the scan misses.
+  // The markup scan and mammoth can disagree about which parts are parsed, so
+  // the scan alone cannot bound the oracle's memory. The scan stays the first
+  // layer; the bound is the reader child's heap cap, shared with the
+  // spreadsheet reader — whatever the scan misses.
   const tinyParagraphs = (bytes: number) =>
     "<w:p><w:r><w:t>a</w:t></w:r></w:p>".repeat(Math.ceil(bytes / 34));
 

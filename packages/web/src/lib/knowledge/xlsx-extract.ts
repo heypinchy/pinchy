@@ -140,11 +140,11 @@ function renderDate(value: Date): string {
  * directive: quoted runs, backslash-escaped characters, and the bracketed
  * blocks Excel uses for colours and conditions.
  *
- * Three passes, each linear, in the order the regexes they replace ran. The
- * bracket pass used to be `/\[[^\]]*\]/g`, which re-scans to the end of the
- * string from every unclosed `[`: quadratic on a format code read from the
+ * Three passes, each linear: quoted runs, then escapes, then brackets. The
+ * bracket pass is not the regex `/\[[^\]]*\]/g`, which re-scans to the end of
+ * the string from every unclosed `[`: quadratic on a format code read from the
  * workbook — 400 000 of them held the web process for two minutes. An
- * unclosed quote or bracket is kept, as before.
+ * unclosed quote or bracket is kept, exactly as that regex keeps it.
  */
 function stripFormatLiterals(section: string): string {
   const withoutQuoted = section.replace(/"[^"]*"/g, "").replace(/\\./g, "");

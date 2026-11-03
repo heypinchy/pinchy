@@ -463,7 +463,7 @@ describe("readWorkbookBuffer", () => {
   }
 
   it("returns an ordinary workbook as a verified copy: the same parts, holding the same bytes", async () => {
-    // Not the file's own bytes any more: exceljs is handed an archive rebuilt
+    // Not the file's own bytes: exceljs is handed an archive rebuilt
     // from the entries the guard inflated and checked, so it cannot read a
     // byte the guard did not (a junk prefix, a hidden local entry). What it
     // reads is the same workbook, part for part.

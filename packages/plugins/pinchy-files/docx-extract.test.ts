@@ -287,10 +287,10 @@ describe("extractDocxText — the shapes the markup scan read differently are re
 });
 
 describe("extractDocxText — mammoth runs in a child whose heap is capped", () => {
-  // The markup ceiling was bypassed again and again because the scan
-  // and mammoth disagreed about which parts are parsed. The scan stays as a
-  // cheap first layer; what bounds the memory now is a child process with a
-  // hard heap cap, whatever the scan missed.
+  // The markup scan and mammoth can disagree about which parts are parsed, so
+  // the scan alone cannot bound mammoth's memory. It stays as a cheap first
+  // layer; the bound is the child process's hard heap cap, whatever the scan
+  // missed.
   const paragraphs = (bytes: number) =>
     "<w:p><w:r><w:t>a</w:t></w:r></w:p>".repeat(Math.ceil(bytes / 34));
 
