@@ -5463,8 +5463,9 @@ describe("seedRestartClassOverridesIfMissing", () => {
     //
     // All four converge on the same seeded baseline — that convergence is the
     // point. Each case still guards something different: the pre-media one is
-    // the only case that fails if the seed stops adding `media`, the baked one
-    // pins config/openclaw.json to the seed.
+    // the only case that fails if `needsMediaTtl` is dropped from the skip check
+    // (in the others another override already forces the write), and the baked
+    // one pins config/openclaw.json to the seed.
     const startingFiles: Array<{
       name: string;
       file: () => Promise<Record<string, unknown> | null>;
