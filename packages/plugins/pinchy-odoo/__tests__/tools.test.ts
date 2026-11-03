@@ -3994,6 +3994,42 @@ describe("error handling", () => {
     expect(result.content[0].text).not.toContain("JSON-RPC");
   });
 
+  it.each([
+    [
+      "a connection that drops mid-body",
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new TypeError("terminated"));
+            },
+          }),
+          { status: 200 }
+        ),
+    ],
+    [
+      "Pinchy being unreachable",
+      () => {
+        throw new TypeError("fetch failed");
+      },
+    ],
+  ])("reports %s on the credentials fetch as Pinchy's, not Odoo's", async (_label, answer) => {
+    fetchMock.mockImplementationOnce(async () => answer() as never);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("Failed to fetch Odoo credentials");
+    expect(text).toContain("could not reach Pinchy");
+    expect(text).not.toContain("JSON-RPC");
+    expect(text).not.toContain("Odoo answered");
+  });
+
   it("does not quote a JSON answer of the wrong shape either (TypeError)", async () => {
     // `{"error": {}}` makes odoo-node read `json.error.data.message` off undefined.
     let thrown: unknown;

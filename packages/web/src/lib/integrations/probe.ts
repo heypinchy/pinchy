@@ -67,7 +67,12 @@ export async function probeIntegrationCredentials(
     }
 
     const result = await fetchOdooSchema({ ...parsed.data, uid });
-    if (!result.success) return { success: false, reason: result.error };
+    // Only an access denial says something about these credentials; any other
+    // schema failure (every model refused alike by a proxy, Odoo unreachable)
+    // must not flag the connection auth_failed.
+    if (!result.success) {
+      return { success: false, reason: result.error, transient: !result.isAuthError };
+    }
     return { success: true, freshCredentials: { uid } };
   }
 

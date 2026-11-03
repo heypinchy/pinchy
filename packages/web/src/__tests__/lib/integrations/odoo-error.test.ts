@@ -26,7 +26,7 @@ describe("describeOdooError", () => {
     expect(describeOdooError(redirect)).toBe(odooRedirectRefusedMessage(308));
     expect(odooRedirectRefusedMessage(308)).toBe(
       "Odoo answered with a redirect (HTTP 308), and Pinchy does not follow redirects. " +
-        "Enter the address Odoo is actually served from — for an http:// URL, usually its https:// address."
+        "Enter the address Odoo is actually served from — if this URL starts with http://, that is usually its https:// address."
     );
   });
 

@@ -166,14 +166,28 @@ export async function requestCredentials(args: {
   label: string;
 }): Promise<unknown> {
   const { apiBaseUrl, gatewayToken, connectionId, agentId, label } = args;
-  const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
-      `?agentId=${encodeURIComponent(agentId)}`,
-    {
-      headers: { Authorization: `Bearer ${gatewayToken}` },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    }
-  );
+  const failed = `Failed to fetch ${label} credentials for connection ${connectionId}`;
+  // A transport failure on the way to Pinchy names Pinchy. Left bare, a
+  // TypeError("fetch failed") reaches the model looking like the third-party
+  // service's own failure, and is classified like one.
+  const unreachable = (err: unknown, status: number) =>
+    new CredentialsFetchError(
+      `${failed}: could not reach Pinchy (${err instanceof Error ? err.message : String(err)})`,
+      status
+    );
+  let response: Response;
+  try {
+    response = await fetch(
+      `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
+        `?agentId=${encodeURIComponent(agentId)}`,
+      {
+        headers: { Authorization: `Bearer ${gatewayToken}` },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      }
+    );
+  } catch (err) {
+    throw unreachable(err, 0);
+  }
 
   if (!response.ok) {
     // The route puts an actionable message in the JSON body (a 404 "This
@@ -192,23 +206,21 @@ export async function requestCredentials(args: {
     })();
     const detail = body && typeof body.error === "string" ? `: ${body.error}` : "";
     throw new CredentialsFetchError(
-      `Failed to fetch ${label} credentials for connection ${connectionId}: ` +
-        `HTTP ${response.status} ${response.statusText}${detail}`,
+      `${failed}: HTTP ${response.status} ${response.statusText}${detail}`,
       response.status
     );
   }
 
   // Parse here rather than hand back `response.json()`: a parse error quotes
-  // the start of the body, and callers pass error messages to the model. Only
-  // the parse error is replaced; a connection that drops or times out while
-  // the body arrives propagates as the network failure it is.
+  // the start of the body, and callers pass error messages to the model. A
+  // connection that drops or times out while the body arrives is a transport
+  // failure, not a body that is not JSON.
   try {
     return await response.json();
   } catch (err) {
-    if (!(err instanceof SyntaxError)) throw err;
+    if (!(err instanceof SyntaxError)) throw unreachable(err, response.status);
     throw new CredentialsFetchError(
-      `Failed to fetch ${label} credentials for connection ${connectionId}: ` +
-        `Pinchy answered HTTP ${response.status} with a body that is not JSON`,
+      `${failed}: Pinchy answered HTTP ${response.status} with a body that is not JSON`,
       response.status
     );
   }

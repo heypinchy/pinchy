@@ -78,9 +78,23 @@ describe("probeIntegrationCredentials", () => {
     vi.mocked(fetchOdooSchema).mockResolvedValue({
       success: false,
       error: "Access denied",
-    } as never);
+      isAuthError: true,
+    });
     const res = await probeIntegrationCredentials("odoo", validOdooCreds);
-    expect(res).toEqual({ success: false, reason: "Access denied" });
+    expect(res).toEqual({ success: false, reason: "Access denied", transient: false });
+  });
+
+  // The login worked; every model probe then failed alike for a reason that is
+  // not about the credentials (a proxy blocking calls, Odoo unreachable).
+  // Flagging auth_failed would send the admin to re-enter a good API key.
+  it("odoo: a schema failure that is not about access is transient", async () => {
+    vi.mocked(fetchOdooSchema).mockResolvedValue({
+      success: false,
+      error: "HTTP 403: Forbidden",
+      isAuthError: false,
+    });
+    const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+    expect(res).toEqual({ success: false, reason: "HTTP 403: Forbidden", transient: true });
   });
 
   it("odoo: returns failure for invalid credentials shape", async () => {

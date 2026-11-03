@@ -219,27 +219,53 @@ describe("requestCredentials", () => {
     );
   });
 
+  // A transport failure on the way to Pinchy is Pinchy's, and must say so: a
+  // bare TypeError("fetch failed") would otherwise reach the model as if Odoo
+  // (or the mail or search provider) had failed.
   it.each([
     ["a connection reset", new TypeError("terminated")],
     [
       "the request timing out",
       new DOMException("The operation was aborted due to timeout", "TimeoutError"),
     ],
-  ])("passes %s mid-body through rather than calling the body not JSON", async (_label, cause) => {
-    const body = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode('{"credentials":'));
-        controller.error(cause);
-      },
-    });
+  ])(
+    "names %s mid-body as a failure reaching Pinchy, not a body that is not JSON",
+    async (_label, cause) => {
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"credentials":'));
+          controller.error(cause);
+        },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(body, { status: 200 }))
+      );
+
+      const err = (await requestCredentials(args).catch(
+        (e: unknown) => e
+      )) as CredentialsFetchError;
+      expect(err).toBeInstanceOf(CredentialsFetchError);
+      expect(err.message).toBe(
+        `Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy (${cause.message})`
+      );
+    }
+  );
+
+  it("names a request that never reached Pinchy as such", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(body, { status: 200 }))
+      vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      })
     );
 
-    const err = await requestCredentials(args).catch((e: unknown) => e);
-    expect(err).not.toBeInstanceOf(CredentialsFetchError);
-    expect(String((err as Error).message)).not.toContain("not JSON");
+    const err = (await requestCredentials(args).catch((e: unknown) => e)) as CredentialsFetchError;
+    expect(err).toBeInstanceOf(CredentialsFetchError);
+    expect(err.status).toBe(0);
+    expect(err.message).toBe(
+      "Failed to fetch Odoo credentials for connection conn-1: could not reach Pinchy (fetch failed)"
+    );
   });
 });
 

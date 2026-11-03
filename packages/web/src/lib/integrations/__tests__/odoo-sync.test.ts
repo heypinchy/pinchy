@@ -155,7 +155,24 @@ describe("fetchOdooSchema", () => {
     expect(result.isAuthError).toBe(false);
     // The same transport failure on every model is the connection failing,
     // not missing permissions.
-    expect(result.error).toBe("Could not reach Odoo: ETIMEDOUT");
+    expect(result.error).toBe("Odoo did not answer successfully: ETIMEDOUT");
+  });
+
+  it("words a shared HTTP failure after retries as true for an Odoo that was reached", async () => {
+    vi.useFakeTimers();
+    mockFields.mockRejectedValue(
+      Object.assign(new Error("HTTP 429: Too Many Requests"), { code: 429 })
+    );
+
+    const promise = fetchOdooSchema(creds);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("Odoo did not answer successfully: HTTP 429: Too Many Requests");
+    expect(result.isAuthError).toBe(false);
   });
 
   const READ_ACCESS_MESSAGE =

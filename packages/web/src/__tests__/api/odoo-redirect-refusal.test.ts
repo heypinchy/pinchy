@@ -206,6 +206,57 @@ describe("probeIntegrationCredentials (odoo) against a redirecting Odoo", () => 
   );
 });
 
+// Test connection against an Odoo whose login works but whose every model
+// call is refused by something in front of it (a WAF answering 403): the
+// failure says nothing about the credentials, so the connection must not be
+// flagged auth_failed.
+describe("POST /api/integrations/[id]/test when the login works but every model call fails", () => {
+  let wafFronted: { server: Server; origin: string };
+
+  beforeAll(async () => {
+    wafFronted = await listen((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        const { id, params } = JSON.parse(body) as { id: number; params: { service: string } };
+        if (params.service === "common") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id, result: 2 }));
+          return;
+        }
+        res.writeHead(403, { "content-type": "text/html" });
+        res.end(`<html>${SECRET}</html>`);
+      });
+    });
+  });
+
+  afterAll(() => {
+    wafFronted.server.close();
+  });
+
+  it("reports the failure without flagging auth_failed", async () => {
+    storedCredentials = {
+      url: wafFronted.origin,
+      db: "prod",
+      login: "admin",
+      apiKey: "key",
+      uid: 2,
+    };
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      post("/api/integrations/conn-1/test", {}),
+      routeContext({ connectionId: "conn-1" })
+    );
+    const body = await response.json();
+
+    expect(body.success).toBe(false);
+    expect(body.error).toContain("HTTP 403");
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+    expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+  });
+});
+
 // A schema sync does not authenticate first: every model probe meets the
 // redirect. That is one failure of the connection, not missing permissions on
 // each model.

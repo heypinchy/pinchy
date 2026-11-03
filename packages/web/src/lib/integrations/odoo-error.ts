@@ -9,7 +9,7 @@ const MAX_LENGTH = 300;
 export function odooRedirectRefusedMessage(status: number | string): string {
   return (
     `Odoo answered with a redirect (HTTP ${status}), and Pinchy does not follow redirects. ` +
-    "Enter the address Odoo is actually served from — for an http:// URL, usually its https:// address."
+    "Enter the address Odoo is actually served from — if this URL starts with http://, that is usually its https:// address."
   );
 }
 
