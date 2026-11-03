@@ -8,12 +8,18 @@ import { apiGet } from "@/lib/api-client";
 interface UnsearchableDocument {
   sourcePath: string;
   status: "active" | "archived";
+  /** `awaiting_conversion`: a Word or PowerPoint file search leaves out until it is converted again. */
+  reason: "no_text" | "awaiting_conversion";
 }
 
 interface UnsearchableResponse {
   documents: UnsearchableDocument[];
   /** The untruncated count — `documents` may be capped by the route. */
   total: number;
+  /** `total` per reason, untruncated as well: the shown rows can hold one reason while the scope holds both. */
+  totals: Record<UnsearchableDocument["reason"], number>;
+  /** Whether the agent has `knowledge_search`. Only then does Pinchy convert waiting files again on its own. */
+  searchesIndex: boolean;
 }
 
 export interface KnowledgeUnsearchableListProps {
@@ -83,6 +89,9 @@ export function KnowledgeUnsearchableList({
   }
 
   const hidden = result.total - result.documents.length;
+  const noText = result.totals.no_text;
+  const awaiting = result.totals.awaiting_conversion;
+  const them = awaiting === 1 ? "it" : "them";
 
   return (
     <div className="space-y-2">
@@ -91,13 +100,31 @@ export function KnowledgeUnsearchableList({
           is `skipped`, not recounted as unsearchable — while this number covers
           everything in scope. So "4 unsearchable" over "25 documents…" is the
           normal case, and without the scope named it reads as a contradiction. */}
-      <p className="text-sm text-amber-600 dark:text-amber-500">
-        {result.total === 1
-          ? "1 document in this agent's folders is indexed but holds no searchable text"
-          : `${result.total} documents in this agent's folders are indexed but hold no searchable text`}{" "}
-        — nearly always scans. Your agent won&apos;t find anything in them, so it will answer that
-        it found nothing. Reading text from scans is on the roadmap.
-      </p>
+      {noText > 0 && (
+        <p className="text-sm text-amber-600 dark:text-amber-500">
+          {noText === 1
+            ? "1 document in this agent's folders is indexed but holds no searchable text"
+            : `${noText} documents in this agent's folders are indexed but hold no searchable text`}{" "}
+          — nearly always scans. Your agent won&apos;t find anything in them, so it will answer that
+          it found nothing. A scan lands here when no vision model was available to read it; make
+          one available and the next run reads it again.
+        </p>
+      )}
+      {awaiting > 0 && (
+        <p className="text-sm text-muted-foreground">
+          {awaiting === 1
+            ? "1 Word or PowerPoint file in this agent's folders is waiting to be converted again."
+            : `${awaiting} Word or PowerPoint files in this agent's folders are waiting to be converted again.`}{" "}
+          An update to Pinchy changed how such files are converted, and search leaves {them} out
+          until then.{" "}
+          {/* Pinchy queues that run itself only for agents that search the
+              index (office-format-upgrade.ts). For any other agent, nothing
+              runs until somebody reindexes. */}
+          {result.searchesIndex
+            ? `Pinchy converts ${them} again on its own.`
+            : `A reindex converts ${them}.`}
+        </p>
+      )}
       <ul className="max-h-48 space-y-1 overflow-y-auto rounded-md border p-2">
         {result.documents.map((doc) => (
           <li key={doc.sourcePath} className="flex items-baseline gap-2 text-sm">
@@ -106,6 +133,11 @@ export function KnowledgeUnsearchableList({
             <span className="font-mono text-xs break-all">{doc.sourcePath}</span>
             {doc.status === "archived" && (
               <span className="text-muted-foreground shrink-0 text-xs">archived</span>
+            )}
+            {doc.reason === "awaiting_conversion" && (
+              <span className="text-muted-foreground shrink-0 text-xs">
+                waiting to be converted again
+              </span>
             )}
           </li>
         ))}

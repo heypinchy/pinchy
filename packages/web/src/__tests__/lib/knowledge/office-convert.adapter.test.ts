@@ -22,11 +22,13 @@ import { runSoffice, runTextOracle } from "@/lib/knowledge/office-convert";
 let tmpRoot: string;
 let outDir: string;
 let profileDir: string;
+let scratchDir: string;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-adapter-test-"));
   outDir = join(tmpRoot, "out");
   profileDir = join(tmpRoot, "profile");
+  scratchDir = join(tmpRoot, "tmp");
   process.env.KB_SOFFICE_BIN = stub("soffice-noop", "exit 0\n");
 });
 
@@ -49,7 +51,14 @@ function stub(name: string, body: string): string {
 }
 
 function run(overrides: Partial<Parameters<typeof runSoffice>[0]> = {}) {
-  return runSoffice({ inputs: [], outDir, profileDir, timeoutMs: 10_000, ...overrides });
+  return runSoffice({
+    inputs: [],
+    outDir,
+    profileDir,
+    tmpDir: scratchDir,
+    timeoutMs: 10_000,
+    ...overrides,
+  });
 }
 
 describe("runSoffice", () => {
@@ -103,6 +112,71 @@ describe("runSoffice", () => {
     // HOME must match the private profile: LibreOffice writes into $HOME too,
     // and pointing it anywhere else puts state outside the staging directory.
     expect(env.HOME).toBe(profileDir);
+    // And its scratch space goes into the batch too: left
+    // to the OS temp dir, a load that runs out of room there looks exactly
+    // like a document LibreOffice cannot read, on a volume nothing checks.
+    expect(env.TMPDIR).toBe(scratchDir);
+  });
+
+  describe("the locked-down profile", () => {
+    // Each key below was found by CANARY, not by name: a crafted document with
+    // an external picture link, converted by the real binary against a local
+    // listener (see office-convert.libreoffice.test.ts). Only
+    // BlockUntrustedRefererLinks stopped http AND file:// on its own; the
+    // others are belts. This test pins that the profile is WRITTEN, before the
+    // converter starts, into the user installation the child is pointed at.
+    async function profileAtStart(): Promise<string> {
+      const record = join(tmpRoot, "xcu-at-start");
+      process.env.KB_SOFFICE_BIN = stub(
+        "soffice-xcu",
+        `cat ${profileDir}/user/registrymodifications.xcu > ${record}\n`
+      );
+      await run();
+      return readFile(record, "utf8");
+    }
+
+    it("is in place before the converter starts", async () => {
+      expect(await profileAtStart()).toContain("<oor:items");
+    });
+
+    it("refuses to follow links from documents it did not write", async () => {
+      expect(await profileAtStart()).toMatch(
+        /oor:path="\/org\.openoffice\.Office\.Common\/Security\/Scripting"><prop oor:name="BlockUntrustedRefererLinks" oor:op="fuse"><value>true<\/value>/
+      );
+    });
+
+    it("never updates links on load, and routes any network access to a dead proxy", async () => {
+      const xcu = await profileAtStart();
+      expect(xcu).toMatch(/oor:name="Link" oor:op="fuse"><value>2<\/value>/);
+      expect(xcu).toMatch(/oor:name="ooInetProxyType" oor:op="fuse"><value>2<\/value>/);
+      expect(xcu).toMatch(
+        /oor:name="ooInetHTTPProxyName" oor:op="fuse"><value>127\.0\.0\.1<\/value>/
+      );
+      expect(xcu).toMatch(
+        /oor:name="ooInetHTTPSProxyName" oor:op="fuse"><value>127\.0\.0\.1<\/value>/
+      );
+      expect(xcu).toMatch(/oor:name="ooInetNoProxy" oor:op="fuse"><value><\/value>/);
+    });
+
+    it("keeps its scratch space in TMPDIR, whatever the build's default", async () => {
+      // LibreOffice unpacks a package into its Temp path, which defaults to
+      // $(temp) — TMPDIR — on Linux but to the profile's own temp directory
+      // on macOS builds (measured, LibreOffice 26.2). Pinned, the scratch is
+      // where the batch's TMPDIR says on every build.
+      expect(await profileAtStart()).toContain(
+        `<item oor:path="/org.openoffice.Office.Paths/Paths/org.openoffice.Office.Paths:NamedPath['Temp']"><prop oor:name="WritePath" oor:op="fuse"><value>$(temp)</value></prop></item>`
+      );
+    });
+
+    it("fails closed: if the profile cannot be written, the converter does not run", async () => {
+      const ran = join(tmpRoot, "ran");
+      process.env.KB_SOFFICE_BIN = stub("soffice-ran", `touch ${ran}\n`);
+      // A FILE where the profile directory must go.
+      writeFileSync(profileDir, "in the way");
+
+      await expect(run()).rejects.toThrow();
+      await expect(readFile(ran)).rejects.toThrow();
+    });
   });
 
   it("reports the exit code a container OOM kill produces", async () => {
@@ -116,7 +190,7 @@ describe("runSoffice", () => {
     // multi-megabyte string inside the web process.
     process.env.KB_SOFFICE_BIN = stub(
       "soffice-loud",
-      "i=0; while [ $i -lt 400 ]; do i=$((i+1)); " +
+      "i=0; while [ $i -lt 1200 ]; do i=$((i+1)); " +
         'printf "Error: source file could not be loaded padding padding padding padding\\n" >&2; ' +
         "done\n"
     );
@@ -125,6 +199,26 @@ describe("runSoffice", () => {
 
     expect(result.stderr.length).toBeLessThan(64 * 1024);
     expect(result.stderr).toContain("could not be loaded");
+  });
+
+  it("keeps enough stderr for every file of a full batch whose PDFs did not fit", async () => {
+    // The per-file `impl_store … failed` line is what the operator is shown
+    // for a PDF a full volume did not take (the volume itself decides that).
+    // At production staging-path lengths a batch of 20 prints
+    // ~9 KB of them; the last file must not lose its line to the cap.
+    const dir = `/app/kb-artifacts/staging/${"0".repeat(8)}-0000-4000-8000-${"0".repeat(12)}`;
+    process.env.KB_SOFFICE_BIN = stub(
+      "soffice-full",
+      'printf "Warning: failed to launch javaldx - java may not function correctly\\n" >&2; ' +
+        "i=0; while [ $i -lt 20 ]; do " +
+        `printf "convert ${dir}/in/$i.pptx -> ${dir}/out/$i.pdf using filter : impress_pdf_Export\\n" >&2; ` +
+        `printf "Error: Please verify input parameters... (SfxBaseModel::impl_store <file://${dir}/out/$i.pdf> failed: 0x507(Error Area:Io Class:Access Code:7) at ./sfx2/source/doc/sfxbasemodel.cxx:3207 at ./sfx2/source/doc/sfxbasemodel.cxx:1783)\\n" >&2; ` +
+        "i=$((i+1)); done\n"
+    );
+
+    const result = await run();
+
+    expect(result.stderr).toContain(`impl_store <file://${dir}/out/19.pdf> failed`);
   });
 
   it("rejects rather than resolving when the binary is missing", async () => {

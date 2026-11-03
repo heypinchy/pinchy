@@ -1276,6 +1276,13 @@ export const kbDocuments = pgTable(
     // the next run — chunks or not — until a read finishes or the retries run
     // out (MAX_INCOMPLETE_READS in ingest.ts). 0 for a read that finished.
     incompleteReads: integer("incomplete_reads").notNull().default(0),
+    // For an Office document converted to PDF, the artifact format version
+    // (OFFICE_ARTIFACT_FORMAT_VERSION) its chunks were read from; null for
+    // every other format. An unchanged document whose version is not the
+    // current one — including null, on a row written before this was recorded
+    // — is converted and read again, so a change to the conversion rules
+    // reaches documents that never change (ingest.ts).
+    artifactFormatVersion: integer("artifact_format_version"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
@@ -1384,6 +1391,13 @@ export const kbIndexJobs = pgTable(
     // only evidence of how far the run got.
     counts: jsonb("counts").$type<IngestResult>(),
     error: text("error"),
+    // The Office artifact format version (OFFICE_ARTIFACT_FORMAT_VERSION) the
+    // run converted under, written when it reaches a terminal state; null on a
+    // job that has not, and on every job finished before this was recorded. A
+    // run under earlier rules converted nothing under the current ones, so it
+    // does not excuse its folders from the run a format bump owes them
+    // (office-format-upgrade.ts).
+    artifactFormatVersion: integer("artifact_format_version"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     startedAt: timestamp("started_at"),
     finishedAt: timestamp("finished_at"),

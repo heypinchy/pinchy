@@ -52,6 +52,7 @@ import { and, count, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
+import { errorLine, LOG_PATH_MAX, LOG_REASON_MAX, oneLine } from "@/lib/log-line";
 
 import {
   DEFAULT_ALLOWED_EXTENSIONS,
@@ -68,12 +69,14 @@ import { detectLang } from "./lid";
 import { collectHeadingSections, headingLocatorAt } from "./heading-sections";
 import {
   isOfficeFile,
+  OfficeFileRejectedError,
   isPresentationFile,
   isSpreadsheetFile,
   isWordFile,
   OFFICE_CONVERT_BATCH_SIZE,
 } from "./office-formats";
 import type { ChunkLocator } from "./locator";
+import { OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
 import type { IngestPage, IngestResult } from "./types";
@@ -471,6 +474,22 @@ interface ExtractedDocument {
   reader: "pdf" | "sheets" | "converter";
 }
 
+/**
+ * The artifact format version a document's chunks are read from: the current
+ * one for an Office document the converter turns into a PDF, none for every
+ * other format.
+ *
+ * Recorded on the row (`kb_documents.artifact_format_version`) and compared on
+ * every run, because the artifact store alone cannot carry a change of rules
+ * to an unchanged document: its hash matches, it has chunks, and it never asks
+ * the store for anything. A row whose version is not this one is converted and
+ * read again — its chunks, and the artifact a citation opens, then both come
+ * from the current rules.
+ */
+function artifactFormatVersionFor(absPath: string): number | null {
+  return isOfficeFile(absPath) ? OFFICE_ARTIFACT_FORMAT_VERSION : null;
+}
+
 /** The fields every page-shaped extraction derives from its pages alike. */
 function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text" | "incomplete"> {
   return {
@@ -505,7 +524,9 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
  * batch through the same checks as every other source read
  * (`copyVerifiedSource`). A document that cannot be copied that way is left
  * out of the batch and NOT answered: its own turn reads it again, and books
- * the refusal or the failure then, once.
+ * the refusal or the failure then, once. Each copy goes with its path on the
+ * share (`displayPath`), so what the converter logs and answers names the file
+ * an admin can find, not the copy.
  *
  * Each answer is kept with the hash of the copy it was converted from, and is
  * given only to a turn asking with that same hash. A batch mate's own turn
@@ -541,7 +562,7 @@ function officeArtifacts(
     // document in a batch is read in full and copied before the converter sees
     // it, even one the artifact store already holds.
     const batch: { path: string; hash: string }[] = [{ path: absPath, hash: contentHash }];
-    const sources: OfficeSource[] = [{ absPath: copyPath, contentHash }];
+    const sources: OfficeSource[] = [{ absPath: copyPath, contentHash, displayPath: absPath }];
     const copies: VerifiedCopy[] = [];
 
     try {
@@ -558,7 +579,7 @@ function officeArtifacts(
         }
         copies.push(copy);
         batch.push({ path: mate.absPath, hash: copy.hash });
-        sources.push({ absPath: copy.path, contentHash: copy.hash });
+        sources.push({ absPath: copy.path, contentHash: copy.hash, displayPath: mate.absPath });
       }
 
       const outcomes = await deps.convertOffice(sources);
@@ -620,6 +641,19 @@ type ResolveArtifact = (
 ) => Promise<ConversionOutcome>;
 
 /**
+ * The server log's line for a file refused before anything was indexed from
+ * it. The path is whatever name the file was given on the share, newlines
+ * included, and a reason can quote the file or the file system — so neither is
+ * printed as it stands: one refusal is one bounded line, and cannot pass for
+ * another.
+ */
+function logRefusal(absPath: string, verdict: string, reason: string): void {
+  console.warn(
+    `[kb-ingest] ${oneLine(absPath, LOG_PATH_MAX)}: ${verdict} — ${oneLine(reason, LOG_REASON_MAX)}`
+  );
+}
+
+/**
  * Reads one file into chunks with locators, dispatching on its extension.
  *
  * The dispatch is the whole Wave-2 shape, and every branch anchors on what the
@@ -649,7 +683,20 @@ async function extractDocument(
   }
 
   if (isSpreadsheetFile(absPath)) {
-    const extraction = await deps.extractXlsx(copyPath);
+    const extraction = await deps.extractXlsx(copyPath).catch((err: unknown) => {
+      if (!(err instanceof OfficeFileRejectedError)) throw err;
+      // Refused unread: too large to load (a compressed bomb is the case that
+      // matters), or not the workbook its name says (a broken archive, a
+      // number format exceljs would choke on). That is a verdict on THIS file,
+      // and a final one — retrying reads the same bytes — so it becomes a row
+      // with no chunks, which is exactly how the unreadable list
+      // (unsearchable.ts) finds it, with its reason in the server log.
+      logRefusal(absPath, "not read", err.message);
+      return null;
+    });
+    if (extraction === null) {
+      return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "sheets" };
+    }
     return {
       chunks: extraction.chunks.map(({ text, sheet, startRow, endRow }) => ({
         text,
@@ -717,6 +764,14 @@ async function extractOfficeDocument(
     // the document — a source briefly unreadable on a network share,
     // LibreOffice exiting without a PDF — so it is retried a few runs before
     // it is taken as final.
+    //
+    // The unreadable list never says why, and the admin-facing counts must not
+    // name paths, so this is the only place an operator learns which document
+    // was refused and for what — logged on every run that refuses it, not only
+    // the last. The reason holds no document text, but it can quote names read
+    // from the file and the file's own path, so `logRefusal` keeps it to one
+    // line.
+    logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
     return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
   }
 
@@ -848,7 +903,11 @@ function ocrSetup(deps: IngestDeps): string {
 }
 
 /** What a read leaves on its document row (`kb_documents`). */
-type ExtractionRecord = { emptyExtractionBy: string | null; incompleteReads: number };
+type ExtractionRecord = {
+  emptyExtractionBy: string | null;
+  incompleteReads: number;
+  artifactFormatVersion: number | null;
+};
 
 /**
  * What to record about a read, given how many reads before it in a row did
@@ -861,6 +920,7 @@ type ExtractionRecord = { emptyExtractionBy: string | null; incompleteReads: num
  * it is still rebuilt.
  */
 function extractionRecord(
+  absPath: string,
   extracted: ExtractedDocument,
   deps: IngestDeps,
   previousIncompleteReads: number
@@ -872,6 +932,7 @@ function extractionRecord(
     emptyExtractionBy:
       extracted.chunks.length === 0 && settled ? `${EXTRACTION_VERSION}|${reader}` : null,
     incompleteReads,
+    artifactFormatVersion: artifactFormatVersionFor(absPath),
   };
 }
 
@@ -954,11 +1015,18 @@ async function ingestFile(
       await db.update(kbDocuments).set({ status }).where(eq(kbDocuments.id, existing.id));
     }
 
+    // Chunks read from an artifact the current conversion rules did not make
+    // are owed a new read, whatever else is on record: the rules changed
+    // because of what such an artifact may hold.
+    const current = existing.artifactFormatVersion === artifactFormatVersionFor(absPath);
+    // Retries already spent were spent under the earlier rules.
+    const previousIncompleteReads = current ? existing.incompleteReads : 0;
+
     // A read that did not finish is owed another one, chunks or not: a scan
     // with a typed cover sheet has chunks of its own even when every vision
     // call behind it failed.
     const retryOwed =
-      existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS;
+      !current || (existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS);
 
     // A file with no text at all: the last read found nothing. Reading it
     // again with the same setup would find the same nothing — and under the
@@ -984,7 +1052,8 @@ async function ingestFile(
     // Robustness case: a document row survives with zero chunks and no
     // empty read on record (a prior ingest crashed after the document insert
     // but before chunk writes, an operator hand-deleted kb_chunks rows, or
-    // the row predates the record), or its last read is owed a retry. The
+    // the row predates the record), or its last read is owed a retry — which
+    // a read from an earlier artifact format always is. The
     // content hash still matches the file on disk, so a naive "hash matches ->
     // skip" would leave this document unsearchable while silently reporting
     // success. We read it again instead and rebuild its chunks in place (same
@@ -1000,10 +1069,15 @@ async function ingestFile(
     } else {
       const { extracted } = read;
       // A retry that fails worse than the read before it must not cost the text
-      // that read found: an outage that returned keeps what is stored.
+      // that read found: an outage that returned keeps what is stored. Never
+      // chunks from an earlier artifact format, though — what the current rules
+      // refuse must not stay searchable through what the earlier ones made.
       const keepStored =
-        storedChunks > 0 && extracted.incomplete && extracted.chunks.length < storedChunks;
-      const record = extractionRecord(extracted, deps, existing.incompleteReads);
+        current &&
+        storedChunks > 0 &&
+        extracted.incomplete &&
+        extracted.chunks.length < storedChunks;
+      const record = extractionRecord(absPath, extracted, deps, previousIncompleteReads);
       const written = await writeChunks(
         existing.id,
         orgId,
@@ -1050,7 +1124,7 @@ async function ingestFile(
       // window in which a crash could leave it claiming a read that did not
       // finish. A crash before the chunks leaves a row the zero-chunk branch
       // rebuilds.
-      ...extractionRecord(extracted, deps, 0),
+      ...extractionRecord(absPath, extracted, deps, 0),
     })
     .returning();
 
@@ -1288,7 +1362,11 @@ export async function ingestPaths(
       if (!(err instanceof FileIngestError)) throw err;
       // The admin-facing counts must not name paths (audit PII rule), so this
       // server log is the only place that says WHICH file failed and why.
-      console.error(`[kb-ingest] ${err.message}`, err.cause);
+      // The message names the file, and the cause — a file-system error, a
+      // reader's — quotes it in its message and stack, so both go through the
+      // same escaping as a refusal: a newline in a file name cannot write a
+      // line of its own.
+      console.error(`[kb-ingest] ${oneLine(err.message, LOG_PATH_MAX + 32)}`, errorLine(err.cause));
       if (err.cause instanceof SourceRefusedError) opts.onRefusedFile?.(absPath, err.cause.refusal);
       failed++;
     }
