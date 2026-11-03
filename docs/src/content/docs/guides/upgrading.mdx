@@ -244,6 +244,30 @@ Setting a switch is the whole fix where one applies; nothing needs re-entering. 
 
 If none of these is your install, there's nothing to do.
 
+#### Email tools send to one recipient per call
+
+`email_send` and `email_draft` now take exactly one address in `to`. A list — `"a@x.at, b@y.at"`, addresses separated by `;`, or an array — is refused with an error that tells the agent to send one email per recipient, and so is an address that imitates a separator, such as a fullwidth `＠`, or whose domain isn't a valid domain name, such as one with a label `xn--a` that doesn't decode, or a display name longer than 64 characters, with a run of spaces, or with an invisible or blank-rendering character (emoji are fine, and so are the zero-width non-joiner and joiner that Persian and Indic names carry, such as علی‌رضا, and so is a single no-break or ideographic space, as in `"山田　太郎" <yamada@example.jp>`). A display name with a comma or parentheses must be in double quotes — `"Müller, Hans" <hans@example.com>`; unquoted, it is refused with an error that tells the agent to add the quotes. The mail libraries behind both tools read a recipient string as a list, so a second address tucked behind a comma used to be delivered to as well.
+
+What changes in practice: an agent asked to write to several people, or to draft a reply-all, now produces one email or one draft per recipient instead of a single message to everyone. If you wrote your own agent instructions that pass several addresses at once, update them to send separate emails. [Tool confirmation → The card shows what will run](/guides/tool-confirmation/#the-card-shows-what-will-run) has the full rules.
+
+#### File tools refuse paths that don't read as their target
+
+`pinchy_write` now refuses a path longer than 1,024 characters, with a `..` segment, not in its plain form (a `.` segment, an empty segment such as `//`, or a trailing `/`), with an invisible or blank-rendering character (such as a zero-width space, a line separator, or the braille blank U+2800), in decomposed Unicode form (NFD), or with a file or folder name that starts or ends with a space. Each refusal tells the agent why, so it retries with the plain path. Ordinary paths — spaces, umlauts, emoji such as ⚠️ or 👨‍👩‍👧, the zero-width non-joiner and joiner that Persian or Indic names carry, such as گزارش‌ها or ශ්‍රී, the emoji presentation selectors, and visible-width spaces such as the no-break space in a macOS screenshot name included — work as before. `pinchy_delete` and `pinchy_generate_file`, both new in this release, follow the same rules; [Tool confirmation → The card shows what will run](/guides/tool-confirmation/#the-card-shows-what-will-run) lists where they differ.
+
+One limit follows from the NFC rule. A file stored under a decomposed (NFD) name — typically one copied in from a Mac — is still reached by its composed spelling: the tools look for the other form on disk before they write or delete. What they cannot reach is a path whose parts mix the two forms on disk, such as a composed folder name holding a decomposed file name. There, a write creates a second, composed file next to the original and a delete reports that the file doesn't exist. Rename such a file to its composed form to work with it.
+
+#### Odoo checks the name you give beside an account code
+
+Odoo lookups now resolve a GL account or a journal by its code — `"6000"`, or the `"6000 Office supplies"` form a chart of accounts prints — and the name beside a code has to be the name of the record the code finds. Case, extra spaces and one separator such as `"6000 - Office supplies"` don't matter; a different name does. A lookup whose name contradicts its code is refused with the name the code actually carries, so the agent retries with the right one.
+
+One lookup that resolved in v0.9.1 is refused now: `{"lookup": {"code": "6000", "name": "Bank fees"}}`. v0.9.1 ignored the code and used whichever account is called "Bank fees". Now that lookup is refused when account 6000 carries another name, and when no account has the code 6000 — then the refusal names the code of the account called "Bank fees", so the agent sends a code and a name of the same account. Countries are the exception — a country code that names no country leaves the name to decide, as before. See [Connect Odoo → How an agent names a record](/guides/connect-odoo/#how-an-agent-names-a-record).
+
+#### Every tool refuses a parameter it doesn't declare
+
+A call to a Pinchy tool that carries a field the tool doesn't take is now refused before the tool runs. In v0.9.1 most tools ignored the extra field; about half of the Odoo tools already refused one. The agent is told and calls again without it. On most model providers the agent runtime refuses the call against the tool's declared parameters and says the call has fields the tool doesn't take; on providers whose tool-schema handling drops that check, such as Gemini, the tool refuses it itself and lists the fields it takes.
+
+Two calls change for agents you already run. `email_search` now refuses an empty `query` too — v0.9.1 refused only a non-empty one, with a message naming the filters to use. And `odoo_delete` refuses `ids` (see [above](#deleting-in-odoo-now-requires-reading-the-record-first)). Both tool descriptions now say what to use instead, so an agent doesn't need the error to find out.
+
 ### Upgrade notes
 
 The standard flow applies:
@@ -300,6 +324,8 @@ Some actions are worth a second look — sending an email, writing to Odoo, dele
 Set it in the agent's **Settings → Permissions**, under **Require confirmation before**. **Use recommended** ticks the tools that change things and leaves read-only ones alone, so the agent keeps feeling fast.
 
 For Odoo the model table on the same page carries three states per cell — **Not allowed**, **Ask first**, **Allowed** — because "ask before deleting" is usually too broad: an invoice deserves a second look, a note doesn't, and an agent that stops for both teaches people to click through without reading. A cell you've never touched inherits the tool setting above it, so gating deletion covers models you add next month, and setting one cell to **Allowed** stays an exception.
+
+The confirmation card shows the whole call: every field and its value, every recipient on a line of its own, the server a web address actually reaches when that differs from the one it reads as, and invisible characters spelled out as markers. Only text under a secret-like field name is hidden. A call too large to show in full — more than 100 fields in an object, 200 entries in a list, 200,000 characters in one text or 512,000 in all — is refused before any card opens: the agent is told which limit it crossed and to split the call where that helps, and the audit trail records `approval.refused`. Ordinary work, such as an Odoo invoice with dozens of lines or a report of a few dozen pages, fits well within these limits.
 
 Nothing changes for your existing agents on upgrade — no tool is gated until you gate one. Worth knowing before you do: a confirmation expires after 10 minutes and the action stays blocked, an approval is per person and good for exactly one action, there's no "always allow", and confirmations can only be answered in the Pinchy app — so a gated tool stays blocked on other channels and in scheduled runs, which have nobody to ask. [Require confirmation before a tool runs](/guides/tool-confirmation/) walks through the rest.
 

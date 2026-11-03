@@ -8,6 +8,7 @@ import { scrubEmails } from "@/lib/scrub-emails";
 // never enter audit.ts's module graph.
 import type { ProbeFailureCode } from "@/lib/integrations/imap-probe";
 import type { KbIndexJobTrigger } from "@/db/enums";
+import type { SummaryLimit } from "@/lib/approvals/summary";
 
 // Transaction-scoped advisory lock key that serializes audit appends so the
 // prev-hash chain can never fork (two writers must not read the same
@@ -214,6 +215,11 @@ export type AuditEventType =
   | "approval.denied"
   | "approval.consumed"
   | "approval.expired"
+  // A gated call whose arguments the confirmation card or the approval prompt
+  // cannot show in full — too large, too costly to draw, or reaching more hosts
+  // than the prompt can name: nothing was opened, so nobody could approve what
+  // they cannot see.
+  | "approval.refused"
   | "approval.gc"
   // Cost budgets (#36). Written once per budget and month by the budget
   // monitor when spend crosses 80% (threshold_reached) and 100% (exceeded).
@@ -530,6 +536,24 @@ export type AuditLogEntry =
         /** Set on sweep-emitted rows (approval.expired) so analysts can
          * correlate one sweep run (AGENTS.md §"Audit logging rules"). */
         sweepId?: string;
+      };
+    })
+  | (AuditLogBase & {
+      // A gated call the gate would not open a confirmation for. There is no
+      // request row, so no `request.id`; the digest still binds exactly which
+      // call it was.
+      eventType: "approval.refused";
+      detail: {
+        agent: { id: string; name: string | null };
+        requester: { id: string; name: string | null };
+        toolName: string;
+        argsDigest: string;
+        reason: "too-large-to-show";
+        /** Which bound the call crossed (`SummaryLimit["kind"]` in
+         * `approvals/summary.ts`, `too-many-hosts` from `approvals/prompt.ts`)
+         * — never the value, the key path or a host, which may carry the
+         * call's content. */
+        exceeded: SummaryLimit["kind"];
       };
     })
   | (AuditLogBase & {
