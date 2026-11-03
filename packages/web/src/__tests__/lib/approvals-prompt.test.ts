@@ -512,6 +512,18 @@ describe("buildApprovalPrompt", () => {
     );
   });
 
+  // A host is named by its end; the cut counts characters, not UTF-16
+  // halves, so an astral character at the cut stays whole.
+  it("names a long host with astral characters by its end without splitting one", () => {
+    const { description } = promptFor("odoo_write", {
+      model: "res.partner",
+      ids: [7],
+      values: { email: `x@${"\u{1F600}".repeat(60)}.xn--a.bc`, comment: "a".repeat(300) },
+    });
+    expect(description).toContain("xn--a.bc");
+    expect(description.isWellFormed()).toBe(true);
+  });
+
   it("adds no control characters to a call without right-to-left text", () => {
     const { description } = promptFor("pinchy_write", { path: "/data/2024/x.md" });
     expect(description).not.toMatch(/[\u2066-\u2069\u202A-\u202E]/);

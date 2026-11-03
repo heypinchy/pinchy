@@ -107,15 +107,22 @@ function describeArgs(summary: Record<string, unknown>): string {
   );
 }
 
+/** The last `max` UTF-16 units of `text`, never starting inside a surrogate pair. */
+function endOf(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let start = text.length - max;
+  const first = text.charCodeAt(start);
+  if (first >= 0xdc00 && first <= 0xdfff) start++;
+  return `…${text.slice(start)}`;
+}
+
 /**
  * Every host the call reaches, each once — `reaches "evil.com", "…aaaa.evil.org"
  * — `. A host longer than PROMPT_HOST_MAX is named by its end, where the
  * domain it reaches is. Empty when it reaches none.
  */
 function reachesClause(hosts: string[]): string {
-  const named = [...new Set(hosts)].map((host) =>
-    quoted(host.length > PROMPT_HOST_MAX ? `…${host.slice(-PROMPT_HOST_MAX)}` : host)
-  );
+  const named = [...new Set(hosts)].map((host) => quoted(endOf(host, PROMPT_HOST_MAX)));
   return named.length > 0 ? `reaches ${named.join(", ")} — ` : "";
 }
 
