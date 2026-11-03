@@ -1738,6 +1738,30 @@ it("leaves a document whose conversion failed in the index with no chunks", asyn
   expect(await chunksFor(doc.id)).toHaveLength(0);
 });
 
+it("names a refused Office document and the reason in the server log, once", async () => {
+  // The unreadable list says THAT a file is unsearchable, never why; the
+  // admin-facing counts must not name paths at all. The server log is the only
+  // place an operator learns which document was refused and for what.
+  const docPath = join(tmpRoot, "Angebot.doc");
+  writeFileSync(docPath, "<html><body>not a Word document</body></html>");
+  const reason = "refused before conversion: the content is HTML, not the format its name claims";
+
+  const { deps } = officeDeps(
+    (absPath) => ({ sourcePath: absPath, status: "failed", reason }),
+    () => WORD_PAGES
+  );
+
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+    const lines = warn.mock.calls.map(([line]) => String(line)).filter((l) => l.includes(docPath));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(reason);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
 it("does not record a document as unreadable when the converter itself was unavailable", async () => {
   // The distinction #936 exists for: out of memory or a missing binary says
   // nothing about the document. Recording it would brand a perfectly good file
@@ -1848,6 +1872,7 @@ describe("an artifact volume that cannot be written", () => {
 
     writeFileSync(docPath, "{\\rtf1 version two}");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       expect(
         await ingestDirectory(
@@ -1856,8 +1881,16 @@ describe("an artifact volume that cannot be written", () => {
           realConverterDeps(prepareSource, runConverter, statfs)
         )
       ).toEqual(counts({ failed: 1 }));
+      // Reported once, as the failed run it is — never also as a refusal of
+      // the document, which the volume check just took back.
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining(docPath),
+        expect.anything()
+      );
+      expect(warn.mock.calls.filter(([line]) => String(line).includes(docPath))).toEqual([]);
     } finally {
       consoleError.mockRestore();
+      warn.mockRestore();
     }
 
     const [after] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
@@ -1905,8 +1938,10 @@ describe("an artifact volume that cannot be written", () => {
     // The real binary prints the same `impl_store … failed … Error Area:Io`
     // for a .pptx whose every slide is hidden — on a volume with room. That
     // is a verdict on the deck, not a full disk to retry forever.
-    writeFileSync(join(tmpRoot, "Praesentation.pptx"), "deck bytes");
+    const deckPath = join(tmpRoot, "Praesentation.pptx");
+    writeFileSync(deckPath, "deck bytes");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       expect(
         await ingestDirectory(
@@ -1922,8 +1957,16 @@ describe("an artifact volume that cannot be written", () => {
           )
         )
       ).toEqual(counts({ unsearchable: 1 }));
+      // The verdict that stands after the volume was ruled out is the one the
+      // operator is told, with LibreOffice's own words for it.
+      const lines = warn.mock.calls
+        .map(([line]) => String(line))
+        .filter((line) => line.includes(deckPath));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("no artifact produced");
     } finally {
       consoleError.mockRestore();
+      warn.mockRestore();
     }
   });
 });

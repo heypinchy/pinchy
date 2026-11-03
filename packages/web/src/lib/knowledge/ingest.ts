@@ -657,6 +657,13 @@ async function extractOfficeDocument(
     // the document — a source briefly unreadable on a network share,
     // LibreOffice exiting without a PDF — so it is retried a few runs before
     // it is taken as final.
+    //
+    // The unreadable list never says why, and the admin-facing counts must not
+    // name paths, so this is the only place an operator learns which document
+    // was refused and for what. The outcome is final here — the converter has
+    // already ruled out its own volume — and its reason never carries document
+    // content.
+    console.warn(`[kb-ingest] ${absPath}: not converted — ${outcome.reason ?? "unknown"}`);
     return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
   }
 
