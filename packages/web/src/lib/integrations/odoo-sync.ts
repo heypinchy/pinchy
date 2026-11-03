@@ -266,9 +266,14 @@ export interface OdooSyncError {
 const MAX_CONCURRENCY = 5;
 const MAX_RETRIES = 2;
 
-/** Returns true if the error is a permission/access issue (should not retry). */
+/**
+ * Returns true if the error is Odoo refusing this user access (should not
+ * retry). An HTTP-level error is not: "HTTP 405: Method Not Allowed" is the
+ * server refusing the method, whatever words its status line uses.
+ */
 function isAccessError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  if (isHttpLevelError(error)) return false;
   const msg = error.message.toLowerCase();
   return (
     msg.includes("accesserror") ||
@@ -286,8 +291,19 @@ function isAccessError(error: unknown): boolean {
  * `code` 0 — and a bare error from elsewhere carries neither.
  */
 function odooAnswered(error: unknown): boolean {
+  return isHttpLevelError(error) || (error as { data?: unknown } | null)?.data !== undefined;
+}
+
+/** odoo-node's shape for an HTTP-level failure: the status in `code`, no `data`. */
+function isHttpLevelError(error: unknown): boolean {
   const { code, data } = (error ?? {}) as { code?: unknown; data?: unknown };
-  return data !== undefined || (typeof code === "number" && code >= 100);
+  return typeof code === "number" && code >= 100 && data === undefined;
+}
+
+/** odoo-node's shape for no usable answer at all — even one that broke off. */
+function isNoAnswerError(error: unknown): boolean {
+  const { code, data } = (error ?? {}) as { code?: unknown; data?: unknown };
+  return code === 0 && data === undefined;
 }
 
 /** How many distinct failure texts a mixed sync failure names. */
@@ -410,7 +426,7 @@ export async function fetchOdooSchema(credentials: {
           if (!transient || attempt === MAX_RETRIES) {
             // Non-transient, or out of retries — no point in trying again.
             const described = describeOdooError(error);
-            const unreachable = transient && !odooAnswered(error);
+            const unreachable = isNoAnswerError(error) || (transient && !odooAnswered(error));
             const text =
               transient && !unreachable
                 ? `Odoo did not answer successfully: ${described}`

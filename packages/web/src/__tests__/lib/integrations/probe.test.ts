@@ -357,6 +357,17 @@ describe("probeIntegrationCredentials", () => {
       expect(res.transient).toBe(true);
     });
 
+    it("reports an internal error during the login as Pinchy's, without blaming Odoo", async () => {
+      mockAuthenticate.mockRejectedValue(
+        new TypeError("Cannot read properties of undefined (reading 'map')")
+      );
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      if (res.success) throw new Error("expected failure");
+      expect(res.reason).toMatch(/^Pinchy hit an internal error while talking to Odoo/);
+      expect(res.reason).not.toMatch(/Odoo didn't answer/);
+      expect(res.transient).toBe(true);
+    });
+
     it("does not call a non-JSON-RPC answer an authentication failure", async () => {
       mockAuthenticate.mockRejectedValue(
         await realOdooError("Response is not JSON-RPC (HTTP 200, text/plain)", 200)

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { OdooError } from "odoo-node";
-import { describeOdooError, odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
+import {
+  describeOdooAuthenticateFailure,
+  describeOdooError,
+  odooRedirectRefusedMessage,
+} from "@/lib/integrations/odoo-error";
 
 describe("describeOdooError", () => {
   it("passes an Odoo error message through", () => {
@@ -57,5 +61,18 @@ describe("describeOdooError", () => {
 
   it("falls back for an empty message", () => {
     expect(describeOdooError(new Error("   "))).toBe("Connection failed");
+  });
+});
+
+describe("describeOdooAuthenticateFailure", () => {
+  // Our own bug is neither Odoo misbehaving nor a refused login.
+  it("reports an internal error as Pinchy's, without blaming Odoo", () => {
+    const bug = new TypeError("Cannot read properties of undefined (reading 'map')");
+
+    const result = describeOdooAuthenticateFailure(bug);
+
+    expect(result.reason).toBe(describeOdooError(bug));
+    expect(result.reason).not.toMatch(/Odoo didn't answer/);
+    expect(result.transient).toBe(true);
   });
 });

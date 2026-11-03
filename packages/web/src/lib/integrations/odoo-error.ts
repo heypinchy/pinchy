@@ -25,20 +25,29 @@ export function odooRedirectRefusedMessage(status: number | string): string {
  * JSON-RPC envelope of the wrong shape (`{"error": {}}`) still escapes as a
  * `TypeError` reading `error.data.message`, which says nothing useful, so it
  * gets the plain sentence alone; any other `TypeError` is a bug on our side
- * and says so. odoo-node's refused-redirect message names
- * the library; the admin gets `odooRedirectRefusedMessage` instead, the same
- * sentence listing databases shows.
+ * and says so. odoo-node's refused-redirect message names the library; the
+ * admin gets `odooRedirectRefusedMessage` instead, the same sentence listing
+ * databases shows.
  *
  * Everything else passes through, collapsed to one line and capped, so even
  * an Odoo-shaped error from a misbehaving server cannot fill a toast with a
  * page of text.
  */
+/**
+ * A `TypeError` that is not odoo-node reading `error.data.message` off a
+ * JSON-RPC error without `data`: a bug on our side. The test is on V8's
+ * message alone, so a bug of ours that reads `message` off undefined is taken
+ * for the envelope case — the code paths that feed these functions call
+ * odoo-node and little else, and nothing in them reads `.message` that way.
+ */
+function isInternalTypeError(err: unknown): err is TypeError {
+  return err instanceof TypeError && !/\(reading 'message'\)$/.test(err.message);
+}
+
 export function describeOdooError(err: unknown): string {
   const notOdoo = "Check that the URL points at the Odoo server itself.";
   if (err instanceof TypeError) {
-    // odoo-node reads `json.error.data.message`; nothing else reads `message`
-    // off undefined/null on this path. Any other TypeError is our bug.
-    if (/\(reading 'message'\)$/.test(err.message)) {
+    if (!isInternalTypeError(err)) {
       return `Odoo answered with something that is not a JSON-RPC response. ${notOdoo}`;
     }
     return (
@@ -96,6 +105,8 @@ export function describeOdooAuthenticateFailure(err: unknown): {
   transient?: boolean;
 } {
   const detail = describeOdooError(err);
+  // Our own bug: neither a refused login nor Odoo misbehaving.
+  if (isInternalTypeError(err)) return { success: false, transient: true, reason: detail };
   if (isOdooAuthFailure(err)) {
     return {
       success: false,

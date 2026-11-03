@@ -53,8 +53,10 @@ function redirectMessage(status: string): string {
  */
 export function describeOdooError(err: unknown): string {
   if (err instanceof TypeError) {
-    // odoo-node reads `json.error.data.message`; nothing else reads `message`
-    // off undefined/null on this path.
+    // odoo-node reads `json.error.data.message` off a JSON-RPC error without
+    // `data`. The test is on V8's message alone, so a bug of ours that reads
+    // `message` off undefined is taken for that case too; tool code reaches
+    // odoo-node through this path and reads `.message` only off caught errors.
     if (/\(reading 'message'\)$/.test(err.message)) return NOT_JSON_RPC_MESSAGE;
     return `The Odoo tool hit an internal error (TypeError: ${err.message}); this is not about the Odoo connection.`;
   }

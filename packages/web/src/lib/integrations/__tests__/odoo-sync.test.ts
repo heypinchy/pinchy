@@ -257,6 +257,33 @@ describe("fetchOdooSchema", () => {
     expect(result.error).toBe("Odoo did not answer successfully: Lock wait timeout exceeded");
   });
 
+  // "Not Allowed" in an HTTP status line is the server refusing the method,
+  // not Odoo refusing this user access to a model.
+  it("does not read an HTTP 405 as an access denial", async () => {
+    mockFields.mockRejectedValue(
+      Object.assign(new Error("HTTP 405: Method Not Allowed"), { code: 405 })
+    );
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("HTTP 405: Method Not Allowed");
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("says Odoo could not be reached when odoo-node's answer broke off", async () => {
+    // odoo-node wraps a failed body read as code 0, no data: no usable answer.
+    mockFields.mockRejectedValue(Object.assign(new Error("terminated"), { code: 0 }));
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("Could not reach Odoo: terminated");
+    expect(result.isAuthError).toBe(false);
+  });
+
   it("keeps the read-access message when Odoo grants read access to no model", async () => {
     mockFields.mockResolvedValue([{ name: "id" }]);
     mockCheckAccessRights.mockResolvedValue(false);

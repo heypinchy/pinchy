@@ -244,6 +244,24 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
     });
 
+    it("reports an internal error in the self-heal as Pinchy's, without flagging auth_failed", async () => {
+      mockOdooAuthenticate.mockRejectedValue(
+        new TypeError("Cannot read properties of undefined (reading 'map')")
+      );
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-1/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+      const body = await response.json();
+
+      expect(body.success).toBe(false);
+      expect(body.error).toMatch(/^Pinchy hit an internal error while talking to Odoo/);
+      expect(body.error).not.toMatch(/Odoo didn't answer/);
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+    });
+
     it("still flags auth_failed when Odoo refuses the login", async () => {
       mockOdooAuthenticate.mockRejectedValue(await realOdooError("Authentication failed"));
       const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
