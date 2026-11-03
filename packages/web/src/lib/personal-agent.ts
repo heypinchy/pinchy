@@ -7,7 +7,7 @@ import {
   writeIdentityFile,
 } from "@/lib/workspace";
 import { getContextForAgent } from "@/lib/context-sync";
-import { getSetting } from "@/lib/settings";
+import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { type ProviderName } from "@/lib/providers";
 import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
@@ -87,7 +87,7 @@ export async function seedPersonalAgent(userId: string, isAdmin = false) {
   });
   if (existing) return existing;
 
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
+  const defaultProvider = (await getUsableDefaultProvider()) as ProviderName | null;
   let model: string;
   if (defaultProvider) {
     try {

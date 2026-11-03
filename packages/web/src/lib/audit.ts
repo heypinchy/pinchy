@@ -758,11 +758,18 @@ export type AuditLogEntry =
       // `connection` deliberately carries the id alone: the name of a mailbox
       // connection is itself an address, and this row is written on a path
       // where the caller has already failed authorization.
+      //
+      // `destination-blocked`: the agent IS granted the connection, but the
+      // stored Odoo URL / IMAP / SMTP host fails the SSRF guard under the
+      // current rules (re-checked on every fetch). `field` names which one;
+      // the address itself is not recorded (a mail host can be a person's
+      // own domain).
       eventType: "integration.credentials_denied";
       detail: {
         agent: EntityRef;
         connection: { id: string };
-        reason: "agent-unknown" | "not-granted";
+        reason: "agent-unknown" | "not-granted" | "destination-blocked";
+        field?: "url" | "imapHost" | "smtpHost";
       };
     })
   | (AuditLogBase & {

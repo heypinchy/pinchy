@@ -19,6 +19,7 @@ const PROVIDER: ProviderListItem = {
   baseUrl: "https://acme.example.com/v1",
   models: [],
   keyHint: "7Z8x",
+  refusedReason: null,
 };
 
 const KEY_AGAIN =

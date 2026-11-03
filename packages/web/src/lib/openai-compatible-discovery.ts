@@ -36,6 +36,46 @@ const MAX_REDIRECT_HOPS = 3;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /**
+ * A signal that aborts after `ms`, like `AbortSignal.timeout` — built on
+ * `setTimeout` so the budget is the same clock the rest of the hop (and a
+ * test's fake timers) runs on. The timer is left to fire: the caller reads
+ * the body after `fetch` resolves, and that read stays inside the budget.
+ */
+function timeoutSignal(ms: number): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () =>
+      controller.abort(new DOMException("The provider did not answer in time.", "TimeoutError")),
+    ms
+  );
+  // Don't hold a Node process open for a probe nobody is waiting on any more.
+  if (typeof timer === "object") timer.unref();
+  return controller.signal;
+}
+
+/** `work`'s result, or a rejection with the signal's reason if it aborts first. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+
+/**
  * `GET <baseUrl>/models`, re-running the SSRF guard on every redirect target.
  *
  * The routes validate `baseUrl` before calling in here (see
@@ -54,6 +94,13 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
  * so the header is re-attached only while the destination's origin still
  * matches the one the key was issued for, and never restored once a chain has
  * left it.
+ *
+ * The first URL is checked too, not only the hops. The routes validate an
+ * admin's input, but `resolveCustomProviderModels` fetches the STORED base URL
+ * on every config regeneration and model-list load — a provider saved under
+ * older rules, before `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS` was set, or
+ * whose name now resolves somewhere else, was fetched with its key attached.
+ * A refusal throws, which every caller below turns into "unreachable".
  */
 async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
   let current = modelsUrl(baseUrl);
@@ -61,16 +108,17 @@ async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
   let sendKey = true;
 
   for (let hop = 0; ; hop++) {
+    // One budget per hop, started before the guard: the guard resolves the
+    // host first, and a resolver that does not answer has to spend this hop's
+    // time, not add to it.
+    const signal = timeoutSignal(PROVIDER_PROBE_TIMEOUT_MS);
+    await untilAborted(assertAllowedProviderUrl(current), signal);
     // Annotated, not inferred: `sendKey` is decided from the hop's URL, which
     // is read off the previous response, which is this call — so letting the
     // header object's type flow into the fetch overload closes a loop tsc
     // cannot resolve (TS7022).
     const headers: Record<string, string> = sendKey ? { Authorization: `Bearer ${apiKey}` } : {};
-    const response = await fetch(current, {
-      headers,
-      redirect: "manual",
-      signal: AbortSignal.timeout(PROVIDER_PROBE_TIMEOUT_MS),
-    });
+    const response = await fetch(current, { headers, redirect: "manual", signal });
 
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 
@@ -90,7 +138,6 @@ async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
     // one past this check.
     sendKey = sendKey && next.origin === keyOrigin;
     current = next.toString();
-    await assertAllowedProviderUrl(current);
   }
 }
 
@@ -202,6 +249,25 @@ const customProviderModelCache = () =>
 /** Clear the custom-provider live-model cache (mirrors provider-models.ts's `resetCache()`). */
 export function resetCustomModelCache(): void {
   customProviderModelCache().clear();
+}
+
+/**
+ * The last live model list fetched for `slug` — under any base URL or key,
+ * however old — or `undefined`
+ * when none was. Never fetches. For a provider whose base URL is refused,
+ * which must not be fetched (the request would carry its key to the refused
+ * address) but whose emitted list should not shrink to the saved snapshot —
+ * see `refusedProviderModels` in openai-compatible-stored-url.ts.
+ */
+export function cachedCustomProviderModels(slug: string): OpenClawModelDefinition[] | undefined {
+  // The cache is keyed by slug, destination and key version (see
+  // modelCacheKey); any of them will do here, so take the newest for the slug.
+  let latest: { fetchedAt: number; result: OpenClawModelDefinition[] } | undefined;
+  for (const [key, entry] of customProviderModelCache()) {
+    if ((JSON.parse(key) as unknown[])[0] !== slug) continue;
+    if (!latest || entry.fetchedAt > latest.fetchedAt) latest = entry;
+  }
+  return latest?.result;
 }
 
 /** The inputs `resolveCustomProviderModels` needs to resolve one provider's live model list. */

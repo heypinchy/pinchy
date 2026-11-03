@@ -317,6 +317,10 @@ export default defineConfig({
               slug: "reference/environment-variables",
             },
             {
+              label: "Network Address Checks",
+              slug: "reference/network-address-checks",
+            },
+            {
               label: "Agent Provisioning API",
               slug: "reference/agent-provisioning-api",
             },
