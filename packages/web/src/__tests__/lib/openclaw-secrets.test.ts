@@ -8,7 +8,7 @@ import {
   versionedSecretName,
   referencedSecretIds,
 } from "@/lib/openclaw-secrets";
-import { readFileSync, existsSync, statSync, writeFileSync } from "fs";
+import { readFileSync, existsSync, statSync, writeFileSync, chmodSync } from "fs";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -203,110 +203,75 @@ describe("writeSecretsFile", () => {
     });
   });
 
-  // OpenClaw moves off a superseded pointer only when the config that names the
-  // new one is applied — and that apply runs in the background, 60–100 s late
-  // under rate limiting or a restart. Until then the RUNNING config points at
-  // the old slot, and a `secrets.reload` (fired by a built-in key rotation in
-  // that window) re-resolves exactly that config. Removing the old slot the
-  // moment it is superseded makes that reload fail, and the rotated built-in
-  // key never reaches the runtime. So a value the running config still points
-  // at stays — an old pointer next to its old value is still a consistent
-  // pair — and goes with the first write after the running config moved on.
-  describe("values the running config still points at", () => {
+  // writeSecretsFile writes the bundle it is given — nothing more. An earlier
+  // design kept a value the running config still pointed at, read back from
+  // the previous file; in production Pinchy cannot read that file
+  // (fix-config-permissions.sh: root:root 0600 every 50 ms), so it kept
+  // nothing there. openclaw.json is rewritten to stop naming a value before it
+  // leaves this file instead (openclaw-config/keyless-bridge.ts). What the
+  // previous file still decides — the reload flag — must fail safe when it
+  // cannot be read.
+  describe("writes exactly the bundle, and reads the previous file for nothing but the reload flag", () => {
     const v1 = versionedSecretName("acme-llm", secretVersion("ciphertext-1"));
     const v2 = versionedSecretName("acme-llm", secretVersion("ciphertext-2"));
-    const ref = (slot: string) => `/providers/${slot}/apiKey`;
-    const onDisk = () => JSON.parse(readFileSync(process.env.OPENCLAW_SECRETS_PATH!, "utf-8"));
+    const path = () => process.env.OPENCLAW_SECRETS_PATH!;
+    const onDisk = () => JSON.parse(readFileSync(path(), "utf-8"));
+    /** Production: the previous file exists, but Pinchy (uid 999) cannot read it. */
+    const makeUnreadable = () => {
+      chmodSync(path(), 0o000);
+      expect(() => readFileSync(path(), "utf-8"), "the test needs a non-root uid").toThrow();
+    };
 
-    it("keeps a superseded slot while the running config still points at it", () => {
+    it("drops a superseded versioned slot at once", () => {
       writeSecretsFile({ providers: { [v1]: { apiKey: "old-key" } } });
-      writeSecretsFile(
-        { providers: { [v2]: { apiKey: "new-key" } } },
-        { stillReferenced: new Set([ref(v1)]) }
-      );
-      expect(onDisk().providers).toEqual({
-        [v1]: { apiKey: "old-key" },
-        [v2]: { apiKey: "new-key" },
-      });
-    });
-
-    it("drops it with the first write after the running config moved on", () => {
-      writeSecretsFile({ providers: { [v1]: { apiKey: "old-key" } } });
-      writeSecretsFile(
-        { providers: { [v2]: { apiKey: "new-key" } } },
-        { stillReferenced: new Set([ref(v1)]) }
-      );
-      writeSecretsFile(
-        { providers: { [v2]: { apiKey: "new-key" } } },
-        { stillReferenced: new Set([ref(v2)]) }
-      );
+      writeSecretsFile({ providers: { [v2]: { apiKey: "new-key" } } });
       expect(onDisk().providers).toEqual({ [v2]: { apiKey: "new-key" } });
     });
 
-    it("lets a deleted provider's key go once the running config no longer names it", () => {
-      writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } });
-      writeSecretsFile(
-        { providers: { anthropic: { apiKey: "a" } } },
-        { stillReferenced: new Set([ref(v1), ref("anthropic")]) }
-      );
-      expect(onDisk().providers[v1]).toEqual({ apiKey: "k" });
+    it("writes the bundle over a previous file it cannot read", () => {
+      writeSecretsFile({ providers: { [v1]: { apiKey: "old-key" } } });
+      makeUnreadable();
+      writeSecretsFile({ providers: { [v2]: { apiKey: "new-key" } } });
+      expect(onDisk().providers).toEqual({ [v2]: { apiKey: "new-key" } });
+      expect(statSync(path()).mode & 0o777).toBe(0o600);
+    });
 
-      writeSecretsFile(
-        { providers: { anthropic: { apiKey: "a" } } },
-        { stillReferenced: new Set([ref("anthropic")]) }
-      );
+    it("drops a deleted provider's key with the first write", () => {
+      writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } });
+      writeSecretsFile({ providers: { anthropic: { apiKey: "a" } } });
       expect(onDisk().providers[v1]).toBeUndefined();
     });
 
-    it("keeps the unversioned slot a pre-versioning config still points at", () => {
-      // The upgrade case: the running config still names `acme-llm` while the
-      // first versioned config is on its way.
+    it("drops the unversioned slot on the upgrade to a versioned one", () => {
       writeSecretsFile({ providers: { "acme-llm": { apiKey: "key" } } });
-      writeSecretsFile(
-        { providers: { [v1]: { apiKey: "key" } } },
-        { stillReferenced: new Set([ref("acme-llm")]) }
-      );
-      expect(onDisk().providers["acme-llm"]).toEqual({ apiKey: "key" });
+      writeSecretsFile({ providers: { [v1]: { apiKey: "key" } } });
+      expect(onDisk().providers).toEqual({ [v1]: { apiKey: "key" } });
     });
 
-    it("never invents a value the previous file did not hold", () => {
-      writeSecretsFile(
-        { providers: { [v2]: { apiKey: "new-key" } } },
-        { stillReferenced: new Set([ref(v1)]) }
-      );
-      expect(onDisk().providers).toEqual({ [v2]: { apiKey: "new-key" } });
-    });
-
-    it("keeping an old value is not a rotation — no reload for it", () => {
+    it("never writes a value the bundle does not hold", () => {
       writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } });
-      expect(
-        writeSecretsFile(
-          { providers: { anthropic: { apiKey: "a" }, [v2]: { apiKey: "k2" } } },
-          { stillReferenced: new Set([ref(v1)]) }
-        )
-      ).toBe(false);
-      // …and a later write that only lets it go is a pure removal.
-      expect(
-        writeSecretsFile(
-          { providers: { anthropic: { apiKey: "a" }, [v2]: { apiKey: "k2" } } },
-          { stillReferenced: new Set([ref(v2)]) }
-        )
-      ).toBe(false);
+      makeUnreadable();
+      writeSecretsFile({ providers: { [v2]: { apiKey: "new-key" } } });
+      expect(onDisk()).toEqual({ providers: { [v2]: { apiKey: "new-key" } } });
     });
 
-    it("a built-in rotation while an old slot is kept still asks for a reload", () => {
+    it("asks for no reload over an unreadable file when only versioned slots are written", () => {
+      // A re-key travels with the config apply; a reload must not be its route,
+      // whether or not the previous file can be read.
+      writeSecretsFile({ providers: { [v1]: { apiKey: "k" } } });
+      makeUnreadable();
+      expect(writeSecretsFile({ providers: { [v2]: { apiKey: "k2" } } })).toBe(false);
+    });
+
+    it("asks for a reload over an unreadable file that may hold an older unversioned value", () => {
+      // The safe side: unread, every unversioned value may be a rotation. An
+      // unnecessary reload costs a round trip; a missed one costs every agent
+      // a 401 (#943).
       writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v1]: { apiKey: "k" } } });
-      writeSecretsFile(
-        { providers: { anthropic: { apiKey: "a" }, [v2]: { apiKey: "k2" } } },
-        { stillReferenced: new Set([ref(v1)]) }
-      );
+      makeUnreadable();
       expect(
-        writeSecretsFile(
-          { providers: { anthropic: { apiKey: "rotated" }, [v2]: { apiKey: "k2" } } },
-          { stillReferenced: new Set([ref(v1)]) }
-        )
+        writeSecretsFile({ providers: { anthropic: { apiKey: "a" }, [v2]: { apiKey: "k2" } } })
       ).toBe(true);
-      expect(onDisk().providers[v1]).toEqual({ apiKey: "k" });
     });
   });
 
