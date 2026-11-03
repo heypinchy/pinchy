@@ -62,6 +62,21 @@ describe("errorLine", () => {
     );
   });
 
+  it("keeps the detail, hint and position a database error carries", () => {
+    const pg = Object.assign(new Error('duplicate key value violates unique constraint "t_pkey"'), {
+      name: "PostgresError",
+      code: "23505",
+      detail: "Key (id)=(1) already exists.",
+      hint: "Use another id.",
+      where: "line 1",
+    });
+    const line = errorLine(new Error("Failed query: insert into t values (1, 2)", { cause: pg }));
+    expect(line).toContain("[23505]");
+    expect(line).toContain("Key (id)=(1) already exists.");
+    expect(line).toContain("Use another id.");
+    expect(line).toContain("line 1");
+  });
+
   it("names the cause before the frames, so a long stack cannot cut it off", () => {
     const err = new Error("outer", { cause: new Error("the cause") });
     err.stack = `Error: outer\n${"    at frame (/a/very/long/path.js:1:1)\n".repeat(200)}`;

@@ -53,13 +53,22 @@ export function errorLine(err: unknown, max: number = LOG_ERROR_MAX): string {
   return oneLine(`${describeChain(err, 0)}${where}`, max);
 }
 
+/** The string fields a database error carries beside its message. */
+const DETAIL_FIELDS = ["detail", "hint", "where"] as const;
+
 /** How many causes deep `errorLine` follows a chain. */
 const MAX_CAUSE_DEPTH = 4;
 
 function describeChain(err: unknown, depth: number): string {
   if (!(err instanceof Error)) return inspect(err, { breakLength: Infinity, depth: 2 });
   const code = (err as NodeJS.ErrnoException).code;
-  const head = `${err.name}: ${err.message}${typeof code === "string" ? ` [${code}]` : ""}`;
+  // A database error says which row or key in `detail`, and why in `hint`
+  // and `where` — what an operator needs to act on a failed constraint.
+  const extra = DETAIL_FIELDS.map((field) => (err as unknown as Record<string, unknown>)[field])
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .map((value) => ` (${value})`)
+    .join("");
+  const head = `${err.name}: ${err.message}${typeof code === "string" ? ` [${code}]` : ""}${extra}`;
   if (err.cause === undefined || depth >= MAX_CAUSE_DEPTH) return head;
   return `${head} — caused by ${describeChain(err.cause, depth + 1)}`;
 }
