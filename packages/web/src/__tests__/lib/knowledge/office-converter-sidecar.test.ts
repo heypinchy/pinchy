@@ -11,8 +11,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
-import { chmod, mkdir, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
-import { request, type Server } from "node:http";
+import { chmod, mkdir, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { createServer, request, type Server } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -22,6 +22,7 @@ import {
   leftoverProcesses,
   listenOfficeConverter,
   sidecarConverter,
+  sweepSpool,
 } from "@/lib/knowledge/office-converter-sidecar";
 import type { ConverterResult, ConverterRun } from "@/lib/knowledge/office-soffice";
 
@@ -341,6 +342,120 @@ describe("office-converter sidecar protocol", () => {
 
     await expect(converter.runConverter(run)).resolves.toMatchObject({ code: 0 });
     expect(recycled).toEqual([]);
+  });
+});
+
+describe("cleaning up a batch the converter wrote into", () => {
+  it("removes what the web process staged and the converter's files, without descending into its directories", async () => {
+    // The converter can create and rearrange directories in out/ and
+    // profile/. The web process removes entries by name and never walks into
+    // a directory it did not make.
+    const converter = sidecarConverter(spool);
+    const dir = await converter.createStagingDir();
+    await writeFile(join(dir, "in", "0.docx"), "staged");
+    await writeFile(join(dir, "out", "0.pdf"), "pdf");
+    await mkdir(join(dir, "out", "sub"));
+    await writeFile(join(dir, "out", "sub", "kept"), "x");
+
+    await expect(converter.removeStagingDir(dir)).rejects.toThrow();
+
+    expect(await readdir(join(dir, "out", "sub"))).toEqual(["kept"]);
+    expect(await readdir(join(dir, "out"))).toEqual(["sub"]);
+    await expect(stat(join(dir, "in"))).rejects.toThrow();
+  });
+
+  it("removes a batch completely when nothing of the converter's is left in it", async () => {
+    const converter = sidecarConverter(spool);
+    const dir = await converter.createStagingDir();
+    await writeFile(join(dir, "in", "0.docx"), "staged");
+    await writeFile(join(dir, "out", "0.pdf"), "pdf");
+
+    await converter.removeStagingDir(dir);
+
+    await expect(stat(dir)).rejects.toThrow();
+  });
+
+  it("prunes only stale batches the web process owns, and never through a link", async () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    const mine = await sidecarConverter(spool).createStagingDir();
+    await utimes(mine, twoDaysAgo, twoDaysAgo);
+    const target = mkdtempSync(join(tmpdir(), "kb-target-"));
+    try {
+      await mkdir(join(target, "in"));
+      await writeFile(join(target, "in", "keep"), "x");
+      const link = join(spool, "11111111-2222-3333-4444-555555555555");
+      await symlink(target, link);
+
+      // Someone else's uid: the prune must leave the batch alone.
+      await sidecarConverter(spool, { uid: 424242 }).createStagingDir();
+      expect(await readdir(spool)).toContain(mine.split("/").pop());
+
+      await sidecarConverter(spool).createStagingDir();
+      const left = await readdir(spool);
+      expect(left).not.toContain(mine.split("/").pop());
+      expect(await readdir(join(target, "in"))).toEqual(["keep"]);
+    } finally {
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it("the converter empties every batch's profile when it starts, and leaves the rest", async () => {
+    // A converter that died mid-batch leaves its profile behind, made of
+    // directories only it may remove.
+    const dir = await sidecarConverter(spool).createStagingDir();
+    await mkdir(join(dir, "profile", "user", "cache"), { recursive: true });
+    await writeFile(join(dir, "out", "0.pdf"), "pdf");
+    await mkdir(join(spool, "not-a-batch"));
+
+    await sweepSpool(spool);
+
+    expect(await readdir(join(dir, "profile"))).toEqual([]);
+    expect(await readdir(join(dir, "out"))).toEqual(["0.pdf"]);
+    expect(await readdir(spool)).toContain("not-a-batch");
+  });
+});
+
+describe("what the web process accepts from the converter", () => {
+  it("refuses an answer larger than any result", async () => {
+    server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({ code: 0, signal: null, stderr: "x".repeat(200_000), timedOut: false })
+      );
+    });
+    await new Promise<void>((resolve) => server!.listen(converterSocketPath(spool), resolve));
+    const { converter, run } = await stagedBatch(["0.docx"]);
+
+    await expect(converter.runConverter(run)).rejects.toThrow(/too large/);
+  });
+
+  it("recycles the converter after a batch with leftovers even when the web process has gone", async () => {
+    const recycled: number[][] = [];
+    await startServer(undefined, {
+      leftovers: async () => {
+        await new Promise((r) => setTimeout(r, 200));
+        return [4242];
+      },
+      onLeftovers: (pids) => recycled.push(pids),
+    });
+    const { run } = await stagedBatch(["0.docx"]);
+    const batch = run.outDir.split("/").at(-2);
+
+    const req = request({
+      socketPath: converterSocketPath(spool),
+      method: "POST",
+      path: "/convert",
+    });
+    req.on("error", () => {});
+    req.end(JSON.stringify({ batch, inputs: ["0.docx"], timeoutMs: 5_000 }));
+    await new Promise((r) => setTimeout(r, 50));
+    req.destroy();
+
+    const deadline = Date.now() + 5_000;
+    while (recycled.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(recycled).toEqual([[4242]]);
   });
 });
 

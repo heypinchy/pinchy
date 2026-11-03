@@ -12,7 +12,7 @@ and is kept in lockstep with `.env.example` by `pnpm release` and the
 ## Three deviations CapRover forces (and how we handle them)
 
 CapRover's one-click schema can't express three things Pinchy's production compose
-relies on. Both are documented here so the security trade-off is explicit, not
+relies on. All three are documented here so the security trade-off is explicit, not
 silent.
 
 1. **`openclaw-secrets` can't be a tmpfs.** In production it's a RAM-only volume

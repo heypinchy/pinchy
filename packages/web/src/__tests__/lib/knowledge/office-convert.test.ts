@@ -30,6 +30,7 @@ import {
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import mammoth from "mammoth";
 
 import {
@@ -1003,7 +1004,7 @@ describe("the word-count oracle's markup ceiling (fourth review, PR #1243)", () 
 });
 
 describe("a batch shared with a converter that runs as another user", () => {
-  const checked = (contentHash: string) => async () => ({
+  const checked = (contentHash: string) => async (_absPath?: string) => ({
     data: Buffer.from("CHECKED COPY"),
     relationshipsRemoved: 0,
     altChunksRemoved: 0,
@@ -1036,6 +1037,45 @@ describe("a batch shared with a converter that runs as another user", () => {
     expect(outcomes[0].reason).toMatch(/could not stage source/);
     expect(await readFile(elsewhere, "utf8")).toBe("UNTOUCHED");
     expect(converter.calls).toHaveLength(0);
+  });
+
+  it("refuses an output that is not a regular file without waiting on it", async () => {
+    // Opening a FIFO for reading blocks until something writes to it, and the
+    // converter can make one where its PDF should be.
+    const sources = [await corpusFile("a.docx", "x"), await corpusFile("b.docx", "y")];
+    const run: RunConverter = async (call) => {
+      execFileSync("mkfifo", [join(call.outDir, "0.pdf")]);
+      await writeFile(join(call.outDir, "1.pdf"), "%PDF-1.4\nconverted words\n");
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(
+      sources,
+      deps({ run, calls: [] }, { prepareSource: checked("3".repeat(64)) })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual(["failed", "converted"]);
+    expect(outcomes[0].reason).toMatch(/not a regular file/);
+  }, 10_000);
+
+  it("books an output it cannot open as that document's infrastructure failure, and keeps the rest", async () => {
+    const sources = [await corpusFile("a.docx", "x"), await corpusFile("b.docx", "y")];
+    const prepared = [checked("4".repeat(64)), checked("5".repeat(64))];
+    let n = 0;
+    const run: RunConverter = async (call) => {
+      await writeFile(join(call.outDir, "0.pdf"), "%PDF-1.4\nunreadable\n");
+      await chmod(join(call.outDir, "0.pdf"), 0o000);
+      await writeFile(join(call.outDir, "1.pdf"), "%PDF-1.4\nconverted words\n");
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(
+      sources,
+      deps({ run, calls: [] }, { prepareSource: (path) => prepared[n++](path) })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "converted"]);
+    expect(outcomes[0].reason).toMatch(/could not read the converter's output/);
   });
 
   it("keeps a conversion that worked when the converter left something it cannot remove", async () => {

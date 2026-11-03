@@ -38,11 +38,18 @@
  * only entries it created itself — its socket, its own output. It cannot
  * swap a staged input, nor touch another batch.
  *
+ * The converter can still create entries of its own in those directories,
+ * and rearrange them at any time. So the web process never walks into a
+ * directory the converter made: it removes a batch entry by entry
+ * (`removeBatch`), opens an output without following it and without waiting
+ * on it (office-convert.ts), and reads at most `MAX_RESPONSE_BYTES` of an
+ * answer.
+ *
  * Node built-ins only: the sidecar imports this, and it must not drag the web
  * app's dependency graph into a container whose point is to hold nothing.
  */
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rm, rmdir, unlink } from "node:fs/promises";
 import { createServer, request, type IncomingMessage, type Server } from "node:http";
 import { basename, dirname, join } from "node:path";
 
@@ -58,7 +65,7 @@ export function converterSocketPath(spoolDir: string): string {
 
 /**
  * The sidecar's ceiling on one batch. office-convert asks for
- * `60 s + 10 s × files` — under four minutes for a default batch of 20 — so
+ * `60 s + 10 s × files` — 4 min 20 s for a default batch of 20 — so
  * this only bites a request that is wrong, and keeps a wrong one from pinning
  * a converter for a day.
  */
@@ -83,6 +90,8 @@ const INPUT_NAME = new RegExp(
 );
 const MAX_INPUTS = 1000;
 const MAX_REQUEST_BYTES = 64 * 1024;
+/** An answer is a few fields and at most 8 KB of stderr; anything bigger is not one. */
+const MAX_RESPONSE_BYTES = 64 * 1024;
 
 /**
  * Modes of a staged batch (see "Who may write what" above). Set with `chmod`,
@@ -123,11 +132,15 @@ export interface SidecarConverter {
   runConverter: RunConverter;
   /** A fresh batch directory in the spool, where the sidecar can see it. */
   createStagingDir: () => Promise<string>;
+  /** Removes a batch without walking into anything the converter made. */
+  removeStagingDir: (dir: string) => Promise<void>;
 }
 
 export interface SidecarConverterOptions {
   graceMs?: number;
   staleAfterMs?: number;
+  /** The web process's uid: only batches it owns are pruned. */
+  uid?: number;
 }
 
 export function sidecarConverter(
@@ -137,10 +150,13 @@ export function sidecarConverter(
   const socketPath = converterSocketPath(spoolDir);
   const graceMs = options.graceMs ?? DEFAULT_GRACE_MS;
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
+  const uid = options.uid ?? process.getuid?.() ?? -1;
 
   return {
+    removeStagingDir: removeBatch,
+
     async createStagingDir() {
-      await pruneStaleBatches(spoolDir, staleAfterMs);
+      await pruneStaleBatches(spoolDir, staleAfterMs, uid);
       const paths = batchPaths(spoolDir, randomUUID());
       for (const [key, path] of [
         ["batch", paths.dir],
@@ -168,7 +184,7 @@ export function sidecarConverter(
             headers: { "content-type": "application/json" },
           },
           (res) => {
-            readBody(res)
+            readBody(res, MAX_RESPONSE_BYTES)
               .then((text) => {
                 if (res.statusCode !== 200) {
                   reject(new Error(`office converter refused the batch: ${errorOf(text)}`));
@@ -244,8 +260,41 @@ function parseResult(text: string): ConverterResult {
   return { code, signal: signal as NodeJS.Signals | null, stderr, timedOut };
 }
 
-/** Removes batch directories a crashed web process left behind. Best effort. */
-async function pruneStaleBatches(spoolDir: string, staleAfterMs: number): Promise<void> {
+/**
+ * Removes one batch, entry by entry: the staged inputs, whatever sits
+ * directly in `out/` and `profile/` (a link or a file is unlinked, never
+ * followed), then the directories the web process made. It does not descend
+ * into a directory the converter created; one left there keeps the batch, and
+ * the final `rmdir` throws so the caller can say so. The converter clears
+ * `profile/` itself, after every batch and when it starts.
+ *
+ * Every path here is safe to use by name: the spool root is sticky and the
+ * batch directory is not writable by the converter, so it cannot swap any
+ * component on the way.
+ */
+async function removeBatch(dir: string): Promise<void> {
+  for (const sub of ["in", "out", "profile"]) {
+    const path = join(dir, sub);
+    for (const entry of await readdir(path).catch(() => [] as string[])) {
+      await unlink(join(path, entry)).catch(() => {});
+    }
+    await rmdir(path).catch(() => {});
+  }
+  await rmdir(dir).catch((err: NodeJS.ErrnoException) => {
+    if (err.code !== "ENOENT") throw err;
+  });
+}
+
+/**
+ * Removes batch directories a crashed web process left behind. Best effort.
+ * Only real directories this process owns: the converter can create entries
+ * in the spool root too, links among them, and those are not ours to walk.
+ */
+async function pruneStaleBatches(
+  spoolDir: string,
+  staleAfterMs: number,
+  uid: number
+): Promise<void> {
   const cutoff = Date.now() - staleAfterMs;
   let entries: string[];
   try {
@@ -256,9 +305,9 @@ async function pruneStaleBatches(spoolDir: string, staleAfterMs: number): Promis
   for (const entry of entries) {
     if (!BATCH_ID.test(entry)) continue;
     const path = join(spoolDir, entry);
-    const info = await stat(path).catch(() => null);
-    if (info?.isDirectory() && info.mtimeMs < cutoff) {
-      await rm(path, { recursive: true, force: true }).catch(() => {});
+    const info = await lstat(path).catch(() => null);
+    if (info?.isDirectory() && info.uid === uid && info.mtimeMs < cutoff) {
+      await removeBatch(path).catch(() => {});
     }
   }
 }
@@ -327,7 +376,10 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
         await clearDirectory(paths.profileDir);
         const left = (await options.leftovers?.()) ?? [];
         if (left.length > 0) {
-          res.once("finish", () => options.onLeftovers?.(left));
+          // Whether or not the web process is still there to hear it.
+          const recycle = () => options.onLeftovers?.(left);
+          if (res.destroyed) recycle();
+          else res.once("close", recycle);
           reply(500, {
             error: `the converter left ${left.length} process(es) running after the batch; the office-converter restarts`,
           });
@@ -383,6 +435,20 @@ export async function listenOfficeConverter(server: Server, spoolDir: string): P
   });
   // The web process connects as another uid, through the group.
   await chmod(socketPath, SOCKET_MODE);
+}
+
+/**
+ * The converter's side of cleaning up, run when it starts: empties the
+ * profile of every batch in the spool. A converter that died mid-batch leaves
+ * its profile behind, and only this uid may remove what is in it. `out/` is
+ * left alone — a PDF there may be one the web process is about to take.
+ */
+export async function sweepSpool(spoolDir: string): Promise<void> {
+  for (const entry of await readdir(spoolDir).catch(() => [] as string[])) {
+    if (!BATCH_ID.test(entry)) continue;
+    const info = await lstat(join(spoolDir, entry)).catch(() => null);
+    if (info?.isDirectory()) await clearDirectory(batchPaths(spoolDir, entry).profileDir);
+  }
 }
 
 /** Removes everything inside `dir`, leaving `dir` itself. Best effort. */

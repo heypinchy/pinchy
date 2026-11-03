@@ -210,6 +210,24 @@ describe("runSoffice", () => {
       expect(await isGone(grandchild)).toBe(true);
     }, 15_000);
 
+    it("answers once the converter has exited, even when something it started still holds its stderr", async () => {
+      // 'close' waits for every holder of the stderr pipe. A process the
+      // converter left behind must not keep the batch from answering — the
+      // sidecar's leftover check needs the answer to run at all.
+      const pidFile = join(tmpRoot, "holder.pid");
+      process.env.KB_SOFFICE_BIN = stub(
+        "soffice-leaves-holder",
+        `sleep 30 &\nprintf '%s' "$!" > ${pidFile}\nexit 0\n`
+      );
+      const started = Date.now();
+
+      const result = await run({ timeoutMs: 60_000 });
+
+      expect(result).toMatchObject({ code: 0, timedOut: false });
+      expect(Date.now() - started).toBeLessThan(15_000);
+      expect(await isGone(Number(await readFile(pidFile, "utf8")))).toBe(true);
+    }, 30_000);
+
     it("does not fire for a converter that finishes in time", async () => {
       process.env.KB_SOFFICE_BIN = stub("soffice-quick", "exit 0\n");
 

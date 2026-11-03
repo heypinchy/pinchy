@@ -44,14 +44,14 @@ anything the web process reads back. With its own uid the web process owns the
 spool and every batch directory, and the group grants exactly what the
 converter needs:
 
-| Path                     | Mode   | Converter can                                            |
-| ------------------------ | ------ | -------------------------------------------------------- |
-| `<spool>`                | `1770` | create (and replace) its own socket; not touch a batch   |
-| `<spool>/<uuid>`         | `0750` | enter and list; not create, rename or remove anything    |
-| `<spool>/<uuid>/in`      | `0750` | read the staged copies; not change or replace them       |
-| `<spool>/<uuid>/out`     | `1770` | write the PDFs; remove only what it wrote                |
-| `<spool>/<uuid>/profile` | `1770` | write its LibreOffice profile; remove only what it wrote |
-| `<spool>/converter.sock` | `0660` | (its own) — the web process connects through the group   |
+| Path                     | Mode   | Converter can                                             |
+| ------------------------ | ------ | --------------------------------------------------------- |
+| `<spool>`                | `1770` | create entries of its own (its socket); not touch a batch |
+| `<spool>/<uuid>`         | `0750` | enter and list; not create, rename or remove anything     |
+| `<spool>/<uuid>/in`      | `0750` | read the staged copies; not change or replace them        |
+| `<spool>/<uuid>/out`     | `1770` | write the PDFs; remove only what it wrote                 |
+| `<spool>/<uuid>/profile` | `1770` | write its LibreOffice profile; remove only what it wrote  |
+| `<spool>/converter.sock` | `0660` | (its own) — the web process connects through the group    |
 
 The modes are set with `chmod` after `mkdir`, since the process umask would cut
 a mode passed to `mkdir`. The image creates the spool `1770`, and a fresh named
@@ -62,10 +62,28 @@ directory. Staged inputs are written with exclusive create (`wx`), so nothing
 already at a staged name is ever written through.
 
 The converter runs with umask `007`, so its output is group-writable, and it
-empties `profile/` itself after each batch (LibreOffice picks the modes of the
-directories it creates there). The web process removes the batch afterwards;
-should the converter leave something it cannot remove, that costs a leftover
-in the spool and a warning, not the batch's results.
+empties `profile/` itself after each batch and, for every batch in the spool,
+when it starts (LibreOffice picks the modes of the directories it creates
+there, and a converter that died mid-batch leaves them). It does not empty
+`out/` when it starts: a PDF there may be one the web process is about to take.
+
+The converter can create entries of its own in the spool root, `out/` and
+`profile/`, and rearrange them at any time, so the web process — the one that
+holds the secrets — treats everything there as the converter's and never
+walks into it:
+
+- It removes a batch entry by entry: its staged inputs, whatever sits directly
+  in `out/` and `profile/` (unlinked, never followed), then the directories it
+  made. A directory the converter left keeps the batch; that costs a leftover
+  in the spool and a warning, not the batch's results.
+- It prunes only stale batches that are real directories it owns (`lstat` and
+  uid), never an entry the converter made in the spool root.
+- It opens an output with `O_NOFOLLOW | O_NONBLOCK` and takes it only if it is
+  a non-empty regular file, so neither a link nor a FIFO can redirect or stall
+  it; an output it cannot open is that document's `infrastructure` outcome,
+  not the batch's.
+- It reads at most 64 KB of an answer (a real one is a few fields and at most
+  8 KB of stderr).
 
 Verified against the real image, as the two uids: the converter's
 `mv`/`rm` of a batch, of a staged input and of a file the web process put in
@@ -140,7 +158,11 @@ business, not the store's.
   server's whole life. Processes `docker exec` starts (the healthcheck) have no
   parent inside the container and are not counted either. Verified in the
   image: a planted orphan turns the next batch into `infrastructure` and one
-  restart; the batch after converts.
+  restart; the batch after converts. A batch answers once `soffice` has
+  exited, even when something it started still holds its stderr open: after a
+  two-second drain the group is killed and the pipe closed, and anything that
+  left the group is an orphan the check finds. The recycle does not depend on
+  the web process still listening for the answer.
 
 ### What stays in the web container
 
@@ -164,8 +186,9 @@ Nothing secret, but not nothing:
   batch at a time per instance (one index job per org, sequential batches),
   and a batch directory is a random UUID a document cannot know, so a
   `file://` reference into the spool can in practice only reach the
-  document's own staged copy. What it writes is limited to `out/` and
-  `profile/` of a batch, and its socket.
+  document's own staged copy. It can create entries of its own in the spool
+  root and in a batch's `out/` and `profile/`; the web process never walks
+  into them (above).
 
 The #1243 review found a reference the profile does not stop: an INTERNAL
 `aFChunk` relationship. With this LibreOffice the HTML-chunk form does not

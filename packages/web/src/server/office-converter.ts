@@ -15,6 +15,7 @@ import {
   createOfficeConverterServer,
   leftoverProcesses,
   listenOfficeConverter,
+  sweepSpool,
 } from "../lib/knowledge/office-converter-sidecar";
 import { runSoffice } from "../lib/knowledge/office-soffice";
 import { rm } from "node:fs/promises";
@@ -56,6 +57,8 @@ async function main(): Promise<void> {
     },
   });
 
+  // What a previous run of this container could not clean up any more.
+  await sweepSpool(spoolDir);
   await listenOfficeConverter(server, spoolDir);
   console.log(`[office-converter] listening on ${converterSocketPath(spoolDir)}`);
 

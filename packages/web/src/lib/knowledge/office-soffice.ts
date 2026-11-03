@@ -39,6 +39,13 @@ export type RunConverter = (run: ConverterRun) => Promise<ConverterResult>;
 const MAX_STDERR_BYTES = 8 * 1024;
 
 /**
+ * How long, once the converter has exited, we still wait for its stderr to
+ * close. Anything it started inherits the pipe and holds it open; without a
+ * bound, such a process would keep the batch from ever answering.
+ */
+const STDERR_DRAIN_MS = 2_000;
+
+/**
  * What a converter subprocess inherits from us — an allow-list, not a copy of
  * `process.env`.
  *
@@ -192,6 +199,8 @@ const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =
 
     let stderr = "";
     let timedOut = false;
+    let settled = false;
+    let drain: NodeJS.Timeout | undefined;
     child.stderr.on("data", (chunk: Buffer) => {
       if (stderr.length < MAX_STDERR_BYTES) stderr += chunk.toString("utf8");
     });
@@ -201,12 +210,30 @@ const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =
       killTree(child);
     }, timeoutMs);
 
-    child.on("error", (err) => {
+    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      clearTimeout(drain);
+      resolve({ code, signal, stderr, timedOut });
+    };
+
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(drain);
       reject(err);
     });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      resolve({ code, signal, stderr, timedOut });
+    child.on("exit", (code, signal) => {
+      drain = setTimeout(() => {
+        // Still held open: by something left in the converter's group, which
+        // goes with it, or by something that left the group, which the
+        // sidecar's leftover check finds next.
+        killTree(child);
+        child.stderr.destroy();
+        finish(code, signal);
+      }, STDERR_DRAIN_MS);
     });
+    child.on("close", finish);
   });

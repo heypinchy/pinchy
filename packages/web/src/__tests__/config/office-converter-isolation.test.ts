@@ -180,6 +180,24 @@ describe("office-converter sidecar isolation (docker-compose.yml)", () => {
   });
 });
 
+describe("the dev overlay", () => {
+  // The dev stack runs both services as root (no `pinchy` user in the dev
+  // image). A spool the production image prepared — owned by 999, sticky,
+  // socket owned by 998 — is one a capability-less root converter can no
+  // longer write. So dev keeps a spool of its own.
+  const dev = read("docker-compose.dev.yml");
+
+  it.each(["pinchy", SERVICE])("%s mounts the dev spool, not the production one", (service) => {
+    expect(list(serviceBlock(dev, service)!, "volumes")).toContain(
+      `pinchy-office-spool-dev:${SPOOL}`
+    );
+  });
+
+  it("declares that volume", () => {
+    expect(dev).toMatch(/^ {2}pinchy-office-spool-dev:$/m);
+  });
+});
+
 describe("compose overlays keep the converter on the web process's image", () => {
   // An overlay that rebuilds or retags `pinchy` but leaves the converter on
   // `ghcr.io/heypinchy/pinchy:${PINCHY_VERSION}` would run a RELEASED image

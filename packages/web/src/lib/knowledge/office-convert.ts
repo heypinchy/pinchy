@@ -189,6 +189,12 @@ export interface ConvertOptions {
    * default converter (see `defaultConverter`).
    */
   createStagingDir?: () => Promise<string>;
+  /**
+   * How a batch is removed again. Defaults to the converter's own when the
+   * staging is the default one, and to a recursive delete when a caller
+   * stages somewhere of its own.
+   */
+  removeStagingDir?: (dir: string) => Promise<void>;
   /** Defaults to the real preflight (./office-preflight.ts). */
   prepareSource?: PrepareSource;
   /** Words in the converted PDF. Prod: the pdfjs text layer (./pdf-extract.ts). */
@@ -226,6 +232,9 @@ export async function convertOfficeFiles(
   const converter = defaultConverter(store);
   const runConverter = options.runConverter ?? converter.runConverter;
   const createStagingDir = options.createStagingDir ?? converter.createStagingDir;
+  const removeStagingDir =
+    options.removeStagingDir ??
+    (options.createStagingDir ? removeTree : converter.removeStagingDir);
   const prepareSource = options.prepareSource ?? prepareOfficeSource;
   const countPdfWords = options.countPdfWords ?? defaultCountPdfWords;
   const countSourceWords = options.countSourceWords ?? countSourceWordsWithOracle;
@@ -273,6 +282,7 @@ export async function convertOfficeFiles(
       store,
       runConverter,
       createStagingDir,
+      removeStagingDir,
       prepareSource,
       countPdfWords,
       countSourceWords,
@@ -309,16 +319,27 @@ export async function convertOfficeFiles(
 function defaultConverter(store: OfficeArtifactStore): {
   runConverter: RunConverter;
   createStagingDir: () => Promise<string>;
+  removeStagingDir: (dir: string) => Promise<void>;
 } {
   const spoolDir = process.env.KB_OFFICE_SPOOL_DIR;
   if (spoolDir) return sidecarConverter(spoolDir);
-  return { runConverter: runSoffice, createStagingDir: () => store.createStagingDir() };
+  return {
+    runConverter: runSoffice,
+    createStagingDir: () => store.createStagingDir(),
+    // In-process, everything in the batch is this process's own.
+    removeStagingDir: removeTree,
+  };
+}
+
+function removeTree(dir: string): Promise<void> {
+  return rm(dir, { recursive: true, force: true });
 }
 
 interface BatchDeps {
   store: OfficeArtifactStore;
   runConverter: RunConverter;
   createStagingDir: () => Promise<string>;
+  removeStagingDir: (dir: string) => Promise<void>;
   prepareSource: PrepareSource;
   countPdfWords: (absPath: string) => Promise<number>;
   countSourceWords: (absPath: string) => Promise<number | null>;
@@ -439,9 +460,9 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
     return outcomes;
   } finally {
     // The converter owns what it wrote into the batch. Should it leave
-    // something this process cannot remove, that costs a leftover in the
-    // spool, not the batch's results.
-    await rm(stagingDir, { recursive: true, force: true }).catch((err: unknown) => {
+    // something this process cannot (or, in the spool, will not) remove,
+    // that costs a leftover, not the batch's results.
+    await deps.removeStagingDir(stagingDir).catch((err: unknown) => {
       console.warn(`[kb-office] could not remove the staged batch ${stagingDir}: ${reasonOf(err)}`);
     });
   }
@@ -458,9 +479,24 @@ async function collectOne(
   deps: BatchDeps,
   stderr: string
 ): Promise<ConversionOutcome> {
-  const privateDir = await deps.store.createStagingDir();
+  let privateDir: string;
   try {
-    const taken = await takeOutput(producedPdf, join(privateDir, "converted.pdf"));
+    privateDir = await deps.store.createStagingDir();
+  } catch (err) {
+    return infrastructureFailure(item.absPath, `staging area unavailable: ${reasonOf(err)}`);
+  }
+  try {
+    let taken: Awaited<ReturnType<typeof takeOutput>>;
+    try {
+      taken = await takeOutput(producedPdf, join(privateDir, "converted.pdf"));
+    } catch (err) {
+      // About this output, not the document: retry it rather than brand it
+      // unreadable, and keep the rest of the batch.
+      return infrastructureFailure(
+        item.absPath,
+        `could not read the converter's output: ${reasonOf(err)}`
+      );
+    }
     if (taken === "missing") {
       // THE failure the exit code hides. stderr is the only place LibreOffice
       // says anything, so carry a trimmed copy for the operator log.
@@ -478,8 +514,10 @@ async function collectOne(
 /**
  * Copies the converter's output into a directory only this process writes,
  * and hands back that copy. The output directory is shared with the
- * converter, so its entry is opened without following links and taken only
- * if it is a non-empty regular file; everything after this reads the copy.
+ * converter, so its entry is opened without following links and without
+ * waiting (a FIFO would block a plain open until something writes to it), and
+ * taken only if it is a non-empty regular file; everything after this reads
+ * the copy.
  */
 async function takeOutput(
   producedPdf: string,
@@ -487,7 +525,10 @@ async function takeOutput(
 ): Promise<string | "missing" | "not-a-file"> {
   let handle;
   try {
-    handle = await open(producedPdf, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    handle = await open(
+      producedPdf,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK
+    );
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return "missing";
