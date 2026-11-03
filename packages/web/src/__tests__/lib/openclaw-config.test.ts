@@ -5314,7 +5314,11 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // A list of "the restart-class fields" is the hand-maintained mirror that
     // missed it, so this test asks OpenClaw instead: the installed binary's own
     // reload planner judges the diff between the seeded baseline and the first
-    // post-wizard regenerate, exactly as its config watcher would.
+    // post-wizard regenerate. The planner loaded here has no plugin registry, so
+    // the restart prefixes that OpenClaw's default-enabled bundled plugins
+    // register at startup (canvas: `plugins.allow`, `plugins.entries.canvas`, …)
+    // are checked separately below — in production those rules sort ahead of
+    // the hot `plugins` rule.
     const { readFileSync: realReadFileSync } = await vi.importActual<typeof import("fs")>("fs");
     const pathMod = await import("path");
     const baked = realReadFileSync(
@@ -5345,10 +5349,20 @@ describe("seedRestartClassOverridesIfMissing", () => {
     await regenerateOpenClawConfig();
     const next = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync)) as Record<string, unknown>;
 
-    const { diffConfigPaths, buildGatewayReloadPlan } = await loadOpenClawReloadPlanner();
-    const plan = buildGatewayReloadPlan(diffConfigPaths(baseline, next));
+    const { diffConfigPaths, buildGatewayReloadPlan, pluginRestartPrefixes } =
+      await loadOpenClawReloadPlanner();
+    const changedPaths = diffConfigPaths(baseline, next);
+    const plan = buildGatewayReloadPlan(changedPaths);
 
+    // The scenario must be real: a regenerate that rebuilt the baseline unchanged
+    // would make the restart assertions below pass on an empty diff.
+    expect(changedPaths).toEqual(expect.arrayContaining(["agents", "models"]));
     expect(plan.restartReasons).toEqual([]);
+    expect(
+      changedPaths.filter((path) =>
+        pluginRestartPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}.`))
+      )
+    ).toEqual([]);
   });
 });
 
@@ -5359,10 +5373,18 @@ describe("seedRestartClassOverridesIfMissing", () => {
  * of the public exports, so this finds the bundled chunk and reads the export
  * aliases from its `export { … }` line. If a bump renames or restructures them,
  * this throws — the signal to re-verify the contract, never a silent pass.
+ *
+ * `pluginRestartPrefixes` covers what that planner cannot see without a running
+ * gateway: the `reload.restartPrefixes` of every bundled plugin OpenClaw enables
+ * by default (`enabledByDefault: true` in its manifest), which its watcher merges
+ * into the rules. Found by reading each such plugin's `index.js` for the field —
+ * a declaration moved into a sibling chunk would escape this, so at least one
+ * declaring plugin must be found (canvas, as of 2026.7.1).
  */
 async function loadOpenClawReloadPlanner(): Promise<{
   diffConfigPaths: (prev: unknown, next: unknown) => string[];
   buildGatewayReloadPlan: (paths: string[]) => { restartReasons: string[] };
+  pluginRestartPrefixes: string[];
 }> {
   const { createRequire } = await import("module");
   const { pathToFileURL } = await import("url");
@@ -5391,11 +5413,41 @@ async function loadOpenClawReloadPlanner(): Promise<{
   if (typeof diffConfigPaths !== "function" || typeof buildGatewayReloadPlan !== "function") {
     throw new Error(`${chunks[0]} exports are not functions — re-verify the reload contract.`);
   }
+
+  const extensions = pathMod.join(dist, "extensions");
+  const pluginRestartPrefixes: string[] = [];
+  for (const dir of fsActual.readdirSync(extensions)) {
+    const manifestPath = pathMod.join(extensions, dir, "openclaw.plugin.json");
+    const indexPath = pathMod.join(extensions, dir, "index.js");
+    if (!fsActual.existsSync(manifestPath) || !fsActual.existsSync(indexPath)) continue;
+    const manifest = JSON.parse(fsActual.readFileSync(manifestPath, "utf-8")) as {
+      enabledByDefault?: boolean;
+    };
+    if (manifest.enabledByDefault !== true) continue;
+    if (!fsActual.readFileSync(indexPath, "utf-8").includes("restartPrefixes")) continue;
+    const entry = (await import(pathToFileURL(indexPath).href)) as {
+      default?: { reload?: { restartPrefixes?: unknown } };
+    };
+    const prefixes = entry.default?.reload?.restartPrefixes;
+    if (!Array.isArray(prefixes) || prefixes.some((p) => typeof p !== "string")) {
+      throw new Error(
+        `extensions/${dir} mentions restartPrefixes but exports none — re-verify the reload contract.`
+      );
+    }
+    pluginRestartPrefixes.push(...(prefixes as string[]));
+  }
+  if (pluginRestartPrefixes.length === 0) {
+    throw new Error(
+      `No default-enabled bundled plugin in ${extensions} declares reload.restartPrefixes — re-verify the reload contract.`
+    );
+  }
+
   return {
     diffConfigPaths: diffConfigPaths as (prev: unknown, next: unknown) => string[],
     buildGatewayReloadPlan: buildGatewayReloadPlan as (paths: string[]) => {
       restartReasons: string[];
     },
+    pluginRestartPrefixes,
   };
 }
 

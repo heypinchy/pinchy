@@ -309,9 +309,9 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
 /**
  * Ensure Pinchy's restart-class overrides are present in openclaw.json BEFORE
  * OpenClaw starts. Writes ONLY the fields that, when missing-then-added later
- * via WS config.apply, hit OC 5.3's BASE_RELOAD_RULES_TAIL `gateway` /
- * `discovery` / `canvasHost` / `update` rules (kind:"restart") — or `media`,
- * which has no rule at all and therefore defaults to restart — and trigger
+ * via WS config.apply, OpenClaw's reload planner classifies as restart-class —
+ * `gateway` / `discovery` (explicit `kind:"restart"` rules) and `canvasHost` /
+ * `update` / `media` (no rule at all, which defaults to restart) — and trigger
  * a SIGUSR1 → in-process restart that crashes with
  * `ConfigMutationConflictError: config changed since last load` (OC 5.3
  * stale-snapshot bug in `prepareGatewayStartupConfig → ensureGatewayStartupAuth →
@@ -326,10 +326,10 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
  * apparently because the bootInits-time regenerate's models/agents block
  * (built from an empty DB) interfered with later setup-wizard regenerate +
  * OC's model registry refresh on hot-reload. Restricting the bootInits write
- * to ONLY the gateway/discovery/canvasHost/update fields avoids that
+ * to ONLY the gateway/discovery/canvasHost/update/media fields avoids that
  * interaction while still aligning OC's compare baseline.
  *
- * This function is idempotent: if the file already has all four overrides
+ * This function is idempotent: if the file already has all the overrides
  * with their expected values, no write happens. The skip path also handles
  * the production case (Docker-managed named volume populated from the image's
  * baked-in `config/openclaw.json`, which already carries these fields) — the
