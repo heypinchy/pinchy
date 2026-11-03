@@ -4,6 +4,7 @@ import { parseRequestBody } from "@/lib/api-validation";
 import {
   upsertOpenAiCompatibleProviderSchema,
   deleteOpenAiCompatibleSchema,
+  type OpenAiCompatibleProviderRow,
 } from "@/lib/schemas/openai-compatible-provider";
 import {
   baseUrlDestinationChange,
@@ -13,6 +14,7 @@ import {
 } from "@/lib/secret-destination";
 import {
   createOrUpdateProvider,
+  listOpenAiCompatibleProviders,
   listOpenAiCompatibleProvidersForAdmin,
   deleteProviderById,
   getProviderSnapshotById,
@@ -31,8 +33,11 @@ import {
   migrateAgentsOffDeletedProvider,
   repointAgentsOffRemovedModels,
   capMigratedAgents,
+  LAST_CONFIGURED_PROVIDER_ERROR,
+  noUsableTargetRefusal,
 } from "@/lib/provider-deletion";
 import { assertAllowedProviderUrl, ProviderUrlBlockedError } from "@/lib/provider-url-guard";
+import { refusedBaseUrlReasons } from "@/lib/openai-compatible-stored-url";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
@@ -366,7 +371,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
 /**
  * List every configured OpenAI-compatible provider. Each row carries a
- * `keyHint` (last 4 chars) and NEVER the decrypted key.
+ * `keyHint` (last 4 chars) and NEVER the decrypted key, plus `refusedReason`:
+ * why the SSRF guard now refuses the saved base URL (config emission points
+ * such a provider at a reserved address — see openai-compatible-stored-url.ts),
+ * or `null`. Each host is looked up once per request, with a short timeout.
  */
 export const GET = withAdmin(async () => {
   // Read-only list, no state change — GET is outside require-audit-log's scope
@@ -374,7 +382,12 @@ export const GET = withAdmin(async () => {
   // Uses the admin accessor so each row carries a keyHint (the one decrypt
   // path — see the module).
   const providers = await listOpenAiCompatibleProvidersForAdmin();
-  return NextResponse.json(providers);
+  const refused = await refusedBaseUrlReasons(providers);
+  const rows: OpenAiCompatibleProviderRow[] = providers.map((p) => ({
+    ...p,
+    refusedReason: refused.get(p.slug) ?? null,
+  }));
+  return NextResponse.json(rows);
 });
 
 /**
@@ -382,7 +395,8 @@ export const GET = withAdmin(async () => {
  * its models onto a remaining provider and reassigning `default_provider` when
  * the deleted slug was it. Mirrors the built-in provider DELETE verbatim: the
  * same last-provider guard shape (`countConfiguredProviders() <= 1` → 400), the
- * built-ins-first remaining-candidate ordering (Task 8), the shared
+ * same "no usable provider would remain" refusal, the built-ins-first
+ * remaining-candidate ordering (Task 8, refused base URLs left out), the shared
  * migration/reassignment/audit-diff helper, and a `settings.deleted` audit that
  * snapshots `{ id, name }`, caps the migrated-agent diff, and NEVER carries the
  * API key. Runtime apply is best-effort (`configRegenerated`) — the row is already
@@ -393,17 +407,50 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
   if ("error" in parsed) return parsed.error;
   const { id } = parsed.data;
 
+  // An unknown id is a 404 before any guard: otherwise a stale id would be
+  // answered — and audited — as a refused removal of a provider that does not
+  // exist. Same answer, and no audit, as the race below where the row vanishes
+  // between this lookup and the delete.
+  const row = (await listOpenAiCompatibleProviders()).find((p) => p.id === id);
+  if (!row) {
+    return NextResponse.json({ error: "OpenAI-compatible provider not found." }, { status: 404 });
+  }
+
   // A single custom instance counts as a valid sole provider, so this count
   // spans built-ins + custom instances (see provider-count.ts). Refuse to remove
   // the last one, with the exact status + message shape the built-in route uses.
   const totalConfigured = await countConfiguredProviders();
   if (totalConfigured <= 1) {
-    return NextResponse.json(
-      {
-        error: "Cannot remove the last configured provider. Add another provider first.",
-      },
-      { status: 400 }
+    return NextResponse.json({ error: LAST_CONFIGURED_PROVIDER_ERROR }, { status: 400 });
+  }
+
+  // Build the migration-target set BEFORE deleting, excluding this row by id:
+  // it doubles as the "is a usable provider left?" guard, which is worthless
+  // once the row is gone. Built-ins-first ordering, custom namespacing, and
+  // leaving out custom providers whose base URL is refused are single-sourced
+  // in buildRemainingCandidates (shared with the built-in DELETE route).
+  const remainingCandidates = await buildRemainingCandidates({ excludeCustomId: id });
+  if (remainingCandidates.length === 0) {
+    // The refusal comes from the SSRF guard's verdict on the other providers,
+    // so it is recorded like PATCH /default's refusal. No address in it. Its
+    // wording (and `reason`) depends on whether this provider is refused too.
+    const refusal = await noUsableTargetRefusal(row);
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        outcome: "failure",
+        detail: {
+          action: "provider_delete_refused_no_usable_target",
+          reason: refusal.reason,
+          // Keyed by slug like every other config.changed row about an
+          // existing provider (see the header), not by the row UUID.
+          provider: { id: row.slug, name: row.displayName },
+        },
+      })
     );
+    return NextResponse.json({ error: refusal.error }, { status: 400 });
   }
 
   let deleted: Awaited<ReturnType<typeof deleteProviderById>> = null;
@@ -418,13 +465,6 @@ export const DELETE = withAdmin(async (request, _ctx, session) => {
     if (!deleted) {
       return NextResponse.json({ error: "OpenAI-compatible provider not found." }, { status: 404 });
     }
-
-    // Build the migration-target set EXCLUDING the just-deleted slug — already
-    // gone from listOpenAiCompatibleProviders after deleteProviderById, so no
-    // built-in exclusion is passed. Built-ins-first ordering + custom namespacing
-    // are single-sourced in buildRemainingCandidates (shared with the built-in
-    // DELETE route).
-    const remainingCandidates = await buildRemainingCandidates();
 
     const previousDefault = await getSetting("default_provider");
     wasDefault = previousDefault === deleted.slug;

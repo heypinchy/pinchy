@@ -465,6 +465,32 @@ describe("pinchy-web plugin", () => {
       ).toHaveLength(0);
     });
 
+    it("does not POST report-auth-failure when the retry with a fresh key fails for another reason", async () => {
+      // The refetched key is fine; the retry then hits a Brave outage. Only an
+      // auth error says the key is bad — anything else would flip a healthy
+      // connection to auth_failed with nothing to clear it.
+      braveSearchMock
+        .mockRejectedValueOnce(new Error("401 Unauthorized"))
+        .mockRejectedValueOnce(
+          Object.assign(new Error("Brave Search API error (502): Bad Gateway"), { status: 502 })
+        );
+
+      const fetchMock = stubCredentialsFetch("brave-key-123");
+      const factories = collectFactories(
+        credentialsPluginConfig({ "agent-1": { tools: ["pinchy_web_search"] } })
+      );
+
+      const result = await factories.pinchy_web_search({ agentId: "agent-1" })!.execute("call-1", {
+        query: "test",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(braveSearchMock).toHaveBeenCalledTimes(2);
+      expect(
+        fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+      ).toHaveLength(0);
+    });
+
     it("does not POST report-auth-failure on a transient 5xx error from Brave", async () => {
       braveSearchMock.mockRejectedValueOnce(new Error("503 Service Unavailable"));
 

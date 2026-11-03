@@ -5,6 +5,7 @@ import { withAdmin } from "@/lib/api-auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { parseRequestBody } from "@/lib/api-validation";
 import { testCredentialsSchema } from "@/lib/schemas/integrations";
+import { describeOdooError } from "@/lib/integrations/odoo-error";
 
 export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(testCredentialsSchema, request);
@@ -54,7 +55,6 @@ export const POST = withAdmin(async (request) => {
       uid,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Connection failed";
-    return NextResponse.json({ success: false, error: message });
+    return NextResponse.json({ success: false, error: describeOdooError(error) });
   }
 });

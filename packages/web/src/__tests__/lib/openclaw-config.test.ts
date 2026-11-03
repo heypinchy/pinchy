@@ -153,7 +153,22 @@ const { mockResolveCustomProviderModels } = vi.hoisted(() => ({
 
 vi.mock("@/lib/openai-compatible-discovery", () => ({
   resolveCustomProviderModels: mockResolveCustomProviderModels,
+  // No live list cached: a refused provider's list comes from the existing
+  // file, else its snapshot.
+  cachedCustomProviderModels: vi.fn(() => undefined),
 }));
+
+// Emission re-checks each custom provider's saved base URL with the SSRF guard
+// (openai-compatible-stored-url.ts), which resolves hostnames. No real DNS in
+// this file: every name is unresolvable, which the guard lets through (fail
+// open), so the hostname fixtures below emit as before. The refusal test uses
+// an address literal, which is classified without DNS.
+vi.mock("dns/promises", () => {
+  const lookup = vi.fn(async () => {
+    throw Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
+  });
+  return { default: { lookup }, lookup };
+});
 
 const { mockValidateBuiltConfig } = vi.hoisted(() => ({
   mockValidateBuiltConfig: vi.fn().mockReturnValue({ ok: true }),
@@ -243,6 +258,7 @@ import {
   MEMORY_EMBEDDING_MODEL_PATH,
 } from "@/lib/openclaw-config";
 import { MAX_EFFECTIVE_CONTEXT_TOKENS } from "@/lib/openclaw-config/effective-context";
+import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
 import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
 import { db } from "@/db";
@@ -8933,6 +8949,256 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // The vision-less model encodes input as ["text"] only.
     expect(config.models.providers["acme-llm"].models[0].input).toEqual(["text"]);
     expect(config.models.providers["acme-llm"].models[0]).not.toHaveProperty("vision");
+  });
+
+  it("points a provider whose saved base URL the SSRF guard now refuses at a reserved address, without its key", async () => {
+    // Saved under older rules (the metadata address used to be accepted when
+    // it sat inside a "private" range). OpenClaw would carry chat traffic and
+    // the key to whatever baseUrl it is given, so the refusal has to happen
+    // here, not only in Pinchy's own fetch.
+    //
+    // The entry stays (corrected expectation: it used to be dropped). Dropping
+    // a provider's whole block can shrink openclaw.json by more than half,
+    // which both Pinchy's size-drop guard and OpenClaw's own config.apply
+    // refuse — the refused URL then stayed live. See the size test below.
+    mockListProvidersWithApiKeys.mockResolvedValue(
+      [
+        makeProvider(),
+        makeProvider({
+          id: "prov-2",
+          slug: "imds",
+          displayName: "Rebound",
+          baseUrl: "http://100.100.100.200/v1",
+          models: [makeModel({ id: "rebound-large", name: "Rebound Large" })],
+        }),
+      ].map((p) => keyed(p, "stored-key"))
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
+      const config = JSON.parse(written);
+      expect(config.models.providers["swisscom-ai"].baseUrl).toBe(
+        "https://api.swisscom.example/v1"
+      );
+      const refused = config.models.providers.imds;
+      expect(refused.baseUrl).toBe(REFUSED_BASE_URL);
+      expect(refused.api).toBe("openai-completions");
+      // No key reference: OpenClaw fails on the missing key before it opens
+      // a connection, and the stored key is never attached to a request.
+      expect(refused).not.toHaveProperty("apiKey");
+      // The saved snapshot, so agents pinned to these models stay valid
+      // config — they fail at the runtime, not on "Unknown model".
+      expect(refused.models.map((m: { id: string }) => m.id)).toEqual(["rebound-large"]);
+      expect(refused.models[0]).not.toHaveProperty("vision");
+      // Never fetched: discovery would send the key to the refused address.
+      expect(mockResolveCustomProviderModels).not.toHaveBeenCalledWith(
+        expect.objectContaining({ slug: "imds" })
+      );
+      expect(written).not.toContain("100.100.100.200");
+      expect(warn.mock.calls.map((c) => String(c[0]))).toContainEqual(
+        expect.stringContaining("Rebound (imds)")
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("writes the config when the refused provider dominates the existing file (no size-drop refusal)", async () => {
+    // The upgrade case that made dropping the block unsafe: an endpoint with a
+    // large catalog was saved under older rules, so most of openclaw.json is
+    // its models. Leaving the block out shrank the file by more than half,
+    // the #311 size-drop guard refused the write, and the refused baseUrl
+    // stayed live — along with every later config change.
+    const manyModels = Array.from({ length: 40 }, (_, i) =>
+      makeModel({ id: `rebound-model-${i}`, name: `Rebound Model ${i}` })
+    );
+    const imds = makeProvider({
+      id: "prov-2",
+      slug: "imds",
+      displayName: "Rebound",
+      baseUrl: "http://100.100.100.200/v1",
+      models: manyModels,
+    });
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify(
+        {
+          gateway: { mode: "local", bind: "lan", auth: { mode: "token", token: "t" } },
+          models: {
+            providers: {
+              imds: {
+                baseUrl: "http://100.100.100.200/v1",
+                api: "openai-completions",
+                apiKey: { source: "file", provider: "pinchy", id: "/providers/imds/apiKey" },
+                models: manyModels.map(({ vision: _vision, ...m }) => ({
+                  ...m,
+                  contextTokens: 32000,
+                  compat: { supportsUsageInStreaming: true },
+                })),
+              },
+            },
+          },
+        },
+        null,
+        2
+      ) + "\n"
+    );
+    mockListProvidersWithApiKeys.mockResolvedValue([imds].map((p) => keyed(p, "stored-key")));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      expect(error.mock.calls.flat().join(" ")).not.toMatch(/suspiciously small/i);
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
+      expect(written).not.toContain("100.100.100.200");
+      expect(JSON.parse(written).models.providers.imds.models).toHaveLength(40);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("keeps a refused provider's on-disk model list when its saved snapshot is much smaller", async () => {
+    // While a provider is allowed, its block holds the LIVE /models list, not
+    // the snapshot saved with the provider — one manual model id, or a
+    // catalogue that has grown since. Emitting the snapshot once the URL is
+    // refused shrank the file by more than half: the size-drop guard refused
+    // the write, so the refused baseUrl and key stayed live, and so did every
+    // later config change.
+    const manyModels = Array.from({ length: 40 }, (_, i) =>
+      makeModel({ id: `rebound-model-${i}`, name: `Rebound Model ${i}` })
+    );
+    const imds = makeProvider({
+      id: "prov-2",
+      slug: "imds",
+      displayName: "Rebound",
+      baseUrl: "http://100.100.100.200/v1",
+      models: [manyModels[0]],
+    });
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify(
+        {
+          gateway: { mode: "local", bind: "lan", auth: { mode: "token", token: "t" } },
+          models: {
+            providers: {
+              imds: {
+                baseUrl: "http://100.100.100.200/v1",
+                api: "openai-completions",
+                apiKey: { source: "file", provider: "pinchy", id: "/providers/imds/apiKey" },
+                models: manyModels.map(({ vision: _vision, ...m }) => ({
+                  ...m,
+                  contextTokens: 32000,
+                  compat: { supportsUsageInStreaming: true },
+                })),
+              },
+            },
+          },
+        },
+        null,
+        2
+      ) + "\n"
+    );
+    mockListProvidersWithApiKeys.mockResolvedValue([imds].map((p) => keyed(p, "stored-key")));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      expect(error.mock.calls.flat().join(" ")).not.toMatch(/suspiciously small/i);
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
+      expect(written).not.toContain("100.100.100.200");
+      const refused = JSON.parse(written).models.providers.imds;
+      expect(refused.baseUrl).toBe(REFUSED_BASE_URL);
+      expect(refused).not.toHaveProperty("apiKey");
+      expect(refused.models.map((m: { id: string }) => m.id)).toEqual(manyModels.map((m) => m.id));
+      // Never fetched to find the list: discovery would send the key.
+      expect(mockResolveCustomProviderModels).not.toHaveBeenCalledWith(
+        expect.objectContaining({ slug: "imds" })
+      );
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("does not emit a refused provider as the default model", async () => {
+    // The default-model guard must share the emission loop's verdict. A
+    // refused provider's entry points at a reserved address, so as the
+    // runtime default it would only make every agent without a model of its
+    // own fail.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "imds";
+      return null;
+    });
+    mockListProvidersWithApiKeys.mockResolvedValue(
+      [
+        makeProvider(),
+        makeProvider({
+          id: "prov-2",
+          slug: "imds",
+          displayName: "Rebound",
+          baseUrl: "http://100.100.100.200/v1",
+        }),
+      ].map((p) => keyed(p, "stored-key"))
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+      expect(getDefaultModel).not.toHaveBeenCalledWith("imds");
+      expect(config.agents.defaults).not.toHaveProperty("model");
+      // One check per regenerate, shared by both decisions: one log line.
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes("Rebound (imds)"))).toHaveLength(
+        1
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("clears a default model an earlier regenerate wrote for a provider that is now refused", async () => {
+    // The upgrade case: the provider was the default under the old rules, so
+    // openclaw.json already carries `agents.defaults.model`. agents.defaults is
+    // deep-merged over the file on every regenerate, so merely not emitting
+    // the key would keep the stale default alive.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        agents: { defaults: { model: { primary: "imds/rebound-large" }, heartbeat: "30m" } },
+      })
+    );
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "imds";
+      return null;
+    });
+    mockListProvidersWithApiKeys.mockResolvedValue(
+      [
+        makeProvider({
+          id: "prov-2",
+          slug: "imds",
+          displayName: "Rebound",
+          baseUrl: "http://100.100.100.200/v1",
+        }),
+      ].map((p) => keyed(p, "stored-key"))
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+      expect(config.agents.defaults).not.toHaveProperty("model");
+      // Only the stale default goes; what OpenClaw stamped beside it stays.
+      expect(config.agents.defaults.heartbeat).toBe("30m");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/keyVersion/snapshot", async () => {

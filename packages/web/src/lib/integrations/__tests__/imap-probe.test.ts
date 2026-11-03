@@ -111,7 +111,7 @@ describe("imap-probe", () => {
     mockImapClient.connect.mockResolvedValue(undefined);
     mockImapClient.logout.mockResolvedValue(undefined);
     mockTransport.verify.mockResolvedValue(true);
-    mockDnsLookup.mockResolvedValue([{ address: "203.0.113.50", family: 4 }]);
+    mockDnsLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
   });
 
   describe("testImapLogin", () => {

@@ -34,6 +34,11 @@ import {
 } from "@/lib/openclaw-builtin-models";
 import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
 import {
+  REFUSED_BASE_URL,
+  refusedBaseUrlsForEmission,
+  refusedProviderModels,
+} from "@/lib/openai-compatible-stored-url";
+import {
   getOpenClawWorkspacePath,
   getAgentBootstrapSizes,
   writeWorkspaceSkill,
@@ -489,10 +494,19 @@ async function regenerateOpenClawConfigOnce(): Promise<void> {
   // AND is a prototype-injection sink (a slug like `constructor` walks the
   // prototype chain). `Object.hasOwn` + `.some()` are both prototype-safe.
   const isBuiltInDefault = defaultProvider !== null && Object.hasOwn(PROVIDERS, defaultProvider);
+  // A saved base URL the SSRF guard now refuses is neither emitted below nor
+  // the default here — one check, shared by both decisions.
+  const refusedCustomProviders = await refusedBaseUrlsForEmission(customProviders);
   const isCustomDefault =
-    defaultProvider !== null && customProviders.some((p) => p.slug === defaultProvider);
+    defaultProvider !== null &&
+    !refusedCustomProviders.has(defaultProvider) &&
+    customProviders.some((p) => p.slug === defaultProvider);
   if (defaultProvider && (isBuiltInDefault || isCustomDefault)) {
     pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };
+  } else if (customProviders.some((p) => p.slug === defaultProvider)) {
+    // A refused default: `undefined` (not omission) so the deepMerge below
+    // drops the default an earlier regenerate wrote for it.
+    pinchyDefaults.model = undefined;
   }
 
   // Vision-model chain for the built-in `pdf` and `image` tools. Both use the
@@ -1493,18 +1507,26 @@ async function regenerateOpenClawConfigOnce(): Promise<void> {
   // a new pointer, so the config that moves `baseUrl` is the only one that
   // resolves the key entered for it — the two can never go live apart, and
   // discovery never sends one save's key to another save's address.
+  //
+  // A saved base URL the SSRF guard now refuses keeps its entry and the model
+  // list the file already holds (so the file keeps its size — see
+  // openai-compatible-stored-url.ts) but points at REFUSED_BASE_URL, carries
+  // no key, and is never fetched.
   for (const p of customProviders) {
-    const models = await resolveCustomProviderModels({
-      slug: p.slug,
-      baseUrl: p.baseUrl,
-      apiKey: p.apiKey,
-      keyVersion: p.keyVersion,
-      models: p.models,
-    });
+    const refused = refusedCustomProviders.has(p.slug);
+    const models = refused
+      ? refusedProviderModels(existing, p)
+      : await resolveCustomProviderModels({
+          slug: p.slug,
+          baseUrl: p.baseUrl,
+          apiKey: p.apiKey,
+          keyVersion: p.keyVersion,
+          models: p.models,
+        });
     modelProviders[p.slug] = {
-      baseUrl: p.baseUrl,
+      baseUrl: refused ? REFUSED_BASE_URL : p.baseUrl,
       api: "openai-completions",
-      apiKey: secretRef(`/providers/${p.secretSlot}/apiKey`),
+      ...(refused ? {} : { apiKey: secretRef(`/providers/${p.secretSlot}/apiKey`) }),
       models: stripVision(models).map((m) => ({
         ...m,
         compat: { supportsUsageInStreaming: true },

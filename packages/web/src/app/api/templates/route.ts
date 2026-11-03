@@ -6,7 +6,7 @@ import { integrationConnections } from "@/db/schema";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { getConnectionModels } from "@/lib/integrations/odoo-connection-models";
-import { getSetting } from "@/lib/settings";
+import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { type ProviderName } from "@/lib/providers";
 import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 import { resolveAvailableModelForTemplate } from "@/lib/model-resolver/resolve-available";
@@ -33,7 +33,7 @@ export const GET = withAuth(async () => {
   const connectionModels = hasOdooConnection ? await getConnectionModels() : null;
 
   // Determine active provider for capability-based template filtering
-  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
+  const defaultProvider = (await getUsableDefaultProvider()) as ProviderName | null;
 
   // Build templates with both Odoo and capability availability
   const templates = await Promise.all(
