@@ -5216,7 +5216,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // readExistingConfig throws on a persistent EACCES (OpenClaw's 0600
     // restart-write window) precisely so callers don't treat the file as empty:
     // writing the overrides onto `{}` would replace agents, models, plugins,
-    // secrets and the gateway token with seven fields.
+    // secrets and the gateway token with just the overrides.
     mockedReadFileSync.mockImplementation(() => {
       throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
     });

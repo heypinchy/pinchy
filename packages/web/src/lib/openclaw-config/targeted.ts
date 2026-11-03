@@ -275,7 +275,8 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
       );
       return false;
     }
-    // ENOENT / parse-error means we're on a true cold start with no file.
+    // readExistingConfig returns {} for ENOENT and unparseable files and only
+    // throws on a persistent EACCES, so this is a defensive fallback.
     existing = {};
   }
 
@@ -357,7 +358,8 @@ export function seedRestartClassOverridesIfMissing(): boolean {
       );
       return false;
     }
-    // ENOENT / parse-error means a true cold start with no usable file.
+    // readExistingConfig returns {} for ENOENT and unparseable files and only
+    // throws on a persistent EACCES, so this is a defensive fallback.
     existing = {};
   }
 
