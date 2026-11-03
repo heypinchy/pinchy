@@ -37,11 +37,14 @@
 // In OC 2026.7.1 signal 1 alone decides; signal 2 is the backup. The OR is a
 // trade: a future OC must break BOTH signals before the gate stops ever saying
 // "ready", but breaking EITHER one (a non-`main` default for an empty list, or
-// an identity on disk-only entries) brings back a false "ready". That direction
-// is bounded by the retry loop, which trusts a contradicted "ready" only once
-// (chat-dispatch-retry.ts). The other direction is loud, not lossless: a gate
-// that never says "ready" makes a chat wait out the whole retry budget and
-// fail, and makes the inbox sweep defer every email.
+// an identity on disk-only entries) brings back a false "ready". On the chat
+// path that is bounded by the retry loop, which stops trusting a "ready" the
+// next dispatch contradicts (chat-dispatch-retry.ts). The inbox sweep has no
+// such loop: a false "ready" there lets the run dispatch into the race, which
+// fails that email terminally and notifies the user (see
+// lib/email-workflows/run-adapter.ts). The other direction is loud, not
+// lossless: a gate that never says "ready" makes a chat wait out the whole
+// retry budget and fail, and makes the inbox sweep defer every email.
 //
 // Polling cost is safe under contention: `agents.list` is a READ. Verified
 // against OC 2026.5.28's method descriptors — `config.apply` carries

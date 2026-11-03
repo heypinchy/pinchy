@@ -1549,7 +1549,7 @@ describe("ClientRouter", () => {
     // agents.list is empty, so its `agents.list` RPC reports every agent
     // directory on disk — without a `name` — while the dispatch handler rejects
     // the id. Reading those raw ids as "ready" re-dispatched ~4,800 times in
-    // 19 s. The gate must wait until the agent is a configured (named) entry.
+    // 19 s. The gate must wait until the response comes from the configured list.
     vi.useFakeTimers();
     try {
       const clientWs = createMockClientWs();
