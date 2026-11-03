@@ -352,23 +352,12 @@ let _runInFlight = false;
  * restart.
  */
 const RECONVERSION_LOOK_INTERVAL_MS = 60 * 60 * 1000;
-/**
- * How long a folder an upgrade run went through is passed over. What one run
- * could not convert (a memory squeeze, LibreOffice down), another run over the
- * same folder right after would not either — but the next day it may.
- */
-const RECONVERTED_FOLDER_PAUSE_MS = 24 * 60 * 60 * 1000;
 
 // Agents whose folders hold Office documents converted under an earlier
 // artifact format, not yet queued.
 let _reconversionsOwed: string[] = [];
 // When the worker last looked for them; null until the first tick.
 let _reconversionLookedAt: number | null = null;
-// The folders those queued runs went through, with when each was queued. An
-// agent whose superseded documents all lie in folders run within the last day
-// is passed over, so a document that cannot be converted costs its folder at
-// most one run a day.
-const _reconvertedPaths = new Map<string, number>();
 // Whether this process has already cleaned up after its predecessor. See the
 // requeue in runKbIndexWorkerTick for why doing it exactly once is not an
 // optimization but a correctness condition.
@@ -447,14 +436,10 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
 async function queueOwedReconversion(): Promise<void> {
   try {
     while (_reconversionsOwed.length > 0) {
-      const outcome = await queueReconversion(_reconversionsOwed[0], recentlyReconvertedPaths());
+      const outcome = await queueReconversion(_reconversionsOwed[0]);
       if (outcome.status === "busy") return;
       _reconversionsOwed.shift();
-      if (outcome.status === "queued") {
-        const queuedAt = Date.now();
-        for (const path of outcome.paths) _reconvertedPaths.set(path, queuedAt);
-        return;
-      }
+      if (outcome.status === "queued") return;
     }
   } catch (err) {
     // A database problem: drop the rest rather than ask again every tick.
@@ -474,10 +459,10 @@ async function queueOwedReconversion(): Promise<void> {
  * run would do it — unless it is switched off — so the agents whose folders
  * hold them are queued from here, one at a time: at boot, and then hourly,
  * which also reaches an agent granted `knowledge_search` or a folder since.
- * Folders an upgrade run went through within the last day are left out, so a
- * document that cannot be converted now does not send its folder round in a
- * loop. A failure is logged and leaves it to the next look; the queue still
- * runs.
+ * Folders a run — any run — succeeded over within the last day are left out,
+ * so a document that cannot be converted now costs its folder at most one run
+ * a day, across restarts. A failure is logged and leaves it to the next look;
+ * the queue still runs.
  */
 async function lookForOwedReconversions(): Promise<void> {
   const now = Date.now();
@@ -489,7 +474,7 @@ async function lookForOwedReconversions(): Promise<void> {
   }
   _reconversionLookedAt = now;
   try {
-    const owed = (await agentsOwedReconversion(recentlyReconvertedPaths())).filter(
+    const owed = (await agentsOwedReconversion()).filter(
       (agentId) => !_reconversionsOwed.includes(agentId)
     );
     if (owed.length > 0) {
@@ -504,15 +489,6 @@ async function lookForOwedReconversions(): Promise<void> {
       errorLine(err)
     );
   }
-}
-
-/** The folders an upgrade run went through within the last day. */
-function recentlyReconvertedPaths(): string[] {
-  const now = Date.now();
-  for (const [path, queuedAt] of _reconvertedPaths) {
-    if (now - queuedAt >= RECONVERTED_FOLDER_PAUSE_MS) _reconvertedPaths.delete(path);
-  }
-  return [..._reconvertedPaths.keys()];
 }
 
 /**
@@ -568,6 +544,5 @@ export function _resetKbIndexWorkerForTest(): void {
   _orphansRequeued = false;
   _reconversionsOwed = [];
   _reconversionLookedAt = null;
-  _reconvertedPaths.clear();
   _runInFlight = false;
 }

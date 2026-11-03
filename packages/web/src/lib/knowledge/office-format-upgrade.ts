@@ -29,10 +29,10 @@
  * applies, because the version column alone cannot tell them apart: a row
  * written before the column existed carries null, exactly like a PDF does.
  */
-import { and, asc, eq, isNull, not, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gte, isNull, not, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/db";
-import { agents, kbDocuments } from "@/db/schema";
+import { agents, kbDocuments, kbIndexJobs } from "@/db/schema";
 import { appendAuditLog, safeProviderError, type EntityRef } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 
@@ -119,12 +119,42 @@ export async function officeFormatVersionInUse(version: number): Promise<boolean
 }
 
 /**
+ * How long a folder a run went through is passed over. What one run could not
+ * convert (a memory squeeze, LibreOffice down), another run over the same
+ * folder right after would not either — but the next day it may.
+ */
+const RECENT_RUN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The folders a run SUCCEEDED over within the last day — any run: the nightly
+ * one, an admin's, or one of ours. Each read its folders whole and converted
+ * what it could, so a document still superseded under them is one a run of
+ * ours would not convert today either. Read from `kb_index_jobs`, so a restart
+ * remembers it, and a run that failed — and read nothing — does not count.
+ * A run still pending or running needs no entry here: it holds the
+ * instance's one job slot, so nothing is queued until it finishes.
+ */
+async function recentlyRunPaths(): Promise<string[]> {
+  const jobs = await db
+    .select({ paths: kbIndexJobs.paths })
+    .from(kbIndexJobs)
+    .where(
+      and(
+        eq(kbIndexJobs.orgId, DEFAULT_ORG_ID),
+        eq(kbIndexJobs.status, "succeeded"),
+        gte(kbIndexJobs.finishedAt, new Date(Date.now() - RECENT_RUN_MS))
+      )
+    );
+  return [...new Set(jobs.flatMap((job) => job.paths))];
+}
+
+/**
  * Does anything under `paths` still need converting again — anything outside
- * `alreadyRun`, the folders an upgrade run has already gone through?
+ * `alreadyRun`, the folders a run went through within the last day?
  */
 async function owesReconversion(
   paths: readonly string[],
-  alreadyRun: readonly string[] = []
+  alreadyRun: readonly string[]
 ): Promise<boolean> {
   if (paths.length === 0) return false;
   const sourcePath = sql`${kbDocuments.sourcePath}`;
@@ -146,12 +176,11 @@ async function owesReconversion(
 /**
  * The searching agents whose granted folders hold an Office document still
  * read from an earlier artifact format, oldest first — the agents a reindex
- * would convert them again for. A document in `alreadyRun`, folders an upgrade
- * run recently went through, does not count.
+ * would convert them again for. A document in a folder a run went through
+ * within the last day does not count.
  */
-export async function agentsOwedReconversion(
-  alreadyRun: readonly string[] = []
-): Promise<string[]> {
+export async function agentsOwedReconversion(): Promise<string[]> {
+  const alreadyRun = await recentlyRunPaths();
   const owed: string[] = [];
   for (const agent of await searchingAgents()) {
     if (await owesReconversion(agent.paths, alreadyRun)) owed.push(agent.id);
@@ -159,30 +188,25 @@ export async function agentsOwedReconversion(
   return owed;
 }
 
-export type ReconversionOutcome =
-  { status: "queued"; paths: string[] } | { status: "busy" } | { status: "skipped" };
+export type ReconversionOutcome = { status: "queued" | "busy" | "skipped" };
 
 /**
  * Queues the reindex that converts an agent's superseded Office documents
  * again — an ordinary `kb_index_jobs` row, run, counted and audited like any
  * other, with trigger `upgrade`.
  *
- * `queued` (with the folders the run will go through) and `skipped` both mean
- * "this agent is done"; `busy` means the instance's one job slot is taken, so
- * ask again once it is free. Re-checked here rather than trusted from the
- * worker's list: an agent deleted, stripped of its folders or of
- * `knowledge_search` since has nothing to run, and an agent whose superseded
- * documents all lie in `alreadyRun` — folders an upgrade run went through
- * within the last day — has nothing a run of its own would change. That
- * second check is not the same as asking the rows again: a document whose
- * conversion ended `infrastructure` (out of memory, a timeout, LibreOffice
- * down) is still superseded after the run, and every other agent granted its
- * folder would otherwise run the whole folder again, every hour.
+ * `queued` and `skipped` both mean "this agent is done"; `busy` means the
+ * instance's one job slot is taken, so ask again once it is free. Re-checked
+ * here rather than trusted from the worker's list: an agent deleted, stripped
+ * of its folders or of `knowledge_search` since has nothing to run, and an
+ * agent whose superseded documents all lie in folders a run went through
+ * within the last day has nothing a run of its own would change. That second
+ * check is not the same as asking the rows again: a document whose conversion
+ * ended `infrastructure` (out of memory, a timeout, LibreOffice down) is still
+ * superseded after the run, and every other agent granted its folder would
+ * otherwise run the whole folder again, every hour.
  */
-export async function queueReconversion(
-  agentId: string,
-  alreadyRun: readonly string[] = []
-): Promise<ReconversionOutcome> {
+export async function queueReconversion(agentId: string): Promise<ReconversionOutcome> {
   if (await findActiveIndexJob(DEFAULT_ORG_ID)) return { status: "busy" };
 
   const [agent] = await db
@@ -198,7 +222,7 @@ export async function queueReconversion(
     .limit(1);
   if (!agent || !isScheduledIndexAgent(agent)) return { status: "skipped" };
   const paths = grantedKnowledgePaths(agent.pluginConfig);
-  if (!(await owesReconversion(paths, alreadyRun))) return { status: "skipped" };
+  if (!(await owesReconversion(paths, await recentlyRunPaths()))) return { status: "skipped" };
 
   const agentRef: EntityRef = { id: agent.id, name: agent.name };
   const base = {
@@ -235,7 +259,7 @@ export async function queueReconversion(
   if (enqueued.status === "busy") return { status: "busy" };
 
   await audit(reindexAuditEntry({ ...base, outcome: "success", jobId: enqueued.job.id }));
-  return { status: "queued", paths };
+  return { status: "queued" };
 }
 
 /** Writes an audit row outside any request — the AGENTS.md non-request pattern. */
