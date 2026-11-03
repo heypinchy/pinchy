@@ -18,6 +18,13 @@ vi.mock("@/lib/audit-deferred", () => ({
   deferAuditLog: vi.fn(),
 }));
 
+// The guard's own decisions (which address classes, which flags) are tested in
+// lib/integrations/__tests__/stored-destination.test.ts. Here it is a seam.
+vi.mock("@/lib/integrations/stored-destination", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/integrations/stored-destination")>();
+  return { ...actual, checkStoredDestination: vi.fn() };
+});
+
 vi.mock("@/db", () => ({
   db: {
     select: vi.fn().mockReturnValue({
@@ -88,6 +95,7 @@ import { isTokenExpired } from "@/lib/integrations/oauth-token";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { authorizeAgentConnection } from "@/lib/integrations/authorize-agent-connection";
 import { deferAuditLog } from "@/lib/audit-deferred";
+import { checkStoredDestination } from "@/lib/integrations/stored-destination";
 import { GET } from "@/app/api/internal/integrations/[connectionId]/credentials/route";
 
 const CALLING_AGENT = { id: "agent-1", name: "Bookkeeper", allowedTools: [] as string[] };
@@ -125,6 +133,7 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
       allowed: true,
       agent: CALLING_AGENT,
     });
+    vi.mocked(checkStoredDestination).mockResolvedValue({ allowed: true });
     vi.mocked(decrypt).mockReturnValue(
       '{"accessToken":"test-token","refreshToken":"test-refresh"}'
     );
@@ -256,6 +265,123 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
 
       expect(res.status).toBe(401);
       expect(authorizeAgentConnection).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("stored destination is re-checked before credentials leave (SSRF)", () => {
+    // The address was validated when the connection was saved — and never
+    // again. The plugin connects to whatever URL/host it is handed here, so a
+    // connection saved under older rules (100.x was public before), or before
+    // an operator removed ALLOW_PRIVATE_URLS, kept reaching it. This is the one
+    // place every plugin fetch passes through.
+    const odooCredentials = {
+      url: "http://100.64.0.7:8069",
+      db: "prod",
+      login: "admin",
+      apiKey: "odoo-api-key-secret",
+      uid: 2,
+    };
+    const refusal = {
+      allowed: false as const,
+      field: "url" as const,
+      message:
+        "Blocked: this URL targets a private network address. Set ALLOW_PRIVATE_URLS=1 to allow an Odoo server on your own network.",
+    };
+
+    beforeEach(() => {
+      vi.mocked(decrypt).mockReturnValue(JSON.stringify(odooCredentials));
+    });
+
+    it("checks the decrypted credentials of the connection's type", async () => {
+      await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(checkStoredDestination).toHaveBeenCalledWith("odoo", odooCredentials);
+    });
+
+    it("refuses to hand out credentials whose destination the guard refuses, and leaks none", async () => {
+      vi.mocked(checkStoredDestination).mockResolvedValue(refusal);
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.credentials).toBeUndefined();
+      expect(JSON.stringify(data)).not.toContain("odoo-api-key-secret");
+      // The plugin puts this body into the agent's tool error — it has to
+      // name the cause and the fix, which the guard's message already does.
+      expect(data.error).toContain(refusal.message);
+    });
+
+    it("words the refusal so the plugins never read it as stale credentials", async () => {
+      // A message the plugins' isAuthError() matches would flip the connection
+      // to auth_failed and tell an admin to re-enter a perfectly good API key.
+      // These are the word patterns from credential-client.ts; the status
+      // (403, not 401) is the other half.
+      vi.mocked(checkStoredDestination).mockResolvedValue(refusal);
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+      const { error } = await res.json();
+
+      expect(res.status).not.toBe(401);
+      expect(String(error).toLowerCase()).not.toMatch(
+        /unauthori[sz]|access denied|authentication (failed|error|required|denied)|failed to authenticate|invalid[ _-]?(api[ _-]?(key|token)|credentials?|token|grant|authentication)|token (has |have )?(been )?expired|session (has )?expired/
+      );
+    });
+
+    it("writes an integration.credentials_denied audit row naming agent, connection, field and reason", async () => {
+      vi.mocked(checkStoredDestination).mockResolvedValue(refusal);
+
+      await GET(makeRequest("conn-1", CALLING_AGENT.id), makeParams("conn-1"));
+
+      expect(deferAuditLog).toHaveBeenCalledTimes(1);
+      const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
+      expect(entry).toMatchObject({
+        actorType: "agent",
+        actorId: CALLING_AGENT.id,
+        eventType: "integration.credentials_denied",
+        resource: "integration:conn-1",
+        outcome: "failure",
+      });
+      expect(entry.detail).toEqual({
+        agent: { id: CALLING_AGENT.id, name: CALLING_AGENT.name },
+        connection: { id: "conn-1" },
+        reason: "destination-blocked",
+        field: "url",
+      });
+      // The refused address itself stays out of the row: a mail host can be a
+      // person's own domain, and the field name is enough to find it.
+      expect(JSON.stringify(entry.detail)).not.toContain("100.64.0.7");
+    });
+
+    it("refuses an imap connection whose SMTP host the guard refuses", async () => {
+      mockDbSelectResult([
+        { id: "conn-imap", type: "imap", status: "active", credentials: "encrypted-blob" },
+      ]);
+      vi.mocked(decrypt).mockReturnValue(
+        JSON.stringify({ imapHost: "imap.example.com", smtpHost: "127.0.0.1", password: "pw" })
+      );
+      vi.mocked(checkStoredDestination).mockResolvedValue({
+        allowed: false,
+        field: "smtpHost",
+        message:
+          "Blocked: this host resolves to a loopback, link-local, cloud-metadata or otherwise reserved address.",
+      });
+
+      const res = await GET(makeRequest("conn-imap"), makeParams("conn-imap"));
+
+      expect(res.status).toBe(403);
+      expect(JSON.stringify(await res.json())).not.toContain('"pw"');
+      expect(vi.mocked(deferAuditLog).mock.calls[0][0].detail).toMatchObject({
+        reason: "destination-blocked",
+        field: "smtpHost",
+      });
+    });
+
+    it("does not audit an allowed fetch", async () => {
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(200);
+      expect(deferAuditLog).not.toHaveBeenCalled();
     });
   });
 

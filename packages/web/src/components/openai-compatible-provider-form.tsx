@@ -7,8 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiPost, ApiError, errorMessage } from "@/lib/api-client";
-import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
-import type { UpsertOpenAiCompatibleProviderInput } from "@/lib/schemas/openai-compatible-provider";
+import type {
+  OpenAiCompatibleProviderRow,
+  UpsertOpenAiCompatibleProviderInput,
+} from "@/lib/schemas/openai-compatible-provider";
 import {
   canonicalDestinationUrl,
   KEY_REQUIRED_FOR_NEW_DESTINATION,
@@ -27,14 +29,7 @@ import {
 // `provider={row}`).
 
 /** A provider row as returned by `GET /api/settings/providers/openai-compatible`. */
-export interface ProviderListItem {
-  id: string;
-  slug: string;
-  displayName: string;
-  baseUrl: string;
-  models: OpenClawModelDefinition[];
-  keyHint: string;
-}
+export type ProviderListItem = OpenAiCompatibleProviderRow;
 
 interface FormProps {
   /** The provider being edited, or null when adding a new one. */
@@ -104,7 +99,9 @@ export function OpenAiCompatibleProviderForm({ provider, onSaved, onCancel }: Fo
         ...(apiKey.trim() ? { apiKey } : {}),
         ...(manualModelIds && manualModelIds.length > 0 ? { manualModelIds } : {}),
       };
-      await apiPost<ProviderListItem, UpsertOpenAiCompatibleProviderInput>(
+      // The save returns the stored row; only the list read checks the URL
+      // again, and a URL the guard refuses is never saved in the first place.
+      await apiPost<Omit<ProviderListItem, "refusedReason">, UpsertOpenAiCompatibleProviderInput>(
         "/api/settings/providers/openai-compatible",
         body
       );

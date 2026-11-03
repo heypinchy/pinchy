@@ -907,6 +907,9 @@ const plugin = {
         try {
           return await fn(trackMutations(fresh, MUTATING_ADAPTER_METHODS, markMutated));
         } catch (retryErr) {
+          // Only an auth error says the fresh credentials are bad; a 5xx or a
+          // validation error on the retry must not flag a healthy connection.
+          if (!isAuthError(retryErr)) throw retryErr;
           return reportAndRethrow(config.connectionId, retryErr);
         }
       }

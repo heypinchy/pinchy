@@ -158,6 +158,10 @@ The **Security** setting doesn't match what the server expects. Try `TLS` for po
 
 The server didn't respond in time — usually a network issue or an incorrect host/port combination.
 
+**"Blocked: enter the mail server as a plain host name or IP address"**
+
+The IMAP or SMTP host contains something a host name can't — usually a stray space, brackets around an IPv6 address, or a port. Enter just the name or address; the port has its own field. See [Mail servers on your own network](#mail-servers-on-your-own-network) for the full rule.
+
 **"Blocked: this host resolves to a private network address"**
 
 See [Mail servers on your own network](#mail-servers-on-your-own-network) below.
@@ -174,15 +178,21 @@ The message itself is fine, and `email_list` and `email_search` still show its s
 
 The connection test reports exactly why an attempt failed — refused, timed out, TLS error, wrong password. That's what makes it useful for fixing a mailbox, and it's also what would make it useful for mapping the network Pinchy runs in. So we only probe hosts that resolve to a public address.
 
-If your mail server genuinely lives on your own network — an on-premise Exchange or Dovecot box on `10.x`, `172.16–31.x`, `192.168.x`, or an IPv6 unique-local range — set the environment variable on the Pinchy container and restart it:
+If your mail server genuinely lives on your own network — an on-premise Exchange or Dovecot box on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale address (`100.x`), an IPv6 unique-local address, or any other of the [private ranges](/reference/network-address-checks/#private-ranges) — set the environment variable on the Pinchy container and restart it:
 
 ```bash
 ALLOW_PRIVATE_MAIL_HOSTS=1
 ```
 
-Loopback and link-local addresses stay blocked either way — `127.0.0.1`, `::1`, `169.254.169.254` and `fd00:ec2::254`, the cloud metadata endpoints. No mail server lives there, so there's nothing to trade off.
+Loopback, link-local, the cloud metadata endpoints and the reserved ranges stay blocked either way — `127.0.0.1`, `::1`, `0.0.0.0/8`, `169.254.169.254`, the documentation ranges, multicast and the rest of the [always-refused list](/reference/network-address-checks/#always-refused). No mail server lives there, so there's nothing to trade off.
 
-The same check runs when the connection is saved, not only when it's tested, so a blocked host can't be stored and quietly reconnected to later by an inbox sweep.
+The host itself has to be a plain host name or IP address — `imap.example.com`, `mail.example.com.`, `93.184.216.34` or `2606:4700:4700::1111`. Spaces, brackets (`[2606:4700:4700::1111]`), a `%` or zone ID (`fe80::1%eth0`), a port (`mail.example.com:993`) and non-ASCII characters are refused, whatever is set. We check the host exactly as the mail client will use it, so it has to be a string every resolver reads the same way. For an internationalised domain, enter its `xn--` form: `mail.xn--bcher-kva.example` rather than `mail.bücher.example`.
+
+The same check runs when the connection is saved, and again every time the saved IMAP and SMTP hosts are used — before an agent's email tools receive the connection, before **Test connection**, and before each inbox sweep. So a mailbox saved under older rules, or before the flag was removed, can't quietly keep reaching a host that's refused now. The agent's email tools keep a connection they already fetched for up to 5 minutes, so after removing `ALLOW_PRIVATE_MAIL_HOSTS` run `docker compose up -d --force-recreate openclaw` if a stricter rule must apply at once. A refusal leaves the stored password alone: the agent's tool reports why, an automation on that mailbox shows an error, and the audit trail records it as `integration.credentials_denied` with the reason `destination-blocked`.
+
+Two gaps remain. The check resolves the hostname, and the mail client resolves it again to connect, so a DNS answer that changes in between (DNS rebinding) isn't caught. And the check runs in Pinchy's container while the mail tools connect from the agent runtime's (`openclaw`): our `docker-compose.yml` gives both the same extra host names, but if you add `extra_hosts` entries of your own to `openclaw`, add them to `pinchy` too — a name the check can't resolve is let through.
+
+On OrbStack, `host.docker.internal` and `ollama.local` (which our `docker-compose.yml` maps to the same host gateway) resolve to `0.250.250.254` and are refused whatever you set; use the mail container's name or your machine's LAN address when developing.
 
 ---
 

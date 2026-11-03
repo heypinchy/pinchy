@@ -183,6 +183,9 @@ const plugin = {
         try {
           return await fn(fresh);
         } catch (retryErr) {
+          // Only an auth error says the fresh key is bad; a Brave outage on
+          // the retry must not flag a healthy connection.
+          if (!isAuthError(retryErr)) throw retryErr;
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
           await postAuthFailure({
             apiBaseUrl,

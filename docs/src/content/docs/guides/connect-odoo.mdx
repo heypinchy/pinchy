@@ -251,17 +251,31 @@ read-write finance templates carry.
 
 Pinchy fetches the URL you enter from its own server, so an admin who can add a connection can point it at anything that server can reach. That's why we only connect to a URL that lands on a public address — and we check the address it actually resolves to, not just how the hostname reads. A name like `erp.yourcompany.com` pointing at `10.0.0.5` is the same request as typing `10.0.0.5` directly.
 
-If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, or an IPv6 unique-local range — set the environment variable on the Pinchy container and restart it:
+If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale address (`100.x`), an IPv6 unique-local address, or any other of the [private ranges](/reference/network-address-checks/#private-ranges) — set the environment variable on the Pinchy container and restart it:
 
 ```bash
 ALLOW_PRIVATE_URLS=1
 ```
 
+That opens your private network and nothing else. Loopback, link-local, the cloud metadata endpoints and the reserved ranges stay blocked either way — `localhost`, `127.0.0.1`, `::1`, `0.0.0.0/8`, `169.254.169.254`, the documentation ranges, multicast and the rest of the [always-refused list](/reference/network-address-checks/#always-refused). No Odoo server lives there, so there's nothing to trade off. It's the same two-tier switch [`ALLOW_PRIVATE_MAIL_HOSTS`](/guides/connect-email-imap/#mail-servers-on-your-own-network) is for mail servers, and a hostname is still resolved and checked with it set.
+
 :::caution
-`ALLOW_PRIVATE_URLS=1` turns the address check off completely, including for loopback and the cloud-metadata address `169.254.169.254`. It is not the two-tier switch that [`ALLOW_PRIVATE_MAIL_HOSTS`](/guides/connect-email-imap/#mail-servers-on-your-own-network) is for mail servers. Set it only on an instance whose admins you'd trust with that reach anyway.
+With the flag set, an admin who can add an Odoo connection can point Pinchy at anything on your private network, not only at Odoo — including the other containers of the Pinchy stack, such as the agent runtime (`openclaw`) and the database (`db`), which Docker's network reaches by name. Set it only on an instance whose admins you'd trust with that reach anyway.
 :::
 
-The same check runs everywhere a URL is accepted, not only on the first connect: adding a connection, editing one, testing credentials, listing databases, previewing a sync, and re-syncing the schema. So a blocked address can't be stored and quietly reconnected to later.
+The same check runs everywhere a URL is accepted — adding a connection, editing one, testing credentials, listing databases, previewing a sync, re-syncing the schema — and again every time a saved connection is used: before an agent's Odoo tools receive the connection, and before **Test connection** contacts it. So a connection saved under older rules, or before the flag was removed, can't quietly keep reaching an address that's refused now. The agent's Odoo tools keep a connection they already fetched for up to 5 minutes, so after removing `ALLOW_PRIVATE_URLS` run `docker compose up -d --force-recreate openclaw` if a stricter rule must apply at once. A refusal says why and leaves the connection's credentials alone; the agent's tool reports it, and the audit trail records it as `integration.credentials_denied` with the reason `destination-blocked`.
+
+Developing against an Odoo on your own machine? On OrbStack, `host.docker.internal` — and `ollama.local`, which our `docker-compose.yml` maps to the same host gateway — resolves to `0.250.250.254`, inside `0.0.0.0/8`, and is refused whatever you set: use the Odoo container's name or your machine's LAN address. Docker Desktop and Linux's `host-gateway` answer with a private address, where the flag is enough.
+
+:::note
+Three gaps remain, and we'd rather name them.
+
+- **DNS rebinding.** The check resolves the hostname, and the Odoo client resolves it again a moment later to connect, so a DNS server that answers differently the second time isn't caught. Closing it would mean pinning the Odoo client's connection to the address we checked, which it doesn't support yet. If that matters for your network, use an IP address or a name your own DNS controls.
+- **A name only the agent runtime knows.** Pinchy runs the check in its own container; the Odoo tools connect from the agent runtime's (`openclaw`). Our `docker-compose.yml` gives both containers the same extra host names, so `ollama.local` — the Docker host — is checked as the Docker host's address. If you add `extra_hosts` entries of your own to the `openclaw` service, add them to `pinchy` too: a name the check can't resolve is let through, and the runtime then connects wherever its own entry points.
+- **Redirects from the Odoo client.** The check reads the URL you enter, not where Odoo's answers point. **Listing databases** refuses a redirect and says so, but the Odoo client behind testing, syncing and the agent's Odoo tools still follows one — so a server at a public address that answers with a redirect to a refused one, such as `169.254.169.254`, is still reached, and a `307` or `308` carries the API key along. Enter the address Odoo is actually served from, and only add a connection to an Odoo server you trust. An answer that isn't JSON-RPC is never quoted back — not to you, and not to the agent or the person chatting with it: Pinchy reports its status and content type, or simply that it wasn't JSON-RPC. An error in JSON-RPC's own format is passed on, on one line and shortened, because that's Odoo saying what went wrong.
+
+  When **Test connection**, or saving changes to a connection, gets no Odoo answer at all — an error from a proxy, a network failure, or something that isn't JSON-RPC — it says your login and API key weren't checked, rather than calling them wrong, and it doesn't mark the connection as needing new credentials.
+  :::
 
 ## Re-syncing when Odoo permissions change
 

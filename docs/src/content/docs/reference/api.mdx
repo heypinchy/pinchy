@@ -964,9 +964,9 @@ and a custom provider's to
 
 ### `DELETE /api/settings/providers`
 
-Remove a provider. Takes a JSON body: `{ "provider": "<id>" }`. Refused with `400` for the last configured provider.
+Remove a provider. Takes a JSON body: `{ "provider": "<id>" }`. Refused with `400` for the last configured provider, and for the last usable one — when every other configured provider is a custom provider whose saved base URL the address check now refuses. That second refusal is audited as `config.changed` with `outcome: "failure"` and `detail.action: "provider_delete_refused_no_usable_target"`, naming the provider as `{ id, name }` and never an address. `detail.reason` is `"last_usable_provider"`, or `"provider_itself_refused"` when the provider being removed is a custom one whose base URL is refused too — then the error says that no usable provider would remain rather than calling it the last usable one.
 
-Every agent pinned to one of the provider's models is moved to the first remaining provider's default model, and that provider becomes the new default if the removed one was it.
+Every agent pinned to one of the provider's models is moved to the first remaining usable provider's default model, and that provider becomes the new default if the removed one was it. A custom provider whose base URL is refused is skipped (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)).
 
 **Response:** `{ "success": true, "migratedAgents": 3 }`
 
@@ -981,11 +981,12 @@ What a removal would do, without doing it — the confirmation dialog uses this 
   "targetProvider": "anthropic",
   "targetProviderLabel": "Anthropic",
   "targetModel": "anthropic/claude-sonnet-5",
-  "affectedAgents": [{ "id": "…", "name": "Hermes" }]
+  "affectedAgents": [{ "id": "…", "name": "Hermes" }],
+  "refusal": null
 }
 ```
 
-The target fields are `null` when no other provider is configured (that removal is refused anyway).
+The target fields are `null` when no other usable provider is configured (that removal is refused anyway). A custom provider whose saved base URL is refused is never the target. `refusal` is the error the `DELETE` would answer with — the last configured provider, the last usable one, or no usable provider remaining — word for word, or `null` when the removal would go ahead. The confirmation dialog shows it and keeps **Remove** disabled.
 
 ### `PATCH /api/settings/providers/default`
 
@@ -993,9 +994,11 @@ Make a configured provider the default for new agents.
 
 **Request body:** `{ "provider": "anthropic" }` — a built-in provider name or a custom provider's slug.
 
+**Errors:** `400` when a built-in provider isn't configured, or when a custom provider's saved base URL is now refused by the address check — then the body also carries `refusedReason` (never the address), and the refusal is audited as `config.changed` with `outcome: "failure"` and `detail.action: "default_provider_refused"`. `404` for a slug that matches no provider.
+
 ### `GET /api/settings/providers/openai-compatible`
 
-List the OpenAI-compatible providers that have been added. Keys are never returned.
+List the OpenAI-compatible providers that have been added. Keys are never returned: each row carries `keyHint`, the key's last four characters. `refusedReason` is `null` for a provider in use, or says why the address check now refuses its saved base URL — the agent runtime then gets a reserved, unresolvable address in its place, and no key, until the URL changes (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)). The reason never names the address.
 
 ### `POST /api/settings/providers/openai-compatible`
 
@@ -1003,13 +1006,13 @@ Add or update an OpenAI-compatible provider. See [OpenAI-compatible providers](/
 
 **Request body:**
 
-| Field            | Type     | Required | Description                                                                                                      |
-| ---------------- | -------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
-| `id`             | uuid     | No       | Omit to create, pass to update                                                                                   |
-| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                                                  |
-| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API, up to 2048 characters. Rejected if it resolves to a private-network address |
-| `apiKey`         | string   | No       | Omit on update to keep the stored key. Required when the update changes `baseUrl`                                |
-| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                                        |
+| Field            | Type     | Required | Description                                                                                                                                                                                                                                                                                                        |
+| ---------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`             | uuid     | No       | Omit to create, pass to update                                                                                                                                                                                                                                                                                     |
+| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                                                                                                                                                                                                                                                    |
+| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API, up to 2048 characters. Rejected if it resolves to a loopback, link-local/metadata or reserved address; a private-network address only when `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1` (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)) |
+| `apiKey`         | string   | No       | Omit on update to keep the stored key. Required when the update changes `baseUrl`                                                                                                                                                                                                                                  |
+| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                                                                                                                                                                                                                                          |
 
 The stored key is bound to the base URL it was entered for — scheme, host, port **and path**, because a shared gateway host routes by path. Only a trailing slash and the letter case of the host are ignored. An update that changes `baseUrl` without a fresh `apiKey` is rejected with `422` and an `apiKey` field error before any request is made, and the refusal is written to the audit trail as a failed `config.changed` row — the stored key is never sent to a new address.
 
@@ -1026,9 +1029,11 @@ The key is encrypted at rest and never written into the OpenClaw configuration i
 
 ### `DELETE /api/settings/providers/openai-compatible`
 
-Remove a custom provider. Agents pinned to one of its models are migrated to a still-configured provider, exactly as for a built-in one.
+Remove a custom provider. Agents pinned to one of its models are migrated to a still-configured, usable provider, exactly as for a built-in one — including the `400` when no usable provider would remain, and its `provider_delete_refused_no_usable_target` audit entry.
 
 **Request body:** `{ "id": "<uuid>" }`
+
+**Errors:** `404` for an id that matches no custom provider, checked before either `400` refusal and not audited.
 
 ### `POST /api/settings/providers/openai-compatible/discover`
 
@@ -1495,7 +1500,7 @@ Remove Telegram from every agent at once. **Admin only.** This is the backend fo
 
 External system integrations — **Odoo**, **email** (Gmail and Microsoft 365 via OAuth), and **Web Search**. See [Integrations](/concepts/integrations/) for the conceptual overview, [Connect Odoo](/guides/connect-odoo/) for the Odoo setup guide, and [Connect Email](/guides/connect-email/) for the email setup guide.
 
-Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `ALLOW_PRIVATE_URLS=1` turns the check off for an on-premise Odoo; see [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
+Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `ALLOW_PRIVATE_URLS=1` additionally allows the [private ranges](/reference/network-address-checks/#private-ranges) — RFC 1918, Tailscale's `100.64.0.0/10`, IPv6 unique-local and the rest — for an on-premise Odoo; loopback, link-local, cloud-metadata and reserved addresses stay refused either way. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
 
 ### `GET /api/integrations`
 
@@ -1738,12 +1743,14 @@ Returns the decrypted credentials for a connection, auto-refreshing an expired O
 | `200`  | Credentials returned                                                                                                                           |
 | `400`  | `agentId` missing                                                                                                                              |
 | `401`  | Gateway token missing or wrong                                                                                                                 |
-| `403`  | The agent is not granted this connection, or the connection is still `pending`                                                                 |
+| `403`  | The agent is not granted this connection, the connection is still `pending`, or its stored Odoo URL / IMAP / SMTP host fails the address check |
 | `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                |
 | `500`  | The stored credentials could not be decrypted under the current encryption key                                                                 |
 | `503`  | An OAuth access token expired and the app's OAuth settings are gone, so it cannot be refreshed. Deliberately not a `200` carrying stale tokens |
 
-A refusal for a missing grant writes an `integration.credentials_denied` audit row naming the agent and the connection — see [Audit Trail](/concepts/audit-trail/). A successful fetch is not audited: plugins re-fetch on every cache miss, so a row per success would be volume without signal.
+**The stored destination is checked before credentials leave.** An Odoo connection's URL and an IMAP connection's IMAP and SMTP hosts are run through the same address check as when the connection was saved ([Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network), [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network)), under the rules and switches as they are now. A refusal is a `403` whose `error` names the field and the fix — deliberately not a `401`, which the plugins would read as stale credentials.
+
+A refusal for a missing grant or a refused destination writes an `integration.credentials_denied` audit row naming the agent and the connection — see [Audit Trail](/concepts/audit-trail/). A successful fetch is not audited: plugins re-fetch on every cache miss, so a row per success would be volume without signal.
 
 ### `POST /api/internal/integrations/:connectionId/report-auth-failure`
 
@@ -2273,11 +2280,23 @@ Verify the integrity of audit log entries by recomputing HMAC signatures. **Admi
 {
   "valid": true,
   "totalChecked": 142,
-  "invalidIds": []
+  "invalidIds": [],
+  "chainBreakIds": [],
+  "previousKeyIds": []
 }
 ```
 
-If tampered entries are found, `valid` is `false` and `invalidIds` contains the IDs of entries with mismatched signatures.
+| Field            | Description                                                                                                                                                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `valid`          | `true` when `invalidIds` and `chainBreakIds` are both empty                                                                                                                                                                                     |
+| `totalChecked`   | Number of entries verified                                                                                                                                                                                                                      |
+| `invalidIds`     | IDs of entries whose signature doesn't match their content, or that only verify under an earlier key although they come after the key change                                                                                                    |
+| `chainBreakIds`  | IDs of entries whose own signature matches but whose link to the previous entry doesn't: an entry before them was deleted, or entries were reordered                                                                                            |
+| `previousKeyIds` | IDs of entries signed with an earlier `AUDIT_HMAC_SECRET`, before the key changed. They're authentic and don't affect `valid`; see [Rows signed with an earlier secret](/concepts/audit-trail-verification/#rows-signed-with-an-earlier-secret) |
+
+If tampered entries are found, `valid` is `false`, and `invalidIds` and `chainBreakIds` say which entries and how.
+
+A range that starts at `fromId` takes its key context from the entry immediately before it. If that entry verifies under the current signing key, the key changed before the range starts, and an entry in the range that only verifies under an earlier key is reported in `invalidIds` rather than as signed with an earlier secret. The same goes for an entry that verifies under no key at all or carries a signature version Pinchy doesn't know: the range treats the key change as already behind it. That's why a spot check can list entries in `invalidIds` that a full verification lists in `previousKeyIds`. Only a verification without `fromId` establishes where the key actually changed. See [Rows signed with an earlier secret](/concepts/audit-trail-verification/#rows-signed-with-an-earlier-secret).
 
 **Errors:**
 

@@ -36,6 +36,16 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// A custom target's saved base URL goes through the SSRF guard. The fixtures
+// use names (unresolvable here, so allowed) or address literals (classified
+// without DNS); nothing resolves a real name.
+vi.mock("dns/promises", () => {
+  const lookup = vi.fn(async () => {
+    throw Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
+  });
+  return { default: { lookup }, lookup };
+});
+
 import { auth } from "@/lib/auth";
 import { getSetting, setSetting } from "@/lib/settings";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
@@ -173,6 +183,48 @@ describe("PATCH /api/settings/providers/default", () => {
       previousDefault: "anthropic",
       newDefault: "acme-llm",
     });
+  });
+
+  // Config emission points such a provider at a reserved address and never
+  // emits it as the runtime default, so "Set as default" would report a
+  // success that changes nothing an agent can use.
+  it("refuses a custom provider whose saved base URL the SSRF guard now refuses (400, reason, no address)", async () => {
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      customProvider({
+        slug: "imds",
+        displayName: "Rebound",
+        baseUrl: "http://100.100.100.200/v1",
+      }),
+    ]);
+    vi.mocked(getSetting).mockImplementation(async (key: string) =>
+      key === "default_provider" ? "anthropic" : null
+    );
+
+    const res = await PATCH(patchRequest({ provider: "imds" }), routeContext());
+
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toMatch(/base URL is now refused/i);
+    expect(data.refusedReason).toBe(
+      "That host resolves to a reserved or internal address that isn't allowed."
+    );
+    expect(JSON.stringify(data)).not.toContain("100.100.100.200");
+    expect(setSetting).not.toHaveBeenCalled();
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+
+    // A security guard turned an admin action down: recorded, as a failure.
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry).toMatchObject({
+      eventType: "config.changed",
+      outcome: "failure",
+      detail: {
+        action: "default_provider_refused",
+        provider: { id: "imds", name: "Rebound" },
+        currentDefault: "anthropic",
+      },
+    });
+    expect(JSON.stringify(entry.detail)).not.toContain("100.100.100.200");
   });
 
   it("returns success with a warning (not a 500) when regenerate throws (#880 pattern)", async () => {
