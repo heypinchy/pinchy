@@ -645,9 +645,9 @@ Runs a hybrid (vector + full-text) search over the requesting agent's indexed, g
 
 ### `GET /api/agents/:agentId/knowledge/unsearchable`
 
-**Which** documents the index holds but cannot search — the list behind the `unsearchable` counter in the reindex status. **Admin only.**
+**Which** documents the index holds but search can't reach. Two kinds: documents that produced no searchable text — the ones the `unsearchable` counter in the reindex status counts — and Word or PowerPoint files search leaves out until they have been converted again after an update, which that counter never counts. **Admin only.**
 
-The counter answers for the last run; this answers for everything currently in the agent's granted folders, so it is usually the larger of the two. That is the two numbers agreeing, not disagreeing: a file unchanged since an earlier run is `skipped` by the next one and never counted again.
+The counter answers for the last run; `totals.no_text` answers for everything currently in the agent's granted folders, so it is usually the larger of the two. That is the two numbers agreeing, not disagreeing: a file unchanged since an earlier run is `skipped` by the next one and never counted again.
 
 Scoped to the folders that agent is granted, exactly like search itself, so the list never names a document the agent isn't allowed to know about.
 
@@ -667,7 +667,9 @@ Scoped to the folders that agent is granted, exactly like search itself, so the 
       "reason": "no_text"
     }
   ],
-  "total": 2
+  "total": 2,
+  "totals": { "no_text": 1, "awaiting_conversion": 1 },
+  "searchesIndex": true
 }
 ```
 
@@ -677,6 +679,8 @@ Scoped to the folders that agent is granted, exactly like search itself, so the 
 | `documents[].status`     | `archived` for a document under an archive folder, already out of everyday search; `active` otherwise. Archived documents come last.                                                                                                                                                       |
 | `documents[].reason`     | `no_text` — indexed, but it produced no searchable text (a scan no vision model read, a file refused for its size or content). `awaiting_conversion` — a Word or PowerPoint file search leaves out until it has been converted again after an update changed how such files are converted. |
 | `total`                  | How many there are. `documents` holds at most 100; `total` is never capped.                                                                                                                                                                                                                |
+| `totals`                 | `total` per reason, `no_text` and `awaiting_conversion`. Never capped either, so it counts documents `documents` doesn't show.                                                                                                                                                             |
+| `searchesIndex`          | Whether the agent has `knowledge_search`. Pinchy converts the `awaiting_conversion` files again on its own only for an agent that searches the index; for any other agent, a reindex converts them.                                                                                        |
 
 **Errors:**
 

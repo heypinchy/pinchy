@@ -148,7 +148,11 @@ it("returns nothing when the agent is granted no directories", async () => {
 
   const result = await listUnsearchableDocuments(ORG_ID, []);
 
-  expect(result).toEqual({ documents: [], total: 0 });
+  expect(result).toEqual({
+    documents: [],
+    total: 0,
+    totals: { no_text: 0, awaiting_conversion: 0 },
+  });
 });
 
 it("never crosses the org boundary", async () => {
@@ -238,4 +242,23 @@ it("lists an Office document search leaves out until it is converted again, and 
     { sourcePath: "/data/offers/Scan.pdf", status: "active", reason: "no_text" },
   ]);
   expect(result.total).toBe(2);
+});
+
+// The two reasons call for different words — one is a scan nothing can read
+// yet, the other a file with text that is about to be converted again — so a
+// surface has to be able to count each. Counted over the whole scope, like
+// `total`: a page that happens to hold only scans must not report zero files
+// waiting to be converted.
+it("counts each reason over the whole scope, not over the returned page", async () => {
+  for (const n of [1, 2, 3]) {
+    await seedUnsearchable(`/data/mixed/A scan ${n}.pdf`);
+  }
+  await seedReadable("/data/mixed/Z offer.docx");
+  await seedReadable("/data/mixed/Z deck.pptx");
+
+  const result = await listUnsearchableDocuments(ORG_ID, ["/data/mixed"], { limit: 2 });
+
+  expect(paths(result)).toEqual(["/data/mixed/A scan 1.pdf", "/data/mixed/A scan 2.pdf"]);
+  expect(result.total).toBe(5);
+  expect(result.totals).toEqual({ no_text: 3, awaiting_conversion: 2 });
 });

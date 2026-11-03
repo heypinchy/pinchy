@@ -59,6 +59,13 @@ export interface UnsearchableDocumentsResult {
   documents: UnsearchableDocument[];
   /** How many there are in total — never truncated by `limit`, so a capped list can say what it is hiding. */
   total: number;
+  /**
+   * `total`, split by reason — also never truncated. The two reasons call for
+   * different words (a scan nothing can read yet, a file with text that waits
+   * to be converted again), and a page of rows sorted by path can hold only
+   * one of them while the scope holds both.
+   */
+  totals: Record<UnsearchableReason, number>;
 }
 
 /** How many documents one call returns by default. A real corpus can hold hundreds; `total` keeps the answer honest past the cap. */
@@ -69,6 +76,7 @@ interface UnsearchableRow extends Record<string, unknown> {
   status: "active" | "archived";
   reason: UnsearchableReason;
   total: string | number;
+  awaiting_conversion_total: string | number;
 }
 
 /**
@@ -85,7 +93,9 @@ export async function listUnsearchableDocuments(
   allowedPaths: readonly string[],
   opts: { limit?: number } = {}
 ): Promise<UnsearchableDocumentsResult> {
-  if (allowedPaths.length === 0) return { documents: [], total: 0 };
+  if (allowedPaths.length === 0) {
+    return { documents: [], total: 0, totals: { no_text: 0, awaiting_conversion: 0 } };
+  }
 
   const limit = opts.limit ?? DEFAULT_UNSEARCHABLE_LIMIT;
   const pathFilter = buildPathFilter(allowedPaths, sql`d.source_path`);
@@ -99,7 +109,8 @@ export async function listUnsearchableDocuments(
            -- list, never the number. A window function beats a second query
            -- here because both would have to agree, and a separate COUNT can
            -- disagree with the page it labels.
-           COUNT(*) OVER () AS total
+           COUNT(*) OVER () AS total,
+           COUNT(*) FILTER (WHERE ${superseded}) OVER () AS awaiting_conversion_total
     FROM kb_documents d
     WHERE d.org_id = ${orgId}
       AND (${pathFilter})
@@ -116,12 +127,15 @@ export async function listUnsearchableDocuments(
     LIMIT ${limit}
   `);
 
+  const total = rows.length > 0 ? Number(rows[0].total) : 0;
+  const awaitingConversion = rows.length > 0 ? Number(rows[0].awaiting_conversion_total) : 0;
   return {
     documents: rows.map((row) => ({
       sourcePath: row.source_path,
       status: row.status,
       reason: row.reason,
     })),
-    total: rows.length > 0 ? Number(rows[0].total) : 0,
+    total,
+    totals: { no_text: total - awaitingConversion, awaiting_conversion: awaitingConversion },
   };
 }
