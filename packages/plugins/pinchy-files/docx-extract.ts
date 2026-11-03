@@ -1,10 +1,50 @@
-import mammoth from "mammoth";
-import TurndownService from "turndown";
-import { gfm } from "turndown-plugin-gfm";
+/**
+ * `.docx` → Markdown for `pinchy_read`, with mammoth running in a CHILD
+ * PROCESS whose heap is capped.
+ *
+ * mammoth builds a DOM at up to ~300x the markup it parses, and the OpenClaw
+ * container gets 2 GB. The zip guard (`docx-zip-guard.ts`) bounds that markup
+ * before mammoth sees it — but it does so by PREDICTING which parts mammoth
+ * parses, and a prediction can miss a spelling: an entity, a character the XML
+ * parser normalises, a prefixed attribute, a name JSZip resolves. Each of
+ * those is a 13 KB file that takes the process reading it past 1 GB
+ * (measured). The guard refuses every such shape it knows and stays as the
+ * cheap first layer; what bounds the memory does not depend on it being right.
+ *
+ * So the conversion runs in its own `node`, fenced three ways — the same
+ * fence the knowledge base puts around its spreadsheet reader
+ * (`packages/web/src/lib/knowledge/xlsx-isolated.ts`):
+ *
+ *  - `--max-old-space-size` caps its heap. A document past it ends in V8's
+ *    own "heap out of memory" abort — in the child.
+ *  - The child raises its own `oom_score_adj` to the maximum before it reads
+ *    a byte, so when the CONTAINER runs out first (the heap cap does not
+ *    bound Buffers), the kernel picks the child, never the gateway.
+ *  - A timeout, after which the child is killed.
+ *
+ * Only V8's heap-limit banner is a verdict on the document
+ * (`DocxReaderOutOfMemoryError`). A child killed without it, one that crashed,
+ * timed out or never got ready is a plain error that says so — the document
+ * may read fine on the next try.
+ *
+ * One child at a time, per process: the memory one child may use is the
+ * memory all of them use. Reads queue behind each other.
+ *
+ * The child runs under Node's own type stripping, because the OpenClaw image
+ * has no tsx and its jiti is not on a path a child can load (Node 22.18+
+ * strips types by default; the flag below covers 22.6-22.17). That is why the
+ * child and `docx-markdown.ts` import only packages and name their `.ts`
+ * extensions.
+ */
+import { fork, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
 import {
-  assertDocxDecompressedSizeWithinLimit,
   MAX_DOCX_DECOMPRESSED_BYTES,
+  MAX_DOCX_MARKUP_BYTES,
+  verifiedZipCopy,
 } from "./docx-zip-guard";
+import type { DocxReaderMessage, DocxReaderRequest } from "./docx-reader-protocol";
 import { MAX_FILE_SIZE } from "./validate";
 
 export interface DocxExtractionResult {
@@ -13,107 +53,246 @@ export interface DocxExtractionResult {
 
 /**
  * Limits for extractDocxText. The defaults are the production values —
- * the overrides exist so tests can exercise both guards without multi-GB
+ * the overrides exist so tests can exercise each fence without multi-GB
  * fixtures, not as a runtime configuration surface.
  */
 export interface DocxExtractOptions {
   /** Cap on the archive's declared decompressed size (issue #424). */
   maxDecompressedBytes?: number;
+  /**
+   * Cap on the markup mammoth parses, summed: its DOM costs up to ~300x the
+   * XML (see `MAX_DOCX_MARKUP_BYTES`), while a picture costs it nothing.
+   */
+  maxMarkupBytes?: number;
   /** Cap on the extracted Markdown length — second defense layer. */
   maxTextBytes?: number;
+  /** Test seam; production uses `DOCX_READER_HEAP_MB`. */
+  maxHeapMb?: number;
+  /** Test seam; production uses `DOCX_READER_TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** Test seam: a stub child. Production uses `docx-reader-child.ts`. */
+  childEntry?: string;
+  /**
+   * Test seam: what converts the verified copy. Production forks the reader
+   * child; a test that must prove mammoth was never reached passes a spy.
+   */
+  read?: (verified: Buffer, maxTextBytes: number) => Promise<string>;
 }
 
 // A .docx may not hand the model more text than the largest plain-text file
 // pinchy_read would serve.
 export const MAX_DOCX_EXTRACTED_TEXT_BYTES = MAX_FILE_SIZE;
 
-const turndown = new TurndownService({
-  headingStyle: "atx",
-  codeBlockStyle: "fenced",
-  bulletListMarker: "-",
-});
-turndown.use(gfm);
-// Until vision lands, embedded images contribute no usable text — the
-// placeholder signals to the model that visual content was elided.
-turndown.addRule("strip-image", {
-  filter: "img",
-  replacement: () => "[image]",
-});
+/**
+ * The reader child's heap, in MB — the bound on what reading a document may
+ * cost, whatever the markup scan in front of it predicts. Measured in the
+ * OpenClaw image (Node 22, mammoth 1.13), peak RSS:
+ *
+ *   document                                  child     result
+ *   2 MiB markup, tiny paragraphs (legit)     443 MB    reads it
+ *   2 MiB markup, Word-shaped paragraphs      248 MB    reads it
+ *   4 MiB hidden by a prefixed attribute      477 MB    refused: out of memory
+ *   30 MiB of markup, guard switched off      503 MB    refused: out of memory
+ *
+ * while the process that forked it stayed under 120 MB in every case. Without
+ * the child the 30 MiB one took the 2 GB OpenClaw container down. Where in
+ * this heap a long Word document runs out is measured at
+ * `MAX_DOCX_MARKUP_BYTES`, which sits below it.
+ */
+export const DOCX_READER_HEAP_MB = 384;
 
 /**
- * Normalize mammoth-generated table HTML so turndown's GFM plugin can
- * render pipe tables.
- *
- * Mammoth emits tables as `<table><tr><td>...</td></tr></table>` — no
- * `<thead>`, no `<th>`, and cells wrapped in `<p>`. The
- * turndown-plugin-gfm table rule only activates when the first row is a
- * heading row (all-`<th>` or inside `<thead>`). We:
- *  1. Strip `<p>` wrappers inside cells so content is inline.
- *  2. Promote the first `<tr>` into a `<thead>` with `<th>` cells so the
- *     GFM rule fires and emits pipe-delimited Markdown.
- *
- * KEEP-IN-SYNC with `normalizeDocxTableHtml` in
- * `packages/web/src/hooks/use-ws-runtime.ts`. Both must apply the same
- * transformations so KB reads and composer uploads produce identical table
- * Markdown. Intentional duplication: the web file uses dynamic imports for
- * bundle isolation; a shared package would complicate that.
+ * A reader still busy after this is killed. Time follows the TEXT more than
+ * the markup: a 1850-page document of long paragraphs (8.2 MiB of markup,
+ * 6.4 MB of text) took 15 s on two cores, and on a loaded host up to 25 s —
+ * the text cap (`MAX_DOCX_EXTRACTED_TEXT_BYTES`) bounds the rest. Two minutes
+ * leaves a slow host room, the same budget the knowledge base's reader has.
  */
-function normalizeTableHtml(html: string): string {
-  let out = html.replace(/<(td|th)([^>]*)><p>([\s\S]*?)<\/p><\/(td|th)>/g, "<$1$2>$3</$1>");
+export const DOCX_READER_TIMEOUT_MS = 120_000;
 
-  // Mammoth emits no <tbody>, so rows sit directly under <table>.
-  out = out.replace(/<table>([\s\S]*?)<\/table>/g, (_, inner: string) => {
-    const firstRowMatch = inner.match(/^(<tr>[\s\S]*?<\/tr>)/);
-    if (!firstRowMatch) return `<table>${inner}</table>`;
-    const firstRow = firstRowMatch[1];
-    const rest = inner.slice(firstRow.length);
-    const headingRow = firstRow.replace(/<td([^>]*)>/g, "<th$1>").replace(/<\/td>/g, "</th>");
-    return `<table><thead>${headingRow}</thead><tbody>${rest}</tbody></table>`;
-  });
+const CHILD_ENTRY = fileURLToPath(new URL("./docx-reader-child.ts", import.meta.url));
 
-  return out;
+/** stderr kept from the child: enough for V8's OOM banner, never a flood. */
+const MAX_STDERR_CHARS = 4096;
+
+/** Reading the document needed more heap than the reader child may have: a verdict on the document. */
+export class DocxReaderOutOfMemoryError extends Error {
+  constructor(heapMb: number) {
+    super(
+      `This document needs more memory to read than pinchy_read may use (${heapMb} MB), so it was not read.`
+    );
+    this.name = "DocxReaderOutOfMemoryError";
+  }
 }
 
 /**
- * Extract a DOCX buffer as Markdown.
+ * Extract a DOCX buffer as Markdown (see `docx-markdown.ts` for the pipeline).
  *
- * Pipeline: mammoth → HTML → normalizeTableHtml → turndown → Markdown.
- * Mammoth's own `convertToMarkdown` is deprecated and degrades tables to one
- * paragraph per cell — the HTML route preserves table structure and
- * round-trips through turndown's GFM plugin as pipe-delimited tables.
+ * Issue #424: decompression bombs are rejected from the central directory's
+ * declared sizes before anything is inflated — and, since an archive can lie
+ * about those sizes, every entry's REAL size is verified too, and the reader
+ * is handed a copy built only from entries that held up. mammoth never sees the bytes it was given. That copy is then
+ * converted in the heap-capped reader child.
  *
- * Images are configured to emit `<img src="">` (no base64 work) and the
- * turndown rule above replaces them with the literal `[image]` token.
+ * The copy is built here, in the gateway, ahead of the gate — and it is never
+ * larger than the file (`verifiedZipCopy` refuses one that would be), so a
+ * read costs the gateway the file, a copy no larger, and the structured clone
+ * that carries it to the child. Measured with a 47.6 MB .docx (the cap is
+ * 50 MB): the process went from 110 MB with the file loaded to a 207 MB peak;
+ * two such reads at once, 158 MB to 350 MB. A directory that lists one stored
+ * picture fifteen times over, which once made a 33.5 MB file a 503 MB copy, is
+ * refused before anything is copied.
  */
 export async function extractDocxText(
   buffer: Buffer,
   options: DocxExtractOptions = {}
 ): Promise<DocxExtractionResult> {
-  // Issue #424: reject decompression bombs from the central directory's
-  // declared sizes before mammoth inflates anything.
-  assertDocxDecompressedSizeWithinLimit(
-    buffer,
-    options.maxDecompressedBytes ?? MAX_DOCX_DECOMPRESSED_BYTES
-  );
-
-  const { value: rawHtml } = await mammoth.convertToHtml(
-    { buffer },
-    {
-      // Empty src skips mammoth's base64 encoding; the strip-image
-      // turndown rule above replaces <img> with [image] downstream.
-      convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: "" })),
-    }
-  );
-  const html = normalizeTableHtml(rawHtml);
-  const text = turndown.turndown(html);
-
-  // Second defense layer: an archive that lied about its declared sizes
-  // still cannot hand the model an unbounded extraction result.
+  const verified = await verifiedZipCopy(buffer, {
+    maxDecompressedBytes: options.maxDecompressedBytes ?? MAX_DOCX_DECOMPRESSED_BYTES,
+    // The first layer: past this the guard answers with its own error
+    // ("…bytes of markup to parse, past the …-byte limit…") without starting
+    // a reader at all.
+    maxMarkupBytes: options.maxMarkupBytes ?? MAX_DOCX_MARKUP_BYTES,
+  });
   const maxTextBytes = options.maxTextBytes ?? MAX_DOCX_EXTRACTED_TEXT_BYTES;
-  if (Buffer.byteLength(text, "utf-8") > maxTextBytes) {
-    throw new Error(
-      `DOCX extracted text (${Buffer.byteLength(text, "utf-8")} bytes) exceeds the limit (${maxTextBytes} bytes).`
-    );
+  const read = options.read ?? ((data, max) => readIsolated(data, max, options));
+  return { text: await read(verified, maxTextBytes) };
+}
+
+// ---------------------------------------------------------------------------
+// The gate: one reader child per process
+// ---------------------------------------------------------------------------
+
+interface Gate {
+  busy: boolean;
+  waiting: Array<() => void>;
+}
+
+// On globalThis, so a second instance of this module (a plugin reload) shares it.
+const GATE_KEY = Symbol.for("pinchy.files.docxReaderGate");
+
+function gate(): Gate {
+  const holder = globalThis as typeof globalThis & { [GATE_KEY]?: Gate };
+  return (holder[GATE_KEY] ??= { busy: false, waiting: [] });
+}
+
+async function withGate<T>(run: () => Promise<T>): Promise<T> {
+  const g = gate();
+  if (g.busy) await new Promise<void>((resolve) => g.waiting.push(resolve));
+  // Whoever was woken owns the gate now; `busy` never dropped in between.
+  g.busy = true;
+  try {
+    return await run();
+  } finally {
+    const next = g.waiting.shift();
+    if (next) next();
+    else g.busy = false;
   }
-  return { text };
+}
+
+// ---------------------------------------------------------------------------
+// One child, one document
+// ---------------------------------------------------------------------------
+
+/** Only what the child needs to run: no gateway token, no provider keys. */
+function childEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV };
+  for (const key of ["PATH", "TMPDIR", "HOME", "LANG", "TZ"] as const) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
+function readIsolated(
+  data: Buffer,
+  maxTextBytes: number,
+  options: DocxExtractOptions
+): Promise<string> {
+  return withGate(() => runChild({ data, maxTextBytes }, options));
+}
+
+function runChild(request: DocxReaderRequest, options: DocxExtractOptions): Promise<string> {
+  const heapMb = options.maxHeapMb ?? DOCX_READER_HEAP_MB;
+  const timeoutMs = options.timeoutMs ?? DOCX_READER_TIMEOUT_MS;
+
+  return new Promise((resolve, reject) => {
+    let child: ChildProcess;
+    try {
+      child = fork(options.childEntry ?? CHILD_ENTRY, [], {
+        execArgv: [
+          "--experimental-strip-types",
+          "--disable-warning=ExperimentalWarning",
+          `--max-old-space-size=${heapMb}`,
+        ],
+        env: childEnv(),
+        stdio: ["ignore", "ignore", "pipe", "ipc"],
+        // Structured clone: the document goes over as bytes, not as JSON.
+        serialization: "advanced",
+      });
+    } catch (err) {
+      reject(new Error("The .docx reader could not be started.", { cause: err }));
+      return;
+    }
+
+    let ready = false;
+    let answered = false;
+    let timedOut = false;
+    let stderr = "";
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < MAX_STDERR_CHARS) stderr += chunk.toString("utf8");
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+
+    child.on("message", (message: DocxReaderMessage) => {
+      if (message.type === "ready") {
+        ready = true;
+        return;
+      }
+      if (answered || (message.type !== "result" && message.type !== "failure")) return;
+      answered = true;
+      clearTimeout(timer);
+      if (message.type === "result") resolve(message.text);
+      else reject(new Error(message.message));
+    });
+
+    child.on("error", (err) => {
+      if (answered) return;
+      answered = true;
+      clearTimeout(timer);
+      reject(new Error("The .docx reader could not be started.", { cause: err }));
+    });
+
+    // The gate opens for the next read only once this child is really gone.
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      if (answered) return;
+      answered = true;
+      const detail = `${signal ?? `exit code ${code}`}: ${stderr.trim().slice(0, 500)}`;
+      if (!ready && !timedOut) {
+        reject(new Error(`The .docx reader exited before it was ready (${detail})`));
+      } else if (!timedOut && /heap out of memory|Reached heap limit/i.test(stderr)) {
+        reject(new DocxReaderOutOfMemoryError(heapMb));
+      } else if (timedOut) {
+        reject(
+          new Error(`Reading this .docx took longer than ${timeoutMs / 1000} s, so it was stopped.`)
+        );
+      } else if (signal === "SIGKILL") {
+        reject(
+          new Error(
+            "The .docx reader was killed while reading (by the system, most likely out of memory). Try again."
+          )
+        );
+      } else {
+        reject(new Error(`The .docx reader stopped while reading (${detail})`));
+      }
+    });
+
+    child.send(request);
+  });
 }

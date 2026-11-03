@@ -14,6 +14,7 @@ import {
   formatEta,
   type ProgressSample,
 } from "@/lib/knowledge/index-eta";
+import type { KbIndexJobTrigger } from "@/db/enums";
 import type { NextIndexRun } from "@/lib/knowledge/index-schedule";
 import type { IngestResult } from "@/lib/knowledge/types";
 import type { KnowledgeReindexRequest } from "@/lib/schemas/knowledge-base";
@@ -24,8 +25,8 @@ type JobStatus = "pending" | "running" | "succeeded" | "failed";
 interface ReindexJob {
   id: string;
   status: JobStatus;
-  /** Who started the run: an admin, or the nightly reindex. Absent on a run this component just started itself. */
-  trigger?: "manual" | "scheduled";
+  /** Who started the run: an admin, the nightly reindex, or Pinchy after an update. Absent on a run this component just started itself. */
+  trigger?: KbIndexJobTrigger;
   /** Folders the run left as they were: unreadable, or empty while the index still held their documents. */
   unavailableFolders?: number;
   processed: number;
@@ -389,7 +390,9 @@ function UnavailableFoldersNote({ count }: { count: number }) {
 }
 
 function SucceededState({ job }: { job: ReindexJob }) {
-  const how = job.trigger === "scheduled" ? "automatically " : "";
+  // Anything an admin did not start, Pinchy did: the nightly run, or the one
+  // it starts itself after an update changed how documents are converted.
+  const how = job.trigger !== undefined && job.trigger !== "manual" ? "automatically " : "";
   return (
     <div className="space-y-2">
       <p className="text-sm text-muted-foreground">

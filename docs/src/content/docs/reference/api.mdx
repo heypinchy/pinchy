@@ -428,7 +428,7 @@ Serve a file from a directory this agent is granted under `allowed_paths` — th
 | `from`     | No       | `variant=rows` only: first cited row, 1-based inclusive                                                                |
 | `to`       | No       | `variant=rows` only: last cited row, inclusive; clamped to at most 200 returned rows                                   |
 
-`variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`, and a read that failed for a reason that is not the workbook's — no room on the artifact volume for the private copy it is read from — answers `503`.
+`variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`, and one that is too large to read safely answers `413` — refused without being opened when it is over 100 MB, unpacks to far more than it weighs, has a sheet (or another part the reader reads as text) over 16 MB or a picture over 32 MB, and refused after the attempt when reading it needs more memory than the separate process the rows are read in may use (384 MB). That process is why a heavy workbook never costs Pinchy's own memory. `503` is about the reader, never the workbook: there was no room on the artifact volume for the private copy the rows are read from, the process could not be started, ran past its two-minute limit or was stopped by the system — or two reads are already waiting for it, in which case the answer carries `Retry-After`. Workbooks are read one at a time, the index's reads included, so a request that is abandoned while it waits or reads (a reload, a closed preview) has its read dropped; its audit row says `cancelled`.
 
 `download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation left (`original`, `converted` or `rows`).
 
@@ -550,7 +550,7 @@ The agent's most recent index run — in flight or last finished — and whether
 | Field                           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `status`                        | `pending`, `running`, `succeeded`, or `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `trigger`                       | `manual` when an admin started the run, `scheduled` when the [nightly reindex](#get-apisettingsknowledge-index-schedule) did.                                                                                                                                                                                                                                                                                                                                                                                |
+| `trigger`                       | `manual` when an admin started the run, `scheduled` when the [nightly reindex](#get-apisettingsknowledge-index-schedule) did, `upgrade` when Pinchy started it after an update changed how Word and PowerPoint files are converted.                                                                                                                                                                                                                                                                          |
 | `unavailableFolders`            | Folders the run had to leave as they were: ones it could not read, and ones that came up empty while the index still held their documents (a network share that failed to mount looks like that). Their documents are kept, not removed. Counted, never named; `0` when every folder was read.                                                                                                                                                                                                               |
 | `processed` / `total`           | Documents done, and documents found. `total` is `null` until discovery has walked every folder; it never changes after that. `processed` advances per whole document, so a long one can hold it still for minutes.                                                                                                                                                                                                                                                                                           |
 | `processedBytes` / `totalBytes` | The same progress weighed by the bytes of the files involved. This is the pair to build a progress bar or a time-to-completion estimate on: documents are not equal units of work — one compilation PDF can be a third of a corpus — while bytes track the actual work and are known in full before the first document is read. `totalBytes` is `null` until discovery has finished, and `processedBytes` moves _inside_ a long document as its pages are embedded, so a slow document still shows movement. |
@@ -578,7 +578,7 @@ The agent's most recent index run — in flight or last finished — and whether
 
 A run interrupted by a restart is picked up again automatically: indexing is idempotent, so the resumed run skips everything already done.
 
-Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the request — the admin's, or the nightly scheduler's — and the outcome (recorded by the background worker, with the counts). Both carry `trigger`.
+Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the request — the admin's, the nightly scheduler's, or Pinchy's own after an update — and the outcome (recorded by the background worker, with the counts). Both carry `trigger`.
 
 **Errors:**
 
@@ -645,11 +645,42 @@ Runs a hybrid (vector + full-text) search over the requesting agent's indexed, g
 
 ### `GET /api/agents/:agentId/knowledge/unsearchable`
 
-**Which** documents the index holds but cannot search — the list behind the `unsearchable` counter in the reindex status. **Admin only.**
+**Which** documents the index holds but search can't reach. Two kinds: documents that produced no searchable text — the ones the `unsearchable` counter in the reindex status counts — and Word or PowerPoint files search leaves out until they have been converted again after an update, which that counter never counts. **Admin only.**
 
-The counter answers for the last run; this answers for everything currently in the agent's granted folders, so it is usually the larger of the two. That is the two numbers agreeing, not disagreeing: a file unchanged since an earlier run is `skipped` by the next one and never counted again.
+The counter answers for the last run; `totals.no_text` answers for everything currently in the agent's granted folders, so it is usually the larger of the two. That is the two numbers agreeing, not disagreeing: a file unchanged since an earlier run is `skipped` by the next one and never counted again.
 
 Scoped to the folders that agent is granted, exactly like search itself, so the list never names a document the agent isn't allowed to know about.
+
+**Response:**
+
+```json
+{
+  "documents": [
+    {
+      "sourcePath": "/data/offers/Angebot.docx",
+      "status": "active",
+      "reason": "awaiting_conversion"
+    },
+    {
+      "sourcePath": "/data/certs/AFNOR validation.pdf",
+      "status": "active",
+      "reason": "no_text"
+    }
+  ],
+  "total": 2,
+  "totals": { "no_text": 1, "awaiting_conversion": 1 },
+  "searchesIndex": true
+}
+```
+
+| Field                    | Description                                                                                                                                                                                                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `documents[].sourcePath` | The document's full path, as indexed.                                                                                                                                                                                                                                                      |
+| `documents[].status`     | `archived` for a document under an archive folder, already out of everyday search; `active` otherwise. Archived documents come last.                                                                                                                                                       |
+| `documents[].reason`     | `no_text` — indexed, but it produced no searchable text (a scan no vision model read, a file refused for its size or content). `awaiting_conversion` — a Word or PowerPoint file search leaves out until it has been converted again after an update changed how such files are converted. |
+| `total`                  | How many there are. `documents` holds at most 100; `total` is never capped.                                                                                                                                                                                                                |
+| `totals`                 | `total` per reason, `no_text` and `awaiting_conversion`. Never capped either, so it counts documents `documents` doesn't show.                                                                                                                                                             |
+| `searchesIndex`          | Whether the agent has `knowledge_search`. Pinchy converts the `awaiting_conversion` files again on its own only for an agent that searches the index; for any other agent, a reindex converts them.                                                                                        |
 
 **Errors:**
 

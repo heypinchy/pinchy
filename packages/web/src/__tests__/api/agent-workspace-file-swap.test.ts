@@ -59,15 +59,15 @@ vi.mock("@/lib/agent-file-access", async (importOriginal) => {
  * pass-through: the real reader still answers.
  */
 const sheetReads = vi.hoisted(() => [] as Array<{ source: unknown; existed: boolean }>);
-vi.mock("@/lib/knowledge/xlsx-extract", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/knowledge/xlsx-extract")>();
+vi.mock("@/lib/knowledge/xlsx-isolated", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/knowledge/xlsx-isolated")>();
   const { existsSync } = await import("node:fs");
   return {
     ...actual,
-    readSheetRange: async (...args: Parameters<typeof actual.readSheetRange>) => {
+    readSheetRangeIsolated: async (...args: Parameters<typeof actual.readSheetRangeIsolated>) => {
       const [source] = args;
       sheetReads.push({ source, existed: typeof source === "string" && existsSync(source) });
-      return actual.readSheetRange(...args);
+      return actual.readSheetRangeIsolated(...args);
     },
   };
 });
@@ -188,10 +188,10 @@ describe("a source swapped for a link after the containment check", () => {
   });
 
   it("reads an ordinary workbook's rows from a private copy, streamed — never the share's path, never whole in this process", async () => {
-    // The reader takes a path (and, with #1243, runs in a child process that
-    // opens it): handed the share's path, it would follow a link swapped in
-    // after the verified open; handed the bytes, this process would hold the
-    // whole workbook. It gets a copy on the staging volume, written from the
+    // The reader takes a path (and runs in a child process that opens it):
+    // handed the share's path, it would follow a link swapped in after the
+    // verified open; handed the bytes, this process would hold the whole
+    // workbook. It gets a copy on the staging volume, written from the
     // verified descriptor a chunk at a time, and removed once it answered.
     const book = new ExcelJS.Workbook();
     const suppliers = book.addWorksheet("Suppliers");

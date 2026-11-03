@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import {
   SourceRefusedError,
   SourceUnverifiableError,
+  copyOpenSource,
   copyVerifiedSource,
   hashVerifiedSource,
   isAtPath,
@@ -330,6 +331,32 @@ describe("copyVerifiedSource", () => {
       SourceRefusedError
     );
     expect(existsSync(staging()) ? readdirSync(staging()) : []).toEqual([]);
+  });
+
+  it("stops at `maxBytes`, however far the file runs past it", async () => {
+    // The preview route checks a workbook's size before it copies it; a file
+    // still being written can grow past that check while the copy runs, and
+    // the copy must not follow it. One byte past the reader's limit is all the
+    // reader needs to refuse it as too large.
+    const bytes = "y".repeat(2 * SOURCE_CHUNK_BYTES + 5);
+    const path = join(share, "Preise.xlsx");
+    writeFileSync(path, bytes);
+    const maxBytes = SOURCE_CHUNK_BYTES + 3;
+
+    const source = await openVerifiedSource(path);
+    let copy;
+    try {
+      copy = await copyOpenSource(source, path, staging(), { maxBytes });
+    } finally {
+      await source.handle.close();
+    }
+    try {
+      expect(copy.size).toBe(maxBytes);
+      expect(readFileSync(copy.path, "utf8")).toBe(bytes.slice(0, maxBytes));
+      expect(copy.hash).toBe(createHash("sha256").update(bytes.slice(0, maxBytes)).digest("hex"));
+    } finally {
+      await copy.dispose();
+    }
   });
 });
 

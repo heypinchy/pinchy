@@ -16,6 +16,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
 
+import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
+import {
+  declaredBomb,
+  lyingEntry,
+  peakRss,
+  replaceEntry,
+  truthfulSpacesEntry,
+} from "@/test-helpers/office-zip";
 import {
   extractXlsx,
   readSheetRange,
@@ -259,6 +267,46 @@ describe("cell values", () => {
     expect(rowLines(chunks[0].text)).toEqual(["Kind: literal; Value: 0.15"]);
   });
 
+  it("refuses a hostile number format before exceljs reads it", async () => {
+    // The format code comes straight from the workbook's styles part, and
+    // exceljs strips its `[…]` blocks with `/\[[^\]]*]/g` — on load, for
+    // every styled cell. That regex re-scans to the end of the string from
+    // every `[` with no `]` after it: 100 000 of them made exceljs's load
+    // take 4 s, 400 000 two minutes, before our own code saw a cell. Excel
+    // caps a format at 255 characters, so a workbook with one like this was
+    // not written by Excel; it is refused, as fast as the guard reads it —
+    // as a refusal, a verdict on the file that ingest lists as unsearchable,
+    // not as a reader that broke and is retried every run.
+    const path = await buildWorkbook("hostile-format.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Formats");
+      sheet.addRow(["Kind", "Value"]);
+      const row = sheet.addRow(["hostile", 0.15]);
+      row.getCell(2).numFmt = `0%${"[".repeat(400_000)}`;
+    });
+
+    const started = Date.now();
+    const err = await extractXlsx(path).catch((e: unknown) => e);
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("unexpected_content");
+  });
+
+  it("still strips quoted runs, escapes and closed brackets from a number format", async () => {
+    const path = await buildWorkbook("literal-formats.xlsx", (workbook) => {
+      const sheet = workbook.addWorksheet("Formats");
+      // (A backslash-escaped `%` is not exercised here: exceljs drops the
+      // backslash when it writes the format, so it would round-trip as `0.00%`.)
+      sheet.addRow(["A", "B", "C"]);
+      const row = sheet.addRow([0.15, 0.15, 0.15]);
+      row.getCell(1).numFmt = '0.00"[%]"';
+      row.getCell(2).numFmt = "[Color10]0.00";
+      row.getCell(3).numFmt = "[Red]0%";
+    });
+
+    const { chunks } = await extractXlsx(path);
+    expect(rowLines(chunks[0].text)).toEqual(["A: 0.15; B: 0.15; C: 15%"]);
+  });
+
   it("drops error cells and collapses newlines inside a cell", async () => {
     const path = await buildWorkbook("noise.xlsx", (workbook) => {
       const sheet = workbook.addWorksheet("Noise");
@@ -414,22 +462,28 @@ describe("chunking", () => {
 });
 
 describe("unreadable files fail at document level", () => {
-  it("throws with a reason for a file that is not a zip at all", async () => {
+  it("refuses a file that is not a zip at all as not what its name says, with a reason", async () => {
+    // The same bytes every run: a verdict on the file, which the ingest lists
+    // as unsearchable instead of reading it again every night.
     const path = join(tmpRoot, "corrupt.xlsx");
     await writeFile(path, "this is plain text, not a workbook");
 
-    await expect(extractXlsx(path)).rejects.toThrow(XlsxExtractionError);
-    await expect(extractXlsx(path)).rejects.toThrow(/corrupt\.xlsx/);
+    const err = await extractXlsx(path).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("unexpected_content");
+    expect((err as Error).message).toMatch(/not a valid workbook archive/);
   });
 
-  it("throws for a legacy binary .xls, which exceljs cannot read", async () => {
+  it("refuses a legacy binary .xls, which exceljs cannot read", async () => {
     // exceljs reads .xlsx as a zip, so no OLE2 container gets past the opener,
     // whatever its BIFF payload — legacy Excel is out of scope for this
     // extractor and has to say so loudly.
     const path = join(tmpRoot, "legacy.xls");
     await writeFile(path, Buffer.concat([OLE2_MAGIC, Buffer.alloc(512)]));
 
-    await expect(extractXlsx(path)).rejects.toThrow(XlsxExtractionError);
+    const err = await extractXlsx(path).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("unexpected_content");
   });
 
   it("throws for a missing file", async () => {
@@ -468,8 +522,9 @@ describe("unreadable files fail at document level", () => {
   });
 
   it("keeps the source path on the error so the caller can name the document", async () => {
-    const path = join(tmpRoot, "corrupt.xlsx");
-    await writeFile(path, "nope");
+    // A file that is gone by the time it is read says nothing about its
+    // content: unreadable, not refused.
+    const path = join(tmpRoot, "vanished.xlsx");
 
     const error = await extractXlsx(path).catch((err: unknown) => err);
     expect(error).toBeInstanceOf(XlsxExtractionError);
@@ -661,5 +716,152 @@ describe("readSheetRange — what a spreadsheet citation opens", () => {
     const range = await readSheetRange(path, "Sheet1", 1, 100000);
 
     expect(range?.rows).toHaveLength(SHEET_RANGE_MAX_ROWS);
+  });
+});
+
+describe("a compressed-bomb workbook is refused, not inflated", () => {
+  // exceljs inflates every zip entry whole and builds the entire cell model. A
+  // few hundred bytes can declare gigabytes; the index worker runs in the web
+  // process and the rows preview is reachable by any member with agent access,
+  // uncached and repeatable — so one planted file could take the server down.
+  // The archive below DECLARES 4 GB for its sheet and carries 64 real bytes:
+  // nothing here can allocate that, which is exactly what must stay true.
+  async function plantBomb(name: string): Promise<string> {
+    const path = join(tmpRoot, name);
+    await writeFile(path, declaredBomb(0xfffffffe));
+    return path;
+  }
+
+  it("extractXlsx rejects it as too large, quickly and without allocating", async () => {
+    const path = await plantBomb("bomb.xlsx");
+    const arrayBuffersBefore = process.memoryUsage().arrayBuffers;
+    const started = Date.now();
+
+    const err = await extractXlsx(path).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("too_large");
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(process.memoryUsage().arrayBuffers - arrayBuffersBefore).toBeLessThan(50 * 1024 * 1024);
+  });
+
+  it("never hands a bomb to exceljs at all", async () => {
+    const path = await plantBomb("bomb-spy.xlsx");
+    const workbook = new ExcelJS.Workbook();
+    const xlsxPrototype = Object.getPrototypeOf(workbook.xlsx);
+    const load = vi.spyOn(xlsxPrototype, "load");
+    const readFile = vi.spyOn(xlsxPrototype, "readFile");
+    try {
+      await expect(extractXlsx(path)).rejects.toBeInstanceOf(OfficeFileRejectedError);
+      await expect(readSheetRange(path, null, 1, 10)).rejects.toBeInstanceOf(
+        OfficeFileRejectedError
+      );
+      expect(load).not.toHaveBeenCalled();
+      expect(readFile).not.toHaveBeenCalled();
+    } finally {
+      load.mockRestore();
+      readFile.mockRestore();
+    }
+  });
+
+  it("readSheetRange rejects it the same way, so the rows view can answer without crashing", async () => {
+    const path = await plantBomb("bomb-rows.xlsx");
+    const err = await readSheetRange(path, "Sheet1", 1, 10).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("too_large");
+  });
+
+  it("still reads an ordinary workbook (the guard costs real files nothing)", async () => {
+    const path = await buildWorkbook("ordinary.xlsx", (workbook) => {
+      workbook.addWorksheet("Sheet1").addRows([["Name"], ["Alice"]]);
+    });
+    expect((await extractXlsx(path)).chunks).toHaveLength(1);
+    expect((await readSheetRange(path, "Sheet1", 1, 5))?.rows).toHaveLength(1);
+  });
+});
+
+describe("a workbook that lies about its size, or hides behind a prefix, never reaches exceljs", () => {
+  // The declared-size guard above reads the central directory, and both of
+  // these get past it. exceljs (JSZip) then inflates the entry WHOLE before it
+  // compares sizes. Measured before the fix: 1.43 GB RSS for a sheet that
+  // declared 1000 bytes and held 1.2 GB; 989 MB RSS for a 465 KB workbook with
+  // 64 junk bytes in front. These pin both the refusal and the memory.
+  const MiB = 1024 * 1024;
+  const HEAD = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>x</t></is></c></row>`;
+  const TAIL = `</sheetData></worksheet>`;
+
+  async function baseWorkbook(): Promise<Buffer> {
+    const workbook = new ExcelJS.Workbook();
+    workbook.addWorksheet("S").addRow(["a", 1]);
+    return Buffer.from(await workbook.xlsx.writeBuffer());
+  }
+
+  /** Runs `read` with exceljs's loaders spied on; returns the error and the peak-RSS growth. */
+  async function readBomb(path: string, read: (path: string) => Promise<unknown>) {
+    const xlsxPrototype = Object.getPrototypeOf(new ExcelJS.Workbook().xlsx);
+    const load = vi.spyOn(xlsxPrototype, "load");
+    const readFile = vi.spyOn(xlsxPrototype, "readFile");
+    const peakBefore = peakRss();
+    try {
+      const err = await read(path).then(
+        () => null,
+        (e: unknown) => e
+      );
+      return {
+        err,
+        growth: peakRss() - peakBefore,
+        excelCalls: load.mock.calls.length + readFile.mock.calls.length,
+      };
+    } finally {
+      load.mockRestore();
+      readFile.mockRestore();
+    }
+  }
+
+  it("refuses a sheet that inflates past its declared size: too large, exceljs never called, memory flat", async () => {
+    const path = join(tmpRoot, "lying.xlsx");
+    await writeFile(
+      path,
+      replaceEntry(
+        await baseWorkbook(),
+        "xl/worksheets/sheet1.xml",
+        lyingEntry("xl/worksheets/sheet1.xml", {
+          head: HEAD,
+          tail: TAIL,
+          realBytes: 1024 * MiB,
+          declaredBytes: 1000,
+        })
+      )
+    );
+
+    for (const read of [extractXlsx, (p: string) => readSheetRange(p, "S", 1, 5)]) {
+      const { err, growth, excelCalls } = await readBomb(path, read);
+      expect(err).toBeInstanceOf(OfficeFileRejectedError);
+      expect((err as OfficeFileRejectedError).code).toBe("too_large");
+      expect(excelCalls).toBe(0);
+      expect(growth).toBeLessThan(128 * MiB);
+    }
+  });
+
+  it("refuses a bomb behind a junk prefix as not a workbook: exceljs never called, memory flat", async () => {
+    const truthful = replaceEntry(
+      await baseWorkbook(),
+      "xl/worksheets/sheet1.xml",
+      truthfulSpacesEntry("xl/worksheets/sheet1.xml", {
+        head: HEAD,
+        tail: TAIL,
+        spaceBytes: 450 * MiB,
+      })
+    );
+    const path = join(tmpRoot, "prefixed.xlsx");
+    await writeFile(path, Buffer.concat([Buffer.alloc(64, 0x41), truthful]));
+
+    const { err, growth, excelCalls } = await readBomb(path, extractXlsx);
+    // A malformed archive is refused like any other file that is not what its
+    // name says — and never handed to exceljs.
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("unexpected_content");
+    expect(excelCalls).toBe(0);
+    expect(growth).toBeLessThan(128 * MiB);
   });
 });
