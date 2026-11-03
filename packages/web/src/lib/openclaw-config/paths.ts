@@ -21,3 +21,10 @@ export const OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS = [
 // value the seed did not already put on disk makes the first regenerate a
 // gateway restart instead of a hot reload.
 export const OPENCLAW_MEDIA_TTL_HOURS = 48;
+
+// The gateway's run mode and bind interface. Pinchy always runs OpenClaw as a
+// local gateway reached over the Docker network. Shared with the boot-time seed
+// in targeted.ts: OpenClaw refuses to start on a config without gateway.mode,
+// and adding mode/bind later is a restart-class `gateway` diff.
+export const OPENCLAW_GATEWAY_MODE = "local";
+export const OPENCLAW_GATEWAY_BIND = "lan";

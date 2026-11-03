@@ -5111,6 +5111,10 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // OpenClaw has no reload rule for `media`, so the first regenerate adding
     // ttlHours would restart the gateway — seed it up front too.
     expect(written.media?.ttlHours).toBe(48);
+    // OpenClaw refuses to start on a config without gateway.mode, and adding
+    // mode/bind in the first regenerate is a restart-class `gateway` diff.
+    expect(written.gateway?.mode).toBe("local");
+    expect(written.gateway?.bind).toBe("lan");
   });
 
   it("seeds media.ttlHours when it is missing and keeps OpenClaw's media siblings", () => {
@@ -5326,31 +5330,24 @@ describe("seedRestartClassOverridesIfMissing", () => {
       ) as Record<string, unknown>;
     };
 
-    // What is on the volume before Pinchy's boot seeds run.
+    // What is on the volume before Pinchy's boot seeds run. OpenClaw's own
+    // startup writes nothing to it (2026.7.1: `loadGatewayStartupConfigSnapshot`
+    // never persists, and an empty file stops it with "existing config is missing
+    // gateway.mode"), so the seeded file IS the baseline its first reload diffs.
     const startingFiles: Array<{
       name: string;
       file: () => Promise<Record<string, unknown> | null>;
-      // What OpenClaw's own first start adds to the file before Pinchy's first
-      // regenerate. Evidence for the empty-volume case: in CI run 41569393728
-      // the volume started empty (both seeds wrote), OpenClaw's first boot logged
-      // `Bind: lan`, and the reload that later fired named only `media` — so
-      // gateway.mode/bind were already in its compare baseline.
-      openClawFirstStart?: (cfg: Record<string, unknown>) => Record<string, unknown>;
     }> = [
       { name: "the baked config/openclaw.json (image copy-up)", file: readBaked },
+      // A compose install usually starts here: the `pinchy` container creates the
+      // shared volume first, so the OpenClaw image's baked file never reaches it.
+      { name: "an empty volume (no openclaw.json yet)", file: async () => null },
       {
-        name: "an empty volume (no openclaw.json yet)",
-        file: async () => null,
-        openClawFirstStart: (cfg) => ({
-          ...cfg,
-          gateway: { mode: "local", bind: "lan", ...(cfg.gateway as Record<string, unknown>) },
-        }),
-      },
-      {
-        // An install created before the media TTL: every other override present.
-        // The seed is the only thing that adds `media` here — this case fails if
-        // the seed stops doing so, which the baked-config case cannot see.
-        name: "a pre-media-TTL config (upgrade)",
+        // The seed baseline as it looked before the media TTL: every other
+        // override present, no `media`. The seed is the only thing that adds it
+        // here — this case fails if the seed stops doing so, which the
+        // baked-config case cannot see.
+        name: "a pre-media-TTL seed baseline",
         file: async () => {
           const { media: _media, ...rest } = await readBaked();
           return rest;
@@ -5393,9 +5390,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
           persistSeedWrite();
           await seedGatewayTokenIfMissing();
           persistSeedWrite();
-          const seeded = JSON.parse(onDisk ?? "{}") as Record<string, unknown>;
-          const baseline = start.openClawFirstStart?.(seeded) ?? seeded;
-          onDisk = JSON.stringify(baseline);
+          const baseline = JSON.parse(onDisk ?? "{}") as Record<string, unknown>;
 
           // The setup wizard's regenerate: Smithers on the chosen provider.
           mockedDb.select.mockReturnValue({
@@ -5443,9 +5438,14 @@ describe("seedRestartClassOverridesIfMissing", () => {
  * rather than reading its source). Third-party plugins Pinchy loads declare no
  * reload rules.
  *
- * Today's first regenerate diffs `plugins` as a whole (the booted file has no
- * `plugins` block), which no plugin rule matches; the check guards the day a
- * `plugins` block reaches the baseline first.
+ * This is a deliberate over-approximation: it assumes every default-enabled
+ * plugin is loaded, while Pinchy's own `plugins.allow` keeps canvas out of a
+ * configured gateway (CI shows `plugins.allow` changes hot-reloading there). It
+ * matters only before Pinchy's first regenerate, when OpenClaw runs its
+ * defaults. Today that diff touches `plugins` as a whole (the seeded file has
+ * no `plugins` block), which no plugin rule matches. If a `plugins` block ever
+ * reaches the seeded baseline, a red here means "check this against a real
+ * gateway", not necessarily a proven restart.
  */
 async function loadOpenClawReloadPlanner(): Promise<{
   diffConfigPaths: (prev: unknown, next: unknown) => string[];

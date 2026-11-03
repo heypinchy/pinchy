@@ -74,17 +74,17 @@ export async function bootInits(): Promise<boolean> {
 
   // Pre-seed Pinchy's restart-class overrides into openclaw.json BEFORE OC
   // starts. Without this seed, the very first WS-driven config.apply (e.g.
-  // from POST /api/setup) produces a diff at `gateway.controlUi.enabled`,
-  // `update`, `discovery`, `canvasHost`, `media` (all restart-class in OC's
-  // reload planner — explicit rules or the no-rule default). The reload subsystem fires SIGUSR1 → in-process
-  // restart → OC's `ensureGatewayStartupAuth → replaceConfigFile` hits the
+  // from POST /api/setup) produces a diff at `gateway.mode`/`bind`,
+  // `gateway.controlUi.enabled`, `update`, `discovery`, `canvasHost`, `media`
+  // (all restart-class in OC's reload planner — explicit rules or the no-rule
+  // default). The reload subsystem fires SIGUSR1 → in-process restart → OC's `ensureGatewayStartupAuth → replaceConfigFile` hits the
   // stale-snapshot bug and crashes the gateway with
   // `ConfigMutationConflictError: config changed since last load`. Telegram
   // E2E `agent-create-no-restart.spec.ts` reproduces this on every other CI
   // run as "OpenClaw never quiet for 30000ms within 240000ms".
-  // Idempotent: if the file already carries the overrides (production
-  // case — Docker-managed named volume populated from the image's baked-in
-  // config/openclaw.json), this is a no-op. Targeted to ONLY the restart-
+  // Idempotent: if the file already carries the overrides (e.g. a volume
+  // populated from the OpenClaw image's baked-in config/openclaw.json), this
+  // is a no-op. Targeted to ONLY the restart-
   // class fields (full bootInits regenerate broke the integration test's
   // basic chat by producing a stale agents/models block that interfered with
   // OC's model registry on later hot-reload).
