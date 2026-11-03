@@ -565,4 +565,71 @@ describe("approvals gate decision service", () => {
       });
     });
   });
+
+  /**
+   * A summary may be 0.5–1.5 MB, and only the pending list reads it — but settled
+   * rows kept it for the 30 days they are retained. Every way out of `pending`
+   * drops it. The audit trail never carried it.
+   */
+  describe("the stored summary is dropped once a confirmation settles", () => {
+    const summary = { body: "x".repeat(1000) };
+    const open = (over: Partial<Parameters<typeof decideGate>[0]> = {}) =>
+      decideGate({ ...base(), toolCallId: "call_9", argsSummary: summary, ...over });
+    const stored = async (id: string) =>
+      (
+        await db
+          .select({ argsSummary: toolApproval.argsSummary })
+          .from(toolApproval)
+          .where(eq(toolApproval.id, id))
+      )[0].argsSummary;
+
+    it("keeps it while the confirmation waits, and on a reused request", async () => {
+      const r = await open();
+      await open();
+      expect(await stored(r.requestId)).toEqual(summary);
+    });
+
+    it.each(["approve", "deny"] as const)("drops it when the user decides: %s", async (d) => {
+      const r = await open();
+      await resolveDecision({ id: r.requestId, approverId: requesterId, decision: d });
+      expect(await stored(r.requestId)).toBeNull();
+    });
+
+    it.each(["allow-once", "allow-always", "deny", "timeout", "cancelled"] as const)(
+      "drops it when the runtime reports %s on a pending confirmation",
+      async (decision) => {
+        const r = await open();
+        await recordResolution({ toolCallId: "call_9", decision });
+        expect(await stored(r.requestId)).toBeNull();
+      }
+    );
+
+    it("drops it when the sweep expires the confirmation", async () => {
+      const r = await open({ ttlMs: -1000 });
+      await expireStale();
+      expect(await stored(r.requestId)).toBeNull();
+    });
+
+    // A grant approved before the upgrade still carries its summary; spending
+    // it must drop it too.
+    it("drops it when an approved grant is spent at the gate", async () => {
+      const r = await open();
+      await db
+        .update(toolApproval)
+        .set({ status: "approved" })
+        .where(eq(toolApproval.id, r.requestId));
+      expect(await stored(r.requestId)).toEqual(summary);
+      expect((await decideGate(base())).decision).toBe("allow");
+      expect(await stored(r.requestId)).toBeNull();
+    });
+
+    it("leaves every other waiting confirmation's summary alone", async () => {
+      const settled = await open();
+      const waiting = await open({ argsDigest: "digest-2", toolCallId: "call_10" });
+      await resolveDecision({ id: settled.requestId, approverId: requesterId, decision: "deny" });
+      await recordResolution({ toolCallId: "call_9", decision: "timeout" });
+      await expireStale();
+      expect(await stored(waiting.requestId)).toEqual(summary);
+    });
+  });
 });

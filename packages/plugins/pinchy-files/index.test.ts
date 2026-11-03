@@ -1653,16 +1653,33 @@ describe("pinchy_generate_file tool", () => {
     expect(readdirSync(workbench)).toEqual([]);
   });
 
-  // macOS-style NFD input ("u" + combining diaeresis) must be stored NFC:
-  // the grant filename round-trips through JSON/the model in NFC, and the
-  // serve route sanitizes to NFC before the lookup — a name stored NFD would
-  // never match again (same incident class as sanitizeFilename's NFC rule).
-  it("normalizes the filename to NFC so the stored name matches the grant lookup", async () => {
+  // A name stored NFD would never match the NFC grant lookup again (same
+  // incident class as sanitizeFilename's NFC rule).
+  //
+  // Every write tool refuses a non-NFC name at its edge instead of rewriting
+  // it: the confirmation card shows the name as sent, so the name approved is
+  // the name written. An NFC name still round-trips (next test).
+  it("refuses an NFD filename instead of rewriting it", async () => {
     const tool = await makeGenerateFileTool();
 
     const result = await tool.execute("call-1", {
       format: "csv",
       filename: "u\u0308bersicht", // NFD form of "übersicht"
+      columns: ["a"],
+      rows: [["1"]],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/NFC/);
+    expect(readdirSync(workbench)).toEqual([]);
+  });
+
+  it("stores an NFC filename as given, so the stored name matches the grant lookup", async () => {
+    const tool = await makeGenerateFileTool();
+
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "\u00FCbersicht",
       columns: ["a"],
       rows: [["1"]],
     });
@@ -1910,5 +1927,276 @@ describe("pinchy_delete tool", () => {
     });
 
     expect(result.details?.error).toBeTruthy();
+  });
+});
+
+// ── unknown parameters ───────────────────────────────────────────────────────
+// A write tool reads its arguments by exact name. A look-alike key the tool
+// never reads — `"path "` next to `path` — still appears on the approval card,
+// where a reader may take it for the real one. The write tools refuse any key
+// they do not declare: in the schema (`additionalProperties: false`, which
+// OpenClaw enforces for most providers) and again at the tool's own edge,
+// because OpenClaw strips that keyword for Gemini-profile models.
+describe("write tools refuse parameters they do not declare", () => {
+  let tmpDir: string;
+  let workbench: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockChown.mockResolvedValue(undefined);
+    tmpDir = mkdtempSync(join(tmpdir(), "pinchy-unknown-params-test-"));
+    workbench = join(tmpDir, "workbench");
+    mkdirSync(workbench);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function toolNamed(name: string) {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir, workbench] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    return mockRegisterTool.mock.calls.find((call: any[]) => call[1]?.name === name)?.[0]({
+      agentId: "agent-1",
+    });
+  }
+
+  it.each(["pinchy_write", "pinchy_delete", "pinchy_generate_file"])(
+    "%s declares additionalProperties: false",
+    async (name) => {
+      const tool = await toolNamed(name);
+      expect(tool.parameters.additionalProperties).toBe(false);
+    }
+  );
+
+  it("pinchy_write refuses a look-alike `path ` key and writes nothing", async () => {
+    const tool = await toolNamed("pinchy_write");
+    const real = join(tmpDir, "real.md");
+    const shown = join(tmpDir, "shown.md");
+    const result = await tool.execute("call-1", { path: real, content: "x", "path ": shown });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('"path "');
+    expect(result.details.error).toMatch(/unknown parameter/i);
+    expect(result.details.unknownParams).toBe(1);
+    expect(existsSync(real)).toBe(false);
+    expect(existsSync(shown)).toBe(false);
+  });
+
+  it("pinchy_delete refuses a look-alike `path ` key and deletes nothing", async () => {
+    const tool = await toolNamed("pinchy_delete");
+    const target = join(tmpDir, "keep.md");
+    writeFileSync(target, "keep");
+    const result = await tool.execute("call-1", {
+      path: target,
+      "path ": join(tmpDir, "other.md"),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(existsSync(target)).toBe(true);
+  });
+
+  it("pinchy_generate_file refuses an undeclared key and writes nothing", async () => {
+    const tool = await toolNamed("pinchy_generate_file");
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "export",
+      columns: ["a"],
+      rows: [["1"]],
+      "filename ": "innocent",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(readdirSync(workbench)).toEqual([]);
+  });
+});
+
+/**
+ * The confirmation card shows a path, and a path can read as one file while it
+ * resolves to another. 180 braille blanks (U+2800)
+ * pushed "/../../contracts/signed.pdf" out of the card's preview, and `..`
+ * then walked the write out of reports/. The write tools refuse such a path at
+ * their own edge — before `validateAccess` ever resolves it — so what the card
+ * shows is the file that changes.
+ */
+describe("write tools refuse a path that does not read as what it resolves to", () => {
+  let tmpDir: string;
+  let workbench: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockChown.mockResolvedValue(undefined);
+    tmpDir = mkdtempSync(join(tmpdir(), "pinchy-plain-path-test-"));
+    workbench = join(tmpDir, "workbench");
+    mkdirSync(workbench);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function toolNamed(name: string) {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir, workbench] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    return mockRegisterTool.mock.calls.find((call: any[]) => call[1]?.name === name)?.[0]({
+      agentId: "agent-1",
+    });
+  }
+
+  const probe = (root: string) =>
+    `${root}/reports/old-draft.md${"\u2800".repeat(180)}/../../contracts/signed.pdf`;
+
+  it.each(["pinchy_write", "pinchy_delete"])(
+    "%s refuses a blank-padded traversal path before validateAccess sees it",
+    async (name) => {
+      const tool = await toolNamed(name);
+      const params =
+        name === "pinchy_write" ? { path: probe(tmpDir), content: "x" } : { path: probe(tmpDir) };
+      const result = await tool.execute("call-1", params);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/U\+2800/);
+      expect(vi.mocked(validateAccess)).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["a '..' segment", (root: string) => `${root}/reports/../contracts/signed.pdf`, /\.\./],
+    ["a braille blank", (root: string) => `${root}/report\u2800.md`, /U\+2800/],
+    ["a hangul filler", (root: string) => `${root}/report\u3164.md`, /U\+3164/],
+    // A paragraph separator, which breaks the line rather than taking visible
+    // width, is the refused space character here: paths accept a no-break
+    // space — the card prints it as ⟨U+00A0⟩, and real file names carry it.
+    ["a paragraph separator", (root: string) => `${root}/report\u2029.md`, /U\+2029/],
+    [
+      "'.' segments",
+      (root: string) => `${root}/${"./".repeat(2100)}contracts/signed.pdf`,
+      /plain form|longer than/,
+    ],
+    ["an empty segment", (root: string) => `${root}//contracts/signed.pdf`, /plain form/],
+    ["a zero-width space", (root: string) => `${root}/report\u200B.md`, /U\+200B/],
+    ["a bidi override", (root: string) => `${root}/report\u202Edm.txt`, /U\+202E/],
+    ["a line break", (root: string) => `${root}/report\n.md`, /U\+000A/],
+    ["an NFD form", (root: string) => `${root}/u\u0308bersicht.md`, /NFC/],
+    // These read on the card like the plain name.
+    ["a trailing space", (root: string) => `${root}/report.md `, /space at the start or end/],
+    ["a space before a slash", (root: string) => `${root}/out /r.md`, /space at the start or end/],
+    // A selector after ✅ is accepted (the card marks
+    // it). A word joiner draws nothing either, and no real name needs one.
+    ["a word joiner", (root: string) => `${root}/report\u2060.md`, /U\+2060/],
+  ])("pinchy_write refuses a path with %s, says why, and writes nothing", async (_l, make, why) => {
+    const tool = await toolNamed("pinchy_write");
+    const result = await tool.execute("call-1", { path: make(tmpDir), content: "x" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(why);
+    expect(readdirSync(tmpDir)).toEqual(["workbench"]);
+  });
+
+  it("pinchy_delete refuses a '..' path and deletes nothing", async () => {
+    const tool = await toolNamed("pinchy_delete");
+    mkdirSync(join(tmpDir, "contracts"));
+    const victim = join(tmpDir, "contracts", "signed.pdf");
+    writeFileSync(victim, "keep");
+    const result = await tool.execute("call-1", {
+      path: `${tmpDir}/reports/../contracts/signed.pdf`,
+    });
+    expect(result.isError).toBe(true);
+    expect(existsSync(victim)).toBe(true);
+  });
+
+  it("pinchy_generate_file refuses a filename with a blank-rendering character", async () => {
+    const tool = await toolNamed("pinchy_generate_file");
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: `export${"\u2800".repeat(40)}x`,
+      columns: ["a"],
+      rows: [["1"]],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/U\+2800/);
+    expect(readdirSync(workbench)).toEqual([]);
+  });
+
+  // Real names carry visible-width spaces the card escapes, e.g. macOS
+  // screenshots ("… at 10.00.00\u202FAM.png").
+  it.each([
+    ["a narrow no-break space", "Screenshot 2026-11-02 at 10.00.00\u202FAM.png"],
+    ["a no-break space", "Betrag 1\u00A0234.md"],
+  ])("still writes a path with %s", async (_l, name) => {
+    const tool = await toolNamed("pinchy_write");
+    const target = join(tmpDir, name);
+    const result = await tool.execute("call-1", { path: target, content: "x" });
+    expect(result.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(true);
+  });
+
+  // The emoji joiner and presentation selector are accepted — refused
+  // outright, they left ordinary emoji names neither writable nor deletable.
+  // The card marks each one.
+  it.each([
+    ["a presentation selector", "\u26A0\uFE0F offen.md"],
+    ["joined emoji", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467} Familie.md"],
+  ])("writes and deletes an emoji name with %s", async (_l, name) => {
+    const target = join(tmpDir, name);
+    const written = await (
+      await toolNamed("pinchy_write")
+    ).execute("call-1", {
+      path: target,
+      content: "x",
+    });
+    expect(written.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(true);
+
+    const deleted = await (await toolNamed("pinchy_delete")).execute("call-2", { path: target });
+    expect(deleted.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(false);
+  });
+
+  // The card marks every selector, an emoji's too,
+  // so `report⟨U+FE0F⟩.md` reads apart from `report.md` and is written as the
+  // separate file it is.
+  it("writes a presentation selector outside an emoji too, as its own file", async () => {
+    const result = await (
+      await toolNamed("pinchy_write")
+    ).execute("call-1", {
+      path: join(tmpDir, "report️.md"),
+      content: "x",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(existsSync(join(tmpDir, "report️.md"))).toBe(true);
+    expect(existsSync(join(tmpDir, "report.md"))).toBe(false);
+  });
+
+  // A joiner outside an emoji is accepted in every
+  // script, and the card marks it — `க்⟨U+200C⟩ம.md` — so it never reads as
+  // the file without it, which stays a different file.
+  it.each([
+    ["between Latin letters", "a‍b.md", "ab.md"],
+    ["inside a Tamil word", "க்‌ம.md", "க்ம.md"],
+  ])("writes and deletes a name with a joiner %s", async (_l, name, lookalike) => {
+    const target = join(tmpDir, name);
+    const written = await (
+      await toolNamed("pinchy_write")
+    ).execute("call-1", { path: target, content: "x" });
+    expect(written.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(true);
+    expect(existsSync(join(tmpDir, lookalike))).toBe(false);
+
+    const deleted = await (await toolNamed("pinchy_delete")).execute("call-2", { path: target });
+    expect(deleted.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("still writes an ordinary path, spaces and umlauts included", async () => {
+    const tool = await toolNamed("pinchy_write");
+    const target = join(tmpDir, "Q3 Bericht \u00FCber.md");
+    const result = await tool.execute("call-1", { path: target, content: "x" });
+    expect(result.isError).toBeFalsy();
+    expect(existsSync(target)).toBe(true);
   });
 });

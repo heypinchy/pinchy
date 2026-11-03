@@ -1298,8 +1298,9 @@ describe("email_search", () => {
   // guarded the handler against a caller still passing the old `query` —
   // the value was silently dropped and the adapter threw a generic "search
   // requires at least one filter field" that never mentioned `query`. The
-  // handler must catch this before it ever reaches the adapter and name the
-  // replacement fields so the model can self-correct.
+  // call must be refused before it ever reaches the adapter, naming the
+  // replacement fields so the model can self-correct — which the refusal of
+  // every undeclared parameter (unknown-params.ts) does.
   it("rejects the legacy `query` parameter with a descriptive error naming the replacement DSL fields", async () => {
     const tools = createApi();
     const tool = findTool(tools, "email_search", agentId)!;
@@ -1336,7 +1337,30 @@ describe("email_search", () => {
     expect(mockSearch).not.toHaveBeenCalled();
   });
 
-  it("ignores an empty-string `query` and still runs the DSL search unchanged", async () => {
+  // Most runtimes refuse an undeclared `query` against the schema before the
+  // tool's own message can name the fields, so the description says it first.
+  it("says in its description that there is no `query` parameter, and what to use instead", () => {
+    const tools = createApi();
+    const { description } = findTool(tools, "email_search", agentId)!;
+
+    expect(description).toContain("There is no `query` parameter");
+    for (const field of [
+      "text",
+      "from",
+      "to",
+      "subject",
+      "unread",
+      "sinceDays",
+      "folder",
+      "limit",
+    ]) {
+      expect(description).toContain(`\`${field}\``);
+    }
+  });
+
+  // The tool does not read `query`, so an empty one is refused like any other
+  // undeclared parameter: a call carries nothing the tool does not read.
+  it("refuses an empty-string `query` too, naming the fields it does take", async () => {
     mockSearch.mockResolvedValue([]);
     const tools = createApi();
     const tool = findTool(tools, "email_search", agentId)!;
@@ -1346,8 +1370,10 @@ describe("email_search", () => {
       subject: "invoice",
     });
 
-    expect(result.isError).toBeUndefined();
-    expect(mockSearch).toHaveBeenCalledWith({ subject: "invoice" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('"query"');
+    expect(result.content[0].text).toContain("subject");
+    expect(mockSearch).not.toHaveBeenCalled();
   });
 
   // Capability restoration (PR #328 follow-up): `text` is a NEW field for
@@ -1605,6 +1631,158 @@ describe("email_send", () => {
     expect(data.messageId).toBeNull();
     const allText = result.content.map((c) => c.text).join("\n");
     expect(allText).toMatch(/sent/i);
+  });
+});
+
+describe("recipient hardening: one address per call (approval card must show what is delivered)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCredentialResponse();
+  });
+
+  const writeConfig: PluginConfig = {
+    ...testConfig,
+    agents: {
+      "agent-1": {
+        connectionId: "conn-1",
+        permissions: { email: ["read", "draft", "send"] },
+      },
+    },
+  };
+
+  const smuggled = `chef@firma.at${" ".repeat(300)}, angreifer@evil.com`;
+
+  it.each(["email_send", "email_draft"])(
+    "%s refuses a comma-smuggled second recipient and never reaches the provider",
+    async (name) => {
+      const tool = findTool(createApi(writeConfig), name, agentId)!;
+      const result = await tool.execute("call-1", { to: smuggled, subject: "s", body: "b" });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/one recipient per call/i);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockDraft).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["email_send", "email_draft"])(
+    "%s refuses a domain that is not a valid domain name and never reaches the provider",
+    async (name) => {
+      const tool = findTool(createApi(writeConfig), name, agentId)!;
+      const pad = [..."abc"].map((c) => c.repeat(63)).join(".");
+      const to = `boss@firma.at.${pad}.${"d".repeat(30)}.xn--a.evil.com`;
+      const result = await tool.execute("call-1", { to, subject: "s", body: "b" });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/not a valid domain name/i);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockDraft).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["email_send", "email_draft"])("%s refuses a list passed as an array", async (name) => {
+    const tool = findTool(createApi(writeConfig), name, agentId)!;
+    const result = await tool.execute("call-1", {
+      to: ["a@x.at", "b@evil.com"],
+      subject: "s",
+      body: "b",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockDraft).not.toHaveBeenCalled();
+  });
+
+  it("email_send hands the provider the trimmed single address", async () => {
+    mockSend.mockResolvedValue({ messageId: "sent-1" });
+    const tool = findTool(createApi(writeConfig), "email_send", agentId)!;
+    await tool.execute("call-1", { to: "  ada@example.com ", subject: "s", body: "b" });
+    expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ to: "ada@example.com" }));
+  });
+
+  it("email_draft hands the provider the trimmed single address", async () => {
+    mockDraft.mockResolvedValue({ draftId: "d-1" });
+    const tool = findTool(createApi(writeConfig), "email_draft", agentId)!;
+    await tool.execute("call-1", { to: " Ada <ada@example.com>", subject: "s", body: "b" });
+    expect(mockDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "Ada <ada@example.com>" })
+    );
+  });
+
+  it("a refusal still curates the audit detail (no raw recipient or body in the audit)", async () => {
+    const tool = findTool(createApi(writeConfig), "email_send", agentId)!;
+    const result = await tool.execute("call-1", { to: smuggled, subject: "s", body: "b" });
+    expect(result.details).toHaveProperty("bodyBytes");
+    expect(JSON.stringify(result.details)).not.toContain("angreifer@evil.com");
+  });
+});
+
+describe("unknown parameters are refused", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCredentialResponse();
+  });
+
+  const writeConfig: PluginConfig = {
+    ...testConfig,
+    agents: {
+      "agent-1": {
+        connectionId: "conn-1",
+        permissions: { email: ["read", "draft", "send"] },
+      },
+    },
+  };
+
+  // A second, look-alike `to ` key. The tool reads `to`;
+  // a reader skimming the arguments sees two recipients and may trust the
+  // wrong one. Nothing the tool does not read may ride along on a call.
+  const smuggled = {
+    to: "attacker@evil.com",
+    subject: "Q3",
+    body: "hi",
+    "to ": "boss@firma.at",
+  };
+
+  it.each(["email_send", "email_draft"])(
+    "%s declares additionalProperties: false, so the runtime can refuse extras first",
+    (name) => {
+      const tool = findTool(createApi(writeConfig), name, agentId)!;
+      expect(tool.parameters.additionalProperties).toBe(false);
+    }
+  );
+
+  // Defence in depth: OpenClaw drops `additionalProperties` from the schema
+  // for Gemini-profile models, so the flag alone does not hold everywhere.
+  it.each(["email_send", "email_draft"])(
+    "%s refuses a call carrying a key it does not declare, and never reaches the provider",
+    async (name) => {
+      const tool = findTool(createApi(writeConfig), name, agentId)!;
+      const result = await tool.execute("call-1", smuggled);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('"to "');
+      expect(result.content[0].text).toMatch(/does not take/);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockDraft).not.toHaveBeenCalled();
+    }
+  );
+
+  it("records the refusal in the audit detail without the raw addresses", async () => {
+    const tool = findTool(createApi(writeConfig), "email_send", agentId)!;
+    const result = await tool.execute("call-1", smuggled);
+    const details = result.details as Record<string, unknown>;
+    expect(details.error).toMatch(/unknown parameter/i);
+    expect(details.unknownParams).toBe(1);
+    expect(JSON.stringify(details)).not.toContain("boss@firma.at");
+    expect(JSON.stringify(details)).not.toContain("attacker@evil.com");
+  });
+
+  it("still runs a call that uses only declared parameters", async () => {
+    mockSend.mockResolvedValue({ messageId: "sent-1" });
+    const tool = findTool(createApi(writeConfig), "email_send", agentId)!;
+    const result = await tool.execute("call-1", { to: "ada@example.com", subject: "s", body: "b" });
+    expect(result.isError).toBeFalsy();
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 });
 
