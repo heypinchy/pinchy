@@ -409,6 +409,12 @@ Your existing providers, keys and default carry over untouched.
 
 A knowledge-base document now counts as archived if any **folder** on its path is called `old`, `archive`, `archived` or `archiv` — matched whole and case-insensitively, so `OLD/` counts and `Goldakte/` does not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it to one of those four to get the same treatment.
 
+#### Indexing never reads through a link
+
+Indexing always skipped symbolic links when it listed a folder, but the reads after that followed them. So a file swapped for a link while a run was in progress — or reached through a folder swapped for one — was indexed with whatever the link pointed at, under the original file's name. Anyone who could write to one mounted folder could use that to make an agent quote a document from another team's folder.
+
+Every read now refuses a link and checks that the file is still a regular file at the place the run listed it; opening a cited document and an agent reading a file directly get the same check. Nothing to configure. A refused file counts as `failed` for that run, keeps any version indexed before, and is counted as `refusedFiles` on the reindex entry in the audit trail. A document saved during a run is read normally. [Links inside a mounted folder](/guides/mount-data-directories/#links-inside-a-mounted-folder) has the details.
+
 #### Knowledge bases now keep themselves current
 
 Until now a knowledge base was as current as its last **Reindex now**: a document dropped into the folder stayed unsearchable until an admin remembered to click. Pinchy now reindexes every knowledge-base agent **once a night, at 02:00 in your organization timezone**, so new, changed and deleted documents are reflected the next morning without anyone doing anything. Only what changed is extracted and embedded again; the rest of the run is reading each file once to see whether it did.
