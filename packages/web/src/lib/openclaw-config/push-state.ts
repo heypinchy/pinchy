@@ -33,9 +33,49 @@
 // route push cannot supersede a server push and both reach `config.apply` —
 // the restart storm the generation guard exists to stop (#193).
 
+import type { SecretsBundle } from "@/lib/openclaw-secrets";
+
 interface ConfigPushState {
   pending: number;
   generation: number;
+  /** Pending follow-up regenerate for a stranded shrink (see scheduleShrinkResume). */
+  shrinkResume: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Start sequence of the newest full regenerate whose stranded shrink the
+   * pending follow-up stands for (see cancelShrinkResume).
+   */
+  shrinkResumeSeq: number;
+  /** Last start sequence handed out by nextRegenerateSequence. */
+  regenerateSeq: number;
+  /**
+   * Calls to regenerateOpenClawConfig not yet served by a run, and whether all
+   * of them were shrink follow-ups (see noteRegenerateCall).
+   */
+  unservedCalls: { followUpOnly: boolean } | undefined;
+  /** See recordWrittenSecrets. */
+  writtenSecretsShape: SecretsBundle | undefined;
+  /** See last-good-bound.ts. Undefined until this process loaded it. */
+  lastGoodBound: LastGoodBound | undefined;
+  /**
+   * Start sequence of the newest push that gave up on a change OpenClaw has to
+   * hear about, 0 when none (see noteUndeliveredConfigChange).
+   */
+  undeliveredSeq: number;
+  /**
+   * Start sequence of the newest full regenerate whose config reached
+   * OpenClaw, 0 before any (see noteFullRegenerateDelivered).
+   */
+  deliveredSeq: number;
+}
+
+/**
+ * The largest openclaw.json OpenClaw may still hold as last-known-good, in
+ * UTF-8 bytes, and what the Pinchy-owned file that survives a restart says
+ * (0: no such file). See last-good-bound.ts.
+ */
+export interface LastGoodBound {
+  bytes: number;
+  persistedBytes: number;
 }
 
 declare global {
@@ -58,11 +98,26 @@ function state(): ConfigPushState {
   // that can never arrive.
   const existing = globalThis.__pinchyConfigPushState as Partial<ConfigPushState> | undefined;
   if (!existing) {
-    globalThis.__pinchyConfigPushState = { pending: 0, generation: 0 };
+    globalThis.__pinchyConfigPushState = {
+      pending: 0,
+      generation: 0,
+      shrinkResume: undefined,
+      shrinkResumeSeq: 0,
+      regenerateSeq: 0,
+      unservedCalls: undefined,
+      writtenSecretsShape: undefined,
+      lastGoodBound: undefined,
+      undeliveredSeq: 0,
+      deliveredSeq: 0,
+    };
     return globalThis.__pinchyConfigPushState;
   }
   existing.pending ??= 0;
   existing.generation ??= 0;
+  existing.shrinkResumeSeq ??= 0;
+  existing.regenerateSeq ??= 0;
+  existing.undeliveredSeq ??= 0;
+  existing.deliveredSeq ??= 0;
   return existing as ConfigPushState;
 }
 
@@ -107,9 +162,228 @@ export function getCurrentConfigPushGeneration(): number {
   return state().generation;
 }
 
-/** Test-only: reset the pending counter between tests. Do not call in app code. */
+/**
+ * Claim a start sequence for a full regenerate, BEFORE it reads any state.
+ * Push order says when a regenerate's payload reached OpenClaw; this says what
+ * it can have seen. A regenerate that started before a provider row was
+ * deleted can still be pushing after the deletion's own regenerate — and its
+ * payload still contains the provider (see cancelShrinkResume).
+ */
+export function nextRegenerateSequence(): number {
+  return ++state().regenerateSeq;
+}
+
+/**
+ * Record a call to regenerateOpenClawConfig before it joins the regenerate
+ * queue (regenerate-queue.ts). Calls made while a run is in flight share the
+ * next run, which takes them all with takeRegenerateRunIsFollowUpOnly when it
+ * starts — synchronously, so no call is counted towards the wrong run.
+ */
+export function noteRegenerateCall({ shrinkFollowUp }: { shrinkFollowUp: boolean }): void {
+  const s = state();
+  s.unservedCalls = { followUpOnly: (s.unservedCalls?.followUpOnly ?? true) && shrinkFollowUp };
+}
+
+/**
+ * Called by a regenerate run as it starts: true only when every call it serves
+ * was a shrink follow-up. Then its push queues no follow-up of its own, so the
+ * hand-off cannot recurse; a real change that shares the run keeps its right to
+ * one.
+ */
+export function takeRegenerateRunIsFollowUpOnly(): boolean {
+  const s = state();
+  const followUpOnly = s.unservedCalls?.followUpOnly ?? false;
+  s.unservedCalls = undefined;
+  return followUpOnly;
+}
+
+/**
+ * Cancel a queued follow-up regenerate (see scheduleShrinkResume). Called when
+ * a full regenerate — the whole target config — has REACHED OpenClaw (applied,
+ * or already in place), which makes a stranded shrink moot.
+ *
+ * Only a regenerate that STARTED after the stranded one: it read state after
+ * the deletion, so its payload carries it. One that started earlier — a slow
+ * regenerate that read the provider rows before the delete — can still land
+ * later, and its payload puts the deleted provider back; it cancels nothing.
+ *
+ * Not when one merely starts: a full regenerate can still be superseded by a
+ * partial writer before it delivers anything, and a follow-up cancelled at its
+ * start would then be lost with OpenClaw still on the deleted provider's stub.
+ */
+export function cancelShrinkResume(deliveredBySeq: number): void {
+  const s = state();
+  if (deliveredBySeq <= s.shrinkResumeSeq) return;
+  clearShrinkResume(s);
+}
+
+function clearShrinkResume(s: ConfigPushState): void {
+  if (s.shrinkResume !== undefined) clearTimeout(s.shrinkResume);
+  s.shrinkResume = undefined;
+  s.shrinkResumeSeq = 0;
+}
+
+/** How long a stranded shrink waits before its follow-up regenerate runs. */
+export const SHRINK_RESUME_DELAY_MS = 2_000;
+/**
+ * While other pushes are still in flight the follow-up waits for them (a
+ * targeted write can sit out a 45 s rate-limit window), re-checking every
+ * SHRINK_RESUME_DELAY_MS — but at most this often, then it runs regardless.
+ */
+const SHRINK_RESUME_MAX_RECHECKS = 60;
+
+/**
+ * Queue one follow-up full regenerate for a provider deletion that stopped
+ * short of its target — superseded before it finished, or dropped for a
+ * transient reason (rate limit, retries exhausted, OpenClaw unreachable) or
+ * after OpenClaw had already accepted a step. OpenClaw then sits on the old
+ * config or on an intermediate one carrying the deleted provider's stub, and
+ * nothing else would finish the job before the next config change.
+ *
+ * Debounced and coalesced process-wide: one pending follow-up at most, the
+ * latest caller's `resume` wins, and a full regenerate that started after the
+ * stranded one and reaches OpenClaw in the meantime cancels it
+ * (cancelShrinkResume). It waits for pushes still in
+ * flight so it does not supersede them. Not recursive by itself: `resume` is a
+ * regenerate whose own push must not pass a `resume` of its own (build.ts).
+ */
+export function scheduleShrinkResume(resume: () => void, strandedSeq: number): void {
+  const s = state();
+  if (s.shrinkResume !== undefined) clearTimeout(s.shrinkResume);
+  // Coalesced: the follow-up stands for the newest stranded regenerate, so only
+  // a regenerate that started after that one may cancel it.
+  s.shrinkResumeSeq = Math.max(s.shrinkResumeSeq, strandedSeq);
+  let rechecks = 0;
+  const fire = () => {
+    if (getPendingConfigPushCount() > 0 && rechecks < SHRINK_RESUME_MAX_RECHECKS) {
+      rechecks++;
+      s.shrinkResume = setTimeout(fire, SHRINK_RESUME_DELAY_MS);
+      s.shrinkResume.unref?.();
+      return;
+    }
+    s.shrinkResume = undefined;
+    s.shrinkResumeSeq = 0;
+    resume();
+  };
+  s.shrinkResume = setTimeout(fire, SHRINK_RESUME_DELAY_MS);
+  s.shrinkResume.unref?.();
+}
+
+/**
+ * Record that a push gave up on a change OpenClaw has to hear about, because
+ * OpenClaw could not be reached: its file write fell under OpenClaw's
+ * read-side line (last-good-bound.ts), or its provider deletion could not
+ * reach a running OpenClaw. Nothing in the push resends it — a targeted
+ * writer's push queues no follow-up, and a follow-up regenerate none of its
+ * own — so OpenClaw's next connect owes a full regenerate
+ * (server/openclaw-connect-regenerate.ts), which rebuilds every change from
+ * the database.
+ *
+ * `seq` is the push's start sequence (`regenerateSeq` in write.ts): claimed
+ * after the change it carries was made. Coalesced like scheduleShrinkResume:
+ * the debt stands for the newest change that gave up.
+ *
+ * Process-wide only, not persisted: after a Pinchy restart the first connect
+ * regenerates anyway, which is everything this would have asked for.
+ */
+export function noteUndeliveredConfigChange(seq: number): void {
+  const s = state();
+  s.undeliveredSeq = Math.max(s.undeliveredSeq, seq);
+}
+
+/** Whether OpenClaw's next connect owes a regenerate (noteUndeliveredConfigChange). */
+export function undeliveredConfigChange(): boolean {
+  return state().undeliveredSeq !== 0;
+}
+
+/**
+ * A full regenerate's config reached OpenClaw (applied, written, or already
+ * in place). It settles the debt only when it STARTED after the newest push
+ * that gave up — only then did it read the state that push carried.
+ */
+export function settleUndeliveredConfigChange(deliveredBySeq: number): void {
+  const s = state();
+  if (deliveredBySeq > s.undeliveredSeq) s.undeliveredSeq = 0;
+}
+
+/**
+ * A full regenerate's config reached OpenClaw: pushed (applied, or already in
+ * OpenClaw's runtime), or found already in openclaw.json by the regenerate
+ * itself (build.ts). Cancels a follow-up and settles a debt that a regenerate
+ * started before this one left (cancelShrinkResume,
+ * settleUndeliveredConfigChange), and remembers the sequence so a push that
+ * started earlier and gives up only afterwards owes nothing
+ * (fullRegenerateDeliveredSince).
+ */
+export function noteFullRegenerateDelivered(seq: number): void {
+  const s = state();
+  s.deliveredSeq = Math.max(s.deliveredSeq, seq);
+  cancelShrinkResume(seq);
+  settleUndeliveredConfigChange(seq);
+}
+
+/**
+ * Whether a full regenerate that started after `seq` has reached OpenClaw
+ * (noteFullRegenerateDelivered). It read the state the push with sequence
+ * `seq` carried, so that push stopping short leaves nothing to resend.
+ */
+export function fullRegenerateDeliveredSince(seq: number): boolean {
+  return state().deliveredSeq > seq;
+}
+
+/** `value` with every string replaced by "": which SecretRefs it resolves, and nothing else. */
+function shapeOf<T>(value: T): T {
+  if (typeof value === "string") return "" as T;
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, shapeOf(child)])
+  ) as T;
+}
+
+/**
+ * Record the bundle a regenerate just wrote to secrets.json — its shape only,
+ * every value replaced by "". It answers "would OpenClaw resolve this
+ * SecretRef?" for the push's file fallback (unresolvedSecretRefs in
+ * keyless-bridge.ts) without reading secrets.json, which Pinchy cannot read in
+ * production, and without keeping a secret in memory past the regenerate that
+ * built it. Here, on globalThis, because the regenerate that writes it and the
+ * push that reads it (a targeted writer's, say) can sit in different module
+ * instances.
+ */
+export function recordWrittenSecrets(bundle: SecretsBundle): void {
+  state().writtenSecretsShape = shapeOf(bundle);
+}
+
+/** The shape recordWrittenSecrets last recorded, or undefined before the first. */
+export function writtenSecretsShape(): SecretsBundle | undefined {
+  return state().writtenSecretsShape;
+}
+
+/** The bound last-good-bound.ts keeps, or undefined before this process loaded it. */
+export function lastGoodBound(): LastGoodBound | undefined {
+  return state().lastGoodBound;
+}
+
+/** Set by last-good-bound.ts only. */
+export function setLastGoodBound(bound: LastGoodBound): void {
+  state().lastGoodBound = bound;
+}
+
+/**
+ * Test-only: reset the pending counter, the recorded secrets shape, the
+ * last-known-good bound (reloaded from disk on next use), an undelivered
+ * change and the newest delivered regenerate, and drop a queued follow-up
+ * regenerate between tests. Do not call in app code.
+ */
 export function _resetConfigPushState(): void {
-  state().pending = 0;
+  const s = state();
+  s.pending = 0;
+  s.undeliveredSeq = 0;
+  s.deliveredSeq = 0;
+  s.unservedCalls = undefined;
+  s.writtenSecretsShape = undefined;
+  s.lastGoodBound = undefined;
+  clearShrinkResume(s);
 }
 
 // There is deliberately NO reset for `generation`. It is a cancellation token
