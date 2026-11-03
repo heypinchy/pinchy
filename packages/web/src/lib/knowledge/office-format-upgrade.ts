@@ -29,7 +29,7 @@
  * applies, because the version column alone cannot tell them apart: a row
  * written before the column existed carries null, exactly like a PDF does.
  */
-import { and, asc, eq, gte, isNull, not, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gte, isNull, not, or, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/db";
 import { agents, kbDocuments, kbIndexJobs } from "@/db/schema";
@@ -39,6 +39,7 @@ import { recordAuditFailure } from "@/lib/audit-deferred";
 import { DEFAULT_ORG_ID } from "./constants";
 import { enqueueIndexJob, findActiveIndexJob } from "./index-jobs";
 import { grantedKnowledgePaths, isScheduledIndexAgent } from "./index-schedule";
+import { kbEmbedderAvailable } from "./kb-embedder";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import { OFFICE_EXTENSIONS } from "./office-formats";
 import { buildPathFilter } from "./path-filter";
@@ -126,27 +127,45 @@ export async function officeFormatVersionInUse(version: number): Promise<boolean
 const RECENT_RUN_MS = 24 * 60 * 60 * 1000;
 
 /**
- * The folders a run SUCCEEDED over within the last day, under the current
- * conversion rules — any such run: the nightly one, an admin's, or one of
- * ours. Each read its folders whole and converted what it could, so a document
- * still superseded under them is one a run of ours would not convert today
- * either. Read from `kb_index_jobs`, so a restart remembers it. A run that
- * failed — and read nothing — does not count, and neither does one finished
- * under earlier rules (`artifact_format_version`, null on a run finished
- * before it was recorded): the nightly run before an upgrade converted nothing
- * under the new ones. A run still pending or running needs no entry here: it
- * holds the instance's one job slot, so nothing is queued until it finishes.
+ * How long a folder a run FAILED over is passed over. A failed run is no
+ * evidence its folders were converted, so it holds them back for less than a
+ * day — but the share that did not mount, or the database that went away,
+ * would fail the next hourly run too.
+ */
+const RECENT_FAILURE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The folders a run under the current conversion rules went through recently
+ * — any such run: the nightly one, an admin's, or one of ours. One that
+ * succeeded within the last day read its folders whole and converted what it
+ * could, so a document still superseded under them is one a run of ours would
+ * not convert today either; one that failed counts for six hours only. Read
+ * from `kb_index_jobs`, so a restart remembers it. A run finished under
+ * earlier rules does not count (`artifact_format_version`, null on a run
+ * finished before it was recorded): the nightly run before an upgrade
+ * converted nothing under the new ones. A run still pending or running needs
+ * no entry here: it holds the instance's one job slot, so nothing is queued
+ * until it finishes.
  */
 async function recentlyRunPaths(): Promise<string[]> {
+  const now = Date.now();
   const jobs = await db
     .select({ paths: kbIndexJobs.paths })
     .from(kbIndexJobs)
     .where(
       and(
         eq(kbIndexJobs.orgId, DEFAULT_ORG_ID),
-        eq(kbIndexJobs.status, "succeeded"),
         eq(kbIndexJobs.artifactFormatVersion, OFFICE_ARTIFACT_FORMAT_VERSION),
-        gte(kbIndexJobs.finishedAt, new Date(Date.now() - RECENT_RUN_MS))
+        or(
+          and(
+            eq(kbIndexJobs.status, "succeeded"),
+            gte(kbIndexJobs.finishedAt, new Date(now - RECENT_RUN_MS))
+          ),
+          and(
+            eq(kbIndexJobs.status, "failed"),
+            gte(kbIndexJobs.finishedAt, new Date(now - RECENT_FAILURE_MS))
+          )
+        )
       )
     );
   return [...new Set(jobs.flatMap((job) => job.paths))];
@@ -154,8 +173,8 @@ async function recentlyRunPaths(): Promise<string[]> {
 
 /**
  * Does anything under `paths` still need converting again — anything outside
- * `alreadyRun`, the folders a run under the current rules went through within
- * the last day?
+ * `alreadyRun`, the folders a run under the current rules went through
+ * recently?
  */
 async function owesReconversion(
   paths: readonly string[],
@@ -182,7 +201,7 @@ async function owesReconversion(
  * The searching agents whose granted folders hold an Office document still
  * read from an earlier artifact format, oldest first — the agents a reindex
  * would convert them again for. A document in a folder a run under the current
- * rules went through within the last day does not count.
+ * rules went through recently does not count.
  */
 export async function agentsOwedReconversion(): Promise<string[]> {
   const alreadyRun = await recentlyRunPaths();
@@ -205,14 +224,19 @@ export type ReconversionOutcome = { status: "queued" | "busy" | "skipped" };
  * here rather than trusted from the worker's list: an agent deleted, stripped
  * of its folders or of `knowledge_search` since has nothing to run, and an
  * agent whose superseded documents all lie in folders a run under the current
- * rules went through within the last day has nothing a run of its own would
- * change. That second
- * check is not the same as asking the rows again: a document whose conversion
- * ended `infrastructure` (out of memory, a timeout, LibreOffice down) is still
- * superseded after the run, and every other agent granted its folder would
- * otherwise run the whole folder again, every hour.
+ * rules went through recently has nothing a run of its own would change. That
+ * second check is not the same as asking the rows again: a document whose
+ * conversion ended `infrastructure` (out of memory, a timeout, LibreOffice
+ * down) is still superseded after the run, and every other agent granted its
+ * folder would otherwise run the whole folder again, every hour.
+ *
+ * Without the bundled embedding model the run could only fail, so nothing is
+ * queued — and, unlike the scheduler, nothing recorded: the nightly run and
+ * Reindex now already say the model is missing, and the worker asks again
+ * every hour.
  */
 export async function queueReconversion(agentId: string): Promise<ReconversionOutcome> {
+  if (!kbEmbedderAvailable()) return { status: "skipped" };
   if (await findActiveIndexJob(DEFAULT_ORG_ID)) return { status: "busy" };
 
   const [agent] = await db

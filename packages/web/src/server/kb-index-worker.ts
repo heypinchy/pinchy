@@ -461,7 +461,9 @@ async function queueOwedReconversion(): Promise<void> {
  * which also reaches an agent granted `knowledge_search` or a folder since.
  * Folders a run — any run — succeeded over within the last day are left out,
  * so a document that cannot be converted now costs its folder at most one run
- * a day, across restarts. A failure is logged and leaves it to the next look;
+ * a day, across restarts; a folder a run failed over is left out for six
+ * hours, so a share that stays unmounted costs four failed runs a day, not 24.
+ * A failure to look is logged and leaves it to the next look;
  * the queue still runs.
  */
 async function lookForOwedReconversions(): Promise<void> {

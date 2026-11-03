@@ -26,6 +26,12 @@ import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
 import { queueReconversion } from "@/lib/knowledge/office-format-upgrade";
 
+const mockKbEmbedderAvailable = vi.fn(() => true);
+vi.mock("@/lib/knowledge/kb-embedder", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/knowledge/kb-embedder")>()),
+  kbEmbedderAvailable: () => mockKbEmbedderAvailable(),
+}));
+
 const ORG_ID = "org-kb-worker-test";
 
 let tmpRoot: string;
@@ -34,6 +40,7 @@ beforeEach(async () => {
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-worker-test-"));
   await db.delete(kbIndexJobs);
   _resetKbIndexWorkerForTest();
+  mockKbEmbedderAvailable.mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -603,6 +610,7 @@ describe("kb index worker", () => {
     });
 
     // No deps injected: the production resolution path runs and finds no GGUF.
+    mockKbEmbedderAvailable.mockReturnValue(false);
     const ran = await runNextIndexJob();
 
     expect(ran?.status).toBe("failed");
@@ -1027,9 +1035,10 @@ describe("kb index worker tick", () => {
         expect(existsSync(join(artifactDir, "v1"))).toBe(false);
       });
 
-      it("tries a folder again on the next hourly look when its run failed outright", async () => {
-        // A run that failed — the embedder down, the database gone mid-run —
-        // read nothing, so it is no reason to leave the folder alone for a day.
+      it("tries a folder again some hours after its run failed outright, not on the next hourly look", async () => {
+        // A failed run is no evidence its folders were converted, so it does
+        // not hold the folder back for a day. It does hold it back for a few
+        // hours: the same outage would fail the next hourly run as well.
         const artifactDir = join(tmpRoot, "artifacts");
         const corpus = join(tmpRoot, "corpus");
         await indexedBeforeTheBump(corpus, artifactDir);
@@ -1046,6 +1055,10 @@ describe("kb index worker tick", () => {
 
         vi.setSystemTime(hoursAfterBoot(1));
         await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+        expect(await db.select().from(kbIndexJobs)).toHaveLength(1);
+
+        vi.setSystemTime(hoursAfterBoot(7));
+        await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
 
         expect(await db.select().from(kbIndexJobs)).toHaveLength(2);
         expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({
@@ -1054,6 +1067,56 @@ describe("kb index worker tick", () => {
         });
         const [doc] = await db.select().from(kbDocuments);
         expect(doc.artifactFormatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
+      });
+
+      it("runs a folder whose runs keep failing four times a day, not every hour", async () => {
+        // A share that failed to mount stays unmounted until someone fixes it.
+        // Every run over it fails, and each writes two audit rows and replaces
+        // the agent's last-run status: hourly, that is 24 runs a day.
+        const artifactDir = join(tmpRoot, "artifacts");
+        const corpus = join(tmpRoot, "corpus");
+        await indexedBeforeTheBump(corpus, artifactDir);
+        await knowledgeAgent(corpus);
+        rmSync(join(corpus, "Angebot.docx"));
+
+        for (let hours = 0; hours < 24; hours++) {
+          vi.setSystemTime(hoursAfterBoot(hours));
+          await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+        }
+
+        const jobs = await db.select().from(kbIndexJobs);
+        expect(jobs).toHaveLength(4);
+        for (const job of jobs) {
+          expect(job).toMatchObject({ status: "failed", trigger: "upgrade" });
+          expect(job.error).toContain("check that it is mounted");
+        }
+        expect(await reindexAuditRows()).toHaveLength(8);
+      });
+
+      it("queues nothing and records nothing while the embedding model is missing, and runs once it is back", async () => {
+        // The run could only fail. The nightly run and Reindex now already say
+        // the model is missing; a failed run of ours every few hours would
+        // only bury that under rows saying the same.
+        const artifactDir = join(tmpRoot, "artifacts");
+        const corpus = join(tmpRoot, "corpus");
+        await indexedBeforeTheBump(corpus, artifactDir);
+        const agent = await knowledgeAgent(corpus);
+        mockKbEmbedderAvailable.mockReturnValue(false);
+
+        await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+        expect(await queueReconversion(agent.id)).toEqual({ status: "skipped" });
+
+        expect(await db.select().from(kbIndexJobs)).toEqual([]);
+        expect(await reindexAuditRows()).toEqual([]);
+
+        mockKbEmbedderAvailable.mockReturnValue(true);
+        vi.setSystemTime(hoursAfterBoot(1));
+        await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+
+        expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({
+          status: "succeeded",
+          trigger: "upgrade",
+        });
       });
 
       it("leaves a folder alone that an admin's reindex ran within the day", async () => {
