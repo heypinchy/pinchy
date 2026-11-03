@@ -9,6 +9,7 @@ import {
   drawnText,
   inStoredOrder,
   modelText,
+  previewEndsInside,
   previewOf,
   previewed,
   quoted,
@@ -139,7 +140,8 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
   );
   if (!starts) {
     // Cut between two characters as a person reads them (`previewOf`), so the
-    // preview never ends in half a flag or a letter without its accent.
+    // preview never ends in half a flag or a letter without its accent — and
+    // where it cannot be, the card says so, as it does for a part.
     const preview = drawnText(text, full);
     return (
       <span className="break-words">
@@ -153,7 +155,8 @@ function TextValue({ text, full }: { text: string; full: boolean }) {
         />
         <span className="text-muted-foreground">
           {" "}
-          ({[...shown].length - [...preview].length} more characters hidden)
+          ({[...shown].length - [...preview].length} more characters hidden
+          {previewEndsInside(shown) && "; the last character shown may go on past the preview"})
         </span>{" "}
         {toggle}
       </span>

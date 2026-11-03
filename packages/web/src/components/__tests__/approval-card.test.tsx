@@ -421,6 +421,20 @@ describe("ApprovalCard shows what will actually run", () => {
       ).toBeInTheDocument();
     });
 
+    // A character longer than the preview — a letter under 300 accents — is
+    // cut inside it, like a part, and the preview says so as a part does.
+    it("says when the preview ends inside a character longer than it", () => {
+      renderCard({ body: summarizeArgs({ body: `a${"́".repeat(300)} ok` }).body as string });
+      expect(
+        screen.getByText(/the last character shown may go on past the preview/)
+      ).toBeInTheDocument();
+    });
+
+    it("says nothing about characters where the preview ends between two of them", () => {
+      renderCard({ body: `${"a".repeat(200)}SECRET-TAIL` });
+      expect(screen.queryByText(/may go on past the preview/)).not.toBeInTheDocument();
+    });
+
     it("says nothing about characters where a part ends between two of them", async () => {
       renderCard({ body: `${"a".repeat(WHOLE_MAX)}SECOND-PART` });
       await userEvent.click(screen.getByRole("button", { name: /show full text/i }));

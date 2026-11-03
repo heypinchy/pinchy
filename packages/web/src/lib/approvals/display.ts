@@ -205,9 +205,10 @@ export function previewed(text: string, full: boolean): boolean {
  * What drawing one collapsed card may cost, over everything it draws: one for
  * every key, value and note, plus one for each of their characters — a
  * character outside the Basic Multilingual Plane ASTRAL_COST. The summary
- * counts it (`drawCost`, on what the card draws: a previewed text by its
- * preview) and refuses a call past this bound; the card draws what the summary
- * accepted, so the count is one decision.
+ * counts it (`drawCost`, on what the card draws: a previewed text by the code
+ * points any browser's preview of it may draw, `chargedText`) and refuses a
+ * call past this bound; the card draws no more than the summary accepted, so
+ * the count is one decision.
  *
  * It counts the card before "Show full text" is clicked, and only then. Behind
  * that button a text of up to 200,000 characters waits, and drawn whole one of
@@ -281,19 +282,56 @@ export function drawnText(text: string, full: boolean): string {
 }
 
 /**
- * The preview of `text`: its first PREVIEW_LEN characters (code points), cut
- * back to a boundary between two characters as a person reads them, and never
- * inside a `⟨…⟩` marker (`partEnd`). Cut by code point, the preview of `Café`
- * ended `Cafe`, and of a flag in a lone regional indicator: a letter or a sign
- * the value does not contain there.
+ * What the summary charges for drawing `text` (`drawCost`): the whole text as
+ * `displayScalar` shows it, or, where the card previews it, its first
+ * PREVIEW_LEN code points, uncut. Not `drawnText`, which cuts the preview back
+ * to where a character begins — and where that is depends on the browser
+ * (`characters`). Charged by the server's cut, one character of an emoji and
+ * 250 skin tones cost 2 as the preview `é`, while a browser without
+ * Intl.Segmenter drew 200 code points of it, at 25,474; a card of fifty such
+ * values took 5 s to draw there. Every preview is a prefix of these code
+ * points, in every browser, so what this costs bounds what any card draws.
  */
-export function previewOf(text: string): string {
+export function chargedText(text: string, full: boolean): string {
+  const shown = displayScalar(text);
+  return previewed(text, full) ? shown.slice(0, previewLimit(shown)) : shown;
+}
+
+/** The offset after the first PREVIEW_LEN code points of `text`, or its length. */
+function previewLimit(text: string): number {
   let limit = 0;
   for (let count = 0; count < PREVIEW_LEN && limit < text.length; count++) {
     limit += text.codePointAt(limit)! > 0xffff ? 2 : 1;
   }
+  return limit;
+}
+
+/**
+ * The preview of `text`: its first PREVIEW_LEN characters (code points), cut
+ * back to a boundary between two characters as a person reads them, and never
+ * inside a `⟨…⟩` marker (`partEnd`). Cut by code point, the preview of `Café`
+ * ended `Cafe`, and of a flag in a lone regional indicator: a letter or a sign
+ * the value does not contain there. Never longer than those code points
+ * (`chargedText`); where no boundary is known among them, cut inside a
+ * character, which the card then says (`previewEndsInside`).
+ */
+export function previewOf(text: string): string {
+  const limit = previewLimit(text);
   if (limit >= text.length) return text;
   return text.slice(0, partEnd(text, 0, limit, characters(text), false));
+}
+
+/**
+ * Does the preview of `text` (`previewOf`) end where it cannot tell that a
+ * character ends — inside one character as a person reads them? Then its last
+ * piece draws differently than the whole character, as a part's does
+ * (`TextWindow.endsInside`): one character longer than the preview, thousands
+ * of accents on one letter, or, in a browser without Intl.Segmenter, a cut
+ * among characters it cannot tell apart.
+ */
+export function previewEndsInside(text: string): boolean {
+  const end = previewOf(text).length;
+  return end < text.length && !characters(text).startsAt(end);
 }
 
 /**

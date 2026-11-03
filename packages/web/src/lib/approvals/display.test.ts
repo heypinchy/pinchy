@@ -11,6 +11,7 @@ import {
   inStoredOrderPlain,
   isAddressShaped,
   mailboxAddress,
+  previewEndsInside,
   previewed,
   readNode,
   readUrl,
@@ -780,6 +781,22 @@ describe("drawnText: a preview ends between two characters as read", () => {
   });
 });
 
+describe("previewEndsInside: a preview cut inside one character says so", () => {
+  it.each([
+    ["a letter under more accents than a preview holds", `a${"\u0301".repeat(300)} ok`, true],
+    ["an emoji under more skin tones than a preview holds", `👍${"🏽".repeat(250)}`, true],
+    ["a cut between two letters", `${"a".repeat(200)}SECRET-TAIL`, false],
+    [
+      "a cut back to a letter and its accent",
+      `${"x".repeat(199)}e\u0301 und ${"y".repeat(300)}`,
+      false,
+    ],
+    ["a text the preview holds whole", "kurz", false],
+  ])("%s", (_name, text, inside) => {
+    expect(previewEndsInside(text)).toBe(inside);
+  });
+});
+
 /** `display.ts` as a browser without Intl.Segmenter (Firefox before 125) loads it. */
 async function withoutSegmenter(): Promise<typeof import("./display")> {
   vi.resetModules();
@@ -820,6 +837,9 @@ describe("textWindow without Intl.Segmenter", () => {
         flagsOf(text)
       );
       parts.forEach((part, index) => {
+        // Bounded by the same count with or without it: a cut it cannot place
+        // only ever ends a part earlier.
+        expect(drawCost(part.drawn)).toBeLessThanOrEqual(WHOLE_MAX + 1);
         if (!part.endsInside) expect(part.end === text.length || whole.has(part.end)).toBe(true);
         if (index > 0) expect(part.startsInside).toBe(parts[index - 1].endsInside);
       });
@@ -830,5 +850,12 @@ describe("textWindow without Intl.Segmenter", () => {
     const { drawnText: preview } = await withoutSegmenter();
     expect(preview(`${"x".repeat(199)}é und mehr ${"y".repeat(300)}`, false)).toBe("x".repeat(199));
     expect(preview(`${"x".repeat(199)}🇦🇹 ${"y".repeat(300)}`, false)).toBe("x".repeat(199));
+  });
+
+  it("says where it cannot tell that a preview ends between two characters", async () => {
+    const { previewEndsInside: endsInside } = await withoutSegmenter();
+    // One character as read: it cannot see where the skin tones end.
+    expect(endsInside(`\u00e9👍${"🏽".repeat(250)}`)).toBe(true);
+    expect(endsInside(`${"x".repeat(199)}e\u0301 und mehr ${"y".repeat(300)}`)).toBe(false);
   });
 });

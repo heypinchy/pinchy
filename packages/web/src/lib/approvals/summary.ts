@@ -107,8 +107,8 @@ import {
   DRAW_BUDGET,
   FULL_VIEW_KEYS,
   TARGET_KEYS,
+  chargedText,
   drawCost,
-  drawnText,
   mailboxAddress,
   modelText,
   noteText,
@@ -148,9 +148,9 @@ const RECIPIENT_KEY = /^(to|cc|bcc)$/i;
  * back without their summary.
  *
  * Drawing: what the collapsed card draws — every key, value and note, a
- * previewed text by its preview — is counted against DRAW_BUDGET
- * (`display.ts`), which bounds the time the approver's browser takes to lay
- * the card out.
+ * previewed text by the code points its preview may draw in any browser
+ * (`chargedText`) — is counted against DRAW_BUDGET (`display.ts`), which
+ * bounds the time the approver's browser takes to lay the card out.
  */
 /** Longest string stored whole, in characters as sent (code points): a
  * report of ~60 pages, or a long mail body with room to spare. */
@@ -492,10 +492,10 @@ function describeRef(record: RefRecord, budget: Budget): SummaryNode {
   return node;
 }
 
-/** What the card draws of a note besides its fixed wording. */
+/** What a note is charged besides its fixed wording (`chargedText`). */
 function noteDrawn(note: SummaryNote, full: boolean): string {
   if (note.kind === "host") return note.host;
-  if (note.kind === "name") return drawnText(note.name, full);
+  if (note.kind === "name") return chargedText(note.name, full);
   return "";
 }
 
@@ -511,7 +511,7 @@ function noted(
   budget: Budget,
   full: boolean
 ): string | SummaryNode {
-  budget.drawn += drawCost(drawnText(text, full));
+  budget.drawn += drawCost(chargedText(text, full));
   if (notes.length === 0) return text;
   for (const note of notes) {
     budget.chars -= noteText(note).length + 3;

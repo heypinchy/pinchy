@@ -1,8 +1,16 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { afterEach, describe, it, expect, beforeAll, vi } from "vitest";
 import { domainToASCII } from "node:url";
 import { describeRefusal, markScripts, summarizeArgs, summarizeCall } from "./summary";
 import { makeRefResolver } from "./call-models";
-import { ASTRAL_COST, DRAW_BUDGET, WHOLE_MAX, inStoredOrder, readNode } from "./display";
+import {
+  ASTRAL_COST,
+  DRAW_BUDGET,
+  WHOLE_MAX,
+  drawCost,
+  drawnText,
+  inStoredOrder,
+  readNode,
+} from "./display";
 // The pinchy-odoo encoder, so the ref rendering is tested against real refs —
 // see call-models.test.ts for why this crosses the package boundary.
 import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
@@ -1470,6 +1478,96 @@ describe("summarizeArgs", () => {
         notes: Array.from({ length: 80 }, () => "x".repeat(6_000)),
       });
       expect(exceeded).toBeNull();
+    });
+
+    describe("in a browser without Intl.Segmenter too", () => {
+      afterEach(() => vi.resetModules());
+
+      /** `display.ts` as a browser without Intl.Segmenter (Firefox before 125) loads it. */
+      async function withoutSegmenter(): Promise<typeof import("./display")> {
+        vi.resetModules();
+        vi.stubGlobal("Intl", Object.create(Intl, { Segmenter: { value: undefined } }));
+        try {
+          return await import("./display");
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      }
+
+      /** A stream of numbers in [0, 1) from `seed`, the same on every run (mulberry32). */
+      function seeded(seed: number): () => number {
+        return () => {
+          seed = (seed + 0x6d2b79f5) | 0;
+          let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      /**
+       * Pieces that make one long character as read, where a browser without
+       * Intl.Segmenter cannot see a boundary between two characters: an
+       * emoji and its skin tones, an accent stack on a non-ASCII letter, a
+       * flag, Malayalam dot rephs (they prepend to what follows), Hangul jamo,
+       * a Devanagari conjunct.
+       */
+      const PIECES = ["é", "👍", "🏽", "́", "🇦🇹", "ൎ", "ᄀ", "ᅡ", "ᆨ", "क्", "ष", "x"];
+
+      function hostile(next: () => number): string {
+        const length = 150 + Math.floor(next() * 300);
+        let text = PIECES[Math.floor(next() * 2)];
+        while ([...text].length < length) {
+          text += PIECES[Math.floor(next() * PIECES.length)].repeat(1 + Math.floor(next() * 60));
+        }
+        return text;
+      }
+
+      /**
+       * What the summary charges for drawing `params`: two padding targets push
+       * the call past the bound, so the refusal reports the cost.
+       */
+      function charged(params: Record<string, unknown>): number {
+        const pad = "a".repeat(WHOLE_MAX);
+        const { exceeded } = summarizeCall({ targets: [pad, pad], ...params });
+        expect(exceeded).toMatchObject({ kind: "too-costly-to-draw" });
+        return (exceeded as { cost: number }).cost - (1 + 7) - 2 * (1 + WHOLE_MAX);
+      }
+
+      it("charges a previewed text at least what such a browser draws of it", async () => {
+        const client = await withoutSegmenter();
+        // One character as read: Intl.Segmenter cuts its preview back to "é",
+        // a browser without it draws 200 code points, 199 of them skin tones.
+        const values = ["é👍" + "🏽".repeat(250)];
+        const next = seeded(1_242_021);
+        for (let round = 0; round < 300; round++) values.push(hostile(next));
+        let longer = 0;
+        for (const value of values) {
+          const shown = summarizeCall({ note: value }).summary.note as string;
+          const drawn = client.drawCost(client.drawnText(shown, false));
+          expect(drawn).toBeLessThanOrEqual(charged({ note: value }) - (1 + 4));
+          if (drawn > drawCost(drawnText(shown, false))) longer++;
+        }
+        // The values are hostile: such a browser draws more of many of them
+        // than one with Intl.Segmenter does.
+        expect(longer).toBeGreaterThan(50);
+      });
+
+      it("refuses a card such a browser would take seconds to draw", async () => {
+        const client = await withoutSegmenter();
+        const value = "é👍" + "🏽".repeat(250);
+        const params = {
+          model: "res.partner",
+          values: Object.fromEntries(
+            Array.from({ length: 5 }, (_, k) => [`f${k}`, Array.from({ length: 10 }, () => value)])
+          ),
+        };
+        const { exceeded, summary } = summarizeCall(params);
+        const drawn = Object.values(summary.values as Record<string, string[]>)
+          .flat()
+          .reduce((sum, text) => sum + client.drawCost(client.drawnText(text, false)), 0);
+        expect(drawn).toBeGreaterThan(DRAW_BUDGET);
+        expect(exceeded).toMatchObject({ kind: "too-costly-to-draw" });
+      });
     });
 
     it("counts every value drawn, a number or a one-letter text too", () => {
