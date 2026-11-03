@@ -432,15 +432,39 @@ describe("the host a value reaches, when the card previews it", () => {
 // WebKit still open. Whatever follows it, a tab or words, the card says it is
 // no domain name, beside the preview rather than behind "Show full text".
 describe("a previewed URL whose host is not a valid domain name", () => {
-  it.each([
-    `https://www.firma.at.${"a".repeat(250)}@xn--a.evil.com/\tx`,
-    `https://www.firma.at.${"a".repeat(250)}@xn--a.evil.com/x y`,
-    `https://xn--a.evil.com/${"x".repeat(250)} see above`,
-  ])("is noted on the collapsed card: %s", (website) => {
+  const urls: [string, (tld: string) => string][] = [
+    [
+      "with a long user name and a tab",
+      (tld) => `https://www.firma.at.${"a".repeat(250)}@xn--a.evil.${tld}/\tx`,
+    ],
+    [
+      "with a long user name and a space",
+      (tld) => `https://www.firma.at.${"a".repeat(250)}@xn--a.evil.${tld}/x y`,
+    ],
+    [
+      "with a long path and words after it",
+      (tld) => `https://xn--a.evil.${tld}/${"x".repeat(250)} see above`,
+    ],
+  ];
+
+  it.each(urls)("is noted on the collapsed card, %s", (_name, url) => {
+    const website = url("com");
     const html = card({ values: { website } });
     expect(html).toMatch(/Show full text/);
     expect(html).toContain('data-annotation="not-a-domain"');
     expect(prompt({ website })).toContain('reaches "xn--a.evil.com"');
+  });
+
+  // The note names the host it reaches, as written: without it, the two
+  // collapsed cards below differ only behind "Show full text".
+  it.each(urls)("names its host on the collapsed card, %s", (_name, url) => {
+    const evil = card({ values: { website: url("com") } });
+    const other = card({ values: { website: url("org") } });
+    expect(evil).not.toBe(other);
+    const note = (html: string) =>
+      decode(/data-annotation="not-a-domain"[^>]*>(.*?)<\/span><\/span>/.exec(html)?.[1] ?? "");
+    expect(note(evil)).toContain('"xn--a.evil.com"');
+    expect(note(other)).toContain('"xn--a.evil.org"');
   });
 });
 
@@ -453,8 +477,22 @@ describe("a previewed URL whose host is not a valid domain name", () => {
  * URL parser the tools use and the address's own domain.
  */
 describe("the host a value reaches is always on the collapsed card and in the prompt", () => {
-  /** The host, resolved without the summary's help; null when nothing is reached. */
+  /**
+   * The host, resolved without the summary's help; null when nothing is
+   * reached. A label that does not decode (`xn--a`) leaves the host with no
+   * resolved form — Node refuses it, while a browser opens it and a mail
+   * library sends to it as written — so it is resolved with a label that
+   * decodes in its place, which is then put back.
+   */
   function resolvedHost(value: string): string | null {
+    if (value.includes("xn--zca.")) throw new Error("the stand-in label is taken");
+    return (
+      resolvedDecodable(value.replaceAll("xn--a.", "xn--zca."))?.replaceAll("xn--zca.", "xn--a.") ??
+      null
+    );
+  }
+
+  function resolvedDecodable(value: string): string | null {
     try {
       const url = new URL(value);
       if (url.protocol === "https:") return url.hostname;
@@ -479,7 +517,9 @@ describe("the host a value reaches is always on the collapsed card and in the pr
     const pick = <T,>(items: T[]): T => items[Math.floor(next() * items.length)];
     const near = pick([200, 8_192]);
     const tld = pick(["com", "org", "net", "io"]);
-    const host = `www.firma.at.${"a".repeat(Math.max(0, near - 60 + Math.floor(next() * 120)))}.evil.${tld}`;
+    // Some with a label that does not decode, which no parser resolves.
+    const label = next() < 0.3 ? "xn--a." : "";
+    const host = `www.firma.at.${"a".repeat(Math.max(0, near - 60 + Math.floor(next() * 120)))}.${label}evil.${tld}`;
     const run = pick(RUNS).repeat(1 + Math.floor(next() * 6));
     const mailbox = next() < 0.5;
     let value = mailbox
@@ -578,6 +618,12 @@ describe("the card draws exactly what the summary counts", () => {
       () => ({ site: "https://%71%71%71%71.at/" }),
       1 + 4 + (1 + 24) + (1 + "qqqq.at".length),
       ["q", 4],
+    ],
+    [
+      "a host that is not a valid domain name, quoted",
+      () => ({ site: "https://qqqq.xn--a/" }),
+      1 + 4 + (1 + "https://qqqq.xn--a/".length) + (1 + '"qqqq.xn--a"'.length),
+      ["q", 8],
     ],
     ["a number", () => ({ count: 123_456_789 }), 1 + 5 + (1 + 9), null],
     ["an empty list", () => ({ none: [] }), 1 + 4 + (1 + 2), null],

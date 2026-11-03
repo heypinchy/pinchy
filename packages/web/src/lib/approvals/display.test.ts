@@ -98,7 +98,10 @@ describe("readNode", () => {
       {
         "@": "noted",
         text: "a@b.at",
-        notes: [{ kind: "name", name: "A" }, { kind: "not-a-domain" }],
+        notes: [
+          { kind: "name", name: "A" },
+          { kind: "not-a-domain", host: "b.at" },
+        ],
       },
     ],
     [{ "@": "previewed", text: "abcd", preview: 2, parts: [3, 4], inside: [3] }],
@@ -133,6 +136,10 @@ describe("readNode", () => {
     [{ "@": "ref", model: "x", id: 1.5, label: "y", labelCut: 0 }],
     [{ "@": "noted", text: "a", notes: [] }],
     [{ "@": "noted", text: "a", notes: [{ kind: "host" }] }],
+    // A note that a host is no domain name names that host.
+    [{ "@": "noted", text: "a", notes: [{ kind: "not-a-domain" }] }],
+    [{ "@": "noted", text: "a", notes: [{ kind: "not-a-domain", host: "" }] }],
+    [{ "@": "noted", text: "a", notes: [{ kind: "not-a-domain", host: 7 }] }],
     // No version of Pinchy writes this note.
     [{ "@": "noted", text: "a", notes: [{ kind: "not-a-url" }] }],
     // A previewed text whose cuts don't fit it: nothing is guessed.

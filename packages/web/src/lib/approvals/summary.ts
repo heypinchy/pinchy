@@ -494,7 +494,8 @@ function describeRef(record: RefRecord, budget: Budget): SummaryNode {
 function noteDrawn(note: SummaryNote): string {
   if (note.kind === "host") return note.host;
   if (note.kind === "name") return drawnOf(note.name);
-  return "";
+  // Named as written, so quoted and escaped, as the card draws it.
+  return quoted(note.host);
 }
 
 /**
@@ -554,14 +555,14 @@ interface Reach {
  * not parse — a label such as `xn--a` that does not decode — has no resolved
  * form, yet a mail library sends to it and a browser opens it as written. So
  * it reaches the domain it spells, named as written (ASCII case aside, every
- * hidden character marked), and the card says it is no domain name: an ASCII
- * one reads as a plain domain.
+ * hidden character marked), and the card names it and says it is no domain
+ * name: an ASCII one reads as a plain domain.
  */
 function domainReach(domain: string): Reach {
   const ascii = domainToASCII(domain);
   if (!ascii) {
     const written = renderText(domain.replace(/[A-Z]/g, (c) => c.toLowerCase()));
-    return { note: { kind: "not-a-domain" }, host: written, plain: false };
+    return { note: { kind: "not-a-domain", host: written }, host: written, plain: false };
   }
   return { note: { kind: "host", host: ascii }, host: ascii, plain: /^[\x00-\x7F]*$/.test(domain) };
 }

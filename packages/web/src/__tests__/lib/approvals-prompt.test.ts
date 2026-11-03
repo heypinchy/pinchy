@@ -448,6 +448,13 @@ describe("buildApprovalPrompt", () => {
       expect(description).toContain(`reaches "…${domain.slice(-PROMPT_HOST_MAX)}" — to:`);
     });
 
+    it("prints the note that a host is not a valid domain name with that host", () => {
+      const { description } = promptFor("email_send", { to: "boss@XN--A.evil.com" });
+      expect(description).toContain(
+        'to: "boss@XN--A.evil.com" (host: "xn--a.evil.com", not a valid domain name)'
+      );
+    });
+
     describe("names every host with a label that does not decode", () => {
       const pad = [..."abc"].map((c) => c.repeat(63)).join(".");
       const labels = ["xn--", "xn--a", "xn---", "xn--ab-cd", "XN--A", "Xn--a"];

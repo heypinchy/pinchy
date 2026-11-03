@@ -1047,16 +1047,16 @@ describe("summarizeArgs", () => {
   // the call is said to reach, and the card says the domain does not parse.
   // An ASCII one included: `boss@xn--a.evil.com` reads as a plain domain.
   describe("hosts that are not a valid domain name", () => {
-    const notADomain = (text: string) => ({
+    const notADomain = (text: string, host: string) => ({
       "@": "noted",
       text,
-      notes: [{ kind: "not-a-domain" }],
+      notes: [{ kind: "not-a-domain", host }],
     });
 
     it("notes a mailbox's domain and records it, as written, as reached", () => {
       for (const key of ["to", "email"]) {
         const { summary, hosts } = summarizeCall({ [key]: "Boss@XN--A.Evil.com" });
-        expect(summary[key]).toEqual(notADomain("Boss@XN--A.Evil.com"));
+        expect(summary[key]).toEqual(notADomain("Boss@XN--A.Evil.com", "xn--a.evil.com"));
         expect(hosts).toEqual(["xn--a.evil.com"]);
       }
     });
@@ -1064,7 +1064,7 @@ describe("summarizeArgs", () => {
     it("notes a URL whose host the parser refuses, and records that host as reached", () => {
       const url = "https://user@XN--A.Evil.com:8080/x";
       const { summary, hosts } = summarizeCall({ website: url });
-      expect(summary.website).toEqual(notADomain(url));
+      expect(summary.website).toEqual(notADomain(url, "xn--a.evil.com"));
       expect(hosts).toEqual(["xn--a.evil.com"]);
     });
 
@@ -1083,14 +1083,17 @@ describe("summarizeArgs", () => {
       const { summary, hosts } = summarizeCall({ values: { website: url } });
       expect((summary.values as Record<string, unknown>).website).toMatchObject({
         "@": "noted",
-        notes: [{ kind: "not-a-domain" }],
+        notes: [{ kind: "not-a-domain", host: "xn--a.evil.com" }],
       });
       expect(hosts).toEqual(["xn--a.evil.com"]);
     });
 
     it("shows any hidden character in such a host as the marker the card shows", () => {
-      const { hosts } = summarizeCall({ to: "boss@xn--a.evil​.com" });
+      const { summary, hosts } = summarizeCall({ to: "boss@xn--a.evil​.com" });
       expect(hosts).toEqual(["xn--a.evil⟨U+200B⟩.com"]);
+      expect(summary.to).toMatchObject({
+        notes: [{ kind: "not-a-domain", host: "xn--a.evil⟨U+200B⟩.com" }],
+      });
     });
 
     it("leaves free text that only starts with such a URL alone", () => {

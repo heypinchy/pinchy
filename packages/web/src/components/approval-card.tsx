@@ -272,7 +272,17 @@ function Note({ note }: { note: SummaryNote }) {
         </Annotation>
       );
     case "not-a-domain":
-      return <Annotation kind="not-a-domain">not a valid domain name</Annotation>;
+      // Named as written — it has no resolved form — so quoted and escaped,
+      // like the prompt's, and in the order it was sent.
+      return (
+        <Annotation kind="not-a-domain">
+          host{" "}
+          <span className="font-mono">
+            <StoredOrder text={quoted(note.host)} />
+          </span>
+          , not a valid domain name
+        </Annotation>
+      );
   }
 }
 

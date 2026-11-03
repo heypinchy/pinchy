@@ -701,6 +701,15 @@ describe("ApprovalCard shows what will actually run", () => {
       );
     });
 
+    it("reads a host that is not a valid domain name as Pinchy's note, naming the host", () => {
+      const { container } = renderCard(
+        summarizeArgs({ website: `https://www.firma.at.${"a".repeat(250)}@xn--a.evil.com/x y` })
+      );
+      expect(spokenText(container)).toContain(
+        'Pinchy note: host "xn--a.evil.com", not a valid domain name'
+      );
+    });
+
     // Left to the bidi algorithm, the unseen copy of 8,192 alternating Hebrew
     // letters and digits tripled the card's layout time in Chromium.
     it("holds the read copy in one left-to-right override, which costs no bidi layout", () => {

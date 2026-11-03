@@ -315,10 +315,13 @@ export function partOf(node: Previewed, index: number): TextWindow {
 
 /**
  * What Pinchy says ABOUT a value, beside it: the host an address or URL really
- * reaches, that a domain does not parse, or the display name of a recipient.
+ * reaches, a host it reaches that is no domain name — named as written, since
+ * it has no resolved form — or the display name of a recipient.
  */
 export type SummaryNote =
-  { kind: "host"; host: string } | { kind: "not-a-domain" } | { kind: "name"; name: Shown };
+  | { kind: "host"; host: string }
+  | { kind: "not-a-domain"; host: string }
+  | { kind: "name"; name: Shown };
 
 /**
  * A summary value that carries an annotation. Written INTO the value's text —
@@ -356,7 +359,7 @@ function isNote(note: unknown): note is SummaryNote {
   const { kind, host, name } = note as Record<string, unknown>;
   if (kind === "host") return typeof host === "string";
   if (kind === "name") return readShown(name) !== null;
-  return kind === "not-a-domain";
+  return kind === "not-a-domain" && typeof host === "string" && host !== "";
 }
 
 /** Is `at` an offset strictly inside `text`, and not between the halves of a surrogate pair? */
@@ -477,7 +480,7 @@ export function noteText(note: SummaryNote): string {
     case "name":
       return `name: ${quoted(textOf(note.name))}`;
     case "not-a-domain":
-      return "not a valid domain name";
+      return `host: ${quoted(note.host)}, not a valid domain name`;
   }
 }
 
