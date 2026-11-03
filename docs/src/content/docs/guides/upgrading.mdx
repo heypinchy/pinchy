@@ -245,7 +245,7 @@ One lookup that resolved in v0.9.1 is refused now: `{"lookup": {"code": "6000", 
 
 #### Every tool refuses a parameter it doesn't declare
 
-A call to a Pinchy tool that carries a field the tool doesn't take is now refused before the tool runs; v0.9.1 ignored the extra field. The agent is told and calls again without it. On most model providers the agent runtime refuses the call against the tool's declared parameters and says the call has fields the tool doesn't take; on providers whose tool-schema handling drops that check, such as Gemini, the tool refuses it itself and lists the fields it takes.
+A call to a Pinchy tool that carries a field the tool doesn't take is now refused before the tool runs. In v0.9.1 most tools ignored the extra field; about half of the Odoo tools already refused one. The agent is told and calls again without it. On most model providers the agent runtime refuses the call against the tool's declared parameters and says the call has fields the tool doesn't take; on providers whose tool-schema handling drops that check, such as Gemini, the tool refuses it itself and lists the fields it takes.
 
 Two calls change for agents you already run. `email_search` now refuses an empty `query` too — v0.9.1 refused only a non-empty one, with a message naming the filters to use. And `odoo_delete` refuses `ids` (see [above](#deleting-in-odoo-now-requires-reading-the-record-first)). Both tool descriptions now say what to use instead, so an agent doesn't need the error to find out.
 
