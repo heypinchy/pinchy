@@ -297,11 +297,19 @@ curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%
 
 **If you already have a value in `.env`, that switches the key your audit trail is signed with.** Entries written before the switch keep their old signature, and they're neither lost nor damaged: Pinchy still holds the previous key in the `pinchy-secrets` volume, so integrity verification reports those rows as signed with an earlier secret instead of flagging them as tampered. The hash chain is unaffected either way — it links each row to its predecessor's stored signature, whichever key produced it.
 
-You won't have to remember which install this happened on: while the pinned value differs from the key in the volume, Pinchy says so in the container log on every start (`docker compose logs pinchy`).
+You won't have to remember which install this happened on: while the pinned value differs from the key in the volume, Pinchy says so in the container log on every start (`docker compose logs pinchy`). If it logs `AUDIT_HMAC_SECRET is set but is not a valid key` instead, the value in `.env` isn't 64 hex characters: Pinchy ignores it and keeps signing with the key in the volume, so nothing has switched yet. Correcting the value is the switch, so follow [Switching the key](/concepts/audit-trail-verification/#switching-the-key) when you do; removing the line keeps the key you have.
 
-Two things follow. Keep backing up the `pinchy-secrets` volume: that's where the previous key lives, and verifying older entries depends on it. And if you'd rather not switch keys, remove the line from `.env` before you restart — Pinchy carries on with the generated one.
+If you'd rather not switch keys, remove the line from `.env` before you restart, and Pinchy carries on with the generated one. Once you've started with it, keeping the new key is usually the safer choice; [Switching back to the earlier key](/concepts/audit-trail-verification/#switching-back-to-the-earlier-key) explains why. Keep backing up the `pinchy-secrets` volume either way: after a switch, it holds the only copy of the key that verifies your older entries. Back it up again with `.env`, see [Which backup to restore](/concepts/audit-trail-verification/#which-backup-to-restore).
+
+**Running several instances against one database?** Then the switch has to happen on all of them at once: re-fetch the compose file everywhere, stop every instance, and only then start them again. Don't roll the upgrade through one instance at a time. [Switching the key on several instances](/concepts/audit-trail-verification/#switching-the-key-on-several-instances) explains why, and what you'll see if it has already happened.
 
 Pin it on a fresh install, or when you run several Pinchy instances against one database. That second case is the one it exists for: without a shared secret each instance derives different actor pseudonyms, and no single instance can show a user's full history. See [Secrets](/reference/environment-variables/#secrets).
+
+#### A key set only in `AUDIT_HMAC_SECRET` is now kept in the secrets volume too
+
+After a key switch, the earlier key Pinchy verifies older entries against is the file `.audit_hmac_secret` in the `pinchy-secrets` volume. A deployment that passed `AUDIT_HMAC_SECRET` into the container from its first start never got that file, so switching the variable to a new value left everything signed so far unverifiable. Pinchy now writes the variable's value into the file whenever it starts with the variable set and no key file present, and logs one line naming the directory it wrote to. It never overwrites an existing file.
+
+On such an install, the first start of this version writes the file, and from then on a key switch keeps the old key automatically, as long as `/app/secrets` sits on a persistent, backed-up volume. The stock `docker-compose.yml` mounts the `pinchy-secrets` volume there; if you run Pinchy another way, mount one yourself, or the file goes away with the container. Change the key only after that start, and follow [Switching the key](/concepts/audit-trail-verification/#switching-the-key). With the stock `docker-compose.yml`, which forwards the variable only from this version on, the generated file already exists and nothing changes.
 
 #### An Odoo URL is now checked against the address it resolves to
 
