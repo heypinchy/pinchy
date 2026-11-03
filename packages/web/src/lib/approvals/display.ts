@@ -333,7 +333,40 @@ function isCut(text: string, at: unknown): at is number {
   return !(low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff);
 }
 
-/** Does `node` hold every cut of a `Previewed`, each one inside its text and in order? */
+/**
+ * Does every stretch these cuts draw stay within what the summary's own cuts
+ * may draw — the preview at most PREVIEW_LEN characters as drawn, each part
+ * at most WHOLE_MAX by `drawCost` — with no cut inside a `⟨…⟩` marker? The
+ * summary never stores other cuts (`shownAs` in `presentation.ts`); drawn as
+ * stored, other ones would be a card larger, or other, than it charged for.
+ */
+function cutsFit(text: string, preview: number, parts: number[]): boolean {
+  const literal = readsAsLiteral(text);
+  const stretch = (start: number, end: number) =>
+    `${literal && start === 0 ? '"' : ""}${escaped(text.slice(start, end), literal)}${
+      literal && end === text.length ? '"' : ""
+    }`;
+  if (codePoints(stretch(0, preview)) > PREVIEW_LEN) return false;
+  let start = 0;
+  for (const end of parts) {
+    if (drawCost(stretch(start, end)) - 1 > WHOLE_MAX) return false;
+    start = end;
+  }
+  const cuts = new Set([preview, ...parts]);
+  let marker = false;
+  for (let at = 0; at < text.length; at++) {
+    if (marker && cuts.has(at)) return false;
+    const char = text.charAt(at);
+    if (char === "⟨") marker = true;
+    else if (char === "⟩") marker = false;
+  }
+  return true;
+}
+
+/**
+ * Does `node` hold every cut of a `Previewed`, each one inside its text, in
+ * order, and drawing no more than the summary's own cuts would (`cutsFit`)?
+ */
 function isPreviewed(node: Record<string, unknown>): boolean {
   const { text, preview, parts, inside } = node;
   if (typeof text !== "string" || !Array.isArray(parts) || !Array.isArray(inside)) return false;
@@ -342,7 +375,8 @@ function isPreviewed(node: Record<string, unknown>): boolean {
     isCut(text, preview) &&
     parts.at(-1) === text.length &&
     cuts.every((at, index) => isCut(text, at) && (index === 0 || at > cuts[index - 1])) &&
-    inside.every((at) => at === preview || cuts.includes(at))
+    inside.every((at) => at === preview || cuts.includes(at)) &&
+    cutsFit(text, preview, parts)
   );
 }
 

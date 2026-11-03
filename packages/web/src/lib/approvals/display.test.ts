@@ -3,6 +3,8 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   FULL_VIEW_KEYS,
+  PREVIEW_LEN,
+  WHOLE_MAX,
   displayScalar,
   inStoredOrder,
   inStoredOrderPlain,
@@ -100,6 +102,7 @@ describe("readNode", () => {
       },
     ],
     [{ "@": "previewed", text: "abcd", preview: 2, parts: [3, 4], inside: [3] }],
+    [{ "@": "previewed", text: "ab⟨U+200B⟩cd", preview: 2, parts: [10, 12], inside: [] }],
     [
       {
         "@": "noted",
@@ -143,6 +146,31 @@ describe("readNode", () => {
     [{ "@": "noted", text: "a", notes: [{ kind: "name", name: { "@": "previewed" } }] }],
   ])("reads %j as unreadable", (value) => {
     expect(readNode(value)).toBe("unreadable");
+  });
+
+  // Cuts that would draw more than the summary ever stores — a preview past
+  // PREVIEW_LEN, a part past what one target drawn whole may cost — or that
+  // fall inside a marker. Drawn as stored, any of them is a card larger, or
+  // other, than the one the summary charged for: nothing is drawn.
+  it.each([
+    ["a preview past PREVIEW_LEN", "a".repeat(500), 300, [500]],
+    ["the whole text as one part", "a".repeat(20_000), 100, [20_000]],
+    ["a part of emoji past what one part may cost", "\u{1F600}".repeat(100), 2, [200]],
+    ["a preview that ends inside a marker", "ab⟨U+200B⟩cd", 4, [12]],
+    ["a part that ends inside a marker", "ab⟨U+200B⟩cd", 2, [5, 12]],
+  ])("reads a previewed text with %s as unreadable", (_, text, preview, parts) => {
+    expect(readNode({ "@": "previewed", text, preview, parts, inside: [] })).toBe("unreadable");
+  });
+
+  it("reads a previewed text cut at the bounds themselves", () => {
+    const node = {
+      "@": "previewed",
+      text: "a".repeat(20_000),
+      preview: PREVIEW_LEN,
+      parts: [WHOLE_MAX, 2 * WHOLE_MAX, 20_000],
+      inside: [],
+    };
+    expect(readNode(node)).toBe(node);
   });
 });
 
