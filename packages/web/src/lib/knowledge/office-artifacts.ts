@@ -63,7 +63,9 @@ export async function hashFileContents(absPath: string): Promise<string> {
  * records this version on each Office document's row and converts and reads
  * again every document whose version is not this one (ingest.ts), so after a
  * bump the artifact a citation opens AND the chunks the search finds both come
- * from the current rules — once per document.
+ * from the current rules — once per document. Until then the search leaves
+ * such a document's chunks out, and the index worker queues the run at boot
+ * (office-format-upgrade.ts).
  *
  * 2: the preflight's relationship allow-list. An artifact converted without it
  * may hold what an altChunk or an SVG picture read from the server's disk, and
@@ -225,13 +227,18 @@ export async function clearStagedBatches(rootDir: string = DEFAULT_ARTIFACT_DIR)
 }
 
 /**
- * Removes every artifact of a format version other than `keepVersion` and
- * returns how many there were.
+ * Removes every artifact of a format version other than `keepVersion` that no
+ * document is still on record as read from, and returns how many there were.
  *
  * After a bump nothing reads them again — `pathFor` resolves only the current
  * version, so the preview cannot reach them — but they still hold whatever the
- * earlier, weaker conversion drew into its PDFs, and they cost disk. The index
- * worker calls this once at boot, next to `clearStagedBatches`.
+ * earlier, weaker conversion drew into its PDFs, and they cost disk. A version
+ * stays, though, while `inUse(version)` says a document's chunks were read
+ * from it: that document has not been converted again yet (the ingest does
+ * that on its next run, and the index worker queues the run at boot), and its
+ * directory is what a rollback to that version — the database restored, the
+ * artifact volume not — would still need. The index worker asks at boot and
+ * after every run, so a version goes once its last document has moved on.
  *
  * Deletes only real directories named `v<n>` directly under `rootDir`: never
  * `staging/` (a batch may be converting into it), never a symlink, whatever
@@ -241,7 +248,8 @@ export async function clearStagedBatches(rootDir: string = DEFAULT_ARTIFACT_DIR)
  */
 export async function pruneOtherFormatVersions(
   rootDir: string = DEFAULT_ARTIFACT_DIR,
-  keepVersion: number = OFFICE_ARTIFACT_FORMAT_VERSION
+  keepVersion: number = OFFICE_ARTIFACT_FORMAT_VERSION,
+  inUse: (version: number) => Promise<boolean>
 ): Promise<number> {
   let entries: Dirent[];
   try {
@@ -253,7 +261,9 @@ export async function pruneOtherFormatVersions(
   let removed = 0;
   for (const entry of entries) {
     if (!entry.isDirectory() || !/^v\d+$/.test(entry.name)) continue;
-    if (entry.name === `v${keepVersion}`) continue;
+    const version = Number(entry.name.slice(1));
+    if (version === keepVersion) continue;
+    if (await inUse(version)) continue;
     const dir = join(rootDir, entry.name);
     for (const shard of await readdir(dir, { withFileTypes: true })) {
       if (!shard.isDirectory()) continue;

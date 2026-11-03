@@ -547,6 +547,13 @@
       "when": 1793665593434,
       "tag": "0077_kb_doc_artifact_format_version",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1793667814209,
+      "tag": "0078_kb_index_job_upgrade_trigger",
+      "breakpoints": true
     }
   ]
 }

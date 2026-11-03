@@ -10,8 +10,12 @@
  * stopped through buildShutdownSteps so SIGTERM doesn't hang. That single-
  * container assumption is also what makes requeueOrphanedIndexJobs() safe at
  * boot — see its doc comment — and clearStagedBatches(), which frees the disk
- * an interrupted Office conversion left behind. The same boot step removes
- * artifacts of a superseded format version (pruneOtherFormatVersions).
+ * an interrupted Office conversion left behind. After an update that changed
+ * how Office documents are converted, the same boot step queues the reindex
+ * that converts the documents indexed the old way again
+ * (office-format-upgrade.ts), and every boot and every finished run removes
+ * an artifact format directory no document is read from any more
+ * (pruneOtherFormatVersions).
  *
  * A run can take hours (a ~2k-PDF corpus is 1.5-7h of CPU-only embedding), so
  * the interval is a poll for NEW work, not a run cadence: the re-entrancy guard
@@ -28,7 +32,16 @@ import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 import { extractXlsxIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
-import { clearStagedBatches, pruneOtherFormatVersions } from "@/lib/knowledge/office-artifacts";
+import {
+  clearStagedBatches,
+  OFFICE_ARTIFACT_FORMAT_VERSION,
+  pruneOtherFormatVersions,
+} from "@/lib/knowledge/office-artifacts";
+import {
+  agentsOwedReconversion,
+  officeFormatVersionInUse,
+  queueReconversion,
+} from "@/lib/knowledge/office-format-upgrade";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
   claimNextIndexJob,
@@ -330,6 +343,12 @@ let _pollInterval: ReturnType<typeof setInterval> | null = null;
 // overlapping tick. The DB claim would refuse the double-run anyway; this keeps
 // us from hammering it every 10s for hours to find that out.
 let _runInFlight = false;
+// Agents whose folders held Office documents converted under an earlier
+// artifact format at boot, not yet queued. Read once per boot, and each one is
+// queued at most once: a document whose conversion cannot finish now (a
+// memory squeeze) waits for the next boot or the nightly run rather than
+// being retried in a loop.
+let _reconversionsOwed: string[] = [];
 // Whether this process has already cleaned up after its predecessor. See the
 // requeue in runKbIndexWorkerTick for why doing it exactly once is not an
 // optimization but a correctness condition.
@@ -373,35 +392,91 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
       } catch (err) {
         console.warn("[kb-index-worker] could not clear leftover Office staging:", err);
       }
-      // After a format bump, the previous version's artifacts are unreachable
-      // (the preview resolves only the current one) but still on the volume,
-      // holding what the weaker conversion drew in. Nothing reads them, so
-      // deleting them cannot break a read; housekeeping, like the above.
+      // After a format bump, the documents indexed from the earlier format's
+      // artifacts are owed a conversion under the current rules, and until
+      // they get it their chunks answer no search and their previews cannot
+      // open. The nightly run would do it — unless it is switched off — so the
+      // agents whose folders hold them are queued from here, one at a time,
+      // once per boot. A failure is logged and leaves it to the next boot or
+      // the next run; the queue still runs.
       try {
-        const pruned = await pruneOtherFormatVersions(opts.artifactDir);
-        if (pruned > 0) {
+        _reconversionsOwed = await agentsOwedReconversion();
+        if (_reconversionsOwed.length > 0) {
           console.log(
-            `[kb-index-worker] removed ${pruned} converted Office document(s) of a superseded format version`
+            `[kb-index-worker] ${_reconversionsOwed.length} agent(s) hold Office documents converted under an earlier format; reindexing them`
           );
         }
       } catch (err) {
-        console.warn("[kb-index-worker] could not remove superseded Office artifacts:", err);
+        console.warn(
+          "[kb-index-worker] could not look for Office documents owed a conversion:",
+          err
+        );
       }
+      await pruneSupersededArtifacts(opts.artifactDir);
     }
 
-    // Drains the queue rather than running one job per tick. Today that loop
-    // body runs at most once: Pinchy is single-tenant (DEFAULT_ORG_ID) and the
-    // active-job index is per org, so there is never a second job to find. It
-    // is a `while` because "keep going while there is work" is the rule the
-    // worker should follow — an `if` would quietly become wrong the day a
-    // second org exists, and costs exactly as much to write.
-    while (await runNextIndexJob(opts)) {
-      /* keep going while there is work */
+    // Drains the queue rather than running one job per tick. Pinchy is
+    // single-tenant (DEFAULT_ORG_ID) and the active-job index is per org, so
+    // one job runs at a time; another is found here when one was queued as
+    // the last freed the slot — the next agent owed a reconversion, queued
+    // just above, or the nightly schedule's next agent. "Keep going while
+    // there is work" is the rule either way, and it stays right the day a
+    // second org exists.
+    for (;;) {
+      await queueOwedReconversion();
+      if (!(await runNextIndexJob(opts))) break;
+      // A finished run may have converted the last document an earlier
+      // format's directory was kept for.
+      await pruneSupersededArtifacts(opts.artifactDir);
     }
   } catch (err) {
     console.error("[kb-index-worker] job run failed:", err);
   } finally {
     _runInFlight = false;
+  }
+}
+
+/**
+ * Queues the next agent owed a reconversion, if the instance's one job slot
+ * is free. Called before every claim, so these runs queue behind whatever an
+ * admin or the nightly schedule already started — one job at a time, like any
+ * other.
+ */
+async function queueOwedReconversion(): Promise<void> {
+  try {
+    while (_reconversionsOwed.length > 0) {
+      const outcome = await queueReconversion(_reconversionsOwed[0]);
+      if (outcome === "busy") return;
+      _reconversionsOwed.shift();
+      if (outcome === "queued") return;
+    }
+  } catch (err) {
+    // A database problem: drop the rest rather than ask again every tick.
+    // The next boot, or the nightly run, converts what is left.
+    _reconversionsOwed = [];
+    console.warn("[kb-index-worker] could not queue the reconversion of Office documents:", err);
+  }
+}
+
+/**
+ * Removes the artifacts of a superseded format version once no document is
+ * read from it any more. Housekeeping, so a failure is logged and the queue
+ * still runs.
+ */
+async function pruneSupersededArtifacts(artifactDir: string | undefined): Promise<void> {
+  try {
+    const pruned = await pruneOtherFormatVersions(
+      artifactDir,
+      OFFICE_ARTIFACT_FORMAT_VERSION,
+      officeFormatVersionInUse
+    );
+    if (pruned > 0) {
+      console.log(
+        `[kb-index-worker] removed ${pruned} converted Office document(s) of a superseded format version`
+      );
+    }
+  } catch (err) {
+    console.warn("[kb-index-worker] could not remove superseded Office artifacts:", err);
   }
 }
 
@@ -434,5 +509,6 @@ export function _isKbIndexWorkerRunning(): boolean {
 /** Test-only: returns the module to its just-booted state, so a test can exercise the once-per-process orphan requeue. */
 export function _resetKbIndexWorkerForTest(): void {
   _orphansRequeued = false;
+  _reconversionsOwed = [];
   _runInFlight = false;
 }

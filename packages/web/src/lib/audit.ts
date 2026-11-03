@@ -7,6 +7,7 @@ import { scrubEmails } from "@/lib/scrub-emails";
 // Type-only (erased at build time), so the IMAP probe's runtime dependencies
 // never enter audit.ts's module graph.
 import type { ProbeFailureCode } from "@/lib/integrations/imap-probe";
+import type { KbIndexJobTrigger } from "@/db/enums";
 
 // Transaction-scoped advisory lock key that serializes audit appends so the
 // prev-hash chain can never fork (two writers must not read the same
@@ -913,8 +914,10 @@ export type AuditLogEntry =
       // Adding a counter here has to stay a decision, not a side effect.
       //
       // `trigger` says who decided the run should happen: `manual` for an
-      // admin's request, `scheduled` for the nightly reindex. Rows written
-      // before the schedule existed carry no trigger and were all manual.
+      // admin's request, `scheduled` for the nightly reindex, `upgrade` for
+      // the run Pinchy queues itself after an update changed how Office
+      // documents are converted. Rows written before the schedule existed
+      // carry no trigger and were all manual.
       // `sweepId` correlates one night's rows across agents (scheduled only).
       //
       // `ocr` is present only when the run sent scanned pages to a vision
@@ -928,7 +931,7 @@ export type AuditLogEntry =
         agent: EntityRef;
         pathCount: number;
         jobId?: string;
-        trigger?: "manual" | "scheduled";
+        trigger?: KbIndexJobTrigger;
         sweepId?: string;
         indexed?: number;
         skipped?: number;

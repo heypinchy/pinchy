@@ -14,14 +14,15 @@ import { tmpdir } from "node:os";
 import { eq } from "drizzle-orm";
 
 import { db } from "@/db";
-import { agents, auditLog, kbDocuments, kbIndexJobs } from "@/db/schema";
+import { agents, auditLog, kbChunks, kbDocuments, kbIndexJobs } from "@/db/schema";
+import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { enqueueIndexJob, getLatestIndexJobForAgent } from "@/lib/knowledge/index-jobs";
 import {
   runNextIndexJob,
   runKbIndexWorkerTick,
   _resetKbIndexWorkerForTest,
 } from "@/server/kb-index-worker";
-import type { IngestDeps } from "@/lib/knowledge/ingest";
+import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
 
 const ORG_ID = "org-kb-worker-test";
@@ -709,6 +710,157 @@ describe("kb index worker tick", () => {
     expect(readdirSync(artifactDir).sort()).toEqual([`v${OFFICE_ARTIFACT_FORMAT_VERSION}`]);
     expect(existsSync(current)).toBe(true);
     expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({ status: "succeeded" });
+  });
+
+  describe("Office documents an earlier artifact format indexed", () => {
+    // AGENTS.md § "Test Migrations Against Pre-Existing Data". After a bump
+    // of OFFICE_ARTIFACT_FORMAT_VERSION, the rows the upgrade finds were read
+    // from PDFs the earlier conversion made. The ingest converts them again
+    // on its next run — but the nightly run can be switched off, and until
+    // then their previews cannot open and their chunks answer no search. So
+    // the worker queues that run itself, at boot.
+    const LEAKED = "root:x:0:0:root:/root:/bin/bash daemon:x:1:1:daemon";
+    const CLEAN = "Every delivery is checked against the order before it goes into storage.";
+
+    /** Ingest deps whose converter "converts" every Office file to a PDF reading `text`. */
+    function officeDeps(text: string, status: "converted" | "infrastructure" = "converted") {
+      const deps = fakeDeps();
+      deps.extractPdf = vi.fn(async () => [{ page: 1, text }]);
+      deps.convertOffice = vi.fn(async (sources: readonly { absPath: string }[]) =>
+        sources.map((source) =>
+          status === "converted"
+            ? { sourcePath: source.absPath, status, artifactPath: join(tmpRoot, "artifact.pdf") }
+            : { sourcePath: source.absPath, status, reason: "converter was killed" }
+        )
+      );
+      return deps;
+    }
+
+    async function knowledgeAgent(corpus: string) {
+      const [agent] = await db
+        .insert(agents)
+        .values({
+          name: "Archivist",
+          model: "test-model",
+          greetingMessage: "Hi",
+          allowedTools: ["knowledge_search"],
+          pluginConfig: { "pinchy-files": { allowed_paths: [corpus] } },
+        })
+        .returning();
+      return agent;
+    }
+
+    /**
+     * A Word document in `corpus`, indexed the way the upgrade finds it: its
+     * chunks read from an earlier format's artifact, which sits in `v1/`, and
+     * the row written before its version was recorded.
+     */
+    async function indexedBeforeTheBump(corpus: string, artifactDir: string) {
+      mkdirSync(corpus, { recursive: true });
+      writeFileSync(join(corpus, "Angebot.docx"), "docx-bytes");
+      await ingestPaths(DEFAULT_ORG_ID, [corpus], officeDeps(LEAKED));
+      await db.update(kbDocuments).set({ artifactFormatVersion: null });
+      const earlierArtifact = join(artifactDir, "v1", "ab", "earlier.pdf");
+      mkdirSync(dirname(earlierArtifact), { recursive: true });
+      writeFileSync(earlierArtifact, LEAKED);
+      return earlierArtifact;
+    }
+
+    async function documentText(): Promise<string> {
+      const [doc] = await db.select().from(kbDocuments);
+      const chunks = await db.select().from(kbChunks).where(eq(kbChunks.documentId, doc.id));
+      return chunks.map((chunk) => chunk.chunkText).join("\n");
+    }
+
+    it("converts them again at boot, under the current rules, without waiting for a nightly run", async () => {
+      const artifactDir = join(tmpRoot, "artifacts");
+      const corpus = join(tmpRoot, "corpus");
+      const earlierArtifact = await indexedBeforeTheBump(corpus, artifactDir);
+      const agent = await knowledgeAgent(corpus);
+      expect(await documentText()).toContain(LEAKED);
+
+      const deps = officeDeps(CLEAN);
+      // The earlier format's directory is kept while a row still names it —
+      // a rollback to that version would find its previews there.
+      const earlierKeptWhileConverting: boolean[] = [];
+      const convertOffice = deps.convertOffice;
+      deps.convertOffice = async (sources) => {
+        earlierKeptWhileConverting.push(existsSync(earlierArtifact));
+        return convertOffice(sources);
+      };
+
+      await runKbIndexWorkerTick({ deps, artifactDir });
+
+      const job = await getLatestIndexJobForAgent(agent.id);
+      expect(job).toMatchObject({
+        status: "succeeded",
+        trigger: "upgrade",
+        requestedBy: "kb-index-worker",
+        paths: [corpus],
+        counts: expect.objectContaining({ indexed: 1 }),
+      });
+      const [doc] = await db.select().from(kbDocuments);
+      expect(doc.artifactFormatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
+      const text = await documentText();
+      expect(text).toContain(CLEAN);
+      expect(text).not.toContain(LEAKED);
+
+      // Kept while the row named it, gone once nothing does.
+      expect(earlierKeptWhileConverting).toEqual([true]);
+      expect(existsSync(join(artifactDir, "v1"))).toBe(false);
+
+      // Requested and finished on the record, both as Pinchy's own decision.
+      const rows = await reindexAuditRows();
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.actorId).toBe("kb-index-worker");
+        expect(row.outcome).toBe("success");
+        expect(row.detail).toMatchObject({
+          trigger: "upgrade",
+          jobId: job!.id,
+          agent: { id: agent.id, name: agent.name },
+        });
+      }
+    });
+
+    it("queues nothing when every Office document is already current", async () => {
+      const corpus = join(tmpRoot, "corpus");
+      mkdirSync(corpus, { recursive: true });
+      writeFileSync(join(corpus, "Angebot.docx"), "docx-bytes");
+      await ingestPaths(DEFAULT_ORG_ID, [corpus], officeDeps(CLEAN));
+      await knowledgeAgent(corpus);
+
+      await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir: join(tmpRoot, "a") });
+
+      expect(await db.select().from(kbIndexJobs)).toEqual([]);
+      expect(await reindexAuditRows()).toEqual([]);
+    });
+
+    it("asks once per boot, so a conversion that cannot finish now waits for the next run", async () => {
+      const artifactDir = join(tmpRoot, "artifacts");
+      const corpus = join(tmpRoot, "corpus");
+      const earlierArtifact = await indexedBeforeTheBump(corpus, artifactDir);
+      await knowledgeAgent(corpus);
+      const squeezed = officeDeps(CLEAN, "infrastructure");
+
+      await runKbIndexWorkerTick({ deps: squeezed, artifactDir });
+      await runKbIndexWorkerTick({ deps: squeezed, artifactDir });
+
+      const jobs = await db.select().from(kbIndexJobs);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]).toMatchObject({ status: "succeeded", trigger: "upgrade" });
+      expect(jobs[0].counts).toMatchObject({ failed: 1 });
+      // Still owed, so still hidden from search, and its directory still kept.
+      const [doc] = await db.select().from(kbDocuments);
+      expect(doc.artifactFormatVersion).toBeNull();
+      expect(existsSync(earlierArtifact)).toBe(true);
+
+      // The next boot asks again.
+      _resetKbIndexWorkerForTest();
+      await runKbIndexWorkerTick({ deps: officeDeps(CLEAN), artifactDir });
+      expect(await db.select().from(kbIndexJobs)).toHaveLength(2);
+      expect(existsSync(join(artifactDir, "v1"))).toBe(false);
+    });
   });
 
   // Requeueing is a BOOT act: it is only sound because a `running` job at
