@@ -67,7 +67,7 @@ async function showEveryPart(container: HTMLElement) {
     drawn.push(container.querySelector("dd [aria-hidden='true']")!.textContent!);
     spoken.push(container.querySelector("dd .sr-only")!.textContent!);
     const next = screen.queryByRole("button", { name: /show next part/i });
-    if (!next || next.hasAttribute("disabled")) return { drawn, spoken };
+    if (!next || next.getAttribute("aria-disabled") === "true") return { drawn, spoken };
     await userEvent.click(next);
   }
 }
@@ -403,13 +403,19 @@ describe("ApprovalCard shows what will actually run", () => {
       renderCard(summarizeArgs({ body }));
       await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
       expect(screen.getByText(/characters 1–8,192 of 8,203/)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /show previous part/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /show previous part/i })).toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
       expect(screen.queryByText(/SECOND-PART/)).not.toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("button", { name: /show next part/i }));
       expect(screen.getByText(/^…SECOND-PART$/)).toBeInTheDocument();
       expect(screen.getByText(/characters 8,193–8,203 of 8,203/)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /show next part/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /show next part/i })).toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
 
       await userEvent.click(screen.getByRole("button", { name: /show previous part/i }));
       expect(screen.getByText(/characters 1–8,192 of 8,203/)).toBeInTheDocument();
@@ -417,6 +423,30 @@ describe("ApprovalCard shows what will actually run", () => {
       await userEvent.click(screen.getByRole("button", { name: /show less/i }));
       expect(screen.getByText(/more characters hidden/i)).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /show next part/i })).not.toBeInTheDocument();
+    });
+
+    // A keyboard or screen-reader user steps with Enter. A truly disabled
+    // button drops focus to the page the moment it is reached, so the end
+    // buttons stay focusable and simply do nothing.
+    it("keeps focus on the step button at the first and last part", async () => {
+      const body = `${"a".repeat(WHOLE_MAX)}SECOND-PART`;
+      renderCard(summarizeArgs({ body }));
+      await userEvent.click(screen.getByRole("button", { name: /show full text/i }));
+      const next = screen.getByRole("button", { name: /show next part/i });
+      next.focus();
+      await userEvent.keyboard("{Enter}");
+      const last = screen.getByRole("button", { name: /show next part/i });
+      expect(last).not.toBeDisabled();
+      expect(last).toHaveAttribute("aria-disabled", "true");
+      expect(last).toHaveFocus();
+      await userEvent.keyboard("{Enter}");
+      expect(screen.getByText(/characters 8,193–8,203 of 8,203/)).toBeInTheDocument();
+      const previous = screen.getByRole("button", { name: /show previous part/i });
+      previous.focus();
+      await userEvent.keyboard("{Enter}");
+      expect(screen.getByRole("button", { name: /show previous part/i })).not.toBeDisabled();
+      await userEvent.keyboard("{Enter}");
+      expect(screen.getByText(/characters 1–8,192 of 8,203/)).toBeInTheDocument();
     });
 
     // One character can cost more than a part — a letter under 9,000 accents

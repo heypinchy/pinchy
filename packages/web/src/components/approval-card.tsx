@@ -174,14 +174,20 @@ function PreviewedValue({ node }: { node: Previewed }) {
   const part = partOf(node, index);
   const before = index > 0 ? "…" : "";
   const after = index < node.parts.length - 1 ? "…" : "";
+  // `aria-disabled`, not `disabled`: a button that becomes disabled under the
+  // keyboard focus drops that focus to the page, so stepping to the last part
+  // with Enter would lose the reader's place. At an end it stays focusable and
+  // does nothing.
   const step = (label: string, disabled: boolean, onClick: () => void) => (
     <Button
       type="button"
       variant="link"
       size="sm"
-      className="h-auto p-0 align-baseline text-xs"
-      disabled={disabled}
-      onClick={onClick}
+      className="h-auto p-0 align-baseline text-xs aria-disabled:pointer-events-none aria-disabled:opacity-50"
+      aria-disabled={disabled}
+      onClick={() => {
+        if (!disabled) onClick();
+      }}
     >
       {label}
     </Button>
