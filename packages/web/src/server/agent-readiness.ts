@@ -57,12 +57,13 @@
 //   - Gateway without agents.list (older OC)  → returns false immediately.
 //   - agents.list RPC errors transiently      → treated as "not yet present".
 //   - agent never appears within the deadline  → returns false.
-// A false answer never drops a message silently: `chatWithDispatchRaceRetry`
-// then backs off and re-dispatches while budget remains, and surfaces the race
-// error once it runs out. Note the chat path hands this helper the WHOLE
-// remaining retry budget as its deadline, so a gate that never confirms uses up
-// that budget in one wait and the chat fails with the race error — the
-// "loud, not lossless" case described above.
+// A false answer never drops a message silently. On the chat path
+// `chatWithDispatchRaceRetry` then backs off and re-dispatches while budget
+// remains, and surfaces the race error once it runs out; note it hands this
+// helper the WHOLE remaining retry budget as its deadline, so a gate that never
+// confirms uses up that budget in one wait and the chat fails with the race
+// error. On the inbox sweep a false answer defers the email to the next sweep
+// (`RunDeferredError` in lib/email-workflows/run-adapter.ts).
 
 import type { AgentsListResult } from "openclaw-node";
 
