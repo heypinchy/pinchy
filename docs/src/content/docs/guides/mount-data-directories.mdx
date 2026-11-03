@@ -165,6 +165,8 @@ Two different paths read the files under `/data/`, and they support different fo
 
 Word documents and slide decks — the old formats as well as the new ones — are converted to PDF on their way into the index, and that converted copy is what the search reads and what a citation opens. It never replaces your file: the original stays exactly where it is, untouched, and is still the document a citation names.
 
+LibreOffice converts them 20 at a time. If it is killed on a batch — the server ran short of memory — or the batch runs out of time, each file of that batch is converted once more on its own, with a time limit of its own, so a file that takes LibreOffice down doesn't keep the others from being indexed. Only a file that can't be converted even on its own counts as `failed`: whatever was indexed from an earlier version of it stays searchable, and it's converted again on the next run.
+
 From that point on the copy is read exactly like any other PDF, and that includes the scan path below: a slide that is one exported image, or a Word page holding a scanned certificate, carries no text layer and is sent to your model provider to be read.
 
 A page with no text layer is read the same way an agent reads one when you open it in chat: the page is rendered to an image and handed to a vision model. That is worth knowing before you mount a corpus of scans, because it is the one part of indexing that sends document content to your model provider — see [What indexing sends to your provider](#what-indexing-sends-to-your-provider) below.

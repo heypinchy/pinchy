@@ -40,7 +40,8 @@ export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
  *
  * Big enough that LibreOffice's startup is amortised (17 real corpus files cost
  * 14.2 s in one process against 25.6 s one-per-file), small enough that an OOM
- * kill — which fails the WHOLE batch as infrastructure — costs bounded re-work.
+ * kill or a timeout — after which every document of the batch is run again on
+ * its own (`office-convert.ts`) — costs bounded re-work.
  *
  * It lives in this import-free module because BOTH sides of the batch need it
  * and neither may hold its own copy: `office-convert.ts` sizes the process, and

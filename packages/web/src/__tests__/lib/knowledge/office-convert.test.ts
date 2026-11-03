@@ -42,6 +42,7 @@ import {
   MIN_FREE_OUTPUT_INODES,
   OFFICE_EXTENSIONS,
   OFFICE_VERIFY_EPSILON,
+  type ConverterResult,
   type ConverterRun,
   type ConvertOptions,
   type OfficeSource,
@@ -302,6 +303,132 @@ describe("convertOfficeFiles", () => {
       const outcomes = await convertOfficeFiles(sources, deps(converter));
 
       expect(outcomes[0].status).toBe("infrastructure");
+    });
+
+    describe("a batch the converter did not survive", () => {
+      // A batch is a fixed slice of a sorted queue, so the same documents meet
+      // in the same batch every night. Booking a kill against all of them
+      // would let one deck that takes LibreOffice down keep its batch-mates
+      // from ever being converted — and a document owed a conversion keeps no
+      // preview and no searchable text in the meantime.
+
+      /** Converts what it is given, unless `kills(inputs)` says this run dies. */
+      function dyingConverter(
+        outputs: Record<string, string>,
+        kills: (sources: string[]) => Partial<Pick<ConverterResult, "code" | "signal" | "timedOut">>
+      ): FakeConverter {
+        const converter = fakeConverter({ outputs });
+        return {
+          calls: converter.calls,
+          run: async (call) => {
+            const sources = await Promise.all(
+              call.inputs.map(async (staged) => basename(await realpath(staged)))
+            );
+            const death = kills(sources);
+            if (Object.keys(death).length === 0) return converter.run(call);
+            converter.calls.push(call);
+            // Whatever it wrote before it died is half a PDF at best.
+            const first = call.inputs[0];
+            await writeFile(
+              join(call.outDir, basename(first, extname(first)) + ".pdf"),
+              "%PDF-1.4\nhalf"
+            );
+            return { code: null, signal: null, stderr: "", ...death };
+          },
+        };
+      }
+
+      it("converts the rest of a batch one document killed, one document at a time", async () => {
+        const sources = [
+          await corpusFile("a.doc", "alpha"),
+          await corpusFile("bomb.pptx", "takes LibreOffice down"),
+          await corpusFile("c.doc", "charlie"),
+        ];
+        const converter = dyingConverter(
+          { "a.doc": "one two", "bomb.pptx": "never", "c.doc": "three four" },
+          (inputs) => (inputs.includes("bomb.pptx") ? { code: 137 } : {})
+        );
+
+        const outcomes = await convertOfficeFiles(sources, deps(converter));
+
+        expect(outcomes.map((o) => o.status)).toEqual(["converted", "infrastructure", "converted"]);
+        expect(outcomes[1].reason).toMatch(/memory/i);
+        expect(await readFile(outcomes[0].artifactPath!, "utf8")).toContain("one two");
+        expect(await readFile(outcomes[2].artifactPath!, "utf8")).toContain("three four");
+        // The batch, then each of its documents once on its own.
+        expect(converter.calls.map((c) => c.inputs.length)).toEqual([3, 1, 1, 1]);
+      });
+
+      it("gives each document of a batch that ran out of time its own run and its own budget", async () => {
+        // Twenty large decks can outlast the batch's budget together while
+        // each converts well inside its own.
+        const sources = [await corpusFile("a.pptx", "alpha"), await corpusFile("b.pptx", "bravo")];
+        const converter = dyingConverter(
+          { "a.pptx": "one two", "b.pptx": "three four" },
+          (inputs) => (inputs.length > 1 ? { timedOut: true } : {})
+        );
+
+        const outcomes = await convertOfficeFiles(sources, deps(converter));
+
+        expect(outcomes.map((o) => o.status)).toEqual(["converted", "converted"]);
+        expect(converter.calls.map((c) => c.timeoutMs)).toEqual([
+          batchTimeoutMs(2),
+          batchTimeoutMs(1),
+          batchTimeoutMs(1),
+        ]);
+      });
+
+      it("runs each document at most once more, and books one that dies alone as infrastructure", async () => {
+        // A document that takes LibreOffice down on its own may be one the
+        // container is too small for: that is the machine's to fix, so it
+        // stays retryable rather than becoming a verdict — but it is retried
+        // on the next run, not in a loop now.
+        const sources = [
+          await corpusFile("a.doc", "x"),
+          await corpusFile("b.doc", "y"),
+          await corpusFile("c.doc", "z"),
+        ];
+        const converter = dyingConverter({}, () => ({ signal: "SIGKILL" }));
+
+        const outcomes = await convertOfficeFiles(sources, deps(converter));
+
+        expect(outcomes.map((o) => o.status)).toEqual([
+          "infrastructure",
+          "infrastructure",
+          "infrastructure",
+        ]);
+        expect(converter.calls.map((c) => c.inputs.length)).toEqual([3, 1, 1, 1]);
+      });
+
+      it("never takes a PDF the killed batch left behind", async () => {
+        // The batch died while writing `0.pdf`; the document's own run then
+        // cannot load it and writes nothing. Half a PDF must not be stored as
+        // its conversion.
+        const sources = [await corpusFile("a.doc", "x"), await corpusFile("b.doc", "y")];
+        const converter = dyingConverter({ "b.doc": "three four" }, (inputs) =>
+          inputs.length > 1 ? { code: 137 } : {}
+        );
+
+        const outcomes = await convertOfficeFiles(sources, deps(converter));
+
+        expect(outcomes.map((o) => o.status)).toEqual(["failed", "converted"]);
+        expect(outcomes[0].artifactPath).toBeUndefined();
+        expect(outcomes[0].reason).toMatch(/no artifact/i);
+      });
+
+      it("starts each document's own run on a fresh profile", async () => {
+        // A killed LibreOffice leaves its profile behind mid-write, lock and
+        // all; a run that inherits it may refuse to start or reuse its state.
+        const sources = [await corpusFile("a.doc", "x"), await corpusFile("b.doc", "y")];
+        const converter = dyingConverter({ "a.doc": "one two", "b.doc": "three four" }, (inputs) =>
+          inputs.length > 1 ? { code: 137 } : {}
+        );
+
+        await convertOfficeFiles(sources, deps(converter));
+
+        const profiles = converter.calls.map((c) => c.profileDir);
+        expect(new Set(profiles).size).toBe(3);
+      });
     });
 
     it("does not blame the document when the converter binary is missing", async () => {

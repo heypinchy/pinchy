@@ -20,8 +20,10 @@
  *
  * 1. **Batch, do not spawn per file.** Process startup dominates: 17 real
  *    corpus files convert in 14.2 s in one process vs 25.6 s one-per-file.
- *    Batches are bounded (`DEFAULT_BATCH_SIZE`) so a single OOM kill costs a
- *    batch rather than the corpus.
+ *    Batches are bounded (`DEFAULT_BATCH_SIZE`), and a batch the converter
+ *    did not survive is run again one document at a time
+ *    (`runIsolatingKills`), so one document that takes LibreOffice down costs
+ *    itself rather than its batch-mates.
  *
  * 2. **The exit code lies.** An input LibreOffice cannot load produces
  *    `Error: source file could not be loaded` on stderr, exit code **0**, and
@@ -449,7 +451,8 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
     await mkdir(tmpDir, { recursive: true });
 
     const outcomes = new Array<ConversionOutcome>(batch.length);
-    const inputs: string[] = [];
+    /** Batch position -> its staged copy, for every document that reached the converter. */
+    const inputs = new Map<number, string>();
     /** What each document is stored under: the hash of the bytes the preflight actually read. */
     const keys = batch.map((item) => item.contentHash);
     /** What each staged package unpacks to; null for one that is not an archive, or not known. */
@@ -475,7 +478,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
           keys[i] = prepared.contentHash;
           unpacked[i] = prepared.unpackedBytes;
         } else await symlink(item.absPath, staged);
-        inputs.push(staged);
+        inputs.set(i, staged);
       } catch (err) {
         if (err instanceof OfficeFileRejectedError) {
           outcomes[i] = documentFailure(item.absPath, `refused before conversion: ${err.message}`);
@@ -501,16 +504,10 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
       }
     }
 
-    if (inputs.length > 0) {
-      let result: ConverterResult;
+    if (inputs.size > 0) {
+      let runs: Map<number, ConverterResult>;
       try {
-        result = await deps.runConverter({
-          inputs,
-          outDir,
-          profileDir,
-          tmpDir,
-          timeoutMs: batchTimeoutMs(inputs.length),
-        });
+        runs = await runIsolatingKills(inputs, { stagingDir, outDir, profileDir, tmpDir }, deps);
       } catch (err) {
         // The converter could not be started at all (a missing binary, a
         // permission problem). Nothing here says anything about the documents.
@@ -521,11 +518,12 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         );
       }
 
-      if (wasKilled(result)) {
+      for (const [i, result] of runs) {
+        if (!wasKilled(result)) continue;
         const reason = result.timedOut
           ? "converter exceeded its time budget"
           : "converter was killed — out of memory (see PINCHY_MEM_LIMIT)";
-        return batch.map((item, i) => outcomes[i] ?? infrastructureFailure(item.absPath, reason));
+        outcomes[i] = infrastructureFailure(batch[i].absPath, reason);
       }
 
       let probe: Promise<string | null> | undefined;
@@ -539,7 +537,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
           stagedSource,
           producedPdf,
           deps,
-          result.stderr
+          runs.get(i)!.stderr
         );
         // Every document verdict collectOne gives is drawn from the PDF — and
         // both the PDF and LibreOffice's scratch land on the artifact volume
@@ -560,7 +558,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
                 unpacked[i]
               ))
             : null;
-        const storeLine = volumeFault ? failedStoreLine(result.stderr, producedPdf) : null;
+        const storeLine = volumeFault ? failedStoreLine(runs.get(i)!.stderr, producedPdf) : null;
         outcomes[i] = volumeFault
           ? infrastructureFailure(
               item.absPath,
@@ -574,6 +572,75 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
   } finally {
     await rm(stagingDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Runs the converter over a batch's staged inputs and answers, per batch
+ * position, with the run that speaks for that document.
+ *
+ * Normally that is the batch's one run. But a run that was killed — the OOM
+ * killer, or our own time budget — says nothing about which of its documents
+ * was the cause, and a batch is a fixed slice of a sorted queue: the same
+ * documents meet in the same batch every night. Booking the kill against all
+ * of them would let one deck that takes LibreOffice down, or twenty large ones
+ * that outlast the budget together, keep up to nineteen unrelated documents
+ * from ever being converted. So a killed batch of more than one document is
+ * run again one document at a time, and each document is answered by its own
+ * run.
+ *
+ * Bounded: each document gets exactly one run of its own, on a budget of
+ * `batchTimeoutMs(1)`, never a retry loop. One that dies alone is answered by
+ * that kill — infrastructure, retried on the next reindex like any other kill,
+ * because a document the container is too small for is the machine's to fix
+ * (see `ConversionStatus`). Each run of its own gets a fresh profile and
+ * scratch space: the killed process left its own behind mid-write, and the
+ * PDFs it may have half written are removed before they could be collected.
+ */
+async function runIsolatingKills(
+  inputs: ReadonlyMap<number, string>,
+  dirs: { stagingDir: string; outDir: string; profileDir: string; tmpDir: string },
+  deps: BatchDeps
+): Promise<Map<number, ConverterResult>> {
+  const batchRun = await deps.runConverter({
+    inputs: [...inputs.values()],
+    outDir: dirs.outDir,
+    profileDir: dirs.profileDir,
+    tmpDir: dirs.tmpDir,
+    timeoutMs: batchTimeoutMs(inputs.size),
+  });
+  const runs = new Map<number, ConverterResult>();
+  if (!wasKilled(batchRun) || inputs.size === 1) {
+    for (const i of inputs.keys()) runs.set(i, batchRun);
+    return runs;
+  }
+
+  // What the dead process held on the volume — its scratch, and whatever
+  // PDFs it got to, the last one possibly half written — goes first.
+  await rm(dirs.tmpDir, { recursive: true, force: true });
+  for (const i of inputs.keys()) await rm(join(dirs.outDir, `${i}.pdf`), { force: true });
+
+  for (const [i, staged] of inputs) {
+    const own = join(dirs.stagingDir, `alone-${i}`);
+    const profileDir = join(own, "profile");
+    const tmpDir = join(own, "tmp");
+    await mkdir(profileDir, { recursive: true });
+    await mkdir(tmpDir, { recursive: true });
+    try {
+      runs.set(
+        i,
+        await deps.runConverter({
+          inputs: [staged],
+          outDir: dirs.outDir,
+          profileDir,
+          tmpDir,
+          timeoutMs: batchTimeoutMs(1),
+        })
+      );
+    } finally {
+      await rm(own, { recursive: true, force: true });
+    }
+  }
+  return runs;
 }
 
 /**
