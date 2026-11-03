@@ -3031,8 +3031,9 @@ function errorResult(
       `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`
     );
   }
-  // Classify on the raw message, show the described one: a non-JSON answer's
-  // SyntaxError quotes the response body, which must not reach the model.
+  // Classify on the raw message, show the described one: `describeOdooError`
+  // rewrites the failures the model cannot act on, and a parse error's quote
+  // of a response body must not reach it.
   const raw = error instanceof Error ? error.message : "";
   const message = describeOdooError(error);
   // A relation field (many2one) that received a display name instead of an id

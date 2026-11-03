@@ -129,6 +129,58 @@ describe("POST /api/integrations/list-databases against a redirecting Odoo", () 
   });
 });
 
+// authenticate sends the API key in the POST body, and a 307/308 re-sends it
+// to wherever the Location header points.
+describe("POST /api/integrations/test-credentials against a redirecting Odoo", () => {
+  it.each([302, 307, 308])(
+    "refuses a %i to an internal host without making a second request",
+    async (status) => {
+      redirectStatus = status;
+      const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+      const response = await POST(
+        post("/api/integrations/test-credentials", {
+          type: "odoo",
+          credentials: { url: redirecting.origin, db: "prod", login: "admin", apiKey: "key" },
+        }),
+        routeContext()
+      );
+      const body = await response.json();
+
+      expect(internalHits).toBe(0);
+      expect(body.success).toBe(false);
+      expect(body.error).toContain(`HTTP ${status}`);
+      expect(body.error).toMatch(/redirect/i);
+      expect(JSON.stringify(body)).not.toContain(SECRET);
+    }
+  );
+});
+
+describe("probeIntegrationCredentials (odoo) against a redirecting Odoo", () => {
+  it.each([302, 307, 308])(
+    "refuses a %i without a second request and without blaming the credentials",
+    async (status) => {
+      redirectStatus = status;
+      const { probeIntegrationCredentials } = await import("@/lib/integrations/probe");
+
+      const result = await probeIntegrationCredentials("odoo", {
+        url: redirecting.origin,
+        db: "prod",
+        login: "admin",
+        apiKey: "key",
+        uid: 2,
+      });
+
+      expect(internalHits).toBe(0);
+      if (result.success) throw new Error("expected failure");
+      expect(result.reason).toContain(`HTTP ${status}`);
+      expect(result.reason).not.toMatch(/authentication failed/i);
+      expect(result.transient).toBe(true);
+      expect(JSON.stringify(result)).not.toContain(SECRET);
+    }
+  );
+});
+
 describe("POST /api/integrations/test-credentials against a non-JSON-RPC answer", () => {
   it("does not echo the response body into the error", async () => {
     const { POST } = await import("@/app/api/integrations/test-credentials/route");

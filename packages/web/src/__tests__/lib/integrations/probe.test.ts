@@ -339,19 +339,14 @@ describe("probeIntegrationCredentials", () => {
       expect(res.transient).toBe(true);
     });
 
-    it("does not call a non-JSON-RPC answer an authentication failure, nor quote it", async () => {
-      let thrown: unknown;
-      try {
-        JSON.parse("my-ec2-role-name\n");
-      } catch (err) {
-        thrown = err;
-      }
-      mockAuthenticate.mockRejectedValue(thrown);
+    it("does not call a non-JSON-RPC answer an authentication failure", async () => {
+      mockAuthenticate.mockRejectedValue(
+        await realOdooError("Response is not JSON-RPC (HTTP 200, text/plain)", 200)
+      );
       const res = await probeIntegrationCredentials("odoo", validOdooCreds);
       if (res.success) throw new Error("expected failure");
       expect(res.reason).not.toMatch(/authentication failed/i);
-      expect(res.reason).not.toContain("my-ec2-role-name");
-      expect(res.reason).toContain("not a JSON-RPC response");
+      expect(res.reason).toContain("not a JSON-RPC response (HTTP 200, text/plain)");
       expect(res.transient).toBe(true);
     });
   });

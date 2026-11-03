@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { OdooError } from "odoo-node";
 import { describeOdooError } from "@/lib/integrations/odoo-error";
 
 describe("describeOdooError", () => {
@@ -6,13 +7,13 @@ describe("describeOdooError", () => {
     expect(describeOdooError(new Error("Access Denied"))).toBe("Access Denied");
   });
 
-  it("replaces a JSON parse error, which quotes the response body, with a plain sentence", () => {
-    const parseError = new SyntaxError(`Unexpected token '<', "<html>SECR"... is not valid JSON`);
+  it("says a non-JSON-RPC answer means the URL is not Odoo's, keeping status and content type", () => {
+    const notJsonRpc = new OdooError("Response is not JSON-RPC (HTTP 200, text/html)", 200);
 
-    const message = describeOdooError(parseError);
-
-    expect(message).toMatch(/not a JSON-RPC response/);
-    expect(message).not.toContain("SECR");
+    expect(describeOdooError(notJsonRpc)).toBe(
+      "Odoo answered with something that is not a JSON-RPC response (HTTP 200, text/html). " +
+        "Check that the URL points at the Odoo server itself."
+    );
   });
 
   it("treats a JSON answer of the wrong shape like a non-JSON one", () => {
