@@ -386,9 +386,11 @@ export async function fetchOdooSchema(credentials: {
             // auth_failed) from transient errors.
             return { model, name, category, fields: [], accessible: false, hadAccessError: true };
           }
-          if (!isTransientOdooProbeError(error) || attempt === MAX_RETRIES) {
-            // Non-transient, non-access error — no point in retrying.
-            const failure = describeOdooError(error);
+          const transient = isTransientOdooProbeError(error);
+          if (!transient || attempt === MAX_RETRIES) {
+            // Non-transient, or out of retries — no point in trying again.
+            const described = describeOdooError(error);
+            const failure = transient ? `Could not reach Odoo: ${described}` : described;
             return { model, name, category, fields: [], accessible: false, failure };
           }
           await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));

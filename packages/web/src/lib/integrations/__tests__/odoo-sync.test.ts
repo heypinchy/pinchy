@@ -153,6 +153,52 @@ describe("fetchOdooSchema", () => {
     expect(result.success).toBe(false);
     if (result.success) return;
     expect(result.isAuthError).toBe(false);
+    // The same transport failure on every model is the connection failing,
+    // not missing permissions.
+    expect(result.error).toBe("Could not reach Odoo: ETIMEDOUT");
+  });
+
+  const READ_ACCESS_MESSAGE =
+    "Could not access any Odoo models. Please ensure the API user has at least " +
+    "read access to the modules you want to use (e.g. Sales, Inventory, Contacts).";
+
+  it("keeps the read-access message when models fail for different reasons", async () => {
+    mockFields.mockImplementation((model: string) =>
+      Promise.reject(
+        new Error(model === "sale.order" ? "Unknown model: sale.order" : "Invalid field 'x'")
+      )
+    );
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe(READ_ACCESS_MESSAGE);
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("keeps the read-access message, as an auth error, when one model is denied and the rest fail alike", async () => {
+    mockFields.mockImplementation((model: string) =>
+      Promise.reject(new Error(model === "sale.order" ? "AccessError" : "Invalid field 'x'"))
+    );
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe(READ_ACCESS_MESSAGE);
+    expect(result.isAuthError).toBe(true);
+  });
+
+  it("reports one failure every model shares, without flagging an auth error", async () => {
+    mockFields.mockRejectedValue(new Error("Invalid field 'x'"));
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("Invalid field 'x'");
+    expect(result.isAuthError).toBe(false);
   });
 
   it("returns isAuthError: true when all models fail due to auth/permission errors", async () => {
@@ -248,6 +294,9 @@ describe("fetchOdooSchema", () => {
 
     expect(result.success).toBe(false);
     expect(saleOrderCalls).toBe(1);
+    if (result.success) return;
+    expect(result.error).toBe(READ_ACCESS_MESSAGE);
+    expect(result.isAuthError).toBe(true);
   });
 
   it("does not retry 'access denied' errors", async () => {

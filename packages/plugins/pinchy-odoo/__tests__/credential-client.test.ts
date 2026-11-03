@@ -218,6 +218,29 @@ describe("requestCredentials", () => {
         "Pinchy answered HTTP 200 with a body that is not JSON"
     );
   });
+
+  it.each([
+    ["a connection reset", new TypeError("terminated")],
+    [
+      "the request timing out",
+      new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+    ],
+  ])("passes %s mid-body through rather than calling the body not JSON", async (_label, cause) => {
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"credentials":'));
+        controller.error(cause);
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status: 200 }))
+    );
+
+    const err = await requestCredentials(args).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(CredentialsFetchError);
+    expect(String((err as Error).message)).not.toContain("not JSON");
+  });
 });
 
 describe("postAuthFailure", () => {

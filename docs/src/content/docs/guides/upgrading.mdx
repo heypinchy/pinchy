@@ -401,7 +401,7 @@ The address check reads the Odoo URL you saved, not where Odoo's answers point. 
 
 The setup this catches by accident is an `http://` Odoo URL in front of a proxy that redirects to `https://` — which Caddy does by default and many Traefik setups configure. Change the URL to the `https://` address, and enter the API key again with it: Pinchy never sends a stored key to a new address.
 
-An answer that isn't JSON-RPC is no longer quoted back either — not in **Settings → Integrations**, and not to an agent's Odoo tools, which used to hand the start of it to the model and so to whoever was chatting with it. Settings shows its status and content type; the agent hears only that it wasn't JSON-RPC. And when **Test connection**, or saving changes to a connection, gets no Odoo answer at all — a redirect, a proxy error, a network failure, something that isn't JSON-RPC — it says your login and API key weren't checked, instead of reporting them as wrong and marking the connection as needing new credentials.
+An answer that isn't JSON-RPC is no longer quoted back either — not in **Settings → Integrations**, and not to an agent's Odoo tools, which used to hand the start of it to the model and so to whoever was chatting with it. Settings reports its status and content type, or simply that it wasn't JSON-RPC; the agent hears only that it wasn't JSON-RPC. And when **Test connection**, or saving changes to a connection, gets no Odoo answer at all — a redirect, a proxy error, a network failure, something that isn't JSON-RPC — it says your login and API key weren't checked, instead of reporting them as wrong and marking the connection as needing new credentials.
 
 #### An agent that couldn't save, or couldn't see its mailbox, can again
 

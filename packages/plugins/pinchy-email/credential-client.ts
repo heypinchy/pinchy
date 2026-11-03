@@ -199,10 +199,13 @@ export async function requestCredentials(args: {
   }
 
   // Parse here rather than hand back `response.json()`: a parse error quotes
-  // the start of the body, and callers pass error messages to the model.
+  // the start of the body, and callers pass error messages to the model. Only
+  // the parse error is replaced; a connection that drops or times out while
+  // the body arrives propagates as the network failure it is.
   try {
     return await response.json();
-  } catch {
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
     throw new CredentialsFetchError(
       `Failed to fetch ${label} credentials for connection ${connectionId}: ` +
         `Pinchy answered HTTP ${response.status} with a body that is not JSON`,
