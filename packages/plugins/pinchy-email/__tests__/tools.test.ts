@@ -697,7 +697,17 @@ describe("credential fetching", () => {
     const tools = createApi();
     const tool = findTool(tools, "email_list", agentId)!;
 
-    const result = await tool.execute("call-1", {});
+    // A 401 from Pinchy is retried with backoff (250 + 500 + 1000 + 2000 ms)
+    // before it surfaces; fake timers keep that out of the test's run time.
+    vi.useFakeTimers();
+    let result: Awaited<ReturnType<typeof tool.execute>>;
+    try {
+      const pending = tool.execute("call-1", {});
+      await vi.advanceTimersByTimeAsync(3750);
+      result = await pending;
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(result.content[0].text).toContain("credential");
     expect(result.isError).toBe(true);

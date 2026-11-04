@@ -691,9 +691,10 @@ describe("pinchy-audit plugin", () => {
         )
       ).rejects.toThrow();
 
-      // MAX_RETRIES = 4, so 5 total attempts, each racing its own timeout —
-      // never a single hang that blocks forever.
-      expect(fetchMock).toHaveBeenCalledTimes(5);
+      // MAX_RETRIES = 2, so 3 total attempts, each racing its own timeout —
+      // never a single hang that blocks forever. Only a 401 earns the longer
+      // retry run: a hang already costs 10s per attempt.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
       expect(timeoutSpy).toHaveBeenCalledWith(10_000);
       timeoutSpy.mockRestore();
     });

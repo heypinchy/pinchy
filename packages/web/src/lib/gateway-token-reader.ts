@@ -14,13 +14,15 @@ import { readSecretsFile } from "@/lib/openclaw-secrets";
  *
  *   2. **secrets.json `gateway.token`** — written by Pinchy's
  *      `writeSecretsFile()` as part of `regenerateOpenClawConfig()`.
- *      Fallback in case openclaw.json is briefly unavailable.
+ *      Fallback in case openclaw.json is briefly unavailable — but only
+ *      where Pinchy can read secrets.json at all (dev, tests).
+ *      start-openclaw.sh chowns it root:root 0600 for OpenClaw's own
+ *      resolver, so in the production container this read fails too.
  *
  *   3. **The last token read successfully** — when neither file yields a
  *      token. OpenClaw rewrites openclaw.json root-only on every config
- *      apply until start-openclaw.sh chmods it back, and secrets.json is
- *      root-owned for OpenClaw's own resolver, so right after an agent is
- *      created or changed both reads can fail. Without this, every plugin
+ *      apply until start-openclaw.sh chmods it back, so right after an
+ *      agent is created or changed both reads can fail. Without this, every plugin
  *      call to an internal route in that window is answered 401: the audit
  *      hook fails and blocks the tool call, a context save is lost. A fresh
  *      read always wins, so a rotated token takes effect on the next
