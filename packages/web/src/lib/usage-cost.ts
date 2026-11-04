@@ -1,9 +1,9 @@
 /**
  * Pure USD cost estimate for a set of token classes — the single source of
  * truth for the per-turn recorder, which prices every session's turns (#483
- * chat, #767 system). OpenClaw's model config carries only input/output
- * prices, so cache classes use Anthropic-style ratios: a cache READ is 10% of
- * the input price, a cache WRITE is 125%.
+ * chat, #767 system). At a flat price, cache classes use Anthropic-style
+ * ratios: a cache READ is 10% of the input price, a cache WRITE is 125% (a
+ * model's own cacheRead/cacheWrite are not read on this path).
  *
  * A model priced by prompt length (Claude Haiku 5.5) also carries
  * `tieredPricing`, in OpenClaw's shape: half-open token ranges

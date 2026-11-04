@@ -19,8 +19,9 @@ interface BlockRule {
  * `thinking` field for it at all (the whole thinking block of the request
  * builder is gated on `model.reasoning`), whatever thinking level a session
  * resolves to. An undeclared model does not count: Pinchy asserts nothing
- * about it. (A dated snapshot of a declared model rides on the base entry —
- * OpenClaw resolves the undeclared id as `reasoning: false` too.)
+ * about it. (A dated snapshot of a declared model rides on the base entry for
+ * this purpose only — OpenClaw resolves the undeclared id as `reasoning: false`
+ * too. Its price and context size do not: those match the exact id.)
  */
 function catalogWithholdsThinking(modelId: string): boolean {
   return getModelCatalogForProvider("anthropic").find((m) => m.id === modelId)?.reasoning === false;
@@ -71,7 +72,7 @@ const RULES: BlockRule[] = [
     modelPattern: /claude-(?:opus|sonnet)-5-5|claude-fable-5-1|claude-opus-5(?=$|-\d{8}$)/i,
     forbiddenWhen: ["tools"],
     reason:
-      "Claude Opus 5, Opus 5.5, Sonnet 5.5 and Fable 5.1 need a newer agent runtime than this Pinchy release ships — their requests are rejected. Claude Sonnet 5 and Haiku 5.5 work today.",
+      "Claude Opus 5, Opus 5.5, Sonnet 5.5 and Fable 5.1 need a newer agent runtime than this Pinchy release ships — their requests are rejected. Claude Sonnet 5 works today.",
   },
   // Claude Haiku 5.5 is the one model of that family the pinned runtime can
   // drive, and only because of how Pinchy declares it. OpenClaw 2026.7.1
