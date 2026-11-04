@@ -105,6 +105,7 @@ vi.mock("@/lib/integrations/microsoft-refresh", () => ({
 }));
 
 import { NextRequest } from "next/server";
+import { odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
 
 const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
 
@@ -218,9 +219,15 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
     }
 
     it.each([
-      ["a refused redirect", "Odoo answered with a redirect (HTTP 308); …", 308],
-      ["a network failure", "fetch failed", 0],
-    ])("reports %s without flagging auth_failed", async (_label, message, code) => {
+      [
+        "a refused redirect",
+        "Odoo answered with a redirect (HTTP 308); odoo-node does not follow redirects. " +
+          "Use the address Odoo is actually served from.",
+        308,
+        odooRedirectRefusedMessage(308),
+      ],
+      ["a network failure", "fetch failed", 0, "fetch failed"],
+    ])("reports %s without flagging auth_failed", async (_label, message, code, shown) => {
       mockOdooAuthenticate.mockRejectedValue(await realOdooError(message, code));
       const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
 
@@ -231,10 +238,28 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       const body = await response.json();
 
       expect(body.success).toBe(false);
-      expect(body.error).toContain(message);
+      expect(body.error).toContain(shown);
       expect(body.error).not.toMatch(/authentication failed/i);
       expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
       expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    });
+
+    it("reports an internal error in the self-heal as Pinchy's, without flagging auth_failed", async () => {
+      mockOdooAuthenticate.mockRejectedValue(
+        new TypeError("Cannot read properties of undefined (reading 'map')")
+      );
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-1/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+      const body = await response.json();
+
+      expect(body.success).toBe(false);
+      expect(body.error).toMatch(/^Pinchy hit an internal error while talking to Odoo/);
+      expect(body.error).not.toMatch(/Odoo didn't answer/);
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
     });
 
     it("still flags auth_failed when Odoo refuses the login", async () => {

@@ -106,13 +106,13 @@ async function fetchBraveCredentials(
   connectionId: string,
   agentId: string
 ): Promise<BraveCredentials> {
-  const data = (await requestCredentials({
+  const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
     connectionId,
     agentId,
     label: "Brave",
-  })) as { credentials?: unknown };
+  });
   assertBraveCredentialsShape(data.credentials);
   return data.credentials;
 }

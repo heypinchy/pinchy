@@ -40,18 +40,25 @@
  * Bounds every call to Pinchy's own internal API against a hung container or a
  * network blackhole with no RST. 10s matches what each plugin used before
  * these two calls moved in here; external calls (Brave, Graph) bound
- * themselves at 30s where they are made. A timeout surfaces as an AbortError,
- * which every caller already treats as an ordinary fetch failure — and which
- * `isAuthError` deliberately does not classify, so a hung endpoint never
- * flags a connection as auth_failed.
+ * themselves at 30s where they are made. In `requestCredentials` a timeout
+ * becomes a `CredentialsFetchError` with status 0; in `postAuthFailure` it is
+ * swallowed with every other error. Neither is classified by `isAuthError`,
+ * so a hung endpoint never flags a connection as auth_failed.
  */
 const FETCH_TIMEOUT_MS = 10_000;
 
 /**
- * Thrown by `requestCredentials` when the credentials API answers non-ok.
- * Carries `status` so callers can discriminate (pinchy-email gates its
- * settings-missing handling strictly on 503) without string-matching a
- * message.
+ * Thrown by `requestCredentials` whenever it cannot hand back a parsed object:
+ *
+ * - the credentials API answered non-ok — `status` is that HTTP status;
+ * - it answered ok with a body that is not JSON, or JSON that is not an
+ *   object — `status` is that status;
+ * - no usable answer arrived: the request failed, timed out, or the body broke
+ *   off mid-stream — `status` is 0.
+ *
+ * The message never quotes the body. `status` lets callers discriminate
+ * (pinchy-email gates its settings-missing handling strictly on 503) without
+ * string-matching a message.
  */
 export class CredentialsFetchError extends Error {
   readonly status: number;
@@ -164,16 +171,28 @@ export async function requestCredentials(args: {
   connectionId: string;
   agentId: string;
   label: string;
-}): Promise<unknown> {
+}): Promise<Record<string, unknown>> {
   const { apiBaseUrl, gatewayToken, connectionId, agentId, label } = args;
-  const response = await fetch(
-    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
-      `?agentId=${encodeURIComponent(agentId)}`,
-    {
-      headers: { Authorization: `Bearer ${gatewayToken}` },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    }
-  );
+  const failed = `Failed to fetch ${label} credentials for connection ${connectionId}`;
+  // A transport failure on the way to Pinchy names Pinchy. Left bare, a
+  // TypeError("fetch failed") reaches the model looking like the third-party
+  // service's own failure, and is classified like one. Status 0: no usable
+  // answer arrived.
+  const transportFailure = (what: string, err: unknown) =>
+    new CredentialsFetchError(`${failed}: ${what} (${describeTransportError(err)})`, 0);
+  let response: Response;
+  try {
+    response = await fetch(
+      `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
+        `?agentId=${encodeURIComponent(agentId)}`,
+      {
+        headers: { Authorization: `Bearer ${gatewayToken}` },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      }
+    );
+  } catch (err) {
+    throw transportFailure("could not reach Pinchy", err);
+  }
 
   if (!response.ok) {
     // The route puts an actionable message in the JSON body (a 404 "This
@@ -192,13 +211,55 @@ export async function requestCredentials(args: {
     })();
     const detail = body && typeof body.error === "string" ? `: ${body.error}` : "";
     throw new CredentialsFetchError(
-      `Failed to fetch ${label} credentials for connection ${connectionId}: ` +
-        `HTTP ${response.status} ${response.statusText}${detail}`,
+      `${failed}: HTTP ${response.status} ${response.statusText}${detail}`,
       response.status
     );
   }
 
-  return response.json();
+  // Parse here rather than hand back `response.json()`: a parse error quotes
+  // the start of the body, and callers pass error messages to the model. A
+  // connection that drops or times out while the body arrives is a transport
+  // failure, not a body that is not JSON.
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (err) {
+    if (!(err instanceof SyntaxError))
+      throw transportFailure("the answer from Pinchy broke off", err);
+    throw new CredentialsFetchError(
+      `${failed}: Pinchy answered HTTP ${response.status} with a body that is not JSON`,
+      response.status
+    );
+  }
+  // Every caller reads fields off the answer; off `null` that is a TypeError,
+  // which reads to the model like the third-party service failing.
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    const got = body === null ? "null" : Array.isArray(body) ? "an array" : `a ${typeof body}`;
+    throw new CredentialsFetchError(
+      `${failed}: Pinchy's credentials API answered ${got}, not an object`,
+      response.status
+    );
+  }
+  return body as Record<string, unknown>;
+}
+
+/**
+ * What a transport failure is called in a message that reaches the model and
+ * the audit trail — never the error's own text: undici's header check quotes
+ * the header value (the gateway token), and a connect error names the
+ * internal address. It is an error code, if the error or its `.cause` carries
+ * one that matches `^[A-Z][A-Z0-9_]+$` (undici hangs the errno there:
+ * `ECONNREFUSED`, `ENOTFOUND`, `UND_ERR_SOCKET`, …); else the DOMException
+ * name `TimeoutError` / `AbortError`; else the fixed phrase "request failed".
+ */
+function describeTransportError(err: unknown): string {
+  for (const candidate of [err, err instanceof Error ? err.cause : undefined]) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const { code, name } = candidate as { code?: unknown; name?: unknown };
+    if (typeof code === "string" && /^[A-Z][A-Z0-9_]+$/.test(code)) return code;
+    if (name === "TimeoutError" || name === "AbortError") return name;
+  }
+  return "request failed";
 }
 
 /**

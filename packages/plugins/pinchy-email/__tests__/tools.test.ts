@@ -705,7 +705,14 @@ describe("credential fetching", () => {
   });
 
   it("returns error when credential fetch throws network error", async () => {
-    mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+    // undici's shape: a bare "fetch failed" with the errno on `.cause`.
+    mockFetch.mockRejectedValue(
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error("connect ECONNREFUSED 172.18.0.3:7777"), {
+          code: "ECONNREFUSED",
+        }),
+      })
+    );
 
     const tools = createApi();
     const tool = findTool(tools, "email_list", agentId)!;
@@ -713,7 +720,21 @@ describe("credential fetching", () => {
     const result = await tool.execute("call-1", {});
 
     expect(result.content[0].text).toContain("ECONNREFUSED");
+    expect(result.content[0].text).not.toContain("172.18.0.3");
     expect(result.isError).toBe(true);
+  });
+
+  it("reports a credentials answer that is null as the credentials API's", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => null });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("credentials API answered null, not an object");
+    expect(mockList).not.toHaveBeenCalled();
   });
 
   it("throws a clear error when credentials API returns no type field", async () => {

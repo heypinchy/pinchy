@@ -1,5 +1,7 @@
 import { OdooClient } from "odoo-node";
 import { runWithConcurrency } from "@/lib/concurrency";
+import { describeOdooError } from "@/lib/integrations/odoo-error";
+import { readOdooFields } from "@/lib/integrations/odoo-calls";
 
 /**
  * Curated list of common Odoo models organized by category.
@@ -265,9 +267,14 @@ export interface OdooSyncError {
 const MAX_CONCURRENCY = 5;
 const MAX_RETRIES = 2;
 
-/** Returns true if the error is a permission/access issue (should not retry). */
+/**
+ * Returns true if the error is Odoo refusing this user access (should not
+ * retry). An HTTP-level error is not: "HTTP 405: Method Not Allowed" is the
+ * server refusing the method, whatever words its status line uses.
+ */
 function isAccessError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  if (isHttpLevelError(error)) return false;
   const msg = error.message.toLowerCase();
   return (
     msg.includes("accesserror") ||
@@ -276,6 +283,32 @@ function isAccessError(error: unknown): boolean {
     msg.includes("permission denied")
   );
 }
+
+/**
+ * Did any answer arrive? odoo-node's errors say so by shape: Odoo's own
+ * JSON-RPC error carries `data` (its `code` is the JSON-RPC one, e.g. 200);
+ * an HTTP error, a refused redirect or a non-JSON-RPC body carries the HTTP
+ * status in `code` and no `data`; a request that got no answer at all carries
+ * `code` 0 — and a bare error from elsewhere carries neither.
+ */
+function odooAnswered(error: unknown): boolean {
+  return isHttpLevelError(error) || (error as { data?: unknown } | null)?.data !== undefined;
+}
+
+/** odoo-node's shape for an HTTP-level failure: the status in `code`, no `data`. */
+function isHttpLevelError(error: unknown): boolean {
+  const { code, data } = (error ?? {}) as { code?: unknown; data?: unknown };
+  return typeof code === "number" && code >= 100 && data === undefined;
+}
+
+/** odoo-node's shape for no usable answer at all — even one that broke off. */
+function isNoAnswerError(error: unknown): boolean {
+  const { code, data } = (error ?? {}) as { code?: unknown; data?: unknown };
+  return code === 0 && data === undefined;
+}
+
+/** How many distinct failure texts a mixed sync failure names. */
+const MAX_NAMED_FAILURES = 3;
 
 /** Returns true when retrying the fields_get probe could plausibly succeed. */
 function isTransientOdooProbeError(error: unknown): boolean {
@@ -307,7 +340,11 @@ function isTransientOdooProbeError(error: unknown): boolean {
 /**
  * Fetch schema from an Odoo instance by probing curated models via fields_get().
  * Does NOT require admin/ir.model access — only needs read access on individual models.
- * Models the user cannot access are silently skipped.
+ * Models the user cannot access are silently skipped. When no model is
+ * readable and no probe reported an access problem, every probe failed for
+ * another reason, and the error says which: "Could not reach Odoo: …" when
+ * none got an answer, the shared error when all failed alike (a refused
+ * redirect, a proxy error), otherwise the first few distinct failures.
  * Retries transient errors (timeouts, rate limits, 5xx) up to MAX_RETRIES times.
  * Limits concurrency to MAX_CONCURRENCY to avoid overwhelming the server.
  * Does NOT save anything — returns the data for the caller to handle.
@@ -340,13 +377,18 @@ export async function fetchOdooSchema(credentials: {
     accessible: boolean;
     access?: AccessRights;
     hadAccessError?: boolean;
+    /**
+     * Why the probe failed, when it failed for a reason other than access.
+     * `unreachable`: it ran out of retries without any answer from Odoo.
+     */
+    failure?: { text: string; unreachable: boolean };
   };
 
   const tasks = ALL_KNOWN_MODELS.map(({ model, name, category }) => {
     return async (): Promise<ProbeResult> => {
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const fields = await client.fields(model);
+          const fields = await readOdooFields(client, model);
 
           // Check per-operation access rights
           const safeCheck = async (
@@ -381,12 +423,30 @@ export async function fetchOdooSchema(credentials: {
             // auth_failed) from transient errors.
             return { model, name, category, fields: [], accessible: false, hadAccessError: true };
           }
-          if (!isTransientOdooProbeError(error)) {
-            // Non-transient, non-access error — no point in retrying.
-            return { model, name, category, fields: [], accessible: false };
-          }
-          if (attempt === MAX_RETRIES) {
-            return { model, name, category, fields: [], accessible: false };
+          const transient = isTransientOdooProbeError(error);
+          if (!transient || attempt === MAX_RETRIES) {
+            // Non-transient, or out of retries — no point in trying again.
+            const described = describeOdooError(error);
+            const unreachable = isNoAnswerError(error) || (transient && !odooAnswered(error));
+            // A bare status line may come from a proxy in front of Odoo as
+            // much as from Odoo, retried or not; a described message that
+            // already says what came back ("Odoo answered with …") needs no
+            // prefix. Only an error carrying Odoo's `data` is Odoo's own.
+            const text = unreachable
+              ? described
+              : isHttpLevelError(error) && described.startsWith("HTTP ")
+                ? `The Odoo address answered with an error: ${described}`
+                : transient && !isHttpLevelError(error)
+                  ? `Odoo did not answer successfully: ${described}`
+                  : described;
+            return {
+              model,
+              name,
+              category,
+              fields: [],
+              accessible: false,
+              failure: { text, unreachable },
+            };
           }
           await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
         }
@@ -401,6 +461,23 @@ export async function fetchOdooSchema(credentials: {
 
   if (accessibleModels.length === 0) {
     const anyAccessError = results.some((r) => r.hadAccessError);
+    const failures = results.map((r) => r.failure);
+    // Only claim missing read access when a probe actually reported an access
+    // problem: Odoo denied it, or granted no read right.
+    if (!anyAccessError && failures.every((f) => f !== undefined)) {
+      const distinct = [...new Set(failures.map((f) => f!.text))];
+      const texts =
+        distinct.slice(0, MAX_NAMED_FAILURES).join("; ") +
+        (distinct.length > MAX_NAMED_FAILURES ? "; …" : "");
+      // Every probe failing to reach Odoo, or failing the same way (a refused
+      // redirect, a proxy error), is one failure of the connection.
+      const error = failures.every((f) => f!.unreachable)
+        ? `Could not reach Odoo: ${texts}`
+        : distinct.length === 1
+          ? texts
+          : `Could not read any Odoo model: ${texts}`;
+      return { success: false, error, isAuthError: false };
+    }
     return {
       success: false,
       error:
