@@ -99,6 +99,7 @@ function makeJob(overrides: Partial<KbIndexJob> = {}): KbIndexJob {
     processedBytes: 0,
     counts: null,
     error: null,
+    artifactFormatVersion: null,
     createdAt: new Date("2026-07-17T10:00:00Z"),
     startedAt: null,
     finishedAt: null,

@@ -12,6 +12,7 @@ import {
   formatPendingRecord,
   parsePendingRecord,
   escapingImportTargets,
+  moduleSpecifiers,
 } from "./prepush-build-gate.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -317,6 +318,74 @@ describe("the build graph is not the same thing as the web package", () => {
     );
   });
 
+  // One more layer down. A shared file is canonical in its plugin, which is
+  // deployed as a self-contained directory, and web reaches it with a relative
+  // import. So it may import nothing but Node built-ins: a package would have
+  // to resolve from both sides of that boundary (it resolves from neither the
+  // same way), and a sibling file would need a COPY of its own. The headers of
+  // these files say so; this is what holds them to it, whatever built-ins a
+  // file happens to need today.
+  test("every shared plugin source the build reaches imports only Node built-ins", () => {
+    const WEB = join(REPO_ROOT, "packages/web");
+    const shared = new Set();
+
+    const walk = (absDir) => {
+      for (const entry of readdirSync(absDir, { withFileTypes: true })) {
+        const abs = join(absDir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules" || entry.name === ".next") continue;
+          walk(abs);
+          continue;
+        }
+        if (!/\.(ts|tsx|mts)$/.test(entry.name)) continue;
+        const repoPath = abs
+          .slice(REPO_ROOT.length + 1)
+          .split("\\")
+          .join("/");
+        if (isBuildIrrelevant(repoPath)) continue;
+
+        for (const target of escapingImportTargets(
+          repoPath,
+          readFileSync(abs, "utf8"),
+        )) {
+          const resolved = [target, `${target}.ts`].find(
+            (c) =>
+              c.startsWith("packages/plugins/") &&
+              c.endsWith(".ts") &&
+              existsSync(join(REPO_ROOT, c)),
+          );
+          if (resolved) shared.add(resolved);
+        }
+      }
+    };
+
+    walk(WEB);
+
+    // Without this, a walk that found nothing would pass in silence.
+    assert.ok(
+      shared.has("packages/plugins/pinchy-files/docx-zip-guard.ts"),
+      `expected the shared zip guard among ${JSON.stringify([...shared])}`,
+    );
+
+    const offenders = [];
+    for (const file of shared) {
+      for (const specifier of moduleSpecifiers(
+        readFileSync(join(REPO_ROOT, file), "utf8"),
+      )) {
+        if (!specifier.startsWith("node:"))
+          offenders.push(`${file} imports "${specifier}"`);
+      }
+    }
+
+    assert.deepEqual(
+      offenders,
+      [],
+      `a plugin file the web build shares may import Node built-ins only ` +
+        `(\`node:…\`):\n  ` +
+        offenders.join("\n  "),
+    );
+  });
+
   test("the walk above actually reads the web tree", () => {
     // A guard that silently traverses nothing is the failure mode here: it stays
     // green forever. Pin the one import we know escapes today.
@@ -337,6 +406,34 @@ describe("the build graph is not the same thing as the web package", () => {
     assert.ok(
       targets.includes("packages/plugins/pinchy-files/openclaw.plugin.json"),
       `expected the plugin manifest imports to be detected, got ${JSON.stringify(targets)}`,
+    );
+  });
+});
+
+describe("moduleSpecifiers — every module a file makes TypeScript resolve", () => {
+  test("returns built-in, bare and relative specifiers alike, once each", () => {
+    assert.deepEqual(
+      moduleSpecifiers(
+        [
+          `import { posix } from "node:path";`,
+          `import * as zlib from "node:zlib";`,
+          `import JSZip from "jszip";`,
+          `export { a } from "./sibling";`,
+          `import "./side-effect";`,
+          `const c = await import("../dynamic");`,
+          `import d = require("./required");`,
+          `import { again } from "node:path";`,
+        ].join("\n"),
+      ),
+      [
+        "node:path",
+        "node:zlib",
+        "jszip",
+        "./sibling",
+        "./side-effect",
+        "../dynamic",
+        "./required",
+      ],
     );
   });
 });

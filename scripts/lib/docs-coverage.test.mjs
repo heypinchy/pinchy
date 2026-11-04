@@ -11,12 +11,15 @@ import {
   extractDocumentedEndpoints,
   extractGrantableTools,
   extractRouteHandlers,
+  extractUpgradeMigrationNotes,
   findGhostEndpoints,
+  findMigrationNoteDrift,
   findUndocumentedAuditEvents,
   findUndocumentedEndpoints,
   findUndocumentedTools,
   normalizeRoute,
 } from "./docs-coverage.mjs";
+import { openNextUpgradeSection } from "./release-logic.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const APP_API = join(REPO_ROOT, "packages/web/src/app/api");
@@ -217,6 +220,166 @@ test("extractGrantableTools unions the registry with the plugin manifests", () =
   );
 });
 
+const UPGRADING = (migrations) => `## Standard upgrade
+
+Pull and restart.
+
+## Upgrading from v1.1.0 to %%PINCHY_VERSION%%
+
+### Upgrade notes
+
+#### Something changed
+
+Prose that names \`0007\` in passing.
+
+### Database migrations
+
+The migrations ${migrations}
+
+- \`0005\` — a table, built on the release branch's own \`0003\`.
+- \`0006\`, \`0007\` — two columns.
+
+## Upgrading from v1.0.0 to v1.1.0
+
+### Database migrations
+
+- \`0004\` — older.
+`;
+
+test("extractUpgradeMigrationNotes reads the newest section's range and the migrations its bullets name", () => {
+  assert.deepEqual(
+    extractUpgradeMigrationNotes(
+      UPGRADING("`0005`–`0007` run automatically on startup."),
+    ),
+    {
+      section: "Upgrading from v1.1.0 to %%PINCHY_VERSION%%",
+      from: "0005",
+      to: "0007",
+      listed: ["0005", "0006", "0007"],
+    },
+  );
+});
+
+test("extractUpgradeMigrationNotes throws when the range cannot be read", () => {
+  // A sentence rewritten so the range no longer parses must not read as a
+  // section with nothing to check.
+  assert.throws(
+    () => extractUpgradeMigrationNotes(UPGRADING("run automatically.")),
+    /range/,
+  );
+});
+
+test("extractUpgradeMigrationNotes throws when a bullet names no migration", () => {
+  assert.throws(
+    () =>
+      extractUpgradeMigrationNotes(
+        UPGRADING("`0005`–`0007` run.").replace(
+          "- `0006`, `0007` — two columns.",
+          "- 0006 and 0007 — two columns.",
+        ),
+      ),
+    /0006 and 0007/,
+  );
+});
+
+test("findMigrationNoteDrift names a migration the list stops short of", () => {
+  const notes = extractUpgradeMigrationNotes(
+    UPGRADING("`0005`–`0007` run automatically on startup."),
+  );
+  const journal = ["0004_a", "0005_b", "0006_c", "0007_d", "0008_e"];
+  assert.deepEqual(findMigrationNoteDrift(notes, journal), [
+    'the newest migration is 0008, but "Upgrading from v1.1.0 to %%PINCHY_VERSION%%" ' +
+      "says its migrations end at 0007 — extend the range in docs/src/content/docs/guides/upgrading.mdx",
+    'migration 0008 (0008_e) has no bullet under "Upgrading from v1.1.0 to %%PINCHY_VERSION%%" → Database migrations in docs/src/content/docs/guides/upgrading.mdx',
+  ]);
+});
+
+test("findMigrationNoteDrift names a bullet for a migration the range or the journal does not hold", () => {
+  const notes = extractUpgradeMigrationNotes(
+    UPGRADING("`0006`–`0007` run automatically on startup."),
+  );
+  assert.deepEqual(
+    findMigrationNoteDrift(notes, ["0005_b", "0006_c", "0007_d"]),
+    [
+      'docs/src/content/docs/guides/upgrading.mdx lists migration 0005 under "Upgrading from v1.1.0 to %%PINCHY_VERSION%%", outside its range 0006–0007',
+    ],
+  );
+});
+
+test("findMigrationNoteDrift is quiet when the list matches the journal", () => {
+  const notes = extractUpgradeMigrationNotes(
+    UPGRADING("`0005`–`0007` run automatically on startup."),
+  );
+  assert.deepEqual(
+    findMigrationNoteDrift(notes, ["0004_a", "0005_b", "0006_c", "0007_d"]),
+    [],
+  );
+});
+
+// What `pnpm release v1.2.0` leaves behind: the section it froze, and above it
+// the skeleton it opened for the next cycle.
+const AFTER_RELEASE = openNextUpgradeSection(
+  UPGRADING("`0005`–`0007` run automatically on startup.").replace(
+    "%%PINCHY_VERSION%%",
+    "v1.2.0",
+  ),
+  "1.1.0",
+  "1.2.0",
+);
+
+test("findMigrationNoteDrift sends a migration after a release to the open section, not the released one", () => {
+  // The released section is immutable; the only correct home for the next
+  // migration is the section the release opened, which has no migration list
+  // of its own yet.
+  const notes = extractUpgradeMigrationNotes(AFTER_RELEASE);
+  assert.deepEqual(
+    findMigrationNoteDrift(notes, ["0005_b", "0006_c", "0007_d", "0008_e"]),
+    [
+      'migration 0008 (0008_e) runs after "Upgrading from v1.1.0 to v1.2.0", but ' +
+        '"Upgrading from v1.2.0 to %%PINCHY_VERSION%%" has no Database migrations — ' +
+        "add a `### Database migrations` subsection to it in docs/src/content/docs/guides/upgrading.mdx",
+    ],
+  );
+});
+
+test("findMigrationNoteDrift is quiet about an open section with no migrations to list", () => {
+  const notes = extractUpgradeMigrationNotes(AFTER_RELEASE);
+  assert.deepEqual(
+    findMigrationNoteDrift(notes, ["0005_b", "0006_c", "0007_d"]),
+    [],
+  );
+});
+
+test("extractUpgradeMigrationNotes reads a single migration as a range of one", () => {
+  const mdx = AFTER_RELEASE.replace(
+    "## Upgrading from v1.1.0 to v1.2.0",
+    "### Database migrations\n\nThe migration `0008` runs automatically on startup.\n\n" +
+      "- `0008` — one column.\n\n## Upgrading from v1.1.0 to v1.2.0",
+  );
+  const notes = extractUpgradeMigrationNotes(mdx);
+  assert.deepEqual(notes, {
+    section: "Upgrading from v1.2.0 to %%PINCHY_VERSION%%",
+    from: "0008",
+    to: "0008",
+    listed: ["0008"],
+  });
+  assert.deepEqual(
+    findMigrationNoteDrift(notes, ["0006_c", "0007_d", "0008_e"]),
+    [],
+  );
+});
+
+test("extractUpgradeMigrationNotes does not end a section at a heading quoted in a code fence", () => {
+  const mdx = UPGRADING("`0005`–`0007` run automatically on startup.").replace(
+    "### Database migrations",
+    "```markdown\n## Document Access\n```\n\n### Database migrations",
+  );
+  assert.equal(
+    extractUpgradeMigrationNotes(mdx).section,
+    "Upgrading from v1.1.0 to %%PINCHY_VERSION%%",
+  );
+});
+
 test("findUndocumentedTools points at the page the reader would look on", () => {
   const problems = findUndocumentedTools(
     ["knowledge_search"],
@@ -329,6 +492,34 @@ test("every grantable tool is in the agent-permissions reference", () => {
     ),
     [],
   );
+});
+
+test("the newest upgrade notes list every database migration it runs", () => {
+  const journal = JSON.parse(
+    readFileSync(
+      join(REPO_ROOT, "packages/web/drizzle/meta/_journal.json"),
+      "utf8",
+    ),
+  ).entries.map((entry) => entry.tag);
+  assert.ok(
+    journal.length > 50,
+    `expected the full migration journal, found ${journal.length}`,
+  );
+  const notes = extractUpgradeMigrationNotes(
+    readFileSync(join(DOCS, "guides/upgrading.mdx"), "utf8"),
+  );
+  // The open section of a new cycle may list one migration, or none yet; a
+  // list that is short of the journal is findMigrationNoteDrift's to report.
+  // What must hold is that the reader found a list to compare against.
+  if ("missing" in notes) {
+    assert.match(notes.previous.to, /^\d{4}$/);
+  } else {
+    assert.ok(
+      notes.listed.length > 0,
+      `expected the newest section's list, found ${notes.listed.length}`,
+    );
+  }
+  assert.deepEqual(findMigrationNoteDrift(notes, journal), []);
 });
 
 test("no exemption outlives the thing it exempts", () => {

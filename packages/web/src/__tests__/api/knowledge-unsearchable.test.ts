@@ -48,8 +48,11 @@ const makeRequest = () =>
 const agentRow = {
   id: "agent-1",
   name: "Smithers",
+  allowedTools: ["knowledge_search"],
   pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr", "/data/legal"] } },
 };
+
+const noTotals = { no_text: 0, awaiting_conversion: 0 };
 
 describe("GET /api/agents/[agentId]/knowledge/unsearchable", () => {
   let GET: typeof import("@/app/api/agents/[agentId]/knowledge/unsearchable/route").GET;
@@ -58,7 +61,7 @@ describe("GET /api/agents/[agentId]/knowledge/unsearchable", () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue({ user: { id: "admin-1", role: "admin" } });
     mockGetAgentWithAccess.mockResolvedValue(agentRow);
-    mockListUnsearchableDocuments.mockResolvedValue({ documents: [], total: 0 });
+    mockListUnsearchableDocuments.mockResolvedValue({ documents: [], total: 0, totals: noTotals });
     GET = (await import("@/app/api/agents/[agentId]/knowledge/unsearchable/route")).GET;
   });
 
@@ -117,6 +120,7 @@ describe("GET /api/agents/[agentId]/knowledge/unsearchable", () => {
     mockGetAgentWithAccess.mockResolvedValueOnce({
       id: "agent-1",
       name: "Smithers",
+      allowedTools: [],
       pluginConfig: null,
     });
 
@@ -126,13 +130,14 @@ describe("GET /api/agents/[agentId]/knowledge/unsearchable", () => {
     expect(mockListUnsearchableDocuments).toHaveBeenCalledWith(DEFAULT_ORG_ID, []);
   });
 
-  it("returns the documents and the untruncated total", async () => {
+  it("returns the documents, the untruncated total and the total per reason", async () => {
     mockListUnsearchableDocuments.mockResolvedValueOnce({
       documents: [
-        { sourcePath: "/data/hr/AFNOR validation.pdf", status: "active" },
-        { sourcePath: "/data/hr/OLD/Expired ISO.pdf", status: "archived" },
+        { sourcePath: "/data/hr/AFNOR validation.pdf", status: "active", reason: "no_text" },
+        { sourcePath: "/data/hr/OLD/Expired ISO.pdf", status: "archived", reason: "no_text" },
       ],
       total: 25,
+      totals: { no_text: 21, awaiting_conversion: 4 },
     });
 
     const res = await GET(makeRequest(), ctx as never);
@@ -140,10 +145,23 @@ describe("GET /api/agents/[agentId]/knowledge/unsearchable", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       documents: [
-        { sourcePath: "/data/hr/AFNOR validation.pdf", status: "active" },
-        { sourcePath: "/data/hr/OLD/Expired ISO.pdf", status: "archived" },
+        { sourcePath: "/data/hr/AFNOR validation.pdf", status: "active", reason: "no_text" },
+        { sourcePath: "/data/hr/OLD/Expired ISO.pdf", status: "archived", reason: "no_text" },
       ],
       total: 25,
+      totals: { no_text: 21, awaiting_conversion: 4 },
+      searchesIndex: true,
     });
+  });
+
+  // Who converts a file waiting to be converted again depends on this: Pinchy
+  // queues that run on its own only for agents that search the index
+  // (office-format-upgrade.ts), so for any other agent it takes a reindex.
+  it("says the agent doesn't search the index when it lacks knowledge_search", async () => {
+    mockGetAgentWithAccess.mockResolvedValueOnce({ ...agentRow, allowedTools: ["pinchy_read"] });
+
+    const res = await GET(makeRequest(), ctx as never);
+
+    expect((await res.json()).searchesIndex).toBe(false);
   });
 });

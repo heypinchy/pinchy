@@ -1,6 +1,6 @@
 // Real-DB integration tests for the durable chat-session-error store that backs
 // the chat "paused" banner (Concern 1). Uses the real Postgres test database
-// (provisioned by global-setup.ts, truncated between tests by setup.ts).
+// (provisioned by global-setup.ts, emptied between tests by the integration reset).
 
 import { describe, it, expect } from "vitest";
 

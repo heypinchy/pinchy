@@ -1,21 +1,32 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { isOpenClawLocalBaseUrl } from "@/lib/openclaw-local-url";
 import { computeAllowedTools } from "@/lib/tool-registry";
+
+// The capability cache is process-wide and starts cold in every test (the
+// shared setup resets it). Loading it is one more `db.select()`, which would
+// shift every call-order-keyed db mock below. `@/lib/model-vision` is mocked
+// right after this, so the cache's contents never matter here — only that
+// loading it reads nothing. (Eight tests used to pass only because an earlier
+// test had warmed the cache; each failed when run alone.)
+vi.mock("@/lib/model-capabilities/cache", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/model-capabilities/cache")>()),
+  ensureModelCapabilityCacheLoaded: vi.fn(async () => undefined),
+}));
 
 vi.mock("@/lib/model-vision", () => ({
   isModelVisionCapable: vi.fn((modelId: string) => {
     const provider = modelId.split("/")[0];
     return ["anthropic", "google", "openai", "ollama-cloud"].includes(provider);
   }),
-  setOllamaLocalVisionModels: vi.fn().mockResolvedValue(undefined),
+  setOllamaLocalVisionModels: vi.fn(async () => undefined),
 }));
 
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
   const writeFileSyncMock = vi.fn();
   const readFileSyncMock = vi.fn();
-  const existsSyncMock = vi.fn().mockReturnValue(true);
+  const existsSyncMock = vi.fn(() => true);
   const mkdirSyncMock = vi.fn();
   const renameSyncMock = vi.fn();
   const chmodSyncMock = vi.fn();
@@ -41,15 +52,15 @@ vi.mock("fs", async (importOriginal) => {
 
 vi.mock("@/db", () => ({
   db: {
-    select: vi.fn().mockImplementation(() => ({
-      from: vi.fn().mockImplementation(() =>
+    select: vi.fn(() => ({
+      from: vi.fn(() =>
         Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockReturnValue(
+          innerJoin: vi.fn(() =>
             Object.assign(Promise.resolve([]), {
-              where: vi.fn().mockResolvedValue([]),
+              where: vi.fn(async () => []),
             })
           ),
-          where: vi.fn().mockResolvedValue([]),
+          where: vi.fn(async () => []),
         })
       ),
     })),
@@ -70,7 +81,7 @@ const { mockGetSetting, mockGetSettingsByPrefix, mockGetSettingsByKeys } = vi.ho
     "admin-smithers",
     "agent-id-with-bot",
   ];
-  const getSetting = vi.fn().mockResolvedValue(null);
+  const getSetting = vi.fn<typeof import("@/lib/settings").getSetting>(async () => null);
   return {
     mockGetSetting: getSetting,
     mockGetSettingsByPrefix: vi.fn(async (prefix: string) => {
@@ -92,7 +103,7 @@ vi.mock("@/lib/settings", () => ({
   getSetting: mockGetSetting,
   getSettingsByPrefix: mockGetSettingsByPrefix,
   getSettingsByKeys: mockGetSettingsByKeys,
-  setSetting: vi.fn().mockResolvedValue(undefined),
+  setSetting: vi.fn(async () => undefined),
 }));
 
 const { mockDecrypt } = vi.hoisted(() => ({
@@ -102,29 +113,32 @@ const { mockDecrypt } = vi.hoisted(() => ({
 vi.mock("@/lib/encryption", () => ({
   decrypt: (val: string) => mockDecrypt(val),
   encrypt: (val: string) => val,
-  getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
+  getOrCreateSecret: vi.fn(() => Buffer.alloc(32)),
 }));
 
 vi.mock("@/server/restart-state", () => ({
   restartState: { notifyRestart: vi.fn() },
 }));
 
-// Generic "OpenAI-compatible" providers (#894). Both entry points live in one
-// module: `listOpenAiCompatibleProviders` (model-provider emission in build.ts)
-// and `getDecryptedApiKey` (secrets bundle in secrets-bundle.ts). Default to an
-// empty list / no-key so every existing test in this file (which configures no
-// custom instances) is unaffected. Individual tests below override these.
-const { mockListOpenAiCompatibleProviders, mockListProvidersWithApiKeys, mockGetDecryptedApiKey } =
-  vi.hoisted(() => ({
-    mockListOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
-    mockListProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
-    mockGetDecryptedApiKey: vi.fn().mockResolvedValue(null),
-  }));
+// Generic "OpenAI-compatible" providers (#894). Regenerate reads every custom
+// provider ONCE, through `listProvidersWithApiKeys` (identity, base URL, models
+// and the decrypted key + version from one SELECT); the secrets bundle, the
+// models.providers emission and the default-model guard all use that read.
+// `listOpenAiCompatibleProviders` is mocked so a test can prove regenerate
+// never consults a second read. Default to empty lists so every existing test
+// in this file (which configures no custom instances) is unaffected.
+const { mockListOpenAiCompatibleProviders, mockListProvidersWithApiKeys } = vi.hoisted(() => ({
+  mockListOpenAiCompatibleProviders: vi.fn<
+    typeof import("@/lib/openai-compatible-providers").listOpenAiCompatibleProviders
+  >(async () => []),
+  mockListProvidersWithApiKeys: vi.fn<
+    typeof import("@/lib/openai-compatible-providers").listProvidersWithApiKeys
+  >(async () => []),
+}));
 
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: mockListOpenAiCompatibleProviders,
   listProvidersWithApiKeys: mockListProvidersWithApiKeys,
-  getDecryptedApiKey: mockGetDecryptedApiKey,
 }));
 
 // #894 backend redesign: build.ts's model-providers emission resolves each
@@ -140,10 +154,27 @@ const { mockResolveCustomProviderModels } = vi.hoisted(() => ({
 
 vi.mock("@/lib/openai-compatible-discovery", () => ({
   resolveCustomProviderModels: mockResolveCustomProviderModels,
+  // No live list cached: a refused provider's list comes from the existing
+  // file, else its snapshot.
+  cachedCustomProviderModels: vi.fn(() => undefined),
 }));
 
+// Emission re-checks each custom provider's saved base URL with the SSRF guard
+// (openai-compatible-stored-url.ts), which resolves hostnames. No real DNS in
+// this file: every name is unresolvable, which the guard lets through (fail
+// open), so the hostname fixtures below emit as before. The refusal test uses
+// an address literal, which is classified without DNS.
+vi.mock("dns/promises", () => {
+  const lookup = vi.fn(async () => {
+    throw Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
+  });
+  return { default: { lookup }, lookup };
+});
+
 const { mockValidateBuiltConfig } = vi.hoisted(() => ({
-  mockValidateBuiltConfig: vi.fn().mockReturnValue({ ok: true }),
+  mockValidateBuiltConfig: vi.fn<
+    typeof import("@/lib/openclaw-config/validate-built-config").validateBuiltConfig
+  >(() => ({ ok: true })),
 }));
 
 vi.mock("@/lib/openclaw-config/validate-built-config", () => ({
@@ -151,20 +182,28 @@ vi.mock("@/lib/openclaw-config/validate-built-config", () => ({
 }));
 
 const { mockedGetOrCreateGatewayToken } = vi.hoisted(() => ({
-  mockedGetOrCreateGatewayToken: vi.fn().mockResolvedValue("test-gateway-token"),
+  mockedGetOrCreateGatewayToken: vi.fn(async () => "test-gateway-token"),
 }));
 
 vi.mock("@/lib/gateway-token-source", () => ({
   getOrCreateGatewayToken: mockedGetOrCreateGatewayToken,
 }));
 
-const { mockWriteSecretsFile, mockReadSecretsFile } = vi.hoisted(() => ({
+const { mockWriteSecretsFile, mockReadSecretsFile, actualSecrets } = vi.hoisted(() => ({
   mockWriteSecretsFile: vi.fn(),
-  mockReadSecretsFile: vi.fn().mockReturnValue({}),
+  mockReadSecretsFile: vi.fn(() => ({})),
+  // The real functions, for tests that run them on top of the mocked fs
+  // (secretsUnreadableToPinchy).
+  actualSecrets: {} as Pick<
+    typeof import("@/lib/openclaw-secrets"),
+    "writeSecretsFile" | "readSecretsFile"
+  >,
 }));
 
 vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/openclaw-secrets")>();
+  actualSecrets.writeSecretsFile = actual.writeSecretsFile;
+  actualSecrets.readSecretsFile = actual.readSecretsFile;
   return {
     ...actual,
     writeSecretsFile: mockWriteSecretsFile,
@@ -199,12 +238,15 @@ vi.mock("@/lib/provider-models", () => {
   return {
     getDefaultModel: vi.fn(async (provider: string) => defaults.get(provider) ?? ""),
     fetchProviderModels,
-    fetchOllamaLocalModelsFromUrl: vi.fn().mockResolvedValue([]),
+    fetchOllamaLocalModelsFromUrl: vi.fn(async () => []),
   };
 });
 
 const { mockGetClient, mockConfigGet, mockConfigApply } = vi.hoisted(() => ({
-  mockGetClient: vi.fn(),
+  // Default: no WS client. A test simulating a connected client overrides it.
+  mockGetClient: vi.fn((): unknown => {
+    throw new Error("OpenClaw client not initialized");
+  }),
   mockConfigGet: vi.fn(),
   mockConfigApply: vi.fn(),
 }));
@@ -230,8 +272,19 @@ import {
   MEMORY_EMBEDDING_MODEL_PATH,
 } from "@/lib/openclaw-config";
 import { MAX_EFFECTIVE_CONTEXT_TOKENS } from "@/lib/openclaw-config/effective-context";
+import { OPENCLAW_GATEWAY_BIND, OPENCLAW_GATEWAY_MODE } from "@/lib/openclaw-config/paths";
+import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
-import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
+import {
+  getPendingConfigPushCount,
+  _resetConfigPushState,
+  nextRegenerateSequence,
+  noteUndeliveredConfigChange,
+  undeliveredConfigChange,
+  trackConfigPushStarted,
+  trackConfigPushSettled,
+  scheduleShrinkResume,
+} from "@/lib/openclaw-config/push-state";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
 import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
@@ -286,15 +339,26 @@ async function drainBackgroundCoroutine(): Promise<void> {
   await new Promise((r) => setImmediate(r));
 }
 
-// Top-level guard: vi.clearAllMocks() in each describe's beforeEach clears
-// call history but NOT mock implementations. A test that calls
-// mockGetClient.mockReturnValue({...}) to simulate a connected client would
-// pollute subsequent sibling describe blocks. This runs before every
-// describe-level beforeEach, resetting to "no WS client" as the baseline.
+// Every test starts from the mocks' defaults, whatever ran before it.
+//
+// vi.clearAllMocks() in the describe-level hooks clears call history only: an
+// implementation a test sets (a configured custom provider, a connected
+// client) and any `mockReturnValueOnce` it did not consume survive into the
+// next test. In file order every describe happened to re-set what it needs;
+// under `--sequence.shuffle` the swisscom-ai provider from the custom-provider
+// block showed up in "no provider configured" tests. So each module-level mock
+// carries its default as `vi.fn(impl)`, and vi.resetAllMocks() — which in
+// Vitest 4 restores exactly that impl and drops queued once-values — runs
+// before every describe-level beforeEach. A new default belongs in the
+// `vi.fn(impl)`, never in a chained `.mockReturnValue(...)`: reset drops those.
+//
+// Verify a change here by shuffling, not by reading:
+//   pnpm -C packages/web exec vitest run src/__tests__/lib/openclaw-config.test.ts \
+//     --sequence.shuffle --sequence.seed=<n>
+let envBeforeTest: NodeJS.ProcessEnv;
 beforeEach(() => {
-  mockGetClient.mockImplementation(() => {
-    throw new Error("OpenClaw client not initialized");
-  });
+  envBeforeTest = { ...process.env };
+  vi.resetAllMocks();
   // Same cross-describe class, one layer deeper. A push coroutine OUTLIVES the
   // test that spawned it — the not-connected path naps 2 s at a time for up to
   // 60 s, the rate-limit path parks 33–53 s — and on resume it calls into
@@ -309,7 +373,26 @@ beforeEach(() => {
   // one gets past the supersede check at all. See `_supersedePendingPushes`
   // in write.ts.
   _supersedePendingPushes();
+  // And the process-wide follow-up a stranded provider deletion queues
+  // (scheduleShrinkResume): it is a timer, not a coroutine, so superseding
+  // does not reach it — left alone it fires a regenerate into a later test.
+  _resetConfigPushState();
 });
+
+// Tests here set provider base URLs and E2E switches directly on process.env,
+// and several switch to fake timers; not every one undoes it on every path.
+afterEach(() => {
+  vi.useRealTimers();
+  for (const key of Object.keys(process.env)) {
+    if (!Object.hasOwn(envBeforeTest, key)) Reflect.deleteProperty(process.env, key);
+  }
+  Object.assign(process.env, envBeforeTest);
+});
+
+// The regenerate queue is reset after every test by the shared setup
+// (src/test-setup.ts): a test that fails while it holds a run open (the
+// "overlapping regenerates" block does, on purpose) would otherwise leave that
+// run in flight, and every later regenerate in this file would wait behind it.
 
 // Drift guard: re-export the shared `isOpenClawLocalBaseUrl` (see
 // @/lib/openclaw-local-url) under the local name used by the assertions in
@@ -1548,9 +1631,10 @@ describe("regenerateOpenClawConfig", () => {
       if (key === "default_provider") return "acme-llm";
       return null;
     });
-    mockListOpenAiCompatibleProviders.mockResolvedValueOnce([
+    // Regenerate reads custom providers once, keys included (see
+    // listProvidersWithApiKeys); the default-model guard uses that same read.
+    mockListProvidersWithApiKeys.mockResolvedValueOnce([
       {
-        id: "row-1",
         slug: "acme-llm",
         displayName: "Acme LLM",
         baseUrl: "https://acme.example.com/v1",
@@ -1566,9 +1650,8 @@ describe("regenerateOpenClawConfig", () => {
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           },
         ],
-        keyHint: "7Z8x",
-        createdAt: new Date("2026-01-01T00:00:00.000Z"),
-        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        apiKey: "acme-key",
+        keyVersion: "0123456789abcdef",
       },
     ]);
     vi.mocked(getDefaultModel).mockResolvedValueOnce("acme-llm/acme-large");
@@ -4978,6 +5061,58 @@ describe("regenerateOpenClawConfig", () => {
       }
     });
   });
+
+  // A change a push gave up on is owed to OpenClaw's next connect
+  // (noteUndeliveredConfigChange). Only a push used to settle it, so a
+  // regenerate that found its target already in openclaw.json — and therefore
+  // pushed nothing — left it owed, and every later reconnect ran a regenerate,
+  // a secrets.json write and a reload request, until Pinchy restarted.
+  describe("a config change owed to OpenClaw's next connect", () => {
+    /** Regenerate once from no file, and return the openclaw.json that wrote. */
+    async function settleOnDiskTarget(): Promise<string> {
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+      const onDisk = writtenOpenClawConfig(mockedWriteFileSync);
+      mockedWriteFileSync.mockClear();
+      mockedReadFileSync.mockReturnValue(onDisk);
+      return onDisk;
+    }
+
+    it("is settled by a regenerate that finds its target already in openclaw.json", async () => {
+      await settleOnDiskTarget();
+      // A push that started before the next regenerate gave up on a change —
+      // a provider deletion, which also queued its follow-up regenerate.
+      const strandedSeq = nextRegenerateSequence();
+      noteUndeliveredConfigChange(strandedSeq);
+      scheduleShrinkResume(vi.fn(), strandedSeq);
+
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+
+      expect(findOpenClawConfigWrite(mockedWriteFileSync), "precondition: unchanged").toBe(
+        undefined
+      );
+      expect(undeliveredConfigChange()).toBe(false);
+      expect(globalThis.__pinchyConfigPushState?.shrinkResume, "follow-up cancelled").toBe(
+        undefined
+      );
+    });
+
+    it("stays owed while a push is still in flight, which may still land other content", async () => {
+      await settleOnDiskTarget();
+      noteUndeliveredConfigChange(nextRegenerateSequence());
+      trackConfigPushStarted();
+
+      try {
+        await regenerateOpenClawConfig();
+        await drainBackgroundCoroutine();
+      } finally {
+        trackConfigPushSettled();
+      }
+
+      expect(undeliveredConfigChange()).toBe(true);
+    });
+  });
 });
 
 describe("sanitizeOpenClawConfig", () => {
@@ -5044,7 +5179,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
     mockedExistsSync.mockReturnValue(true);
   });
 
-  it("writes overrides when the file is empty / missing all four fields", () => {
+  it("writes every override when the file is empty / missing", () => {
     // Bind-mount-empty scenario: e.g. Pinchy on the host writing into
     // /tmp/pinchy-integration-openclaw before OC's first start, where the
     // bind-mount target doesn't carry the image's baked-in config.
@@ -5073,6 +5208,120 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // seed them off up front so the first regenerate isn't a missing-then-added
     // diff that triggers a SIGUSR1 restart.
     expect(written.gateway?.terminal?.enabled).toBe(false);
+    // OpenClaw has no reload rule for `media`, so the first regenerate adding
+    // ttlHours would restart the gateway — seed it up front too.
+    expect(written.media?.ttlHours).toBe(48);
+    // OpenClaw refuses to start on a config without gateway.mode, and adding
+    // mode/bind in the first regenerate is a restart-class `gateway` diff.
+    expect(written.gateway?.mode).toBe("local");
+    expect(written.gateway?.bind).toBe("lan");
+  });
+
+  it("seeds media.ttlHours when it is missing and keeps OpenClaw's media siblings", () => {
+    // Installs created before the media TTL existed carry every other override
+    // but no `media` block; the seed must add ttlHours without dropping fields
+    // OpenClaw may have enriched under `media`.
+    const existing = {
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: {
+          enabled: false,
+          allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+        },
+        terminal: { enabled: false },
+      },
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+      media: { maxBytes: 1024 },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(true);
+    const written = JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1]));
+    expect(written.media).toEqual({ maxBytes: 1024, ttlHours: 48 });
+  });
+
+  // One fixture per guard condition: every override correct except one. Each row
+  // fails if its condition is dropped from the seed's skip check — a fixture
+  // that misses two fields would stay green with either condition gone.
+  const allOverridesCorrect = () => ({
+    gateway: {
+      mode: "local",
+      bind: "lan",
+      controlUi: {
+        enabled: false,
+        allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+      },
+      terminal: { enabled: false },
+    },
+    discovery: { mdns: { mode: "off" } },
+    update: { checkOnStart: false },
+    canvasHost: { enabled: false },
+    media: { ttlHours: 48 },
+  });
+  type Fixture = ReturnType<typeof allOverridesCorrect>;
+  const onlyOneOverrideOff: Array<{
+    field: string;
+    breakIt: (cfg: Fixture) => void;
+    expectFixed: (written: Fixture) => void;
+  }> = [
+    {
+      field: "gateway.mode (missing)",
+      breakIt: (c) => delete (c.gateway as Partial<Fixture["gateway"]>).mode,
+      expectFixed: (w) => expect(w.gateway.mode).toBe("local"),
+    },
+    {
+      field: "gateway.bind",
+      breakIt: (c) => (c.gateway.bind = "loopback"),
+      expectFixed: (w) => expect(w.gateway.bind).toBe("lan"),
+    },
+    {
+      field: "gateway.controlUi.enabled",
+      breakIt: (c) => (c.gateway.controlUi.enabled = true),
+      expectFixed: (w) => expect(w.gateway.controlUi.enabled).toBe(false),
+    },
+    {
+      field: "discovery.mdns.mode",
+      breakIt: (c) => (c.discovery.mdns.mode = "auto"),
+      expectFixed: (w) => expect(w.discovery.mdns.mode).toBe("off"),
+    },
+    {
+      field: "update.checkOnStart",
+      breakIt: (c) => (c.update.checkOnStart = true),
+      expectFixed: (w) => expect(w.update.checkOnStart).toBe(false),
+    },
+    {
+      field: "canvasHost.enabled",
+      breakIt: (c) => (c.canvasHost.enabled = true),
+      expectFixed: (w) => expect(w.canvasHost.enabled).toBe(false),
+    },
+  ];
+  for (const row of onlyOneOverrideOff) {
+    it(`writes when only ${row.field} is off`, () => {
+      const existing = allOverridesCorrect();
+      row.breakIt(existing);
+      mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+      expect(seedRestartClassOverridesIfMissing()).toBe(true);
+      row.expectFixed(JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1])));
+    });
+  }
+
+  it("refuses to seed (no write) when openclaw.json is EACCES", () => {
+    // readExistingConfig throws on a persistent EACCES (OpenClaw's 0600
+    // restart-write window) precisely so callers don't treat the file as empty:
+    // writing the overrides onto `{}` would replace agents, models, plugins,
+    // secrets and the gateway token with just the overrides.
+    mockedReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
+
+    expect(seedRestartClassOverridesIfMissing()).toBe(false);
+    expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
   });
 
   it("returns false (no write) when file already has all overrides — production case", () => {
@@ -5091,6 +5340,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5105,12 +5355,18 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // Pre-2026.5.28 Pinchy wrote controlUi.enabled=false WITHOUT allowedOrigins.
     // On upgrade, OpenClaw seeds allowedOrigins in memory only; if Pinchy never
     // persists it, the next regenerate drops the field and OC restarts. The seed
-    // must add it even when the other four overrides are already correct.
+    // must add it even when every other override is already correct.
     const existing = {
-      gateway: { mode: "local", bind: "lan", controlUi: { enabled: false } },
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: { enabled: false },
+        terminal: { enabled: false },
+      },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5143,6 +5399,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5154,15 +5411,54 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.gateway.terminal.enabled).toBe(false);
   });
 
-  it("preserves existing fields outside the four restart-class paths", () => {
-    // Don't clobber other Pinchy/OC state — only flip the four restart-class
+  it("pins gateway.mode/bind when they differ and every other override is correct", () => {
+    // OpenClaw refuses to start on a config without gateway.mode, and a
+    // regenerate that changes mode/bind is a restart-class `gateway` diff.
+    // buildGatewayBlock always writes local/lan, so the seed must too.
+    const existing = {
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        controlUi: {
+          enabled: false,
+          allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+        },
+        terminal: { enabled: false },
+      },
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(true);
+    const written = JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1]));
+    expect(written.gateway.mode).toBe("local");
+    expect(written.gateway.bind).toBe("lan");
+  });
+
+  it("matches entrypoint.sh's minimal seed to the gateway constants the regenerate writes", async () => {
+    // The production image's entrypoint writes a minimal openclaw.json when the
+    // volume has none (pinchy mounts the volume first, so the OpenClaw image's
+    // baked config never lands). If its mode/bind drift from what
+    // buildGatewayBlock writes, the first regenerate is a gateway restart.
+    expect(await readEntrypointSeed()).toEqual({
+      gateway: { mode: OPENCLAW_GATEWAY_MODE, bind: OPENCLAW_GATEWAY_BIND },
+    });
+  });
+
+  it("preserves existing fields outside the restart-class paths", () => {
+    // Don't clobber other Pinchy/OC state — only flip the restart-class
     // overrides. The agents/plugins/secrets/models blocks must round-trip
     // unchanged.
     const existing = {
       meta: { version: "5.3.0", lastTouchedAt: "T1" },
       gateway: {
         mode: "local",
-        bind: "lan",
+        bind: "loopback", // needs flip
         auth: { mode: "token", token: "preserved-token" },
         controlUi: { enabled: true, allowedOrigins: ["http://localhost:18789"] },
       },
@@ -5179,6 +5475,8 @@ describe("seedRestartClassOverridesIfMissing", () => {
     const written = JSON.parse(String(writtenAtomic![1]));
 
     // Restart-class overrides flipped to Pinchy values:
+    expect(written.gateway.mode).toBe("local");
+    expect(written.gateway.bind).toBe("lan");
     expect(written.gateway.controlUi.enabled).toBe(false);
     expect(written.discovery.mdns.mode).toBe("off");
     expect(written.update.checkOnStart).toBe(false);
@@ -5186,8 +5484,6 @@ describe("seedRestartClassOverridesIfMissing", () => {
 
     // Non-restart-class fields preserved byte-for-byte:
     expect(written.meta).toEqual(existing.meta);
-    expect(written.gateway.mode).toBe("local");
-    expect(written.gateway.bind).toBe("lan");
     expect(written.gateway.auth).toEqual(existing.gateway.auth);
     expect(written.gateway.controlUi.allowedOrigins).toEqual(["http://localhost:18789"]);
     expect(written.agents).toEqual(existing.agents);
@@ -5233,7 +5529,287 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.env).toEqual(existing.env);
     expect(written.models).toEqual(existing.models);
   });
+
+  // The seed exists so the first real regenerate is a HOT reload. Every field it
+  // misses becomes a restart-class diff on a fresh install — and an in-process
+  // gateway restart aborts whatever run is in flight ("Agent run belongs to a
+  // stale gateway lifecycle"). `media.ttlHours` was exactly such a miss: build.ts
+  // has written it since the media-TTL change, the seed and the baked config never
+  // did, and OpenClaw has no reload rule for `media`, so it restarts. The
+  // integration suite lost a user's message to it (CI run 41569393728).
+  //
+  // A list of "the restart-class fields" is the hand-maintained mirror that
+  // missed it, so these tests ask OpenClaw instead: the installed binary's own
+  // reload planner, plus the reload rules of its default-enabled bundled plugins,
+  // judge the diff between the booted baseline and the first post-wizard
+  // regenerate.
+  describe("first post-wizard regenerate is not restart-class (OpenClaw's own reload planner)", () => {
+    const readBaked = async (): Promise<Record<string, unknown>> => {
+      const fsActual = await vi.importActual<typeof import("fs")>("fs");
+      const pathMod = await import("path");
+      return JSON.parse(
+        fsActual.readFileSync(
+          pathMod.resolve(__dirname, "../../../../../config/openclaw.json"),
+          "utf-8"
+        )
+      ) as Record<string, unknown>;
+    };
+
+    // What is on the volume before Pinchy's boot seeds run. OpenClaw's own
+    // startup writes nothing to it (2026.7.1: `loadGatewayStartupConfigSnapshot`
+    // never persists, and an empty file stops it with "existing config is missing
+    // gateway.mode"), so the seeded file IS the baseline its first reload diffs.
+    //
+    // All four converge on the same seeded baseline — that convergence is the
+    // point. Each case still guards something different: the pre-media one is
+    // the only case that fails if `needsMediaTtl` is dropped from the skip check
+    // (in the others another override already forces the write), and the baked
+    // one pins config/openclaw.json to the seed.
+    const startingFiles: Array<{
+      name: string;
+      file: () => Promise<Record<string, unknown> | null>;
+      expectNoSeedWrite?: boolean;
+    }> = [
+      // A production-image fresh install: pinchy mounts the shared volume first,
+      // so the OpenClaw image's baked file never reaches it, and entrypoint.sh
+      // writes its minimal seed. CI run 41569393728 started from this.
+      { name: "entrypoint.sh's minimal seed (production image)", file: readEntrypointSeed },
+      {
+        name: "the baked config/openclaw.json (image copy-up)",
+        file: readBaked,
+        expectNoSeedWrite: true,
+      },
+      // The dev image and a host-run Pinchy have no entrypoint seed.
+      { name: "no openclaw.json (dev image / host-run Pinchy)", file: async () => null },
+      {
+        // The seed baseline as it looked before the media TTL: every other
+        // override present, no `media`. The seed is the only thing that adds it
+        // here — this case fails if the seed stops doing so, which the
+        // baked-config case cannot see.
+        name: "a pre-media-TTL seed baseline",
+        file: async () => {
+          const { media: _media, ...rest } = await readBaked();
+          return rest;
+        },
+      },
+    ];
+
+    const wizardProviders: Array<{ name: string; model: string; setting: Record<string, string> }> =
+      [
+        {
+          name: "local Ollama",
+          model: "ollama/llama3.2",
+          setting: { ollama_local_url: "http://host.docker.internal:11434" },
+        },
+        {
+          name: "Anthropic with an API key",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          setting: { anthropic_api_key: "sk-ant-decrypted" },
+        },
+      ];
+
+    for (const start of startingFiles) {
+      for (const provider of wizardProviders) {
+        it(`starting from ${start.name}, wizard on ${provider.name}`, async () => {
+          // Boot, in bootInits order: restart-class seed, then the gateway token.
+          const initial = await start.file();
+          let onDisk: string | null = initial === null ? null : JSON.stringify(initial);
+          mockedReadFileSync.mockImplementation(() => {
+            if (onDisk === null) {
+              throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+            }
+            return onDisk;
+          });
+          const persistSeedWrite = () => {
+            const write = findOpenClawConfigWrite(mockedWriteFileSync);
+            if (write) onDisk = String(write[1]);
+            mockedWriteFileSync.mockClear();
+          };
+          const seedWrote = seedRestartClassOverridesIfMissing();
+          persistSeedWrite();
+          // The baked file must already be what the seed would produce, or the
+          // two have drifted apart.
+          if (start.expectNoSeedWrite) expect(seedWrote).toBe(false);
+          await seedGatewayTokenIfMissing();
+          persistSeedWrite();
+          const baseline = JSON.parse(onDisk ?? "{}") as Record<string, unknown>;
+
+          // The setup wizard's regenerate: Smithers on the chosen provider.
+          mockedDb.select.mockReturnValue({
+            from: mockFrom([
+              { id: "smithers", name: "Smithers", model: provider.model, createdAt: new Date() },
+            ]),
+          } as never);
+          mockedGetSetting.mockImplementation(async (key: string) => provider.setting[key] ?? null);
+          await regenerateOpenClawConfig();
+          const next = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync)) as Record<
+            string,
+            unknown
+          >;
+
+          const planner = await loadOpenClawReloadPlanner();
+          const changedPaths = planner.diffConfigPaths(baseline, next);
+
+          // The scenario must be real: a regenerate that rebuilt the baseline
+          // unchanged would make the restart assertions pass on an empty diff.
+          expect(changedPaths).toEqual(expect.arrayContaining(["agents", "models"]));
+          expect(planner.buildGatewayReloadPlan(changedPaths).restartReasons).toEqual([]);
+          expect(changedPaths.filter(planner.restartsViaPluginRule)).toEqual([]);
+        });
+      }
+    }
+  });
 });
+
+/**
+ * The minimal openclaw.json that entrypoint.sh writes when the shared volume has
+ * none — read from the script itself, so a change there is tested here. Throws if
+ * the seed line can no longer be found.
+ */
+async function readEntrypointSeed(): Promise<Record<string, unknown>> {
+  const fsActual = await vi.importActual<typeof import("fs")>("fs");
+  const pathMod = await import("path");
+  const script = fsActual.readFileSync(
+    pathMod.resolve(__dirname, "../../../../../entrypoint.sh"),
+    "utf-8"
+  );
+  const match = /printf '(\{.*\})\\n' > \/openclaw-config\/openclaw\.json/.exec(script);
+  if (!match) {
+    throw new Error("entrypoint.sh no longer seeds openclaw.json with a printf'd JSON literal.");
+  }
+  return JSON.parse(match[1]) as Record<string, unknown>;
+}
+
+/**
+ * Load OpenClaw's REAL config-reload planner from the installed `openclaw`
+ * package: `diffConfigPaths` + `buildGatewayReloadPlan`, the two functions its
+ * config watcher runs to decide hot reload vs gateway restart. They are not part
+ * of the public exports, so this finds the bundled chunk and reads the export
+ * aliases from its `export { … }` line. If a bump renames or restructures them,
+ * this throws — the signal to re-verify the contract, never a silent pass.
+ *
+ * The chunk's planner sees no plugin registry, but a running gateway merges the
+ * `reload` rules of the plugins it loads, sorted with the base rules by prefix
+ * length — so canvas's `plugins.allow` restart rule beats the hot `plugins` one.
+ * `restartsViaPluginRule` covers that: it imports every bundled plugin OpenClaw
+ * enables by default (`enabledByDefault: true`) and reports a path whose
+ * longest-matching plugin rule is a restart. As of 2026.7.1 that is canvas
+ * (`plugins.enabled/allow/deny`, `plugins.entries.canvas`) and browser
+ * (`browser`, whose rules live in a sibling chunk — hence importing the entry
+ * rather than reading its source). The loader throws if either stops declaring
+ * static rules, so a rename or a move to runtime `registerReload()` is a red
+ * test rather than a quietly smaller check. Third-party plugins Pinchy loads
+ * declare no reload rules.
+ *
+ * This is a deliberate over-approximation: it assumes every default-enabled
+ * plugin is loaded, while Pinchy's own `plugins.allow` keeps canvas out of a
+ * configured gateway (CI shows `plugins.allow` changes hot-reloading there). It
+ * matters only before Pinchy's first regenerate, when OpenClaw runs its
+ * defaults. Today that diff touches `plugins` as a whole (the seeded file has
+ * no `plugins` block), which no plugin rule matches. If a `plugins` block ever
+ * reaches the seeded baseline, a red here means "check this against a real
+ * gateway", not necessarily a proven restart.
+ */
+async function loadOpenClawReloadPlanner(): Promise<{
+  diffConfigPaths: (prev: unknown, next: unknown) => string[];
+  buildGatewayReloadPlan: (paths: string[]) => { restartReasons: string[] };
+  restartsViaPluginRule: (path: string) => boolean;
+}> {
+  const { createRequire } = await import("module");
+  const { pathToFileURL } = await import("url");
+  const pathMod = await import("path");
+  const fsActual = await vi.importActual<typeof import("fs")>("fs");
+  const require = createRequire(import.meta.url);
+  const dist = pathMod.dirname(require.resolve("openclaw"));
+  const chunks = fsActual.readdirSync(dist).filter((n) => /^config-reload-plan-.*\.js$/.test(n));
+  if (chunks.length !== 1) {
+    throw new Error(
+      `Expected one config-reload-plan chunk in ${dist}, found ${String(chunks.length)} — re-verify the reload contract against the installed openclaw version.`
+    );
+  }
+  const file = pathMod.join(dist, chunks[0]);
+  const source = fsActual.readFileSync(file, "utf-8");
+  const alias = (name: string): string => {
+    const match = new RegExp(`\\b${name} as (\\w+)`).exec(source);
+    if (!match) {
+      throw new Error(`${chunks[0]} no longer exports ${name} — re-verify the reload contract.`);
+    }
+    return match[1];
+  };
+  const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+  const diffConfigPaths = mod[alias("diffConfigPaths")];
+  const buildGatewayReloadPlan = mod[alias("buildGatewayReloadPlan")];
+  if (typeof diffConfigPaths !== "function" || typeof buildGatewayReloadPlan !== "function") {
+    throw new Error(`${chunks[0]} exports are not functions — re-verify the reload contract.`);
+  }
+
+  type PluginRule = { prefix: string; restart: boolean };
+  const pluginRules: PluginRule[] = [];
+  const pluginsWithRules = new Set<string>();
+  const extensions = pathMod.join(dist, "extensions");
+  for (const dir of fsActual.readdirSync(extensions)) {
+    const manifestPath = pathMod.join(extensions, dir, "openclaw.plugin.json");
+    const indexPath = pathMod.join(extensions, dir, "index.js");
+    if (!fsActual.existsSync(manifestPath) || !fsActual.existsSync(indexPath)) continue;
+    const manifest = JSON.parse(fsActual.readFileSync(manifestPath, "utf-8")) as {
+      enabledByDefault?: boolean;
+    };
+    if (manifest.enabledByDefault !== true) continue;
+    const entry = (await import(pathToFileURL(indexPath).href)) as {
+      default?: { reload?: Record<string, unknown> };
+    };
+    const reload = entry.default?.reload;
+    if (reload === undefined) continue;
+    for (const [key, restart] of [
+      ["restartPrefixes", true],
+      ["hotPrefixes", false],
+      ["noopPrefixes", false],
+    ] as const) {
+      const prefixes = reload[key] ?? [];
+      if (!Array.isArray(prefixes) || prefixes.some((p) => typeof p !== "string")) {
+        throw new Error(
+          `extensions/${dir} reload.${key} is not a string[] — re-verify the reload contract.`
+        );
+      }
+      for (const prefix of prefixes as string[]) pluginRules.push({ prefix, restart });
+      if ((prefixes as string[]).length > 0) pluginsWithRules.add(dir);
+    }
+  }
+  // The plugins known to declare static reload rules in 2026.7.1. One of them
+  // renaming its entry, dropping `reload`, or moving its rules into a runtime
+  // `registerReload()` would otherwise shrink this check without failing it.
+  for (const expected of ["browser", "canvas"]) {
+    if (!pluginsWithRules.has(expected)) {
+      throw new Error(
+        `extensions/${expected} no longer declares static reload rules — re-verify the reload contract.`
+      );
+    }
+  }
+  if (!pluginRules.some((rule) => rule.restart)) {
+    throw new Error(
+      `No default-enabled bundled plugin in ${extensions} declares reload.restartPrefixes — re-verify the reload contract.`
+    );
+  }
+  const restartsViaPluginRule = (path: string): boolean => {
+    const matching = pluginRules
+      .filter((rule) => path === rule.prefix || path.startsWith(`${rule.prefix}.`))
+      .sort((a, b) => b.prefix.length - a.prefix.length);
+    return matching[0]?.restart === true;
+  };
+  // The matcher must flag at least one rule it was handed, or the assertion
+  // that uses it could never fail.
+  if (!pluginRules.some((rule) => rule.restart && restartsViaPluginRule(rule.prefix))) {
+    throw new Error("restartsViaPluginRule flags none of the plugin restart rules it loaded.");
+  }
+
+  return {
+    diffConfigPaths: diffConfigPaths as (prev: unknown, next: unknown) => string[],
+    buildGatewayReloadPlan: buildGatewayReloadPlan as (paths: string[]) => {
+      restartReasons: string[];
+    },
+    restartsViaPluginRule,
+  };
+}
 
 describe("seedGatewayTokenIfMissing", () => {
   // Background: OC 2026.5.12+ strictly requires gateway.auth.token in
@@ -8605,6 +9181,847 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
   });
 });
 
+// A deliberate removal must not look like the #311 race to the size guard.
+//
+// A large OpenAI-compatible provider is most of an install's openclaw.json: 40
+// discovered models at ~450 bytes each dwarf everything else Pinchy emits.
+// Deleting it legitimately shrinks the file by far more than half, and the #311
+// guard used to read that as "regenerate ran through a DB-loading race" — so the
+// write was refused, nothing was pushed, and OpenClaw kept serving the deleted
+// provider (and its key reference). Worse, every LATER regenerate computed the
+// same small payload against the same large file and was refused too: the
+// config froze until someone hand-edited openclaw.json.
+//
+// The guard now measures against the existing file with the DELETED providers'
+// bytes discounted — but only while the new payload still carries at least one
+// provider. A DB read that came back empty (no providers at all), a kept
+// provider whose discovered catalogue shrank or collapsed, and any shrink
+// OUTSIDE models.providers still trip it exactly as before.
+describe("regenerateOpenClawConfig size-drop guard vs deliberate provider removal", () => {
+  function makeLargeCustomProvider() {
+    return {
+      id: "prov-big",
+      slug: "acme-llm",
+      displayName: "Acme LLM",
+      baseUrl: "https://acme.example/v1",
+      models: Array.from({ length: 40 }, (_, i) => ({
+        id: `acme-model-${i}-with-a-realistically-long-identifier`,
+        name: `Acme Model ${i} (realistic display name)`,
+        contextWindow: 128000,
+        maxTokens: 8192,
+        reasoning: false,
+        vision: false,
+        input: ["text"],
+        cost: { input: 0.5, output: 1.5, cacheRead: 0.05, cacheWrite: 0.5 },
+      })),
+      keyHint: "cret",
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+    };
+  }
+
+  const ACME_KEY_VERSION = "00000000000000ac";
+  const ACME_SLOT = `acme-llm@${ACME_KEY_VERSION}`;
+
+  /** The one row regenerate reads for a custom provider (listProvidersWithApiKeys). */
+  function keyedRow(provider: ReturnType<typeof makeLargeCustomProvider>) {
+    const { slug, displayName, baseUrl, models } = provider;
+    return { slug, displayName, baseUrl, models, apiKey: "acme-key", keyVersion: ACME_KEY_VERSION };
+  }
+
+  /** Regenerate with the given DB state and return the openclaw.json it wrote. */
+  async function regenerateAndCapture(): Promise<string> {
+    mockedWriteFileSync.mockClear();
+    await regenerateOpenClawConfig();
+    return writtenOpenClawConfig(mockedWriteFileSync);
+  }
+
+  function rejectedDumps() {
+    return mockedWriteFileSync.mock.calls.filter(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes(".regenerate-rejected.")
+    );
+  }
+
+  /**
+   * Every openclaw.json Pinchy itself wrote, each checked to be the key-less
+   * bridge (keyless-bridge.ts): the on-disk file with the deleted provider as
+   * a stub that keeps its models and names no key. Never the shrink itself —
+   * that only ever reaches OpenClaw through config.apply.
+   */
+  function keylessBridgesWritten(existing: string): string[] {
+    const deleted = JSON.parse(existing).models.providers["acme-llm"];
+    const writes = mockedWriteFileSync.mock.calls
+      .filter(isOpenClawConfigWrite)
+      .map((c) => String(c[1]));
+    for (const written of writes) {
+      expect(Buffer.byteLength(written), "Pinchy never file-writes the shrink").toBeGreaterThan(
+        Buffer.byteLength(existing) * 0.5
+      );
+      const stub = JSON.parse(written).models.providers["acme-llm"];
+      expect(stub, "the deleted provider stays, as a key-less stub").not.toHaveProperty("apiKey");
+      expect(stub.models).toEqual(deleted.models);
+    }
+    return writes;
+  }
+
+  /** The provider apiKey SecretRef ids in `file` that `secrets` cannot resolve to a string. */
+  function unresolvable(file: string, secrets: Record<string, unknown>): string[] {
+    const providers = (JSON.parse(file).models?.providers ?? {}) as Record<
+      string,
+      { apiKey?: { id?: string } }
+    >;
+    return Object.values(providers)
+      .map((p) => p.apiKey?.id)
+      .filter((id): id is string => typeof id === "string")
+      .filter((id) => {
+        const value = id
+          .split("/")
+          .slice(1)
+          .reduce<unknown>(
+            (node, seg) =>
+              node && typeof node === "object" ? (node as Record<string, unknown>)[seg] : undefined,
+            secrets
+          );
+        return typeof value !== "string";
+      });
+  }
+
+  /**
+   * secrets.json as production has it: Pinchy (uid 999) cannot read it —
+   * fix-config-permissions.sh chowns it to root:root 0600 every 50 ms. Here
+   * the mocked `fs.readFileSync` throws EACCES for its path, and that is the
+   * one call both of Pinchy's reads of it go through: `readSecretsFile`, and
+   * `writeSecretsFile`'s read of the previous file (for its reload flag and
+   * the identical-write skip). Both run unmocked on top of it — the real
+   * `writeSecretsFile` writes through the mocked fs, so nothing reaches disk —
+   * and `onWrite` sees each bundle just before it is written. Every other
+   * read answers `readOpenClawJson()`.
+   */
+  function secretsUnreadableToPinchy(
+    readOpenClawJson: () => string,
+    onWrite: (bundle: Record<string, unknown>) => void
+  ) {
+    const secretsPath = process.env.OPENCLAW_SECRETS_PATH || "/openclaw-secrets/secrets.json";
+    mockedReadFileSync.mockImplementation((path) => {
+      if (String(path) === secretsPath) {
+        throw Object.assign(new Error(`EACCES: permission denied, open '${secretsPath}'`), {
+          code: "EACCES",
+        });
+      }
+      return readOpenClawJson();
+    });
+    mockReadSecretsFile.mockImplementation(() => actualSecrets.readSecretsFile());
+    mockWriteSecretsFile.mockImplementation((bundle: Record<string, unknown>) => {
+      onWrite(bundle);
+      return actualSecrets.writeSecretsFile(bundle);
+    });
+    expect(
+      () => actualSecrets.readSecretsFile(),
+      "precondition: Pinchy cannot read secrets.json"
+    ).toThrow(/EACCES/);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetOrCreateGatewayToken.mockResolvedValue("test-gateway-token");
+    mockedExistsSync.mockReturnValue(true);
+    mockReadSecretsFile.mockReturnValue({});
+    mockValidateBuiltConfig.mockReturnValue({ ok: true });
+    mockedDb.select.mockReturnValue({ from: mockFrom([]) } as never);
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    mockResolveCustomProviderModels.mockImplementation(async (p: { models: unknown }) => p.models);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+  });
+
+  // vi.clearAllMocks() keeps implementations, and the describes below this one
+  // do not reset all of them: leave no large on-disk config or custom provider
+  // behind for them to regenerate against.
+  afterEach(() => {
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+  });
+
+  /**
+   * The on-disk config of an install with Anthropic AND a 40-model custom
+   * provider — produced by Pinchy's own regenerate, so the sizes are real.
+   */
+  async function installWithLargeCustomProvider(): Promise<string> {
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-test" : null
+    );
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeLargeCustomProvider()]);
+    mockListProvidersWithApiKeys.mockResolvedValue([keyedRow(makeLargeCustomProvider())]);
+    const existing = await regenerateAndCapture();
+    expect(JSON.parse(existing).models.providers).toHaveProperty("acme-llm");
+    return existing;
+  }
+
+  it("delivers the config to OpenClaw when a large custom provider is deleted and another provider remains", async () => {
+    const existing = await installWithLargeCustomProvider();
+    mockedReadFileSync.mockReturnValue(existing);
+    // A connected OpenClaw that enforces its own 50% rule. (Pinchy never
+    // file-writes a provider-deletion shrink — not even without a client, see
+    // push-size-drop.test.ts — so the deletion reaching OpenClaw is the proof
+    // the #311 guard let it through.)
+    let ocFile = existing;
+    const applied: string[] = [];
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => ({
+          hash: `h${applied.length}`,
+          config: JSON.parse(ocFile),
+          parsed: JSON.parse(ocFile),
+        })),
+        apply: vi.fn(async (raw: string) => {
+          applied.push(raw);
+          const base = Buffer.byteLength(ocFile);
+          const next = Buffer.byteLength(raw);
+          if (next < Math.floor(base * 0.5)) {
+            throw new Error(`Config write rejected: x (size-drop:${base}->${next}).`);
+          }
+          ocFile = raw;
+        }),
+      },
+    });
+
+    // The admin deletes the custom provider; Anthropic is still configured.
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+      for (let i = 0; i < 500 && getPendingConfigPushCount() > 0; i++) {
+        await new Promise((r) => setImmediate(r));
+      }
+
+      expect(
+        applied.length,
+        `deleting the provider must reach OpenClaw; guard said: ${errorSpy.mock.calls.flat().join(" ")}`
+      ).toBeGreaterThan(0);
+      // Precondition that makes this a real repro: the deletion more than
+      // halves the file, i.e. exactly what the #311 guard used to refuse.
+      expect(applied[0].length).toBeLessThan(existing.length * 0.5);
+      const config = JSON.parse(ocFile);
+      expect(config.models.providers).not.toHaveProperty("acme-llm");
+      expect(config.models.providers).toHaveProperty("anthropic");
+      expect(rejectedDumps()).toHaveLength(0);
+      expect(keylessBridgesWritten(existing)).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("still refuses when the provider read comes back empty (#311: no provider survives)", async () => {
+    const existing = await installWithLargeCustomProvider();
+    mockedReadFileSync.mockReturnValue(existing);
+
+    // Every provider read is empty — the shape of a DB-loading race, not of a
+    // deletion: Pinchy refuses to delete the last provider (`countConfiguredProviders`),
+    // so an install never legitimately reaches zero.
+    mockedGetSetting.mockResolvedValue(null);
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      mockWriteSecretsFile.mockClear();
+      await regenerateOpenClawConfig();
+
+      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      expect(rejectedDumps()).toHaveLength(1);
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/suspiciously small/);
+      // secrets.json comes from the same empty read. Written, it would leave the
+      // file OpenClaw keeps naming keys secrets.json no longer has — OpenClaw
+      // could neither restart nor accept a copy of its own file.
+      expect(mockWriteSecretsFile).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("still refuses when Ollama discovery comes back empty — a failed read, not a deletion", async () => {
+    // Ollama unreachable at boot: fetchOllamaLocalModelsFromUrl returns []
+    // (uncached) and `ollama` is emitted with `models: []`. The provider is
+    // still in the payload, so this is no deletion, and discounting its bytes
+    // would let an empty catalogue through to OpenClaw's last-known-good — on
+    // an offline install every agent then fails with "Unknown model".
+    const ollamaModels = Array.from({ length: 80 }, (_, i) => ({
+      id: `ollama/qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M`,
+      name: `qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M (32B)`,
+      parameterSize: "32B",
+      compatible: true,
+      capabilities: { tools: true, vision: false, completion: true, thinking: false },
+    }));
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue(ollamaModels);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+    const existing = await regenerateAndCapture();
+    expect(JSON.parse(existing).models.providers.ollama.models).toHaveLength(80);
+    mockedReadFileSync.mockReturnValue(existing);
+
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+
+      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      expect(rejectedDumps()).toHaveLength(1);
+      const rejected = JSON.parse(rejectedDumps()[0][1] as string);
+      // Precondition: the collapse alone more than halves the file.
+      expect((rejectedDumps()[0][1] as string).length).toBeLessThan(existing.length * 0.5);
+      expect(rejected.models.providers.ollama.models).toEqual([]);
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/suspiciously small/);
+    } finally {
+      errorSpy.mockRestore();
+      vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+    }
+  });
+
+  // The refusal above must not leave OpenClaw without secrets.json. The keys
+  // come from settings and provider rows, not from discovery, and the secrets
+  // volume is a tmpfs: after a host reboot it is empty. An offline install
+  // whose Ollama is not up yet when Pinchy boots trips the guard on every
+  // regenerate — and if that skipped secrets.json, OpenClaw would start on the
+  // old openclaw.json naming `/providers/anthropic/apiKey` with nothing to
+  // resolve it against ("required secrets are unavailable"), and stay down.
+  it("still writes secrets.json when it refuses an Ollama collapse, because the bundle resolves every key the file names", async () => {
+    const ollamaModels = Array.from({ length: 80 }, (_, i) => ({
+      id: `ollama/qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M`,
+      name: `qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M (32B)`,
+      parameterSize: "32B",
+      compatible: true,
+      capabilities: { tools: true, vision: false, completion: true, thinking: false },
+    }));
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue(ollamaModels);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+    const existing = await regenerateAndCapture();
+    expect(JSON.parse(existing).models.providers.anthropic.apiKey.id).toBe(
+      "/providers/anthropic/apiKey"
+    );
+    mockedReadFileSync.mockReturnValue(existing);
+
+    // Boot after a host reboot: secrets.json is gone, Ollama is not up yet.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      mockWriteSecretsFile.mockClear();
+      await regenerateOpenClawConfig();
+
+      // Precondition: the guard refused the collapse.
+      expect(rejectedDumps()).toHaveLength(1);
+      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      // …and secrets.json is written all the same, with every key the file names.
+      expect(mockWriteSecretsFile).toHaveBeenCalledTimes(1);
+      const written = mockWriteSecretsFile.mock.calls[0][0] as Record<string, unknown>;
+      expect(unresolvable(existing, written)).toEqual([]);
+      expect(written).toMatchObject({ providers: { anthropic: { apiKey: "sk-ant-test" } } });
+    } finally {
+      errorSpy.mockRestore();
+      vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+    }
+  });
+
+  // The same refusal while a deletion is still pending: the file names the
+  // deleted provider's key, the bundle no longer has it. secrets.json without
+  // the key next to that file would leave OpenClaw a file it cannot start on —
+  // and skipping secrets.json leaves it none at all after a host reboot (the
+  // secrets volume is a tmpfs). OpenClaw only starts once Pinchy is healthy,
+  // and while it is down nothing but an admin's next change or Pinchy's next
+  // restart regenerates: no first-connect regenerate, no self-heal. And with
+  // Ollama still down, that regenerate is refused the same way. So the refusal
+  // still writes the key-less bridge — built from the on-disk file, never from
+  // the refused payload, so the Ollama catalogue stays — and then secrets.json.
+  it("still writes the key-less bridge and secrets.json when it refuses an Ollama collapse while a deletion is pending", async () => {
+    const ollamaModels = Array.from({ length: 80 }, (_, i) => ({
+      id: `ollama/qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M`,
+      name: `qwen2.5-coder-instruct-variant-${i}:32b-q4_K_M (32B)`,
+      parameterSize: "32B",
+      compatible: true,
+      capabilities: { tools: true, vision: false, completion: true, thinking: false },
+    }));
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue(ollamaModels);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValue([makeLargeCustomProvider()]);
+    mockListProvidersWithApiKeys.mockResolvedValue([keyedRow(makeLargeCustomProvider())]);
+    const existing = await regenerateAndCapture();
+    expect(JSON.parse(existing).models.providers.ollama.models).toHaveLength(80);
+    mockGetClient.mockReturnValue(undefined);
+
+    // Boot after a host reboot: the admin had deleted the custom provider and
+    // the hand-over had not finished; Ollama is not up yet.
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+    const order: string[] = [];
+    let secrets: Record<string, unknown> = {};
+    secretsUnreadableToPinchy(
+      () => existing,
+      (bundle) => {
+        secrets = bundle;
+        order.push("secrets.json");
+      }
+    );
+    mockedWriteFileSync.mockImplementation((path: unknown) => {
+      if (typeof path === "string" && path.endsWith("openclaw.json.tmp")) {
+        order.push("openclaw.json");
+      }
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+
+      // Precondition: the guard refused the collapse.
+      expect(rejectedDumps()).toHaveLength(1);
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/suspiciously small/);
+      // The bridge first, then secrets.json — and nothing else.
+      expect(order).toEqual(["openclaw.json", "secrets.json"]);
+      // Precondition: the file names a key the new bundle lacks.
+      expect(unresolvable(existing, secrets)).toEqual([`/providers/${ACME_SLOT}/apiKey`]);
+      const [bridge] = keylessBridgesWritten(existing);
+      expect(unresolvable(bridge, secrets)).toEqual([]);
+      expect(secrets).toMatchObject({ providers: { anthropic: { apiKey: "sk-ant-test" } } });
+      // Built from the file, not from the refused payload.
+      expect(JSON.parse(bridge).models.providers.ollama.models).toHaveLength(80);
+    } finally {
+      vi.restoreAllMocks();
+      vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
+      mockedWriteFileSync.mockReset();
+      mockWriteSecretsFile.mockReset();
+      mockReadSecretsFile.mockReset();
+      mockReadSecretsFile.mockReturnValue({});
+    }
+  });
+
+  // OpenClaw rewrites openclaw.json as root 0600 on every internal restart, and
+  // fix-config-permissions.sh reopens it on its next tick. If the read just
+  // before the write lands in that window, the file is unreadable — not
+  // missing. Taken for missing, the guard, the key-less bridge and the shrink
+  // expectation all saw nothing, and secrets.json was written without a
+  // deleted provider's key that the file still names.
+  it("skips the regenerate when openclaw.json turns unreadable just before the write — never mistaking it for no file", async () => {
+    const existing = await installWithLargeCustomProvider();
+    let unreadable = false;
+    mockedReadFileSync.mockImplementation(() => {
+      if (unreadable) {
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      }
+      return existing;
+    });
+    // The last thing regenerate does before it re-reads the file.
+    mockValidateBuiltConfig.mockImplementation(() => {
+      unreadable = true;
+      return { ok: true };
+    });
+    mockGetClient.mockReturnValue(undefined);
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      mockWriteSecretsFile.mockClear();
+      await regenerateOpenClawConfig();
+
+      expect(mockValidateBuiltConfig, "precondition: regenerate got that far").toHaveBeenCalled();
+      expect(mockWriteSecretsFile).not.toHaveBeenCalled();
+      expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+      expect(errorSpy.mock.calls.flat().join(" ")).toMatch(/EACCES/);
+    } finally {
+      vi.restoreAllMocks();
+      mockValidateBuiltConfig.mockReset();
+      mockValidateBuiltConfig.mockReturnValue({ ok: true });
+    }
+  });
+
+  it("finishes a stranded deletion with exactly one follow-up regenerate, which queues none", async () => {
+    // After each size-drop refusal OpenClaw accepts exactly one deletion step
+    // and then rate-limits every apply past Pinchy's retry budget: each push
+    // stops on an intermediate config that still carries the deleted provider
+    // as a stub. One follow-up regenerate must pick it up — and when that one
+    // strands the same way, it must not queue another (no regenerate loop).
+    const existing = await installWithLargeCustomProvider();
+    mockedReadFileSync.mockReturnValue(existing);
+    let ocFile = existing;
+    let accepted = 0;
+    let stepAllowed = false;
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => ({
+          hash: `h${accepted}`,
+          config: JSON.parse(ocFile),
+          parsed: JSON.parse(ocFile),
+        })),
+        apply: vi.fn(async (raw: string) => {
+          const base = Buffer.byteLength(ocFile);
+          const next = Buffer.byteLength(raw);
+          if (next < Math.floor(base * 0.5)) {
+            stepAllowed = true;
+            throw new Error(`Config write rejected: x (size-drop:${base}->${next}).`);
+          }
+          if (!stepAllowed) {
+            throw new Error("rate limit exceeded for config.apply; retry after 1s");
+          }
+          stepAllowed = false;
+          ocFile = raw;
+          accepted++;
+        }),
+      },
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const logs: string[] = [];
+    const capture = (...args: unknown[]) => void logs.push(args.map(String).join(" "));
+    vi.spyOn(console, "log").mockImplementation(capture);
+    vi.spyOn(console, "warn").mockImplementation(capture);
+    vi.spyOn(console, "error").mockImplementation(capture);
+    vi.useFakeTimers();
+    try {
+      await regenerateOpenClawConfig();
+      for (let i = 0; i < 400; i++) await vi.advanceTimersByTimeAsync(5_000);
+
+      // Precondition: both pushes stranded after progress (one step each), and
+      // the deleted provider is still in OpenClaw as a stub.
+      expect(accepted).toBe(2);
+      expect(JSON.parse(ocFile).models.providers).toHaveProperty("acme-llm");
+      const generations = new Set(
+        logs.flatMap((line) => [...line.matchAll(/push gen=(\d+)/g)].map((m) => m[1]))
+      );
+      // The original regenerate's push, and one follow-up — never a third.
+      expect(generations.size).toBe(2);
+      expect(logs.filter((l) => l.includes("queueing a follow-up regenerate"))).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  }, 60_000);
+
+  it("never writes a deletion's shrunken file when OpenClaw rate-limits it before its first size-drop refusal", async () => {
+    // OpenClaw checks its rate limit before its size check, so a push that is
+    // rate-limited throughout never hears the refusal. The regenerate already
+    // knows the payload is a provider deletion that more than halves the file,
+    // and must tell the push — otherwise its rate-limit fallback writes the
+    // file past OpenClaw's guard. One follow-up regenerate, which queues none.
+    const existing = await installWithLargeCustomProvider();
+    mockedReadFileSync.mockReturnValue(existing);
+    const apply = vi.fn(async () => {
+      throw new Error("rate limit exceeded for config.apply; retry after 1s");
+    });
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => ({
+          hash: "h",
+          config: JSON.parse(existing),
+          parsed: JSON.parse(existing),
+        })),
+        apply,
+      },
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const logs: string[] = [];
+    const capture = (...args: unknown[]) => void logs.push(args.map(String).join(" "));
+    vi.spyOn(console, "log").mockImplementation(capture);
+    vi.spyOn(console, "warn").mockImplementation(capture);
+    vi.spyOn(console, "error").mockImplementation(capture);
+    vi.useFakeTimers();
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+      for (let i = 0; i < 400; i++) await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(apply, "precondition: the push did try").toHaveBeenCalled();
+      expect(keylessBridgesWritten(existing).length).toBeGreaterThan(0);
+      const generations = new Set(
+        logs.flatMap((line) => [...line.matchAll(/push gen=(\d+)/g)].map((m) => m[1]))
+      );
+      expect(generations.size).toBe(2);
+      expect(logs.filter((l) => l.includes("queueing a follow-up regenerate"))).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  }, 60_000);
+
+  it("keeps every SecretRef in openclaw.json resolvable while a deletion is handed over, without reading secrets.json", async () => {
+    // regenerate writes secrets.json from the database, so the deleted key is
+    // gone from it before the push even starts — and the push of a large
+    // deletion is a stepped hand-over that a targeted writer can supersede.
+    // Every reader of openclaw.json in that window needs its SecretRefs to
+    // resolve: OpenClaw restarting, and a targeted Telegram write of the file
+    // (refused otherwise, after which its fallback used to write that file).
+    // Pinchy cannot read secrets.json in production (root:root 0600), so here
+    // no read of it succeeds either (secretsUnreadableToPinchy).
+    const existing = await installWithLargeCustomProvider();
+    let ocFile = existing;
+    let secretsOnDisk: Record<string, unknown> = {
+      providers: { anthropic: { apiKey: "sk-ant-test" }, [ACME_SLOT]: { apiKey: "acme-key" } },
+    };
+    // The invariant, after every write of either file: openclaw.json never
+    // names a key secrets.json lacks — a file OpenClaw can neither start on
+    // nor accept a copy of.
+    const violations: string[] = [];
+    const check = (after: string) =>
+      violations.push(...unresolvable(ocFile, secretsOnDisk).map((id) => `${after} left ${id}`));
+    const order: string[] = [];
+    secretsUnreadableToPinchy(
+      () => ocFile,
+      (bundle) => {
+        secretsOnDisk = bundle;
+        order.push("secrets.json");
+        check("secrets write");
+      }
+    );
+    // Pinchy's own write (writeConfigAtomic: tmp, then rename) lands in OpenClaw's file.
+    mockedWriteFileSync.mockImplementation((path: unknown, content: unknown) => {
+      if (typeof path === "string" && path.endsWith("openclaw.json.tmp")) {
+        ocFile = String(content);
+        order.push("openclaw.json");
+        check("Pinchy's config write");
+      }
+    });
+    let accepted = 0;
+    const acceptedFiles: string[] = [];
+    const apply = vi.fn(async (raw: string) => {
+      const missing = unresolvable(raw, secretsOnDisk);
+      if (missing.length > 0) {
+        throw new Error(
+          `invalid config: active SecretRef resolution failed (JSON pointer ${missing[0]} does not exist.)`
+        );
+      }
+      const base = Buffer.byteLength(ocFile);
+      const next = Buffer.byteLength(raw);
+      if (next < Math.floor(base * 0.5)) {
+        throw new Error(`Config write rejected: x (size-drop:${base}->${next}).`);
+      }
+      ocFile = raw;
+      acceptedFiles.push(raw);
+      accepted++;
+      check("config.apply");
+    });
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => ({
+          hash: `h${accepted}`,
+          config: JSON.parse(ocFile),
+          parsed: JSON.parse(ocFile),
+        })),
+        apply,
+      },
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+      // The file stops naming the key first; then the key leaves secrets.json —
+      // at once, and for good: nothing keeps it.
+      expect(order).toEqual(["openclaw.json", "secrets.json"]);
+      expect(secretsOnDisk.providers).toEqual({ anthropic: { apiKey: "sk-ant-test" } });
+
+      // A targeted writer reads the file and changes one block.
+      expect(updateTelegramChannelConfig("bot-1", { botToken: "tg-token" })).toBe("applied");
+      for (let i = 0; i < 400; i++) await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(violations).toEqual([]);
+      // OpenClaw accepted the targeted write (a later full regenerate rebuilds
+      // channels from the DB, which this test does not seed).
+      expect(
+        acceptedFiles.some((f) => JSON.parse(f).channels?.telegram?.accounts?.["bot-1"]),
+        "the targeted write was accepted"
+      ).toBe(true);
+      const final = JSON.parse(ocFile);
+      expect(final.models.providers, "the deletion completed").not.toHaveProperty("acme-llm");
+      expect(keylessBridgesWritten(existing)).toHaveLength(1);
+      expect(errorSpy.mock.calls.flat().join(" ")).not.toMatch(/SecretRef/);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      mockedWriteFileSync.mockReset();
+      mockWriteSecretsFile.mockReset();
+      mockReadSecretsFile.mockReset();
+      mockReadSecretsFile.mockReturnValue({});
+    }
+  }, 60_000);
+
+  it("repairs, at boot with no OpenClaw client, a file that names a key secrets.json no longer has", async () => {
+    // Before this fix, regenerate dropped a deleted provider's key from
+    // secrets.json while openclaw.json still named it, and OpenClaw then failed
+    // every start with "required secrets are unavailable". A full-stack restart
+    // while a deletion is pending ends the same way: the secrets volume is
+    // tmpfs, and Pinchy rebuilds it from the database, without the key.
+    // OpenClaw only starts once Pinchy is healthy, so Pinchy's boot regenerate
+    // runs with no client — and must leave OpenClaw a file it can start on
+    // (that OpenClaw does start on this shape is proven against its real
+    // startup code in integration/openclaw-config-size-drop-against-oc.test.ts).
+    const existing = await installWithLargeCustomProvider();
+    mockGetClient.mockReturnValue(undefined);
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const order: string[] = [];
+    let secrets: Record<string, unknown> = {};
+    secretsUnreadableToPinchy(
+      () => existing,
+      (bundle) => {
+        secrets = bundle;
+        order.push("secrets.json");
+      }
+    );
+    mockedWriteFileSync.mockImplementation((path: unknown) => {
+      if (typeof path === "string" && path.endsWith("openclaw.json.tmp")) {
+        order.push("openclaw.json");
+      }
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+
+      // Precondition: the file named a key the new bundle lacks.
+      expect(unresolvable(existing, secrets)).toEqual([`/providers/${ACME_SLOT}/apiKey`]);
+      // One write — the bridge, never the shrink — and before secrets.json.
+      const [bridge] = keylessBridgesWritten(existing);
+      expect(order).toEqual(["openclaw.json", "secrets.json"]);
+      expect(unresolvable(bridge, secrets)).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
+      mockedWriteFileSync.mockReset();
+      mockWriteSecretsFile.mockReset();
+      mockReadSecretsFile.mockReset();
+      mockReadSecretsFile.mockReturnValue({});
+    }
+  });
+
+  it("knows a deletion of a provider with non-ASCII model names is a size drop (OpenClaw counts bytes)", async () => {
+    // OpenClaw's rule is floor(OLD * 0.5) in UTF-8 bytes. A provider whose
+    // model names are CJK is three bytes per character, so the payload can be
+    // more than half the file by `length` and less than half by bytes. In that
+    // band OpenClaw refuses the write while Pinchy did not expect it, and a
+    // rate-limited push then took the file fallback for the shrink.
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-test" : null
+    );
+    const anthropicOnly = await regenerateAndCapture();
+    // Size the deleted provider into the band: under half by characters,
+    // over half by bytes.
+    const n = 4;
+    const perModel = Math.ceil((anthropicOnly.length * 0.4) / n);
+    const cjk = {
+      ...makeLargeCustomProvider(),
+      models: Array.from({ length: n }, (_, i) => ({
+        ...makeLargeCustomProvider().models[i],
+        name: "模型".repeat(Math.ceil(perModel / 2)),
+      })),
+    };
+    mockListOpenAiCompatibleProviders.mockResolvedValue([cjk]);
+    mockListProvidersWithApiKeys.mockResolvedValue([keyedRow(cjk)]);
+    const existing = await regenerateAndCapture();
+    mockedReadFileSync.mockReturnValue(existing);
+    const apply = vi.fn(async (raw: string): Promise<void> => {
+      throw new Error(
+        `rate limit exceeded for config.apply; retry after 1s (${String(raw.length)})`
+      );
+    });
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => ({
+          hash: "h",
+          config: JSON.parse(existing),
+          parsed: JSON.parse(existing),
+        })),
+        apply,
+      },
+    });
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+      for (let i = 0; i < 400; i++) await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(apply, "precondition: the push did try").toHaveBeenCalled();
+      const target = JSON.parse(String(apply.mock.calls.at(0)?.[0] ?? "{}"));
+      expect(target.models?.providers, "precondition: the deletion was pushed").not.toHaveProperty(
+        "acme-llm"
+      );
+      const sent = JSON.stringify(target, null, 2) + "\n";
+      // Precondition: inside the band.
+      expect(sent.length).toBeGreaterThanOrEqual(existing.length * 0.5);
+      expect(Buffer.byteLength(sent)).toBeLessThan(Math.floor(Buffer.byteLength(existing) * 0.5));
+      expect(keylessBridgesWritten(existing).length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  }, 60_000);
+
+  it("still refuses when the rest of the config collapses alongside a provider deletion (#311)", async () => {
+    // A deletion discounts exactly the provider bytes it explains — nothing
+    // else. Here the rest of the on-disk config (gateway, agents, channels,
+    // bindings…) also lost more than half of itself, which no provider
+    // deletion accounts for. The `secrets.padding` stands in for that state:
+    // Pinchy's regenerate never reproduces it (same device as the #311 block).
+    const healthy = JSON.parse(await installWithLargeCustomProvider());
+    healthy.secrets = { ...healthy.secrets, padding: "x".repeat(8000) };
+    const existing = JSON.stringify(healthy, null, 2).trimEnd() + "\n";
+    mockedReadFileSync.mockReturnValue(existing);
+
+    mockListOpenAiCompatibleProviders.mockResolvedValue([]);
+    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedWriteFileSync.mockClear();
+      await regenerateOpenClawConfig();
+
+      expect(rejectedDumps()).toHaveLength(1);
+      // The refused payload is never written. The file still names the
+      // deleted provider's key, so its key-less bridge is — the on-disk file,
+      // collapsed state and all, with the provider stubbed.
+      const [bridge, ...more] = keylessBridgesWritten(existing);
+      expect(more).toEqual([]);
+      expect(JSON.parse(bridge).secrets.padding).toBe(healthy.secrets.padding);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
 // `agents.defaults.imageModel.primary` mirrors `pdfModel` but for the
 // built-in `image` tool. Without it, OpenClaw scans providers in their
 // declared order and picks the first vision-flagged model — which on an
@@ -8815,6 +10232,19 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     };
   }
 
+  // One row of the single read regenerate takes per custom provider: identity,
+  // base URL, models AND the decrypted key + its version, all from the same
+  // SELECT (see listProvidersWithApiKeys). A base URL and a key can only ever
+  // be emitted together if they came from the same row read.
+  function keyed(
+    provider: ReturnType<typeof makeProvider>,
+    apiKey: string,
+    keyVersion = "0123456789abcdef"
+  ) {
+    const { slug, displayName, baseUrl, models } = provider;
+    return { slug, displayName, baseUrl, models, apiKey, keyVersion };
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockedGetOrCreateGatewayToken.mockResolvedValue("test-gateway-token");
@@ -8827,18 +10257,16 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     mockedGetSetting.mockResolvedValue(null);
     // Reset custom-provider mocks to their empty defaults (clearAllMocks clears
     // call history but not implementations set by earlier tests in this block).
-    // build.ts emission reads `listOpenAiCompatibleProviders`; the secrets bundle
-    // reads `listProvidersWithApiKeys` (single-query accessor).
+    // Regenerate reads `listProvidersWithApiKeys` once for everything; the
+    // key-free `listOpenAiCompatibleProviders` must stay unconsulted.
     mockListOpenAiCompatibleProviders.mockResolvedValue([]);
     mockListProvidersWithApiKeys.mockResolvedValue([]);
-    mockGetDecryptedApiKey.mockResolvedValue(null);
     // Identity pass-through by default — see the mock's doc-comment above.
     mockResolveCustomProviderModels.mockImplementation(async (p: { models: unknown }) => p.models);
   });
 
   it("emits a models.providers entry mirroring the ollama-cloud shape (SecretRef, api, compat)", async () => {
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
-    mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
+    mockListProvidersWithApiKeys.mockResolvedValue([keyed(makeProvider(), "swiss-plaintext-key")]);
 
     await regenerateOpenClawConfig();
 
@@ -8850,7 +10278,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
       apiKey: {
         source: "file",
         provider: "pinchy",
-        id: "/providers/swisscom-ai/apiKey",
+        id: "/providers/swisscom-ai@0123456789abcdef/apiKey",
       },
       models: [
         {
@@ -8876,17 +10304,20 @@ describe("OpenAI-compatible custom providers (#894)", () => {
   });
 
   it("emits two coexisting provider keys when two instances are seeded", async () => {
-    mockListOpenAiCompatibleProviders.mockResolvedValue([
-      makeProvider(),
-      makeProvider({
-        id: "prov-2",
-        slug: "acme-llm",
-        displayName: "Acme LLM",
-        baseUrl: "https://acme.example/v1",
-        models: [makeModel({ id: "acme-1", name: "Acme 1", vision: false, input: ["text"] })],
-      }),
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      keyed(makeProvider(), "some-key"),
+      keyed(
+        makeProvider({
+          id: "prov-2",
+          slug: "acme-llm",
+          displayName: "Acme LLM",
+          baseUrl: "https://acme.example/v1",
+          models: [makeModel({ id: "acme-1", name: "Acme 1", vision: false, input: ["text"] })],
+        }),
+        "some-key",
+        "fedcba9876543210"
+      ),
     ]);
-    mockGetDecryptedApiKey.mockResolvedValue("some-key");
 
     await regenerateOpenClawConfig();
 
@@ -8901,20 +10332,272 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(config.models.providers["acme-llm"].models[0]).not.toHaveProperty("vision");
   });
 
-  it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/snapshot", async () => {
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
+  it("points a provider whose saved base URL the SSRF guard now refuses at a reserved address, without its key", async () => {
+    // Saved under older rules (the metadata address used to be accepted when
+    // it sat inside a "private" range). OpenClaw would carry chat traffic and
+    // the key to whatever baseUrl it is given, so the refusal has to happen
+    // here, not only in Pinchy's own fetch.
+    //
+    // The entry stays (corrected expectation: it used to be dropped). Dropping
+    // a provider's whole block can shrink openclaw.json by more than half,
+    // which both Pinchy's size-drop guard and OpenClaw's own config.apply
+    // refuse — the refused URL then stayed live. See the size test below.
+    mockListProvidersWithApiKeys.mockResolvedValue(
+      [
+        makeProvider(),
+        makeProvider({
+          id: "prov-2",
+          slug: "imds",
+          displayName: "Rebound",
+          baseUrl: "http://100.100.100.200/v1",
+          models: [makeModel({ id: "rebound-large", name: "Rebound Large" })],
+        }),
+      ].map((p) => keyed(p, "stored-key"))
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
+      const config = JSON.parse(written);
+      expect(config.models.providers["swisscom-ai"].baseUrl).toBe(
+        "https://api.swisscom.example/v1"
+      );
+      const refused = config.models.providers.imds;
+      expect(refused.baseUrl).toBe(REFUSED_BASE_URL);
+      expect(refused.api).toBe("openai-completions");
+      // No key reference: OpenClaw fails on the missing key before it opens
+      // a connection, and the stored key is never attached to a request.
+      expect(refused).not.toHaveProperty("apiKey");
+      // The saved snapshot, so agents pinned to these models stay valid
+      // config — they fail at the runtime, not on "Unknown model".
+      expect(refused.models.map((m: { id: string }) => m.id)).toEqual(["rebound-large"]);
+      expect(refused.models[0]).not.toHaveProperty("vision");
+      // Never fetched: discovery would send the key to the refused address.
+      expect(mockResolveCustomProviderModels).not.toHaveBeenCalledWith(
+        expect.objectContaining({ slug: "imds" })
+      );
+      expect(written).not.toContain("100.100.100.200");
+      expect(warn.mock.calls.map((c) => String(c[0]))).toContainEqual(
+        expect.stringContaining("Rebound (imds)")
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("writes the config when the refused provider dominates the existing file (no size-drop refusal)", async () => {
+    // The upgrade case that made dropping the block unsafe: an endpoint with a
+    // large catalog was saved under older rules, so most of openclaw.json is
+    // its models. Leaving the block out shrank the file by more than half,
+    // the #311 size-drop guard refused the write, and the refused baseUrl
+    // stayed live — along with every later config change.
+    const manyModels = Array.from({ length: 40 }, (_, i) =>
+      makeModel({ id: `rebound-model-${i}`, name: `Rebound Model ${i}` })
+    );
+    const imds = makeProvider({
+      id: "prov-2",
+      slug: "imds",
+      displayName: "Rebound",
+      baseUrl: "http://100.100.100.200/v1",
+      models: manyModels,
+    });
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify(
+        {
+          gateway: { mode: "local", bind: "lan", auth: { mode: "token", token: "t" } },
+          models: {
+            providers: {
+              imds: {
+                baseUrl: "http://100.100.100.200/v1",
+                api: "openai-completions",
+                apiKey: { source: "file", provider: "pinchy", id: "/providers/imds/apiKey" },
+                models: manyModels.map(({ vision: _vision, ...m }) => ({
+                  ...m,
+                  contextTokens: 32000,
+                  compat: { supportsUsageInStreaming: true },
+                })),
+              },
+            },
+          },
+        },
+        null,
+        2
+      ) + "\n"
+    );
+    mockListProvidersWithApiKeys.mockResolvedValue([imds].map((p) => keyed(p, "stored-key")));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      expect(error.mock.calls.flat().join(" ")).not.toMatch(/suspiciously small/i);
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
+      expect(written).not.toContain("100.100.100.200");
+      expect(JSON.parse(written).models.providers.imds.models).toHaveLength(40);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("keeps a refused provider's on-disk model list when its saved snapshot is much smaller", async () => {
+    // While a provider is allowed, its block holds the LIVE /models list, not
+    // the snapshot saved with the provider — one manual model id, or a
+    // catalogue that has grown since. Emitting the snapshot once the URL is
+    // refused shrank the file by more than half: the size-drop guard refused
+    // the write, so the refused baseUrl and key stayed live, and so did every
+    // later config change.
+    const manyModels = Array.from({ length: 40 }, (_, i) =>
+      makeModel({ id: `rebound-model-${i}`, name: `Rebound Model ${i}` })
+    );
+    const imds = makeProvider({
+      id: "prov-2",
+      slug: "imds",
+      displayName: "Rebound",
+      baseUrl: "http://100.100.100.200/v1",
+      models: [manyModels[0]],
+    });
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify(
+        {
+          gateway: { mode: "local", bind: "lan", auth: { mode: "token", token: "t" } },
+          models: {
+            providers: {
+              imds: {
+                baseUrl: "http://100.100.100.200/v1",
+                api: "openai-completions",
+                apiKey: { source: "file", provider: "pinchy", id: "/providers/imds/apiKey" },
+                models: manyModels.map(({ vision: _vision, ...m }) => ({
+                  ...m,
+                  contextTokens: 32000,
+                  compat: { supportsUsageInStreaming: true },
+                })),
+              },
+            },
+          },
+        },
+        null,
+        2
+      ) + "\n"
+    );
+    mockListProvidersWithApiKeys.mockResolvedValue([imds].map((p) => keyed(p, "stored-key")));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      expect(error.mock.calls.flat().join(" ")).not.toMatch(/suspiciously small/i);
+      const written = writtenOpenClawConfig(mockedWriteFileSync);
+      expect(written).not.toContain("100.100.100.200");
+      const refused = JSON.parse(written).models.providers.imds;
+      expect(refused.baseUrl).toBe(REFUSED_BASE_URL);
+      expect(refused).not.toHaveProperty("apiKey");
+      expect(refused.models.map((m: { id: string }) => m.id)).toEqual(manyModels.map((m) => m.id));
+      // Never fetched to find the list: discovery would send the key.
+      expect(mockResolveCustomProviderModels).not.toHaveBeenCalledWith(
+        expect.objectContaining({ slug: "imds" })
+      );
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("does not emit a refused provider as the default model", async () => {
+    // The default-model guard must share the emission loop's verdict. A
+    // refused provider's entry points at a reserved address, so as the
+    // runtime default it would only make every agent without a model of its
+    // own fail.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "imds";
+      return null;
+    });
+    mockListProvidersWithApiKeys.mockResolvedValue(
+      [
+        makeProvider(),
+        makeProvider({
+          id: "prov-2",
+          slug: "imds",
+          displayName: "Rebound",
+          baseUrl: "http://100.100.100.200/v1",
+        }),
+      ].map((p) => keyed(p, "stored-key"))
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+      expect(getDefaultModel).not.toHaveBeenCalledWith("imds");
+      expect(config.agents.defaults).not.toHaveProperty("model");
+      // One check per regenerate, shared by both decisions: one log line.
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes("Rebound (imds)"))).toHaveLength(
+        1
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("clears a default model an earlier regenerate wrote for a provider that is now refused", async () => {
+    // The upgrade case: the provider was the default under the old rules, so
+    // openclaw.json already carries `agents.defaults.model`. agents.defaults is
+    // deep-merged over the file on every regenerate, so merely not emitting
+    // the key would keep the stale default alive.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        agents: { defaults: { model: { primary: "imds/rebound-large" }, heartbeat: "30m" } },
+      })
+    );
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "default_provider") return "imds";
+      return null;
+    });
+    mockListProvidersWithApiKeys.mockResolvedValue(
+      [
+        makeProvider({
+          id: "prov-2",
+          slug: "imds",
+          displayName: "Rebound",
+          baseUrl: "http://100.100.100.200/v1",
+        }),
+      ].map((p) => keyed(p, "stored-key"))
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await regenerateOpenClawConfig();
+
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+      expect(config.agents.defaults).not.toHaveProperty("model");
+      // Only the stale default goes; what OpenClaw stamped beside it stays.
+      expect(config.agents.defaults.heartbeat).toBe("30m");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("resolves each provider's emitted models via resolveCustomProviderModels, passing slug/baseUrl/apiKey/keyVersion/snapshot", async () => {
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      keyed(makeProvider(), "swiss-plaintext-key", "0123456789abcdef"),
     ]);
-    mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
 
     await regenerateOpenClawConfig();
 
+    // keyVersion is part of the live-model cache key (with the base URL), so a
+    // re-pointed or re-keyed provider never reuses a list cached for another
+    // destination or key.
     expect(mockResolveCustomProviderModels).toHaveBeenCalledWith(
       expect.objectContaining({
         slug: "swisscom-ai",
         baseUrl: "https://api.swisscom.example/v1",
         apiKey: "swiss-plaintext-key",
+        keyVersion: "0123456789abcdef",
         models: [makeModel()],
       })
     );
@@ -8924,9 +10607,8 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // The snapshot (makeProvider().models) and the live result are
     // deliberately different models, proving the emission reads the live
     // result rather than `p.models` directly.
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      keyed(makeProvider(), "swiss-plaintext-key", "0123456789abcdef"),
     ]);
     mockResolveCustomProviderModels.mockResolvedValueOnce([
       makeModel({
@@ -8958,18 +10640,235 @@ describe("OpenAI-compatible custom providers (#894)", () => {
   });
 
   it("carries each instance's decrypted key into the secrets bundle (never the config)", async () => {
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     // The secrets bundle sources keys from the single-query accessor.
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      keyed(makeProvider(), "swiss-plaintext-key", "0123456789abcdef"),
     ]);
 
     await regenerateOpenClawConfig();
 
     expect(mockWriteSecretsFile).toHaveBeenCalled();
     const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
-    expect(secretsArg.providers?.["swisscom-ai"]).toEqual({ apiKey: "swiss-plaintext-key" });
+    expect(secretsArg.providers?.["swisscom-ai@0123456789abcdef"]).toEqual({
+      apiKey: "swiss-plaintext-key",
+    });
     expect(mockListProvidersWithApiKeys).toHaveBeenCalled();
+  });
+
+  // Snapshot pairing (second review finding on #1238). The key + version and
+  // the base URL used to come from two separate reads, so an update committing
+  // between them paired the NEW base URL with the OLD key version — and
+  // resolveCustomProviderModels sent the old key to the new host. Regenerate
+  // now derives the slot, the config entry and the discovery call from one
+  // read; a second, divergent read is never consulted.
+  it("pairs each provider's base URL with the key from the same read, never a second one", async () => {
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      keyed(
+        makeProvider({ baseUrl: "https://moved.swisscom.example/v1" }),
+        "new-key",
+        "2222222222222222"
+      ),
+    ]);
+    // What a second read would see had the row changed again in between.
+    mockListOpenAiCompatibleProviders.mockResolvedValue([
+      makeProvider({ baseUrl: "https://elsewhere.example/v1" }),
+    ]);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(config.models.providers["swisscom-ai"]).toMatchObject({
+      baseUrl: "https://moved.swisscom.example/v1",
+      apiKey: { id: "/providers/swisscom-ai@2222222222222222/apiKey" },
+    });
+    expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1);
+    expect(mockResolveCustomProviderModels).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: "https://moved.swisscom.example/v1", apiKey: "new-key" })
+    );
+    expect(mockListOpenAiCompatibleProviders).not.toHaveBeenCalled();
+    expect(JSON.stringify(config)).not.toContain("elsewhere.example");
+  });
+
+  // Runtime pairing (review finding on #1238). OpenClaw learns a new baseUrl by
+  // config apply, and the key by re-resolving SecretRefs. If the pointer stayed
+  // `/providers/<slug>/apiKey` while both changed, a `secrets.reload` against
+  // the still-running config could put the NEW key on the OLD address, and a
+  // failed reload could leave the address and key from different saves. With
+  // the slot versioned by the key, the config that carries the new baseUrl is
+  // the only one whose pointer resolves the new key, and the previous slot is
+  // gone — a config still pointing at it fails closed.
+  it("re-points the SecretRef whenever the key changes, so a new baseUrl only ever resolves its own key", async () => {
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      keyed(makeProvider(), "old-key", "1111111111111111"),
+    ]);
+    await regenerateOpenClawConfig();
+    const before = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+    mockedWriteFileSync.mockClear();
+    mockWriteSecretsFile.mockClear();
+    mockListProvidersWithApiKeys.mockResolvedValue([
+      keyed(
+        makeProvider({ baseUrl: "https://moved.swisscom.example/v1" }),
+        "new-key",
+        "2222222222222222"
+      ),
+    ]);
+    await regenerateOpenClawConfig();
+    const after = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const secretsAfter = mockWriteSecretsFile.mock.calls[0][0];
+
+    expect(before.models.providers["swisscom-ai"].apiKey.id).toBe(
+      "/providers/swisscom-ai@1111111111111111/apiKey"
+    );
+    expect(after.models.providers["swisscom-ai"]).toMatchObject({
+      baseUrl: "https://moved.swisscom.example/v1",
+      apiKey: { id: "/providers/swisscom-ai@2222222222222222/apiKey" },
+    });
+    expect(secretsAfter.providers["swisscom-ai@2222222222222222"]).toEqual({ apiKey: "new-key" });
+    // The old pointer resolves nothing any more: a runtime still on the old
+    // config cannot pick up the new key, and the new config cannot resolve the old.
+    expect(secretsAfter.providers).not.toHaveProperty("swisscom-ai@1111111111111111");
+    expect(secretsAfter.providers).not.toHaveProperty("swisscom-ai");
+  });
+
+  // Regenerates are serialized (third review finding on #1238). Two run
+  // concurrently, a slow one that read the OLD row could finish after a newer
+  // one and write last — stale base URL live, and with versioned slots
+  // openclaw.json and secrets.json on different key versions. Now a call made
+  // during a run waits for a run that starts after it, so the newer state is
+  // always what lands last. The queue's own rules are unit-tested in
+  // openclaw-config-regenerate-queue.test.ts.
+  describe("overlapping regenerates", () => {
+    function configWrites() {
+      return mockedWriteFileSync.mock.calls
+        .filter(isOpenClawConfigWrite)
+        .map((c) => JSON.parse(c[1] as string));
+    }
+
+    // The held run reaches discovery only after the real 300 ms cold-start
+    // retry sleep, so vi.waitFor's 1 s default leaves little slack on a loaded
+    // machine. Generous, and still well inside the 20 s test timeout.
+    const HELD_RUN_WAIT = { timeout: 10_000 };
+
+    /** Hold the first run inside its discovery call until released. Release it in a `finally`. */
+    function holdFirstDiscovery() {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      mockResolveCustomProviderModels.mockImplementationOnce(async (p: { models: unknown }) => {
+        await gate;
+        return p.models;
+      });
+      return release;
+    }
+
+    const oldState = () => [keyed(makeProvider(), "old-key", "1111111111111111")];
+    const newState = () => [
+      keyed(
+        makeProvider({ baseUrl: "https://moved.swisscom.example/v1" }),
+        "new-key",
+        "2222222222222222"
+      ),
+    ];
+
+    it("writes the second caller's state last, from a run that started after its call", async () => {
+      mockListProvidersWithApiKeys.mockResolvedValue(oldState());
+      const release = holdFirstDiscovery();
+
+      try {
+        const first = regenerateOpenClawConfig();
+        await vi.waitFor(
+          () => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1),
+          HELD_RUN_WAIT
+        );
+
+        // A save commits while the first regenerate is still in flight…
+        mockListProvidersWithApiKeys.mockResolvedValue(newState());
+        const second = regenerateOpenClawConfig();
+        // …and its regenerate does not start alongside the stale one. A bounded
+        // negative window: past the 300 ms cold-start retry every regenerate in
+        // this block takes (no openclaw.json on disk), a concurrent run would
+        // have read the table AND written its config by now — and the held
+        // first run would then overwrite it with the stale row.
+        await new Promise((r) => setTimeout(r, 450));
+        expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(1);
+        expect(configWrites()).toHaveLength(0);
+
+        release();
+        await Promise.all([first, second]);
+      } finally {
+        release();
+      }
+
+      expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(2);
+      const writes = configWrites();
+      expect(writes.at(-1).models.providers["swisscom-ai"]).toMatchObject({
+        baseUrl: "https://moved.swisscom.example/v1",
+        apiKey: { id: "/providers/swisscom-ai@2222222222222222/apiKey" },
+      });
+      // secrets.json ends on the same version openclaw.json points at.
+      const lastSecrets = mockWriteSecretsFile.mock.calls.at(-1)![0];
+      expect(lastSecrets.providers).toEqual(
+        expect.objectContaining({ "swisscom-ai@2222222222222222": { apiKey: "new-key" } })
+      );
+      expect(lastSecrets.providers).not.toHaveProperty("swisscom-ai@1111111111111111");
+    });
+
+    it("runs exactly one more regenerate for any number of calls made during a run", async () => {
+      mockListProvidersWithApiKeys.mockResolvedValue(oldState());
+      const release = holdFirstDiscovery();
+
+      try {
+        const first = regenerateOpenClawConfig();
+        await vi.waitFor(
+          () => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1),
+          HELD_RUN_WAIT
+        );
+        mockListProvidersWithApiKeys.mockResolvedValue(newState());
+        const during = [
+          regenerateOpenClawConfig(),
+          regenerateOpenClawConfig(),
+          regenerateOpenClawConfig(),
+        ];
+
+        release();
+        await Promise.all([first, ...during]);
+        await drainBackgroundCoroutine();
+      } finally {
+        release();
+      }
+
+      expect(mockListProvidersWithApiKeys).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects the caller whose run failed, and still applies the next caller's change", async () => {
+      mockListProvidersWithApiKeys.mockResolvedValue(oldState());
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      mockResolveCustomProviderModels.mockImplementationOnce(async () => {
+        await gate;
+        throw new Error("first regenerate failed");
+      });
+
+      try {
+        const first = regenerateOpenClawConfig();
+        await vi.waitFor(
+          () => expect(mockResolveCustomProviderModels).toHaveBeenCalledTimes(1),
+          HELD_RUN_WAIT
+        );
+        mockListProvidersWithApiKeys.mockResolvedValue(newState());
+        const second = regenerateOpenClawConfig();
+
+        release();
+        await expect(first).rejects.toThrow("first regenerate failed");
+        await expect(second).resolves.toBeUndefined();
+      } finally {
+        release();
+      }
+
+      expect(configWrites().at(-1).models.providers["swisscom-ai"].baseUrl).toBe(
+        "https://moved.swisscom.example/v1"
+      );
+    });
   });
 
   it("never writes the raw key into the emitted config tree (assertNoPlaintextSecrets passes)", async () => {
@@ -8977,9 +10876,8 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // Use an OpenAI-shaped key so the scanner's `openai-generic` pattern would
     // catch a leak if the raw key ever reached the config tree. The key flows
     // through the secrets bundle (listProvidersWithApiKeys), never the config.
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "sk-proj-abcdef0123456789abcdef" },
+      keyed(makeProvider(), "sk-proj-abcdef0123456789abcdef"),
     ]);
 
     await regenerateOpenClawConfig();
@@ -8990,7 +10888,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(config.models.providers["swisscom-ai"].apiKey).toEqual({
       source: "file",
       provider: "pinchy",
-      id: "/providers/swisscom-ai/apiKey",
+      id: "/providers/swisscom-ai@0123456789abcdef/apiKey",
     });
   });
 
@@ -9034,19 +10932,19 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // config carries a SecretRef, so neither can surface in the config tree.
     const skKey = "sk-proj-Zx9Qm2Kd7Lp4Rt8Wv1Nb6Yc3Hj5Fg0Aa";
     const jwtKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzd2lzc2NvbSJ9.7bQe2mVnKpA0";
-    mockListOpenAiCompatibleProviders.mockResolvedValue([
-      makeProvider(),
-      makeProvider({
-        id: "prov-2",
-        slug: "acme-llm",
-        displayName: "Acme LLM",
-        baseUrl: "https://acme.example/v1",
-        models: [makeModel({ id: "acme-1", name: "Acme 1", vision: false, input: ["text"] })],
-      }),
-    ]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: skKey },
-      { slug: "acme-llm", apiKey: jwtKey },
+      keyed(makeProvider(), skKey, "0123456789abcdef"),
+      keyed(
+        makeProvider({
+          id: "prov-2",
+          slug: "acme-llm",
+          displayName: "Acme LLM",
+          baseUrl: "https://acme.example/v1",
+          models: [makeModel({ id: "acme-1", name: "Acme 1", vision: false, input: ["text"] })],
+        }),
+        jwtKey,
+        "fedcba9876543210"
+      ),
     ]);
 
     await regenerateOpenClawConfig();
@@ -9063,21 +10961,21 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(config.models.providers["swisscom-ai"].apiKey).toEqual({
       source: "file",
       provider: "pinchy",
-      id: "/providers/swisscom-ai/apiKey",
+      id: "/providers/swisscom-ai@0123456789abcdef/apiKey",
     });
     expect(config.models.providers["acme-llm"].apiKey).toEqual({
       source: "file",
       provider: "pinchy",
-      id: "/providers/acme-llm/apiKey",
+      id: "/providers/acme-llm@fedcba9876543210/apiKey",
     });
   });
 
-  it("emits a scanner-clean SecretRef-only config even when no key is seeded (no false positive)", async () => {
+  it("emits a scanner-clean SecretRef-only config for a key with no recognizable prefix (no false positive)", async () => {
     const { findPlaintextSecrets } = await import("@/lib/openclaw-plaintext-scanner");
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
-    // Deliberately leave listProvidersWithApiKeys unseeded: the config tree is
-    // what the scanner reads, and it must be clean with only the SecretRef.
-    mockListProvidersWithApiKeys.mockResolvedValue([]);
+    // A provider row always carries a key (it comes from the same read as the
+    // base URL), here one with no known prefix: the config tree is what the
+    // scanner reads, and it must be clean with only the SecretRef.
+    mockListProvidersWithApiKeys.mockResolvedValue([keyed(makeProvider(), "plain-arbitrary-key")]);
 
     await regenerateOpenClawConfig();
 
@@ -9134,11 +11032,9 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // perturbs built-in emission — the empty-table path is inert by comparison.
     mockedWriteFileSync.mockClear();
     mockWriteSecretsFile.mockClear();
-    mockListOpenAiCompatibleProviders.mockResolvedValue([makeProvider()]);
     mockListProvidersWithApiKeys.mockResolvedValue([
-      { slug: "swisscom-ai", apiKey: "swiss-plaintext-key" },
+      keyed(makeProvider(), "swiss-plaintext-key", "0123456789abcdef"),
     ]);
-    mockGetDecryptedApiKey.mockResolvedValue("swiss-plaintext-key");
 
     await regenerateOpenClawConfig();
 

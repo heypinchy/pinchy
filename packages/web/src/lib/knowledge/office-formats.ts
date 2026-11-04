@@ -40,7 +40,8 @@ export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
  *
  * Big enough that LibreOffice's startup is amortised (17 real corpus files cost
  * 14.2 s in one process against 25.6 s one-per-file), small enough that an OOM
- * kill — which fails the WHOLE batch as infrastructure — costs bounded re-work.
+ * kill or a timeout — after which every document of the batch is run again on
+ * its own (`office-convert.ts`) — costs bounded re-work.
  *
  * It lives in this import-free module because BOTH sides of the batch need it
  * and neither may hold its own copy: `office-convert.ts` sizes the process, and
@@ -108,4 +109,59 @@ export function convertedPdfName(path: string): string {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const ext = extensionOf(name);
   return `${ext ? name.slice(0, -ext.length) : name}.pdf`;
+}
+
+/**
+ * Why an Office file was refused BEFORE any reader touched it.
+ *
+ * - `too_large`   — the file, or what its zip central directory says it
+ *                   inflates to, is past what we will load into the web
+ *                   process. A decompression bomb takes this exit; so does a
+ *                   genuinely enormous workbook, and that is deliberate — the
+ *                   reader (exceljs, mammoth, LibreOffice) materialises the
+ *                   whole thing and the cost is the same. The spreadsheet
+ *                   reader's child process running out of memory or time
+ *                   (`xlsx-isolated.ts`) is booked the same way.
+ * - `unexpected_content` — the bytes are not the format the extension claims
+ *                   (HTML renamed `.doc`, an ODF package renamed `.docx`).
+ *                   LibreOffice sniffs content, not names, so such a file would
+ *                   be imported by a filter the extension never promised — one
+ *                   that fetches linked content.
+ *
+ * It lives in this import-free module because the ingest, the converter, the
+ * spreadsheet reader and the workspace-file route all need to tell "this
+ * document is refused" from "this reader broke", and none of them may pull the
+ * others' dependencies (exceljs, `child_process`) to do it.
+ */
+export class OfficeFileRejectedError extends Error {
+  constructor(
+    readonly code: "too_large" | "unexpected_content",
+    message: string
+  ) {
+    super(message);
+    this.name = "OfficeFileRejectedError";
+  }
+}
+
+/**
+ * The checked copy of an Office file could not be written where the converter
+ * reads it: a full, read-only or failing artifact volume. Thrown for the
+ * DESTINATION only — a source that cannot be read is about the document —
+ * because nothing here is a verdict on the file: the converter books it as
+ * infrastructure, retried next run, and the index keeps what it had.
+ */
+export class StagedCopyWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StagedCopyWriteError";
+  }
+}
+
+/**
+ * One word-splitting rule for both sides of the conversion's comparison — two
+ * rules would make the bound meaningless. Here, in the import-free module,
+ * because the word-count reader's child counts with it too.
+ */
+export function countWords(text: string): number {
+  return text.split(/\s+/).filter(Boolean).length;
 }

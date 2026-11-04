@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
 import { KnowledgeIndexScheduleSettings } from "@/components/knowledge-index-schedule-settings";
 import { apiGet, apiPut, ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
+import { holdResults } from "@/test-helpers/hold-results";
 
 vi.mock("@/lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api-client")>();
@@ -165,11 +166,15 @@ describe("KnowledgeIndexScheduleSettings", () => {
   });
 
   it("stays out of the way if the status cannot be read", async () => {
-    mockGet.mockRejectedValue(new Error("network down"));
+    // A swallowed rejection commits nothing, so there is no render to wait
+    // for: the release itself is the signal.
+    const read = holdResults();
+    mockGet.mockImplementation(() => read.rejectWith(new Error("network down")));
 
     const { container } = render(<KnowledgeIndexScheduleSettings />);
 
-    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    expect(mockGet).toHaveBeenCalled();
+    await read.release();
     expect(container).toBeEmptyDOMElement();
   });
 });

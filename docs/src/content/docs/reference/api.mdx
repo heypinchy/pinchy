@@ -428,7 +428,7 @@ Serve a file from a directory this agent is granted under `allowed_paths` — th
 | `from`     | No       | `variant=rows` only: first cited row, 1-based inclusive                                                                |
 | `to`       | No       | `variant=rows` only: last cited row, inclusive; clamped to at most 200 returned rows                                   |
 
-`variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`.
+`variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`, and one that is too large to read safely answers `413` — refused without being opened when it is over 100 MB, unpacks to far more than it weighs, has a sheet (or another part the reader reads as text) over 16 MB or a picture over 32 MB, and refused after the attempt when reading it needs more memory than the separate process the rows are read in may use (384 MB). That process is why a heavy workbook never costs Pinchy's own memory. `503` is about the reader, never the workbook: there was no room on the artifact volume for the private copy the rows are read from, the process could not be started, ran past its two-minute limit or was stopped by the system — or two reads are already waiting for it, in which case the answer carries `Retry-After`. Workbooks are read one at a time, the index's reads included, so a request that is abandoned while it waits or reads (a reload, a closed preview) has its read dropped; its audit row says `cancelled`.
 
 `download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation left (`original`, `converted` or `rows`).
 
@@ -442,7 +442,7 @@ Machine clients (CI, scripts) provision agents with a scoped API key instead of 
 
 ### `GET /api/settings/api-keys`
 
-List every API key (masked `start`, scopes, expiry, last-used, enabled state). **Admin only.** The plaintext secret is never returned — it is shown once at creation and never again.
+List every API key (masked `start`, scopes, expiry, last-used, enabled state, and `createdBy` with the creator's snapshotted name and an `active` flag that turns `false` once the creator is banned, deleted or no longer an admin). **Admin only.** The plaintext secret is never returned — it is shown once at creation and never again.
 
 ### `POST /api/settings/api-keys`
 
@@ -550,7 +550,7 @@ The agent's most recent index run — in flight or last finished — and whether
 | Field                           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `status`                        | `pending`, `running`, `succeeded`, or `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `trigger`                       | `manual` when an admin started the run, `scheduled` when the [nightly reindex](#get-apisettingsknowledge-index-schedule) did.                                                                                                                                                                                                                                                                                                                                                                                |
+| `trigger`                       | `manual` when an admin started the run, `scheduled` when the [nightly reindex](#get-apisettingsknowledge-index-schedule) did, `upgrade` when Pinchy started it after an update changed how Word and PowerPoint files are converted.                                                                                                                                                                                                                                                                          |
 | `unavailableFolders`            | Folders the run had to leave as they were: ones it could not read, and ones that came up empty while the index still held their documents (a network share that failed to mount looks like that). Their documents are kept, not removed. Counted, never named; `0` when every folder was read.                                                                                                                                                                                                               |
 | `processed` / `total`           | Documents done, and documents found. `total` is `null` until discovery has walked every folder; it never changes after that. `processed` advances per whole document, so a long one can hold it still for minutes.                                                                                                                                                                                                                                                                                           |
 | `processedBytes` / `totalBytes` | The same progress weighed by the bytes of the files involved. This is the pair to build a progress bar or a time-to-completion estimate on: documents are not equal units of work — one compilation PDF can be a third of a corpus — while bytes track the actual work and are known in full before the first document is read. `totalBytes` is `null` until discovery has finished, and `processedBytes` moves _inside_ a long document as its pages are embedded, so a slow document still shows movement. |
@@ -559,7 +559,7 @@ The agent's most recent index run — in flight or last finished — and whether
 | `counts.skipped`                | Unchanged content hash, and either chunks already present or it already came out empty and nothing has changed that could read it differently (see [Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current)).                                                                                                                                                                                                                                                             |
 | `counts.removed`                | Source file no longer on disk; the document and its chunks were deleted. Stays `0` until the run's final pass.                                                                                                                                                                                                                                                                                                                                                                                               |
 | `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved — a workbook whose sheets are all hidden, or a scan that no vision model was available to read.                                                                                                                                                                                                                                                                                                     |
-| `counts.failed`                 | The file could not be read or parsed. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                                                                                                                                                                             |
+| `counts.failed`                 | The file could not be read or parsed, or was refused because it had been [swapped for a symbolic link](/guides/mount-data-directories/#links-inside-a-mounted-folder) during the run. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                             |
 | `error`                         | Why the run failed. `null` unless `status` is `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 `schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
@@ -578,7 +578,7 @@ The agent's most recent index run — in flight or last finished — and whether
 
 A run interrupted by a restart is picked up again automatically: indexing is idempotent, so the resumed run skips everything already done.
 
-Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the request — the admin's, or the nightly scheduler's — and the outcome (recorded by the background worker, with the counts). Both carry `trigger`.
+Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the request — the admin's, the nightly scheduler's, or Pinchy's own after an update — and the outcome (recorded by the background worker, with the counts). Both carry `trigger`.
 
 **Errors:**
 
@@ -645,11 +645,42 @@ Runs a hybrid (vector + full-text) search over the requesting agent's indexed, g
 
 ### `GET /api/agents/:agentId/knowledge/unsearchable`
 
-**Which** documents the index holds but cannot search — the list behind the `unsearchable` counter in the reindex status. **Admin only.**
+**Which** documents the index holds but search can't reach. Two kinds: documents that produced no searchable text — the ones the `unsearchable` counter in the reindex status counts — and Word or PowerPoint files search leaves out until they have been converted again after an update, which that counter never counts. **Admin only.**
 
-The counter answers for the last run; this answers for everything currently in the agent's granted folders, so it is usually the larger of the two. That is the two numbers agreeing, not disagreeing: a file unchanged since an earlier run is `skipped` by the next one and never counted again.
+The counter answers for the last run; `totals.no_text` answers for everything currently in the agent's granted folders, so it is usually the larger of the two. That is the two numbers agreeing, not disagreeing: a file unchanged since an earlier run is `skipped` by the next one and never counted again.
 
 Scoped to the folders that agent is granted, exactly like search itself, so the list never names a document the agent isn't allowed to know about.
+
+**Response:**
+
+```json
+{
+  "documents": [
+    {
+      "sourcePath": "/data/offers/Angebot.docx",
+      "status": "active",
+      "reason": "awaiting_conversion"
+    },
+    {
+      "sourcePath": "/data/certs/AFNOR validation.pdf",
+      "status": "active",
+      "reason": "no_text"
+    }
+  ],
+  "total": 2,
+  "totals": { "no_text": 1, "awaiting_conversion": 1 },
+  "searchesIndex": true
+}
+```
+
+| Field                    | Description                                                                                                                                                                                                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `documents[].sourcePath` | The document's full path, as indexed.                                                                                                                                                                                                                                                      |
+| `documents[].status`     | `archived` for a document under an archive folder, already out of everyday search; `active` otherwise. Archived documents come last.                                                                                                                                                       |
+| `documents[].reason`     | `no_text` — indexed, but it produced no searchable text (a scan no vision model read, a file refused for its size or content). `awaiting_conversion` — a Word or PowerPoint file search leaves out until it has been converted again after an update changed how such files are converted. |
+| `total`                  | How many there are. `documents` holds at most 100; `total` is never capped.                                                                                                                                                                                                                |
+| `totals`                 | `total` per reason, `no_text` and `awaiting_conversion`. Never capped either, so it counts documents `documents` doesn't show.                                                                                                                                                             |
+| `searchesIndex`          | Whether the agent has `knowledge_search`. Pinchy converts the `awaiting_conversion` files again on its own only for an agent that searches the index; for any other agent, a reindex converts them.                                                                                        |
 
 **Errors:**
 
@@ -964,9 +995,9 @@ and a custom provider's to
 
 ### `DELETE /api/settings/providers`
 
-Remove a provider. Takes a JSON body: `{ "provider": "<id>" }`. Refused with `400` for the last configured provider.
+Remove a provider. Takes a JSON body: `{ "provider": "<id>" }`. Refused with `400` for the last configured provider, and for the last usable one — when every other configured provider is a custom provider whose saved base URL the address check now refuses. That second refusal is audited as `config.changed` with `outcome: "failure"` and `detail.action: "provider_delete_refused_no_usable_target"`, naming the provider as `{ id, name }` and never an address. `detail.reason` is `"last_usable_provider"`, or `"provider_itself_refused"` when the provider being removed is a custom one whose base URL is refused too — then the error says that no usable provider would remain rather than calling it the last usable one.
 
-Every agent pinned to one of the provider's models is moved to the first remaining provider's default model, and that provider becomes the new default if the removed one was it.
+Every agent pinned to one of the provider's models is moved to the first remaining usable provider's default model, and that provider becomes the new default if the removed one was it. A custom provider whose base URL is refused is skipped (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)).
 
 **Response:** `{ "success": true, "migratedAgents": 3 }`
 
@@ -981,11 +1012,12 @@ What a removal would do, without doing it — the confirmation dialog uses this 
   "targetProvider": "anthropic",
   "targetProviderLabel": "Anthropic",
   "targetModel": "anthropic/claude-sonnet-5",
-  "affectedAgents": [{ "id": "…", "name": "Hermes" }]
+  "affectedAgents": [{ "id": "…", "name": "Hermes" }],
+  "refusal": null
 }
 ```
 
-The target fields are `null` when no other provider is configured (that removal is refused anyway).
+The target fields are `null` when no other usable provider is configured (that removal is refused anyway). A custom provider whose saved base URL is refused is never the target. `refusal` is the error the `DELETE` would answer with — the last configured provider, the last usable one, or no usable provider remaining — word for word, or `null` when the removal would go ahead. The confirmation dialog shows it and keeps **Remove** disabled.
 
 ### `PATCH /api/settings/providers/default`
 
@@ -993,9 +1025,11 @@ Make a configured provider the default for new agents.
 
 **Request body:** `{ "provider": "anthropic" }` — a built-in provider name or a custom provider's slug.
 
+**Errors:** `400` when a built-in provider isn't configured, or when a custom provider's saved base URL is now refused by the address check — then the body also carries `refusedReason` (never the address), and the refusal is audited as `config.changed` with `outcome: "failure"` and `detail.action: "default_provider_refused"`. `404` for a slug that matches no provider.
+
 ### `GET /api/settings/providers/openai-compatible`
 
-List the OpenAI-compatible providers that have been added. Keys are never returned.
+List the OpenAI-compatible providers that have been added. Keys are never returned: each row carries `keyHint`, the key's last four characters. `refusedReason` is `null` for a provider in use, or says why the address check now refuses its saved base URL — the agent runtime then gets a reserved, unresolvable address in its place, and no key, until the URL changes (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)). The reason never names the address.
 
 ### `POST /api/settings/providers/openai-compatible`
 
@@ -1003,21 +1037,34 @@ Add or update an OpenAI-compatible provider. See [OpenAI-compatible providers](/
 
 **Request body:**
 
-| Field            | Type     | Required | Description                                                                               |
-| ---------------- | -------- | -------- | ----------------------------------------------------------------------------------------- |
-| `id`             | uuid     | No       | Omit to create, pass to update                                                            |
-| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                           |
-| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API. Rejected if it resolves to a private-network address |
-| `apiKey`         | string   | No       | Omit on update to keep the stored key                                                     |
-| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                 |
+| Field            | Type     | Required | Description                                                                                                                                                                                                                                                                                                        |
+| ---------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`             | uuid     | No       | Omit to create, pass to update                                                                                                                                                                                                                                                                                     |
+| `displayName`    | string   | Yes      | Name on the provider tile, up to 120 characters                                                                                                                                                                                                                                                                    |
+| `baseUrl`        | string   | Yes      | Endpoint that speaks the OpenAI API, up to 2048 characters. Rejected if it resolves to a loopback, link-local/metadata or reserved address; a private-network address only when `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1` (see [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed)) |
+| `apiKey`         | string   | No       | Omit on update to keep the stored key. Required when the update changes `baseUrl`                                                                                                                                                                                                                                  |
+| `manualModelIds` | string[] | No       | Model ids to fall back on when the endpoint's live discovery returns none                                                                                                                                                                                                                                          |
+
+The stored key is bound to the base URL it was entered for — scheme, host, port **and path**, because a shared gateway host routes by path. Only a trailing slash and the letter case of the host are ignored. An update that changes `baseUrl` without a fresh `apiKey` is rejected with `422` and an `apiKey` field error before any request is made, and the refusal is written to the audit trail as a failed `config.changed` row — the stored key is never sent to a new address.
+
+An update is saved only if the provider still has the base URL and key it was checked against when the request arrived. Live model discovery runs in between, against the address you submitted, and can take a few seconds; if another save changed the base URL or the key in that time, nothing is written and the request answers `409`.
+
+**Errors:**
+
+- `400` — invalid body, e.g. a `baseUrl` that is not an http(s) URL or longer than 2048 characters
+- `404` — no provider with that `id`, or it was deleted while this update was being saved
+- `409` — the provider changed while this update was being saved; reload and try again
+- `422` — the base URL is not allowed, the update changes `baseUrl` without a fresh `apiKey`, or a new provider's endpoint lists no models and no `manualModelIds` were given
 
 The key is encrypted at rest and never written into the OpenClaw configuration in plaintext — see [Secret handling](/security/secrets/).
 
 ### `DELETE /api/settings/providers/openai-compatible`
 
-Remove a custom provider. Agents pinned to one of its models are migrated to a still-configured provider, exactly as for a built-in one.
+Remove a custom provider. Agents pinned to one of its models are migrated to a still-configured, usable provider, exactly as for a built-in one — including the `400` when no usable provider would remain, and its `provider_delete_refused_no_usable_target` audit entry.
 
 **Request body:** `{ "id": "<uuid>" }`
+
+**Errors:** `404` for an id that matches no custom provider, checked before either `400` refusal and not audited.
 
 ### `POST /api/settings/providers/openai-compatible/discover`
 
@@ -1165,15 +1212,41 @@ List all users.
       "email": "alice@example.com",
       "role": "admin",
       "banned": false,
-      "groups": [{ "id": "group-uuid", "name": "Engineering" }]
+      "groups": [{ "id": "group-uuid", "name": "Engineering" }],
+      "unknownOrigin": false
     }
   ]
 }
 ```
 
+`unknownOrigin` is `true` for an account that neither the setup wizard nor a claimed invite created — in practice one that signed itself up while releases up to v0.9.1 left the sign-up endpoint open. **Settings → Users** lists these in a banner. The rule: every account counts as unknown except the earliest-created admin (the setup admin), the claimer of an invite (not a password-reset invite), any account that created an invite (only admins can), and an account an admin marked as known with [`POST /api/users/:id/acknowledge-origin`](#post-apiusersidacknowledge-origin).
+
+### `POST /api/users/:id/acknowledge-origin`
+
+Mark an account as known, so `unknownOrigin` is `false` for it from then on. **Admin only.** Works on your own account too — a setup admin who was demoted and promoted again, for example, may be the only admin left to clear the flag.
+
+**Request body:** `{}` — the endpoint takes no fields.
+
+The acknowledgement is stored as a `user.origin_acknowledged` row in the [audit trail](/concepts/audit-trail/), with the acting admin as the actor, the account in `resource` (`user:<id>`), and only `user.name` in the detail — an admin can mark their own account, and the acting user's raw id never goes into `detail`. That row is what the provenance check reads, so it cannot be undone silently: there is no endpoint that withdraws it.
+
+**Response:**
+
+```json
+{
+  "success": true
+}
+```
+
+**Errors:**
+
+- `400` — the body is not `{}`
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — user not found
+
 ### `DELETE /api/users/:id`
 
-Deactivate a user (soft delete — sets banned status). Their personal agents are removed from the shared view but the account record is retained and can be reactivated via `POST /api/users/:id/reactivate`.
+Deactivate a user (soft delete — sets banned status). Their sessions are deleted, and any chat WebSocket they have open is closed with code `4403` after an error frame (`code: "policy_account_deactivated"`) saying the account was deactivated; a frame that tab still sends is refused — so is a message the server accepted just before and had not yet dispatched — and the chat UI sends the tab to the login page instead of reconnecting. A tab that had no connection open at that moment (hidden, or reconnecting) gets no `4403`; its reconnects fail the handshake, and after the second failed one in a row it asks Better Auth's session lookup (`/api/auth/get-session`) and goes to the login page when there is no session. Every chat run Pinchy has in flight for the user is aborted on OpenClaw before the response, each recorded as `chat.run_aborted` with `reason: "account_deactivated"` and the admin as the actor. A run that was still waiting to be dispatched is not dispatched again. When an abort stops nothing or fails (`outcome: "failure"`) — OpenClaw may still be preparing the run, and can start it afterwards — Pinchy keeps aborting it by its runId after the response, with a growing pause up to two seconds and for at most a minute, until OpenClaw confirms an abort, reports the run over (`agent.wait`), or turns the dispatch away (`ok: false` on the `agent` request; nothing ran, and no further row is written). A run Pinchy dispatched again after OpenClaw failed the first attempt resolving its model is aborted under the new attempt's runId. A stop that took effect this way gets a second `chat.run_aborted` row with `outcome: "success"` and `followUp: "aborted_by_run_id"` (or `"stopped_before_dispatch"` for a run not dispatched again); a run OpenClaw reports finished is recorded as `chat.run_completed_after_disconnect`. A run whose abort OpenClaw confirmed never is. A run that is no longer in flight — its reply already ended, or a stop OpenClaw confirmed already stopped it — is left alone: no abort, no row. When OpenClaw's confirmation of a stop is still on its way as deactivation lands, the run is aborted again and that abort stops nothing; Pinchy waits briefly for the confirmation, and once it arrives, writes no row for deactivation's abort. Telegram replies already running and automations are not aborted — see [what deactivation doesn't stop](/guides/user-management/#what-deactivation-doesnt-stop). Their personal agents are removed from the shared view but the account record is retained and can be reactivated via `POST /api/users/:id/reactivate`.
 
 **Response:** `200 OK`
 
@@ -1458,7 +1531,7 @@ Remove Telegram from every agent at once. **Admin only.** This is the backend fo
 
 External system integrations — **Odoo**, **email** (Gmail and Microsoft 365 via OAuth), and **Web Search**. See [Integrations](/concepts/integrations/) for the conceptual overview, [Connect Odoo](/guides/connect-odoo/) for the Odoo setup guide, and [Connect Email](/guides/connect-email/) for the email setup guide.
 
-Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `ALLOW_PRIVATE_URLS=1` turns the check off for an on-premise Odoo; see [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network).
+Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `ALLOW_PRIVATE_URLS=1` additionally allows the [private ranges](/reference/network-address-checks/#private-ranges) — RFC 1918, Tailscale's `100.64.0.0/10`, IPv6 unique-local and the rest — for an on-premise Odoo; loopback, link-local, cloud-metadata and reserved addresses stay refused either way. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
 
 ### `GET /api/integrations`
 
@@ -1498,7 +1571,23 @@ Get a single connection (credentials masked).
 
 ### `PATCH /api/integrations/:connectionId`
 
-Update a connection's name, description, or credentials.
+Update a connection's name, description, or credentials. Credential fields you leave out keep their stored values, and the merged credentials are tested against the service before they are saved.
+
+A stored secret never follows the connection to a new destination. If the update changes where the secret would be sent, the secret has to come in the same request:
+
+| Type | Destination fields                                              | Secret to re-send |
+| ---- | --------------------------------------------------------------- | ----------------- |
+| Odoo | `url` (trailing slash ignored), `db` (exact, whitespace counts) | `apiKey`          |
+| IMAP | `imapHost`, `imapPort`, `smtpHost`, `smtpPort`, `security`      | `password`        |
+
+Without it the request is rejected with `422` and a field error on the secret, before anything is sent to the new destination, and the refusal is written to the audit trail as a failed `integration.credentials_updated` row. Changing only the login, username, or sender name keeps the stored secret. A credential update that the service rejects (`400`) or that loses a race against another save (`409`) changes nothing, and is written to the audit trail as a failed `integration.credentials_updated` row too.
+
+**Errors:**
+
+- `400` — invalid credentials, an invalid Odoo URL, or the test against the service failed
+- `404` — connection not found
+- `409` — the credentials were changed concurrently; retry
+- `422` — the destination changed but the secret was not re-entered
 
 ### `DELETE /api/integrations/:connectionId`
 
@@ -1612,12 +1701,12 @@ Try the settings without saving them. Both halves are exercised: an IMAP login a
 
 **Request body:**
 
-| Field                  | Type   | Required | Description                  |
-| ---------------------- | ------ | -------- | ---------------------------- |
-| `imapHost`, `imapPort` |        | Yes      | IMAP server and port         |
-| `smtpHost`, `smtpPort` |        | Yes      | SMTP server and port         |
-| `username`, `password` | string | Yes      | Mailbox credentials          |
-| `security`             | string | Yes      | `tls`, `starttls`, or `none` |
+| Field                  | Type   | Required | Description                                 |
+| ---------------------- | ------ | -------- | ------------------------------------------- |
+| `imapHost`, `imapPort` |        | Yes      | IMAP server (up to 253 characters) and port |
+| `smtpHost`, `smtpPort` |        | Yes      | SMTP server (up to 253 characters) and port |
+| `username`, `password` | string | Yes      | Mailbox credentials                         |
+| `security`             | string | Yes      | `tls`, `starttls`, or `none`                |
 
 **Response:** `200 OK` whether the probe passed or failed — a rejected login is a result, not a request error. Read `ok`, not the status code.
 
@@ -1685,12 +1774,14 @@ Returns the decrypted credentials for a connection, auto-refreshing an expired O
 | `200`  | Credentials returned                                                                                                                           |
 | `400`  | `agentId` missing                                                                                                                              |
 | `401`  | Gateway token missing or wrong                                                                                                                 |
-| `403`  | The agent is not granted this connection, or the connection is still `pending`                                                                 |
+| `403`  | The agent is not granted this connection, the connection is still `pending`, or its stored Odoo URL / IMAP / SMTP host fails the address check |
 | `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                |
 | `500`  | The stored credentials could not be decrypted under the current encryption key                                                                 |
 | `503`  | An OAuth access token expired and the app's OAuth settings are gone, so it cannot be refreshed. Deliberately not a `200` carrying stale tokens |
 
-A refusal for a missing grant writes an `integration.credentials_denied` audit row naming the agent and the connection — see [Audit Trail](/concepts/audit-trail/). A successful fetch is not audited: plugins re-fetch on every cache miss, so a row per success would be volume without signal.
+**The stored destination is checked before credentials leave.** An Odoo connection's URL and an IMAP connection's IMAP and SMTP hosts are run through the same address check as when the connection was saved ([Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network), [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network)), under the rules and switches as they are now. A refusal is a `403` whose `error` names the field and the fix — deliberately not a `401`, which the plugins would read as stale credentials.
+
+A refusal for a missing grant or a refused destination writes an `integration.credentials_denied` audit row naming the agent and the connection — see [Audit Trail](/concepts/audit-trail/). A successful fetch is not audited: plugins re-fetch on every cache miss, so a row per success would be volume without signal.
 
 ### `POST /api/internal/integrations/:connectionId/report-auth-failure`
 
@@ -1998,7 +2089,13 @@ The human-in-the-loop checkpoint an admin can put in front of a tool — see [Re
 
 ### `GET /api/approvals`
 
-Your own pending confirmations, newest first — the source for the in-app confirmation cards. Returns only requests where you are the requester and that have not expired; a confirmation is personal and never appears in a teammate's list, even on a shared agent.
+Your own pending confirmations, newest first — the source for the in-app confirmation cards. Returns only requests where you are the requester and that have not expired; a confirmation is personal and never appears in a teammate's list, even on a shared agent. A confirmation that is settled while the list is being read is left out rather than listed without its arguments, so every listed confirmation that is not in `known` carries its `argsSummary`.
+
+**Query parameters:**
+
+| Parameter | Description                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `known`   | Optional. Comma-separated ids of confirmations you already hold. They are listed as usual but **without** `argsSummary`, which never changes once stored and can be large (0.5–1.5 MB of JSON in the worst case, the upper end for non-Latin text), so a client that polls this list receives each summary only once. Anything that is not an id is ignored, and at most 200 ids are read; a confirmation past that is listed with its summary again. |
 
 **Response:**
 
@@ -2019,7 +2116,22 @@ Your own pending confirmations, newest first — the source for the in-app confi
 }
 ```
 
-`argsSummary` is a compact, redacted rendering of the tool's arguments so you can decide in context: secret-looking keys are replaced with `[redacted]` and long values truncated, while the recipient or record stays visible — hiding it would defeat the point of an informed confirmation.
+`argsSummary` is a faithful, redacted rendering of the tool's arguments so you can decide in context — always of the whole call. Arrays and objects keep their real contents and every value keeps its JSON type. A call that does not fit — more than 100 keys in an object, 200 items in a list or addresses in a recipient field, nesting deeper than ten levels, a string longer than 200,000 characters (code points, as sent), a key longer than 100 characters, more than 512,000 characters in all (counted as rendered: every string with its markers, every key label, every number, boolean or `null` by its JSON length, and 2 per array or object), or a collapsed card that would cost more than 16,384 to draw (one for every key, value and note the card draws, plus one for each of their characters and 128 for a character outside the Basic Multilingual Plane, such as an emoji — except the Mathematical Alphanumeric Symbols, U+1D400–U+1D7FF, which browsers lay out like letters and which count one; a previewed string counts by its preview — what a character costs the browser to lay out varies by orders of magnitude, and an emoji's font lookup is the costliest) — gets no pending confirmation at all: the gate refuses it, tells the agent which limit was crossed and at which path (such as `values.comment`), suggests splitting the call only where that can help (too many keys, items or recipients, too much in all, or too costly to draw), and writes an `approval.refused` audit entry. So no listed confirmation has anything left out. Strings are kept as sent — never trimmed or whitespace-collapsed — except that a CR LF pair becomes a line feed, and that a run of four or more spaces, line breaks or tabs becomes `⟨N spaces⟩` / `⟨N line breaks⟩` / `⟨N tabs⟩`, and every invisible or blank-rendering character (controls other than tab and line feed, a lone UTF-16 surrogate, format characters such as bidi overrides and Unicode tag characters, every space separator other than U+0020, variation selectors and the other default-ignorables such as the Hangul fillers, and the braille blank U+2800) is shown as a `⟨U+XXXX⟩` marker, with a run of more than three of one character shown as one `⟨N × U+XXXX⟩` marker; a run of different characters names each one, so no two strings share a rendering. A literal `⟨` or `⟩` is always shown as `⟨U+27E8⟩` / `⟨U+27E9⟩`, so every `⟨` in a summary string opens a marker and no marker contains a bracket. U+200C, U+200D, U+FE0E and U+FE0F are marked like the rest, everywhere — in Arabic-script and Indic text (`گزارش⟨U+200C⟩ها`, `க்⟨U+200C⟩ம`) and inside emoji (`👨⟨U+200D⟩👩⟨U+200D⟩👧`, `❤⟨U+FE0F⟩`), since whether one draws anything depends on the script and on the approver's fonts, not on the server's Unicode data. The file tools accept all four anywhere in a path; the email tools accept all four in a display name, never in an address. A combining mark (`\p{M}`) is kept only on a letter it is written with — a letter of one of its scripts (the Unicode property `Script_Extensions`), or any letter for a mark of every script (`Zinh`, such as U+0336) — directly or through marks that are; every other one, at the start, after a space, digit, `/`, punctuation or marker, or on another script's letter, is shown as a `⟨U+XXXX⟩` marker (`⟨U+05BC⟩בא`), because a mark with no base of its own is drawn onto its neighbour and `ּבא` renders like `באּ`. The file tools accept such a mark in a path, and the email tools in a display name: the card marks it. The stored strings carry no direction controls: Pinchy's card draws each one in stored order (each line in `<bdo dir="ltr">`, each run of right-to-left words in a `<bdi dir="ltr">`, where a word is letters, their marks and the non-letters whose bidi class is R or AL, plus a `"` or `'` between two such characters), because left to itself the bidi algorithm draws `/data/חוזים/2024.md` and `/data/2024/חוזים.md` alike — a client that renders `argsSummary` itself should do the same. A string under a recipient or target key, and an email- or URL-shaped string at any key, is drawn whole up to 8,192 characters as drawn; every other string longer than 200 characters (and a longer one of those) is stored as a `previewed` node (below) and shown as a preview, with the rest on demand a part at a time, only one part drawn at once: Chromium lays out a long mixed-direction text in time that grows faster than its length, and drawn whole, one 200,000-character value froze the tab for 13 seconds, and again on every relayout. Under a target key, and anywhere inside one, a space, tab or line feed at the start or end of a string is marked too (`/data/out/report.md⟨U+0020⟩`; a run of four or more still reads `⟨N spaces⟩`). Keys are never merged: a key that is not a plain identifier (`[A-Za-z0-9_.-]`) appears quoted and escaped, such as `"to "`, and keys are unique. `to`, `cc` and `bcc` are split into one entry per address (a single address stays a single entry, not a list). Recipient keys and target keys (`model`, `ids`, `id`, `path`, `filename`, `url`, `target`, …) are summarized before any other key.
+
+What Pinchy says **about** a value is never written into its text: a string in `argsSummary` is always the value's own text, and every annotation is a separate **node** — an object with the key `@`, which no summarized object can have, because a key is shown bare only when it is a plain identifier and quoted (`"@"`) otherwise. Written into the text, `(record reference: res.partner #7 "Acme GmbH")` would read exactly like a string an agent could send instead, which pinchy-odoo resolves as a record **name**. There are four nodes:
+
+| Node                                                       | Replaces                                                                                                           | Fields                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{"@": "ref", "model", "id", "label", "labelCut"}`         | An opaque Odoo reference that decodes — only when the string is exactly the reference, nothing before or after it. | The record it names. `label` is the record's display name, rendered like any string and cut at 200 characters; `labelCut` says how many more there were (`0` if none), and a cut label does not make the call too large, because the reference acts on `<model> #<id>`, which is always whole.                                                                                      |
+| `{"@": "secret", "length"}`                                | A string under a secret-looking key, or anywhere inside an array or object under one.                              | The value's length in characters; the value itself is never stored.                                                                                                                                                                                                                                                                                                                 |
+| `{"@": "noted", "text", "notes"}`                          | A string Pinchy has something to say about.                                                                        | `text` is the value, rendered like any string — a string, or a `previewed` node where the value is previewed; `notes` is a non-empty list of `{"kind": "host", "host"}`, `{"kind": "not-a-domain", "host"}` or `{"kind": "name", "name"}`, where `name` is a string or a `previewed` node too, and a `not-a-domain` note's `host` is the host as written, rendered like any string. |
+| `{"@": "previewed", "text", "preview", "parts", "inside"}` | A string the card shows as a preview.                                                                              | `text` is the value, rendered like any string. `preview` is where the preview ends and `parts` where each part **Show full text** reveals ends — UTF-16 offsets into `text`, the last part ending at its length; `inside` lists the offsets among them that fall inside one grapheme cluster.                                                                                       |
+
+A recipient entry with a display name is a `noted` node with a `name` note (`{"@": "noted", "text": "ada@example.com", "notes": [{"kind": "name", "name": "Ada Lovelace"}]}`); a non-ASCII domain adds a `host` note with its punycode form, in a recipient field and in any other string that is one mailbox, at any key and depth — read the way the mail tools read one: trimmed, and taken out of `Name <address>`, so `Boss <boss@fіrma.at>` and ` boss@fіrma.at` are noted too. Any string the WHATWG URL parser (`new URL`, what the web tools use) accepts with a scheme that has a host (`http`, `https`, `ws`, `wss`, `ftp`, `file`) is a URL, whatever its shape — `https:fіrma.at`, `https:\\fіrma.at\x` and a leading control character included — and gets a `host` note with the host the parser resolves whenever its text does not show exactly that host right after `scheme://` (ASCII case aside), or carries userinfo: `https://fіrma.at` → `xn--frma-l9d.at`, `https://fіrma.at\@evil.com/x` → `xn--frma-l9d.at`, `https://fir%6Da.at/` → `firma.at`, `https://firma.at@evil.com` → `evil.com`. A string the parser refuses is not a URL and gets no note — unless it has such a scheme and a host that Node's parser refuses but Chromium and WebKit open: an all-ASCII host with a label such as `xn--a` that does not decode. That host is read the way the WHATWG parser reads it, tabs and line breaks deleted and percent-encoding decoded, and whatever follows it — a space or a tab in the path, words after it — does not matter: `https://xn--a.evil.com/x y`, `ht\ttps://xn--a.evil.com/` and `https://u@xn--a.evil.com/ see above` all reach `xn--a.evil.com`. Such a string gets a `not-a-domain` note, like a mailbox whose domain Node's `domainToASCII` rejects. The note names that host as written (ASCII case aside, every hidden character marked) — there is no resolved form to name — and Pinchy's card draws it beside the value, quoted and escaped, and counts it in the draw cost, so two previewed values that differ only in that host draw two different cards; the approval request text names it too. A host a browser refuses too — `https://xn--a.evil.com see above`, where the space sits in the host — gets none. A URL or mailbox string (a recipient entry included) that is previewed always gets a `host` note, even when its host is plain ASCII and reads as it resolves, because the host at its end would be hidden behind the preview. A string is previewed, counted in characters as drawn (a string that would read as a JSON literal is drawn quoted and escaped), when it is longer than 200 characters, unless it sits under a recipient or target key or is email- or URL-shaped as a whole (the parser accepts it with nothing after it, or it is one mailbox) and is at most 8,192 characters long. So a URL with words after it, or one whose stored text holds a count marker such as `⟨4 × U+200B⟩` (which has spaces in it), is previewed past 200 characters and noted.
+
+Every decision about how a string is shown is made by Pinchy's server when it builds the summary, and stored: whether it is previewed, where the preview ends — at most 200 characters as drawn, cut back to a grapheme-cluster boundary and never inside a `⟨…⟩` marker or an escape — and where each part ends: after a space where one fits, else between two grapheme clusters, where its characters would cost more than 8,192 by the draw count above. The draw count charges exactly that preview. Whether a string is a URL is answered by Node's URL parser, the one the web tools fetch with, and where a character ends by Node's `Intl.Segmenter`; browsers answer both differently — Chromium and WebKit accept hosts such as `xn--a` that Node refuses, and Firefox before version 125 has no `Intl.Segmenter` — so Pinchy's card answers neither and draws exactly the stored cuts, the same in every browser. A plain string is drawn whole, and the summary stores none longer than 8,192 characters as drawn. A string that does not decode as a reference, or that carries anything past one (padding, a line break, more text), is kept as the text it is, and counted against the limits like any other; pinchy-odoo refuses such a string as a reference too. Numbers, booleans and `null` under a secret-looking key are shown, and a key ending in `_id` or `_ids` is never treated as secret-looking, since it holds record ids.
+
+A client that renders `argsSummary` itself must draw a node apart from any text — Pinchy's card draws each annotation as a label of its own beside the value, outside any preview of a long text — and keep them apart for assistive technology too: Pinchy's card exposes each string value as its `"`-quoted, escaped text (the drawn copy is `aria-hidden`) and each annotation as a `role="note"` element whose text starts with "Pinchy note:", and quotes and escapes a ref's `label`. It should treat an object with an `@` key it does not recognize, or a node missing a field, as a value it cannot show, never as fields; Pinchy's card does the same for a plain string longer than 8,192 characters as drawn, rather than guess where to cut it, and for a `previewed` node whose cuts draw more than the server's own would — a preview longer than 200 characters as drawn, a part costing more than 8,192 by the draw count, or a cut inside a `⟨…⟩` marker. Confirmations stored before nodes existed carry no nodes; they expire within ten minutes.
 
 ### `POST /api/approvals/:id/decision`
 
@@ -2086,6 +2198,8 @@ This is the server-side security boundary for the whole feature. The plugin asks
 The `reason` is written for the model, which relays it to the person in the chat — so it names the action, says where to act, and tells the model to stop rather than retry. It deliberately carries no request id: `/approve <id>` is a real OpenClaw command for OpenClaw's own approvals, and given an id a model will invent it, handing the user an instruction that fails. The id travels in `requestId`, where the plugin reads it.
 
 A grant is bound to the agent, the person, the session, the tool **and** a sha256 of the exact arguments, and is spent on first use — so a changed recipient or a different tool asks again. The route fails closed: if the acting person cannot be resolved to a Pinchy user — or the call arrives from a run with no session at all, which a grant could not be bound to — it is blocked rather than allowed, because only a real user can confirm it. The plugin applies the same rule to this endpoint being unreachable.
+
+A blocking answer that opens a confirmation also carries `approval: {title, description}` — the request text every approval surface shows, at most 80 and 256 characters. When the description has to be cut, it names every server and mail domain the call reaches before the arguments, each by its last 100 characters. A call whose servers don't all fit gets no confirmation: it is refused like a call too large for the card, with `exceeded: "too-many-hosts"` in its `approval.refused` entry and a reason telling the agent to split it. A call too large for the card is refused before that, and carries no `approval` either.
 
 One person can have at most **20 confirmations open on one agent** at a time. Past that the route blocks with a reason saying so and opens nothing: a changed argument otherwise mints a new confirmation per attempt, and an agent that retries in a loop would bury the requester's inbox. Consuming a grant the user already approved is never subject to the cap.
 
@@ -2197,11 +2311,23 @@ Verify the integrity of audit log entries by recomputing HMAC signatures. **Admi
 {
   "valid": true,
   "totalChecked": 142,
-  "invalidIds": []
+  "invalidIds": [],
+  "chainBreakIds": [],
+  "previousKeyIds": []
 }
 ```
 
-If tampered entries are found, `valid` is `false` and `invalidIds` contains the IDs of entries with mismatched signatures.
+| Field            | Description                                                                                                                                                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `valid`          | `true` when `invalidIds` and `chainBreakIds` are both empty                                                                                                                                                                                     |
+| `totalChecked`   | Number of entries verified                                                                                                                                                                                                                      |
+| `invalidIds`     | IDs of entries whose signature doesn't match their content, or that only verify under an earlier key although they come after the key change                                                                                                    |
+| `chainBreakIds`  | IDs of entries whose own signature matches but whose link to the previous entry doesn't: an entry before them was deleted, or entries were reordered                                                                                            |
+| `previousKeyIds` | IDs of entries signed with an earlier `AUDIT_HMAC_SECRET`, before the key changed. They're authentic and don't affect `valid`; see [Rows signed with an earlier secret](/concepts/audit-trail-verification/#rows-signed-with-an-earlier-secret) |
+
+If tampered entries are found, `valid` is `false`, and `invalidIds` and `chainBreakIds` say which entries and how.
+
+A range that starts at `fromId` takes its key context from the entry immediately before it. If that entry verifies under the current signing key, the key changed before the range starts, and an entry in the range that only verifies under an earlier key is reported in `invalidIds` rather than as signed with an earlier secret. The same goes for an entry that verifies under no key at all or carries a signature version Pinchy doesn't know: the range treats the key change as already behind it. That's why a spot check can list entries in `invalidIds` that a full verification lists in `previousKeyIds`. Only a verification without `fromId` establishes where the key actually changed. See [Rows signed with an earlier secret](/concepts/audit-trail-verification/#rows-signed-with-an-earlier-secret).
 
 **Errors:**
 

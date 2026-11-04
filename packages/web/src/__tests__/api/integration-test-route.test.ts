@@ -56,11 +56,20 @@ vi.mock("@/lib/integrations/auth-state", () => ({
 }));
 
 // odoo-node mock (needed because route still imports OdooClient for uid self-heal)
+const mockOdooAuthenticate = vi.fn().mockResolvedValue(2);
 vi.mock("odoo-node", () => {
   function OdooClient() {}
-  OdooClient.authenticate = vi.fn().mockResolvedValue(2);
+  OdooClient.authenticate = (...args: unknown[]) => mockOdooAuthenticate(...args);
   return { OdooClient };
 });
+
+// The stored-destination guard's own decisions are tested in
+// lib/integrations/__tests__/stored-destination.test.ts; here it is a seam, so
+// these cases stay about what the route does with a refusal.
+const mockCheckStoredDestination = vi.fn();
+vi.mock("@/lib/integrations/stored-destination", () => ({
+  checkStoredDestination: (...args: unknown[]) => mockCheckStoredDestination(...args),
+}));
 
 vi.mock("@/lib/integrations/odoo-schema", () => ({
   odooCredentialsSchema: {
@@ -96,6 +105,7 @@ vi.mock("@/lib/integrations/microsoft-refresh", () => ({
 }));
 
 import { NextRequest } from "next/server";
+import { odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
 
 const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
 
@@ -151,6 +161,8 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
     mockSelectWhere.mockResolvedValue([mockConnection]);
     mockClearIntegrationAuthError.mockResolvedValue(undefined);
     mockSetIntegrationAuthFailed.mockResolvedValue(undefined);
+    mockOdooAuthenticate.mockResolvedValue(2);
+    mockCheckStoredDestination.mockResolvedValue({ allowed: true });
   });
 
   it("calls clearIntegrationAuthError with connectionId and actor when probe succeeds", async () => {
@@ -194,6 +206,74 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       actor: { type: "user", id: "user-1" },
     });
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+  });
+
+  // The uid self-heal authenticates before the probe runs, so its failures
+  // need the same classification the probe applies: a redirect, a proxy error
+  // or a non-JSON-RPC answer says nothing about the API key, and flagging the
+  // connection auth_failed would tell the admin to re-enter a good one.
+  describe("odoo: uid self-heal failures that are not about the credentials", () => {
+    async function realOdooError(message: string, code?: number, data?: Record<string, unknown>) {
+      const { OdooError } = await vi.importActual<typeof import("odoo-node")>("odoo-node");
+      return new OdooError(message, code, data);
+    }
+
+    it.each([
+      [
+        "a refused redirect",
+        "Odoo answered with a redirect (HTTP 308); odoo-node does not follow redirects. " +
+          "Use the address Odoo is actually served from.",
+        308,
+        odooRedirectRefusedMessage(308),
+      ],
+      ["a network failure", "fetch failed", 0, "fetch failed"],
+    ])("reports %s without flagging auth_failed", async (_label, message, code, shown) => {
+      mockOdooAuthenticate.mockRejectedValue(await realOdooError(message, code));
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-1/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+      const body = await response.json();
+
+      expect(body.success).toBe(false);
+      expect(body.error).toContain(shown);
+      expect(body.error).not.toMatch(/authentication failed/i);
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    });
+
+    it("reports an internal error in the self-heal as Pinchy's, without flagging auth_failed", async () => {
+      mockOdooAuthenticate.mockRejectedValue(
+        new TypeError("Cannot read properties of undefined (reading 'map')")
+      );
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-1/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+      const body = await response.json();
+
+      expect(body.success).toBe(false);
+      expect(body.error).toMatch(/^Pinchy hit an internal error while talking to Odoo/);
+      expect(body.error).not.toMatch(/Odoo didn't answer/);
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+    });
+
+    it("still flags auth_failed when Odoo refuses the login", async () => {
+      mockOdooAuthenticate.mockRejectedValue(await realOdooError("Authentication failed"));
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      await POST(makeRequest("/api/integrations/conn-1/test", { method: "POST" }), {
+        params: Promise.resolve({ connectionId: "conn-1" }),
+      });
+
+      expect(mockSetIntegrationAuthFailed).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: "conn-1" })
+      );
+    });
   });
 
   describe("Microsoft: pre-refresh expired tokens + transient-failure handling", () => {
@@ -300,6 +380,86 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
       });
       // Must not have probed with stale credentials once we know the OAuth app is gone.
       expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("stored destination is re-checked before anything connects to it", () => {
+    // The address was checked when the connection was saved, but the rules can
+    // change after that (an upgrade tightened them; an operator removed
+    // ALLOW_PRIVATE_URLS), and a stored URL was never re-validated on use. A
+    // "Test connection" click is a connection like any other.
+    const refusal = {
+      allowed: false,
+      field: "url",
+      message:
+        "Blocked: this URL targets a private network address. Set ALLOW_PRIVATE_URLS=1 to allow an Odoo server on your own network.",
+    };
+
+    it("checks the stored odoo credentials", async () => {
+      mockProbeIntegrationCredentials.mockResolvedValue({ success: true });
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      await POST(makeRequest("/api/integrations/conn-1/test", { method: "POST" }), {
+        params: Promise.resolve({ connectionId: "conn-1" }),
+      });
+
+      expect(mockCheckStoredDestination).toHaveBeenCalledWith(
+        "odoo",
+        expect.objectContaining({ url: decryptedOdooCreds.url })
+      );
+    });
+
+    it("refuses an odoo URL the guard refuses — before the uid self-heal authenticates against it", async () => {
+      mockCheckStoredDestination.mockResolvedValue(refusal);
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-1/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-1" }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual({ success: false, error: refusal.message });
+      // Nothing was sent to the refused address: not the self-heal's
+      // authenticate (which carries the API key), not the probe.
+      expect(mockOdooAuthenticate).not.toHaveBeenCalled();
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+      // A refused address is a configuration problem, not evidence the
+      // credentials are bad: the connection must not be flagged auth_failed
+      // (which would tell the admin to re-enter a perfectly good API key).
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+      expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+    });
+
+    it("refuses an imap host the guard refuses, without probing or flagging auth_failed", async () => {
+      mockSelectWhere.mockResolvedValue([{ ...mockConnection, id: "conn-imap", type: "imap" }]);
+      mockDecrypt.mockReturnValue(
+        JSON.stringify({ imapHost: "10.0.0.5", smtpHost: "10.0.0.5", username: "u" })
+      );
+      mockCheckStoredDestination.mockResolvedValue({
+        allowed: false,
+        field: "imapHost",
+        message: "Blocked: this host resolves to a private network address.",
+      });
+      const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+      const response = await POST(
+        makeRequest("/api/integrations/conn-imap/test", { method: "POST" }),
+        { params: Promise.resolve({ connectionId: "conn-imap" }) }
+      );
+      const body = await response.json();
+
+      expect(mockCheckStoredDestination).toHaveBeenCalledWith(
+        "imap",
+        expect.objectContaining({ imapHost: "10.0.0.5" })
+      );
+      expect(body).toEqual({
+        success: false,
+        error: "Blocked: this host resolves to a private network address.",
+      });
+      expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+      expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
     });
   });
 

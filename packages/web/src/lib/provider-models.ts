@@ -11,9 +11,19 @@ import {
 
 export { isModelVisionCapable } from "@/lib/model-vision";
 import { setOllamaLocalVisionModels } from "@/lib/model-vision";
+import { hasFields, isMap, processWideCache } from "@/lib/process-wide-cache";
 
-let cachedResult: ProviderModels[] | null = null;
-let cachedAt: number = 0;
+// Every cache in this module is process-wide (see process-wide-cache.ts): a
+// regenerate reads them, and the instance that runs a regenerate is not always
+// the one that called resetCache().
+
+/** Cloud providers' catalogs, fetched together, kept for an hour. */
+const cloudCatalog = () =>
+  processWideCache<{ result: ProviderModels[] | null; at: number }>(
+    "__pinchyCloudModelCatalogCache",
+    () => ({ result: null, at: 0 }),
+    hasFields("result", "at")
+  );
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 // Per-URL cache for fetchOllamaLocalModelsFromUrl. regenerateOpenClawConfig()
@@ -24,12 +34,18 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 // The TTL is intentionally short: the model list is also displayed live in
 // the setup wizard, and a long TTL would leak stale data into that surface.
 const OLLAMA_LOCAL_CACHE_TTL_MS = 10_000;
-const ollamaLocalCache = new Map<string, { fetchedAt: number; result: OllamaLocalModelInfo[] }>();
+const ollamaLocalCache = () =>
+  processWideCache<Map<string, { fetchedAt: number; result: OllamaLocalModelInfo[] }>>(
+    "__pinchyOllamaLocalModelCache",
+    () => new Map(),
+    isMap
+  );
 
 export function resetCache() {
-  cachedResult = null;
-  cachedAt = 0;
-  ollamaLocalCache.clear();
+  const cloud = cloudCatalog();
+  cloud.result = null;
+  cloud.at = 0;
+  ollamaLocalCache().clear();
   // Custom OpenAI-compatible providers' live-model cache lives in
   // openai-compatible-discovery.ts (#894 backend redesign) — clear it too so
   // resetCache() remains the single "forget everything cached" entry point.
@@ -273,10 +289,16 @@ export function selectOllamaLocalDefault(models: OllamaLocalModelInfo[]): string
   return sorted[0].id;
 }
 
-let lastOllamaLocalModels: OllamaLocalModelInfo[] = [];
+/** The last local Ollama model list seen — what the ollama-local default is picked from. */
+const lastOllamaLocal = () =>
+  processWideCache<{ models: OllamaLocalModelInfo[] }>(
+    "__pinchyOllamaLocalModels",
+    () => ({ models: [] }),
+    hasFields("models")
+  );
 
 export function getOllamaLocalModels(): OllamaLocalModelInfo[] {
-  return lastOllamaLocalModels;
+  return lastOllamaLocal().models;
 }
 
 /**
@@ -296,7 +318,7 @@ export function getOllamaLocalModels(): OllamaLocalModelInfo[] {
  * ollama-local install.
  */
 export function setOllamaLocalModels(models: OllamaLocalModelInfo[]): void {
-  lastOllamaLocalModels = models;
+  lastOllamaLocal().models = models;
 }
 
 // Per-call timeout for Ollama discovery requests. Each `/api/show` call
@@ -341,7 +363,7 @@ export async function fetchOllamaLocalModelsFromUrl(
   const url = baseUrl.replace(/\/$/, "");
 
   // Cache lookup — see OLLAMA_LOCAL_CACHE_TTL_MS doc-comment for rationale.
-  const cached = ollamaLocalCache.get(url);
+  const cached = ollamaLocalCache().get(url);
   if (cached && Date.now() - cached.fetchedAt < OLLAMA_LOCAL_CACHE_TTL_MS) {
     return cached.result;
   }
@@ -406,7 +428,7 @@ export async function fetchOllamaLocalModelsFromUrl(
   // is already short-circuited above, but if /api/tags returned 200 with
   // an empty model list we cache that too — the user just hasn't pulled
   // anything yet, and we want to avoid hammering the endpoint.
-  ollamaLocalCache.set(url, { fetchedAt: Date.now(), result: models });
+  ollamaLocalCache().set(url, { fetchedAt: Date.now(), result: models });
 
   return models;
 }
@@ -502,7 +524,7 @@ export async function getDefaultModel(provider: ProviderModelsId): Promise<strin
 
   // Local Ollama uses capability-based heuristic (largest model with tool support)
   if (builtIn === "ollama-local") {
-    return selectOllamaLocalDefault(lastOllamaLocalModels) || PROVIDERS[builtIn].defaultModel;
+    return selectOllamaLocalDefault(getOllamaLocalModels()) || PROVIDERS[builtIn].defaultModel;
   }
 
   return selectDefaultModel(builtIn, providerModels.models);
@@ -514,8 +536,9 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
   const now = Date.now();
   let cloudResults: ProviderModels[];
 
-  if (cachedResult && now - cachedAt < CACHE_TTL_MS) {
-    cloudResults = cachedResult;
+  const cloud = cloudCatalog();
+  if (cloud.result && now - cloud.at < CACHE_TTL_MS) {
+    cloudResults = cloud.result;
   } else {
     cloudResults = [];
 
@@ -542,8 +565,8 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
       }
     }
 
-    cachedResult = cloudResults;
-    cachedAt = now;
+    cloud.result = cloudResults;
+    cloud.at = now;
   }
 
   const results = [...cloudResults];
@@ -552,7 +575,7 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
   if (ollamaUrl) {
     try {
       const ollamaModels = await fetchOllamaLocalModelsFromUrl(ollamaUrl);
-      lastOllamaLocalModels = ollamaModels;
+      setOllamaLocalModels(ollamaModels);
 
       const visionModels = new Set(
         ollamaModels.filter((m) => m.capabilities.vision).map((m) => m.id.replace("ollama/", ""))

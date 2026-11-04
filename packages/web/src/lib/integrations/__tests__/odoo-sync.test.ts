@@ -153,6 +153,208 @@ describe("fetchOdooSchema", () => {
     expect(result.success).toBe(false);
     if (result.success) return;
     expect(result.isAuthError).toBe(false);
+    // The same transport failure on every model is the connection failing,
+    // not missing permissions.
+    expect(result.error).toBe("Could not reach Odoo: ETIMEDOUT");
+  });
+
+  it("says Odoo could not be reached when odoo-node reports a network failure", async () => {
+    vi.useFakeTimers();
+    // odoo-node's shape for a request that never got an answer: code 0.
+    mockFields.mockRejectedValue(Object.assign(new Error("fetch failed"), { code: 0 }));
+
+    const promise = fetchOdooSchema(creds);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("Could not reach Odoo: fetch failed");
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("words a shared HTTP failure after retries as true for an Odoo that was reached", async () => {
+    vi.useFakeTimers();
+    mockFields.mockRejectedValue(
+      Object.assign(new Error("HTTP 429: Too Many Requests"), { code: 429 })
+    );
+
+    const promise = fetchOdooSchema(creds);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    // The status may come from a proxy in front of Odoo as much as from Odoo.
+    expect(result.error).toBe(
+      "The Odoo address answered with an error: HTTP 429: Too Many Requests"
+    );
+    expect(result.isAuthError).toBe(false);
+  });
+
+  const READ_ACCESS_MESSAGE =
+    "Could not access any Odoo models. Please ensure the API user has at least " +
+    "read access to the modules you want to use (e.g. Sales, Inventory, Contacts).";
+
+  // No probe reported an access problem, so the message must not claim one.
+  it("names the failures, not read access, when models fail for different reasons", async () => {
+    mockFields.mockImplementation((model: string) =>
+      Promise.reject(
+        new Error(model === "sale.order" ? "Unknown model: sale.order" : "Invalid field 'x'")
+      )
+    );
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toMatch(/^Could not read any Odoo model: /);
+    expect(result.error).toContain("Unknown model: sale.order");
+    expect(result.error).toContain("Invalid field 'x'");
+    expect(result.error).not.toMatch(/read access/);
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("says Odoo could not be reached when every probe failed to reach it, whatever each one said", async () => {
+    vi.useFakeTimers();
+    mockFields.mockImplementation((model: string) =>
+      Promise.reject(
+        model === "sale.order"
+          ? Object.assign(new Error("fetch failed"), { code: 0 })
+          : new Error("ETIMEDOUT")
+      )
+    );
+
+    const promise = fetchOdooSchema(creds);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toMatch(/^Could not reach Odoo: /);
+    expect(result.error).toContain("fetch failed");
+    expect(result.error).toContain("ETIMEDOUT");
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("counts Odoo's own error as an answer even though it carries a JSON-RPC code", async () => {
+    vi.useFakeTimers();
+    // Odoo's server errors carry code 200 and `data`; it did answer.
+    mockFields.mockRejectedValue(
+      Object.assign(new Error("Lock wait timeout exceeded"), {
+        code: 200,
+        data: { name: "psycopg2.errors.LockNotAvailable" },
+      })
+    );
+
+    const promise = fetchOdooSchema(creds);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("Odoo did not answer successfully: Lock wait timeout exceeded");
+  });
+
+  // "Not Allowed" in an HTTP status line is the server refusing the method,
+  // not Odoo refusing this user access to a model.
+  it("does not read an HTTP 405 as an access denial", async () => {
+    mockFields.mockRejectedValue(
+      Object.assign(new Error("HTTP 405: Method Not Allowed"), { code: 405 })
+    );
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe(
+      "The Odoo address answered with an error: HTTP 405: Method Not Allowed"
+    );
+    expect(result.isAuthError).toBe(false);
+  });
+
+  // A WAF or proxy in front of Odoo answering every call with a status line:
+  // not retried, but it needs the same context as a transient one.
+  it("gives a shared non-transient status line the same context", async () => {
+    mockFields.mockRejectedValue(Object.assign(new Error("HTTP 403: Forbidden"), { code: 403 }));
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("The Odoo address answered with an error: HTTP 403: Forbidden");
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("says Odoo could not be reached when odoo-node's answer broke off", async () => {
+    // odoo-node wraps a failed body read as code 0, no data: no usable answer.
+    mockFields.mockRejectedValue(Object.assign(new Error("terminated"), { code: 0 }));
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("Could not reach Odoo: terminated");
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("does not prefix an answer that already says what came back", async () => {
+    vi.useFakeTimers();
+    mockFields.mockRejectedValue(
+      Object.assign(new Error("Response is not JSON-RPC (HTTP 500, text/html)"), { code: 500 })
+    );
+
+    const promise = fetchOdooSchema(creds);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe(
+      "Odoo answered with something that is not a JSON-RPC response (HTTP 500, text/html). " +
+        "Check that the URL points at the Odoo server itself."
+    );
+  });
+
+  it("keeps the read-access message when Odoo grants read access to no model", async () => {
+    mockFields.mockResolvedValue([{ name: "id" }]);
+    mockCheckAccessRights.mockResolvedValue(false);
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe(READ_ACCESS_MESSAGE);
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("keeps the read-access message, as an auth error, when one model is denied and the rest fail alike", async () => {
+    mockFields.mockImplementation((model: string) =>
+      Promise.reject(new Error(model === "sale.order" ? "AccessError" : "Invalid field 'x'"))
+    );
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe(READ_ACCESS_MESSAGE);
+    expect(result.isAuthError).toBe(true);
+  });
+
+  it("reports one failure every model shares, without flagging an auth error", async () => {
+    mockFields.mockRejectedValue(new Error("Invalid field 'x'"));
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("Invalid field 'x'");
+    expect(result.isAuthError).toBe(false);
   });
 
   it("returns isAuthError: true when all models fail due to auth/permission errors", async () => {
@@ -248,6 +450,9 @@ describe("fetchOdooSchema", () => {
 
     expect(result.success).toBe(false);
     expect(saleOrderCalls).toBe(1);
+    if (result.success) return;
+    expect(result.error).toBe(READ_ACCESS_MESSAGE);
+    expect(result.isAuthError).toBe(true);
   });
 
   it("does not retry 'access denied' errors", async () => {

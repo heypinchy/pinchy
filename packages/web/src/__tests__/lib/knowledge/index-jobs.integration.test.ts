@@ -17,6 +17,7 @@ import {
   recordIndexJobProgress,
   requeueOrphanedIndexJobs,
 } from "@/lib/knowledge/index-jobs";
+import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
 
 const ORG_ID = "org-index-jobs-test";
 
@@ -245,6 +246,24 @@ describe("kb index job store", () => {
     expect(latest?.counts).toEqual(counts);
     expect(latest?.error).toBeNull();
     expect(latest?.finishedAt).toBeInstanceOf(Date);
+  });
+
+  // The rules the run converted Office documents under. A run finished under
+  // earlier rules converted nothing under these, so it is no reason to leave
+  // its folders' superseded documents for a day (office-format-upgrade.ts).
+  it("records the Office artifact format the run converted under", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const job = await claimNextIndexJob();
+    expect(job?.artifactFormatVersion).toBeNull();
+
+    await finishIndexJob(job!.id, {
+      outcome: "succeeded",
+      counts: { indexed: 1, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 },
+    });
+
+    const latest = await getLatestIndexJobForAgent(agent.id);
+    expect(latest?.artifactFormatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
   });
 
   // A systemic failure (embedding endpoint down) still processed some files

@@ -22,7 +22,12 @@
  * update is a list that will be wrong; the fix is not more diligence, it is a
  * diff.
  *
- * All three checks live in ONE module on purpose. They are the same operation
+ * The same reasoning covers a fourth list: the newest upgrade section's
+ * `Database migrations`, which mirrors `packages/web/drizzle/meta/_journal.json`
+ * (`extractUpgradeMigrationNotes`, `findMigrationNoteDrift`): nothing else
+ * tells the author of a new migration that it belongs there.
+ *
+ * All the checks live in ONE module on purpose. They are the same operation
  * — extract identifiers from code, assert each appears in a doc — and splitting
  * them would triple the fixture boilerplate while making the shared
  * normalization (route params, exemption tables) drift instead.
@@ -31,6 +36,8 @@
  * `docs-coverage.test.mjs` reads the real repo and asserts against it, and
  * `pnpm test:scripts` runs it in CI's `quality` job. No new CI wiring.
  */
+
+import { maskFencedBlocks, sliceSectionBody } from "./mdx-fences.mjs";
 
 const HTTP_METHODS = [
   "GET",
@@ -51,7 +58,7 @@ const HTTP_METHODS = [
  */
 export const API_DOC_EXEMPTIONS = {
   "/api/auth/{}":
-    "Better Auth catch-all — the library owns this surface, documented upstream",
+    "Better Auth catch-all — clients reach only sign-in/email, sign-out and get-session (allowlist in lib/auth.ts, described in guides/hardening)",
   "/api/dev/enterprise-toggle":
     "development-only helper, not present in a production build",
   "/api/internal/openclaw-config-ready":
@@ -351,4 +358,163 @@ export function findUndocumentedTools(
         `tool "${t}" is not in docs/src/content/docs/concepts/agent-permissions.mdx ` +
         `(document it, or add it to TOOL_DOC_EXEMPTIONS with a reason)`,
     );
+}
+
+const UPGRADING_PAGE = "docs/src/content/docs/guides/upgrading.mdx";
+
+/**
+ * The database migrations the newest upgrade section says it runs.
+ *
+ * `guides/upgrading.mdx` keeps one `## Upgrading from …` section per release,
+ * newest first. The newest one is the only place the next migration may go:
+ * every older section describes a release that already shipped and must not
+ * change (AGENTS.md § "A Released Upgrade Section Is Immutable").
+ *
+ * Its `Database migrations` subsection opens with the range in its first
+ * paragraph (`` `0056`–`0078` ``, or a single `` `0079` ``), and each bullet
+ * opens with the migrations it describes (`` - `0061`, `0062` — … ``). Only
+ * that label counts: a bullet's prose may name another migration in passing —
+ * the release branch's own number for the same change, say.
+ *
+ * The section `pnpm release` opens for the next cycle has no such subsection
+ * until a migration needs one. Then the result carries `missing: true` and the
+ * newest older section that does list migrations, so `findMigrationNoteDrift`
+ * can tell whether anything ran after it.
+ *
+ * Throws on a subsection it cannot read rather than returning a short list:
+ * a range rewritten out of shape, or a bullet whose label names no migration,
+ * is a list the guard would otherwise stop checking without a word.
+ *
+ * @param {string} mdx contents of guides/upgrading.mdx
+ * @returns {{section: string, from: string, to: string, listed: string[]}
+ *   | {section: string, missing: true, previous: {section: string, to: string}}}
+ */
+export function extractUpgradeMigrationNotes(mdx) {
+  const mask = maskFencedBlocks(mdx);
+  const sections = [];
+  for (const heading of mask.matchAll(/^## (Upgrading from .*)$/gm)) {
+    const bodyStart = heading.index + heading[0].length;
+    const { body } = sliceSectionBody(mdx, bodyStart, mask);
+    sections.push({
+      heading: heading[1].trim(),
+      body,
+      mask: mask.slice(bodyStart, bodyStart + body.length),
+    });
+  }
+  const [newest, ...older] = sections;
+  if (!newest) {
+    throw new Error(`${UPGRADING_PAGE}: no "## Upgrading from …" section`);
+  }
+  const notes = readMigrationSubsection(newest);
+  if (notes) return notes;
+  for (const section of older) {
+    const previous = readMigrationSubsection(section);
+    if (previous) {
+      return {
+        section: newest.heading,
+        missing: true,
+        previous: { section: previous.section, to: previous.to },
+      };
+    }
+  }
+  throw new Error(
+    `${UPGRADING_PAGE}: no "## Upgrading from …" section has a Database migrations subsection`,
+  );
+}
+
+/**
+ * @param {{heading: string, body: string, mask: string}} section
+ * @returns {{section: string, from: string, to: string, listed: string[]} | null}
+ */
+function readMigrationSubsection({ heading, body: section, mask }) {
+  const start = /^#{3,4} Database migrations\s*$/m.exec(mask);
+  if (!start) return null;
+  const restStart = start.index + start[0].length;
+  const next = /^#{2,4} /m.exec(mask.slice(restStart));
+  const body = section.slice(
+    restStart,
+    next ? restStart + next.index : section.length,
+  );
+
+  const firstBullet = /^- /m.exec(body);
+  const intro = firstBullet ? body.slice(0, firstBullet.index) : body;
+  const range = /`(\d{4})`(?:–`(\d{4})`)?/.exec(intro);
+  if (!range) {
+    throw new Error(
+      `${UPGRADING_PAGE}: "${heading}" → Database migrations names no range ` +
+        "like `0056`–`0078` (or a single `0079`) this guard can read",
+    );
+  }
+  const listed = [];
+  for (const line of body.split("\n")) {
+    if (!line.startsWith("- ")) continue;
+    const label = line.slice(2).split(" — ")[0];
+    const numbers = [...label.matchAll(/`(\d{4})`/g)].map((m) => m[1]);
+    if (numbers.length === 0) {
+      throw new Error(
+        `${UPGRADING_PAGE}: a bullet under "${heading}" → Database migrations ` +
+          `names no migration before its " — ": ${JSON.stringify(line)}`,
+      );
+    }
+    listed.push(...numbers);
+  }
+  return {
+    section: heading,
+    from: range[1],
+    to: range[2] ?? range[1],
+    listed,
+  };
+}
+
+/**
+ * Compares the newest upgrade section's migration list with the migration
+ * journal: its range must end at the newest migration, and its bullets must
+ * name every migration in the range and nothing outside it. A newest section
+ * without a list is fine until the journal holds a migration past the previous
+ * section's range; then each such migration is named, pointing at the
+ * subsection to add.
+ *
+ * @param {ReturnType<typeof extractUpgradeMigrationNotes>} notes
+ * @param {string[]} journalTags `entries[].tag` of packages/web/drizzle/meta/_journal.json
+ * @returns {string[]} problems (empty = ok)
+ */
+export function findMigrationNoteDrift(notes, journalTags) {
+  const problems = [];
+  const migrations = journalTags.map((tag) => ({ id: tag.slice(0, 4), tag }));
+  if ("missing" in notes) {
+    return migrations
+      .filter((m) => m.id > notes.previous.to)
+      .map(
+        ({ id, tag }) =>
+          `migration ${id} (${tag}) runs after "${notes.previous.section}", but ` +
+          `"${notes.section}" has no Database migrations — add a ` +
+          `\`### Database migrations\` subsection to it in ${UPGRADING_PAGE}`,
+      );
+  }
+  const newest = migrations[migrations.length - 1];
+  if (newest.id !== notes.to) {
+    problems.push(
+      `the newest migration is ${newest.id}, but "${notes.section}" says its ` +
+        `migrations end at ${notes.to} — extend the range in ${UPGRADING_PAGE}`,
+    );
+  }
+  const expected = migrations.filter((m) => m.id >= notes.from);
+  for (const { id, tag } of expected) {
+    if (!notes.listed.includes(id)) {
+      problems.push(
+        `migration ${id} (${tag}) has no bullet under "${notes.section}" → ` +
+          `Database migrations in ${UPGRADING_PAGE}`,
+      );
+    }
+  }
+  const expectedIds = new Set(expected.map((m) => m.id));
+  for (const id of notes.listed) {
+    if (!expectedIds.has(id) || id > notes.to) {
+      problems.push(
+        `${UPGRADING_PAGE} lists migration ${id} under "${notes.section}", ` +
+          `outside its range ${notes.from}–${notes.to}`,
+      );
+    }
+  }
+  return problems;
 }

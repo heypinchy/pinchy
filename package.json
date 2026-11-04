@@ -9,6 +9,7 @@
     "test": "pnpm --filter @pinchy/web test",
     "test:related": "node scripts/test-related.mjs",
     "test:plugins": "pnpm --fail-if-no-match --filter \"./packages/plugins/*\" test",
+    "test:libreoffice": "pnpm --filter @pinchy/web test:libreoffice",
     "test:scripts": "node --test scripts/lib/*.test.mjs docs/scripts/*.test.mjs config/telegram-mock/__tests__/*.test.mjs config/__tests__/*.test.mjs",
     "worktree:env": "node scripts/worktree-env.mjs",
     "format": "prettier --write .",
@@ -33,7 +34,8 @@
   "devDependencies": {
     "husky": "^9.1.7",
     "lint-staged": "^17.2.0",
-    "prettier": "^3.9.6"
+    "prettier": "^3.9.6",
+    "yaml": "^2.9.0"
   },
   "pnpm": {
     "overrides": {

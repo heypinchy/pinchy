@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -15,6 +15,7 @@ const mockParams = vi.fn();
 vi.mock("next/navigation", () => ({ useParams: () => mockParams() }));
 
 import { ThreadApprovals } from "../thread-approvals";
+import { ARM_MS } from "../approval-card";
 import { ApprovalsInbox } from "../approvals-inbox";
 import { AgentIdContext } from "../chat";
 
@@ -56,6 +57,7 @@ describe("approval card placement", () => {
     );
 
     await screen.findByText(/needs your confirmation/i);
+    fireEvent.click(screen.getByRole("button", { name: /review/i }));
     expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
   });
 
@@ -151,5 +153,108 @@ describe("approval card placement", () => {
       await screen.findByText(/Odoo needs your confirmation/i);
       expect(screen.getAllByText(/needs your confirmation/i)).toHaveLength(2);
     });
+
+    // The thread and the corner are one screen: between them they draw one
+    // card's arguments and decision at a time, never one per surface.
+    it("opens one card across both surfaces", async () => {
+      fetchPendingApprovals.mockResolvedValue({
+        approvals: [
+          approval(),
+          approval({ id: "req-2", agentId: "other", agentName: "Odoo", argsSummary: { x: 1 } }),
+        ],
+      });
+
+      bothSurfaces("a1");
+
+      await screen.findByText(/Odoo needs your confirmation/i);
+      expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: /review .* for Smithers/i }));
+      expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(1);
+
+      fireEvent.click(screen.getByRole("button", { name: /review .* for Odoo/i }));
+      expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
+      expect(screen.getByText("x")).toBeInTheDocument();
+      expect(screen.queryByText("recordId")).toBeNull();
+    });
+
+    // A newer confirmation in the open thread must not take over from the card
+    // the person is reading in the corner: its Approve would land where theirs was.
+    it("keeps the corner card open when a newer confirmation arrives in the thread", async () => {
+      const corner = approval({
+        id: "req-2",
+        agentId: "other",
+        agentName: "Odoo",
+        argsSummary: { x: 1 },
+      });
+      fetchPendingApprovals.mockResolvedValue({ approvals: [corner] });
+
+      bothSurfaces("a1");
+
+      await screen.findByText(/Odoo needs your confirmation/i);
+      fireEvent.click(screen.getByRole("button", { name: /review/i }));
+      const approve = screen.getByRole("button", { name: /approve/i });
+
+      fetchPendingApprovals.mockResolvedValue({ approvals: [approval(), corner] });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await screen.findByText(/Smithers needs your confirmation/i);
+
+      expect(screen.getByRole("button", { name: /approve/i })).toBe(approve);
+      expect(screen.getByText("x")).toBeInTheDocument();
+      const thread = screen
+        .getAllByRole("region", { name: /pending approvals/i })
+        .find((region) => within(region).queryByText(/Smithers/));
+      expect(within(thread!).getByRole("button", { name: /review/i })).toBeInTheDocument();
+    });
+  });
+
+  // The thread is anchored to its top, so a card arriving above the open one
+  // pushes it down by one card height — its Approve onto the pixels where the
+  // card below it had its Review, under the pointer about to click it.
+  it("does not approve with a click aimed at a card below when a card arrives above", async () => {
+    const spy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element
+    ) {
+      const card = this.closest("[role=region] > *");
+      let above = 0;
+      for (let prev = card?.previousElementSibling; prev; prev = prev.previousElementSibling)
+        above++;
+      return new DOMRect(0, 100 + 100 * above, 80, 32);
+    });
+    try {
+      const open = approval();
+      const below = approval({ id: "req-3", argsSummary: { y: 2 } });
+      const newer = approval({ id: "req-2", argsSummary: { x: 1 } });
+      fetchPendingApprovals.mockResolvedValue({ approvals: [open, below] });
+      submitApprovalDecision.mockResolvedValue({ ok: true, status: "approved", resumed: true });
+      render(
+        <AgentIdContext.Provider value="a1">
+          <ThreadApprovals />
+        </AgentIdContext.Provider>
+      );
+      await screen.findAllByText(/needs your confirmation/i);
+      fireEvent.click(screen.getAllByRole("button", { name: /review/i })[0]);
+      const approve = screen.getByRole("button", { name: /approve/i });
+      await waitFor(() => expect(approve).not.toHaveAttribute("aria-disabled", "true"), {
+        timeout: ARM_MS + 1000,
+      });
+
+      fetchPendingApprovals.mockResolvedValue({ approvals: [newer, open, below] });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(screen.getAllByText(/needs your confirmation/i)).toHaveLength(3));
+      fireEvent.click(approve);
+      expect(submitApprovalDecision).not.toHaveBeenCalled();
+
+      await waitFor(() => expect(approve).not.toHaveAttribute("aria-disabled", "true"), {
+        timeout: ARM_MS + 1000,
+      });
+      fireEvent.click(approve);
+      await waitFor(() =>
+        expect(submitApprovalDecision).toHaveBeenCalledWith("req-1", { decision: "approve" })
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
