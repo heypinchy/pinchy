@@ -205,7 +205,7 @@ describe.skipIf(!VERSION)(
 
     beforeAll(async () => {
       root = mkdtempSync(join(tmpdir(), "pinchy-sidecar-canary-"));
-      // The service runs as uid 999; the bind mount must be writable for it.
+      // The service runs as uid 998; the bind mount must be writable for it.
       chmodSync(root, 0o777);
       for (const dir of [
         "in",

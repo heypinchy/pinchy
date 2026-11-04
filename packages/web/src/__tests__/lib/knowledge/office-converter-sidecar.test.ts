@@ -326,6 +326,22 @@ describe("office-converter sidecar protocol", () => {
     }
   });
 
+  it("accepts a spool path written with a trailing slash", async () => {
+    await startServer();
+    const converter = sidecarConverter(`${spool}/`);
+    const dir = await converter.createStagingDir();
+    await writeFile(join(dir, "in", "0.docx"), "bytes");
+
+    await expect(
+      converter.runConverter({
+        inputs: [join(dir, "in", "0.docx")],
+        outDir: join(dir, "out"),
+        profileDir: join(dir, "profile"),
+        timeoutMs: 5_000,
+      })
+    ).resolves.toMatchObject({ code: 0 });
+  });
+
   it("gives up on a sidecar that never answers", async () => {
     await startServer();
     answer = () => new Promise<ConverterResult>(() => {});

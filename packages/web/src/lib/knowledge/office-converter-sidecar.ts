@@ -61,7 +61,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { createServer, request, type IncomingMessage, type Server } from "node:http";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { OFFICE_EXTENSIONS } from "./office-formats";
 import type { ConverterResult, ConverterRun, RunConverter } from "./office-soffice";
@@ -174,9 +174,13 @@ export interface SidecarConverterOptions {
 }
 
 export function sidecarConverter(
-  spoolDir: string,
+  configuredSpoolDir: string,
   options: SidecarConverterOptions = {}
 ): SidecarConverter {
+  // Normalised once: the staging check compares paths as strings, and a
+  // trailing or doubled slash in KB_OFFICE_SPOOL_DIR must not refuse every
+  // batch.
+  const spoolDir = resolve(configuredSpoolDir);
   const socketPath = converterSocketPath(spoolDir);
   const graceMs = options.graceMs ?? DEFAULT_GRACE_MS;
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
