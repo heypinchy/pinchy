@@ -200,9 +200,10 @@ describe("recordSessionTurnsUsage cost wiring", () => {
   });
 
   // The turn's tool-loop calls are summed into one row, but only the LAST
-  // call's prompt size is known — and within a turn the prompt only grows. So
-  // the tier is picked by that size: a turn that crosses 100K tokens mid-loop
-  // is priced a little high, never low, which is the safe side for a budget.
+  // call's prompt size is known, so the tier is picked by that size. Usually
+  // the prompt grows within a turn, which makes a turn that crosses 100K
+  // tokens mid-loop read slightly high (usage-per-turn.ts names the cases
+  // that read low).
   it("prices a Claude Haiku 5.5 turn by its prompt-length tier", async () => {
     mockReadTrajectoryJsonl.mockResolvedValue(
       JSON.stringify({

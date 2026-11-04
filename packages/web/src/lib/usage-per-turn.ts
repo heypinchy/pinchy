@@ -173,9 +173,12 @@ export async function recordSessionTurnsUsage(
             },
             pricing,
             // A turn sums its whole tool loop, but only the last call's prompt
-            // size is known. Within a turn the prompt only grows, so pricing
-            // the turn by that size errs high, never low — the safe side for a
-            // budget that enforces on this number.
+            // size is known, so the whole turn is priced by that call's tier.
+            // The prompt normally grows within a turn, so a turn that crosses
+            // a tier boundary partway reads slightly high. It reads low when
+            // the runtime compacts mid-turn (the last call is then smaller than
+            // the ones before it) and when the size wasn't reported (flat
+            // rate). Both are documented on the Usage & Costs page.
             row.contextTokens
           ),
         };
