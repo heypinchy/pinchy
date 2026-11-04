@@ -106,7 +106,8 @@ export function kbEmbeddingConfig(): EmbeddingConfig {
       cpuQuota: readCpuQuota(),
       override,
     });
-    // An operator who set it expects it to matter; say so once when it doesn't.
+    // An operator who set it expects it to matter; say so when it doesn't —
+    // once per module instance, so at most twice per process.
     if (override !== undefined && override.trim() !== "" && !isValidThreadOverride(override)) {
       console.warn(
         `[knowledge] KB_EMBEDDING_THREADS="${oneLine(override, LOG_REASON_MAX)}" is not a positive whole ` +

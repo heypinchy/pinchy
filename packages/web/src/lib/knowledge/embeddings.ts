@@ -215,6 +215,8 @@ function getLocalEmbeddingContext(
       // Keep the failure cached for a while, so a persistently broken load
       // fails every search fast instead of loading the model again for each.
       const evict = setTimeout(() => {
+        // Defensive: only this path sets the key today, but never let an old
+        // timer evict a newer load.
         if (contexts.get(modelPath) === loading) contexts.delete(modelPath);
       }, LOCAL_MODEL_RETRY_COOLDOWN_MS);
       evict.unref?.();
