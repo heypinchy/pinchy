@@ -428,18 +428,17 @@ export async function fetchOdooSchema(credentials: {
             // Non-transient, or out of retries — no point in trying again.
             const described = describeOdooError(error);
             const unreachable = isNoAnswerError(error) || (transient && !odooAnswered(error));
-            // A status line may come from a proxy in front of Odoo as much as
-            // from Odoo; only an error carrying Odoo's `data` is Odoo's own.
-            const text =
-              !transient || unreachable
-                ? described
-                : isHttpLevelError(error)
-                  ? // A described message that already says what came back
-                    // ("Odoo answered with …") needs no second prefix.
-                    described.startsWith("HTTP ")
-                    ? `The Odoo address answered with an error: ${described}`
-                    : described
-                  : `Odoo did not answer successfully: ${described}`;
+            // A bare status line may come from a proxy in front of Odoo as
+            // much as from Odoo, retried or not; a described message that
+            // already says what came back ("Odoo answered with …") needs no
+            // prefix. Only an error carrying Odoo's `data` is Odoo's own.
+            const text = unreachable
+              ? described
+              : isHttpLevelError(error) && described.startsWith("HTTP ")
+                ? `The Odoo address answered with an error: ${described}`
+                : transient && !isHttpLevelError(error)
+                  ? `Odoo did not answer successfully: ${described}`
+                  : described;
             return {
               model,
               name,

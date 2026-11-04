@@ -271,9 +271,10 @@ describe("requestCredentials", () => {
     );
   });
 
-  // The message goes to the model and into the audit trail, so it carries a
-  // fixed vocabulary only: undici's header check quotes the header value — the
-  // gateway token — and a connect error names the internal address.
+  // The message goes to the model and into the audit trail, so it carries an
+  // error code, an error name or a fixed phrase, never the error's own text:
+  // undici's header check quotes the header value — the gateway token — and a
+  // connect error names the internal address.
   it("never repeats a transport error's own text", async () => {
     vi.stubGlobal(
       "fetch",

@@ -271,7 +271,22 @@ describe("fetchOdooSchema", () => {
 
     expect(result.success).toBe(false);
     if (result.success) return;
-    expect(result.error).toBe("HTTP 405: Method Not Allowed");
+    expect(result.error).toBe(
+      "The Odoo address answered with an error: HTTP 405: Method Not Allowed"
+    );
+    expect(result.isAuthError).toBe(false);
+  });
+
+  // A WAF or proxy in front of Odoo answering every call with a status line:
+  // not retried, but it needs the same context as a transient one.
+  it("gives a shared non-transient status line the same context", async () => {
+    mockFields.mockRejectedValue(Object.assign(new Error("HTTP 403: Forbidden"), { code: 403 }));
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe("The Odoo address answered with an error: HTTP 403: Forbidden");
     expect(result.isAuthError).toBe(false);
   });
 

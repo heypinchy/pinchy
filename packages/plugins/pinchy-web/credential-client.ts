@@ -245,11 +245,12 @@ export async function requestCredentials(args: {
 
 /**
  * What a transport failure is called in a message that reaches the model and
- * the audit trail — from a fixed vocabulary, never the error's own text:
- * undici's header check quotes the header value (the gateway token), and a
- * connect error names the internal address. undici hangs the errno off
- * `.cause` (`ECONNREFUSED`, `ENOTFOUND`, `UND_ERR_SOCKET`, …); a timeout or
- * abort is named by its DOMException name; anything else is "request failed".
+ * the audit trail — never the error's own text: undici's header check quotes
+ * the header value (the gateway token), and a connect error names the
+ * internal address. It is an error code, if the error or its `.cause` carries
+ * one that matches `^[A-Z][A-Z0-9_]+$` (undici hangs the errno there:
+ * `ECONNREFUSED`, `ENOTFOUND`, `UND_ERR_SOCKET`, …); else the DOMException
+ * name `TimeoutError` / `AbortError`; else the fixed phrase "request failed".
  */
 function describeTransportError(err: unknown): string {
   for (const candidate of [err, err instanceof Error ? err.cause : undefined]) {
