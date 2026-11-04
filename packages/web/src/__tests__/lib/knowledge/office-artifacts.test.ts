@@ -7,8 +7,16 @@
  * ever be written next to the original (`/data` is mounted read-only and the
  * docs state that as a product promise).
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+} from "node:fs";
 import { readdir, stat, utimes } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,6 +25,7 @@ import {
   clearStagedBatches,
   liveStagingDirOf,
   OfficeArtifactStore,
+  pruneOtherFormatVersions,
 } from "@/lib/knowledge/office-artifacts";
 
 let tmpRoot: string;
@@ -134,18 +143,102 @@ describe("OfficeArtifactStore", () => {
       const store = new OfficeArtifactStore(join(tmpRoot, "never-used"));
       expect(await store.sweep(1000)).toBe(0);
     });
+  });
 
+  describe("pruneOtherFormatVersions", () => {
+    // After a format bump nothing reads the old version directory again — the
+    // preview resolves only the current version — but it still holds what the
+    // earlier, weaker conversion drew into its PDFs, and it costs disk.
+    const NOTHING_REFERENCED = async () => false;
+
+    // ...unless a document is still on record as read from it. Until that
+    // document has been converted again, its directory is what the version
+    // it was indexed with resolves, and the one thing a rollback to that
+    // version — database restored, artifact volume not — still finds.
+    it("keeps a superseded version as long as a document is still on record as read from it", async () => {
+      const root = join(tmpRoot, "store");
+      const v1 = new OfficeArtifactStore(root, { formatVersion: 1 });
+      await v1.put(HASH_A, stagedPdf("a.pdf"));
+      const v0 = new OfficeArtifactStore(root, { formatVersion: 0 });
+      await v0.put(HASH_B, stagedPdf("b.pdf"));
+      new OfficeArtifactStore(root, { formatVersion: 2 });
+      const asked: number[] = [];
+
+      const removed = await pruneOtherFormatVersions(root, 2, async (version) => {
+        asked.push(version);
+        return version === 1;
+      });
+
+      expect(removed).toBe(1);
+      expect(asked.sort()).toEqual([0, 1]);
+      expect(await v1.get(HASH_A)).not.toBeNull();
+      expect((await readdir(root)).sort()).toEqual(["v1", "v2"]);
+    });
+
+    it("is never asked about the current version", async () => {
+      const root = join(tmpRoot, "store");
+      const v2 = new OfficeArtifactStore(root, { formatVersion: 2 });
+      await v2.put(HASH_A, stagedPdf("a.pdf"));
+      const inUse = vi.fn(async () => false);
+
+      expect(await pruneOtherFormatVersions(root, 2, inUse)).toBe(0);
+
+      expect(inUse).not.toHaveBeenCalled();
+      expect(await v2.get(HASH_A)).not.toBeNull();
+    });
     it("removes the artifacts of superseded format versions wholesale", async () => {
       const root = join(tmpRoot, "store");
       const v1 = new OfficeArtifactStore(root, { formatVersion: 1 });
       await v1.put(HASH_A, stagedPdf("a.pdf"));
-
       const v2 = new OfficeArtifactStore(root, { formatVersion: 2 });
-      const removed = await v2.pruneOtherFormatVersions();
+      const kept = await v2.put(HASH_B, stagedPdf("b.pdf"));
+
+      const removed = await pruneOtherFormatVersions(root, 2, NOTHING_REFERENCED);
 
       expect(removed).toBe(1);
       expect(await v1.get(HASH_A)).toBeNull();
       expect(await readdir(root)).toEqual(["v2"]);
+      expect(readFileSync(kept, "utf8")).toBe("%PDF-1.4 stand-in");
+    });
+
+    it("leaves staging and anything that is not a version directory alone", async () => {
+      // `staging/` may hold a batch converting right now; the rest is not ours.
+      const root = join(tmpRoot, "store");
+      const store = new OfficeArtifactStore(root, { formatVersion: 2 });
+      const batch = await store.createStagingDir();
+      writeFileSync(join(batch, "0.pptx"), "a checked copy");
+      for (const name of ["v1.old", "v", "notes"]) mkdirSync(join(root, name));
+      writeFileSync(join(root, "v3"), "a file, not a version directory");
+
+      expect(await pruneOtherFormatVersions(root, 2, NOTHING_REFERENCED)).toBe(0);
+
+      expect((await readdir(root)).sort()).toEqual(["notes", "staging", "v", "v1.old", "v2", "v3"]);
+      expect(existsSync(join(batch, "0.pptx"))).toBe(true);
+    });
+
+    it("never follows a symlink out of the store", async () => {
+      const outside = join(tmpRoot, "outside");
+      mkdirSync(join(outside, "ab"), { recursive: true });
+      writeFileSync(join(outside, "ab", "precious.pdf"), "not the store's");
+      const root = join(tmpRoot, "store");
+      new OfficeArtifactStore(root, { formatVersion: 2 });
+      // A version-shaped name that points elsewhere, and a shard inside a real
+      // superseded version that does the same.
+      symlinkSync(outside, join(root, "v1"));
+      mkdirSync(join(root, "v0"));
+      symlinkSync(join(outside, "ab"), join(root, "v0", "ab"));
+
+      await pruneOtherFormatVersions(root, 2, NOTHING_REFERENCED);
+
+      expect(readFileSync(join(outside, "ab", "precious.pdf"), "utf8")).toBe("not the store's");
+      expect(existsSync(join(root, "v0"))).toBe(false);
+    });
+
+    it("is a no-op, and creates nothing, where there is no store", async () => {
+      const root = join(tmpRoot, "never-used");
+
+      expect(await pruneOtherFormatVersions(root, 2, NOTHING_REFERENCED)).toBe(0);
+      expect(existsSync(root)).toBe(false);
     });
   });
 

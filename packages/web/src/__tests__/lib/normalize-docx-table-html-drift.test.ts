@@ -1,6 +1,6 @@
 /**
  * Drift-guard: the table-HTML normalizer is duplicated across the plugin
- * (`packages/plugins/pinchy-files/docx-extract.ts::normalizeTableHtml`) and
+ * (`packages/plugins/pinchy-files/docx-markdown.ts::normalizeTableHtml`) and
  * the web composer (`packages/web/src/lib/attachment-adapters.ts::normalizeDocxTableHtml`).
  *
  * The duplication is intentional (bundle isolation in the web path uses
@@ -15,7 +15,7 @@ import { resolve } from "node:path";
 
 const PLUGIN_FILE = resolve(
   import.meta.dirname,
-  "../../../../plugins/pinchy-files/docx-extract.ts"
+  "../../../../plugins/pinchy-files/docx-markdown.ts"
 );
 const WEB_FILE = resolve(import.meta.dirname, "../../lib/attachment-adapters.ts");
 

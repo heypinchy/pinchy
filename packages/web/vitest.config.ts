@@ -70,6 +70,11 @@ export default defineConfig({
       "../plugins/pinchy-*/**/node_modules/**",
       "e2e",
       "**/*.integration.test.{ts,tsx,js,jsx}",
+      // The LibreOffice suites drive a real `soffice` and run on their own,
+      // one file at a time: `pnpm test:libreoffice` (vitest.libreoffice.config.ts).
+      // Here they ran in parallel workers on any machine with LibreOffice and
+      // timed out against each other.
+      "**/*.libreoffice.test.{ts,tsx}",
     ],
     server: {
       deps: {

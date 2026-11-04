@@ -52,6 +52,7 @@ import { buildShutdownSteps } from "./src/server/shutdown-steps";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
+import { regenerateOnConnect } from "./src/server/openclaw-connect-regenerate";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 import {
   describeAuditKeyFilePersist,
@@ -835,19 +836,11 @@ const startup = app.prepare().then(async () => {
         } catch {
           // Non-critical — approval loop has a safety timeout
         }
-
-        // Push full config via config.apply on the FIRST connection only. This
-        // seeds OC's currentCompareConfig with the complete Pinchy payload so
-        // subsequent config.apply calls show only field-level diffs — not a
-        // massive diff against the baked-in startup config that triggers
-        // gateway/discovery/update/canvasHost restart rules (openclaw#75534,
-        // PR #279). Scoped to firstConnect to prevent a cascade: if this push
-        // triggers an OC restart (large diff on fresh install), the reconnect
-        // (firstConnect=false) won't fire again, terminating the loop.
-        regenerateOpenClawConfig().catch((err) => {
-          console.warn("[server] on-connected regenerateOpenClawConfig failed:", err);
-        });
       }
+
+      // Full config push via config.apply — see regenerateOnConnect for when
+      // a connect owes one.
+      regenerateOnConnect({ firstConnect }, regenerateOpenClawConfig);
 
       // Start global usage poller. Idempotent — a reconnect won't spawn a
       // second poller. The poller handles sessions.list() failures gracefully.

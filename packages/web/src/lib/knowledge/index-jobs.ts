@@ -20,6 +20,7 @@ import { db } from "@/db";
 import { kbIndexJobs } from "@/db/schema";
 import { KB_INDEX_JOB_ACTIVE_STATUSES, type KbIndexJobTrigger } from "@/db/enums";
 
+import { OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import type { IngestResult } from "./types";
 
 export type KbIndexJob = typeof kbIndexJobs.$inferSelect;
@@ -169,7 +170,10 @@ export interface FinishIndexJobArgs {
   unavailableFolders?: number;
 }
 
-/** Moves a job to its terminal state, recording what it found. Releases the org's active-job slot. */
+/**
+ * Moves a job to its terminal state, recording what it found and the Office
+ * artifact format it converted under. Releases the org's active-job slot.
+ */
 export async function finishIndexJob(jobId: string, args: FinishIndexJobArgs): Promise<void> {
   await db
     .update(kbIndexJobs)
@@ -178,6 +182,7 @@ export async function finishIndexJob(jobId: string, args: FinishIndexJobArgs): P
       counts: args.counts,
       error: args.error ?? null,
       unavailableFolders: args.unavailableFolders ?? 0,
+      artifactFormatVersion: OFFICE_ARTIFACT_FORMAT_VERSION,
       finishedAt: new Date(),
     })
     .where(eq(kbIndexJobs.id, jobId));

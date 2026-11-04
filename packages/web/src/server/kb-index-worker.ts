@@ -10,7 +10,11 @@
  * stopped through buildShutdownSteps so SIGTERM doesn't hang. That single-
  * container assumption is also what makes requeueOrphanedIndexJobs() safe at
  * boot — see its doc comment — and clearStagedBatches(), which frees the disk
- * an interrupted run left behind.
+ * an interrupted run left behind. After an update that changed how Office
+ * documents are converted, the worker queues the reindex that converts the
+ * documents indexed the old way again (office-format-upgrade.ts) — at boot, and
+ * hourly after — and every boot and every finished run removes an artifact
+ * format directory no document is read from any more (pruneOtherFormatVersions).
  *
  * A run can take hours (a ~2k-PDF corpus is 1.5-7h of CPU-only embedding), so
  * the interval is a poll for NEW work, not a run cadence: the re-entrancy guard
@@ -21,13 +25,24 @@ import { usageRecords } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
 import { embedTexts } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
-import { extractXlsx } from "@/lib/knowledge/xlsx-extract";
+import { extractXlsxIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
-import { clearStagedBatches, stagingDirOf } from "@/lib/knowledge/office-artifacts";
+import {
+  clearStagedBatches,
+  OFFICE_ARTIFACT_FORMAT_VERSION,
+  pruneOtherFormatVersions,
+  stagingDirOf,
+} from "@/lib/knowledge/office-artifacts";
+import {
+  agentsOwedReconversion,
+  officeFormatVersionInUse,
+  queueReconversion,
+} from "@/lib/knowledge/office-format-upgrade";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
   claimNextIndexJob,
@@ -104,7 +119,10 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
             }
           : {}),
       }),
-    extractXlsx,
+    // In a heap-capped child process: a workbook's cell model costs ~20× its
+    // sheet XML, and in this process that is an OOM kill of the web server on
+    // every nightly reindex (xlsx-isolated.ts).
+    extractXlsx: (absPath) => extractXlsxIsolated(absPath),
     convertOffice: (sources) => convertOfficeFiles(sources),
     ocrModel: ocr?.model ?? null,
     // The artifact volume, not the container's /tmp: see IngestDeps.stagingDir.
@@ -123,7 +141,7 @@ export const FOLDERS_UNAVAILABLE_ERROR =
 export interface RunIndexJobOptions {
   /** Test seam: injects a deterministic embedder/extractor. Production resolves them from the bundled in-process embeddinggemma GGUF. */
   deps?: IngestDeps;
-  /** Test seam: the artifact volume whose leftover staging the first tick clears. Production uses the store's default. */
+  /** Test seam: the artifact volume the first tick clears leftover staging (batches and source copies) and superseded format versions from. Production uses the store's default. */
   artifactDir?: string;
 }
 
@@ -176,19 +194,19 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
         unavailableFolders++;
         skippedRoots++;
         console.warn(
-          `[kb-index-worker] job ${job.id}: skipped ${rootDir} (${reason}); nothing under it was indexed or removed`
+          `[kb-index-worker] job ${job.id}: skipped ${oneLine(rootDir, LOG_PATH_MAX)} (${reason}); nothing under it was indexed or removed`
         );
       },
       onRefusedFile: (absPath, refusal) => {
         refusedFiles++;
         console.warn(
-          `[kb-index-worker] job ${job.id}: refused to read ${absPath} (${refusal}); it was not indexed, and any version indexed before was kept`
+          `[kb-index-worker] job ${job.id}: refused to read ${oneLine(absPath, LOG_PATH_MAX)} (${refusal}); it was not indexed, and any version indexed before was kept`
         );
       },
       onKeptFolder: (folder) => {
         unavailableFolders++;
         console.warn(
-          `[kb-index-worker] job ${job.id}: ${folder} came up empty while the index still holds documents from it; they were kept`
+          `[kb-index-worker] job ${job.id}: ${oneLine(folder, LOG_PATH_MAX)} came up empty while the index still holds documents from it; they were kept`
         );
       },
       // A share that failed to mount is an empty directory under Docker, and
@@ -284,7 +302,7 @@ async function recordOcrUsage(job: KbIndexJob, ocr: OcrTally | null): Promise<vo
   } catch (err) {
     // Telemetry must never take down a reindex that actually happened — the
     // same call the audit write makes one line below.
-    console.error("[kb-index-worker] failed to record OCR usage:", err);
+    console.error("[kb-index-worker] failed to record OCR usage:", errorLine(err));
   }
 }
 
@@ -344,6 +362,20 @@ let _pollInterval: ReturnType<typeof setInterval> | null = null;
 // overlapping tick. The DB claim would refuse the double-run anyway; this keeps
 // us from hammering it every 10s for hours to find that out.
 let _runInFlight = false;
+/**
+ * How often to look for Office documents owed a conversion under the current
+ * artifact format. At boot, and then hourly: an agent granted
+ * `knowledge_search` or a folder after boot is owed that run too, and with the
+ * nightly reindex switched off nothing else would give it one before the next
+ * restart.
+ */
+const RECONVERSION_LOOK_INTERVAL_MS = 60 * 60 * 1000;
+
+// Agents whose folders hold Office documents converted under an earlier
+// artifact format, not yet queued.
+let _reconversionsOwed: string[] = [];
+// When the worker last looked for them; null until the first tick.
+let _reconversionLookedAt: number | null = null;
 // Whether this process has already cleaned up after its predecessor. See the
 // requeue in runKbIndexWorkerTick for why doing it exactly once is not an
 // optimization but a correctness condition.
@@ -387,23 +419,126 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
           );
         }
       } catch (err) {
-        console.warn("[kb-index-worker] could not clear leftover staging:", err);
+        console.warn("[kb-index-worker] could not clear leftover staging:", errorLine(err));
       }
+      await pruneSupersededArtifacts(opts.artifactDir);
     }
 
-    // Drains the queue rather than running one job per tick. Today that loop
-    // body runs at most once: Pinchy is single-tenant (DEFAULT_ORG_ID) and the
-    // active-job index is per org, so there is never a second job to find. It
-    // is a `while` because "keep going while there is work" is the rule the
-    // worker should follow — an `if` would quietly become wrong the day a
-    // second org exists, and costs exactly as much to write.
-    while (await runNextIndexJob(opts)) {
-      /* keep going while there is work */
+    await lookForOwedReconversions();
+
+    // Drains the queue rather than running one job per tick. Pinchy is
+    // single-tenant (DEFAULT_ORG_ID) and the active-job index is per org, so
+    // one job runs at a time; another is found here when one was queued as
+    // the last freed the slot — the next agent owed a reconversion, queued
+    // just above, or the nightly schedule's next agent. "Keep going while
+    // there is work" is the rule either way, and it stays right the day a
+    // second org exists.
+    for (;;) {
+      await queueOwedReconversion();
+      if (!(await runNextIndexJob(opts))) break;
+      // A finished run may have converted the last document an earlier
+      // format's directory was kept for.
+      await pruneSupersededArtifacts(opts.artifactDir);
     }
   } catch (err) {
-    console.error("[kb-index-worker] job run failed:", err);
+    console.error("[kb-index-worker] job run failed:", errorLine(err));
   } finally {
     _runInFlight = false;
+  }
+}
+
+/**
+ * Queues the next agent owed a reconversion, if the instance's one job slot
+ * is free. Called before every claim, so these runs queue behind whatever an
+ * admin or the nightly schedule already started — one job at a time, like any
+ * other.
+ */
+async function queueOwedReconversion(): Promise<void> {
+  try {
+    while (_reconversionsOwed.length > 0) {
+      const outcome = await queueReconversion(_reconversionsOwed[0]);
+      if (outcome.status === "busy") return;
+      _reconversionsOwed.shift();
+      if (outcome.status === "queued") return;
+    }
+  } catch (err) {
+    // A database problem: drop the rest rather than ask again every tick.
+    // The next look, within the hour, finds what is left.
+    _reconversionsOwed = [];
+    console.warn(
+      "[kb-index-worker] could not queue the reconversion of Office documents:",
+      errorLine(err)
+    );
+  }
+}
+
+/**
+ * After a format bump, the documents indexed from the earlier format's
+ * artifacts are owed a conversion under the current rules, and until they get
+ * it their chunks answer no search and their previews cannot open. The nightly
+ * run would do it — unless it is switched off — so the agents whose folders
+ * hold them are queued from here, one at a time: at boot, and then hourly,
+ * which also reaches an agent granted `knowledge_search` or a folder since.
+ * Folders a run — any run — read whole and succeeded over, started within
+ * the last day, are left out, so a document that cannot be converted now costs
+ * its folder at most one run a day, across restarts; a folder a run failed
+ * over, or had to leave as it was, is left out for six hours from its start,
+ * so a share that stays unmounted costs four failed runs a day, not 24. While
+ * the bundled embedding model is missing nothing is queued — every run could
+ * only fail — and the look says so instead. A failure to look is logged and
+ * leaves it to the next look; the queue still runs.
+ */
+async function lookForOwedReconversions(): Promise<void> {
+  const now = Date.now();
+  if (
+    _reconversionLookedAt !== null &&
+    now - _reconversionLookedAt < RECONVERSION_LOOK_INTERVAL_MS
+  ) {
+    return;
+  }
+  _reconversionLookedAt = now;
+  try {
+    const owed = (await agentsOwedReconversion()).filter(
+      (agentId) => !_reconversionsOwed.includes(agentId)
+    );
+    if (owed.length === 0) return;
+    if (!kbEmbedderAvailable()) {
+      console.warn(
+        `[kb-index-worker] ${owed.length} agent(s) hold Office documents converted under an earlier format; their reindex is held until the bundled embedding model is back`
+      );
+      return;
+    }
+    _reconversionsOwed.push(...owed);
+    console.log(
+      `[kb-index-worker] ${owed.length} agent(s) hold Office documents converted under an earlier format; reindexing them`
+    );
+  } catch (err) {
+    console.warn(
+      "[kb-index-worker] could not look for Office documents owed a conversion:",
+      errorLine(err)
+    );
+  }
+}
+
+/**
+ * Removes the artifacts of a superseded format version once no document is
+ * read from it any more. Housekeeping, so a failure is logged and the queue
+ * still runs.
+ */
+async function pruneSupersededArtifacts(artifactDir: string | undefined): Promise<void> {
+  try {
+    const pruned = await pruneOtherFormatVersions(
+      artifactDir,
+      OFFICE_ARTIFACT_FORMAT_VERSION,
+      officeFormatVersionInUse
+    );
+    if (pruned > 0) {
+      console.log(
+        `[kb-index-worker] removed ${pruned} converted Office document(s) of a superseded format version`
+      );
+    }
+  } catch (err) {
+    console.warn("[kb-index-worker] could not remove superseded Office artifacts:", errorLine(err));
   }
 }
 
@@ -436,5 +571,7 @@ export function _isKbIndexWorkerRunning(): boolean {
 /** Test-only: returns the module to its just-booted state, so a test can exercise the once-per-process orphan requeue. */
 export function _resetKbIndexWorkerForTest(): void {
   _orphansRequeued = false;
+  _reconversionsOwed = [];
+  _reconversionLookedAt = null;
   _runInFlight = false;
 }

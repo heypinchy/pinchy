@@ -48,10 +48,9 @@
  * only takes a path (pdfjs, exceljs, LibreOffice, and the child processes
  * that run them) never sees one an author of the share controls. The ingest
  * and the citation route never buffer a source: they hash it and copy it a
- * chunk at a time. The readers they hand the copy to are another matter —
- * the in-process PDF reader (`extractPdfPages`) and, until #1243 moves it
- * into a child process, the workbook reader (`readFile` in xlsx-extract.ts)
- * load that copy whole.
+ * chunk at a time. The readers they hand the copy to are another matter: the
+ * in-process PDF reader (`extractPdfPages`) loads that copy whole, and the
+ * workbook reader does too, in its heap-capped child (xlsx-isolated.ts).
  */
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, type BigIntStats } from "node:fs";
@@ -268,12 +267,14 @@ export async function copyVerifiedSource(
  * `copyVerifiedSource` for a descriptor the caller has already opened through
  * `openVerifiedSource` — the preview route, which tells a refused open apart
  * from a copy that could not be written. The caller still owns, and closes,
- * the descriptor.
+ * the descriptor. `maxBytes` ends the copy there: a reader with a size limit
+ * needs one byte past it to refuse a file, never the rest of it.
  */
 export async function copyOpenSource(
   source: VerifiedSource,
   sourcePath: string,
-  stagingDir: string
+  stagingDir: string,
+  { maxBytes }: { maxBytes?: number } = {}
 ): Promise<VerifiedCopy> {
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- the artifact volume's staging directory, from configuration.
   await mkdir(stagingDir, { recursive: true });
@@ -286,11 +287,15 @@ export async function copyOpenSource(
     let size = 0;
     let hash: string;
     try {
-      hash = await hashOpenFile(source.handle, async (chunk) => {
-        // A write may take less than it was given; the rest follows.
-        for (let at = 0; at < chunk.length;) at += (await copy.write(chunk, at)).bytesWritten;
-        size += chunk.length;
-      });
+      hash = await hashOpenFile(
+        source.handle,
+        async (chunk) => {
+          // A write may take less than it was given; the rest follows.
+          for (let at = 0; at < chunk.length;) at += (await copy.write(chunk, at)).bytesWritten;
+          size += chunk.length;
+        },
+        maxBytes
+      );
     } finally {
       await copy.close();
     }

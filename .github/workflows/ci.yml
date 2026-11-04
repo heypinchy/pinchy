@@ -2878,6 +2878,78 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.eval.yml down -v
 
+  # The LibreOffice suites (`pnpm test:libreoffice`): the conversion adapter
+  # against a real binary, and the canaries proving an Office file on a share
+  # cannot make the converter fetch or draw a local file into the PDF. They
+  # need a real `soffice`, which no runner has — before this job they skipped
+  # in CI and had never run there at all. So they run INSIDE the Pinchy image
+  # this pipeline built, i.e. against the LibreOffice that ships (Debian's),
+  # with `--network none` (the canaries' listener is on loopback) and
+  # KB_REQUIRE_SOFFICE=1, so a missing binary fails instead of skipping.
+  # A 24 MiB tmpfs (KB_SMALL_VOLUME) is a staging volume too small for the
+  # scratch LibreOffice unpacks a large package into while loading it: a test
+  # cannot shrink a filesystem, and that case needs a real one.
+  #
+  # The runtime image carries production dependencies only, so vitest comes
+  # from the runner: dependencies are installed there and the checkout is
+  # mounted. Not a required check, and gated like every other non-required job
+  # (scripts/lib/ci-path-filter.mjs); scripts/lib/libreoffice-suite.test.mjs
+  # pins this wiring.
+  libreoffice:
+    name: LibreOffice conversion canaries
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
+    if: >-
+      always() &&
+      needs.changes.outputs.code == 'true' &&
+      (needs.build-image.result == 'success' ||
+       needs.build-image.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Log in to GHCR (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull pre-built CI images (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Name the pulled image
+        if: needs.build-image.result == 'success'
+        env:
+          PINCHY_IMAGE: ${{ needs.build-image.outputs.pinchy-image }}
+        run: docker tag "$PINCHY_IMAGE" pinchy-libreoffice
+
+      - name: Build the Pinchy image locally (fork PR fallback)
+        if: needs.build-image.result == 'skipped'
+        run: docker build -t pinchy-libreoffice -f Dockerfile.pinchy .
+
+      - name: pnpm test:libreoffice inside the image
+        run: |
+          docker run --rm --network none \
+            -e CI=true -e KB_REQUIRE_SOFFICE=1 \
+            --tmpfs /kb-small-volume:size=24m -e KB_SMALL_VOLUME=/kb-small-volume \
+            -v "$GITHUB_WORKSPACE:/repo" -w /repo \
+            --entrypoint sh pinchy-libreoffice \
+            -c 'soffice --version && pnpm test:libreoffice'
+
   ollama-integration:
     name: Ollama integration tests
     needs: changes

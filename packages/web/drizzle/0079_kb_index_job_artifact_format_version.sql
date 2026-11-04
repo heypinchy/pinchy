@@ -1,0 +1,1 @@
+ALTER TABLE "kb_index_jobs" ADD COLUMN "artifact_format_version" integer;

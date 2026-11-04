@@ -45,7 +45,7 @@ const mockPost = vi.mocked(apiPost);
 type Job = {
   id: string;
   status: "pending" | "running" | "succeeded" | "failed";
-  trigger?: "manual" | "scheduled";
+  trigger?: "manual" | "scheduled" | "upgrade";
   unavailableFolders?: number;
   processed: number;
   total: number | null;
@@ -696,6 +696,21 @@ describe("KnowledgeReindexSection", () => {
           status: "succeeded",
           trigger: "scheduled",
           counts: { indexed: 1, skipped: 40, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      expect(await screen.findByText(/^Last indexed automatically /)).toBeInTheDocument();
+    });
+
+    it("says the same of a run Pinchy started after an update changed how documents are read", async () => {
+      mockGet.mockResolvedValue({
+        schedule: nightly,
+        job: job({
+          status: "succeeded",
+          trigger: "upgrade",
+          counts: { indexed: 12, skipped: 40, removed: 0, unsearchable: 0, failed: 0 },
         }),
       });
 

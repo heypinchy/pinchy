@@ -174,34 +174,6 @@ function parsePreviousBundle(previousContent: string | undefined): unknown {
 }
 
 /**
- * `next`, plus every value of the previous bundle that `next` dropped while the
- * running config still points at it (see "values the running config still
- * points at" on {@link writeSecretsFile}). Only values the previous file really
- * held come back; nothing is invented for a pointer that resolved to nothing.
- */
-function withStillReferencedValues(
-  previousBundle: unknown,
-  next: SecretsBundle,
-  stillReferenced: ReadonlySet<string>
-): SecretsBundle {
-  const nextValues = flattenSecretValues(next);
-  let kept: SecretsBundle | undefined;
-  for (const [path, value] of flattenSecretValues(previousBundle)) {
-    if (nextValues.has(path) || !stillReferenced.has(`/${path}`)) continue;
-    kept ??= structuredClone(next);
-    const segments = path.split("/");
-    let node = kept as Record<string, unknown>;
-    for (const segment of segments.slice(0, -1)) {
-      const child = node[segment];
-      if (child === null || typeof child !== "object") node[segment] = {};
-      node = node[segment] as Record<string, unknown>;
-    }
-    node[segments.at(-1)!] = value;
-  }
-  return kept ?? next;
-}
-
-/**
  * True when `next` holds a value the previous bundle did not have under the
  * same path — added or rotated. Deliberately false when the only difference is
  * that values DISAPPEARED (see the removal note on {@link writeSecretsFile}),
@@ -243,30 +215,20 @@ function hasNewOrRotatedValue(previousBundle: unknown, next: SecretsBundle): boo
  * A pure REMOVAL returns false even though the file did change. A reload
  * re-resolves the config OpenClaw is currently running; a removal gives it
  * nothing new to resolve, and the removal itself travels with the config apply
- * of this same regenerate. (A caller that does not pass `stillReferenced` can
- * still remove a value the running config points at — a reload then would fail
- * on the dangling pointer and degrade OpenClaw's secrets runtime, which is the
- * other reason a removal must never ask for one.)
+ * of the same regenerate. A removed value is gone from this file at once — the
+ * bundle is written exactly as given. Before a value the on-disk openclaw.json
+ * still names is removed, regenerate rewrites that file so it no longer names
+ * it (openclaw-config/keyless-bridge.ts); this function keeps nothing back,
+ * because keeping a value would mean reading it from this file.
  *
- * Values the running config still points at. A value is removed from this file
- * only once the config OpenClaw is RUNNING no longer points at it — callers pass
- * those pointers as `stillReferenced` (the SecretRef ids of the openclaw.json
- * OpenClaw last persisted, see {@link referencedSecretIds}). The config that
- * moves OpenClaw off a pointer — a re-keyed OpenAI-compatible provider's new
- * versioned slot, a deleted provider — arrives by a background `config.apply`
- * that can take a minute or more under rate limiting or a restart. Until it
- * lands, a `secrets.reload` (a built-in key rotation in that window) re-resolves
- * the running config, and a slot already gone from this file fails the whole
- * reload — the rotated built-in key would then not reach the runtime until a
- * restart. Keeping the old value costs no safety: the running config pairs it
- * with the address it was entered for. It goes with the first write after the
- * running config stopped naming it. Keeping it is not a rotation, so it never
- * sets the reload flag, and dropping it later is a pure removal.
+ * The previous file is read only to decide the return value and to skip an
+ * identical write, never for what is written. In production it is unreadable
+ * to Pinchy (fix-config-permissions.sh chowns it to root:root 0600 every
+ * 50 ms); it then counts as empty, so every unversioned value counts as new
+ * and a reload is requested — the safe side: an unnecessary reload costs a
+ * round trip, a missed one costs every agent a 401.
  */
-export function writeSecretsFile(
-  bundle: SecretsBundle,
-  { stillReferenced = new Set<string>() }: { stillReferenced?: ReadonlySet<string> } = {}
-): boolean {
+export function writeSecretsFile(bundle: SecretsBundle): boolean {
   const path = process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH;
 
   let previousContent: string | undefined;
@@ -280,13 +242,12 @@ export function writeSecretsFile(
     }
   }
   const previousBundle = parsePreviousBundle(previousContent);
-  const toWrite = withStillReferencedValues(previousBundle, bundle, stillReferenced);
-  const newContent = JSON.stringify(toWrite, null, 2);
+  const newContent = JSON.stringify(bundle, null, 2);
 
   // Skip the write when content is unchanged to avoid a spurious inotify event
   // that would trigger OpenClaw's secrets-file watcher unnecessarily.
   if (previousContent === newContent) return false;
-  const runtimeIsStale = hasNewOrRotatedValue(previousBundle, toWrite);
+  const runtimeIsStale = hasNewOrRotatedValue(previousBundle, bundle);
 
   const dir = dirname(path);
   try {
@@ -307,6 +268,15 @@ export function writeSecretsFile(
     // guidance instead of a stack trace buried in logs (#878).
     throw new Error(secretsVolumeErrorMessage(dir, err));
   }
+}
+
+/**
+ * Whether secrets.json is there at all. Pinchy cannot read it in production,
+ * but it can see it: the directory is Pinchy's (0770, uid 999). Gone after a
+ * host reboot — the volume is a tmpfs.
+ */
+export function secretsFileExists(): boolean {
+  return existsSync(process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH);
 }
 
 export function readSecretsFile(): SecretsBundle {
