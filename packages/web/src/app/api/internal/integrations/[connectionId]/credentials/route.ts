@@ -107,8 +107,9 @@ export async function GET(
           field: destination.field,
         },
       });
-      // 403, never 401: the plugins read a 401 as stale credentials, retry,
-      // and then flag the connection auth_failed. The body reaches the agent's
+      // 403, never 401: the plugins read a 401 from this route as Pinchy
+      // briefly unable to read the gateway token and retry it for several
+      // seconds, which would only delay this final refusal. The body reaches the agent's
       // tool error, so it carries the guard's message, which names the fix.
       return NextResponse.json(
         {

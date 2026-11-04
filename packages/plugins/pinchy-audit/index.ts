@@ -309,6 +309,9 @@ function sleep(ms: number): Promise<void> {
  * into a platform-wide outage. `/api/internal/usage/record` already answers
  * 429 from a pre-auth rate limiter, so this is one sibling route away from
  * being live rather than hypothetical.
+ *
+ * 401 counts as definitive here, which the budget gate relies on. The audit
+ * hook still retries it — see the 401 note in postToolAuditEvent.
  */
 function isDefinitiveRejection(status: number): boolean {
   if (status === 408 || status === 429) return false;
@@ -320,6 +323,8 @@ function isDefinitiveRejection(status: number): boolean {
 // here blocks all tool dispatch indefinitely. Note the worst case is this
 // times MAX_RETRIES + 1, plus the backoff spent between those attempts — an
 // unreachable Pinchy costs ~30.75s per tool call before the hook fails closed.
+// A run that ends in 401s draws on MAX_UNAUTHORIZED_RETRIES instead, so a
+// Pinchy that answers 401 only after nearly timing out could cost ~53.75s.
 const FETCH_TIMEOUT_MS = 10_000;
 
 async function postToolAuditEvent(
