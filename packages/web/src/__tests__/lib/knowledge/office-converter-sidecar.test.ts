@@ -342,6 +342,49 @@ describe("office-converter sidecar protocol", () => {
     ).resolves.toMatchObject({ code: 0 });
   });
 
+  it("after waiting out a converter once, tries the next batches once each instead of waiting again", async () => {
+    // A stopped converter must cost a run one wait, not one per batch — and a
+    // converter that comes back is used at once.
+    leaveStaleSocket();
+    const options = { connectRetryMs: 300, connectIntervalMs: 50 };
+    const { run } = await stagedBatch(["0.docx"]);
+    await expect(sidecarConverter(spool, options).runConverter(run)).rejects.toThrow(
+      /not answering/
+    );
+
+    const started = Date.now();
+    await expect(sidecarConverter(spool, options).runConverter(run)).rejects.toThrow(
+      /not answering/
+    );
+    expect(Date.now() - started).toBeLessThan(150);
+
+    await startServer();
+    await expect(sidecarConverter(spool, options).runConverter(run)).resolves.toMatchObject({
+      code: 0,
+    });
+  });
+
+  it("connects only to a socket, never through a link in its place", async () => {
+    // The converter owns its socket's entry in the spool and could replace it.
+    const elsewhere = mkdtempSync(join(tmpdir(), "kb-else-"));
+    const seenElsewhere: string[] = [];
+    const decoy = createServer((req, res) => {
+      seenElsewhere.push(req.url ?? "");
+      res.end("{}");
+    });
+    try {
+      await new Promise<void>((resolve) => decoy.listen(join(elsewhere, "s.sock"), resolve));
+      await symlink(join(elsewhere, "s.sock"), converterSocketPath(spool));
+      const { converter, run } = await stagedBatch(["0.docx"]);
+
+      await expect(converter.runConverter(run)).rejects.toThrow(/is not a socket/);
+      expect(seenElsewhere).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => decoy.close(() => resolve()));
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
   it("gives up on a sidecar that never answers", async () => {
     await startServer();
     answer = () => new Promise<ConverterResult>(() => {});

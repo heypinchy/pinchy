@@ -91,10 +91,21 @@ const DEFAULT_GRACE_MS = 30_000;
 /**
  * How long a refused connection is retried: a converter that recycled itself
  * is back within seconds (the restart policy starts it at once, and it only
- * has to load). Long enough for that on a busy host, short enough that a
- * converter that keeps crashing costs a batch a short wait, not minutes.
+ * has to load). Long enough for that on a busy host; a run pays it once, not
+ * per batch (`GAVE_UP_COOLDOWN_MS`).
  */
 const DEFAULT_CONNECT_RETRY_MS = 20_000;
+
+/**
+ * After a retry window ran out, how long later batches get one attempt each
+ * instead of a window of their own. A run converts batch after batch, each
+ * with its own converter client; without this, a stopped converter would cost
+ * every batch the full wait and hold the index worker for hours.
+ */
+const GAVE_UP_COOLDOWN_MS = 60_000;
+
+/** Per socket: until when a refused connection is not waited out again. */
+const gaveUpUntil = new Map<string, number>();
 
 /**
  * A staged batch older than this is a leftover — its web process died before
@@ -189,8 +200,18 @@ export function sidecarConverter(
   const connectIntervalMs = options.connectIntervalMs ?? 500;
 
   /** One request; nothing has reached the converter when it fails with ECONNREFUSED. */
-  const send = (body: string, timeoutMs: number) =>
-    new Promise<ConverterResult>((resolve, reject) => {
+  const send = async (body: string, timeoutMs: number) => {
+    // The converter owns this entry and could put a link there; connect()
+    // would follow it. Only a socket is connected to. (A swap between this
+    // check and the connect is not excluded — design record, "The spool".)
+    const entry = await lstat(socketPath).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return null;
+      throw err;
+    });
+    if (entry && !entry.isSocket()) {
+      throw new Error(`office converter socket at ${socketPath} is not a socket`);
+    }
+    return new Promise<ConverterResult>((resolve, reject) => {
       const req = request(
         {
           socketPath,
@@ -242,6 +263,7 @@ export function sidecarConverter(
       });
       req.end(body);
     });
+  };
 
   return {
     removeStagingDir: removeBatch,
@@ -263,13 +285,18 @@ export function sidecarConverter(
 
     async runConverter(run) {
       const body = JSON.stringify(toRequest(spoolDir, run));
-      const deadline = Date.now() + connectRetryMs;
+      // Waited out recently and nobody came: one attempt, no new window.
+      const waitedRecently = Date.now() < (gaveUpUntil.get(socketPath) ?? 0);
+      const deadline = waitedRecently ? 0 : Date.now() + connectRetryMs;
       for (;;) {
         try {
-          return await send(body, run.timeoutMs);
+          const result = await send(body, run.timeoutMs);
+          gaveUpUntil.delete(socketPath);
+          return result;
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== "ECONNREFUSED") throw err;
           if (Date.now() >= deadline) {
+            if (!waitedRecently) gaveUpUntil.set(socketPath, Date.now() + GAVE_UP_COOLDOWN_MS);
             throw new Error(
               `office converter is not answering at ${socketPath} (ECONNREFUSED) — it is not running or keeps restarting; see \`docker compose logs office-converter\``
             );

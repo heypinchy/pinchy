@@ -174,7 +174,10 @@ business, not the store's.
   listens a connection is refused rather than missing: the web side retries a
   refused connection for up to 20 s before it books the batch (`not answering
 … docker compose logs office-converter`), and fails at once only when there
-  is no socket at all — no converter service, which waiting would not change.
+  is no socket at all — no converter service, which waiting would not change. Once
+  a 20 s window has run out, later batches get one attempt each, without a
+  window of their own, for 60 s: a stopped converter costs a run one wait,
+  not one per batch, and a converter that is back is used at once.
   The next start replaces the leftover socket atomically — it binds under a
   temporary name and renames that over it — so the path is never missing in
   between. A batch already in flight when the converter is stopped gets its
@@ -207,7 +210,13 @@ Nothing secret, but not nothing:
   `file://` reference into the spool can in practice only reach the
   document's own staged copy. It can create entries of its own in the spool
   root and in a batch's `out/` and `profile/`; the web process never walks
-  into them (above).
+  into them (above). The one entry the web process does use by name is the
+  socket: it connects only if `lstat` finds a socket there, never a link. A
+  swap between that check and the connect is not excluded — the cost would be
+  the web's fixed `POST /convert` reaching another Unix socket in the `pinchy`
+  container, whose answer is parsed only as a conversion result. Closing it
+  fully would mean reversing the direction (the web listening, the converter
+  connecting); not done.
 
 The #1243 review found a reference the profile does not stop: an INTERNAL
 `aFChunk` relationship. With this LibreOffice the HTML-chunk form does not
