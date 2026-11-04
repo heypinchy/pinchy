@@ -404,7 +404,9 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
           // Exclusive create: in the sidecar's spool another process may make
           // entries, and whatever already sits at this name is refused, never
           // written through.
-          await writeFile(staged, prepared.data, { flag: "wx" });
+          // An explicit mode: a umask can only remove bits, so the converter's
+          // group can read the copy and, whatever the umask, never write it.
+          await writeFile(staged, prepared.data, { flag: "wx", mode: 0o640 });
           // NOT the hash from the run's first read of the file: that read and
           // this one can see different bytes, and the artifact must be filed
           // under the content it was converted from.

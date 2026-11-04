@@ -59,7 +59,9 @@ volume copies that mode (checked); `entrypoint.sh` sets it again on every start
 for a volume that already exists, and removes a socket a converter of an older
 build left under another uid, which the converter could not replace in a sticky
 directory. Staged inputs are written with exclusive create (`wx`), so nothing
-already at a staged name is ever written through.
+already at a staged name is ever written through, and with an explicit mode
+`0640`: a umask can only remove bits, so the group can never write the checked
+copy, even under a user-private-group umask of `002`.
 
 The converter runs with umask `007`, so its output is group-writable, and it
 empties `profile/` itself after each batch and, for every batch in the spool,

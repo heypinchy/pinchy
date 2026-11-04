@@ -24,6 +24,7 @@ import {
   readdir,
   readFile,
   realpath,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -1037,6 +1038,30 @@ describe("a batch shared with a converter that runs as another user", () => {
     expect(outcomes[0].reason).toMatch(/could not stage source/);
     expect(await readFile(elsewhere, "utf8")).toBe("UNTOUCHED");
     expect(converter.calls).toHaveLength(0);
+  });
+
+  it("stages inputs the converter's group can read but never write, whatever the umask", async () => {
+    // The converter shares the web process's group. A umask of 002 — a
+    // user-private-group default — must not hand that group write access to
+    // the bytes the preflight checked.
+    const source = await corpusFile("a.docx", "x");
+    let mode = -1;
+    const run: RunConverter = async (call) => {
+      mode = (await stat(call.inputs[0])).mode & 0o777;
+      await writeFile(join(call.outDir, "0.pdf"), "%PDF-1.4\nconverted words\n");
+      return { code: 0, signal: null, stderr: "" };
+    };
+    const previous = process.umask(0o002);
+    try {
+      await convertOfficeFiles(
+        [source],
+        deps({ run, calls: [] }, { prepareSource: checked("6".repeat(64)) })
+      );
+    } finally {
+      process.umask(previous);
+    }
+
+    expect(mode).toBe(0o640);
   });
 
   it("refuses an output that is not a regular file without waiting on it", async () => {
