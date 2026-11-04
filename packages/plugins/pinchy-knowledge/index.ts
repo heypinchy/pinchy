@@ -13,8 +13,29 @@ import { refusingUnknownParams } from "./unknown-params";
 import { formatLocator, type ChunkLocator } from "./locator";
 
 // Bounds the call to Pinchy's own internal API against a hung container /
-// network blackhole.
+// network blackhole. A healthy search answers in well under a second, even
+// queued: query embeddings take ~15 ms each on a 2-vCPU box, and one queued
+// behind a reindex waits for at most one ~1 s indexing chunk (the embedder is
+// one shared context with a FIFO evaluate lock — see embeddings.ts). Ten
+// seconds is an order of magnitude of headroom over that, not a budget a
+// healthy search is expected to approach.
 const FETCH_TIMEOUT_MS = 10_000;
+
+// What the model reads when the budget runs out. The raw abort reason ("The
+// operation was aborted due to timeout") is what an agent relayed to a user on
+// staging; it names neither what timed out nor what to do next.
+const TIMEOUT_MESSAGE =
+  `the knowledge base did not answer within ${FETCH_TIMEOUT_MS / 1000} seconds. ` +
+  "Retry the search once; if it times out again, tell the user the knowledge base " +
+  "is not responding right now.";
+
+function isTimeout(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: unknown }).name === "TimeoutError"
+  );
+}
 
 interface PluginToolContext {
   agentId?: string;
@@ -311,7 +332,11 @@ const plugin = {
                 },
               };
             } catch (error) {
-              const message = error instanceof Error ? error.message : "Unknown error";
+              const message = isTimeout(error)
+                ? TIMEOUT_MESSAGE
+                : error instanceof Error
+                  ? error.message
+                  : "Unknown error";
               return {
                 isError: true,
                 content: [{ type: "text", text: `Knowledge base search failed: ${message}` }],

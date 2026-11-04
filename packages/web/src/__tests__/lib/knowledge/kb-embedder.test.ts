@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
+import {
+  kbEmbeddingConfig,
+  parseCgroupCpuMax,
+  resolveEmbeddingThreads,
+} from "@/lib/knowledge/kb-embedder";
 import {
   EMBEDDING_DIMENSIONS,
   EMBEDDING_MODEL,
@@ -24,6 +28,73 @@ describe("kbEmbeddingConfig", () => {
     expect(cfg.expectedDim).toBe(EMBEDDING_DIMENSIONS);
     // No Ollama endpoint: the KB embeds itself in-process.
     expect(cfg.baseUrl).toBe("");
+  });
+
+  it("carries a thread count sized for this machine", () => {
+    const { threads } = kbEmbeddingConfig();
+
+    expect(Number.isInteger(threads)).toBe(true);
+    expect(threads).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// llama.cpp's worker threads spin at a barrier between graph nodes, so a thread
+// that has no core to run on stalls every other one. node-llama-cpp's embedding
+// context asks for 6 threads. On the staging VM (2 vCPUs, and the pinchy
+// container capped at 1.5 CPUs by docker-compose.yml) that made one query
+// embedding take 3-6 s instead of ~15 ms, and three parallel knowledge_search
+// calls queue behind one another until the third hits the plugin's 10 s timeout.
+describe("resolveEmbeddingThreads", () => {
+  it("leaves a core free for Postgres and request serving on a 2-vCPU box", () => {
+    expect(resolveEmbeddingThreads({ cpus: 2, cpuQuota: null })).toBe(1);
+  });
+
+  it("honours the container's CPU quota, which the core count does not show", () => {
+    // docker-compose.yml's default `cpus: 1.5` on the 2-vCPU staging VM.
+    expect(resolveEmbeddingThreads({ cpus: 2, cpuQuota: 1.5 })).toBe(1);
+    // Same quota on a big host: the 14 visible cores are not ours to use.
+    expect(resolveEmbeddingThreads({ cpus: 14, cpuQuota: 1.5 })).toBe(1);
+    expect(resolveEmbeddingThreads({ cpus: 16, cpuQuota: 4 })).toBe(3);
+  });
+
+  it("uses all but one core on a mid-sized box", () => {
+    expect(resolveEmbeddingThreads({ cpus: 4, cpuQuota: null })).toBe(3);
+  });
+
+  it("never asks for more than node-llama-cpp's own default of 6", () => {
+    expect(resolveEmbeddingThreads({ cpus: 32, cpuQuota: null })).toBe(6);
+  });
+
+  it("never goes below one thread", () => {
+    expect(resolveEmbeddingThreads({ cpus: 1, cpuQuota: null })).toBe(1);
+    expect(resolveEmbeddingThreads({ cpus: 1, cpuQuota: 0.5 })).toBe(1);
+  });
+
+  it("lets an operator override the choice with a positive integer", () => {
+    expect(resolveEmbeddingThreads({ cpus: 2, cpuQuota: 1.5, override: "2" })).toBe(2);
+  });
+
+  it("ignores an override that is not a positive integer", () => {
+    for (const override of ["", "0", "-1", "1.5", "two", "3x"]) {
+      expect(resolveEmbeddingThreads({ cpus: 4, cpuQuota: null, override })).toBe(3);
+    }
+  });
+});
+
+describe("parseCgroupCpuMax", () => {
+  it("reads a cgroup v2 quota as CPUs", () => {
+    expect(parseCgroupCpuMax("150000 100000\n")).toBe(1.5);
+    expect(parseCgroupCpuMax("200000 100000")).toBe(2);
+  });
+
+  it("returns null when there is no quota", () => {
+    expect(parseCgroupCpuMax("max 100000\n")).toBeNull();
+  });
+
+  it("returns null for anything it cannot read", () => {
+    expect(parseCgroupCpuMax("")).toBeNull();
+    expect(parseCgroupCpuMax("garbage")).toBeNull();
+    expect(parseCgroupCpuMax("150000 0")).toBeNull();
   });
 });
 

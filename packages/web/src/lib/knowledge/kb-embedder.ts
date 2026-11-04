@@ -15,10 +15,73 @@
  * embed (getLocalEmbeddingContext), so a deployment that never uses the KB
  * pays nothing.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
 
 import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, EMBEDDING_MODEL_PATH } from "./constants";
 import type { EmbeddingConfig } from "./embeddings";
+
+/** node-llama-cpp's own default for an embedding context; never asked to exceed it. */
+const MAX_EMBEDDING_THREADS = 6;
+
+/**
+ * How many llama.cpp threads the KB embedder gets: every CPU this container
+ * may actually use, minus one, at least one and at most six.
+ *
+ * Why not node-llama-cpp's default of 6: llama.cpp's worker threads wait for
+ * each other at a spinning barrier after every graph node, so a thread without
+ * a core of its own stalls all the others until the scheduler gets round to
+ * it. Measured with the bundled embeddinggemma GGUF in the production image,
+ * pinned to 2 cores and capped at 1.5 CPUs like the staging VM: one query
+ * embedding took 3.0-5.8 s at 4 threads and 16-24 ms at 1 thread; three
+ * parallel queries took 5.8/8.7/14.1 s against 17/35/56 ms. A 512-token
+ * indexing chunk took 3.3-6.2 s against 0.85-0.93 s. The spare core is for
+ * everything else in the container — Postgres queries, request serving, PDF
+ * extraction — which a full-width thread pool would otherwise fight.
+ *
+ * `cpuQuota` matters as much as `cpus`: docker-compose.yml caps the pinchy
+ * container (`PINCHY_CPUS`, default 1.5), and that cap is invisible to the core
+ * count, which reports the host's.
+ *
+ * `override` is `KB_EMBEDDING_THREADS`, for a host where neither signal is
+ * right; anything but a positive integer is ignored.
+ */
+export function resolveEmbeddingThreads(input: {
+  cpus: number;
+  cpuQuota: number | null;
+  override?: string;
+}): number {
+  if (input.override !== undefined && /^[1-9]\d*$/.test(input.override.trim())) {
+    return Number(input.override.trim());
+  }
+  const usable =
+    input.cpuQuota != null ? Math.min(input.cpus, Math.floor(input.cpuQuota)) : input.cpus;
+  return Math.min(MAX_EMBEDDING_THREADS, Math.max(1, usable - 1));
+}
+
+/**
+ * A cgroup v2 `cpu.max` ("<quota> <period>", or "max <period>" for no limit)
+ * as a number of CPUs, or null when there is no readable quota.
+ */
+export function parseCgroupCpuMax(content: string): number | null {
+  const match = /^(\d+)\s+(\d+)\s*$/.exec(content.trim());
+  if (!match) return null;
+  const quota = Number(match[1]);
+  const period = Number(match[2]);
+  if (period <= 0) return null;
+  return quota / period;
+}
+
+function readCpuQuota(): number | null {
+  try {
+    return parseCgroupCpuMax(readFileSync("/sys/fs/cgroup/cpu.max", "utf8"));
+  } catch {
+    // No cgroup v2 (macOS dev, cgroup v1): fall back to the core count alone.
+    return null;
+  }
+}
+
+let kbEmbeddingThreads: number | undefined;
 
 /**
  * The KB's fixed embedding config: embeddinggemma-300m via provider "local"
@@ -26,12 +89,18 @@ import type { EmbeddingConfig } from "./embeddings";
  * unused on the local path.
  */
 export function kbEmbeddingConfig(): EmbeddingConfig {
+  kbEmbeddingThreads ??= resolveEmbeddingThreads({
+    cpus: availableParallelism(),
+    cpuQuota: readCpuQuota(),
+    override: process.env.KB_EMBEDDING_THREADS,
+  });
   return {
     baseUrl: "",
     provider: "local",
     model: EMBEDDING_MODEL,
     modelPath: EMBEDDING_MODEL_PATH,
     expectedDim: EMBEDDING_DIMENSIONS,
+    threads: kbEmbeddingThreads,
   };
 }
 
