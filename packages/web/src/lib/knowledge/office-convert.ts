@@ -62,6 +62,7 @@ import { constants as fsConstants, createWriteStream, type StatsFs } from "node:
 import {
   chmod,
   copyFile,
+  link,
   lstat,
   mkdir,
   open,
@@ -800,17 +801,25 @@ async function runAlone(staged: string, deps: BatchDeps, ownBatches: string[]): 
 }
 
 /**
- * Stages a document's copy again for a run of its own, the way it was
- * staged: a copy as a copy (exclusive, `0640`, like the first), a link — what
- * the tests that fake the converter stage — as a link to the same file.
+ * Gives a document's run of its own the copy that was staged for the batch:
+ * a copy by a hard link to it — the same checked bytes, the same `0640`
+ * file this process owns, and nothing written twice (a killed batch is the
+ * large one, and a second copy of each of its files would double what it
+ * holds on the volume) — and a link, what the tests that fake the converter
+ * stage, as a link to the same file. A volume that takes no hard link gets
+ * a copy, exclusive and `0640` like the first.
  */
 async function restage(staged: string, dest: string): Promise<void> {
   if ((await lstat(staged)).isSymbolicLink()) {
     await symlink(await readlink(staged), dest);
     return;
   }
-  await copyFile(staged, dest, fsConstants.COPYFILE_EXCL);
-  await chmod(dest, 0o640);
+  try {
+    await link(staged, dest);
+  } catch {
+    await copyFile(staged, dest, fsConstants.COPYFILE_EXCL);
+    await chmod(dest, 0o640);
+  }
 }
 
 /**

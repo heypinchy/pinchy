@@ -2009,6 +2009,37 @@ describe("a batch shared with a converter that runs as another user", () => {
     expect(outcomes[1].reason).toMatch(/left a process running/);
   });
 
+  it("gives a document's own run its checked copy without writing it a second time", async () => {
+    // A killed batch is the large one; a second copy of each of its files
+    // would double what it holds on the volume while its documents run alone.
+    const sources = [await corpusFile("a.doc", "alpha"), await corpusFile("b.doc", "bravo")];
+    const inodes: number[][] = [];
+    let batchInputs: string[] = [];
+    const run: RunConverter = async (call) => {
+      if (call.inputs.length > 1) {
+        batchInputs = call.inputs;
+        return { code: 137, signal: null, stderr: "" };
+      }
+      const staged = call.inputs[0];
+      const original = batchInputs.find((p) => basename(p) === basename(staged))!;
+      inodes.push([(await stat(original)).ino, (await stat(staged)).ino]);
+      await writeFile(
+        join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
+        "%PDF-1.4\nwords here\n"
+      );
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(
+      sources,
+      deps({ run, calls: [] }, { prepareSource: checked("7".repeat(64)) })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual(["converted", "converted"]);
+    expect(inodes).toHaveLength(2);
+    for (const [original, own] of inodes) expect(own).toBe(original);
+  });
+
   it("frees what the killed batch wrote before its documents run on their own", async () => {
     // Its PDFs and its scratch sit on the volume the re-runs and the
     // free-space check use.

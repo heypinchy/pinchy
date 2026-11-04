@@ -136,9 +136,10 @@ containers that mount the spool.
    and a sidecar that dies mid-request is a connection error → `infrastructure`.
 5. A killed batch of more than one document (#1243's per-document re-run) is
    run again one document at a time, each as **a batch of its own**: a fresh
-   `<uuid>` from `createStagingDir`, the document's staged copy written into
-   its `in/` again (exclusive, `0640`), and its own `out/`, `profile/` and
-   `tmp/`. That is the only shape the sidecar accepts — it derives every path
+   `<uuid>` from `createStagingDir`, the document's staged copy hard-linked
+   into its `in/` (the same `0640` file the web process owns, nothing written
+   twice; a copy where the volume takes no hard link), and its own `out/`,
+   `profile/` and `tmp/`. That is the only shape the sidecar accepts — it derives every path
    from the batch id — and it means nothing the killed process left behind is
    reused or collected. The killed batch's `out/<n>.pdf` files are unlinked
    first all the same (by name), so the re-runs and the free-space check do not
