@@ -578,6 +578,25 @@ describe("cleaning up a batch the converter wrote into", () => {
     await expect(stat(join(dir, "in"))).rejects.toThrow();
   });
 
+  it("never goes through a part of the batch that is not its own directory", async () => {
+    // Whatever stands at in/, out/, profile/ or tmp/ is only walked if it is
+    // the real directory the web process made.
+    const converter = sidecarConverter(spool);
+    const dir = await converter.createStagingDir();
+    const target = mkdtempSync(join(tmpdir(), "kb-target-"));
+    try {
+      await writeFile(join(target, "keep"), "x");
+      await rm(join(dir, "in"), { recursive: true });
+      await symlink(target, join(dir, "in"));
+
+      await converter.removeStagingDir(dir).catch(() => {});
+
+      expect(await readdir(target)).toEqual(["keep"]);
+    } finally {
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
   it("removes a batch completely when nothing of the converter's is left in it", async () => {
     const converter = sidecarConverter(spool);
     const dir = await converter.createStagingDir();

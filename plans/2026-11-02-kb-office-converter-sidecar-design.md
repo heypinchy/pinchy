@@ -54,8 +54,12 @@ converter needs:
 | `<spool>/<uuid>/tmp`     | `1770` | LibreOffice's scratch (`TMPDIR`); remove only what it wrote |
 | `<spool>/converter.sock` | `0660` | (its own) — the web process connects through the group      |
 
-The modes are set with `chmod` after `mkdir`, since the process umask would cut
-a mode passed to `mkdir`. The image creates the spool `1770`, and a fresh named
+Each directory is made owner-only (`0700`) and then set to its mode with
+`chmod`: a umask can only remove bits, so no umask opens a window in which the
+converter's group can write into a new batch, and `mkdir`'s own mode would be
+cut by the umask. Removal also checks, per part, that `in/`, `out/`,
+`profile/` and `tmp/` are the real directories the web process made before
+it unlinks anything in them. The image creates the spool `1770`, and a fresh named
 volume copies that mode (checked); `entrypoint.sh` sets it again on every start
 for a volume that already exists, and removes a socket a converter of an older
 build left under another uid, which the converter could not replace in a sticky

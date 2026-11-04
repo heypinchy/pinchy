@@ -286,7 +286,9 @@ export function sidecarConverter(
         ["profile", paths.profileDir],
         ["tmp", paths.tmpDir],
       ] as const) {
-        await mkdir(path);
+        // Owner-only first: a umask only removes bits, so no umask lets the
+        // converter's group into the directory before the chmod.
+        await mkdir(path, { mode: 0o700 });
         await chmod(path, BATCH_MODES[key]);
       }
       return paths.dir;
@@ -379,8 +381,13 @@ function parseResult(text: string): ConverterResult {
  * component on the way.
  */
 async function removeBatch(dir: string): Promise<void> {
+  const uid = process.getuid?.() ?? -1;
   for (const sub of ["in", "out", "profile", "tmp"]) {
     const path = join(dir, sub);
+    // Only the real directory this process made, never what stands in its
+    // place.
+    const info = await lstat(path).catch(() => null);
+    if (!info?.isDirectory() || info.uid !== uid) continue;
     for (const entry of await readdir(path).catch(() => [] as string[])) {
       await unlink(join(path, entry)).catch(() => {});
     }
