@@ -327,7 +327,14 @@ describe("requestCredentials", () => {
     const ok = () =>
       new Response(JSON.stringify({ credentials: { apiKey: "k" } }), { status: 200 });
 
+    // Every retry logs a warning; keep it out of the test output and never
+    // let the silenced console leak past this block.
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
     afterEach(() => {
+      warn.mockRestore();
       vi.useRealTimers();
     });
 
@@ -359,7 +366,6 @@ describe("requestCredentials", () => {
 
     it("warns once per retry, naming the connection but never the token or the body", async () => {
       vi.useFakeTimers();
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const fetchMock = vi
         .fn()
         .mockResolvedValueOnce(unauthorized())

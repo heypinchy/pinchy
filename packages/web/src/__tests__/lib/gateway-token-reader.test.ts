@@ -223,6 +223,18 @@ describe("readGatewayToken", () => {
       }
     });
 
+    it("forgets the remembered token once a clean read says there is none", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+
+      writeFileSync(configPath, JSON.stringify({ env: {} }));
+      expect(readGatewayToken()).toBe("");
+
+      rmSync(configPath);
+      expect(readGatewayToken()).toBe("");
+    });
+
     it("prefers a token secrets.json still yields over the remembered one", async () => {
       writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "old-token" } } }));
       const { readGatewayToken } = await import("@/lib/gateway-token-reader");

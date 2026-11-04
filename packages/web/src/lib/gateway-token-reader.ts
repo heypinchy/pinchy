@@ -60,7 +60,13 @@ export function readGatewayToken(): string {
     failingSince = undefined;
     return read.token;
   }
-  if (read.configUnreadable && lastGoodToken) {
+  if (!read.configUnreadable) {
+    // A clean read that carries no token is an answer: forget the old one.
+    lastGoodToken = "";
+    failingSince = undefined;
+    return "";
+  }
+  if (lastGoodToken) {
     failingSince ??= Date.now();
     if (Date.now() - failingSince < LAST_GOOD_TOKEN_MAX_AGE_MS) return lastGoodToken;
   }
