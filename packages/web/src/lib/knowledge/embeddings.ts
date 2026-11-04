@@ -200,8 +200,12 @@ function getLocalEmbeddingContext(
         return ctx as unknown as LlamaEmbeddingContext;
       } catch (err) {
         // The ~300 MB model is loaded; without a context nobody holds it, and
-        // a retry would load another one next to it.
-        await model.dispose().catch(() => {});
+        // a retry would load another one next to it. Fire-and-forget, so a
+        // dispose that throws or never settles can neither replace this error
+        // nor hold the load (and its cooldown) open.
+        void Promise.resolve()
+          .then(() => model.dispose())
+          .catch(() => {});
         throw err;
       }
     })();

@@ -452,5 +452,16 @@ describe("embedTexts (provider: local, node-llama-cpp mocked)", () => {
       await expect(embedTexts(["a"], cfg)).rejects.toThrow("context: out of memory");
       expect(dispose).toHaveBeenCalledTimes(1);
     });
+
+    it("reports the context error even when disposing the model throws", async () => {
+      const dispose = vi.fn(() => {
+        throw new Error("dispose failed");
+      });
+      loadModel.mockResolvedValueOnce({ createEmbeddingContext, dispose });
+      createEmbeddingContext.mockRejectedValueOnce(new Error("context: out of memory"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/bad-dispose.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("context: out of memory");
+    });
   });
 });
