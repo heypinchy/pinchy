@@ -36,6 +36,20 @@ describe("kbEmbeddingConfig", () => {
     expect(Number.isInteger(threads)).toBe(true);
     expect(threads).toBeGreaterThanOrEqual(1);
   });
+
+  it("takes the thread count from KB_EMBEDDING_THREADS when an operator sets it", async () => {
+    const orig = process.env.KB_EMBEDDING_THREADS;
+    process.env.KB_EMBEDDING_THREADS = "3";
+    vi.resetModules();
+    try {
+      const { kbEmbeddingConfig: fresh } = await import("@/lib/knowledge/kb-embedder");
+      expect(fresh().threads).toBe(3);
+    } finally {
+      if (orig === undefined) delete process.env.KB_EMBEDDING_THREADS;
+      else process.env.KB_EMBEDDING_THREADS = orig;
+      vi.resetModules();
+    }
+  });
 });
 
 // llama.cpp's worker threads spin at a barrier between graph nodes, so a thread
@@ -49,7 +63,7 @@ describe("resolveEmbeddingThreads", () => {
     expect(resolveEmbeddingThreads({ cpus: 2, cpuQuota: null })).toBe(1);
   });
 
-  it("honours the container's CPU quota, which the core count does not show", () => {
+  it("honours the container's CPU quota even when the core count ignores it", () => {
     // docker-compose.yml's default `cpus: 1.5` on the 2-vCPU staging VM.
     expect(resolveEmbeddingThreads({ cpus: 2, cpuQuota: 1.5 })).toBe(1);
     // Same quota on a big host, read by a runtime whose core count ignores it.
