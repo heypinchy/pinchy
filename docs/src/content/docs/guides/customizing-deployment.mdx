@@ -159,7 +159,7 @@ Two things about that are worth knowing when you size the container.
 
 **LibreOffice is not a daemon.** It starts, converts a batch of documents, and exits. The memory it needs is transient: nothing of LibreOffice stays resident between reindexes, and a deployment that never indexes an Office document never pays for it. What does stay up is the `office-converter` container itself, a small Node server waiting for the next batch.
 
-**It has a container to itself.** `OFFICE_CONVERTER_MEM_LIMIT` caps it, so a conversion no longer competes with the web app or with the ~300 MB embedding model that keeps working in the `pinchy` container during a reindex. Before the converter moved out, we measured the worst case of that overlap — 17 Word documents converting in one container while the embedder kept embedding, at several ceilings:
+**It has a container to itself.** `OFFICE_CONVERTER_MEM_LIMIT` caps it, so a conversion doesn't compete with the web app or with the ~300 MB embedding model that keeps working in the `pinchy` container during a reindex. How much that overlap would cost, measured with both in one container — 17 Word documents converting while the embedder kept embedding, at several ceilings:
 
 | Memory for converter **and** embedder | Result                                              |
 | ------------------------------------- | --------------------------------------------------- |
@@ -168,7 +168,7 @@ Two things about that are worth knowing when you size the container.
 | `640m`                                | All 17 converted, ~70 % slower                      |
 | `512m`                                | **Out of memory.** The container was killed mid-run |
 
-The converter now gets its `1g` default without the embedder beside it, so the **default has more room than that measurement needed**, and `640m` (the 4 GB VPS tuning above) is the lowest ceiling we've seen work. Going the other way pays off in time rather than reliability: the converter is the one part of Pinchy that gets meaningfully faster with more memory, so `2g` is worth it for a large first-time index.
+The converter gets its `1g` default without the embedder beside it, so the **default has more room than that measurement needed**, and `640m` (the 4 GB VPS tuning above) is the lowest ceiling we've seen work. Going the other way pays off in time rather than reliability: the converter is the one part of Pinchy that gets meaningfully faster with more memory, so `2g` is worth it for a large first-time index.
 
 <Aside type="tip">
   If the container does run out of memory mid-conversion, Pinchy tells the two
