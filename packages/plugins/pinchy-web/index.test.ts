@@ -343,6 +343,43 @@ describe("pinchy-web plugin", () => {
       expect(result.content[0].text).toMatch(/no longer connected/i);
     });
 
+    it("surfaces a credentials-fetch 401 that outlasts the retries without flagging the connection", async () => {
+      // Pinchy's own 401 is about the gateway token, not the Brave key. Even
+      // when it never clears, it must not be classified as stale credentials
+      // and reported as an auth failure on the connection.
+      vi.useFakeTimers();
+      try {
+        const fetchMock = vi.fn(async () => ({
+          ok: false,
+          status: 401,
+          statusText: "Unauthorized",
+          json: async () => ({ error: "Unauthorized" }),
+        }));
+        vi.stubGlobal("fetch", fetchMock);
+
+        const factories = collectFactories(
+          credentialsPluginConfig({ "agent-1": { tools: ["pinchy_web_search"] } })
+        );
+        const pending = factories
+          .pinchy_web_search({ agentId: "agent-1" })!
+          .execute("call-1", { query: "test" });
+        await vi.advanceTimersByTimeAsync(250 + 500 + 1000 + 2000);
+        const result = await pending;
+
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain("HTTP 401");
+        expect(
+          fetchMock.mock.calls.filter((c) => String(c[0]).includes("/credentials"))
+        ).toHaveLength(5);
+        expect(
+          fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+        ).toHaveLength(0);
+        expect(braveSearchMock).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("rides out 401s on the credentials fetch right after a config apply, then searches", async () => {
       // Pinchy answers its internal routes 401 while it momentarily cannot
       // read the shared gateway token. One attempt used to fail the whole
