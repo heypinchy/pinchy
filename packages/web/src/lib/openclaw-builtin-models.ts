@@ -52,15 +52,29 @@ export interface OpenClawModelDefinition {
 // low-tier account a 128K reservation can exceed the whole limit, so every
 // turn would be answered 429 however short the reply.
 //
-// A model only belongs here once the pinned OpenClaw can drive it. The Claude
-// 5.5 family and Fable 5.1 cannot yet: OpenClaw 2026.7.1 predates their request
+// A model only belongs here once the pinned OpenClaw can drive it. Opus 5.5,
+// Sonnet 5.5 and Fable 5.1 cannot yet: OpenClaw 2026.7.1 predates their request
 // contract: it sends Opus 5.5 a thinking setting the API rejects, and has none
 // of the append-only context handling the newer runtime adds for the thinking
-// blocks of Sonnet 5.5, Haiku 5.5 and Fable 5.1. They arrive with the OpenClaw
-// update and are tools-blocked until then (model-resolver/blocklist.ts).
+// blocks of Sonnet 5.5 and Fable 5.1. They arrive with the OpenClaw update and
+// are tools-blocked until then (model-resolver/blocklist.ts).
+//
+// Claude Haiku 5.5 is here, but only as `reasoning: false`, and that flag is
+// load-bearing — read it as "OpenClaw must send this model no thinking
+// setting", not as a statement about the model (it does think: Anthropic runs
+// adaptive thinking when a request leaves `thinking` out). The runtime does not
+// know Haiku 5.5, so `reasoning: true` would make it default the thinking level
+// to "medium" and send a `budget_tokens` budget, which the model rejects with
+// HTTP 400. The blocklist reads this flag and blocks Haiku 5.5 again if it flips.
+// Keep it second: OpenClaw sizes an undeclared Anthropic model by the FIRST
+// entry here.
 //
 // Anthropic prices: platform.claude.com/docs/en/about-claude/pricing, read
-// 2026-10-16 — input / output / cache hits / 5-minute cache writes.
+// 2026-10-16 (Haiku 5.5 on 2026-11-04) — input / output / cache hits /
+// 5-minute cache writes. Haiku 5.5 has two rate cards chosen by prompt length;
+// a flat cost can carry only one, so it carries the card for prompts up to
+// 100,000 tokens. A turn whose prompt (cache reads and writes included) is
+// longer is billed at five times that, and Usage & Costs undercounts it.
 const ANTHROPIC_MODELS: OpenClawModelDefinition[] = [
   {
     id: "claude-sonnet-5",
@@ -71,6 +85,16 @@ const ANTHROPIC_MODELS: OpenClawModelDefinition[] = [
     vision: true,
     input: ["text", "image"],
     cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  },
+  {
+    id: "claude-haiku-5-5",
+    name: "Claude Haiku 5.5",
+    contextWindow: 1000000,
+    maxTokens: 32000,
+    reasoning: false,
+    vision: true,
+    input: ["text", "image"],
+    cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
   },
   {
     id: "claude-opus-4-7",
