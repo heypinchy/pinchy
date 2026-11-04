@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { embedTexts } from "@/lib/knowledge/embeddings";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { embedTexts, LOCAL_MODEL_RETRY_COOLDOWN_MS } from "@/lib/knowledge/embeddings";
 
 global.fetch = vi.fn();
 
@@ -412,13 +412,45 @@ describe("embedTexts (provider: local, node-llama-cpp mocked)", () => {
     expect(createEmbeddingContext).toHaveBeenCalledWith({ threads: 1 });
   });
 
-  it("retries a failed model load on the next call instead of failing every search until restart", async () => {
-    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
-    loadModel.mockRejectedValueOnce(new Error("ENOMEM"));
-    const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/flaky-load.gguf" };
+  describe("a failed load", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
 
-    await expect(embedTexts(["a"], cfg)).rejects.toThrow("ENOMEM");
-    await expect(embedTexts(["b"], cfg)).resolves.toEqual([[1, 2, 3]]);
-    expect(loadModel).toHaveBeenCalledTimes(2);
+    it("is retried once the cooldown has passed instead of failing every search until restart", async () => {
+      vi.useFakeTimers();
+      getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+      loadModel.mockRejectedValueOnce(new Error("ENOMEM"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/flaky-load.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("ENOMEM");
+      await vi.advanceTimersByTimeAsync(LOCAL_MODEL_RETRY_COOLDOWN_MS);
+      await expect(embedTexts(["b"], cfg)).resolves.toEqual([[1, 2, 3]]);
+      expect(loadModel).toHaveBeenCalledTimes(2);
+    });
+
+    // A persistently broken load (a corrupt GGUF, a container out of memory)
+    // must not load another ~300 MB model on every search.
+    it("is not retried within the cooldown: searches fail fast on the same error", async () => {
+      vi.useFakeTimers();
+      loadModel.mockRejectedValue(new Error("ENOMEM"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/broken-load.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("ENOMEM");
+      await vi.advanceTimersByTimeAsync(LOCAL_MODEL_RETRY_COOLDOWN_MS - 1);
+      await expect(embedTexts(["b"], cfg)).rejects.toThrow("ENOMEM");
+      await expect(embedTexts(["c"], cfg)).rejects.toThrow("ENOMEM");
+      expect(loadModel).toHaveBeenCalledTimes(1);
+    });
+
+    it("disposes a model that loaded when its embedding context could not be created", async () => {
+      const dispose = vi.fn().mockResolvedValue(undefined);
+      loadModel.mockResolvedValueOnce({ createEmbeddingContext, dispose });
+      createEmbeddingContext.mockRejectedValueOnce(new Error("context: out of memory"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/no-context.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("context: out of memory");
+      expect(dispose).toHaveBeenCalledTimes(1);
+    });
   });
 });

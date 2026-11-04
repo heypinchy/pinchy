@@ -14,7 +14,7 @@ import { formatLocator, type ChunkLocator } from "./locator";
 
 // Bounds the call to Pinchy's own internal API against a hung container /
 // network blackhole. A healthy search answers in well under a second, even
-// queued: query embeddings take ~15 ms each on a 2-vCPU box, and one queued
+// queued: query embeddings take 16-24 ms each on a 2-vCPU box, and one queued
 // behind a reindex waits for at most one ~1 s indexing chunk (the embedder is
 // one shared context with a FIFO evaluate lock — see embeddings.ts). Ten
 // seconds is an order of magnitude of headroom over that, not a budget a

@@ -20,6 +20,7 @@ import { availableParallelism } from "node:os";
 
 import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, EMBEDDING_MODEL_PATH } from "./constants";
 import type { EmbeddingConfig } from "./embeddings";
+import { LOG_REASON_MAX, oneLine } from "@/lib/log-line";
 
 /** node-llama-cpp's own default for an embedding context; never asked to exceed it. */
 const MAX_EMBEDDING_THREADS = 6;
@@ -55,12 +56,16 @@ export function resolveEmbeddingThreads(input: {
   cpuQuota: number | null;
   override?: string;
 }): number {
-  if (input.override !== undefined && /^[1-9]\d*$/.test(input.override.trim())) {
+  if (input.override !== undefined && isValidThreadOverride(input.override)) {
     return Number(input.override.trim());
   }
   const usable =
     input.cpuQuota != null ? Math.min(input.cpus, Math.floor(input.cpuQuota)) : input.cpus;
   return Math.min(MAX_EMBEDDING_THREADS, Math.max(1, usable - 1));
+}
+
+function isValidThreadOverride(value: string): boolean {
+  return /^[1-9]\d*$/.test(value.trim());
 }
 
 /**
@@ -76,9 +81,10 @@ export function parseCgroupCpuMax(content: string): number | null {
   return quota / period;
 }
 
-function readCpuQuota(): number | null {
+/** The container's cgroup v2 CPU quota in CPUs, or null when there is none to read. */
+export function readCpuQuota(path = "/sys/fs/cgroup/cpu.max"): number | null {
   try {
-    return parseCgroupCpuMax(readFileSync("/sys/fs/cgroup/cpu.max", "utf8"));
+    return parseCgroupCpuMax(readFileSync(path, "utf8"));
   } catch {
     // No cgroup v2 (macOS dev, cgroup v1): fall back to the core count alone.
     return null;
@@ -93,11 +99,21 @@ let kbEmbeddingThreads: number | undefined;
  * unused on the local path.
  */
 export function kbEmbeddingConfig(): EmbeddingConfig {
-  kbEmbeddingThreads ??= resolveEmbeddingThreads({
-    cpus: availableParallelism(),
-    cpuQuota: readCpuQuota(),
-    override: process.env.KB_EMBEDDING_THREADS,
-  });
+  if (kbEmbeddingThreads === undefined) {
+    const override = process.env.KB_EMBEDDING_THREADS;
+    kbEmbeddingThreads = resolveEmbeddingThreads({
+      cpus: availableParallelism(),
+      cpuQuota: readCpuQuota(),
+      override,
+    });
+    // An operator who set it expects it to matter; say so once when it doesn't.
+    if (override !== undefined && override.trim() !== "" && !isValidThreadOverride(override)) {
+      console.warn(
+        `[knowledge] KB_EMBEDDING_THREADS="${oneLine(override, LOG_REASON_MAX)}" is not a positive whole ` +
+          `number and was ignored; the embedder uses ${kbEmbeddingThreads} thread(s).`
+      );
+    }
+  }
   return {
     baseUrl: "",
     provider: "local",

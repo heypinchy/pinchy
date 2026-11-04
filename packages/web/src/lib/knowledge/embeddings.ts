@@ -146,8 +146,9 @@ function assertEmbeddingShape(
 // per distinct GGUF file. Keyed by modelPath so different models each get
 // their own context; the promise is cached (not just the resolved value) so
 // concurrent callers during the initial load also await the same load
-// rather than triggering it twice. A load that fails is evicted, so the next
-// call tries again instead of every search failing until a restart.
+// rather than triggering it twice. A load that fails is evicted after
+// LOCAL_MODEL_RETRY_COOLDOWN_MS, so a later call tries again instead of every
+// search failing until a restart.
 //
 // Sharing ONE context across concurrent callers is safe: in the web process
 // the KB search route (one query embed per request) and the KB index worker
@@ -163,6 +164,14 @@ function assertEmbeddingShape(
 // process-wide-cache.ts). Each loaded its own model and context — twice the
 // RAM, and two evaluate locks, so a search and a reindex ran their embeddings
 // at the same time on the same cores instead of queueing. Hence globalThis.
+/**
+ * How long a failed local model load stays failed before the next call tries
+ * again. Short enough that a transient failure (memory pressure during a big
+ * conversion) heals within a minute; long enough that a permanent one (a
+ * corrupt GGUF) costs one load per minute rather than one per search.
+ */
+export const LOCAL_MODEL_RETRY_COOLDOWN_MS = 60_000;
+
 type LlamaEmbeddingContext = {
   getEmbeddingFor(text: string): Promise<{ vector: ArrayLike<number> }>;
 };
@@ -186,13 +195,25 @@ function getLocalEmbeddingContext(
       const { getLlama } = await import("node-llama-cpp");
       const llama = await getLlama();
       const model = await llama.loadModel({ modelPath });
-      const ctx = await model.createEmbeddingContext(threads != null ? { threads } : {});
-      return ctx as unknown as LlamaEmbeddingContext;
+      try {
+        const ctx = await model.createEmbeddingContext(threads != null ? { threads } : {});
+        return ctx as unknown as LlamaEmbeddingContext;
+      } catch (err) {
+        // The ~300 MB model is loaded; without a context nobody holds it, and
+        // a retry would load another one next to it.
+        await model.dispose().catch(() => {});
+        throw err;
+      }
     })();
     contextPromise = loading;
     contexts.set(modelPath, loading);
     loading.catch(() => {
-      if (contexts.get(modelPath) === loading) contexts.delete(modelPath);
+      // Keep the failure cached for a while, so a persistently broken load
+      // fails every search fast instead of loading the model again for each.
+      const evict = setTimeout(() => {
+        if (contexts.get(modelPath) === loading) contexts.delete(modelPath);
+      }, LOCAL_MODEL_RETRY_COOLDOWN_MS);
+      evict.unref?.();
     });
   }
   return contextPromise;

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import {
   kbEmbeddingConfig,
   parseCgroupCpuMax,
+  readCpuQuota,
   resolveEmbeddingThreads,
 } from "@/lib/knowledge/kb-embedder";
 import {
@@ -37,6 +38,58 @@ describe("kbEmbeddingConfig", () => {
     expect(threads).toBeGreaterThanOrEqual(1);
   });
 
+  // Wiring, not policy: the config must ask availableParallelism(), not
+  // os.cpus() (which reports the host, whatever the container may use), and
+  // must actually consult cgroup v2's cpu.max.
+  describe("wiring to the host", () => {
+    const origOverride = process.env.KB_EMBEDDING_THREADS;
+
+    afterEach(() => {
+      vi.doUnmock("node:os");
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+      if (origOverride === undefined) delete process.env.KB_EMBEDDING_THREADS;
+      else process.env.KB_EMBEDDING_THREADS = origOverride;
+    });
+
+    async function configOn(host: { parallelism: number; hostCpus: number; cpuMax: string }) {
+      delete process.env.KB_EMBEDDING_THREADS;
+      vi.resetModules();
+      vi.doMock("node:os", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("node:os")>();
+        const one = actual.cpus()[0];
+        return {
+          ...actual,
+          availableParallelism: () => host.parallelism,
+          cpus: () => Array.from({ length: host.hostCpus }, () => one),
+        };
+      });
+      vi.doMock("node:fs", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("node:fs")>();
+        const realRead = actual.readFileSync as (...args: unknown[]) => unknown;
+        return {
+          ...actual,
+          readFileSync: ((path: unknown, ...rest: unknown[]) =>
+            path === "/sys/fs/cgroup/cpu.max"
+              ? host.cpuMax
+              : realRead(path, ...rest)) as typeof actual.readFileSync,
+        };
+      });
+      const { kbEmbeddingConfig: fresh } = await import("@/lib/knowledge/kb-embedder");
+      return fresh();
+    }
+
+    it("gives one thread on a 14-CPU host whose cgroup caps the container at 1.5 CPUs", async () => {
+      const cfg = await configOn({ parallelism: 14, hostCpus: 14, cpuMax: "150000 100000\n" });
+      expect(cfg.threads).toBe(1);
+    });
+
+    it("sizes from availableParallelism(), not the host's core count", async () => {
+      const cfg = await configOn({ parallelism: 4, hostCpus: 14, cpuMax: "max 100000\n" });
+      expect(cfg.threads).toBe(3);
+    });
+  });
+
   it("takes the thread count from KB_EMBEDDING_THREADS when an operator sets it", async () => {
     const orig = process.env.KB_EMBEDDING_THREADS;
     process.env.KB_EMBEDDING_THREADS = "3";
@@ -56,10 +109,10 @@ describe("kbEmbeddingConfig", () => {
 // that has no core to run on stalls every other one. node-llama-cpp's embedding
 // context asks for 6 threads. On the staging VM (2 vCPUs, and the pinchy
 // container capped at 1.5 CPUs by docker-compose.yml) that made one query
-// embedding take 3-6 s instead of ~15 ms, and three parallel knowledge_search
+// embedding take 3-6 s instead of 16-24 ms, and three parallel knowledge_search
 // calls queue behind one another until the third hits the plugin's 10 s timeout.
 describe("resolveEmbeddingThreads", () => {
-  it("leaves a core free for Postgres and request serving on a 2-vCPU box", () => {
+  it("leaves a core free for request serving on a 2-vCPU box", () => {
     expect(resolveEmbeddingThreads({ cpus: 2, cpuQuota: null })).toBe(1);
   });
 
@@ -109,6 +162,73 @@ describe("parseCgroupCpuMax", () => {
     expect(parseCgroupCpuMax("")).toBeNull();
     expect(parseCgroupCpuMax("garbage")).toBeNull();
     expect(parseCgroupCpuMax("150000 0")).toBeNull();
+  });
+});
+
+describe("readCpuQuota", () => {
+  function cpuMaxFile(content: string): { path: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "kb-cpu-max-"));
+    const path = join(dir, "cpu.max");
+    writeFileSync(path, content);
+    return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("reads a fractional quota from the file", () => {
+    const file = cpuMaxFile("150000 100000\n");
+    try {
+      expect(readCpuQuota(file.path)).toBe(1.5);
+    } finally {
+      file.cleanup();
+    }
+  });
+
+  it("returns null for an unlimited cgroup", () => {
+    const file = cpuMaxFile("max 100000\n");
+    try {
+      expect(readCpuQuota(file.path)).toBeNull();
+    } finally {
+      file.cleanup();
+    }
+  });
+
+  it("returns null when there is no cgroup v2 file (macOS, cgroup v1)", () => {
+    expect(readCpuQuota(join(tmpdir(), "kb-cpu-max-does-not-exist"))).toBeNull();
+  });
+});
+
+describe("an invalid KB_EMBEDDING_THREADS", () => {
+  const orig = process.env.KB_EMBEDDING_THREADS;
+
+  afterEach(() => {
+    if (orig === undefined) delete process.env.KB_EMBEDDING_THREADS;
+    else process.env.KB_EMBEDDING_THREADS = orig;
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("is ignored with one warning that names the variable and the value", async () => {
+    process.env.KB_EMBEDDING_THREADS = "two";
+    vi.resetModules();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { kbEmbeddingConfig: fresh } = await import("@/lib/knowledge/kb-embedder");
+
+    fresh();
+    fresh();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain("KB_EMBEDDING_THREADS");
+    expect(String(warn.mock.calls[0][0])).toContain('"two"');
+  });
+
+  it("is not warned about when unset or valid", async () => {
+    process.env.KB_EMBEDDING_THREADS = "2";
+    vi.resetModules();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { kbEmbeddingConfig: fresh } = await import("@/lib/knowledge/kb-embedder");
+
+    fresh();
+
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

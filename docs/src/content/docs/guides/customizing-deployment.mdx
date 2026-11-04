@@ -187,7 +187,7 @@ The volume also holds a private copy of each document while it is being read —
 
 ### CPU when the knowledge base embeds
 
-The knowledge base's embedding model runs inside the `pinchy` container, and it computes on the CPU. Pinchy sizes its thread pool to the CPU the container may actually use — the smaller of the host's cores and `PINCHY_CPUS`, rounded down — minus one core, which it leaves for the requests, uploads and document extraction running alongside. With the default `PINCHY_CPUS=1.5`, that's one thread on any host; `PINCHY_CPUS=2.5` gives one too, and `4` gives three.
+The knowledge base's embedding model runs inside the `pinchy` container, and it computes on the CPU. Pinchy sizes its thread pool to the CPU the container may actually use — the smaller of the host's cores and `PINCHY_CPUS`, rounded down — minus one core, which it leaves for the requests, uploads and document extraction running alongside. It never goes above six threads. With the default `PINCHY_CPUS=1.5`, that's one thread on any host; `PINCHY_CPUS=2.5` gives one too, `4` gives three, and anything from `7` up gives six.
 
 That's deliberately fewer threads than the hardware might seem to allow. The model's threads wait for each other many times per document, so a thread without a core of its own holds all the others up. We measured it on two cores capped at 1.5 CPUs, the default on a small VPS:
 
@@ -195,6 +195,8 @@ That's deliberately fewer threads than the hardware might seem to allow. The mod
 | ------- | ---------------- | ------------- | ----------------- |
 | 4       | 3–6 s            | up to 15 s    | 3–6 s             |
 | 1       | under 25 ms      | under 60 ms   | under 1 s         |
+
+The spare core matters on bigger boxes too, just less. On four cores, an indexed chunk took 0.27–0.39 s at four threads and 0.31–0.40 s at three; with one other busy process in the container, four threads slowed to 0.4–1.1 s while three stayed at 0.31–0.32 s. Search queries took under 10 ms either way.
 
 What a bigger box buys you is faster indexing, not faster search: a search query is short and already takes milliseconds. To speed up a large first index, raise `PINCHY_CPUS` (and the host's cores with it); Pinchy picks up the extra cores on its next start.
 
