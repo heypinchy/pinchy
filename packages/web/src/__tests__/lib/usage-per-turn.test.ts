@@ -199,6 +199,82 @@ describe("recordSessionTurnsUsage cost wiring", () => {
     expect(rows[0].contextTokens).toBe(400);
   });
 
+  // The turn's tool-loop calls are summed into one row, but only the LAST
+  // call's prompt size is known — and within a turn the prompt only grows. So
+  // the tier is picked by that size: a turn that crosses 100K tokens mid-loop
+  // is priced a little high, never low, which is the safe side for a budget.
+  it("prices a Claude Haiku 5.5 turn by its prompt-length tier", async () => {
+    mockReadTrajectoryJsonl.mockResolvedValue(
+      JSON.stringify({
+        type: "model.completed",
+        runId: "run-3",
+        seq: 1,
+        sessionId: "sess-1",
+        sessionKey: "agent:a1:direct:u1",
+        provider: "anthropic",
+        modelId: "claude-haiku-5-5",
+        data: {
+          usage: { input: 1_000_000, output: 1_000_000, total: 2_000_000 },
+          promptCache: {
+            lastCallUsage: { input: 10_000, output: 500, cacheRead: 140_000, cacheWrite: 0 },
+          },
+        },
+      })
+    );
+    const tiered = {
+      config: {
+        models: {
+          providers: {
+            anthropic: {
+              models: [
+                {
+                  id: "claude-haiku-5-5",
+                  cost: {
+                    input: 0.1,
+                    output: 0.5,
+                    cacheRead: 0.01,
+                    cacheWrite: 0.125,
+                    tieredPricing: [
+                      {
+                        input: 0.1,
+                        output: 0.5,
+                        cacheRead: 0.01,
+                        cacheWrite: 0.125,
+                        range: [0, 100001],
+                      },
+                      {
+                        input: 0.5,
+                        output: 2.5,
+                        cacheRead: 0.05,
+                        cacheWrite: 0.625,
+                        range: [100001],
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    await recordSessionTurnsUsage({
+      openclawClient: {
+        config: { get: vi.fn().mockResolvedValue(tiered) },
+      } as unknown as Parameters<typeof recordSessionTurnsUsage>[0]["openclawClient"],
+      agentId: "a1",
+      userId: "u1",
+      agentName: "Ada",
+      sessionKey: "agent:a1:direct:u1",
+    });
+
+    const rows = mockValues.mock.calls[0][0] as Array<Record<string, unknown>>;
+    // 1M input at $0.50 + 1M output at $2.50: the long-prompt card, because the
+    // turn's last call read 150,000 prompt tokens.
+    expect(rows[0].estimatedCostUsd).toBe("3.000000");
+  });
+
   it("still records the turn with a null cost when the model is unpriced", async () => {
     mockReadTrajectoryJsonl.mockResolvedValue(
       JSON.stringify({

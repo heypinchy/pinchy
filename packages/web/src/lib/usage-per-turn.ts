@@ -86,7 +86,8 @@ export function buildUsageRows(
               cacheReadTokens: t.cacheReadTokens,
               cacheWriteTokens: t.cacheWriteTokens,
             },
-            pricing
+            pricing,
+            t.contextTokens
           )
         : null,
       runId: t.runId,
@@ -170,7 +171,12 @@ export async function recordSessionTurnsUsage(
               cacheReadTokens: row.cacheReadTokens,
               cacheWriteTokens: row.cacheWriteTokens,
             },
-            pricing
+            pricing,
+            // A turn sums its whole tool loop, but only the last call's prompt
+            // size is known. Within a turn the prompt only grows, so pricing
+            // the turn by that size errs high, never low — the safe side for a
+            // budget that enforces on this number.
+            row.contextTokens
           ),
         };
       })

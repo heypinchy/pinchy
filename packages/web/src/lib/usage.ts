@@ -1,8 +1,9 @@
 import type { OpenClawClient } from "openclaw-node";
+import type { ModelPricing } from "@/lib/usage-cost";
 
 // Module-level cache for OpenClaw config pricing
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-let cachedPricing: Map<string, { input: number; output: number }> | null = null;
+let cachedPricing: Map<string, ModelPricing> | null = null;
 let cacheTimestamp = 0;
 
 /** Exported only for tests — resets the module-level pricing cache. */
@@ -14,7 +15,7 @@ export function _resetPricingCacheForTest(): void {
 export async function getModelPricing(
   openclawClient: OpenClawClient,
   modelId: string
-): Promise<{ input: number; output: number } | null> {
+): Promise<ModelPricing | null> {
   const now = Date.now();
 
   if (cachedPricing && now - cacheTimestamp < CACHE_TTL_MS) {
@@ -33,9 +34,9 @@ export async function getModelPricing(
   // chat turn at null. Where two providers share a bare id, the last one wins —
   // unchanged from before; the qualified key disambiguates those callers that
   // supply it.
-  const pricingMap = new Map<string, { input: number; output: number }>();
+  const pricingMap = new Map<string, ModelPricing>();
   for (const [providerName, provider] of Object.entries(providers) as Array<
-    [string, { models?: Array<{ id: string; cost?: { input: number; output: number } }> }]
+    [string, { models?: Array<{ id: string; cost?: ModelPricing }> }]
   >) {
     for (const model of provider.models ?? []) {
       if (model.cost) {

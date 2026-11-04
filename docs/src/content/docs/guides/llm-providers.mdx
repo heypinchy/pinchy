@@ -93,7 +93,9 @@ The model dropdown lists everything the provider serves, so a model released aft
 
 **Claude Opus 5, Opus 5.5, Sonnet 5.5 and Fable 5.1** are listed too, but disabled. They need a newer agent runtime than this Pinchy release ships, and their requests would be rejected — so the dropdown says so instead of letting a chat fail. Use Claude Sonnet 5 in the meantime; enabling them is tracked in [#1225](https://github.com/heypinchy/pinchy/issues/1225).
 
-**Claude Haiku 5.5** is selectable. The runtime this release ships doesn't know it yet, and if it were told that Haiku 5.5 can think, it would send a thinking budget the model rejects. So we never tell it that, and the runtime sends Haiku 5.5 no thinking setting at all. The model still thinks: Anthropic runs it with adaptive thinking at its default effort whenever a request leaves the setting out. Pinchy prices it at Anthropic's rate for prompts up to 100,000 tokens ($0.10 input / $0.50 output per million tokens). A request with a longer prompt is billed at five times that, so the [usage dashboard](/guides/usage-dashboard/) undercounts those turns.
+**Claude Haiku 5.5** is selectable. The runtime this release ships doesn't know it yet, and if it were told that Haiku 5.5 can think, it would send a thinking budget the model rejects. So we never tell it that, and the runtime sends Haiku 5.5 no thinking setting at all. The model still thinks: Anthropic runs it with adaptive thinking at its default effort whenever a request leaves the setting out. Templates on the fast tier still start on Claude Haiku 4.5; pick Haiku 5.5 in an agent's settings if you want it.
+
+Anthropic bills Haiku 5.5 by prompt length: $0.10 input / $0.50 output per million tokens while a request's prompt is 100,000 tokens or fewer, five times that above. The prompt includes the conversation history that is resent — cached or not — on every request, so a long conversation crosses that line routinely. The [Usage & Costs dashboard](/guides/usage-dashboard/) prices each turn at the rate its prompt size selects.
 
 ## Remove a provider
 

@@ -190,12 +190,36 @@ describe("current model generations", () => {
     ["claude-opus-4-7", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }],
     ["claude-sonnet-4-6", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }],
     ["claude-haiku-4-5-20251001", { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }],
-    // The rate card for prompts up to 100,000 tokens; a longer prompt is billed
-    // at five times these rates, which a flat per-model cost cannot express.
-    ["claude-haiku-5-5", { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }],
+    // The flat rates are the card for prompts up to 100,000 tokens; both cards
+    // are pinned in "Claude Haiku 5.5 prompt-length pricing" below.
+    [
+      "claude-haiku-5-5",
+      {
+        input: 0.1,
+        output: 0.5,
+        cacheRead: 0.01,
+        cacheWrite: 0.125,
+        tieredPricing: expect.any(Array),
+      },
+    ],
   ])("anthropic/%s carries the published list price", (id, cost) => {
     const model = getModelCatalogForProvider("anthropic").find((m) => m.id === id);
     expect(model?.cost).toEqual(cost);
+  });
+});
+
+// Claude Haiku 5.5 is billed by prompt length (cache reads and writes count
+// toward it): up to 100,000 tokens at the short card, above that at five times
+// it. Carried as OpenClaw's `tieredPricing` (half-open ranges), so Usage &
+// Costs and budgets price a long prompt at what Anthropic bills for it.
+// Source: platform.claude.com/docs/en/about-claude/pricing, read 2026-11-04.
+describe("Claude Haiku 5.5 prompt-length pricing", () => {
+  it("carries both rate cards, split after 100,000 prompt tokens", () => {
+    const haiku = getModelCatalogForProvider("anthropic").find((m) => m.id === "claude-haiku-5-5");
+    expect(haiku?.cost.tieredPricing).toEqual([
+      { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, range: [0, 100001] },
+      { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625, range: [100001] },
+    ]);
   });
 });
 

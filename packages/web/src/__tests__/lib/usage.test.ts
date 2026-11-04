@@ -70,3 +70,37 @@ describe("getModelPricing model-id resolution", () => {
     await expect(getModelPricing(client, "anthropic/deepseek-v4-pro")).resolves.toBeNull();
   });
 });
+
+// A model with prompt-length pricing (Claude Haiku 5.5) carries its tiers in
+// OpenClaw's `cost.tieredPricing`. Dropping them here would price every long
+// prompt at the short-prompt rate.
+describe("getModelPricing tiered pricing", () => {
+  beforeEach(() => {
+    _resetPricingCacheForTest();
+  });
+
+  it("passes a model's tieredPricing through", async () => {
+    const tieredPricing = [
+      { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, range: [0, 100001] },
+      { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625, range: [100001] },
+    ];
+    const client = makeOpenClawClient({
+      config: {
+        models: {
+          providers: {
+            anthropic: {
+              models: [
+                { id: "claude-haiku-5-5", cost: { input: 0.1, output: 0.5, tieredPricing } },
+              ],
+            },
+          },
+        },
+      },
+    });
+    await expect(getModelPricing(client, "anthropic/claude-haiku-5-5")).resolves.toEqual({
+      input: 0.1,
+      output: 0.5,
+      tieredPricing,
+    });
+  });
+});

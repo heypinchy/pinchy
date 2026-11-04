@@ -19,7 +19,8 @@ interface BlockRule {
  * `thinking` field for it at all (the whole thinking block of the request
  * builder is gated on `model.reasoning`), whatever thinking level a session
  * resolves to. An undeclared model does not count: Pinchy asserts nothing
- * about it.
+ * about it. (A dated snapshot of a declared model rides on the base entry —
+ * OpenClaw resolves the undeclared id as `reasoning: false` too.)
  */
 function catalogWithholdsThinking(modelId: string): boolean {
   return getModelCatalogForProvider("anthropic").find((m) => m.id === modelId)?.reasoning === false;
@@ -84,12 +85,21 @@ const RULES: BlockRule[] = [
   // blocks are replayed only for the tool round in progress
   // (`findActiveAnthropicToolTurnAssistantIndex`); earlier ones are dropped
   // from the front of the history, which the preserved-thinking check allows.
-  // Pinchy v0.9.x ran Haiku 5.5 with tools on this same runtime (2026-10-27).
+  // Pinchy v0.9.x ran Haiku 5.5 with tools on this same runtime (2026-10-27),
+  // in exactly this shape — v0.9.x did not declare it, and OpenClaw resolves an
+  // undeclared model as `reasoning: false`.
+  //
+  // What this does NOT cover: preserved thinking still applies to the blocks
+  // the model produces. If the runtime compacts in the middle of a tool round
+  // (its mid-turn context guard, near the context ceiling), the replayed block's
+  // prefix changes, and on an Anthropic account created on or after 2026-08-31
+  // that request is a 400. The same held on v0.9.x; it goes away with the
+  // runtime update in #1225, not here.
   //
   // The rule therefore reads the catalog instead of trusting a comment: flip
   // that entry to `reasoning: true`, or drop it, and Haiku 5.5 is blocked again.
   {
-    modelPattern: /claude-haiku-5-5/i,
+    modelPattern: /claude-haiku-5-5(?=$|-\d{8}$)/i,
     forbiddenWhen: ["tools"],
     inForce: () => !catalogWithholdsThinking("claude-haiku-5-5"),
     reason:

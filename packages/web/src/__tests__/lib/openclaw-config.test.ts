@@ -8465,7 +8465,16 @@ describe("regenerateOpenClawConfig — env secrets", () => {
       reasoning: false,
       contextWindow: 1000000,
       input: ["text", "image"],
-      cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+      cost: {
+        input: 0.1,
+        output: 0.5,
+        cacheRead: 0.01,
+        cacheWrite: 0.125,
+        tieredPricing: [
+          { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, range: [0, 100001] },
+          { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625, range: [100001] },
+        ],
+      },
     });
   });
 
