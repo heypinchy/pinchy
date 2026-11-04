@@ -77,7 +77,9 @@ describe("estimateTurnCostUsd with prompt-length tiers", () => {
   });
 
   it("falls back to the flat price when the prompt size is unknown", () => {
-    // 0.1 + 0.5 + 0.1 * 0.1 + 0.1 * 1.25 — the untiered formula
-    expect(estimateTurnCostUsd(oneMillionEach, haiku55, null)).toBe("0.735000");
+    // Flat rates deliberately unlike either tier, so picking a tier for an
+    // unknown size would show: 0.2 + 1 + 0.2 * 0.1 + 0.2 * 1.25.
+    const flatDiffers: ModelPricing = { ...haiku55, input: 0.2, output: 1 };
+    expect(estimateTurnCostUsd(oneMillionEach, flatDiffers, null)).toBe("1.470000");
   });
 });

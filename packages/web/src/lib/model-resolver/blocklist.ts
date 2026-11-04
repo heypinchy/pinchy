@@ -104,7 +104,10 @@ const RULES: BlockRule[] = [
   // (temperature 0.3, via the agent's model when no utilityModel is set) fails
   // and the topic keeps its default name — the error is caught and logged; the
   // exec auto-reviewer (temperature 0) never runs, because no Pinchy agent is
-  // granted `exec`; `openclaw models scan` is a CLI command Pinchy doesn't run.
+  // granted `exec`; the TTS long-reply summarizer (temperature 0.3) uses the
+  // instance's default model, never Haiku 5.5 unless an admin makes it that,
+  // and only with TTS auto-summary on; `openclaw models scan` is a CLI command
+  // Pinchy doesn't run. These are the callers found in the 2026.7.1 dist.
   //
   // The rule therefore reads the catalog instead of trusting a comment: flip
   // that entry to `reasoning: true`, or drop it, and Haiku 5.5 is blocked again.

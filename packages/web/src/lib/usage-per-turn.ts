@@ -174,8 +174,9 @@ export async function recordSessionTurnsUsage(
             pricing,
             // A turn sums its whole tool loop, but only the last call's prompt
             // size is known, so the whole turn is priced by that call's tier.
-            // The prompt normally grows within a turn, so a turn that crosses
-            // a tier boundary partway reads slightly high. It reads low when
+            // The prompt normally grows within a turn, so the turn that crosses
+            // a tier boundary reads high — up to the full tier factor (5x for
+            // Haiku 5.5) when only its last call crossed. It reads low when
             // the runtime compacts mid-turn (the last call is then smaller than
             // the ones before it) and when the size wasn't reported (flat
             // rate). Both are documented on the Usage & Costs page.

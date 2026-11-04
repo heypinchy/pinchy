@@ -201,9 +201,9 @@ describe("recordSessionTurnsUsage cost wiring", () => {
 
   // The turn's tool-loop calls are summed into one row, but only the LAST
   // call's prompt size is known, so the tier is picked by that size. Usually
-  // the prompt grows within a turn, which makes a turn that crosses 100K
-  // tokens mid-loop read slightly high (usage-per-turn.ts names the cases
-  // that read low).
+  // the prompt grows within a turn, which makes the turn that crosses 100K
+  // tokens read high, up to fivefold (usage-per-turn.ts names the cases that
+  // read low).
   it("prices a Claude Haiku 5.5 turn by its prompt-length tier", async () => {
     mockReadTrajectoryJsonl.mockResolvedValue(
       JSON.stringify({
@@ -377,5 +377,33 @@ describe("buildUsageRows context size", () => {
   it("passes an unknown context size through as null, not 0", () => {
     const rows = buildUsageRows([turn({ contextTokens: null })], ctx, () => null);
     expect(rows[0].contextTokens).toBeNull();
+  });
+
+  it("picks a prompt-length tier by the turn's context size", () => {
+    const tiered = {
+      input: 0.1,
+      output: 0.5,
+      tieredPricing: [
+        {
+          input: 0.1,
+          output: 0.5,
+          cacheRead: 0.01,
+          cacheWrite: 0.125,
+          range: [0, 100001] as [number, number],
+        },
+        {
+          input: 0.5,
+          output: 2.5,
+          cacheRead: 0.05,
+          cacheWrite: 0.625,
+          range: [100001] as [number],
+        },
+      ],
+    };
+    const t = { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    const [short] = buildUsageRows([turn({ ...t, contextTokens: 50_000 })], ctx, () => tiered);
+    const [long] = buildUsageRows([turn({ ...t, contextTokens: 150_000 })], ctx, () => tiered);
+    expect(short.estimatedCostUsd).toBe("0.100000");
+    expect(long.estimatedCostUsd).toBe("0.500000");
   });
 });
