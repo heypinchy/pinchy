@@ -766,13 +766,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1342,13 +1344,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1493,13 +1497,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1751,13 +1757,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1876,13 +1884,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2003,13 +2013,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2135,13 +2147,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2290,13 +2304,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2432,13 +2448,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2627,13 +2645,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2796,13 +2816,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2912,6 +2934,9 @@ jobs:
   # this pipeline built, i.e. against the LibreOffice that ships (Debian's),
   # with `--network none` (the canaries' listener is on loopback) and
   # KB_REQUIRE_SOFFICE=1, so a missing binary fails instead of skipping.
+  # A 24 MiB tmpfs (KB_SMALL_VOLUME) is a staging volume too small for the
+  # scratch LibreOffice unpacks a large package into while loading it: a test
+  # cannot shrink a filesystem, and that case needs a real one.
   #
   # The runtime image carries production dependencies only, so vitest comes
   # from the runner: dependencies are installed there and the checkout is
@@ -2968,6 +2993,7 @@ jobs:
         run: |
           docker run --rm --network none \
             -e CI=true -e KB_REQUIRE_SOFFICE=1 \
+            --tmpfs /kb-small-volume:size=24m -e KB_SMALL_VOLUME=/kb-small-volume \
             -v "$GITHUB_WORKSPACE:/repo" -w /repo \
             --entrypoint sh pinchy-libreoffice \
             -c 'soffice --version && pnpm test:libreoffice'

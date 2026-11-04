@@ -73,7 +73,7 @@ export default defineConfig({
       // The LibreOffice suites drive a real `soffice` and run on their own,
       // one file at a time: `pnpm test:libreoffice` (vitest.libreoffice.config.ts).
       // Here they ran in parallel workers on any machine with LibreOffice and
-      // timed out against each other (third review, PR #1243).
+      // timed out against each other.
       "**/*.libreoffice.test.{ts,tsx}",
     ],
     server: {

@@ -15,6 +15,7 @@ import type {
   ComposeOptions,
   Folder,
 } from "./email-adapter.js";
+import { splitMailbox } from "./recipient.js";
 
 export interface ImapAdapterOptions {
   imapHost: string;
@@ -230,6 +231,14 @@ function assertNoHeaderInjection(field: string, value: string): void {
       `${field} contains a line break, which is not allowed (possible header injection attempt)`
     );
   }
+}
+
+// The recipient as nodemailer/MailComposer take it: `{ name, address }` when
+// there is a display name, so the library encodes the name (RFC 2047) instead
+// of re-parsing `Name <address>` as an address list; the bare address otherwise.
+function recipientField(to: string): string | { name: string; address: string } {
+  const { name, address } = splitMailbox(to);
+  return name ? { name, address } : address;
 }
 
 function assertComposeOptionsSafe(opts: ComposeOptions): void {
@@ -503,7 +512,7 @@ export class ImapAdapter implements EmailAdapter {
 
     const raw = await new MailComposer({
       from,
-      to: opts.to,
+      to: recipientField(opts.to),
       subject: opts.subject,
       text: opts.body,
       ...(opts.replyTo ? { inReplyTo: opts.replyTo } : {}),
@@ -550,7 +559,7 @@ export class ImapAdapter implements EmailAdapter {
     try {
       const info = await transport.sendMail({
         from,
-        to: opts.to,
+        to: recipientField(opts.to),
         subject: opts.subject,
         text: opts.body,
         ...(opts.replyTo ? { inReplyTo: opts.replyTo } : {}),
@@ -569,7 +578,7 @@ export class ImapAdapter implements EmailAdapter {
     try {
       const raw = await new MailComposer({
         from,
-        to: opts.to,
+        to: recipientField(opts.to),
         subject: opts.subject,
         text: opts.body,
         ...(opts.replyTo ? { inReplyTo: opts.replyTo } : {}),

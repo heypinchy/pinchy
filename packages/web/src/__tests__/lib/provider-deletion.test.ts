@@ -12,6 +12,13 @@ vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
 }));
 
+// The SSRF verdict on a saved base URL has its own tests
+// (openai-compatible-stored-url.test.ts); here only its answer matters.
+// Default: nothing refused.
+vi.mock("@/lib/openai-compatible-stored-url", () => ({
+  refusedBaseUrlReasons: vi.fn().mockResolvedValue(new Map()),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     query: {
@@ -40,6 +47,7 @@ import {
 import { setSetting } from "@/lib/settings";
 import { listConfiguredBuiltIns } from "@/lib/provider-count";
 import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
+import { refusedBaseUrlReasons } from "@/lib/openai-compatible-stored-url";
 import { db } from "@/db";
 
 describe("migrateAgentsOffDeletedProvider", () => {
@@ -115,6 +123,7 @@ describe("buildRemainingCandidates", () => {
     vi.clearAllMocks();
     vi.mocked(listConfiguredBuiltIns).mockResolvedValue([]);
     vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([]);
+    vi.mocked(refusedBaseUrlReasons).mockResolvedValue(new Map());
   });
 
   it("lists built-ins first, then custom instances namespaced <slug>/<models[0].id>", async () => {
@@ -168,6 +177,69 @@ describe("buildRemainingCandidates", () => {
     expect(candidates).toEqual([
       { name: "anthropic", label: "Anthropic", defaultModel: "anthropic/claude-haiku" },
       { name: "acme", label: "Acme LLM", defaultModel: "acme/acme-large" },
+    ]);
+  });
+  // A custom provider whose saved base URL the SSRF guard refuses is emitted
+  // pointed at REFUSED_BASE_URL with no key: every agent on it fails. Picking it
+  // as the migration target would move every orphaned agent onto a provider
+  // that cannot answer, and reassigning default_provider to it would undo the
+  // refusal the default route enforces on PATCH.
+  it("leaves out a custom provider whose saved base URL is refused", async () => {
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      {
+        slug: "metadata",
+        displayName: "Metadata",
+        baseUrl: "http://169.254.169.254/v1",
+        models: [{ id: "m" }],
+      },
+      {
+        slug: "acme",
+        displayName: "Acme LLM",
+        baseUrl: "https://acme.example.com/v1",
+        models: [{ id: "acme-large" }],
+      },
+    ] as any);
+    vi.mocked(refusedBaseUrlReasons).mockResolvedValue(
+      new Map([["metadata", "That host resolves to a reserved or internal address."]])
+    );
+
+    const candidates = await buildRemainingCandidates();
+
+    expect(candidates).toEqual([
+      { name: "acme", label: "Acme LLM", defaultModel: "acme/acme-large" },
+    ]);
+    // One batch verdict for every custom provider — one lookup per host, not
+    // one per provider (refusedBaseUrlReasons memoizes within a call).
+    expect(refusedBaseUrlReasons).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(refusedBaseUrlReasons).mock.calls[0][0]).toEqual([
+      expect.objectContaining({ slug: "metadata", baseUrl: "http://169.254.169.254/v1" }),
+      expect.objectContaining({ slug: "acme", baseUrl: "https://acme.example.com/v1" }),
+    ]);
+  });
+
+  it("asks for no verdict when there is no custom provider", async () => {
+    vi.mocked(listConfiguredBuiltIns).mockResolvedValue([
+      { name: "anthropic", config: { name: "Anthropic", defaultModel: "anthropic/claude-haiku" } },
+    ] as any);
+
+    await buildRemainingCandidates();
+
+    expect(refusedBaseUrlReasons).not.toHaveBeenCalled();
+  });
+
+  // The custom DELETE has to know BEFORE it deletes whether a usable provider
+  // would remain, so it builds candidates while its own row still exists and
+  // excludes it by id.
+  it("excludes the custom provider named by excludeCustomId", async () => {
+    vi.mocked(listOpenAiCompatibleProviders).mockResolvedValue([
+      { id: "row-1", slug: "acme", displayName: "Acme LLM", models: [{ id: "acme-large" }] },
+      { id: "row-2", slug: "other", displayName: "Other", models: [{ id: "other-large" }] },
+    ] as any);
+
+    const candidates = await buildRemainingCandidates({ excludeCustomId: "row-1" });
+
+    expect(candidates).toEqual([
+      { name: "other", label: "Other", defaultModel: "other/other-large" },
     ]);
   });
 });

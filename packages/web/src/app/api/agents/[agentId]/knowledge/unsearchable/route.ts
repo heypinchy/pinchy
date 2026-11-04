@@ -15,9 +15,12 @@ type RouteContext = { params: Promise<{ agentId: string }> };
  * The reindex status route already reports `unsearchable` as a count. A count
  * nobody can expand is the silent half of a known gap: the agent answers "I
  * found nothing" and the reader hears a statement about the world rather than
- * about the index. Named after that counter on purpose — this is the list
- * behind it, and `unreadable` is the word the docs already spend on `failed`,
- * which (see lib/knowledge/unsearchable.ts) is the one state this cannot show.
+ * about the index. Named after that counter on purpose — `totals.no_text` is
+ * the list behind it, and `unreadable` is the word the docs already spend on
+ * `failed`, which (see lib/knowledge/unsearchable.ts) is the one state this
+ * cannot show. It also lists what the counter never counts: Word and
+ * PowerPoint files search leaves out until they are converted again
+ * (`totals.awaiting_conversion`).
  *
  * Wider window than the counter, though: a run counts only what it processed,
  * this answers for everything currently in scope. Callers rendering the two
@@ -27,6 +30,10 @@ type RouteContext = { params: Promise<{ agentId: string }> };
  * scopes retrieval, resolved from the same place. Never from the request: a
  * path parameter here would turn a diagnostics panel into a way to enumerate
  * documents the agent was never granted.
+ *
+ * `searchesIndex` says who converts those files: Pinchy queues that run on its
+ * own only for an agent with `knowledge_search` (office-format-upgrade.ts), so
+ * for any other agent it takes a reindex.
  *
  * Admin-only and access-gated, like the reindex it explains: the scope comes
  * from the agent's grants, so the caller has to be allowed to see the agent
@@ -46,7 +53,15 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
 
   // Denies by default on an empty grant list (see listUnsearchableDocuments), so
   // an agent granted nothing reports nothing rather than the whole corpus.
-  const { documents, total } = await listUnsearchableDocuments(DEFAULT_ORG_ID, allowedPaths);
+  const { documents, total, totals } = await listUnsearchableDocuments(
+    DEFAULT_ORG_ID,
+    allowedPaths
+  );
 
-  return NextResponse.json({ documents, total });
+  return NextResponse.json({
+    documents,
+    total,
+    totals,
+    searchesIndex: agent.allowedTools.includes("knowledge_search"),
+  });
 });

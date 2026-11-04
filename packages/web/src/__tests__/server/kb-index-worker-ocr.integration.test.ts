@@ -13,7 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { and, eq, like } from "drizzle-orm";
 
@@ -32,10 +32,17 @@ vi.mock("@/lib/knowledge/embeddings", async (importOriginal) => ({
   embedTexts: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.01))),
 }));
 vi.mock("@/lib/knowledge/kb-ocr", () => ({ resolveKbOcr: vi.fn() }));
+// The production deps stage their source copies on the artifact volume, which
+// exists only in the container. Here it is a directory of the test's own.
+const artifactVolume = vi.hoisted(() => ({ staging: "" }));
+vi.mock("@/lib/knowledge/office-artifacts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/knowledge/office-artifacts")>()),
+  stagingDirOf: () => artifactVolume.staging,
+}));
 vi.mock("@/lib/knowledge/pdf-extract", () => ({ extractPdfPages: vi.fn() }));
 // The spreadsheet reader the worker wires in: the isolated one, whose child
-// process is what keeps a heavy workbook from OOM-killing the web container
-// (fourth review, PR #1243). Its own behaviour is xlsx-isolated.test.ts.
+// process is what keeps a heavy workbook from OOM-killing the web container.
+// Its own behaviour is xlsx-isolated.test.ts.
 vi.mock("@/lib/knowledge/xlsx-isolated", () => ({
   extractXlsxIsolated: vi.fn(async () => ({
     chunks: [{ text: "Sheet: S\nName: Alice", sheet: "S", startRow: 2, endRow: 2 }],
@@ -63,6 +70,7 @@ let tmpRoot: string;
 
 beforeEach(async () => {
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-worker-ocr-test-"));
+  artifactVolume.staging = join(tmpRoot, ".kb-artifacts", "staging");
   await db.delete(kbIndexJobs);
   await db.delete(usageRecords).where(like(usageRecords.sessionKey, "kb-index:%"));
   _resetKbIndexWorkerForTest();
@@ -228,6 +236,21 @@ describe("without a vision model", () => {
     const detail = await outcomeAuditDetail(job.id);
     expect(detail).not.toHaveProperty("ocr");
   });
+
+  it("hands the extractor a copy staged on the artifact volume, never one in os.tmpdir()", async () => {
+    // A run killed mid-read never removes its copy. In the container's /tmp
+    // that copy — a full plaintext document — would survive every restart on
+    // the writable layer; on the volume, the next worker start clears it.
+    let handed = "";
+    mockExtractPdfPages.mockImplementation(async (absPath) => {
+      handed = absPath;
+      return [{ page: 1, text: "a certificate" }];
+    });
+
+    await enqueueAndRun();
+
+    expect(dirname(dirname(handed))).toBe(artifactVolume.staging);
+  });
 });
 
 // The nightly schedule queues ordinary jobs and this worker runs them; there is
@@ -308,7 +331,7 @@ describe("a scheduled run", () => {
   });
 });
 
-describe("the spreadsheet reader the worker wires in (fourth review, PR #1243)", () => {
+describe("the spreadsheet reader the worker wires in", () => {
   it("reads a workbook through the isolated child, never in the web process", async () => {
     mockResolveKbOcr.mockResolvedValue(null);
     const agent = await makeAgent();
@@ -326,8 +349,11 @@ describe("the spreadsheet reader the worker wires in (fourth review, PR #1243)",
 
     expect(await runNextIndexJob()).not.toBeNull();
 
-    expect(vi.mocked(extractXlsxIsolated)).toHaveBeenCalledWith(
-      expect.stringMatching(/\/sheets\/prices\.xlsx$/)
-    );
+    // Handed the private copy on the artifact volume's staging, under the
+    // workbook's own name — never the path on the share.
+    expect(vi.mocked(extractXlsxIsolated)).toHaveBeenCalledTimes(1);
+    const [handed] = vi.mocked(extractXlsxIsolated).mock.calls[0];
+    expect(dirname(dirname(handed))).toBe(artifactVolume.staging);
+    expect(basename(handed)).toBe("prices.xlsx");
   });
 });

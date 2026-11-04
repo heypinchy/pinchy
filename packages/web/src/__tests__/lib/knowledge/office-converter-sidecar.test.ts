@@ -73,6 +73,7 @@ async function stagedBatch(names: string[]) {
   await mkdir(inDir, { recursive: true });
   await mkdir(join(dir, "out"), { recursive: true });
   await mkdir(join(dir, "profile"), { recursive: true });
+  await mkdir(join(dir, "tmp"), { recursive: true });
   for (const name of names) await writeFile(join(inDir, name), "bytes");
   return {
     converter,
@@ -81,6 +82,7 @@ async function stagedBatch(names: string[]) {
       inputs: names.map((n) => join(inDir, n)),
       outDir: join(dir, "out"),
       profileDir: join(dir, "profile"),
+      tmpDir: join(dir, "tmp"),
       timeoutMs: 5_000,
     } satisfies ConverterRun,
   };
@@ -169,6 +171,7 @@ describe("office-converter sidecar protocol", () => {
           inputs: [join(elsewhere, "in", "0.docx")],
           outDir: join(elsewhere, "out"),
           profileDir: join(elsewhere, "profile"),
+          tmpDir: join(elsewhere, "tmp"),
           timeoutMs: 5_000,
         })
       ).rejects.toThrow(/outside the office converter's spool/);
@@ -337,6 +340,7 @@ describe("office-converter sidecar protocol", () => {
         inputs: [join(dir, "in", "0.docx")],
         outDir: join(dir, "out"),
         profileDir: join(dir, "profile"),
+        tmpDir: join(dir, "tmp"),
         timeoutMs: 5_000,
       })
     ).resolves.toMatchObject({ code: 0 });
@@ -474,6 +478,7 @@ describe("office-converter sidecar protocol", () => {
     expect(await mode(join(dir, "in"))).toBe(0o750);
     expect(await mode(join(dir, "out"))).toBe(0o1770);
     expect(await mode(join(dir, "profile"))).toBe(0o1770);
+    expect(await mode(join(dir, "tmp"))).toBe(0o1770);
   });
 
   it("opens its socket to the web process's group and to nobody else", async () => {
@@ -601,7 +606,7 @@ describe("what the web process accepts from the converter", () => {
     server = createServer((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
-        JSON.stringify({ code: 0, signal: null, stderr: "x".repeat(200_000), timedOut: false })
+        JSON.stringify({ code: 0, signal: null, stderr: "x".repeat(300_000), timedOut: false })
       );
     });
     await new Promise<void>((resolve) => server!.listen(converterSocketPath(spool), resolve));

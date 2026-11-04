@@ -8,6 +8,12 @@ import { adminClient } from "better-auth/client/plugins";
 // admin-gated /api/settings/api-keys route. Registering the plugin would
 // advertise an API that is designed to fail, and invite the next person to
 // "fix" the guard so it works.
+//
+// `adminClient()` stays for one reason: it types `session.user.role`, which
+// agent-settings-page-content.tsx reads. Its `authClient.admin.*` actions are
+// dead on arrival — lib/auth.ts only answers clients on /sign-in/email,
+// /sign-out and /get-session (CLIENT_REACHABLE_AUTH_PATHS) — and nothing here
+// calls them. Don't add a call; add a Pinchy route.
 export const authClient = createAuthClient({
   plugins: [adminClient()],
 });

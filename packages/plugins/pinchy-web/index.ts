@@ -1,3 +1,4 @@
+import { refusingUnknownParams } from "./unknown-params.js";
 import { braveSearch, type BraveSearchConfig } from "./brave-search.js";
 import { webFetch, type WebFetchConfig } from "./web-fetch.js";
 import {
@@ -105,13 +106,13 @@ async function fetchBraveCredentials(
   connectionId: string,
   agentId: string
 ): Promise<BraveCredentials> {
-  const data = (await requestCredentials({
+  const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
     connectionId,
     agentId,
     label: "Brave",
-  })) as { credentials?: unknown };
+  });
   assertBraveCredentialsShape(data.credentials);
   return data.credentials;
 }
@@ -121,7 +122,9 @@ const plugin = {
   name: "Pinchy Web",
   description: "Web search and page fetching with domain filtering.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const config = api.pluginConfig;
     const apiBaseUrl = config?.apiBaseUrl ?? "";
     const gatewayToken = config?.gatewayToken ?? "";
@@ -180,6 +183,9 @@ const plugin = {
         try {
           return await fn(fresh);
         } catch (retryErr) {
+          // Only an auth error says the fresh key is bad; a Brave outage on
+          // the retry must not flag a healthy connection.
+          if (!isAuthError(retryErr)) throw retryErr;
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
           await postAuthFailure({
             apiBaseUrl,

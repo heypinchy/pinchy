@@ -48,7 +48,10 @@ silent.
 
 `extra_hosts` (the `ollama.local` host-gateway mapping for a local Ollama) is
 also unsupported by CapRover's parser and is omitted — use a cloud model
-provider or run Ollama as its own CapRover app.
+provider or run Ollama as its own CapRover app. It is omitted on both services,
+which is what matters: Pinchy checks a saved Odoo URL or mail host before
+OpenClaw connects to it, so the two must resolve names alike
+(`scripts/lib/compose-extra-hosts.test.mjs` reads this template too).
 
 ## Test before submitting (needs your own CapRover server)
 

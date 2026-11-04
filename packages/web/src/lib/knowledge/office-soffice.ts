@@ -22,6 +22,11 @@ export interface ConverterRun {
   outDir: string;
   /** A private LibreOffice profile, so concurrent runs never fight over one user installation. */
   profileDir: string;
+  /**
+   * The converter's scratch space (`TMPDIR`), inside the batch — on the volume
+   * the free-space check asks, and removed with the batch.
+   */
+  tmpDir: string;
   timeoutMs: number;
 }
 
@@ -35,8 +40,15 @@ export interface ConverterResult {
 
 export type RunConverter = (run: ConverterRun) => Promise<ConverterResult>;
 
-/** stderr we keep. LibreOffice repeats itself per file; a huge batch must not build a huge string. */
-const MAX_STDERR_BYTES = 8 * 1024;
+/**
+ * stderr we keep. LibreOffice repeats itself per file; a huge batch must not
+ * build a huge string. But the per-file `impl_store … failed` line is what an
+ * operator is shown for a PDF the full volume did not take (`failedStoreLine`
+ * — the volume decides, the line only says what LibreOffice saw), so the cap
+ * must hold a whole batch of them: at staging-path lengths a failed file
+ * costs ~450 bytes (its `convert` line and its error), 20 of them ~9 KB.
+ */
+const MAX_STDERR_BYTES = 32 * 1024;
 
 /**
  * How long, once the converter has exited, we still wait for its stderr to
@@ -60,10 +72,11 @@ const STDERR_DRAIN_MS = 2_000;
  */
 const INHERITED_ENV = ["PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ"] as const;
 
-export function childEnv(home: string): NodeJS.ProcessEnv {
+export function childEnv(home: string, tmpDir?: string): NodeJS.ProcessEnv {
   // NODE_ENV carries no secret and is what every child process here already
   // sees; it is listed explicitly because Next.js declares it non-optional.
   const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV, HOME: home };
+  if (tmpDir !== undefined) env.TMPDIR = tmpDir;
   for (const key of INHERITED_ENV) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
@@ -111,26 +124,32 @@ export function killTree(child: ReturnType<typeof spawn>): void {
  *     fetch but not `file://`. Its job is the future: whatever LibreOffice
  *     learns to fetch next still has nowhere to go.
  *
- * Two honest limits, both measured (release reviews of v0.10.0). This profile
+ * Two honest limits, both measured. This profile
  * does NOT stop LibreOffice's HTML import (an altChunk) or its SVG import from
  * reading `file://` references — and anything LibreOffice takes for SVG by its
  * bytes goes through that import, whatever the document called it: a picture,
  * a font, an RTF `\pict`, a picture inside an EMF+ record. For OOXML and RTF,
  * `office-preflight.ts` is a second layer — defence in depth with known
  * limits, not a guarantee: it cuts altChunks, pictures that reach outside
- * themselves (metafiles carrying a picture of their own included) and
+ * themselves (and every record of a metafile that can carry another) and
  * everything else not on its allow-list, and refuses what it cannot read
- * unambiguously. Each of those answers a vector a review found; the next way
+ * unambiguously. Each of those answers a vector found by canary; the next way
  * LibreOffice draws something by its bytes is a gap until it is found. For
  * the legacy binary formats (`.doc`, `.ppt`), which the preflight cannot
- * rewrite, this profile is the ONLY layer of the two, and an SVG embedded in
- * one still reads a local file (the canary pins that gap).
+ * rewrite, this profile is the ONLY layer, and an SVG embedded in one still
+ * reads a local file (the canary pins that gap).
  *
  * None of it is the boundary. In production this runs in the office-converter
  * sidecar, which has no network to fetch over and no secret or workspace to
  * read (office-converter-sidecar.ts) — that is what closes the family. These
  * settings still guard the in-process converter a developer machine runs,
  * which has both. The canaries say, vector by vector, which layers hold alone.
+ *
+ * The last setting is not about links: it pins LibreOffice's Temp path to
+ * `$(temp)`, which is `TMPDIR` (see `runSoffice`). That is the default on
+ * Linux, but a macOS build defaults to the profile's own `temp` directory
+ * (measured, LibreOffice 26.2), so the scratch space would follow the build
+ * rather than the batch's `tmpDir`.
  */
 const LOCKED_DOWN_PROFILE = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -143,6 +162,11 @@ ${[
   ["/org.openoffice.Inet/Settings", "ooInetHTTPSProxyName", "127.0.0.1"],
   ["/org.openoffice.Inet/Settings", "ooInetHTTPSProxyPort", "9"],
   ["/org.openoffice.Inet/Settings", "ooInetNoProxy", ""],
+  [
+    "/org.openoffice.Office.Paths/Paths/org.openoffice.Office.Paths:NamedPath['Temp']",
+    "WritePath",
+    "$(temp)",
+  ],
 ]
   .map(
     ([path, name, value]) =>
@@ -152,21 +176,9 @@ ${[
 </oor:items>
 `;
 
-/**
- * LibreOffice's temp directory, inside the private profile. It removes its
- * temp files only on a clean exit; in the sidecar the default `/tmp` is a
- * tmpfs that outlives every batch and counts against the container's memory,
- * so a killed conversion would leave them there for good. In the profile they
- * go with the batch.
- */
-function tmpDirOf(profileDir: string): string {
-  return join(profileDir, "tmp");
-}
-
 async function writeLockedDownProfile(profileDir: string): Promise<void> {
   const userDir = join(profileDir, "user");
   await mkdir(userDir, { recursive: true });
-  await mkdir(tmpDirOf(profileDir), { recursive: true });
   await writeFile(join(userDir, "registrymodifications.xcu"), LOCKED_DOWN_PROFILE);
 }
 
@@ -178,18 +190,28 @@ async function writeLockedDownProfile(profileDir: string): Promise<void> {
  * installation, and a second instance — a concurrent reindex, or a leftover
  * process — refuses to start or silently reuses the other's state.
  *
+ * `TMPDIR` puts its scratch space there too. LibreOffice unpacks a package
+ * into it while loading — about the unpacked size — and left to itself uses
+ * the container's /tmp, a volume no check here looks at: a load that runs out
+ * of room there exits 0 with `source file could not be loaded`, which is what
+ * an unreadable document says. In the batch it is on the volume
+ * `outputVolumeFault` asks. Verified against the runtime image's
+ * LibreOffice 7.4: with a 20 MiB /tmp and TMPDIR on a roomy volume, a
+ * document needing 26 MB of scratch converts and /tmp stays empty. LibreOffice
+ * finds TMPDIR through its Temp path setting, which the profile pins.
+ *
  * The binary is resolved per call rather than at import so a test can point at
  * a stub: without that, everything below is only reachable on a machine with a
  * 422 MB LibreOffice installed, which is no machine CI runs on.
  */
-export const runSoffice: RunConverter = async ({ inputs, outDir, profileDir, timeoutMs }) => {
+export const runSoffice: RunConverter = async (run) => {
   // Before the process exists, and a failure here is a failure to convert: a
   // converter that cannot be locked down must not run at all.
-  await writeLockedDownProfile(profileDir);
-  return spawnSoffice({ inputs, outDir, profileDir, timeoutMs });
+  await writeLockedDownProfile(run.profileDir);
+  return spawnSoffice(run);
 };
 
-const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =>
+const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, tmpDir, timeoutMs }) =>
   new Promise<ConverterResult>((resolve, reject) => {
     const child = spawn(
       process.env.KB_SOFFICE_BIN || "soffice",
@@ -206,11 +228,7 @@ const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =
         outDir,
         ...inputs,
       ],
-      {
-        stdio: ["ignore", "ignore", "pipe"],
-        env: { ...childEnv(profileDir), TMPDIR: tmpDirOf(profileDir) },
-        detached: true,
-      }
+      { stdio: ["ignore", "ignore", "pipe"], env: childEnv(profileDir, tmpDir), detached: true }
     );
 
     let stderr = "";

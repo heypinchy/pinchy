@@ -1,5 +1,5 @@
 /**
- * CANARIES for release review v0.10.0, finding 1: an Office file on a mounted
+ * CANARIES: an Office file on a mounted
  * share must not make the converter fetch from the network or embed a local
  * file. Anyone who can write to the share can plant one, and the nightly
  * reindex converts it.
@@ -26,15 +26,17 @@
  * plus a CONTROL: the same documents, stock profile, unsanitized, DO fetch or
  * read. A canary that cannot go red proves nothing.
  *
- * Not every vector has two layers, and each one says which it has. The
- * reviews of this very suite found a family the profile does NOT stop:
+ * Not every vector has two layers, and each one says which it has. There is
+ * a family the profile does NOT stop:
  * anything LibreOffice draws as an SVG reads `<image href="file:///…">` into
  * the PDF under the locked profile — an SVG picture, an altChunk importing
  * HTML, a font or an "Office part" whose bytes are SVG (LibreOffice resolves
  * `r:embed` by Id and detects the format from the bytes), a `data:` URL
  * claiming PNG, an RTF `\pict` (also one hidden behind a `\bin` the two
  * readers count differently), and an SVG carried INSIDE a metafile — an EMF+
- * image object, or an EMF inside a WMF — which is drawn as a raster, so the
+ * image object, or an EMF inside a WMF, even one planted as a FONT (a
+ * version-0x0100 WMF, an EPS's WMF preview, a deck's bullet picture named by
+ * a font relationship) — which is drawn as a raster, so the
  * local file's pixels reach the PDF rather than its text. For those the
  * preflight is the only layer (it cuts or refuses them), so they are absent
  * from layer 2 by design. A legacy OLE2 `.doc` with a linked picture has only
@@ -61,6 +63,7 @@
  * the listener is on loopback. Locally, against an image that has vitest:
  *
  *   docker run --rm --network none --user root --entrypoint sh \
+ *     --tmpfs /kb-small-volume:size=24m -e KB_SMALL_VOLUME=/kb-small-volume \
  *     -v "$PWD/packages/web/src:/app/packages/web/src:ro" \
  *     -v "$PWD/packages/web/vitest.libreoffice.config.ts:/app/packages/web/vitest.libreoffice.config.ts:ro" \
  *     -v "$PWD/packages/plugins/pinchy-files:/app/packages/plugins/pinchy-files:ro" \
@@ -90,6 +93,7 @@ import {
   readZipEntries,
 } from "@/lib/knowledge/office-zip";
 import {
+  documentXml,
   docxWith,
   REL_HYPERLINK,
   REL_IMAGE,
@@ -99,6 +103,7 @@ import {
 import {
   EMF_PLUS_DRAW_IMAGE,
   EMF_RECTANGLE,
+  decoyedWmf,
   emf,
   emfPlusComment,
   emfPlusDualComment,
@@ -152,7 +157,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
 
   /** Planted in every local-file vector; it must never reach a PDF's text. */
   const SECRET = "SVGSECRETMARKER";
-  /** Words drawn by a metafile's own records: they must survive the preflight (fourth review). */
+  /** Words drawn by a metafile's own records: they must survive the preflight. */
   const EMF_WORDS = "EMFWORDSMARKER";
   const WMF_WORDS = "WMFWORDSMARKER";
   /** The altChunk's own text: present in a PDF only if this LibreOffice imported the chunk at all. */
@@ -257,8 +262,15 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       pictureRelId: "rId9",
     });
 
-  /** A real .pptx made by LibreOffice, then given an externally-linked picture. */
-  function plantPptx(target: string): string {
+  /**
+   * A real .pptx made by LibreOffice, then given an externally-linked picture.
+   * When `font` is given, the same base deck is also planted as
+   * `deck-font-bullet.pptx`: `font` embedded where PowerPoint embeds fonts
+   * (a font relationship of the presentation part), and named by that part's
+   * default text style as a bullet PICTURE (`a:buBlip`) — which LibreOffice
+   * 26.2 and 7.4.7 both draw, by the bytes' own format.
+   */
+  function plantPptx(target: string, font?: Buffer): string {
     const fodp = join(root, "base.fodp");
     writeFileSync(
       fodp,
@@ -314,6 +326,31 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
             : rawPart(base, e)
       )
     );
+    if (font) {
+      const presentation = text("ppt/presentation.xml").replace(
+        "</p:presentation>",
+        `<p:defaultTextStyle><a:lvl1pPr marL="342900" indent="-342900"><a:buSzPct val="300000"/><a:buBlip><a:blip r:embed="rIdF"/></a:buBlip></a:lvl1pPr></p:defaultTextStyle></p:presentation>`
+      );
+      expect(presentation, "the default text style went in").toContain("<a:buBlip>");
+      const presentationRels = text("ppt/_rels/presentation.xml.rels").replace(
+        "</Relationships>",
+        `<Relationship Id="rIdF" Type="${relType("font")}" Target="fonts/font1.fntdata"/></Relationships>`
+      );
+      planted(
+        "deck-font-bullet.pptx",
+        assembleZip([
+          ...entries.map((e) =>
+            e.name === "ppt/presentation.xml"
+              ? deflatedPart(e.name, Buffer.from(presentation))
+              : e.name === "ppt/_rels/presentation.xml.rels"
+                ? deflatedPart(e.name, Buffer.from(presentationRels))
+                : rawPart(base, e)
+          ),
+          deflatedPart("ppt/fonts/font1.fntdata", font),
+        ]),
+        { profile: false, preflight: "sanitizes" }
+      );
+    }
     return planted("deck-linked-http.pptx", patched);
   }
 
@@ -343,13 +380,12 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       "mislabelled-hyperlink.docx",
       linkedPicture(`${origin}/mislabelled.png`, REL_HYPERLINK)
     );
-    plantPptx(`${origin}/deck.png`);
     // The same HTML, named for three formats: LibreOffice sniffs content.
     const html = `<html><body><p>Hello html posing as an office file</p><img src="${origin}/html.png"></body></html>`;
     planted("posing.doc", html, { profile: true, preflight: "refuses" });
     planted("posing.docx", html, { profile: true, preflight: "refuses" });
 
-    // --- What the locked profile does NOT stop (release review v0.10.0) ---
+    // --- What the locked profile does NOT stop ---
     const secretSvg = join(root, "secret.svg");
     writeFileSync(
       secretSvg,
@@ -376,6 +412,58 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
         },
       }),
       { profile: false, preflight: "sanitizes" }
+    );
+    // The same import, with nothing for the relationship allow-list to cut:
+    // the altChunk's prefix is non-ASCII (an XML name, if not an ASCII one)
+    // and its id is BORROWED from a font relationship — LibreOffice resolves
+    // an altChunk's r:id without checking the Type — whose part is HTML
+    // behind a UTF-16 byte-order mark. LibreOffice 26.2 read the local file
+    // into the PDF from the staged copy, until the preflight read element
+    // names the way a parser does and sniffed text past a byte-order mark.
+    planted(
+      "altchunk-borrowed-font.docx",
+      docxWith({
+        text: "Body words for the borrowed-font canary",
+        documentRels: relationships(
+          `<Relationship Id="rIdF" Type="${relType("font")}" Target="fonts/font1.odttf"/>`
+        ),
+        body: `<ä:altChunk xmlns:ä="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="rIdF"/>`,
+        parts: {
+          "word/fonts/font1.odttf": Buffer.from(
+            `﻿<html><body><p>${ALT_CHUNK_BODY}</p><img src="${pngUrl}"><img src="${svgUrl}" width="400" height="60"></body></html>`,
+            "utf16le"
+          ),
+        },
+      }),
+      { profile: false, preflight: "sanitizes" }
+    );
+    // The same import, with the altChunk itself out of sight: the document
+    // part declares UTF-7, where `<` is `+ADw-`, so no scan reading its bytes
+    // sees an element at all — LibreOffice decodes it as declared. Its id is
+    // borrowed from a HEADER relationship (kept: a header is rendered from),
+    // whose part is an Office header root wrapped round HTML. LibreOffice
+    // 26.2 imported that header as HTML and read the local files into the
+    // PDF from the staged copy, until the preflight refused a part it would
+    // not read as UTF-8.
+    const utf7 = (text: string) =>
+      text.replace(/[<>"]/g, (c) => ({ "<": "+ADw-", ">": "+AD4-", '"': "+ACI-" })[c]!);
+    planted(
+      "altchunk-utf7-header.docx",
+      docxWith({
+        text: "Body words for the UTF-7 canary",
+        documentRels: relationships(
+          `<Relationship Id="rIdH" Type="${relType("header")}" Target="header1.xml"/>`
+        ),
+        parts: {
+          "word/document.xml": documentXml(
+            "Body words for the UTF-7 canary",
+            undefined,
+            utf7(`<w:altChunk r:id="rIdH"/>`)
+          ).replace('encoding="UTF-8"', 'encoding="UTF-7"'),
+          "word/header1.xml": `<!-- c --><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><html><body><p>${ALT_CHUNK_BODY}</p><img src="${pngUrl}"><img src="${svgUrl}" width="400" height="60"></body></html></w:hdr>`,
+        },
+      }),
+      { profile: false, preflight: "refuses" }
     );
     // An altChunk importing a NESTED .docx — whose own relationships the
     // preflight never saw — with an externally linked picture.
@@ -405,7 +493,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       { profile: false, preflight: "sanitizes" }
     );
 
-    // --- The second review (PR #1243): SVG by its BYTES, whatever the Type ---
+    // --- SVG by its BYTES, whatever the Type ---
     // LibreOffice resolves r:embed by Id and never checks the Type, then
     // detects the picture's format from its content. Each of these drew a
     // local file into the PDF under the locked profile (26.2, measured).
@@ -460,7 +548,7 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       { profile: false, preflight: "sanitizes" }
     );
 
-    // --- The third review (PR #1243): a picture INSIDE a metafile, and RTF \bin ---
+    // --- A picture INSIDE a metafile, and RTF \bin ---
     // An EMF passes the picture check on its magic bytes, but an EMF+ image
     // object carries another picture LibreOffice detects by ITS bytes. Behind
     // 4 KiB of comment padding the first bytes say nothing but "metafile";
@@ -484,8 +572,8 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       preflight: "sanitizes",
     });
     // The same EMF carried whole inside a WMF (the "WMFC" comment Office uses).
-    // Since the fourth review the EMF is dropped and the WMF's own records —
-    // its words among them — are drawn instead of the picture being cut.
+    // The EMF is dropped and the WMF's own records — its words among them —
+    // are drawn instead of the picture being cut.
     planted(
       "wmf-embedded-emf.docx",
       metafilePicture(
@@ -494,10 +582,31 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       ),
       { profile: false, preflight: "sanitizes" }
     );
-    // Fourth review: an "EMF+ Dual" EMF — what Office and LibreOffice write —
+    // The same EMF in a WMF between two "WMFC" decoys LibreOffice skips — a
+    // Version, a CommentType or a CommentRecordCount other than Office's — an
+    // EMF header whose size swallows the real chunk, and an end of file. A
+    // walk that reassembled every chunk read header -> end of file and kept
+    // the WMF whole; LibreOffice 26.2 and 7.4.7 reassembled the one real chunk
+    // and drew the local files. Every embedded-EMF record is dropped now.
+    for (const [name, decoy] of [
+      ["wmf-decoy-version.docx", { version: 0x00020000 }],
+      ["wmf-decoy-comtype.docx", { commentType: 2 }],
+      ["wmf-decoy-reccount.docx", { recordCount: 0 }],
+    ] as const) {
+      planted(
+        name,
+        metafilePicture(
+          "media/image1.wmf",
+          decoyedWmf(emfPlusSvg, decoy, WMF_RECTANGLE, wmfText(WMF_WORDS))
+        ),
+        { profile: false, preflight: "sanitizes" }
+      );
+    }
+    // An "EMF+ Dual" EMF — what Office and LibreOffice write —
     // draws everything twice. When only its EMF+ layer carries the picture,
     // that layer is dropped and the EMF records stay: the same drawing, its
-    // words included, which a cut used to take out of the index.
+    // words included, which cutting the whole picture would take out of the
+    // index.
     planted(
       "emfplus-dual-svg.docx",
       metafilePicture(
@@ -512,6 +621,53 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       ),
       { profile: false, preflight: "sanitizes" }
     );
+    // --- A metafile planted as a FONT ---
+    // A font relationship's target is drawn by its bytes when something
+    // names its id as a picture. Two formats LibreOffice draws that the
+    // preflight did not recognise as pictures: a WMF of version 0x0100, and a
+    // DOS-binary EPS — both carrying the EMF+ SVG above (the EPS in its WMF
+    // preview). In a document's own relationships, where no font is read
+    // from, they are cut by their place; in a deck's presentation part, where
+    // fonts do live, by their bytes: PowerPoint embeds Embedded OpenType.
+    const wmf100 = Buffer.from(
+      wmf(wmfEmbeddedEmf(emfPlusSvg), WMF_RECTANGLE, wmfText(WMF_WORDS)).subarray(22)
+    );
+    wmf100.writeUInt16LE(0x0100, 4);
+    const epsPostScript = Buffer.from(
+      "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 400 200\nshowpage\n"
+    );
+    const epsPreview = Buffer.from(wmf100);
+    epsPreview.writeUInt16LE(0x0300, 4);
+    const epsHeader = Buffer.alloc(30);
+    epsHeader.writeUInt32LE(0xc6d3d0c5, 0);
+    epsHeader.writeUInt32LE(30, 4);
+    epsHeader.writeUInt32LE(epsPostScript.length, 8);
+    epsHeader.writeUInt32LE(30 + epsPostScript.length, 12);
+    epsHeader.writeUInt32LE(epsPreview.length, 16);
+    epsHeader.writeUInt16LE(0xffff, 28);
+    const fontPicture = (text: string, bytes: Buffer) =>
+      docxWith({
+        text,
+        documentRels: relationships(
+          `<Relationship Id="rIdF" Type="${relType("font")}" Target="fonts/font1.odttf"/>`
+        ),
+        body: embeddedPicture("rIdF"),
+        parts: { "word/fonts/font1.odttf": bytes },
+      });
+    planted("font-wmf100.docx", fontPicture("Body words for the WMF font canary", wmf100), {
+      profile: false,
+      preflight: "sanitizes",
+    });
+    planted(
+      "font-eps.docx",
+      fontPicture(
+        "Body words for the EPS font canary",
+        Buffer.concat([epsHeader, epsPostScript, epsPreview])
+      ),
+      { profile: false, preflight: "sanitizes" }
+    );
+    plantPptx(`${origin}/deck.png`, wmf100);
+
     // `\bin` with 2^31: the sanitizer skipped to the end of the file, while
     // LibreOffice's 32-bit parameter overflowed to 0 and it drew the `\pict`.
     planted(
@@ -652,20 +808,34 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       expect(await textOf(join(outDir, `${name}.pdf`)), name).toContain(SECRET);
     }
     // ...and through a metafile's own picture, the local file's PIXELS.
-    for (const name of ["emfplus-svg", "wmf-embedded-emf", "emfplus-dual-svg"]) {
+    for (const name of [
+      "emfplus-svg",
+      "wmf-embedded-emf",
+      "wmf-decoy-version",
+      "wmf-decoy-comtype",
+      "wmf-decoy-reccount",
+      "emfplus-dual-svg",
+      "font-wmf100",
+      "font-eps",
+    ]) {
       expect(localPixelsIn(join(outDir, `${name}.pdf`)), name).toBe(true);
     }
+    // The deck draws it as its bullet — a JPEG there, which `localPixelsIn`
+    // does not decode; it has no picture but that one.
+    expect(imagesIn(join(outDir, "deck-font-bullet.pdf")), "deck-font-bullet").toBeGreaterThan(0);
 
     // Whether altChunk HTML is imported at all depends on the LibreOffice
     // version: 26.2 imports it and reads the local files (local PNG embedded,
     // local SVG's text indexed); 7.4.7 — the runtime image's — skips the chunk
     // entirely (measured). Where it is imported, it leaks; that is the claim.
-    const altPdf = join(outDir, "altchunk-html.pdf");
-    const altText = await textOf(altPdf);
-    expect(
-      !altText.includes(ALT_CHUNK_BODY) || (imagesIn(altPdf) > 0 && altText.includes(SECRET)),
-      "an imported altChunk read the local files"
-    ).toBe(true);
+    for (const name of ["altchunk-html", "altchunk-borrowed-font", "altchunk-utf7-header"]) {
+      const altPdf = join(outDir, `${name}.pdf`);
+      const altText = await textOf(altPdf);
+      expect(
+        !altText.includes(ALT_CHUNK_BODY) || (imagesIn(altPdf) > 0 && altText.includes(SECRET)),
+        `${name}: an imported altChunk read the local files`
+      ).toBe(true);
+    }
   }, 240_000);
 
   it("1. full pipeline: nothing is fetched, no local file is embedded, the HTML posing as Word is refused", async () => {
@@ -682,14 +852,18 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     // An "Office part" that is really an SVG is built to be imported: refused.
     expect(byName.get("office-namespaced-svg.docx")!.status).toBe("failed");
     expect(byName.get("office-namespaced-svg.docx")!.reason).toMatch(/should be Office XML/);
+    // An Office part a parser would not read as UTF-8 — here UTF-7, hiding
+    // an altChunk from every scan — is refused.
+    expect(byName.get("altchunk-utf7-header.docx")!.status).toBe("failed");
+    expect(byName.get("altchunk-utf7-header.docx")!.reason).toMatch(/UTF-8/);
     // A binary run two readers could disagree about: refused.
     expect(byName.get("rtf-bin-overflow.doc")!.status).toBe("failed");
     expect(byName.get("rtf-bin-overflow.doc")!.reason).toMatch(/binary run/);
     // The documents themselves still convert: a cut link costs a picture, not
     // the text — and no local file's text or picture reaches the PDF.
-    // CORRECTED (second review): the two altChunk files used to be refused
-    // outright. They are converted now, with the chunk cut — so the rest of
-    // the document is searchable and the chunk's own content is not.
+    // The two altChunk files are converted with the chunk cut, not refused
+    // outright — so the rest of the document is searchable and the chunk's
+    // own content is not.
     for (const name of [
       "linked-http.docx",
       "linked-file.docx",
@@ -697,13 +871,20 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
       "deck-linked-http.pptx",
       "svg-picture.docx",
       "altchunk-html.docx",
+      "altchunk-borrowed-font.docx",
       "altchunk-nested.docx",
       "font-svgz.docx",
       "data-url-svg.docx",
       "rtf-picture.doc",
       "emfplus-svg.docx",
       "wmf-embedded-emf.docx",
+      "wmf-decoy-version.docx",
+      "wmf-decoy-comtype.docx",
+      "wmf-decoy-reccount.docx",
       "emfplus-dual-svg.docx",
+      "font-wmf100.docx",
+      "font-eps.docx",
+      "deck-font-bullet.pptx",
       "legacy-linked-http.doc",
       "legacy-linked-file.doc",
     ]) {
@@ -718,16 +899,26 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
     expect(await textOf(byName.get("altchunk-html.docx")!.artifactPath!)).toContain(
       "Body words for the altChunk canary"
     );
+    expect(await textOf(byName.get("altchunk-borrowed-font.docx")!.artifactPath!)).toContain(
+      "Body words for the borrowed-font canary"
+    );
     expect(await textOf(byName.get("rtf-picture.doc")!.artifactPath!)).toContain(
       "Body words for the RTF canary"
     );
-    // A metafile with a second drawing keeps it, words and all (fourth review).
+    // A metafile with a second drawing keeps it, words and all.
     // Glyph by glyph, as a metafile positions them, so pdfjs may split a word:
     // compared without whitespace.
     const glyphs = async (name: string) =>
       (await textOf(byName.get(name)!.artifactPath!)).replace(/\s+/g, "");
     expect(await glyphs("emfplus-dual-svg.docx")).toContain(EMF_WORDS);
-    expect(await glyphs("wmf-embedded-emf.docx")).toContain(WMF_WORDS);
+    for (const name of [
+      "wmf-embedded-emf.docx",
+      "wmf-decoy-version.docx",
+      "wmf-decoy-comtype.docx",
+      "wmf-decoy-reccount.docx",
+    ]) {
+      expect(await glyphs(name), name).toContain(WMF_WORDS);
+    }
   }, 240_000);
 
   it("KNOWN GAP of the profile-only layer: a legacy .doc whose embedded picture is an SVG still draws a local file", async () => {
@@ -826,10 +1017,9 @@ describe.skipIf(!hasSoffice)("an Office file cannot make the converter fetch or 
   }, 240_000);
 
   it("converts a document with an SVG picture the way Office 365 and LibreOffice write it — not refused", async () => {
-    // The third review's false refusal: `<asvg:svgBlip>`, written next to
-    // every SVG picture and PowerPoint Icon, was read as an `<svg` element and
-    // the whole document refused. Both files were written by LibreOffice 26.2.
-    // (That the picture itself is KEPT is office-preflight.review3.test.ts's
+    // `<asvg:svgBlip>`, written next to every SVG picture and PowerPoint Icon,
+    // must not be read as an `<svg` element and the whole document refused. Both files were written by LibreOffice 26.2.
+    // (That the picture itself is KEPT is office-preflight.reader-agreement.test.ts's
     // claim: LibreOffice draws the icon as vectors, not as an image object.)
     const fixtures = join(__dirname, "../../fixtures/kb/office");
     const store = new OfficeArtifactStore(join(root, "artifacts-svg-icons"));

@@ -47,6 +47,15 @@ services:
       # Same path in both containers (Dockerfile.pinchy sets
       # KB_OFFICE_SPOOL_DIR to it), so nothing needs translating.
       - pinchy-office-spool:/var/spool/pinchy-office
+    extra_hosts:
+      # The same mapping as the openclaw service below, and it has to stay that
+      # way: Pinchy resolves a saved Odoo URL or mail host to check it before
+      # a plugin in the openclaw container connects to it. A name only openclaw
+      # can resolve fails to resolve here, the check lets an unresolvable name
+      # through, and the plugin then reaches the Docker host. Every openclaw
+      # extra_hosts entry belongs here too — scripts/lib/compose-extra-hosts.test.mjs
+      # fails otherwise.
+      - "ollama.local:host-gateway"
     restart: unless-stopped
     depends_on:
       db:

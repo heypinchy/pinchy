@@ -3,6 +3,8 @@ import { basename } from "node:path";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { MAX_ATTACHMENT_BYTES, truncateEmailBody } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
+import { parseSingleRecipient } from "./recipient.js";
+import { refusingUnknownParams } from "./unknown-params.js";
 import {
   putHandle,
   putAttachmentHandle,
@@ -392,6 +394,34 @@ function emailWriteAuditDetails(params: Record<string, unknown>): {
 }
 
 /**
+ * The parameters of email_send and email_draft — one object, shared by both
+ * tools. Every tool is registered through `refusingUnknownParams`, which
+ * declares `additionalProperties: false` and refuses an undeclared key at the
+ * tool's own edge, against this same schema.
+ */
+const EMAIL_WRITE_PARAMETERS = {
+  type: "object",
+  properties: {
+    to: {
+      type: "string",
+      description:
+        "Exactly one recipient email address. For several recipients, call the tool once per recipient.",
+    },
+    subject: { type: "string", description: "Email subject line" },
+    body: {
+      type: "string",
+      description: "Email body text (plain text)",
+    },
+    replyTo: {
+      type: "string",
+      description: "Message ID to reply to (optional). Sets In-Reply-To header.",
+    },
+  },
+  required: ["to", "subject", "body"],
+  additionalProperties: false,
+};
+
+/**
  * Merge curated email audit details into an error result so the audit route
  * suppresses the raw params on the failure path too (see emailWriteAuditDetails).
  */
@@ -638,19 +668,16 @@ async function fetchCredentials(
   connectionId: string,
   agentId: string
 ): Promise<{ type: string; credentials: EmailCredentials }> {
-  const data = (await requestCredentials({
+  const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
     connectionId,
     agentId,
     label: "email",
-  })) as {
-    type?: unknown;
-    credentials?: unknown;
-  };
+  });
   if (!data.type || typeof data.type !== "string") {
     throw new Error(
-      `pinchy-email: credentials API returned no type field (got ${JSON.stringify((data as { type?: unknown }).type)})`
+      `pinchy-email: credentials API returned no type field (got ${JSON.stringify(data.type)})`
     );
   }
   // IMAP connections carry host/port/username/password credentials with no
@@ -671,7 +698,9 @@ const plugin = {
   name: "Pinchy Email",
   description: "Email integration (Gmail, Microsoft 365, and IMAP) with per-agent permissions.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     // Capture agentConfigs at register() time. OpenClaw calls register() with a
     // fully-populated api.pluginConfig; the reference may be reset after the call
     // returns, so factories must not read api.pluginConfig?.agents dynamically —
@@ -875,6 +904,9 @@ const plugin = {
         try {
           return await fn(trackMutations(fresh, MUTATING_ADAPTER_METHODS, markMutated));
         } catch (retryErr) {
+          // Only an auth error says the fresh credentials are bad; a 5xx or a
+          // validation error on the retry must not flag a healthy connection.
+          if (!isAuthError(retryErr)) throw retryErr;
           return reportAndRethrow(config.connectionId, retryErr);
         }
       }
@@ -1042,7 +1074,7 @@ const plugin = {
           name: "email_search",
           label: "Email Search",
           description:
-            "Search emails using structured DSL fields. All fields are optional — combine them to narrow results. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
+            "Search emails using structured DSL fields. All fields are optional — combine them to narrow results. There is no `query` parameter: use `text` for a free-text match, and `from`, `to`, `subject`, `unread`, `sinceDays`, `folder` and `limit` to filter. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
           parameters: {
             type: "object",
             properties: {
@@ -1089,29 +1121,6 @@ const plugin = {
                 return withEmailSearchAuditDetails(permissionDenied("read"), params);
               }
 
-              // email_search used to take a raw Gmail-style `query` string.
-              // It was replaced by the structured DSL fields below, but the
-              // JSON schema doesn't declare additionalProperties:false and
-              // nothing else in the handler catches a caller still passing
-              // `query` — the value would silently be dropped and the
-              // adapter would throw a generic "search requires at least one
-              // filter field" that never mentions `query`. Guard for it here
-              // so the model gets an error it can act on. If `query` and
-              // valid DSL fields are both present, treat it as ambiguous
-              // intent and reject rather than guess.
-              if (typeof params.query === "string" && params.query.length > 0) {
-                return withEmailSearchAuditDetails(
-                  errorResult(
-                    new Error(
-                      "The `query` parameter was removed. email_search now uses structured " +
-                        "fields instead of a raw query string: from, to, subject, unread, " +
-                        "sinceDays, folder, limit. Re-issue the call using those fields."
-                    )
-                  ),
-                  params
-                );
-              }
-
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.search({
                   from: params.from as string | undefined,
@@ -1155,26 +1164,19 @@ const plugin = {
           label: "Email Draft",
           description:
             "Create a draft email. The draft is saved but NOT sent. Use replyTo to create a reply to an existing message.",
-          parameters: {
-            type: "object",
-            properties: {
-              to: { type: "string", description: "Recipient email address" },
-              subject: { type: "string", description: "Email subject line" },
-              body: {
-                type: "string",
-                description: "Email body text (plain text)",
-              },
-              replyTo: {
-                type: "string",
-                description: "Message ID to reply to (optional). Sets In-Reply-To header.",
-              },
-            },
-            required: ["to", "subject", "body"],
-          },
+          parameters: EMAIL_WRITE_PARAMETERS,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "draft")) {
                 return withEmailAuditDetails(permissionDenied("draft"), params);
+              }
+
+              // One address per call: a string is parsed as an address LIST by
+              // the mail libraries, so a comma-smuggled second recipient would
+              // be delivered to without the approver ever seeing it.
+              const recipient = parseSingleRecipient(params.to);
+              if (!recipient.ok) {
+                return withEmailAuditDetails(toolError(recipient.error), params);
               }
 
               let replyTo: string | undefined = params.replyTo as string | undefined;
@@ -1186,7 +1188,7 @@ const plugin = {
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.draft({
-                  to: params.to as string,
+                  to: recipient.address,
                   subject: params.subject as string,
                   body: params.body as string,
                   replyTo,
@@ -1235,26 +1237,19 @@ const plugin = {
           label: "Email Send",
           description:
             "Send an email immediately. WARNING: This sends the email right away — it cannot be undone. Use email_draft if you want to review before sending. Use replyTo to reply to an existing message.",
-          parameters: {
-            type: "object",
-            properties: {
-              to: { type: "string", description: "Recipient email address" },
-              subject: { type: "string", description: "Email subject line" },
-              body: {
-                type: "string",
-                description: "Email body text (plain text)",
-              },
-              replyTo: {
-                type: "string",
-                description: "Message ID to reply to (optional). Sets In-Reply-To header.",
-              },
-            },
-            required: ["to", "subject", "body"],
-          },
+          parameters: EMAIL_WRITE_PARAMETERS,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "send")) {
                 return withEmailAuditDetails(permissionDenied("send"), params);
+              }
+
+              // One address per call: a string is parsed as an address LIST by
+              // the mail libraries, so a comma-smuggled second recipient would
+              // be delivered to without the approver ever seeing it.
+              const recipient = parseSingleRecipient(params.to);
+              if (!recipient.ok) {
+                return withEmailAuditDetails(toolError(recipient.error), params);
               }
 
               let replyTo: string | undefined = params.replyTo as string | undefined;
@@ -1266,7 +1261,7 @@ const plugin = {
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.send({
-                  to: params.to as string,
+                  to: recipient.address,
                   subject: params.subject as string,
                   body: params.body as string,
                   replyTo,

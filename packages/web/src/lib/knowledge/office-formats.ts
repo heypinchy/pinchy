@@ -40,7 +40,8 @@ export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
  *
  * Big enough that LibreOffice's startup is amortised (17 real corpus files cost
  * 14.2 s in one process against 25.6 s one-per-file), small enough that an OOM
- * kill — which fails the WHOLE batch as infrastructure — costs bounded re-work.
+ * kill or a timeout — after which every document of the batch is run again on
+ * its own (`office-convert.ts`) — costs bounded re-work.
  *
  * It lives in this import-free module because BOTH sides of the batch need it
  * and neither may hold its own copy: `office-convert.ts` sizes the process, and
@@ -140,4 +141,27 @@ export class OfficeFileRejectedError extends Error {
     super(message);
     this.name = "OfficeFileRejectedError";
   }
+}
+
+/**
+ * The checked copy of an Office file could not be written where the converter
+ * reads it: a full, read-only or failing artifact volume. Thrown for the
+ * DESTINATION only — a source that cannot be read is about the document —
+ * because nothing here is a verdict on the file: the converter books it as
+ * infrastructure, retried next run, and the index keeps what it had.
+ */
+export class StagedCopyWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StagedCopyWriteError";
+  }
+}
+
+/**
+ * One word-splitting rule for both sides of the conversion's comparison — two
+ * rules would make the bound meaningless. Here, in the import-free module,
+ * because the word-count reader's child counts with it too.
+ */
+export function countWords(text: string): number {
+  return text.split(/\s+/).filter(Boolean).length;
 }

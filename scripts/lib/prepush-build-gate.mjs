@@ -93,9 +93,10 @@ const IRRELEVANT_FILES = new Set([
  *
  * The third is the zip guard from #424 (`docx-zip-guard.ts`), which the
  * knowledge base's Office preflight reuses before exceljs, mammoth or
- * LibreOffice inflate an untrusted archive (release review v0.10.0). Same
- * shape, canonical in the plugin; it imports one Node built-in (`node:zlib`,
- * to verify real sizes), which resolves on both sides of the boundary.
+ * LibreOffice inflate an untrusted archive. Same
+ * shape, canonical in the plugin; it imports Node built-ins only (`node:path`,
+ * `node:zlib`), which resolve on both sides of the boundary. The test file
+ * holds every shared plugin source to that rule.
  *
  * This is a carve-out from IRRELEVANT_PREFIXES, checked before it. Do not extend
  * it by hand: `escapingImportTargets` + the drift guard in
@@ -108,6 +109,9 @@ const BUILD_RELEVANT_OUTSIDE_WEB = [
   // The zip guard (#424) the knowledge base's Office preflight shares:
   // canonical in the plugin, Node built-ins only.
   /^packages\/plugins\/pinchy-files\/docx-zip-guard\.ts$/,
+  // The IP classifier the admin-facing SSRF guards share with web_fetch, so the
+  // two cannot keep separate (and drifting) lists of internal ranges.
+  /^packages\/plugins\/pinchy-web\/ip-address\.ts$/,
 ];
 
 /**
@@ -142,13 +146,7 @@ export function isBuildIrrelevant(path) {
 }
 
 /**
- * Every module specifier in `source` that resolves OUTSIDE packages/web.
- *
- * The point is the drift guard, not the resolution: hard-coding today's one
- * escape (the plugin manifests) would pin only today's, and the next relative
- * import out of the package would land in the build graph with the gate still
- * calling it irrelevant — green checks, silent hole. Deriving the escapes from
- * the source turns that into a failing test.
+ * Every module specifier in `source`, deduplicated, in order of appearance.
  *
  * Deliberately a regex over text rather than a parse: it needs to see a
  * type-only import exactly like a value one, and it runs over ~700 files on
@@ -162,6 +160,29 @@ export function isBuildIrrelevant(path) {
  * loads is a runtime dependency that `next build` never reads. Its own comment
  * says as much ("without a build-graph entanglement").
  *
+ * @param {string} source a file's text
+ * @returns {string[]} the specifiers as written
+ */
+export function moduleSpecifiers(source) {
+  const found = [];
+  const specifiers =
+    /(?:\bfrom\s*|\bimport\s*\(?\s*|\bimport\s+[\w$]+\s*=\s*require\s*\(\s*)["']([^"'\n]+)["']/g;
+  for (const [, specifier] of source.matchAll(specifiers)) {
+    if (!found.includes(specifier)) found.push(specifier);
+  }
+  return found;
+}
+
+/**
+ * Every module specifier in `source` that resolves OUTSIDE packages/web.
+ *
+ * The point is the drift guard, not the resolution: hard-coding today's one
+ * escape (the plugin manifests) would pin only today's, and the next relative
+ * import out of the package would land in the build graph with the gate still
+ * calling it irrelevant — green checks, silent hole. Deriving the escapes from
+ * the source turns that into a failing test. Which forms count is
+ * `moduleSpecifiers`'s answer.
+ *
  * @param {string} fromRepoPath repo-relative path of the importing file
  * @param {string} source its text
  * @returns {string[]} repo-relative, extension-preserving targets, deduplicated
@@ -169,9 +190,7 @@ export function isBuildIrrelevant(path) {
 export function escapingImportTargets(fromRepoPath, source) {
   const dir = posix.dirname(fromRepoPath);
   const targets = [];
-  const specifiers =
-    /(?:\bfrom\s*|\bimport\s*\(?\s*|\bimport\s+[\w$]+\s*=\s*require\s*\(\s*)["']([^"'\n]+)["']/g;
-  for (const [, specifier] of source.matchAll(specifiers)) {
+  for (const specifier of moduleSpecifiers(source)) {
     // Bare specifiers resolve through node_modules / tsconfig paths, never out
     // of the package by climbing; `@/…` is the web package's own alias.
     if (!specifier.startsWith(".")) continue;

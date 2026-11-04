@@ -33,6 +33,7 @@
     "db:studio": "drizzle-kit studio",
     "reset-admin": "node --import tsx scripts/reset-admin.ts",
     "domain:reset": "node --import tsx scripts/domain-reset.ts",
+    "check-keys": "node --import tsx scripts/check-keys.ts",
     "generate-pwa-assets": "node --import tsx scripts/generate-pwa-assets.ts"
   },
   "dependencies": {
@@ -67,7 +68,7 @@
     "next-themes": "^0.4.6",
     "node-llama-cpp": "^3",
     "nodemailer": "^10.1.4",
-    "odoo-node": "0.3.0",
+    "odoo-node": "0.3.1",
     "openclaw-node": "0.14.0",
     "pdfjs-dist": "^6.2.108",
     "pdfkit": "^0.19.1",

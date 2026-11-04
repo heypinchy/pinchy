@@ -1,7 +1,12 @@
-import { readFileSync, writeFileSync } from "fs";
+import { writeFileSync } from "fs";
 import { dirname } from "path";
 import { isDeepStrictEqual } from "util";
-import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
+import {
+  writeSecretsFile,
+  secretRef,
+  secretsFileExists,
+  type SecretsBundle,
+} from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -27,8 +32,12 @@ import {
   getModelCatalogForProvider,
   type OpenClawModelDefinition,
 } from "@/lib/openclaw-builtin-models";
-import { listOpenAiCompatibleProviders } from "@/lib/openai-compatible-providers";
 import { resolveCustomProviderModels } from "@/lib/openai-compatible-discovery";
+import {
+  REFUSED_BASE_URL,
+  refusedBaseUrlsForEmission,
+  refusedProviderModels,
+} from "@/lib/openai-compatible-stored-url";
 import {
   getOpenClawWorkspacePath,
   getAgentBootstrapSizes,
@@ -38,10 +47,40 @@ import {
 } from "@/lib/workspace";
 import { getSkillBody, isKnownSkill } from "@/lib/skills";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
-import { CONFIG_PATH } from "./paths";
+import { CONFIG_PATH, OPENCLAW_MEDIA_TTL_HOURS } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
-import { readExistingConfig, pushConfigInBackground } from "./write";
+import {
+  readConfigContent,
+  readExistingConfig,
+  pushConfigInBackground,
+  writeConfigAtomic,
+  type PushConfigOptions,
+} from "./write";
+import {
+  sizeGuardBaseline,
+  expectsSizeDropRefusal,
+  keepsAProvider,
+  deletesAProvider,
+} from "./size-drop";
+import {
+  getPendingConfigPushCount,
+  nextConfigPushGeneration,
+  nextRegenerateSequence,
+  noteFullRegenerateDelivered,
+  noteRegenerateCall,
+  recordWrittenSecrets,
+  takeRegenerateRunIsFollowUpOnly,
+} from "./push-state";
+import {
+  keylessBridge,
+  rekeyedBridge,
+  rekeyedProviders,
+  unresolvedSecretRefs,
+  withRemovedKeyPlaceholders,
+} from "./keyless-bridge";
+import { readSideBaselineBytes, UnderReadSideLineError } from "./last-good-bound";
 import { reloadSecretsInBackground } from "./secrets-reload";
+import { serializeRegenerates } from "./regenerate-queue";
 import {
   buildSecretsBundle,
   collectPluginSecrets,
@@ -187,7 +226,41 @@ export async function loadAgentConnectionPermissions(dbClient: typeof db): Promi
   });
 }
 
-export async function regenerateOpenClawConfig() {
+/**
+ * Options for {@link regenerateOpenClawConfig}. `shrinkFollowUp` marks the one
+ * follow-up regenerate a stranded provider deletion queues (see write.ts,
+ * MAX_SHRINK_STEPS): its own push queues none, so the hand-off cannot recurse.
+ */
+export interface RegenerateOptions {
+  shrinkFollowUp?: boolean;
+}
+
+const runSerializedRegenerate = serializeRegenerates(() =>
+  regenerateOpenClawConfigOnce({ shrinkFollowUp: takeRegenerateRunIsFollowUpOnly() })
+);
+
+/**
+ * Rebuild openclaw.json + secrets.json from the DB and push them to OpenClaw.
+ *
+ * Serialized (see regenerate-queue.ts): at most one regenerate runs at a time,
+ * and a call made while one runs resolves only after a regenerate that started
+ * AFTER the call has completed — so the state a caller changed before calling
+ * is what that caller's await has applied, and an older run can never write
+ * after a newer one. It rejects with the error of the run the caller waited for.
+ *
+ * Calls made during one run share the next one, so a run counts as a shrink
+ * follow-up only when every call it serves is one (noteRegenerateCall): a real
+ * change coalesced with a follow-up keeps its own right to a follow-up.
+ */
+export function regenerateOpenClawConfig(options: RegenerateOptions = {}): Promise<void> {
+  noteRegenerateCall({ shrinkFollowUp: options.shrinkFollowUp === true });
+  return runSerializedRegenerate();
+}
+
+async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise<void> {
+  // Claimed before any state is read: orders this regenerate against others by
+  // what it can have seen, not by when its push lands (see cancelShrinkResume).
+  const regenerateSeq = nextRegenerateSequence();
   // `readExistingConfig` distinguishes two recoverable failure modes:
   //   - ENOENT / parse error → returns {} (cold start; we build the first config from scratch).
   //   - Persistent EACCES → throws (file exists but unreadable; race with OC's
@@ -377,7 +450,12 @@ export async function regenerateOpenClawConfig() {
   // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
   // provider with a configured apiKey. Helper returns a fresh mutable map;
   // ollama-cloud is spliced into providerSecrets at the model-providers call site.
-  const { providers: providerSecrets } = await collectProviderSecrets();
+  // `customProviders` is this regenerate's ONE read of the OpenAI-compatible
+  // table: every use below (default-model guard, models.providers emission,
+  // live discovery) takes slug, base URL, models and key from these rows, so
+  // a save committing mid-regenerate can never pair one save's address with
+  // another save's key.
+  const { providers: providerSecrets, customProviders } = await collectProviderSecrets();
 
   // Keep agents.defaults minimal. OpenClaw enriches agents.defaults with
   // heartbeat, models, contextPruning, compaction at runtime; if Pinchy were to
@@ -450,9 +528,7 @@ export async function regenerateOpenClawConfig() {
       local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH },
     },
   };
-  // Fetched once here (reused for the models.providers emission below) so the
-  // default-model guard can recognise a custom slug without a second query.
-  const customProviders = await listOpenAiCompatibleProviders();
+  // The default-model guard recognises a custom slug from the same read.
   const defaultProvider = await getSetting("default_provider");
   // Emit the default model when `default_provider` names either a built-in OR a
   // known custom OpenAI-compatible slug (#894). `getDefaultModel` is slug-aware
@@ -461,10 +537,19 @@ export async function regenerateOpenClawConfig() {
   // AND is a prototype-injection sink (a slug like `constructor` walks the
   // prototype chain). `Object.hasOwn` + `.some()` are both prototype-safe.
   const isBuiltInDefault = defaultProvider !== null && Object.hasOwn(PROVIDERS, defaultProvider);
+  // A saved base URL the SSRF guard now refuses is neither emitted below nor
+  // the default here — one check, shared by both decisions.
+  const refusedCustomProviders = await refusedBaseUrlsForEmission(customProviders);
   const isCustomDefault =
-    defaultProvider !== null && customProviders.some((p) => p.slug === defaultProvider);
+    defaultProvider !== null &&
+    !refusedCustomProviders.has(defaultProvider) &&
+    customProviders.some((p) => p.slug === defaultProvider);
   if (defaultProvider && (isBuiltInDefault || isCustomDefault)) {
     pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };
+  } else if (customProviders.some((p) => p.slug === defaultProvider)) {
+    // A refused default: `undefined` (not omission) so the deepMerge below
+    // drops the default an earlier regenerate wrote for it.
+    pinchyDefaults.model = undefined;
   }
 
   // Vision-model chain for the built-in `pdf` and `image` tools. Both use the
@@ -774,7 +859,7 @@ export async function regenerateOpenClawConfig() {
     // (same pattern as canvasHost.enabled above) — any admin- or
     // OpenClaw-tuned ttlHours must not survive a regenerate — but other
     // sibling fields OpenClaw may enrich under `media` are preserved.
-    media: { ...existingMedia, ttlHours: 48 },
+    media: { ...existingMedia, ttlHours: OPENCLAW_MEDIA_TTL_HOURS },
     secrets: {
       providers: {
         pinchy: {
@@ -1457,21 +1542,34 @@ export async function regenerateOpenClawConfig() {
   // #894 backend redesign: the emitted model list is resolved LIVE via
   // `resolveCustomProviderModels` (short-TTL cache + snapshot fallback — same
   // helper the model dropdown uses in provider-models.ts), not read off
-  // `p.models` directly. `customProviders` (fetched key-free, above) still
-  // supplies slug/baseUrl/snapshot and backs the default-provider guard;
-  // `providerSecrets` (already fetched for the secrets bundle) supplies the
-  // decrypted key discovery needs without a second DB round trip.
+  // `p.models` directly — with `p.models` as the fallback snapshot.
+  //
+  // Everything here comes from one row of `customProviders` (see above): the
+  // base URL, the key discovery authenticates with, and the key's slot, which
+  // is versioned (`<slug>@<keyVersion>`, see versionedSecretName). A new key is
+  // a new pointer, so the config that moves `baseUrl` is the only one that
+  // resolves the key entered for it — the two can never go live apart, and
+  // discovery never sends one save's key to another save's address.
+  //
+  // A saved base URL the SSRF guard now refuses keeps its entry and the model
+  // list the file already holds (so the file keeps its size — see
+  // openai-compatible-stored-url.ts) but points at REFUSED_BASE_URL, carries
+  // no key, and is never fetched.
   for (const p of customProviders) {
-    const models = await resolveCustomProviderModels({
-      slug: p.slug,
-      baseUrl: p.baseUrl,
-      apiKey: providerSecrets[p.slug]?.apiKey ?? "",
-      models: p.models,
-    });
+    const refused = refusedCustomProviders.has(p.slug);
+    const models = refused
+      ? refusedProviderModels(existing, p)
+      : await resolveCustomProviderModels({
+          slug: p.slug,
+          baseUrl: p.baseUrl,
+          apiKey: p.apiKey,
+          keyVersion: p.keyVersion,
+          models: p.models,
+        });
     modelProviders[p.slug] = {
-      baseUrl: p.baseUrl,
+      baseUrl: refused ? REFUSED_BASE_URL : p.baseUrl,
       api: "openai-completions",
-      apiKey: secretRef(`/providers/${p.slug}/apiKey`),
+      ...(refused ? {} : { apiKey: secretRef(`/providers/${p.secretSlot}/apiKey`) }),
       models: stripVision(models).map((m) => ({
         ...m,
         compat: { supportsUsageInStreaming: true },
@@ -1715,23 +1813,6 @@ export async function regenerateOpenClawConfig() {
     );
   }
 
-  // A secrets-only change is invisible to EVERY guard below: `openclaw.json`
-  // carries a SecretRef, not the value, so a rotated provider key leaves the
-  // emitted config byte-identical, the equivalence check returns right here, and
-  // the running OpenClaw keeps serving the credential it resolved at process
-  // start — 401 on every agent until someone restarts the container (#943).
-  // `secrets.reload` is the RPC that closes that gap, and it is fired BEFORE the
-  // early returns for exactly that reason. It costs no `config.apply` rate-limit
-  // slot, so the no-op guard keeps doing the job it exists for.
-  //
-  // The flag is "a value was added or rotated", NOT "the file changed": a pure
-  // removal must stay silent here, because OpenClaw would re-resolve the config
-  // it is still running — which points at the key this regenerate just took
-  // away. See writeSecretsFile.
-  if (writeSecretsFile(secretsBundle)) {
-    reloadSecretsInBackground();
-  }
-
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts.
   // Format must match what OpenClaw's writeConfigFile produces (trimEnd + "\n")
   // so the SHA256 hashes line up. OpenClaw's reload subsystem dedupes
@@ -1741,37 +1822,117 @@ export async function regenerateOpenClawConfig() {
   // hashes diverge and chokidar fires a redundant reload that diffs against
   // a stale `currentCompareConfig` — see #193 / openclaw#75534.
   const newContent = JSON.stringify(config, null, 2).trimEnd() + "\n";
+  // The file as it is NOW, not as this regenerate read it at the start: a push
+  // may have landed in between.
+  // Unreadable (OpenClaw's root:0600 restart write, before the chmod loop
+  // reopens it) is not "missing": the size guard, the key-less bridge and the
+  // shrink expectation below all judge against this file, and secrets.json
+  // must not lose a key a file we could not read may still name. So a
+  // persistent EACCES skips the regenerate, writing neither file — like the
+  // first read above.
+  let onDiskContent: string | undefined;
   try {
-    const existing = readFileSync(CONFIG_PATH, "utf-8");
-    if (existing === newContent) return;
-    // Workaround for openclaw#75534: OpenClaw stamps `meta.lastTouchedAt`
-    // on every write it performs (config.apply RPC, internal restart
-    // bookkeeping). Pinchy preserves `meta` from existing, so back-to-back
-    // regenerates with no DB changes still differ on this single field.
-    // Without this normalize-compare, sending the byte-different config
-    // via config.apply triggers OpenClaw's diff-against-runtime-resolved-
-    // snapshot to flag env.* paths as changed (env templates "${VAR}" vs
-    // resolved "sk-..."), which falls through `BASE_RELOAD_RULES` to the
-    // default full-restart trigger. Result: every settings save costs
-    // 15-30 s of "Agent runtime is not available" downtime (#193).
-    // Removable when we bump OpenClaw past the upstream fix; tracked in #215.
-    if (configsAreEquivalentUpToOpenClawMetadata(existing, newContent)) return;
-
-    // Defense-in-depth size-drop guard (#311). OpenClaw's `config.apply` RPC
-    // already rejects writes that shrink the on-disk config by more than 50%
-    // (`size-drop:OLD->NEW` error), but Pinchy's `writeConfigAtomic` runs
-    // BEFORE `pushConfigInBackground`, so a corrupted regenerate lands on
-    // disk and OC's inotify watcher diffs it before the RPC ever runs —
-    // triggering a full gateway restart cascade. The trigger pattern: a
-    // regenerate runs through a window where DB-derived state isn't fully
-    // loaded (telegram_bot_token race in CI flake) and produces a payload
-    // missing `channels.telegram` + `bindings`, ~50% smaller than the
-    // healthy on-disk file. Mirroring OC's threshold on the Pinchy side
-    // keeps the bad payload off disk so the cascade never starts; the next
-    // regenerate (from the same or a follow-up request) writes correct
-    // content. The bad payload is saved alongside the config for postmortem
-    // — silent skip would hide the underlying race forever.
-    if (existing.length > 0 && newContent.length < existing.length * 0.5) {
+    onDiskContent = readConfigContent();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "EACCES") throw err;
+    console.error(
+      "[openclaw-config] regenerate skipped: openclaw.json became unreadable " +
+        "(EACCES) before the write. See #314. No write performed."
+    );
+    return;
+  }
+  let onDiskConfig: Record<string, unknown> | undefined;
+  try {
+    onDiskConfig =
+      onDiskContent === undefined
+        ? undefined
+        : (JSON.parse(onDiskContent) as Record<string, unknown>);
+  } catch {
+    // Unparseable: nothing OpenClaw could run either, so nothing it names.
+  }
+  // Workaround for openclaw#75534: OpenClaw stamps `meta.lastTouchedAt` on
+  // every write it performs (config.apply RPC, internal restart bookkeeping).
+  // Pinchy preserves `meta` from existing, so back-to-back regenerates with no
+  // DB changes still differ on this single field. Without this normalize-
+  // compare, sending the byte-different config via config.apply triggers
+  // OpenClaw's diff-against-runtime-resolved-snapshot to flag env.* paths as
+  // changed (env templates "${VAR}" vs resolved "sk-..."), which falls through
+  // `BASE_RELOAD_RULES` to the default full-restart trigger. Result: every
+  // settings save costs 15-30 s of "Agent runtime is not available" downtime
+  // (#193). Removable when we bump OpenClaw past the upstream fix; tracked in #215.
+  const unchanged =
+    onDiskContent !== undefined &&
+    (onDiskContent === newContent ||
+      configsAreEquivalentUpToOpenClawMetadata(onDiskContent, newContent));
+  // Set below when the guard lets a deletion through that OpenClaw will refuse.
+  let expectsProviderShrink = false;
+  // The one follow-up regenerate a stranded provider deletion queues (see
+  // MAX_SHRINK_STEPS in write.ts) — none from that follow-up itself, so the
+  // hand-off cannot recurse.
+  const resumeStrandedShrink = options.shrinkFollowUp
+    ? undefined
+    : () => {
+        regenerateOpenClawConfig({ shrinkFollowUp: true }).catch((err: unknown) => {
+          console.error(
+            "[openclaw-config] follow-up regenerate for a stranded provider deletion failed:",
+            err instanceof Error ? err.message : String(err)
+          );
+        });
+      };
+  const deletesProvider = onDiskConfig !== undefined && deletesAProvider(onDiskConfig, config);
+  // A deletion, or a re-keyed provider still waiting in openclaw.json for its
+  // new entry (rekeyedProviders): a targeted writer's copy of the file that
+  // supersedes this regenerate's push carries the stub back, so the push queues
+  // a follow-up then (handsOverProvider in write.ts).
+  const handsOverProvider =
+    deletesProvider ||
+    (onDiskConfig !== undefined &&
+      rekeyedProviders(onDiskConfig, config, secretsBundle).length > 0);
+  // How a write of openclaw.json below goes to OpenClaw when it falls under
+  // the read-side line (writeFileOrApply): carrying this regenerate's change
+  // like its own push, and resuming it once it has landed.
+  const deferredWrite: PushConfigOptions = {
+    regenerateSeq,
+    handsOverProvider,
+    resumeStrandedShrink,
+    onChangeApplied: () => {
+      regenerateOpenClawConfig().catch((err: unknown) => {
+        console.error(
+          "[openclaw-config] regenerate after a config.apply that stood in for a file write failed:",
+          err instanceof Error ? err.message : String(err)
+        );
+      });
+    },
+  };
+  // Set below when the #311 guard refuses the payload: nothing is pushed.
+  let refused = false;
+  // The key-less bridge, and the re-keyed one that follows secrets.json.
+  let bridge: Record<string, unknown> | null = null;
+  let rekeyed: Record<string, unknown> | null = null;
+  if (onDiskContent !== undefined && !unchanged) {
+    // Defense-in-depth size-drop guard (#311). A regenerate that runs through a
+    // window where DB-derived state isn't fully loaded (telegram_bot_token race
+    // in CI flake) produces a payload missing `channels.telegram` + `bindings`,
+    // ~50% smaller than the healthy on-disk file. Mirroring OpenClaw's own 50%
+    // threshold (its config writer refuses `size-drop:OLD->NEW`) keeps such a
+    // payload off disk and out of the push; the next regenerate writes correct
+    // content. The bad payload is saved alongside the config for postmortem —
+    // silent skip would hide the underlying race forever (#314).
+    //
+    // Measured against the existing file MINUS the bytes of every provider the
+    // payload deleted, as long as a provider survives (see size-drop.ts).
+    // Deleting a 40-model OpenAI-compatible provider removes most of the file
+    // on purpose; judged against the raw size, it was refused here, every later
+    // regenerate was refused the same way, and OpenClaw kept serving the
+    // deleted provider. Everything else is still judged in full: an empty
+    // provider read, a kept provider whose discovered model list shrank (a
+    // half-answered discovery), a kept provider whose catalogue collapsed to
+    // `[]` (Ollama unreachable — this voids the deletion discount too), and any
+    // shrink outside `models.providers`. Delivering a deletion past OpenClaw's
+    // own check is pushConfigInBackground's job (stepwise config.apply).
+    const sizeBaseline = sizeGuardBaseline(onDiskContent, config);
+    refused = onDiskContent.length > 0 && newContent.length < sizeBaseline * 0.5;
+    if (refused) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       const rejectedPath = `${CONFIG_PATH}.regenerate-rejected.${ts}`;
       try {
@@ -1782,15 +1943,182 @@ export async function regenerateOpenClawConfig() {
       }
       console.error(
         `[openclaw-config] regenerate produced a suspiciously small config ` +
-          `(${newContent.length} bytes, was ${existing.length}). ` +
+          `(${newContent.length} bytes, was ${onDiskContent.length}` +
+          `${sizeBaseline !== onDiskContent.length ? `; ${sizeBaseline} after discounting deleted providers` : ""}). ` +
           `Refusing the write to keep OpenClaw's existing state intact. ` +
           `Likely a DB-state-loading race; see #311. ` +
           `Rejected payload saved to ${rejectedPath}.`
       );
-      return;
+      // The refused payload is never written or pushed, but secrets.json still
+      // is, below — the file OpenClaw keeps running, and restarts on, needs
+      // it. The keys come from settings and provider rows, not from the
+      // discovery that most often trips this guard (Ollama unreachable at boot
+      // answers `[]`), and the secrets volume is a tmpfs: after a host reboot
+      // it is empty, and skipping the write would leave OpenClaw nothing to
+      // resolve `/providers/anthropic/apiKey` against — "required secrets are
+      // unavailable". OpenClaw only starts once Pinchy is healthy, and while
+      // it is down nothing regenerates on its own (no first connect, no
+      // self-heal): only an admin's next change or Pinchy's next restart, and
+      // with Ollama still down that is refused the same way. A key rotation
+      // saved meanwhile reaches OpenClaw the same way.
+      //
+      // When the file still names a key the bundle lacks — a deletion or a
+      // re-key not yet handed over — the key-less bridge below goes first,
+      // exactly as for a payload that passes. It is built from the on-disk
+      // file and the bundle; of the refused payload it takes only each kept
+      // provider's address, never its models: it keeps every model of every
+      // provider (an empty Ollama catalogue stays out of it) and only drops
+      // key references and the addresses on file, so it stays far above half
+      // the file this guard protects. A re-keyed provider then
+      // takes its entry from the payload, as below: one provider's saved
+      // state, whose models fall back to the snapshot stored with it, never
+      // to `[]` (resolveCustomProviderModels). When a re-key is what this
+      // guard refused — the new address serves far fewer models, a kept
+      // provider's shrink — that entry keeps the file's models as well
+      // (rekeyedBridge), so the write stays above OpenClaw's read-side check;
+      // the shorter list itself is refused here on every regenerate, as any
+      // kept provider's shrink is.
+      //
+      // Except for a payload with no provider at all: Pinchy refuses to delete
+      // the last provider, so that is an empty provider read, and a bridge
+      // built from it would strip every key from a working OpenClaw. Then
+      // neither file is written — secrets.json would drop keys the file
+      // still names. Unless secrets.json is gone (keepOnDiskConfigResolvable).
+      const dropped = onDiskConfig ? unresolvedSecretRefs(onDiskConfig, secretsBundle) : [];
+      if (onDiskConfig && dropped.length > 0 && !keepsAProvider(config)) {
+        console.error(
+          `[openclaw-config] secrets.json not written either: the payload has no provider, ` +
+            `and it would drop ${dropped.join(", ")}, which openclaw.json still names.`
+        );
+        keepOnDiskConfigResolvable(onDiskConfig, secretsBundle);
+        return;
+      }
+    } else {
+      // Past this guard only because deleted providers were discounted, and
+      // still under half the file: OpenClaw will refuse it as a size drop. The
+      // push must know before OpenClaw says so — its rate limit can keep the
+      // refusal from ever arriving, and the file-write fallback must not run
+      // for this payload (see MAX_SHRINK_STEPS in write.ts).
+      // Compared the way OpenClaw compares — UTF-8 bytes, not `length` (UTF-16
+      // units; a CJK model name is one unit and three bytes) — and with
+      // headroom, because missing a refusal costs a file write past OpenClaw's
+      // guard while expecting one that never comes costs nothing
+      // (expectsSizeDropRefusal).
+      expectsProviderShrink =
+        sizeBaseline < onDiskContent.length && expectsSizeDropRefusal(onDiskContent, newContent);
     }
-  } catch {
-    // File doesn't exist yet — write it
+
+    // openclaw.json stops naming a key BEFORE secrets.json loses it. A deleted
+    // provider's key is not in this bundle, and neither is a re-keyed
+    // OpenAI-compatible provider's previous slot (`<slug>@<version>`), but
+    // OpenClaw's file names them until the push delivers the change — minutes
+    // for a large deletion, or never for an install that hit this before it
+    // was fixed — and OpenClaw cannot restart on, or accept a targeted
+    // writer's copy of, a file whose SecretRefs do not resolve. So the file
+    // first becomes the key-less bridge: itself, with every such provider a
+    // stub that keeps its models, which resolves against the old secrets.json
+    // and the new one alike. A provider the target keeps — re-keyed, not
+    // deleted — then takes the target's entry, once secrets.json holds its new
+    // slot (see keyless-bridge.ts) — and so does one the file already holds
+    // as a stub, from a bridge some earlier write left there with no re-keyed
+    // entry after it (rekeyedProviders): which provider takes the target's
+    // entry is read off the file, never off what this regenerate wrote.
+    // Decided from the file and the bundle alone; Pinchy cannot read
+    // secrets.json in production.
+    //
+    // A bridge under OpenClaw's read-side line — judged against a bound that
+    // can be stale-high (last-good-bound.ts) — goes over config.apply instead
+    // (writeFileOrApply), and openclaw.json still names the key, so
+    // secrets.json keeps it until the regenerate that runs once the bridge has
+    // landed. Unless secrets.json is gone (keepOnDiskConfigResolvable).
+    bridge = onDiskConfig ? keylessBridge(onDiskConfig, secretsBundle, config) : null;
+    if (bridge && onDiskConfig) {
+      const dangling = unresolvedSecretRefs(bridge, secretsBundle);
+      if (dangling.length > 0) {
+        console.error(
+          `[openclaw-config] openclaw.json names SecretRef(s) outside models.providers that the new secrets lack (${dangling.join(", ")}); ` +
+            `Pinchy emits none there, so the key-less bridge cannot cover them.`
+        );
+      }
+      if (!writeFileOrApply(bridge, deferredWrite)) {
+        keepOnDiskConfigResolvable(onDiskConfig, secretsBundle);
+        return;
+      }
+      console.log(
+        `[openclaw-config] openclaw.json no longer names the removed key(s) ${unresolvedSecretRefs(onDiskConfig, secretsBundle).join(", ")} (key-less bridge written before secrets.json)`
+      );
+    }
+    rekeyed = onDiskConfig
+      ? rekeyedBridge(
+          bridge ?? onDiskConfig,
+          onDiskConfig,
+          config,
+          secretsBundle,
+          readSideBaselineBytes(onDiskContent)
+        )
+      : null;
+  }
+
+  // Written even when the config is unchanged or refused (all but an empty
+  // provider read, above) — tmpfs is wiped on container restart, and
+  // secrets.json must be present for OpenClaw to resolve SecretRef pointers. A
+  // removal is safe to write here: the bridge above already took every
+  // reference to it out of openclaw.json.
+  //
+  // No `secrets.reload` when a bridge was written: OpenClaw re-resolves every
+  // SecretRef when it hot-reloads the bridge, against this file. A reload
+  // would instead re-resolve the config OpenClaw is still running, which names
+  // the key this write removes — it fails, and tells the operator to restart.
+  writeSecretsAndReload(secretsBundle, { reload: !bridge });
+  // Under the read-side line, the re-keyed entry goes over config.apply too;
+  // the file keeps the key-less stub, which resolves against this
+  // secrets.json, and whichever regenerate runs next writes the entry again
+  // should that push not land (rekeyedProviders).
+  if (rekeyed) {
+    if (!writeFileOrApply(rekeyed, deferredWrite)) return;
+    console.log(
+      "[openclaw-config] openclaw.json points re-keyed provider(s) at their new key slot (written after secrets.json)"
+    );
+  }
+  if (refused) {
+    // Nothing of this regenerate is pushed. When it took a key out of
+    // secrets.json (it wrote a bridge), a push still in flight — a
+    // regenerate's, or a targeted writer's copy of the pre-bridge file, parked
+    // in a rate-limit wait — can name that key: OpenClaw refuses it on every
+    // retry. A passing regenerate supersedes such a push with its own; a
+    // refused one does it here, and the superseded change reaches OpenClaw
+    // with the next regenerate that passes the guard. A refusal that removed
+    // no key (Ollama unreachable, a half-answered discovery: the common case)
+    // supersedes nothing, as before this guard learned to write secrets.json:
+    // what is in flight (a Telegram disconnect, a permission revocation) must
+    // still land. A push naming a key removed earlier is caught by its own
+    // file fallback (namesRemovedKey in write.ts), and OpenClaw refuses it.
+    if (bridge) nextConfigPushGeneration();
+    return;
+  }
+  if (unchanged) {
+    // Nothing to push — so no push settles a change owed to OpenClaw's next
+    // connect, or cancels a stranded deletion's follow-up, the way one that
+    // reaches its target does. Without this, a debt whose change arrived some
+    // other way stayed owed — a deletion's push that gave up only after a
+    // newer regenerate had landed the same change — and every later reconnect
+    // regenerated until Pinchy restarted.
+    //
+    // This regenerate settles it itself: openclaw.json already holds its
+    // target, and the file is what OpenClaw runs or will run. A running
+    // OpenClaw wrote it (config.apply persists what it applies) or hot-reloads
+    // it, as it does a push's file fallback; a stopped one starts on it.
+    // Pinchy writes nothing under OpenClaw's read-side line
+    // (last-good-bound.ts), and should OpenClaw's startup restore `.bak` all
+    // the same, that rewrites the file, so it still holds what OpenClaw runs.
+    // A deletion in the file was applied by OpenClaw: Pinchy never file-writes
+    // one (MAX_SHRINK_STEPS in write.ts).
+    //
+    // Only with no push in flight, for the reason a push settles only as the
+    // newest one: a push in flight may still land other content (a targeted
+    // writer's copy of an older file), and settles or records for itself.
+    if (getPendingConfigPushCount() === 0) noteFullRegenerateDelivered(regenerateSeq);
+    return;
   }
 
   // Write per-agent auth-profiles.json for agents that use API-key-based
@@ -1869,7 +2197,13 @@ export async function regenerateOpenClawConfig() {
   // Fire-and-forget: the caller must not block on this — config.apply
   // can take 10–30 s when a gateway restart is needed, which broke
   // interactive save flows (Odoo "Save & Restart", UI waits for 200 OK).
-  pushConfigInBackground(newContent);
+  pushConfigInBackground(newContent, {
+    fullRegenerate: true,
+    regenerateSeq,
+    expectsProviderShrink,
+    handsOverProvider,
+    resumeStrandedShrink,
+  });
 
   // Report AFTER the push, never instead of it. The caller has to hear about
   // this — the setup wizard turns the rejection into a warning toast and records
@@ -1894,4 +2228,96 @@ export async function regenerateOpenClawConfig() {
       { cause: authProfileFailures[0].error }
     );
   }
+}
+
+/**
+ * Write `config` as openclaw.json — or, when writeConfigAtomic refuses it under
+ * OpenClaw's read-side line (last-good-bound.ts), send it over config.apply
+ * with `push` instead, and return false. The caller then writes nothing more:
+ * what would have followed the file follows in the regenerate
+ * `push.onChangeApplied` runs once it has landed.
+ *
+ * Every write of openclaw.json in this file goes through here (pinned by
+ * last-good-bound.test.ts). The bound only ever errs high, and it goes stale
+ * whenever OpenClaw promotes a file Pinchy wrote with no config.apply landing
+ * since — a push's file fallback it started on. A refusal that escaped the
+ * regenerate aborted it before any push, the same way on every later one, and
+ * no config change reached OpenClaw again. A landed config.apply clears the
+ * bound (OpenClaw is running, and promotes its own write), so the regenerate
+ * that follows it writes the file. With OpenClaw unreachable, the push owes
+ * the change to its next connect, like any file write it gives up on.
+ */
+function writeFileOrApply(config: Record<string, unknown>, push: PushConfigOptions): boolean {
+  const content = JSON.stringify(config, null, 2).trimEnd() + "\n";
+  try {
+    writeConfigAtomic(content);
+    return true;
+  } catch (err) {
+    if (!(err instanceof UnderReadSideLineError)) throw err;
+    console.error(
+      `[openclaw-config] NOT writing openclaw.json: ${String(err.nextBytes)} bytes is under half of ` +
+        `${String(err.baselineBytes)}, the largest file OpenClaw may still hold as last-known-good. ` +
+        `Sending it over config.apply instead; the regenerate carries on once it has landed.`
+    );
+    pushConfigInBackground(content, push);
+    return false;
+  }
+}
+
+/**
+ * For a regenerate that writes no secrets.json because openclaw.json still
+ * names a key `bundle` lacks — a bridge waiting for config.apply, or an empty
+ * provider read the #311 guard refused. Then secrets.json is normally the one
+ * written while the file named that key, and still holds it. When it is gone,
+ * write one the file resolves against in full: `bundle`, plus an inert
+ * placeholder for each missing key (withRemovedKeyPlaceholders).
+ *
+ * A host reboot empties the secrets tmpfs, and OpenClaw starts only once
+ * Pinchy is healthy, so the boot regenerate runs with no OpenClaw — and
+ * OpenClaw starts only on a file whose every SecretRef resolves, the kept
+ * providers' included. Without a secrets.json it never came up, so nothing
+ * that waits for its connect — the bridge over config.apply, the regenerate
+ * that reads the providers again — ever ran. The placeholder is not a
+ * recovered key: Pinchy has none, the database dropped it. It leaves with the
+ * next regenerate that writes secrets.json: the one that follows the bridge
+ * once OpenClaw has taken it, or the first connect's.
+ *
+ * No `secrets.reload`: OpenClaw is not running on this file yet.
+ */
+function keepOnDiskConfigResolvable(
+  onDiskConfig: Record<string, unknown>,
+  bundle: SecretsBundle
+): void {
+  if (secretsFileExists()) return;
+  console.warn(
+    `[openclaw-config] secrets.json is missing (host reboot?) while openclaw.json still names ` +
+      `${unresolvedSecretRefs(onDiskConfig, bundle).join(", ")}: writing it with an inert placeholder ` +
+      `for those, so OpenClaw can start and take the change over config.apply`
+  );
+  writeSecretsAndReload(withRemovedKeyPlaceholders(onDiskConfig, bundle), { reload: false });
+}
+
+/**
+ * Write secrets.json, and ask the running OpenClaw to re-read it when a value
+ * it already resolved was added or rotated in place.
+ *
+ * A secrets-only change is invisible to EVERY config guard: `openclaw.json`
+ * carries a SecretRef, not the value, so a rotated provider key leaves the
+ * emitted config byte-identical, the equivalence check says "unchanged", and
+ * the running OpenClaw keeps serving the credential it resolved at process
+ * start — 401 on every agent until someone restarts the container (#943).
+ * `secrets.reload` is the RPC that closes that gap, and it is fired BEFORE the
+ * unchanged return for exactly that reason. It costs no `config.apply`
+ * rate-limit slot, so the no-op guard keeps doing the job it exists for.
+ *
+ * The flag is "a value was added or rotated", NOT "the file changed", and an
+ * OpenAI-compatible provider's versioned slot never sets it: a re-key changes
+ * the SecretRef in openclaw.json and travels with that config. See
+ * writeSecretsFile.
+ */
+function writeSecretsAndReload(bundle: SecretsBundle, { reload = true } = {}): void {
+  const runtimeIsStale = writeSecretsFile(bundle);
+  // What the push's file fallback judges a payload's SecretRefs against.
+  recordWrittenSecrets(bundle);
+  if (runtimeIsStale && reload) reloadSecretsInBackground();
 }

@@ -1,3 +1,4 @@
+import { refusingUnknownParams } from "./unknown-params";
 import { unlinkSync } from "fs";
 import { join } from "path";
 
@@ -127,7 +128,9 @@ const plugin = {
     },
   },
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const config = api.pluginConfig;
     if (!config) return;
 

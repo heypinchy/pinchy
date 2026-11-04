@@ -1,5 +1,5 @@
 import { createHmac } from "crypto";
-import { asc, desc, eq, gt, gte, lte, and, sql } from "drizzle-orm";
+import { asc, desc, eq, gt, gte, lt, lte, and, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog, users, type AuditDetail } from "@/db/schema";
 import { getOrCreateSecret, getPreviousSecret } from "@/lib/encryption";
@@ -7,6 +7,8 @@ import { scrubEmails } from "@/lib/scrub-emails";
 // Type-only (erased at build time), so the IMAP probe's runtime dependencies
 // never enter audit.ts's module graph.
 import type { ProbeFailureCode } from "@/lib/integrations/imap-probe";
+import type { KbIndexJobTrigger } from "@/db/enums";
+import type { SummaryLimit } from "@/lib/approvals/summary";
 
 // Transaction-scoped advisory lock key that serializes audit appends so the
 // prev-hash chain can never fork (two writers must not read the same
@@ -127,8 +129,19 @@ export type AuditEventType =
   | "agent.created"
   | "agent.updated"
   | "agent.deleted"
+  // An account came into existence: through the setup wizard (the first
+  // admin) or a claimed invite. `detail.via` says which. Actor is the new user.
+  | "user.created"
   | "user.invited"
   | "user.invite_blocked"
+  // Written once per account at boot by reportUnknownOriginUsers
+  // (lib/user-provenance.ts): an account that neither the setup wizard nor a
+  // claimed invite explains — in practice, one self-registered through the
+  // sign-up endpoint earlier releases left open to clients.
+  | "user.unknown_origin_detected"
+  // An admin marked a flagged account as known (Mark as known in Settings →
+  // Users). The row IS the acknowledgement: findUnknownOriginUsers reads it.
+  | "user.origin_acknowledged"
   | "user.updated"
   | "user.deleted"
   | "config.changed"
@@ -202,6 +215,11 @@ export type AuditEventType =
   | "approval.denied"
   | "approval.consumed"
   | "approval.expired"
+  // A gated call whose arguments the confirmation card or the approval prompt
+  // cannot show in full — too large, too costly to draw, or reaching more hosts
+  // than the prompt can name: nothing was opened, so nobody could approve what
+  // they cannot see.
+  | "approval.refused"
   | "approval.gc"
   // Cost budgets (#36). Written once per budget and month by the budget
   // monitor when spend crosses 80% (threshold_reached) and 100% (exceeded).
@@ -521,6 +539,45 @@ export type AuditLogEntry =
       };
     })
   | (AuditLogBase & {
+      // A gated call the gate would not open a confirmation for. There is no
+      // request row, so no `request.id`; the digest still binds exactly which
+      // call it was.
+      eventType: "approval.refused";
+      detail: {
+        agent: { id: string; name: string | null };
+        requester: { id: string; name: string | null };
+        toolName: string;
+        argsDigest: string;
+        reason: "too-large-to-show";
+        /** Which bound the call crossed (`SummaryLimit["kind"]` in
+         * `approvals/summary.ts`, `too-many-hosts` from `approvals/prompt.ts`)
+         * — never the value, the key path or a host, which may carry the
+         * call's content. */
+        exceeded: SummaryLimit["kind"];
+      };
+    })
+  | (AuditLogBase & {
+      // Provenance check (lib/user-provenance.ts). System-written, one row per
+      // account ever; `resource` is `user:<id>`, which is also how the check
+      // knows it already reported an account. No email — `user.name` is the
+      // human-readable snapshot.
+      eventType: "user.unknown_origin_detected";
+      detail: {
+        user: EntityRef;
+        role: string;
+        accountCreatedAt: string;
+      };
+    })
+  | (AuditLogBase & {
+      // An admin vouched for a flagged account (lib/user-provenance.ts). The
+      // provenance check reads these rows by `resource` = `user:<id>`, so the
+      // row is the stored state, not a side note. No email, and no id: the
+      // route works on the admin's own account, so a `user.id` here could be
+      // the acting admin's raw id (#824). The id is in `resource`.
+      eventType: "user.origin_acknowledged";
+      detail: { user: { name: string } };
+    })
+  | (AuditLogBase & {
       // Cost budgets (#36): a budget crossed its warning line (80%) or its
       // limit (100%) this month. One row per budget, crossing and month — the
       // monitor claims each before writing it (lib/budgets.ts).
@@ -704,6 +761,12 @@ export type AuditLogEntry =
         reason?: string;
         fields?: string[];
         modelCount?: number;
+        // Where a credential update moved the secret (Odoo url/db, mail
+        // hosts/ports/security), as `{ <field>: { from, to } }`. On a refused
+        // update (`reason: "secret_required_for_new_destination"`, outcome
+        // failure) it names the destination the stored secret was kept from.
+        // URLs carry no userinfo or query. See lib/secret-destination.ts.
+        destinationChange?: Record<string, { from: string | number; to: string | number }>;
         // Present instead of a plaintext `name` when the connection's
         // human-readable name is itself PII (an OAuth mailbox address).
         // See redactEmail(): GDPR Art. 17 forbids writing the raw address
@@ -720,11 +783,18 @@ export type AuditLogEntry =
       // `connection` deliberately carries the id alone: the name of a mailbox
       // connection is itself an address, and this row is written on a path
       // where the caller has already failed authorization.
+      //
+      // `destination-blocked`: the agent IS granted the connection, but the
+      // stored Odoo URL / IMAP / SMTP host fails the SSRF guard under the
+      // current rules (re-checked on every fetch). `field` names which one;
+      // the address itself is not recorded (a mail host can be a person's
+      // own domain).
       eventType: "integration.credentials_denied";
       detail: {
         agent: EntityRef;
         connection: { id: string };
-        reason: "agent-unknown" | "not-granted";
+        reason: "agent-unknown" | "not-granted" | "destination-blocked";
+        field?: "url" | "imapHost" | "smtpHost";
       };
     })
   | (AuditLogBase & {
@@ -913,8 +983,10 @@ export type AuditLogEntry =
       // Adding a counter here has to stay a decision, not a side effect.
       //
       // `trigger` says who decided the run should happen: `manual` for an
-      // admin's request, `scheduled` for the nightly reindex. Rows written
-      // before the schedule existed carry no trigger and were all manual.
+      // admin's request, `scheduled` for the nightly reindex, `upgrade` for
+      // the run Pinchy queues itself after an update changed how Office
+      // documents are converted. Rows written before the schedule existed
+      // carry no trigger and were all manual.
       // `sweepId` correlates one night's rows across agents (scheduled only).
       //
       // `ocr` is present only when the run sent scanned pages to a vision
@@ -928,7 +1000,7 @@ export type AuditLogEntry =
         agent: EntityRef;
         pathCount: number;
         jobId?: string;
-        trigger?: "manual" | "scheduled";
+        trigger?: KbIndexJobTrigger;
         sweepId?: string;
         indexed?: number;
         skipped?: number;
@@ -938,6 +1010,8 @@ export type AuditLogEntry =
         archived?: number;
         ocr?: { model: string; documents: number; pages: number; skippedPages: number };
         unavailableFolders?: number;
+        // Files refused because their path no longer led to a regular file in the folder (a swapped link); also in `failed`.
+        refusedFiles?: number;
         reason?: string;
       };
     })
@@ -1171,6 +1245,8 @@ interface VerifyResult {
   invalidIds: number[];
   // v3 chain links that don't point at their predecessor's rowHmac — evidence
   // of a deleted (middle) row or a reordering, distinct from field tampering.
+  // Also the window's first row when the caller says its predecessor broke
+  // (`seedPredecessorBroken`); that row can be in `invalidIds` as well.
   chainBreakIds: number[];
   // Rows whose signature verifies under the SUPERSEDED signing secret rather
   // than the active one — an operator pinned AUDIT_HMAC_SECRET on an install
@@ -1178,7 +1254,109 @@ interface VerifyResult {
   // authentic and unmodified, so they are not integrity violations and do not
   // clear `valid`. They are reported separately and never folded into the
   // healthy rows, so the rotation stays visible. See getPreviousSecret().
+  // Only a contiguous prefix of the chain can land here: an old-key row after a
+  // row that verified under the active key is forged (the old key file outlives
+  // a rotation) and goes to `invalidIds` instead.
   previousKeyIds: number[];
+}
+
+type AuditLogRow = typeof auditLog.$inferSelect;
+
+/**
+ * Which key a stored row's signature verifies under, recomputed from the row as
+ * it is now:
+ *
+ * - `"active"`: the current signing key.
+ * - `"previous"`: the key an operator superseded by pinning AUDIT_HMAC_SECRET
+ *   (`getPreviousSecret`), and not the active one.
+ * - `"neither"`: no key this instance holds. Either the row was altered after it
+ *   was signed, or the key that signed it is no longer held (removed key file, a
+ *   second rotation). The two look identical without that key.
+ * - `"unknown-version"`: a row version no verifier knows. `verifyIntegrity`
+ *   reports such a row as invalid under every key, so it is not a key question.
+ * - `"missing"`: there is no such row.
+ *
+ * Legacy v1/v2 rows are signed with the same audit secret as v3 (only the
+ * payload shape differs), so they classify by key exactly like v3 rows, as they
+ * do in `verifyIntegrity`.
+ */
+export type AuditRowKey = "active" | "previous" | "neither" | "unknown-version" | "missing";
+
+function classifyRowKey(entry: AuditLogRow): Exclude<AuditRowKey, "missing"> {
+  const verifier = ROW_HMAC_VERIFIERS[entry.version];
+  if (!verifier) return "unknown-version";
+  const fields = {
+    timestamp: entry.timestamp,
+    eventType: entry.eventType,
+    actorType: entry.actorType,
+    actorId: entry.actorId,
+    resource: entry.resource,
+    detail: entry.detail,
+    outcome: (entry.outcome ?? "success") as "success" | "failure",
+    error: entry.error as { message: string } | null,
+    prevHmac: entry.prevHmac,
+  };
+  if (verifier(getOrCreateSecret("audit_hmac_secret"), fields) === entry.rowHmac) return "active";
+  const previousSecret = getPreviousSecret("audit_hmac_secret");
+  if (previousSecret && verifier(previousSecret, fields) === entry.rowHmac) return "previous";
+  return "neither";
+}
+
+/**
+ * Read the stored row `id` once and answer both questions a verifier resuming
+ * after it needs: its rowHmac as stored now, and which key it verifies under
+ * (see `AuditRowKey`). One read, so the row can't change between the two.
+ */
+export async function readAuditRowKey(
+  id: number
+): Promise<{ key: AuditRowKey; rowHmac: string | null }> {
+  const [entry] = await db.select().from(auditLog).where(eq(auditLog.id, id)).limit(1);
+  if (!entry) return { key: "missing", rowHmac: null };
+  return { key: classifyRowKey(entry), rowHmac: entry.rowHmac };
+}
+
+/**
+ * The `seedActiveKeySeen` for a window that follows a row of class `key`.
+ *
+ * Only a row that positively verifies under the previous key says the key change
+ * hasn't happened yet, so only `"previous"` keeps the old key open. A row that
+ * verifies under neither key or has an unknown version was either altered or
+ * signed by a key retired since; both mean the change already happened, so they
+ * close it (fail closed). Reading them as "not the active key, so not rotated
+ * yet" let content-only tampering of that one row re-open the old key for
+ * everything after it. `"missing"` means there is no row before the window: it
+ * starts the chain, and nothing has been seen.
+ *
+ * Whether the row is still the row a caller verified earlier is a separate
+ * question this can't answer; the incremental sweep compares its rowHmac with
+ * the one it remembered.
+ */
+export function keyChangeSeenAfter(key: AuditRowKey): boolean {
+  return key !== "previous" && key !== "missing";
+}
+
+/**
+ * Had the active key already signed a row by the time the row at `fromId` was
+ * written? The seed for a partial-range verification that starts at `fromId`.
+ *
+ * Answers from the row immediately before `fromId` (the greatest existing id
+ * below it), by the same rule the incremental sweep applies to its checkpoint
+ * row (`keyChangeSeenAfter`): only a predecessor that verifies under the
+ * previous key and not the active one answers false, and so does having no
+ * predecessor at all.
+ *
+ * That is a context, not a proof. Whether the predecessor itself is authentic,
+ * and where in the log the key really changed, only a verification from the
+ * first row establishes.
+ */
+export async function isActiveKeySeenBefore(fromId: number): Promise<boolean> {
+  const [entry] = await db
+    .select()
+    .from(auditLog)
+    .where(lt(auditLog.id, fromId))
+    .orderBy(desc(auditLog.id))
+    .limit(1);
+  return keyChangeSeenAfter(entry ? classifyRowKey(entry) : "missing");
 }
 
 // Rows processed per fetch. The whole audit_log can grow unbounded, so loading
@@ -1200,6 +1378,29 @@ export async function verifyIntegrity(
     // (the default, omitting the option) preserves the pre-existing
     // unchecked-root behavior for existing callers.
     seedPrevHmac?: string | null;
+    // Whether a row BEFORE this window already verified under the active key.
+    // The previous signing key is only acceptable for the rows that pre-date
+    // the rotation, and a windowed verifier cannot see that from its own rows:
+    // a window of forged old-key rows that follows an active-key checkpoint
+    // would otherwise look like a legitimate pre-rotation prefix. An
+    // incremental verifier derives this from its checkpoint row and passes it
+    // here; omitted (the default) means "the window starts at the chain's
+    // beginning", which is correct for a full-range verification.
+    seedActiveKeySeen?: boolean;
+    // The row BEFORE this window is no longer the row the caller verified: it
+    // was deleted, or its rowHmac changed. `seedPrevHmac` can't see that, since
+    // the first row's link still matches the value the caller remembered. The
+    // first row's link to its real predecessor is broken all the same, so it is
+    // reported in `chainBreakIds` whatever its row version and whatever its own
+    // signature says. A first row that also fails its signature (or has an
+    // unknown version) is in `invalidIds` too: the two findings are independent.
+    //
+    // That matters with `seedActiveKeySeen: true`, which a caller that lost its
+    // predecessor passes to fail closed: an earlier-key first row then fails
+    // its signature, and without this the deletion would only show up as that
+    // row being "changed". The option does not touch the key context itself;
+    // that is `seedActiveKeySeen`'s job.
+    seedPredecessorBroken?: boolean;
   }
 ): Promise<VerifyResult> {
   const secret = getOrCreateSecret("audit_hmac_secret");
@@ -1213,6 +1414,9 @@ export async function verifyIntegrity(
   const chainBreakIds: number[] = [];
   const previousKeyIds: number[] = [];
   let totalChecked = 0;
+  // Set once a row verifies under the ACTIVE key. Carried across pages: the
+  // previous key is only acceptable before the first such row.
+  let activeKeySeen = opts?.seedActiveKeySeen ?? false;
   // rowHmac of the previous row in range; undefined before the first row so the
   // first row in a partial range isn't chain-checked against a missing
   // predecessor — UNLESS seedPrevHmac was supplied, in which case it seeds the
@@ -1220,6 +1424,8 @@ export async function verifyIntegrity(
   // Carried ACROSS pages so a chain break that straddles a page boundary is
   // still detected.
   let prevRowHmac: string | null | undefined = hasSeed ? (opts?.seedPrevHmac ?? null) : undefined;
+  // Cleared after the first row of the window, not the first row of each page.
+  let predecessorBroken = opts?.seedPredecessorBroken ?? false;
   // Exclusive lower-bound cursor for keyset pagination. Undefined on the first
   // page (which honors `fromId`); afterwards it advances past the last id seen.
   let cursor: number | undefined = undefined;
@@ -1241,6 +1447,14 @@ export async function verifyIntegrity(
 
     for (const entry of page) {
       totalChecked++;
+      // Taken before any `continue` below, so it can only ever apply to the
+      // window's first row.
+      const linkKnownBroken = predecessorBroken;
+      predecessorBroken = false;
+      // The break to this row's real predecessor is known from outside the
+      // window, not read from the row, so it is reported whatever the row's own
+      // signature says. A row that also fails its signature is in both lists.
+      if (linkKnownBroken) chainBreakIds.push(entry.id);
       const verifier = ROW_HMAC_VERIFIERS[entry.version];
       if (!verifier) {
         invalidIds.push(entry.id);
@@ -1261,11 +1475,26 @@ export async function verifyIntegrity(
       };
 
       let signatureOk = verifier(secret, fields) === entry.rowHmac;
-      // Only rows that fail under the ACTIVE key are retried, so an unrotated
-      // install pays nothing and a rotated one pays one extra HMAC per legacy
-      // row. A row that verifies under neither key is tampering, and the
-      // fallback must not launder it into the previous-key bucket.
-      if (!signatureOk && previousSecret && verifier(previousSecret, fields) === entry.rowHmac) {
+      if (signatureOk) {
+        // The rotation has happened by this row. From here on the superseded
+        // key is no longer acceptable (see below).
+        activeKeySeen = true;
+      } else if (
+        // Only rows that fail under the ACTIVE key are retried, so an
+        // unrotated install pays nothing and a rotated one pays one extra HMAC
+        // per legacy row. A row that verifies under neither key is tampering,
+        // and the fallback must not launder it into the previous-key bucket.
+        //
+        // The previous key is only trusted for the PREFIX of the chain that
+        // pre-dates the rotation. Its file stays in the secrets volume after a
+        // rotation (typically one done because the old key leaked), so anyone
+        // with DB write access and that file could re-sign any row, including
+        // rows written after the rotation, and have it verify. Once a row has
+        // verified under the active key, an old-key row is therefore invalid.
+        !activeKeySeen &&
+        previousSecret &&
+        verifier(previousSecret, fields) === entry.rowHmac
+      ) {
         previousKeyIds.push(entry.id);
         signatureOk = true;
       }
@@ -1273,6 +1502,7 @@ export async function verifyIntegrity(
       if (!signatureOk) {
         invalidIds.push(entry.id);
       } else if (
+        !linkKnownBroken &&
         entry.version >= 3 &&
         prevRowHmac !== undefined &&
         entry.prevHmac !== prevRowHmac

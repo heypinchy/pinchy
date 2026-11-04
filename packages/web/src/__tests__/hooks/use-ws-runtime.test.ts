@@ -39,6 +39,14 @@ vi.mock("@/lib/image-compression", () => ({
   })),
 }));
 
+// A deactivated account leaves for /login (full page load). jsdom cannot
+// navigate, so the one function that does is replaced and observed.
+const mockLeaveDeactivatedAccount = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/account-deactivated", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/account-deactivated")>()),
+  leaveDeactivatedAccount: mockLeaveDeactivatedAccount,
+}));
+
 // Track all created WebSocket instances
 let wsInstances: MockWebSocket[] = [];
 
@@ -3080,6 +3088,226 @@ describe("useWsRuntime", () => {
     // Waiting on would end in the history timeout, which reads as a network
     // fault instead of the explanation the bubble carries.
     expect(result.current.isHistoryLoaded).toBe(true);
+  });
+
+  it("treats the deactivation refusal as final: no Retry, and the history wait ends", () => {
+    // A tab that reconnects in the moment the account is deactivated gets the
+    // refusal instead of history — the upgrade passed, then the registry
+    // closed the socket on registration (server/user-sockets.ts).
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+    });
+    act(() => {
+      ws.simulateMessage({
+        type: "error",
+        code: "policy_account_deactivated",
+        message: "Your account has been deactivated.",
+      });
+    });
+
+    expect(result.current.isHistoryLoaded).toBe(true);
+    const errorMsg = store(result.current.runtime).messages.find(
+      (m: any) => m.role === "assistant" && m.metadata?.custom?.error
+    );
+    expect(errorMsg!.metadata!.custom.error).toEqual({
+      message: "Your account has been deactivated.",
+    });
+    expect(errorMsg!.metadata!.custom.retryable).toBeUndefined();
+  });
+
+  it("does not reconnect after close code 4403 and leaves for the login page", () => {
+    // The account is deactivated and its sessions are gone: every reconnect
+    // would fail the upgrade, ten times over, behind a "reconnecting" status.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+      ws.simulateMessage({ type: "history", messages: [] });
+    });
+    act(() => {
+      store(result.current.runtime).onNew({
+        content: [{ type: "text", text: "Send the invoices" }],
+        parentId: "root",
+      });
+    });
+    act(() => {
+      ws.simulateMessage({
+        type: "error",
+        code: "policy_account_deactivated",
+        message: "Your account has been deactivated.",
+      });
+      ws.simulateClose(4403);
+    });
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(wsInstances).toHaveLength(1);
+    expect(mockLeaveDeactivatedAccount).toHaveBeenCalledTimes(1);
+    expect(result.current.isRunning).toBe(false);
+  });
+
+  it("still reconnects after an ordinary close and stays on the page", () => {
+    renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.simulateOpen();
+      ws.simulateMessage({ type: "history", messages: [] });
+      ws.simulateClose(1006);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(wsInstances.length).toBeGreaterThan(1);
+    expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();
+  });
+
+  describe("a tab that missed the 4403 because its socket was already closed", () => {
+    // Hidden past the grace period, or mid-reconnect when the account was
+    // deactivated: no socket was open to receive 4403. Every reconnect then
+    // fails the upgrade's session lookup (HTTP 401, seen as 1006), and the tab
+    // would sit through ten "reconnecting" attempts. After two failed
+    // reconnects in a row it asks whether it still has a session.
+    const realFetch = globalThis.fetch;
+    let mockFetch: ReturnType<typeof vi.fn>;
+
+    function answerSession(body: unknown) {
+      mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => body });
+    }
+
+    beforeEach(() => {
+      mockFetch = vi.fn();
+      globalThis.fetch = mockFetch as unknown as typeof fetch;
+    });
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      });
+    });
+
+    /** Fail the newest socket's dial and let its backoff produce the next one. */
+    async function failLatestDial(backoffMs: number) {
+      await act(async () => {
+        latestWs().simulateClose(1006);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(backoffMs);
+      });
+    }
+
+    it("leaves for the login page after two failed reconnects when the session is gone", async () => {
+      answerSession(null); // Better Auth's get-session answers `null` without a session
+      renderHook(() => useWsRuntime("agent-1"));
+      act(() => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      await failLatestDial(1_000); // the drop itself → reconnect #1
+      await failLatestDial(2_000); // reconnect #1 fails → reconnect #2
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();
+
+      await failLatestDial(0); // reconnect #2 fails → ask
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/auth/get-session",
+        expect.objectContaining({ cache: "no-store" })
+      );
+      expect(mockLeaveDeactivatedAccount).toHaveBeenCalledTimes(1);
+
+      const socketsWhenLeaving = wsInstances.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(wsInstances).toHaveLength(socketsWhenLeaving);
+    });
+
+    it("leaves too when the socket was closed while the tab was hidden", async () => {
+      answerSession(null);
+      renderHook(() => useWsRuntime("agent-1"));
+      act(() => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      // Hidden past the grace period: the tab closes its own socket, so the
+      // deactivation that happens meanwhile has nothing to send 4403 to.
+      act(() => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          value: "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        latestWs().simulateClose(1000);
+      });
+      const before = wsInstances.length;
+      act(() => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          value: "visible",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(wsInstances.length).toBe(before + 1);
+
+      await failLatestDial(1_000);
+      await failLatestDial(2_000);
+      await failLatestDial(0);
+
+      expect(mockLeaveDeactivatedAccount).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps reconnecting when the session is still valid", async () => {
+      answerSession({ session: { id: "s-1" }, user: { id: "u-1" } });
+      renderHook(() => useWsRuntime("agent-1"));
+      act(() => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      await failLatestDial(1_000);
+      await failLatestDial(2_000);
+      await failLatestDial(4_000);
+      const afterThird = wsInstances.length;
+      await failLatestDial(5_000);
+
+      expect(mockFetch).toHaveBeenCalled();
+      expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();
+      expect(wsInstances.length).toBe(afterThird + 1);
+    });
+
+    it("keeps reconnecting when the session check itself fails", async () => {
+      // A Pinchy that is restarting answers neither the socket nor the check.
+      // That is not evidence of a lost session.
+      mockFetch.mockRejectedValue(new TypeError("Failed to fetch"));
+      renderHook(() => useWsRuntime("agent-1"));
+      act(() => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+
+      await failLatestDial(1_000);
+      await failLatestDial(2_000);
+      await failLatestDial(4_000);
+      const afterThird = wsInstances.length;
+      await failLatestDial(5_000);
+
+      expect(mockFetch).toHaveBeenCalled();
+      expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();
+      expect(wsInstances.length).toBe(afterThird + 1);
+    });
   });
 
   // ── status reducer ───────────────────────────────────────────────────────────

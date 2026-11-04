@@ -19,7 +19,20 @@ export const gateCheckSchema = z.object({
    * `sessionKey`: some run contexts carry none, and a gated call without one
    * must get an answer it can act on rather than a 400. */
   toolCallId: z.string().min(1).optional(),
-  params: z.record(z.string(), z.unknown()).optional().default({}),
+  /**
+   * Taken as parsed, not rebuilt: `z.record` copies the object by assignment, and
+   * `out["__proto__"] = …` hits the prototype setter — the key vanished from the
+   * digest and the card while the tool, reading the raw JSON, could still receive
+   * it. JSON.parse makes every key, `__proto__` included, an own data property;
+   * this keeps them all.
+   */
+  params: z
+    .custom<Record<string, unknown>>(
+      (value) => typeof value === "object" && value !== null && !Array.isArray(value),
+      { message: "params must be an object" }
+    )
+    .optional()
+    .default({}),
 });
 export type GateCheckBody = z.infer<typeof gateCheckSchema>;
 
@@ -39,6 +52,22 @@ export const resolutionSchema = z.object({
   decision: z.enum(["allow-once", "allow-always", "deny", "timeout", "cancelled"]),
 });
 export type ResolutionBody = z.infer<typeof resolutionSchema>;
+
+/**
+ * How many held card ids the inbox poll names in `GET /api/approvals?known=`,
+ * and how many the route reads. Shared so the two cannot drift.
+ *
+ * There is no real maximum to derive this from: MAX_PENDING_PER_REQUESTER
+ * (20) bounds one person's open cards on ONE agent, and a person may work with
+ * any number of agents. So the bound comes from the request instead. The ids
+ * ride in the query string at ~37 characters each; 200 of them are ~7.4 KB,
+ * inside the 8 KB request line common proxies accept and well inside Node's
+ * 16 KB header limit. Past it the poll would fail outright — and the poll is
+ * the only way a card reaches the screen. A person holding more than 200
+ * pending cards has the rest of their summaries re-sent on every poll:
+ * wasteful, never wrong, and far past anything a person works through.
+ */
+export const MAX_KNOWN_APPROVALS = 200;
 
 /** A requester's approve/deny decision on their own pending confirmation. */
 export const decisionSchema = z.object({

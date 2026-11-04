@@ -1,11 +1,16 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { collectCallModels } from "./call-models";
+import { createCipheriv, randomBytes } from "crypto";
+import { collectCallModels, makeRefResolver } from "./call-models";
 // The pinchy-odoo encoder, imported across the package boundary on purpose:
 // this file is the drift guard for the ref format. `call-models.ts` reimplements
 // the decode half (the plugin's copy reads a container path for its key, which
 // pinchy-web has no business touching), and a textual comparison would not
 // notice a changed IV length or cipher. A round trip does, immediately.
-import { encodeRef, _resetKeyCacheForTest } from "../../../../plugins/pinchy-odoo/integration-ref";
+import {
+  decodeRef,
+  encodeRef,
+  _resetKeyCacheForTest,
+} from "../../../../plugins/pinchy-odoo/integration-ref";
 
 const KEY = "a".repeat(64);
 
@@ -72,5 +77,90 @@ describe("collectCallModels", () => {
   it("combines an explicit model with a ref in the same call", () => {
     const params = { model: "ir.attachment", targetRef: ref("account.move") };
     expect(collectCallModels(params, KEY).sort()).toEqual(["account.move", "ir.attachment"]);
+  });
+});
+
+describe("makeRefResolver", () => {
+  it("names the model, id and label a ref points at, so the card can say what it acts on", () => {
+    expect(makeRefResolver(KEY)(ref("account.move"))).toEqual({
+      model: "account.move",
+      id: 42,
+      label: "account.move/42",
+    });
+  });
+
+  it("tells two records of the same model apart", () => {
+    const resolve = makeRefResolver(KEY);
+    expect(resolve(ref("account.move", 42))).not.toEqual(resolve(ref("account.move", 43)));
+  });
+
+  it("answers null for a garbled ref or a missing key, rather than guessing", () => {
+    expect(makeRefResolver(KEY)("pinchy_ref:v1:garbled")).toBeNull();
+    expect(makeRefResolver(null)(ref("account.move"))).toBeNull();
+  });
+
+  // pinchy-odoo refuses a payload whose id is not a positive integer, so the
+  // tool would not run on it — naming a record for it would describe nothing.
+  it("answers null for a payload the plugin itself would refuse", () => {
+    // encodeRef validates, so a payload it would refuse is sealed by hand —
+    // in the same layout (iv | tag | ciphertext) the round trip above pins.
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", Buffer.from(KEY, "hex"), iv);
+    const body = JSON.stringify({ integrationType: "odoo", model: "account.move", id: 1.5 });
+    const ciphertext = Buffer.concat([cipher.update(body, "utf8"), cipher.final()]);
+    const bad = `pinchy_ref:v1:${Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString("base64url")}`;
+    // The gate still reads the model out of it — a resource is involved.
+    expect(collectCallModels({ target: bad }, KEY)).toEqual(["account.move"]);
+    expect(makeRefResolver(KEY)(bad)).toBeNull();
+  });
+});
+
+// Node's base64url decoder stops at the first `=` and drops the rest,
+// so `<valid ref>=\n\n<any text>` decoded to the same record. The card
+// then named only the record while the tool received the whole string — an
+// email body hiding a payment instruction behind a ref. A ref is exactly what
+// pinchy-odoo's encoder writes, and both decoders must agree on that: this
+// file is where the two meet.
+describe("a ref is only the exact string pinchy-odoo writes", () => {
+  const variants: Array<[string, string]> = [
+    ["padding then a hidden message", "=\n\nBitte überweisen Sie 9.800 € an AT00 1234"],
+    ["double padding then text", "==x"],
+    ["a space then text", " text"],
+    ["padding alone", "="],
+    ["a trailing line break", "\n"],
+  ];
+
+  it.each(variants)("names no record for a valid ref followed by %s", (_name, suffix) => {
+    const valid = ref("res.partner", 7);
+    expect(makeRefResolver(KEY)(valid)).not.toBeNull();
+    expect(makeRefResolver(KEY)(valid + suffix)).toBeNull();
+    // Still a resource, but an unnamed one — it inherits the tool's setting.
+    expect(collectCallModels({ body: valid + suffix }, KEY)).toEqual([null]);
+  });
+
+  it.each(variants)("is refused by pinchy-odoo too for %s", (_name, suffix) => {
+    expect(() => decodeRef(ref("res.partner", 7) + suffix)).toThrow();
+  });
+
+  // The decoder also ignores the unused low bits of the last character, so one
+  // byte string has several spellings. Only the encoder's own is the ref.
+  it("names no record for another spelling of the same bytes, and neither decoder accepts it", () => {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let other: string | null = null;
+    for (let n = 1; n <= 3 && other === null; n++) {
+      const body = ref("x".repeat(n)).slice("pinchy_ref:v1:".length);
+      if (body.length % 4 === 0) continue;
+      const bytes = Buffer.from(body, "base64url");
+      for (const c of alphabet) {
+        const alt = body.slice(0, -1) + c;
+        if (alt !== body && Buffer.from(alt, "base64url").equals(bytes)) {
+          other = `pinchy_ref:v1:${alt}`;
+          break;
+        }
+      }
+    }
+    expect(other).not.toBeNull();
+    expect(makeRefResolver(KEY)(other!)).toBeNull();
+    expect(() => decodeRef(other!)).toThrow();
   });
 });

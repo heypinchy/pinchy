@@ -31,6 +31,24 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 const HEX_64 = /^[0-9a-fA-F]{64}$/;
+const REF_SHAPE = /^pinchy_ref:v1:[A-Za-z0-9_-]+$/;
+
+/**
+ * True only for a string in the exact form pinchy-odoo's encoder writes: the
+ * prefix, unpadded base64url, and nothing after it — the same rule the
+ * plugin's `decodeRef` applies.
+ *
+ * Checked before any decode because Node's base64url decoder is lenient: it stops
+ * at the first `=` and drops whatever follows, skips whitespace, and ignores the
+ * unused bits of the last character. So `<valid ref>=\n\n<any text>` decoded to
+ * the record, the card named only the record, and the tool received the whole
+ * string. A string that is not exactly a ref is text, and is shown as text.
+ */
+export function isCanonicalRef(value: string): boolean {
+  if (!REF_SHAPE.test(value)) return false;
+  const body = value.slice(PREFIX.length);
+  return Buffer.from(body, "base64url").toString("base64url") === body;
+}
 
 /**
  * A resource the call touches. `null` is one we could not name — a ref that
@@ -40,7 +58,15 @@ const HEX_64 = /^[0-9a-fA-F]{64}$/;
  */
 export type CallResource = string | null;
 
-function decodeRefModel(ref: string, key: string): string | null {
+/** What a ref points at, as far as the card needs to name it. */
+export interface RefRecord {
+  model: string;
+  id: number;
+  label: string;
+}
+
+function decodeRefPayload(ref: string, key: string): Record<string, unknown> | null {
+  if (!isCanonicalRef(ref)) return null;
   try {
     const raw = Buffer.from(ref.slice(PREFIX.length), "base64url");
     if (raw.length <= IV_LENGTH + TAG_LENGTH) return null;
@@ -55,15 +81,45 @@ function decodeRefModel(ref: string, key: string): string | null {
       decipher.final(),
     ]).toString("utf8");
     const payload: unknown = JSON.parse(plaintext);
-    if (!payload || typeof payload !== "object") return null;
-    const model = (payload as Record<string, unknown>).model;
-    return typeof model === "string" && model.length > 0 ? model : null;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    return payload as Record<string, unknown>;
   } catch {
     // Every decode failure is the same answer here — an unnamed resource.
     // Telling a garbled ref from a rotated key matters to the tool that has to
     // explain itself to the model; it does not change what the gate must do.
     return null;
   }
+}
+
+function decodeRefModel(ref: string, key: string): string | null {
+  const model = decodeRefPayload(ref, key)?.model;
+  return typeof model === "string" && model.length > 0 ? model : null;
+}
+
+/**
+ * The full record a ref names — model, id and label — or `null`.
+ *
+ * Stricter than `decodeRefModel` on purpose. The gate needs only to know that
+ * SOME resource of a model is involved, so a model alone is enough there. The
+ * card claims to name the one record the call acts on, and it may only do that
+ * for a payload pinchy-odoo itself would accept (`isPayload` in
+ * integration-ref.ts): a positive integer id and a string label. Anything else
+ * the tool refuses to run, and a name for it would describe nothing.
+ */
+function decodeRefRecord(ref: string, key: string): RefRecord | null {
+  const payload = decodeRefPayload(ref, key);
+  if (!payload) return null;
+  const { model, id, label } = payload;
+  if (typeof model !== "string" || model.length === 0) return null;
+  if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) return null;
+  if (typeof label !== "string") return null;
+  return { model, id, label };
+}
+
+/** Resolves a single ref to the record it points at; `null` when it cannot. */
+export function makeRefResolver(key: string | null): (ref: string) => RefRecord | null {
+  const usableKey = key && HEX_64.test(key) ? key : null;
+  return (ref) => (usableKey ? decodeRefRecord(ref, usableKey) : null);
 }
 
 /**

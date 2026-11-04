@@ -22,11 +22,13 @@ import { runSoffice, runTextOracle } from "@/lib/knowledge/office-convert";
 let tmpRoot: string;
 let outDir: string;
 let profileDir: string;
+let scratchDir: string;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-adapter-test-"));
   outDir = join(tmpRoot, "out");
   profileDir = join(tmpRoot, "profile");
+  scratchDir = join(tmpRoot, "tmp");
   process.env.KB_SOFFICE_BIN = stub("soffice-noop", "exit 0\n");
 });
 
@@ -49,7 +51,14 @@ function stub(name: string, body: string): string {
 }
 
 function run(overrides: Partial<Parameters<typeof runSoffice>[0]> = {}) {
-  return runSoffice({ inputs: [], outDir, profileDir, timeoutMs: 10_000, ...overrides });
+  return runSoffice({
+    inputs: [],
+    outDir,
+    profileDir,
+    tmpDir: scratchDir,
+    timeoutMs: 10_000,
+    ...overrides,
+  });
 }
 
 describe("runSoffice", () => {
@@ -103,22 +112,13 @@ describe("runSoffice", () => {
     // HOME must match the private profile: LibreOffice writes into $HOME too,
     // and pointing it anywhere else puts state outside the staging directory.
     expect(env.HOME).toBe(profileDir);
-    // Its temp files too: LibreOffice removes its temp directory only on a
-    // clean exit, and a killed batch must not leave one in the converter's
-    // memory-backed /tmp. Inside the profile, it goes with the batch.
-    expect(env.TMPDIR).toBe(join(profileDir, "tmp"));
+    // And its scratch space goes into the batch too: left
+    // to the OS temp dir, a load that runs out of room there looks exactly
+    // like a document LibreOffice cannot read, on a volume nothing checks.
+    expect(env.TMPDIR).toBe(scratchDir);
   });
 
-  it("gives the converter a temp directory inside its private profile", async () => {
-    const record = join(tmpRoot, "tmpdir");
-    process.env.KB_SOFFICE_BIN = stub("soffice-tmp", `test -d "$TMPDIR" && echo ok > ${record}\n`);
-
-    await run();
-
-    expect(await readFile(record, "utf8")).toBe("ok\n");
-  });
-
-  describe("the locked-down profile (release review v0.10.0, finding 1)", () => {
+  describe("the locked-down profile", () => {
     // Each key below was found by CANARY, not by name: a crafted document with
     // an external picture link, converted by the real binary against a local
     // listener (see office-convert.libreoffice.test.ts). Only
@@ -158,6 +158,16 @@ describe("runSoffice", () => {
       expect(xcu).toMatch(/oor:name="ooInetNoProxy" oor:op="fuse"><value><\/value>/);
     });
 
+    it("keeps its scratch space in TMPDIR, whatever the build's default", async () => {
+      // LibreOffice unpacks a package into its Temp path, which defaults to
+      // $(temp) — TMPDIR — on Linux but to the profile's own temp directory
+      // on macOS builds (measured, LibreOffice 26.2). Pinned, the scratch is
+      // where the batch's TMPDIR says on every build.
+      expect(await profileAtStart()).toContain(
+        `<item oor:path="/org.openoffice.Office.Paths/Paths/org.openoffice.Office.Paths:NamedPath['Temp']"><prop oor:name="WritePath" oor:op="fuse"><value>$(temp)</value></prop></item>`
+      );
+    });
+
     it("fails closed: if the profile cannot be written, the converter does not run", async () => {
       const ran = join(tmpRoot, "ran");
       process.env.KB_SOFFICE_BIN = stub("soffice-ran", `touch ${ran}\n`);
@@ -180,7 +190,7 @@ describe("runSoffice", () => {
     // multi-megabyte string inside the web process.
     process.env.KB_SOFFICE_BIN = stub(
       "soffice-loud",
-      "i=0; while [ $i -lt 400 ]; do i=$((i+1)); " +
+      "i=0; while [ $i -lt 1200 ]; do i=$((i+1)); " +
         'printf "Error: source file could not be loaded padding padding padding padding\\n" >&2; ' +
         "done\n"
     );
@@ -191,7 +201,27 @@ describe("runSoffice", () => {
     expect(result.stderr).toContain("could not be loaded");
   });
 
-  it("caps stderr at exactly 8 KB, however large the chunk it arrives in", async () => {
+  it("keeps enough stderr for every file of a full batch whose PDFs did not fit", async () => {
+    // The per-file `impl_store … failed` line is what the operator is shown
+    // for a PDF a full volume did not take (the volume itself decides that).
+    // At production staging-path lengths a batch of 20 prints
+    // ~9 KB of them; the last file must not lose its line to the cap.
+    const dir = `/app/kb-artifacts/staging/${"0".repeat(8)}-0000-4000-8000-${"0".repeat(12)}`;
+    process.env.KB_SOFFICE_BIN = stub(
+      "soffice-full",
+      'printf "Warning: failed to launch javaldx - java may not function correctly\\n" >&2; ' +
+        "i=0; while [ $i -lt 20 ]; do " +
+        `printf "convert ${dir}/in/$i.pptx -> ${dir}/out/$i.pdf using filter : impress_pdf_Export\\n" >&2; ` +
+        `printf "Error: Please verify input parameters... (SfxBaseModel::impl_store <file://${dir}/out/$i.pdf> failed: 0x507(Error Area:Io Class:Access Code:7) at ./sfx2/source/doc/sfxbasemodel.cxx:3207 at ./sfx2/source/doc/sfxbasemodel.cxx:1783)\\n" >&2; ` +
+        "i=$((i+1)); done\n"
+    );
+
+    const result = await run();
+
+    expect(result.stderr).toContain(`impl_store <file://${dir}/out/19.pdf> failed`);
+  });
+
+  it("caps stderr at exactly 32 KB, however large the chunk it arrives in", async () => {
     // A pipe read can deliver 64 KB at once; the cap has to hold for the
     // chunk that crosses it, or the answer outgrows what the web side reads.
     const big = join(tmpRoot, "big");
@@ -200,10 +230,10 @@ describe("runSoffice", () => {
 
     const result = await run();
 
-    expect(result.stderr.length).toBe(8 * 1024);
+    expect(result.stderr.length).toBe(32 * 1024);
     // Even escaped six-fold, as JSON does with control characters, the
-    // answer stays under the 64 KB the web side accepts.
-    expect(JSON.stringify(result).length).toBeLessThan(64 * 1024);
+    // answer stays under the 256 KB the web side accepts.
+    expect(JSON.stringify(result).length).toBeLessThan(256 * 1024);
   });
 
   it("rejects rather than resolving when the binary is missing", async () => {

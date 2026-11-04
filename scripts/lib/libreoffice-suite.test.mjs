@@ -6,9 +6,9 @@
  * Why their own runner: under the default vitest config they ran in parallel
  * workers on any machine that has `soffice` installed, two LibreOffice first
  * starts raced on one extension repository (signal 6 in 7.4.7), and the
- * canary's 240 s budget turned into 89 s / 180 s timeouts on a loaded laptop
- * (third review, PR #1243). On a machine without `soffice` they skipped —
- * which is every CI runner, so in CI they had never run at all.
+ * canary's 240 s budget turned into 89 s / 180 s timeouts on a loaded laptop.
+ * On a machine without `soffice` they skipped — which is every CI runner, so
+ * in CI they had never run at all.
  *
  * So: excluded from `vitest.config.ts`, run by `vitest.libreoffice.config.ts`
  * one file at a time (`pnpm test:libreoffice`), and run in CI inside the
@@ -132,4 +132,19 @@ test("ci.yml runs them inside the image the pipeline built, gated like every non
   assert.match(job.body, /docker build -t \S+ -f Dockerfile\.pinchy \./);
   assert.match(job.body, /KB_REQUIRE_SOFFICE=1/);
   assert.match(job.body, /--network none/);
+  // The small staging volume the scratch test needs: without it that test
+  // skips, and a full volume is booked as an unreadable document again
+  // unnoticed.
+  const smallVolume = /--tmpfs (\/\S+):size=\S+ -e KB_SMALL_VOLUME=(\S+)/.exec(
+    job.body,
+  );
+  assert.ok(
+    smallVolume,
+    "mounts a small tmpfs and names it in KB_SMALL_VOLUME",
+  );
+  assert.equal(
+    smallVolume[1],
+    smallVolume[2],
+    "KB_SMALL_VOLUME names the tmpfs mounted",
+  );
 });

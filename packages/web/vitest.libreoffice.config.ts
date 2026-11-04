@@ -7,9 +7,9 @@
 // in parallel workers raced on one extension repository and one aborted
 // (signal 6 in `syncRepositories`, LibreOffice 7.4.7), and under the default
 // config they ran in parallel on any machine with `soffice` installed, which
-// is where the 89 s / 180 s timeouts on a loaded laptop came from (third
-// review, PR #1243). A conversion batch takes minutes on a cold profile, so
-// the timeouts are the suites' own, not the unit suite's 20 s.
+// is where the 89 s / 180 s timeouts on a loaded laptop came from. A
+// conversion batch takes minutes on a cold profile, so the timeouts are the
+// suites' own, not the unit suite's 20 s.
 //
 // Without `soffice` every suite skips (`describe.skipIf`), so a developer
 // without LibreOffice gets a green no-op. `KB_REQUIRE_SOFFICE=1` turns that

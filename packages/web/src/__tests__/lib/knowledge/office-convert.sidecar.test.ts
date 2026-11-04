@@ -94,6 +94,36 @@ const counters = {
 };
 
 describe("convertOfficeFiles with the office-converter sidecar", () => {
+  it("re-runs a killed batch one document at a time through the sidecar, and leaves the spool clean", async () => {
+    // Each document's own run is a batch of its own in the spool — the only
+    // shape the sidecar accepts, since it derives every path from the batch.
+    server = createOfficeConverterServer({
+      spoolDir: spool,
+      runConverter: async (run) => {
+        sidecarRuns++;
+        if (run.inputs.length > 1) return { code: 137, signal: null, stderr: "", timedOut: false };
+        return runSoffice(run);
+      },
+    });
+    await listenOfficeConverter(server, spool);
+    const store = new OfficeArtifactStore(join(root, "artifacts"));
+    // Different content each: identical documents would share one conversion.
+    const sources = ["alpha", "bravo", "charlie"].map((word) => {
+      const absPath = join(corpus, `${word}.docx`);
+      writeFileSync(absPath, docxWith({ text: `Angebot ${word}`, documentRels: relationships() }));
+      return { absPath };
+    });
+
+    const outcomes = await convertOfficeFiles(sources, { store, ...counters });
+
+    expect(
+      outcomes.map((o) => o.status),
+      outcomes.map((o) => o.reason).join("; ")
+    ).toEqual(["converted", "converted", "converted"]);
+    expect(sidecarRuns).toBe(4);
+    expect(await readdir(spool)).toEqual(["converter.sock"]);
+  });
+
   it("converts through the sidecar and commits the PDF into a store outside the spool", async () => {
     await startSidecar();
     // A different directory tree than the spool. Here both are on one

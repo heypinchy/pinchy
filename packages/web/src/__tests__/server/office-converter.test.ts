@@ -128,6 +128,7 @@ describe("office-converter entrypoint", () => {
       inputs: [join(dir, "in", "0.docx")],
       outDir: join(dir, "out"),
       profileDir: join(dir, "profile"),
+      tmpDir: join(dir, "tmp"),
       timeoutMs: 10_000,
     });
 

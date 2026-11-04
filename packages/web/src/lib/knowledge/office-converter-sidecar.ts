@@ -18,7 +18,7 @@
  *
  * HTTP over a Unix socket in the shared spool volume — the one channel
  * `network_mode: none` leaves open, reachable only by a container that mounts
- * the spool. The web side stages a batch under `<spool>/<uuid>/{in,out,profile}`
+ * the spool. The web side stages a batch under `<spool>/<uuid>/{in,out,profile,tmp}`
  * (the spool is mounted at the same path in both containers) and sends
  * `POST /convert {batch, inputs, timeoutMs}`. The sidecar never takes a path
  * from the request: it checks the batch id and the index names and derives
@@ -33,8 +33,8 @@
  * The sidecar runs as its own uid in the web process's group
  * (docker-compose.yml). The web process owns the spool and every batch
  * directory in it; the modes in `BATCH_MODES` let the converter read `in/`
- * and write `out/` and `profile/`, and nothing else. The spool root and the
- * two writable directories are sticky, so the converter can remove or rename
+ * and write `out/`, `profile/` and `tmp/`, and nothing else. The spool root
+ * and the writable directories are sticky, so the converter can remove or rename
  * only entries it created itself — its socket, its own output. It cannot
  * swap a staged input, nor touch another batch.
  *
@@ -118,10 +118,10 @@ const INPUT_NAME = new RegExp(
 const MAX_INPUTS = 1000;
 const MAX_REQUEST_BYTES = 64 * 1024;
 /**
- * An answer is a few fields and at most 8 KB of stderr (office-soffice.ts),
+ * An answer is a few fields and at most 32 KB of stderr (office-soffice.ts),
  * which JSON escapes to at most six times that. Anything bigger is not one.
  */
-const MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_RESPONSE_BYTES = 256 * 1024;
 
 /**
  * Modes of a staged batch (see "Who may write what" above). Set with `chmod`,
@@ -132,6 +132,7 @@ export const BATCH_MODES = {
   in: 0o750,
   out: 0o1770,
   profile: 0o1770,
+  tmp: 0o1770,
 } as const;
 
 /** The socket: the web process's group connects, nobody else. */
@@ -151,6 +152,7 @@ function batchPaths(spoolDir: string, batch: string) {
     inDir: join(dir, "in"),
     outDir: join(dir, "out"),
     profileDir: join(dir, "profile"),
+    tmpDir: join(dir, "tmp"),
   };
 }
 
@@ -274,6 +276,7 @@ export function sidecarConverter(
         ["in", paths.inDir],
         ["out", paths.outDir],
         ["profile", paths.profileDir],
+        ["tmp", paths.tmpDir],
       ] as const) {
         await mkdir(path);
         await chmod(path, BATCH_MODES[key]);
@@ -321,6 +324,7 @@ function toRequest(spoolDir: string, run: ConverterRun): ConvertRequest {
     BATCH_ID.test(batch) &&
     run.outDir === expected.outDir &&
     run.profileDir === expected.profileDir &&
+    run.tmpDir === expected.tmpDir &&
     run.inputs.every((input) => dirname(input) === expected.inDir);
   if (!inside) {
     throw new Error(
@@ -349,18 +353,18 @@ function parseResult(text: string): ConverterResult {
 
 /**
  * Removes one batch, entry by entry: the staged inputs, whatever sits
- * directly in `out/` and `profile/` (a link or a file is unlinked, never
+ * directly in `out/`, `profile/` and `tmp/` (a link or a file is unlinked, never
  * followed), then the directories the web process made. It does not descend
  * into a directory the converter created; one left there keeps the batch, and
  * the final `rmdir` throws so the caller can say so. The converter clears
- * `profile/` itself, after every batch and when it starts.
+ * `profile/` and `tmp/` itself, after every batch and when it starts.
  *
  * Every path here is safe to use by name: the spool root is sticky and the
  * batch directory is not writable by the converter, so it cannot swap any
  * component on the way.
  */
 async function removeBatch(dir: string): Promise<void> {
-  for (const sub of ["in", "out", "profile"]) {
+  for (const sub of ["in", "out", "profile", "tmp"]) {
     const path = join(dir, sub);
     for (const entry of await readdir(path).catch(() => [] as string[])) {
       await unlink(join(path, entry)).catch(() => {});
@@ -451,6 +455,7 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
             inputs: parsed.inputs.map((name) => join(paths.inDir, name)),
             outDir: paths.outDir,
             profileDir: paths.profileDir,
+            tmpDir: paths.tmpDir,
             timeoutMs: Math.min(parsed.timeoutMs, maxTimeoutMs),
           });
           answer = [200, result];
@@ -461,6 +466,7 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
         // LibreOffice picks. Emptied here, by the uid that created it, so the
         // web process can always remove the batch.
         await clearDirectory(paths.profileDir);
+        await clearDirectory(paths.tmpDir);
         const left = (await options.leftovers?.()) ?? [];
         if (left.length > 0) {
           // Whether or not the web process is still there to hear it.
@@ -546,7 +552,10 @@ export async function sweepSpool(spoolDir: string): Promise<void> {
   for (const entry of await readdir(spoolDir).catch(() => [] as string[])) {
     if (!BATCH_ID.test(entry)) continue;
     const info = await lstat(join(spoolDir, entry)).catch(() => null);
-    if (info?.isDirectory()) await clearDirectory(batchPaths(spoolDir, entry).profileDir);
+    if (!info?.isDirectory()) continue;
+    const paths = batchPaths(spoolDir, entry);
+    await clearDirectory(paths.profileDir);
+    await clearDirectory(paths.tmpDir);
   }
 }
 

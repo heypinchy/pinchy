@@ -20,8 +20,10 @@
  *
  * 1. **Batch, do not spawn per file.** Process startup dominates: 17 real
  *    corpus files convert in 14.2 s in one process vs 25.6 s one-per-file.
- *    Batches are bounded (`DEFAULT_BATCH_SIZE`) so a single OOM kill costs a
- *    batch rather than the corpus.
+ *    Batches are bounded (`DEFAULT_BATCH_SIZE`), and a batch the converter
+ *    did not survive is run again one document at a time
+ *    (`runIsolatingKills`), so one document that takes LibreOffice down costs
+ *    itself rather than its batch-mates.
  *
  * 2. **The exit code lies.** An input LibreOffice cannot load produces
  *    `Error: source file could not be loaded` on stderr, exit code **0**, and
@@ -34,7 +36,11 @@
  * 3. **OOM is distinguishable, and the difference is load-bearing.** Exit
  *    **137** (or a bare SIGKILL, which is what a direct spawn sees) means the
  *    container was too small — infrastructure, retryable. Exit 0 with no
- *    artifact means THIS document is unreadable — final. Without the split,
+ *    artifact means THIS document is unreadable — final — unless the volume
+ *    got in the way: the output and LibreOffice's load-time scratch both land
+ *    on the artifact volume, and a full one gives the same exit 0 and no
+ *    file. The volume is asked, not
+ *    LibreOffice's stderr (`outputVolumeFault`). Without the split,
  *    one memory squeeze brands perfectly good documents as permanently
  *    unreadable and nothing ever retries them.
  *
@@ -52,19 +58,36 @@
  * text), NOT a guarantee.
  */
 import { spawn } from "node:child_process";
-import { constants as fsConstants, createWriteStream } from "node:fs";
-import { mkdir, open, rm, symlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, createWriteStream, type StatsFs } from "node:fs";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  readlink,
+  rm,
+  stat,
+  statfs,
+  symlink,
+  unlink,
+} from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { LOG_PATH_MAX, LOG_REASON_MAX, oneLine } from "../log-line";
 
 import { getOfficeArtifactStore, hashFileContents, OfficeArtifactStore } from "./office-artifacts";
 import {
+  countWords,
   OFFICE_CONVERT_BATCH_SIZE,
   OFFICE_EXTENSIONS,
   OfficeFileRejectedError,
+  StagedCopyWriteError,
   isOfficeFile,
 } from "./office-formats";
-import { prepareOfficeSource, readGuardedDocx, type PreparedSource } from "./office-preflight";
+import type { StagedSource } from "./office-preflight";
 import { extractPdfPages } from "./pdf-extract";
 import { sidecarConverter } from "./office-converter-sidecar";
 import {
@@ -75,6 +98,11 @@ import {
   type ConverterRun,
   type RunConverter,
 } from "./office-soffice";
+import {
+  countDocxWordsIsolated,
+  SheetReaderStoppedError,
+  stageOfficeSourceIsolated,
+} from "./xlsx-isolated";
 
 /**
  * Re-exported so this module stays the one place a caller has to know about
@@ -116,6 +144,83 @@ export function batchTimeoutMs(fileCount: number): number {
   return 60_000 + 10_000 * fileCount;
 }
 
+/**
+ * Free space below which a missing PDF is blamed on the volume, not the
+ * document: the unpacked package, plus
+ * `2 × max(MIN_FREE_OUTPUT_BYTES, 2 × the staged source)` for the PDF.
+ *
+ * Two things land on the batch's volume. First the SCRATCH LibreOffice
+ * unpacks a package into while loading it (its `TMPDIR` is inside the batch,
+ * see `runSoffice`). When that runs out it reports exactly what an unloadable
+ * document reports — exit 0, no PDF, `source file could not be loaded` — and
+ * by the time the volume is asked the scratch is gone again. Measured in the
+ * runtime image: a 152 KB `.docx` whose document.xml is 26.6 MB peaked at
+ * 26 MB of scratch, failed to load on a 24 MiB volume and left 23.6 MiB free
+ * behind it. So the unpacked size (`unpackedBytes` from the
+ * preflight) is demanded in full; a legacy `.doc`/`.ppt` is not an archive
+ * and adds nothing.
+ *
+ * Then the PDF, whose size is unknown — it was never written. The staged
+ * source stands in for it: twice the source, never under the floor. That is
+ * a guess, and no factor makes it a bound: the export embeds fonts and
+ * re-encodes pictures (a PNG becomes a JPEG), so the PDF's size follows the
+ * pictures' pixels, not the file's bytes. A 868 KiB `.doc` of five pictures
+ * exports to a 13.6 MiB PDF, an 8.55 MB `.doc` of 200 screenshots to an
+ * 81.9 MB one, 9.6 times the file (both measured in the runtime image).
+ * 16 MiB is above any font set and above the first of those PDFs, and far
+ * below what a volume that is merely busy has left. It also catches the case
+ * measured on a nearly full volume: 4 KB left, the probe's write fits, the PDF does
+ * not.
+ *
+ * And room for that PDF TWICE. LibreOffice exports into its `TMPDIR` — the
+ * batch's, on this volume — and then copies the file into `--outdir`, so for
+ * a moment it is on the volume twice; the temp copy goes before the next
+ * document's. Measured in the runtime image, a `.doc` whose
+ * PDF is 5,758 KiB: converts with 11,592 KiB free, fails the store with
+ * 11,336 KiB (exit 0, no PDF, `impl_store … failed: 0x20d`) and leaves the
+ * volume free again — and twice the PDF is 11,516 KiB, between the two.
+ * Counted once, a changed 12 MB `.ppt` with a 14 MB PDF, on 26 MiB free,
+ * would be judged the document's fault. So a document that came out without
+ * a PDF is never held against it on a volume with less than 32 MiB left —
+ * a volume that is nearly full, not one that is merely in use.
+ *
+ * The scratch and the PDF are added rather than maxed: measuring that
+ * `.docx` shows the scratch released before the PDF is written, but
+ * that is one document's behaviour, not a promise for every format.
+ *
+ * The error that costs least is the one this leans towards: a document
+ * blamed on a volume too small to load it is read again next run — and the
+ * operator is told about a volume that really is about to stop taking writes.
+ *
+ * What it gets wrong the other way, and why it stays: a PDF that outgrows the
+ * guess, on a volume with room for the guess but not for that PDF twice, is
+ * booked `failed`. The 81.9 MB PDF above fails the store on a 70 MiB volume
+ * and leaves 64.5 MB free, against the 34 MB asked: on any volume with
+ * between about 34 MB and twice the PDF (164 MB) free, the document is held
+ * at fault. LibreOffice's output cannot settle it: the line it prints —
+ * `impl_store … failed: 0xc10(Error Area:Io Class:Write Code:16)` — is
+ * byte for byte what an all-hidden `.pptx` or `.ppt` prints on a roomy disk
+ * (measured in the runtime image; a corrupt or truncated
+ * file fails to LOAD instead, and an empty deck converts). Nor can a larger
+ * factor: the deck it then wrongly blamed on the volume would be retried
+ * every run, uncapped, where a wrong `failed` is an incomplete read and is
+ * retried for `MAX_INCOMPLETE_READS` runs (ingest.ts) — the earlier version of
+ * a changed file is lost meanwhile and it is listed unsearchable, which the
+ * docs say. The volume being that full is what an operator can see and fix.
+ */
+export const MIN_FREE_OUTPUT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Free inodes below which the volume is out of files rather than bytes. A
+ * batch creates a handful per document (staged copy, PDF, LibreOffice's temp
+ * file) — under a hundred for a whole batch; a healthy filesystem reports
+ * millions.
+ */
+export const MIN_FREE_OUTPUT_INODES = 1024;
+
+/** The part of `statfs` the volume check reads. */
+export type VolumeSpace = Pick<StatsFs, "bsize" | "bavail" | "files" | "ffree">;
+
 export interface OfficeSource {
   absPath: string;
   /**
@@ -125,6 +230,13 @@ export interface OfficeSource {
    * second read.
    */
   contentHash?: string;
+  /**
+   * What the log and the outcome's `reason` call this document, when `absPath`
+   * is a private copy of it: the path on the share. A copy keeps the file's
+   * basename in a staging directory of its own, so a line naming it reads like
+   * the document and points at a file nobody can find. Defaults to `absPath`.
+   */
+  displayPath?: string;
 }
 
 /**
@@ -162,7 +274,12 @@ export interface ConversionOutcome {
   artifactPath?: string;
   /** Set for `converted` only. */
   verification?: VerificationReport;
-  /** Diagnostic. Never carries document content — it is safe to log. */
+  /**
+   * Diagnostic. Holds no document text, but it can quote names read from the
+   * file (a part's, an entry's — escaped and cut short where they are quoted)
+   * and the file system's own words, which may name the source path. A log
+   * line built from it must still keep it to one line.
+   */
   reason?: string;
 }
 
@@ -174,11 +291,14 @@ export interface ConvertProgress {
 }
 
 /**
- * Vets one source and returns the bytes to convert — or `null` to convert the
- * file in place, through a link (what the tests that fake the converter use).
- * Throws `OfficeFileRejectedError` for a file that must not reach a reader.
+ * Vets one source and writes the bytes to convert to `staged`, answering with
+ * what it did — or `null` to convert the file in place, through a link (what
+ * the tests that fake the converter use). Throws `OfficeFileRejectedError` for
+ * a file that must not reach a reader, `StagedCopyWriteError` when `staged`
+ * cannot be written, and `SheetReaderStoppedError` when the process doing the
+ * vetting stopped without a verdict.
  */
-export type PrepareSource = (absPath: string) => Promise<PreparedSource | null>;
+export type PrepareSource = (absPath: string, staged: string) => Promise<StagedSource | null>;
 
 export interface ConvertOptions {
   store?: OfficeArtifactStore;
@@ -195,20 +315,31 @@ export interface ConvertOptions {
    * stages somewhere of its own.
    */
   removeStagingDir?: (dir: string) => Promise<void>;
-  /** Defaults to the real preflight (./office-preflight.ts). */
+  /**
+   * Defaults to the real preflight (./office-preflight.ts), run in the reader
+   * child (`stageOfficeSourceIsolated`): this process never holds the file.
+   */
   prepareSource?: PrepareSource;
   /** Words in the converted PDF. Prod: the pdfjs text layer (./pdf-extract.ts). */
   countPdfWords?: (absPath: string) => Promise<number>;
-  /** Words the INDEPENDENT extractor sees in the original, or null when there is none for this format. */
-  countSourceWords?: (absPath: string) => Promise<number | null>;
+  /**
+   * Words the INDEPENDENT extractor sees in the original, or null when there is
+   * none for this format. `absPath` is the staged copy; `displayPath` is what a
+   * log line calls the document.
+   */
+  countSourceWords?: (absPath: string, displayPath: string) => Promise<number | null>;
   batchSize?: number;
   epsilon?: number;
   onProgress?: (progress: ConvertProgress) => void | Promise<void>;
+  /** How full the artifact volume is. Prod: `fs.statfs`. */
+  statfs?: (dir: string) => Promise<VolumeSpace>;
 }
 
 /** One document's slot in the run, so results can be returned in input order. */
 interface WorkItem {
   absPath: string;
+  /** See `OfficeSource.displayPath`. */
+  displayPath: string;
   contentHash: string;
   /** Every input position that shares this content — two paths, one conversion. */
   positions: number[];
@@ -235,11 +366,15 @@ export async function convertOfficeFiles(
   const removeStagingDir =
     options.removeStagingDir ??
     (options.createStagingDir ? removeTree : converter.removeStagingDir);
-  const prepareSource = options.prepareSource ?? prepareOfficeSource;
+  const prepareSource = options.prepareSource ?? defaultPrepareSource;
   const countPdfWords = options.countPdfWords ?? defaultCountPdfWords;
-  const countSourceWords = options.countSourceWords ?? countSourceWordsWithOracle;
+  const countSourceWords =
+    options.countSourceWords ??
+    ((absPath: string, displayPath: string) =>
+      countSourceWordsWithOracle(absPath, {}, displayPath));
   const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE);
   const epsilon = options.epsilon ?? OFFICE_VERIFY_EPSILON;
+  const readSpace = options.statfs ?? ((dir: string) => statfs(dir));
 
   const outcomes = new Array<ConversionOutcome>(sources.length);
   const byHash = new Map<string, WorkItem>();
@@ -252,7 +387,10 @@ export async function convertOfficeFiles(
       } catch (err) {
         // The file vanished or turned unreadable between discovery and here.
         // That is about THIS document, not the infrastructure.
-        outcomes[position] = documentFailure(source.absPath, `unreadable source: ${reasonOf(err)}`);
+        outcomes[position] = documentFailure(
+          source.absPath,
+          inOwnName(`unreadable source: ${reasonOf(err)}`, source.absPath, source.displayPath)
+        );
         continue;
       }
     }
@@ -270,7 +408,14 @@ export async function convertOfficeFiles(
 
     const existing = byHash.get(contentHash);
     if (existing) existing.positions.push(position);
-    else byHash.set(contentHash, { absPath: source.absPath, contentHash, positions: [position] });
+    else {
+      byHash.set(contentHash, {
+        absPath: source.absPath,
+        displayPath: source.displayPath ?? source.absPath,
+        contentHash,
+        positions: [position],
+      });
+    }
   }
 
   const work = [...byHash.values()];
@@ -287,11 +432,19 @@ export async function convertOfficeFiles(
       countPdfWords,
       countSourceWords,
       epsilon,
+      statfs: readSpace,
     });
 
     for (const [i, item] of batch.entries()) {
       for (const position of item.positions) {
-        outcomes[position] = { ...results[i], sourcePath: sources[position].absPath };
+        const { reason } = results[i];
+        outcomes[position] = {
+          ...results[i],
+          sourcePath: sources[position].absPath,
+          ...(reason === undefined
+            ? {}
+            : { reason: inOwnName(reason, item.absPath, sources[position].displayPath) }),
+        };
       }
     }
 
@@ -314,7 +467,7 @@ export async function convertOfficeFiles(
  * reason that says what to start.
  *
  * Unset — a developer machine running `pnpm dev`, the tests — means
- * LibreOffice in this process, staged inside the store as before.
+ * LibreOffice in this process, staged inside the store.
  */
 function defaultConverter(store: OfficeArtifactStore): {
   runConverter: RunConverter;
@@ -342,9 +495,14 @@ interface BatchDeps {
   removeStagingDir: (dir: string) => Promise<void>;
   prepareSource: PrepareSource;
   countPdfWords: (absPath: string) => Promise<number>;
-  countSourceWords: (absPath: string) => Promise<number | null>;
+  countSourceWords: (absPath: string, displayPath: string) => Promise<number | null>;
   epsilon: number;
+  statfs: (dir: string) => Promise<VolumeSpace>;
 }
+
+/** The production preparer: the preflight, in the reader child. */
+const defaultPrepareSource: PrepareSource = (absPath, staged) =>
+  stageOfficeSourceIsolated(absPath, staged);
 
 /**
  * Converts one batch in a single converter process.
@@ -367,69 +525,84 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
   } catch (err) {
     // A full or unwritable staging volume (the artifact store's, or the
     // sidecar's spool) is a squeeze on the machine, not a verdict on these
-    // documents — and it must arrive as a retryable outcome
-    // rather than an exception that also throws away the batches that already
-    // succeeded.
+    // documents — and it must arrive as a retryable outcome rather than an
+    // exception that also throws away the batches that already succeeded.
     return batch.map((item) =>
       infrastructureFailure(item.absPath, `staging area unavailable: ${reasonOf(err)}`)
     );
   }
+  /** Batches of a document's own run (see `runIsolatingKills`), removed with this one. */
+  const ownBatches: string[] = [];
 
   const inDir = join(stagingDir, "in");
   const outDir = join(stagingDir, "out");
   const profileDir = join(stagingDir, "profile");
+  const tmpDir = join(stagingDir, "tmp");
 
   try {
     await mkdir(inDir, { recursive: true });
     await mkdir(outDir, { recursive: true });
     await mkdir(profileDir, { recursive: true });
+    await mkdir(tmpDir, { recursive: true });
 
     const outcomes = new Array<ConversionOutcome>(batch.length);
-    const inputs: string[] = [];
+    /** Batch position -> its staged copy, for every document that reached the converter. */
+    const inputs = new Map<number, string>();
     /** What each document is stored under: the hash of the bytes the preflight actually read. */
     const keys = batch.map((item) => item.contentHash);
+    /** What each staged package unpacks to; null for one that is not an archive, or not known. */
+    const unpacked = batch.map((): number | null => null);
 
     for (const [i, item] of batch.entries()) {
       const staged = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
       try {
-        const prepared = await deps.prepareSource(item.absPath);
+        // One file at a time, in the reader child: it reads, checks and
+        // writes the copy at `staged`, and this process gets the metadata.
+        const prepared = await deps.prepareSource(item.absPath, staged);
         if (prepared) {
           if (prepared.altChunksRemoved > 0) {
             // Unlike a cut picture link, a cut altChunk costs text: the
             // chunk's content (HTML, a nested document) is not indexed.
             console.warn(
-              `[kb-office] ${item.absPath}: cut ${prepared.altChunksRemoved} altChunk(s) — content embedded in another format is not indexed`
+              `[kb-office] ${oneLine(item.displayPath, LOG_PATH_MAX)}: cut ${prepared.altChunksRemoved} altChunk(s) — content embedded in another format is not indexed`
             );
           }
-          // Exclusive create: in the sidecar's spool another process may make
-          // entries, and whatever already sits at this name is refused, never
-          // written through.
-          // An explicit mode: a umask can only remove bits, so the converter's
-          // group can read the copy and, whatever the umask, never write it.
-          await writeFile(staged, prepared.data, { flag: "wx", mode: 0o640 });
           // NOT the hash from the run's first read of the file: that read and
           // this one can see different bytes, and the artifact must be filed
           // under the content it was converted from.
           keys[i] = prepared.contentHash;
+          unpacked[i] = prepared.unpackedBytes;
         } else await symlink(item.absPath, staged);
-        inputs.push(staged);
+        inputs.set(i, staged);
       } catch (err) {
-        outcomes[i] =
-          err instanceof OfficeFileRejectedError
-            ? documentFailure(item.absPath, `refused before conversion: ${err.message}`)
-            : documentFailure(item.absPath, `could not stage source: ${reasonOf(err)}`);
+        if (err instanceof OfficeFileRejectedError) {
+          outcomes[i] = documentFailure(item.absPath, `refused before conversion: ${err.message}`);
+        } else if (err instanceof SheetReaderStoppedError) {
+          // The child stopped without a verdict — killed by the system, out
+          // of time, never started. Nothing is known about this document:
+          // read it again next run, and keep what the index has meanwhile.
+          outcomes[i] = infrastructureFailure(
+            item.absPath,
+            `could not check the source: ${err.message}`
+          );
+        } else if (err instanceof StagedCopyWriteError) {
+          // The source was read and checked; only the volume refused the
+          // copy — full, read-only, failing. Like a staging directory that
+          // cannot be created, that is the machine, not this document.
+          outcomes[i] = infrastructureFailure(
+            item.absPath,
+            `could not write the staged copy: ${err.message}`
+          );
+        } else {
+          outcomes[i] = documentFailure(item.absPath, `could not stage source: ${reasonOf(err)}`);
+        }
       }
     }
 
-    if (inputs.length > 0) {
-      let result: ConverterResult;
+    if (inputs.size > 0) {
+      let runs: Map<number, DocumentRun>;
       try {
-        result = await deps.runConverter({
-          inputs,
-          outDir,
-          profileDir,
-          timeoutMs: batchTimeoutMs(inputs.length),
-        });
+        runs = await runIsolatingKills(inputs, { outDir, profileDir, tmpDir }, deps, ownBatches);
       } catch (err) {
         // The converter could not be started at all (a missing binary, a
         // permission problem). Nothing here says anything about the documents.
@@ -440,34 +613,165 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         );
       }
 
-      if (wasKilled(result)) {
+      for (const [i, { result }] of runs) {
+        if (!wasKilled(result)) continue;
         const reason = result.timedOut
           ? "converter exceeded its time budget"
-          : "converter was killed — out of memory (raise OFFICE_CONVERTER_MEM_LIMIT)";
-        return batch.map((item, i) => outcomes[i] ?? infrastructureFailure(item.absPath, reason));
+          : "converter was killed — out of memory (see OFFICE_CONVERTER_MEM_LIMIT)";
+        outcomes[i] = infrastructureFailure(batch[i].absPath, reason);
       }
 
+      let probe: Promise<string | null> | undefined;
+      let space: Promise<VolumeSpace | string> | undefined;
       for (const [i, item] of batch.entries()) {
         if (outcomes[i]) continue;
-        outcomes[i] = await collectOne(
+        const stagedSource = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
+        const run = runs.get(i)!;
+        const producedPdf = join(run.outDir, `${i}.pdf`);
+        const outcome = await collectOne(
           { ...item, contentHash: keys[i] },
-          join(inDir, `${i}${extname(item.absPath).toLowerCase()}`),
-          join(outDir, `${i}.pdf`),
+          stagedSource,
+          producedPdf,
           deps,
-          result.stderr
+          run.result.stderr
         );
+        // Every document verdict collectOne gives is drawn from the PDF — and
+        // both the PDF and LibreOffice's scratch land on the artifact volume
+        // the staged copies just filled. Before a missing or broken PDF is
+        // held against the document, rule out the volume: does the directory
+        // still take a write, and is there room left to load this document
+        // and write its PDF? Asked of the volume itself, once per batch:
+        // LibreOffice's stderr cannot answer it (see `failedStoreLine`).
+        const volumeFault =
+          outcome.status === "failed"
+            ? ((await (probe ??= probeWritable(outDir))) ??
+              outputVolumeFault(
+                await (space ??= readVolumeSpace(outDir, deps.statfs)),
+                await stat(stagedSource).then(
+                  (info) => info.size,
+                  () => 0
+                ),
+                unpacked[i]
+              ))
+            : null;
+        const storeLine = volumeFault ? failedStoreLine(run.result.stderr, producedPdf) : null;
+        outcomes[i] = volumeFault
+          ? infrastructureFailure(
+              item.absPath,
+              `could not write the converted PDF: ${volumeFault}${storeLine ? ` (converter: ${storeLine})` : ""}`
+            )
+          : outcome;
       }
     }
 
     return outcomes;
   } finally {
-    // The converter owns what it wrote into the batch. Should it leave
+    // The converter owns what it wrote into a batch. Should it leave
     // something this process cannot (or, in the spool, will not) remove,
     // that costs a leftover, not the batch's results.
-    await deps.removeStagingDir(stagingDir).catch((err: unknown) => {
-      console.warn(`[kb-office] could not remove the staged batch ${stagingDir}: ${reasonOf(err)}`);
+    for (const dir of [...ownBatches, stagingDir]) {
+      await deps.removeStagingDir(dir).catch((err: unknown) => {
+        console.warn(
+          `[kb-office] could not remove the staged batch ${oneLine(dir, LOG_PATH_MAX)}: ${oneLine(reasonOf(err), LOG_REASON_MAX)}`
+        );
+      });
+    }
+  }
+}
+
+/** The run that speaks for one document, and where it wrote. */
+interface DocumentRun {
+  result: ConverterResult;
+  outDir: string;
+}
+
+/**
+ * Runs the converter over a batch's staged inputs and answers, per batch
+ * position, with the run that speaks for that document.
+ *
+ * Normally that is the batch's one run. But a run that was killed — the OOM
+ * killer, or our own time budget — says nothing about which of its documents
+ * was the cause, and a batch is a fixed slice of a sorted queue: the same
+ * documents meet in the same batch every night. Booking the kill against all
+ * of them would let one deck that takes LibreOffice down, or twenty large ones
+ * that outlast the budget together, keep up to nineteen unrelated documents
+ * from ever being converted. So a killed batch of more than one document is
+ * run again one document at a time, and each document is answered by its own
+ * run.
+ *
+ * Bounded: each document gets exactly one run of its own, on a budget of
+ * `batchTimeoutMs(1)`, never a retry loop. One that dies alone is answered by
+ * that kill — infrastructure, retried on the next reindex like any other kill,
+ * because a document the container is too small for is the machine's to fix
+ * (see `ConversionStatus`).
+ *
+ * Each run of its own is a batch of its own: a fresh staging directory from
+ * `createStagingDir`, holding the document's staged copy again, with a fresh
+ * profile, scratch space and output directory. So nothing the killed process
+ * left behind — its profile mid-write, its scratch, a half-written PDF — is
+ * reused or collected, and nothing of it has to be removed first. With the
+ * sidecar that is also the only shape the converter accepts (it derives every
+ * path from the batch), and the converter cleans up what it wrote; the
+ * directories are removed with the batch, in `convertBatch`, the way any
+ * batch is.
+ */
+async function runIsolatingKills(
+  inputs: ReadonlyMap<number, string>,
+  dirs: { outDir: string; profileDir: string; tmpDir: string },
+  deps: BatchDeps,
+  ownBatches: string[]
+): Promise<Map<number, DocumentRun>> {
+  const batchRun = await deps.runConverter({
+    inputs: [...inputs.values()],
+    outDir: dirs.outDir,
+    profileDir: dirs.profileDir,
+    tmpDir: dirs.tmpDir,
+    timeoutMs: batchTimeoutMs(inputs.size),
+  });
+  const runs = new Map<number, DocumentRun>();
+  if (!wasKilled(batchRun) || inputs.size === 1) {
+    for (const i of inputs.keys()) runs.set(i, { result: batchRun, outDir: dirs.outDir });
+    return runs;
+  }
+
+  for (const [i, staged] of inputs) {
+    const own = await deps.createStagingDir();
+    ownBatches.push(own);
+    const ownDirs = {
+      inDir: join(own, "in"),
+      outDir: join(own, "out"),
+      profileDir: join(own, "profile"),
+      tmpDir: join(own, "tmp"),
+    };
+    for (const dir of Object.values(ownDirs)) await mkdir(dir, { recursive: true });
+    const ownStaged = join(ownDirs.inDir, basename(staged));
+    await restage(staged, ownStaged);
+    runs.set(i, {
+      result: await deps.runConverter({
+        inputs: [ownStaged],
+        outDir: ownDirs.outDir,
+        profileDir: ownDirs.profileDir,
+        tmpDir: ownDirs.tmpDir,
+        timeoutMs: batchTimeoutMs(1),
+      }),
+      outDir: ownDirs.outDir,
     });
   }
+  return runs;
+}
+
+/**
+ * Stages a document's copy again for a run of its own, the way it was
+ * staged: a copy as a copy (exclusive, `0640`, like the first), a link — what
+ * the tests that fake the converter stage — as a link to the same file.
+ */
+async function restage(staged: string, dest: string): Promise<void> {
+  if ((await lstat(staged)).isSymbolicLink()) {
+    await symlink(await readlink(staged), dest);
+    return;
+  }
+  await copyFile(staged, dest, fsConstants.COPYFILE_EXCL);
+  await chmod(dest, 0o640);
 }
 
 /**
@@ -485,7 +789,7 @@ async function collectOne(
   try {
     privateDir = await deps.store.createStagingDir();
   } catch (err) {
-    return infrastructureFailure(item.absPath, `staging area unavailable: ${reasonOf(err)}`);
+    return infrastructureFailure(item.absPath, `artifact store unavailable: ${reasonOf(err)}`);
   }
   try {
     let taken: Awaited<ReturnType<typeof takeOutput>>;
@@ -568,7 +872,7 @@ async function verifyAndCommit(
   // fail a document — it only removes the tripwire for this one file. It reads
   // the STAGED copy: the bytes that were checked and converted, not whatever
   // the share holds by now.
-  const sourceWords = await deps.countSourceWords(stagedSource).catch(() => null);
+  const sourceWords = await deps.countSourceWords(stagedSource, item.displayPath).catch(() => null);
 
   const verification: VerificationReport = {
     status: sourceWords === null ? "unverified" : "ok",
@@ -601,6 +905,105 @@ async function verifyAndCommit(
 }
 
 /**
+ * LibreOffice's line saying it could not store `producedPdf`, or null —
+ * corroboration for the operator log, never a verdict.
+ *
+ * A failed write of the output is reported, per file, as
+ * `SfxBaseModel::impl_store <file:///…/out/<i>.pdf> failed: 0x…(Error Area:Io …)`
+ * — exit 0, no PDF. Measured against the runtime image's LibreOffice 7.4: a
+ * full tmpfs gives `Class:Access`, one with 4 KB left `Class:Space`, a target
+ * answering ENOSPC `Class:Abort`. But the same line comes out when the export
+ * fails for the DOCUMENT's sake: a .pptx whose every slide is hidden gives
+ * `Class:Write Code:16` on a disk with gigabytes free. Taken as "the volume is
+ * full", that deck would be converted again every run, never listed
+ * unsearchable, and the operator sent after a disk that is fine. So the
+ * volume decides (`probeWritable`, `outputVolumeFault`), and this line is only
+ * quoted once it has. It is matched to the output it names — stderr is
+ * batch-wide.
+ */
+function failedStoreLine(stderr: string, producedPdf: string): string | null {
+  for (const line of stderr.split("\n")) {
+    const match = /impl_store <(file:[^>]+)> failed:.*Error Area:Io/.exec(line);
+    if (!match) continue;
+    let target: string;
+    try {
+      target = fileURLToPath(match[1]);
+    } catch {
+      continue;
+    }
+    // By name: this stderr is the batch's own process, which writes into one
+    // directory, and the path it prints may be one the OS resolved (macOS's
+    // /var -> /private/var).
+    if (basename(target) === basename(producedPdf)) return line.trim().slice(0, 300);
+  }
+  return null;
+}
+
+/**
+ * Null when `dir` still takes a write, else why not.
+ *
+ * Writes, fsyncs and removes a small file: an fsync is where a quota or a
+ * failing disk speaks up, not the open. The directory is the batch's own
+ * scratch space, so a failure here says nothing about any document — whatever
+ * the errno, it is the volume.
+ */
+async function probeWritable(dir: string): Promise<string | null> {
+  const probe = join(dir, ".write-probe");
+  try {
+    const handle = await open(probe, "wx");
+    try {
+      await handle.write(Buffer.alloc(4096));
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await unlink(probe);
+    return null;
+  } catch (err) {
+    await rm(probe, { force: true }).catch(() => {});
+    return `output directory does not take a write: ${reasonOf(err)}`;
+  }
+}
+
+/** What `statfs` says about `dir`'s volume, or why it said nothing. */
+function readVolumeSpace(
+  dir: string,
+  statfs: (dir: string) => Promise<VolumeSpace>
+): Promise<VolumeSpace | string> {
+  return statfs(dir).catch(
+    (err: unknown) => `output volume did not report its free space: ${reasonOf(err)}`
+  );
+}
+
+/**
+ * Null when the volume had room to load a document of `sourceBytes` that
+ * unpacks to `unpackedBytes` and to write its PDF (see
+ * `MIN_FREE_OUTPUT_BYTES`), else why not. `space` is what `statfs` said, or
+ * why it said nothing — a volume that cannot report its own state is not one
+ * to blame a document on.
+ */
+function outputVolumeFault(
+  space: VolumeSpace | string,
+  sourceBytes: number,
+  unpackedBytes: number | null
+): string | null {
+  if (typeof space === "string") return space;
+  const free = space.bavail * space.bsize;
+  // The PDF's size, estimated, then twice: once in LibreOffice's TMPDIR, once in --outdir.
+  const pdfBytes = Math.max(MIN_FREE_OUTPUT_BYTES, 2 * sourceBytes);
+  const needed = (unpackedBytes ?? 0) + 2 * pdfBytes;
+  if (free < needed) {
+    return `only ${free} bytes free on the output volume, below the ${needed} bytes this document needs to load and convert`;
+  }
+  // 0 total inodes is a filesystem that does not count them (btrfs, some
+  // network mounts), not one that ran out.
+  if (space.files > 0 && space.ffree < MIN_FREE_OUTPUT_INODES) {
+    return `only ${space.ffree} free inodes on the output volume`;
+  }
+  return null;
+}
+
+/**
  * Was the converter killed rather than finished? 137 is 128+9 — what a shell
  * or `docker` reports for SIGKILL — while a direct spawn sees the signal with
  * a null exit code. Both are the same event: the OOM killer, or our own
@@ -616,6 +1019,15 @@ function documentFailure(sourcePath: string, reason: string): ConversionOutcome 
 
 function infrastructureFailure(sourcePath: string, reason: string): ConversionOutcome {
   return { sourcePath, status: "infrastructure", reason };
+}
+
+/**
+ * `reason` with every mention of the private copy at `absPath` replaced by the
+ * document's own name: a file system error quotes the path it was handed, and
+ * the copy's reads like the document while being nowhere an admin can look.
+ */
+function inOwnName(reason: string, absPath: string, displayPath: string | undefined): string {
+  return displayPath === undefined ? reason : reason.split(absPath).join(displayPath);
 }
 
 function reasonOf(err: unknown): string {
@@ -659,6 +1071,15 @@ async function defaultCountPdfWords(absPath: string): Promise<number> {
   return countWords(pages.map((page) => page.text).join(" "));
 }
 
+export interface OracleDeps {
+  /**
+   * Counts the words of the .docx at a path. Production reads it through the
+   * guard and runs mammoth, both in the heap-capped reader child
+   * (`countDocxWordsIsolated`), so this process never holds the file.
+   */
+  countDocxWords?: (absPath: string) => Promise<number>;
+}
+
 /**
  * Words the INDEPENDENT extractor sees in the original, or null when there is
  * none for this format.
@@ -666,7 +1087,9 @@ async function defaultCountPdfWords(absPath: string): Promise<number> {
  * Independence is the point: an oracle derived from LibreOffice would agree
  * with LibreOffice about text it dropped, and verify nothing.
  *
- *   - `.docx` — mammoth, already a web dependency, reading OOXML directly.
+ *   - `.docx` — mammoth, already a web dependency, reading OOXML directly —
+ *     in the reader child (`xlsx-isolated.ts`), never in this process: its
+ *     DOM costs up to ~300x the markup it parses.
  *   - `.doc`  — `catdoc`, and `.ppt` — `catppt` (Debian `catdoc`, ~1 MB next
  *     to LibreOffice's 422 MB). Both are known to under-report and to mangle
  *     Central/Eastern European diacritics; the lower-bound direction is chosen
@@ -676,24 +1099,33 @@ async function defaultCountPdfWords(absPath: string): Promise<number> {
  *
  * A missing binary is not an error: it yields null, the file is recorded
  * `unverified`, and conversion proceeds. Local dev has no catdoc.
+ *
+ * `displayPath` is what its log line calls the document: the conversion hands
+ * the oracle a staged copy (`in/0.docx`), a name that says nothing.
  */
-export async function countSourceWordsWithOracle(absPath: string): Promise<number | null> {
+export async function countSourceWordsWithOracle(
+  absPath: string,
+  deps: OracleDeps = {},
+  displayPath: string = absPath
+): Promise<number | null> {
   const ext = extname(absPath).toLowerCase();
 
   if (ext === ".docx") {
     try {
-      // The same limits the conversion input passed: mammoth inflates the
-      // whole archive, so a bomb must not reach it through the oracle's door.
-      const buffer = await readGuardedDocx(absPath);
-      const { default: mammoth } = await import("mammoth");
-      const { value } = await mammoth.extractRawText({ buffer });
-      return countWords(value);
+      // The child reads the file through the same limits the conversion
+      // input passed — mammoth inflates the whole archive, so a bomb must not
+      // reach it through the oracle's door — and its heap cap bounds the
+      // memory whatever those limits miss.
+      return await (deps.countDocxWords ?? countDocxWordsIsolated)(absPath);
     } catch (err) {
       if (err instanceof OfficeFileRejectedError && err.code === "too_large") {
-        // Too much for mammoth's DOM in this process (or a bomb the
-        // conversion's own preflight refuses as well). Not a failure: the
-        // conversion goes on, without its tripwire.
-        console.warn(`[kb-convert] ${absPath}: word count skipped, unverified — ${err.message}`);
+        // Too much markup for mammoth's DOM — refused by the scan, or by the
+        // reader child running out of heap — or a bomb the conversion's own
+        // preflight refuses as well. Not a failure: the conversion goes on,
+        // without its tripwire.
+        console.warn(
+          `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count skipped, unverified — ${oneLine(err.message, LOG_REASON_MAX)}`
+        );
       }
       return null;
     }
@@ -751,7 +1183,4 @@ export function runTextOracle(bin: string, absPath: string): Promise<number | nu
   });
 }
 
-/** One word-splitting rule for both sides of the comparison — two rules would make the bound meaningless. */
-export function countWords(text: string): number {
-  return text.split(/\s+/).filter(Boolean).length;
-}
+export { countWords };

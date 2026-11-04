@@ -244,13 +244,72 @@ describe("chatWithDispatchRaceRetry", () => {
       const chat = vi
         .fn()
         .mockImplementationOnce(makeStream(raceError()))
-        .mockImplementationOnce(makeStream(raceError()))
         .mockImplementationOnce(makeStream(successful));
 
       const clock = fakeClock();
-      // The gate confirms readiness each time (the agent is present in the
-      // runtime agents.list). It models the deterministic poll: no need for the
-      // wrapper's blind backoff.
+      // The gate confirms readiness (the agent is present in the runtime
+      // agents.list) and the dispatch that follows lands. It models the
+      // deterministic poll: no need for the wrapper's blind backoff.
+      const awaitAgentReady = vi.fn(async () => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(got).toEqual(successful);
+      expect(chat).toHaveBeenCalledTimes(2);
+      // Gate consulted for the race; blind backoff NOT used.
+      expect(awaitAgentReady).toHaveBeenCalledTimes(1);
+      expect(clock.delay).not.toHaveBeenCalled();
+    });
+
+    it("backs off instead of hot-looping when the gate says ready but the dispatch still races", async () => {
+      // CI run 41569393728: OpenClaw's `agents.list` reported the agent (it
+      // lists agent directories from disk while the runtime agents.list is
+      // empty) while the `agent` dispatch handler kept rejecting the id. With
+      // an immediate re-dispatch after every "ready", Pinchy sent ~4,800
+      // dispatches in 19 s. A gate the next dispatch contradicts is not
+      // evidence of readiness, so the loop must fall back to the capped backoff.
+      const chat = vi.fn(makeStream(raceError("a")));
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn(async () => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 2000, maxTotalMs: 10000 }
+        )
+      );
+
+      // Still bounded and still surfaces the race error at the end.
+      expect(got).toHaveLength(1);
+      assertErrorChunk(got[0]);
+      // First "ready" is trusted (immediate retry); once that retry races too,
+      // every further retry waits the capped backoff: 1000, 2000, 2000, ...
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([1000, 2000, 2000, 2000, 2000, 1000]);
+      expect(chat).toHaveBeenCalledTimes(8);
+      // Once contradicted, the gate is not consulted again for this call.
+      expect(awaitAgentReady).toHaveBeenCalledTimes(1);
+    });
+
+    it("trusts the gate's 'ready' once, then waits the backoff when it was wrong", async () => {
+      // The gate answers "ready" but the agent lands one retry later: the first
+      // answer earns an immediate retry; once that retry races too, the gate is
+      // no longer asked and the next retry waits the backoff.
+      const successful: ChatChunk[] = [{ type: "done", text: "", runId: "r1" }];
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      const clock = fakeClock();
       const awaitAgentReady = vi.fn(async () => true);
 
       const got = await collect(
@@ -264,9 +323,8 @@ describe("chatWithDispatchRaceRetry", () => {
 
       expect(got).toEqual(successful);
       expect(chat).toHaveBeenCalledTimes(3);
-      // Gate consulted once per race; blind backoff NOT used.
-      expect(awaitAgentReady).toHaveBeenCalledTimes(2);
-      expect(clock.delay).not.toHaveBeenCalled();
+      expect(awaitAgentReady).toHaveBeenCalledTimes(1);
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([1000]);
     });
 
     it("passes the REMAINING wall-clock budget to the readiness gate", async () => {
@@ -289,6 +347,64 @@ describe("chatWithDispatchRaceRetry", () => {
 
       // First (and only) race fires at t=0, so the full budget is available.
       expect(awaitAgentReady).toHaveBeenCalledWith(90000);
+    });
+
+    it("does not count a model race after a 'ready' as contradicting the gate", async () => {
+      // The dispatch after the gate's "ready" was ACCEPTED (it failed on the
+      // model, not the agent id), so the gate was right and stays trusted.
+      const successful: ChatChunk[] = [{ type: "done", text: "", runId: "r1" }];
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(
+          makeStream([{ type: "error", text: "Unknown model: google/gemini-2.5-pro", runId: "r0" }])
+        )
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn(async () => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(got).toEqual(successful);
+      expect(chat).toHaveBeenCalledTimes(4);
+      // Both agent races consult the gate; only the model race backs off.
+      expect(awaitAgentReady).toHaveBeenCalledTimes(2);
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([1000]);
+    });
+
+    it("keeps trusting the gate after a 'not ready' answer", async () => {
+      // Only a contradicted "ready" ends the trust. A gate that timed out and
+      // later confirms readiness still earns an immediate retry.
+      const successful: ChatChunk[] = [{ type: "done", text: "", runId: "r1" }];
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, awaitAgentReady },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(got).toEqual(successful);
+      expect(awaitAgentReady).toHaveBeenCalledTimes(2);
+      // Backoff after the "not ready" only; the confirmed retry is immediate.
+      expect(clock.delay.mock.calls.map((c) => c[0])).toEqual([500]);
     });
 
     it("falls back to capped blind backoff when the gate reports not-ready (unobservable / timeout)", async () => {
@@ -484,6 +600,177 @@ describe("chatWithDispatchRaceRetry", () => {
       assertErrorChunk(got[0]);
       expect(MODEL_DISPATCH_RACE_PATTERN.test(got[0].text)).toBe(true);
       expect(clock.now()).toBeLessThanOrEqual(3000);
+    });
+  });
+
+  describe("a run stopped while it waits out the race (shouldStop)", () => {
+    // The stop button and deactivation both abort a PENDING run by session
+    // only. While the loop is between attempts nothing is running on OpenClaw,
+    // so that abort answers `aborted: false` and stops nothing — the next
+    // re-dispatch would start the reply the user (or the admin) just stopped.
+    const successful: ChatChunk[] = [
+      { type: "text", text: "Booked.", runId: "r1" },
+      { type: "done", text: "", runId: "r1" },
+    ];
+
+    it("does not dispatch again when the run is stopped during the backoff", async () => {
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      let stopped = false;
+      const clock = fakeClock();
+      clock.delay.mockImplementation(async () => {
+        stopped = true; // the abort lands while the loop sleeps
+      });
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          { chat: chat as never, delay: clock.delay, now: clock.now, shouldStop: () => stopped },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(clock.delay).toHaveBeenCalledTimes(1);
+      // Ends cleanly: no race error surfaced as if the agent had failed.
+      expect(got).toEqual([]);
+    });
+
+    it("does not dispatch again when the run is stopped while the readiness gate waits", async () => {
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      let stopped = false;
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn(async () => {
+        stopped = true;
+        return true; // ready — which would re-dispatch at once
+      });
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          {
+            chat: chat as never,
+            delay: clock.delay,
+            now: clock.now,
+            awaitAgentReady,
+            shouldStop: () => stopped,
+          },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(got).toEqual([]);
+    });
+
+    it("neither waits nor dispatches again when the run was stopped before the race error arrived", async () => {
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      const clock = fakeClock();
+      const awaitAgentReady = vi.fn(async () => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          {
+            chat: chat as never,
+            delay: clock.delay,
+            now: clock.now,
+            awaitAgentReady,
+            shouldStop: () => true,
+          },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(awaitAgentReady).not.toHaveBeenCalled();
+      expect(clock.delay).not.toHaveBeenCalled();
+      expect(got).toEqual([]);
+    });
+
+    it("tells onStopped, and waits for it, before it returns on a stop — and only then", async () => {
+      const chat = vi
+        .fn()
+        .mockImplementationOnce(makeStream(raceError()))
+        .mockImplementationOnce(makeStream(successful));
+      let stopped = false;
+      const clock = fakeClock();
+      clock.delay.mockImplementation(async () => {
+        stopped = true;
+      });
+      const events: string[] = [];
+      const onStopped = vi.fn(async () => {
+        await Promise.resolve();
+        events.push("onStopped settled");
+      });
+
+      await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          {
+            chat: chat as never,
+            delay: clock.delay,
+            now: clock.now,
+            shouldStop: () => stopped,
+            onStopped,
+          },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+      events.push("returned");
+
+      expect(onStopped).toHaveBeenCalledTimes(1);
+      expect(events).toEqual(["onStopped settled", "returned"]);
+
+      // A run nobody stopped never reports a stop.
+      const unstopped = vi.fn();
+      await collect(
+        chatWithDispatchRaceRetry(
+          "hello",
+          { agentId: "a" } as ChatOptions,
+          {
+            chat: vi
+              .fn()
+              .mockImplementationOnce(makeStream(raceError()))
+              .mockImplementationOnce(makeStream(successful)) as never,
+            delay: fakeClock().delay,
+            now: fakeClock().now,
+            shouldStop: () => false,
+            onStopped: unstopped,
+          },
+          { baseDelayMs: 500, maxDelayMs: 5000, maxTotalMs: 90000 }
+        )
+      );
+      expect(unstopped).not.toHaveBeenCalled();
+    });
+
+    it("does not consult shouldStop for a run that never raced", async () => {
+      const chat = vi.fn().mockImplementationOnce(makeStream(successful));
+      const shouldStop = vi.fn(() => true);
+
+      const got = await collect(
+        chatWithDispatchRaceRetry("hello", { agentId: "a" } as ChatOptions, {
+          chat: chat as never,
+          shouldStop,
+        })
+      );
+
+      // A stop on a run that is actually streaming is OpenClaw's to end — the
+      // wrapper passes the stream through untouched.
+      expect(got).toEqual(successful);
+      expect(shouldStop).not.toHaveBeenCalled();
     });
   });
 

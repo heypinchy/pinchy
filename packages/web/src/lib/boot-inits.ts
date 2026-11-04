@@ -16,6 +16,7 @@ import { seedBuiltinModels } from "@/lib/model-capabilities/seed";
 import { loadModelCapabilityCache } from "@/lib/model-capabilities/cache";
 import { checkSecretsVolumeWritable } from "@/lib/openclaw-secrets";
 import { recordConfigRegenSuccess, recordConfigRegenFailure } from "@/lib/openclaw-config-health";
+import { reportUnknownOriginUsers } from "@/lib/user-provenance";
 
 /**
  * Runs all one-time boot initializations in the correct order and performs
@@ -73,20 +74,21 @@ export async function bootInits(): Promise<boolean> {
 
   // Pre-seed Pinchy's restart-class overrides into openclaw.json BEFORE OC
   // starts. Without this seed, the very first WS-driven config.apply (e.g.
-  // from POST /api/setup) produces a diff at `gateway.controlUi.enabled`,
-  // `update`, `discovery`, `canvasHost` (per OC 5.3 BASE_RELOAD_RULES_TAIL,
-  // these are restart-class). The reload subsystem fires SIGUSR1 → in-process
-  // restart → OC's `ensureGatewayStartupAuth → replaceConfigFile` hits the
-  // stale-snapshot bug and crashes the gateway with
-  // `ConfigMutationConflictError: config changed since last load`. Telegram
-  // E2E `agent-create-no-restart.spec.ts` reproduces this on every other CI
-  // run as "OpenClaw never quiet for 30000ms within 240000ms".
-  // Idempotent: if the file already carries the four overrides (production
-  // case — Docker-managed named volume populated from the image's baked-in
-  // config/openclaw.json), this is a no-op. Targeted to ONLY the four restart-
-  // class fields (full bootInits regenerate broke the integration test's
-  // basic chat by producing a stale agents/models block that interfered with
-  // OC's model registry on later hot-reload).
+  // from POST /api/setup) produces a diff at `gateway.mode`/`bind`,
+  // `gateway.controlUi.enabled`, `update`, `discovery`, `canvasHost`, `media`
+  // (all restart-class in OC's reload planner — explicit rules or the no-rule
+  // default). The reload subsystem fires SIGUSR1 → in-process restart, which
+  // aborts any run in flight and can hit OC's stale-snapshot bug in
+  // `ensureGatewayStartupAuth → replaceConfigFile` (`ConfigMutationConflictError:
+  // config changed since last load`). Telegram E2E
+  // `agent-create-no-restart.spec.ts` reproduced that as "OpenClaw never quiet
+  // for 30000ms within 240000ms".
+  // Idempotent: a file that already carries the overrides (e.g. a volume
+  // populated from the OpenClaw image's baked-in config/openclaw.json) is left
+  // alone. Targeted to ONLY the restart-class fields: a full bootInits
+  // regenerate broke the integration test's basic chat by producing a stale
+  // agents/models block that interfered with OC's model registry on a later
+  // hot-reload.
   try {
     if (seedRestartClassOverridesIfMissing()) {
       console.log(
@@ -161,8 +163,10 @@ export async function bootInits(): Promise<boolean> {
   }
 
   let setupWasComplete = false;
+  let setupComplete = false;
   try {
     if (await isSetupComplete()) {
+      setupComplete = true;
       await migrateExistingSmithers();
 
       // Bring un-customized Smithers souls up to the soul this build ships.
@@ -204,5 +208,35 @@ export async function bootInits(): Promise<boolean> {
   console.log("[pinchy] boot complete: OpenClaw container may now start");
   markOpenClawConfigReady();
 
+  // After readiness, and not awaited: the report reads every account and
+  // writes an audit row per flagged one, which on an instance a bot filled
+  // with sign-ups is minutes of work that neither OpenClaw's start nor the
+  // healthcheck has any reason to wait for. Before setup there is no setup
+  // admin, so every account would read as unknown.
+  if (setupComplete) void reportUnknownOriginUsersInBackground();
+
   return setupWasComplete;
+}
+
+/**
+ * Accounts self-registered through the sign-up endpoint earlier releases left
+ * open survive the upgrade that closed it. Report each once in the audit trail;
+ * Settings → Users lists them for admins. Never throws: it runs detached from
+ * boot, and a rejection here would have no one to catch it.
+ */
+async function reportUnknownOriginUsersInBackground(): Promise<void> {
+  try {
+    const reported = await reportUnknownOriginUsers();
+    if (reported > 0) {
+      console.warn(
+        `[pinchy] ${reported} account(s) neither the setup wizard nor an invite created — ` +
+          "review them in Settings → Users"
+      );
+    }
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to check account provenance:",
+      err instanceof Error ? err.message : err
+    );
+  }
 }

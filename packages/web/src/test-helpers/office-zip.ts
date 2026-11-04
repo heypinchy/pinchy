@@ -173,3 +173,44 @@ export function truthfulSpacesEntry(
 export function peakRss(): number {
   return process.resourceUsage().maxRSS * 1024;
 }
+
+/**
+ * `archive` with one more directory record per `aliases` name, each a copy of
+ * `name`'s record — pointing at the SAME local header and stored bytes. Every
+ * record passes a size and checksum check on its own; a copy built record by
+ * record would hold those bytes once per record.
+ */
+export function withAliases(archive: Buffer, name: string, aliases: string[]): Buffer {
+  const eocd = archive.length - 22;
+  const count = archive.readUInt16LE(eocd + 10);
+  const cdSize = archive.readUInt32LE(eocd + 12);
+  const cdOffset = archive.readUInt32LE(eocd + 16);
+  let record: Buffer | undefined;
+  for (let pos = cdOffset; pos < cdOffset + cdSize;) {
+    const nameLength = archive.readUInt16LE(pos + 28);
+    const length =
+      46 + nameLength + archive.readUInt16LE(pos + 30) + archive.readUInt16LE(pos + 32);
+    if (archive.toString("utf8", pos + 46, pos + 46 + nameLength) === name) {
+      record = archive.subarray(pos, pos + length);
+    }
+    pos += length;
+  }
+  if (!record) throw new Error(`no entry named "${name}"`);
+  const original = record;
+  const copies = aliases.map((alias) => {
+    const aliasName = Buffer.from(alias, "utf8");
+    const copy = Buffer.alloc(46 + aliasName.length);
+    original.copy(copy, 0, 0, 46);
+    copy.writeUInt16LE(aliasName.length, 28);
+    copy.writeUInt16LE(0, 30);
+    copy.writeUInt16LE(0, 32);
+    aliasName.copy(copy, 46);
+    return copy;
+  });
+  const directory = Buffer.concat([archive.subarray(cdOffset, cdOffset + cdSize), ...copies]);
+  const end = Buffer.from(archive.subarray(eocd));
+  end.writeUInt16LE(count + aliases.length, 8);
+  end.writeUInt16LE(count + aliases.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  return Buffer.concat([archive.subarray(0, cdOffset), directory, end]);
+}

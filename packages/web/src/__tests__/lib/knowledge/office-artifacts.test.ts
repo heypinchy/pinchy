@@ -7,13 +7,26 @@
  * ever be written next to the original (`/data` is mounted read-only and the
  * docs state that as a product promise).
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+} from "node:fs";
 import { readdir, stat, utimes } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
+import {
+  clearStagedBatches,
+  liveStagingDirOf,
+  OfficeArtifactStore,
+  pruneOtherFormatVersions,
+} from "@/lib/knowledge/office-artifacts";
 
 let tmpRoot: string;
 
@@ -130,18 +143,149 @@ describe("OfficeArtifactStore", () => {
       const store = new OfficeArtifactStore(join(tmpRoot, "never-used"));
       expect(await store.sweep(1000)).toBe(0);
     });
+  });
 
+  describe("pruneOtherFormatVersions", () => {
+    // After a format bump nothing reads the old version directory again — the
+    // preview resolves only the current version — but it still holds what the
+    // earlier, weaker conversion drew into its PDFs, and it costs disk.
+    const NOTHING_REFERENCED = async () => false;
+
+    // ...unless a document is still on record as read from it. Until that
+    // document has been converted again, its directory is what the version
+    // it was indexed with resolves, and the one thing a rollback to that
+    // version — database restored, artifact volume not — still finds.
+    it("keeps a superseded version as long as a document is still on record as read from it", async () => {
+      const root = join(tmpRoot, "store");
+      const v1 = new OfficeArtifactStore(root, { formatVersion: 1 });
+      await v1.put(HASH_A, stagedPdf("a.pdf"));
+      const v0 = new OfficeArtifactStore(root, { formatVersion: 0 });
+      await v0.put(HASH_B, stagedPdf("b.pdf"));
+      new OfficeArtifactStore(root, { formatVersion: 2 });
+      const asked: number[] = [];
+
+      const removed = await pruneOtherFormatVersions(root, 2, async (version) => {
+        asked.push(version);
+        return version === 1;
+      });
+
+      expect(removed).toBe(1);
+      expect(asked.sort()).toEqual([0, 1]);
+      expect(await v1.get(HASH_A)).not.toBeNull();
+      expect((await readdir(root)).sort()).toEqual(["v1", "v2"]);
+    });
+
+    it("is never asked about the current version", async () => {
+      const root = join(tmpRoot, "store");
+      const v2 = new OfficeArtifactStore(root, { formatVersion: 2 });
+      await v2.put(HASH_A, stagedPdf("a.pdf"));
+      const inUse = vi.fn(async () => false);
+
+      expect(await pruneOtherFormatVersions(root, 2, inUse)).toBe(0);
+
+      expect(inUse).not.toHaveBeenCalled();
+      expect(await v2.get(HASH_A)).not.toBeNull();
+    });
     it("removes the artifacts of superseded format versions wholesale", async () => {
       const root = join(tmpRoot, "store");
       const v1 = new OfficeArtifactStore(root, { formatVersion: 1 });
       await v1.put(HASH_A, stagedPdf("a.pdf"));
-
       const v2 = new OfficeArtifactStore(root, { formatVersion: 2 });
-      const removed = await v2.pruneOtherFormatVersions();
+      const kept = await v2.put(HASH_B, stagedPdf("b.pdf"));
+
+      const removed = await pruneOtherFormatVersions(root, 2, NOTHING_REFERENCED);
 
       expect(removed).toBe(1);
       expect(await v1.get(HASH_A)).toBeNull();
       expect(await readdir(root)).toEqual(["v2"]);
+      expect(readFileSync(kept, "utf8")).toBe("%PDF-1.4 stand-in");
+    });
+
+    it("leaves staging and anything that is not a version directory alone", async () => {
+      // `staging/` may hold a batch converting right now; the rest is not ours.
+      const root = join(tmpRoot, "store");
+      const store = new OfficeArtifactStore(root, { formatVersion: 2 });
+      const batch = await store.createStagingDir();
+      writeFileSync(join(batch, "0.pptx"), "a checked copy");
+      for (const name of ["v1.old", "v", "notes"]) mkdirSync(join(root, name));
+      writeFileSync(join(root, "v3"), "a file, not a version directory");
+
+      expect(await pruneOtherFormatVersions(root, 2, NOTHING_REFERENCED)).toBe(0);
+
+      expect((await readdir(root)).sort()).toEqual(["notes", "staging", "v", "v1.old", "v2", "v3"]);
+      expect(existsSync(join(batch, "0.pptx"))).toBe(true);
+    });
+
+    it("never follows a symlink out of the store", async () => {
+      const outside = join(tmpRoot, "outside");
+      mkdirSync(join(outside, "ab"), { recursive: true });
+      writeFileSync(join(outside, "ab", "precious.pdf"), "not the store's");
+      const root = join(tmpRoot, "store");
+      new OfficeArtifactStore(root, { formatVersion: 2 });
+      // A version-shaped name that points elsewhere, and a shard inside a real
+      // superseded version that does the same.
+      symlinkSync(outside, join(root, "v1"));
+      mkdirSync(join(root, "v0"));
+      symlinkSync(join(outside, "ab"), join(root, "v0", "ab"));
+
+      await pruneOtherFormatVersions(root, 2, NOTHING_REFERENCED);
+
+      expect(readFileSync(join(outside, "ab", "precious.pdf"), "utf8")).toBe("not the store's");
+      expect(existsSync(join(root, "v0"))).toBe(false);
+    });
+
+    it("is a no-op, and creates nothing, where there is no store", async () => {
+      const root = join(tmpRoot, "never-used");
+
+      expect(await pruneOtherFormatVersions(root, 2, NOTHING_REFERENCED)).toBe(0);
+      expect(existsSync(root)).toBe(false);
+    });
+  });
+
+  describe("clearStagedBatches", () => {
+    // A batch cleans its staging directory up when it finishes. A batch that
+    // never finishes — a restart, an upgrade, an OOM kill during the nightly
+    // reindex — leaves up to 20 checked copies of up to 200 MB each behind,
+    // and nothing else ever removes them: `sweep` reads only the version
+    // directory and `pruneOtherFormatVersions` deliberately skips `staging/`.
+    it("removes every batch an interrupted run left in staging, and nothing else", async () => {
+      const root = join(tmpRoot, "store");
+      const store = new OfficeArtifactStore(root);
+      const artifact = await store.put(HASH_A, stagedPdf("a.pdf"));
+      for (const batch of [await store.createStagingDir(), await store.createStagingDir()]) {
+        mkdirSync(join(batch, "in"), { recursive: true });
+        writeFileSync(join(batch, "in", "0.pptx"), "a checked copy");
+      }
+
+      expect(await clearStagedBatches(root)).toBe(2);
+
+      expect(await readdir(join(root, "staging"))).toEqual([]);
+      expect(readFileSync(artifact, "utf8")).toBe("%PDF-1.4 stand-in");
+    });
+
+    it("spares the copies this process is reading right now, and removes another process's", async () => {
+      // The web server takes requests before the index worker's first tick, so
+      // a preview may be reading its private copy of a workbook at the very
+      // moment the boot clear runs. Removing it would answer that reader
+      // "unreadable" — and audit it — over a file that is fine.
+      const root = join(tmpRoot, "store");
+      const own = liveStagingDirOf(root);
+      mkdirSync(join(own, "source-a"), { recursive: true });
+      writeFileSync(join(own, "source-a", "prices.xlsx"), "a preview's copy");
+      const dead = join(root, "staging", "live-of-a-dead-process", "source-b");
+      mkdirSync(dead, { recursive: true });
+      writeFileSync(join(dead, "salaries.xlsx"), "a dead preview's copy");
+
+      expect(await clearStagedBatches(root)).toBe(1);
+
+      expect(await readdir(join(root, "staging"))).toEqual([basename(own)]);
+      expect(readFileSync(join(own, "source-a", "prices.xlsx"), "utf8")).toBe("a preview's copy");
+    });
+
+    it("is a no-op on a store that has no staging directory, or no store at all", async () => {
+      expect(await clearStagedBatches(join(tmpRoot, "never-used"))).toBe(0);
+      new OfficeArtifactStore(join(tmpRoot, "fresh"));
+      expect(await clearStagedBatches(join(tmpRoot, "fresh"))).toBe(0);
     });
   });
 });

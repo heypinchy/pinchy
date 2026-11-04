@@ -133,6 +133,8 @@ function fakeDeps(): IngestDeps {
       throw new Error("convertOffice must not be called for a PDF");
     },
     ocrModel: null,
+    // Hidden, so a run over tmpRoot never lists its own copies.
+    stagingDir: join(tmpRoot, ".kb-artifacts", "staging"),
   };
 }
 

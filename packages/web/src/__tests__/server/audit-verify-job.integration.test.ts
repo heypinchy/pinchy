@@ -12,9 +12,17 @@
 // through the checkpoint fold, which likewise only means something against
 // real ids and a real chain.
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { asc, eq, sql } from "drizzle-orm";
-import { appendAuditLog, verifyIntegrity } from "@/lib/audit";
+import {
+  appendAuditLog,
+  computeRowHmacV3,
+  isActiveKeySeenBefore,
+  verifyIntegrity,
+} from "@/lib/audit";
 import { db } from "@/db";
 import { auditLog, auditVerifyState } from "@/db/schema";
 import { sweepAuditVerify } from "@/server/audit-verify-job";
@@ -95,8 +103,8 @@ describe("audit-verify-job (integration)", () => {
     // Only the #698 test arms the concurrent-append interposer; make sure a
     // leftover arming can never bleed into another test's row sequence.
     raceState.armed = false;
-    // Fresh checkpoint per test — the shared per-test TRUNCATE in
-    // src/test-helpers/integration/setup.ts already resets audit_verify_state,
+    // Fresh checkpoint per test — the shared per-test reset in
+    // src/test-helpers/integration/reset-db.ts already empties audit_verify_state,
     // this is just documentation of that assumption.
     expect(await readCheckpointRow()).toBeNull();
   });
@@ -219,6 +227,64 @@ describe("audit-verify-job (integration)", () => {
     expect(checkpointAfterSecondSweep!.lastStatus).toBe("violation");
   });
 
+  it("DELETED CHECKPOINT ROW: the next sweep reports the boundary link as broken", async () => {
+    // The checkpoint remembers the rowHmac of the row it ends on, and the next
+    // window's first link still matches that remembered value after the row
+    // itself is gone. Only comparing the row as it is now with what the
+    // checkpoint remembered notices the deletion.
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const checkpoint = await readCheckpointRow();
+
+    await appendRow("u3");
+    await deleteRowPastTrigger(checkpoint!.lastVerifiedId);
+
+    const second = await sweepAuditVerify();
+
+    expect(second.scanned).toBe(true);
+    expect(second.valid).toBe(false);
+    expect(second.chainBreakCount).toBe(1);
+    expect((await readCheckpointRow())!.lastStatus).toBe("violation");
+  });
+
+  it("DELETED CHECKPOINT ROW AT THE TIP: only the sweep reports it, a full verification is clean", async () => {
+    // The checkpoint is usually the sweep's own report row, the newest row on a
+    // quiet instance. Deleted while it is still the newest, it leaves no gap in
+    // the chain: the next appended row links to the row before it. A full
+    // verification walks a consistent chain and finds nothing. Only the sweep,
+    // which compares the window's first link with the hash it remembered, sees
+    // the deletion, so its chain break has to stand on its own.
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const checkpoint = await readCheckpointRow();
+    const rowsBeforeDelete = await allRowsById();
+    expect(rowsBeforeDelete[rowsBeforeDelete.length - 1].id).toBe(checkpoint!.lastVerifiedId);
+
+    await deleteRowPastTrigger(checkpoint!.lastVerifiedId);
+    await appendRow("u3");
+    await appendRow("u4");
+    const [u3] = (await allRowsById()).filter((r) => r.id > checkpoint!.lastVerifiedId);
+
+    const second = await sweepAuditVerify();
+
+    expect(second.valid).toBe(false);
+    expect(second.chainBreakCount).toBe(1);
+    const [failure] = await db
+      .select({ detail: auditLog.detail })
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "audit.integrity_check"))
+      .orderBy(sql`${auditLog.id} desc`)
+      .limit(1);
+    expect(failure.detail).toMatchObject({ chainBreakIds: [u3.id] });
+
+    const full = await verifyIntegrity();
+    expect(full.valid).toBe(true);
+    expect(full.chainBreakIds).toEqual([]);
+    expect(full.invalidIds).toEqual([]);
+  });
+
   it("CONCURRENT APPEND during the sweep: the raced row is verified by the next sweep, not skipped forever (#698)", async () => {
     await appendRow("u1");
     await appendRow("u2");
@@ -305,5 +371,372 @@ describe("audit-verify-job (integration)", () => {
     // checkpoint that pointed at a non-existent or wrong row.
     const secondSweep = await sweepAuditVerify();
     expect(secondSweep.scanned).toBe(false);
+  });
+});
+
+// The previous signing key is only trusted for the rows that pre-date the
+// rotation. The full-range verifier knows that from the rows it walks; the
+// incremental sweep sees one window at a time, so without help a window of
+// forged old-key rows that follows an active-key checkpoint looks like a
+// legitimate pre-rotation prefix. These prove the sweep carries the rotation
+// across the checkpoint.
+describe("audit-verify-job across a signing-secret rotation (integration)", () => {
+  const previousSecretHex = "ab".repeat(32);
+  const previousSecret = Buffer.from(previousSecretHex, "hex");
+  let secretsDir: string;
+  let originalKeyDir: string | undefined;
+
+  beforeEach(() => {
+    // AUDIT_HMAC_SECRET is pinned by the integration config (the active key).
+    // A different key file in the secrets dir is, by getPreviousSecret's
+    // definition, the key that pin superseded.
+    originalKeyDir = process.env.ENCRYPTION_KEY_DIR;
+    secretsDir = mkdtempSync(join(tmpdir(), "audit-prev-key-"));
+    writeFileSync(join(secretsDir, ".audit_hmac_secret"), previousSecretHex);
+    process.env.ENCRYPTION_KEY_DIR = secretsDir;
+  });
+
+  afterEach(() => {
+    if (originalKeyDir === undefined) delete process.env.ENCRYPTION_KEY_DIR;
+    else process.env.ENCRYPTION_KEY_DIR = originalKeyDir;
+    rmSync(secretsDir, { recursive: true, force: true });
+  });
+
+  // Re-sign a stored row under the previous key, as someone holding the old
+  // key file and DB write access would (immutability trigger bypassed).
+  async function resignUnderPreviousKey(id: number, actorId?: string) {
+    const [row] = await db.select().from(auditLog).where(eq(auditLog.id, id));
+    const newActorId = actorId ?? row.actorId;
+    const rowHmac = computeRowHmacV3(previousSecret, {
+      timestamp: row.timestamp,
+      eventType: row.eventType,
+      actorType: row.actorType,
+      actorId: newActorId,
+      resource: row.resource,
+      detail: row.detail,
+      outcome: (row.outcome ?? "success") as "success" | "failure",
+      error: row.error as { message: string } | null,
+      prevHmac: row.prevHmac,
+    });
+    await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER no_update`);
+    try {
+      await db.execute(
+        sql`UPDATE audit_log SET actor_id = ${newActorId}, row_hmac = ${rowHmac} WHERE id = ${id}`
+      );
+    } finally {
+      await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER no_update`);
+    }
+    return rowHmac;
+  }
+
+  // Re-sign every row in the table, in order, under `key`, threading the chain:
+  // re-signing changes rowHmac, so the next row's prevHmac must follow. Models
+  // history that was written while `key` was the active key. Returns the last
+  // row's { id, rowHmac }.
+  async function resignChainUnder(key: Buffer) {
+    const rows = await allRowsById();
+    let prev: string | null = null;
+    await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER no_update`);
+    try {
+      for (const r of rows) {
+        const [row] = await db.select().from(auditLog).where(eq(auditLog.id, r.id));
+        const rowHmac = computeRowHmacV3(key, {
+          timestamp: row.timestamp,
+          eventType: row.eventType,
+          actorType: row.actorType,
+          actorId: row.actorId,
+          resource: row.resource,
+          detail: row.detail,
+          outcome: (row.outcome ?? "success") as "success" | "failure",
+          error: row.error as { message: string } | null,
+          prevHmac: prev,
+        });
+        await db.execute(
+          sql`UPDATE audit_log SET prev_hmac = ${prev}, row_hmac = ${rowHmac} WHERE id = ${r.id}`
+        );
+        prev = rowHmac;
+      }
+    } finally {
+      await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER no_update`);
+    }
+    return { id: rows[rows.length - 1].id, rowHmac: prev! };
+  }
+
+  // Change a stored row's content past the immutability trigger and leave its
+  // row_hmac alone: the stored hash string stays the one the sweep remembered.
+  async function alterContentInPlace(id: number) {
+    await db.execute(sql`ALTER TABLE audit_log DISABLE TRIGGER no_update`);
+    try {
+      await db.execute(sql`UPDATE audit_log SET detail = '{}'::jsonb WHERE id = ${id}`);
+    } finally {
+      await db.execute(sql`ALTER TABLE audit_log ENABLE TRIGGER no_update`);
+    }
+  }
+
+  it("flags an old-key row that appears in a later window than the active-key rows", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    const first = await sweepAuditVerify();
+    expect(first.valid).toBe(true);
+
+    // After the rotation: a row written under the active key, then rewritten
+    // under the leaked old key. It is alone in the second window, with no
+    // active-key row inside that window to precede it.
+    await appendRow("u3");
+    const rows = await allRowsById();
+    await resignUnderPreviousKey(rows[rows.length - 1].id, "forged-after-rotation");
+
+    const second = await sweepAuditVerify();
+
+    expect(second.scanned).toBe(true);
+    expect(second.invalidCount).toBe(1);
+    expect(second.previousKeyCount).toBe(0);
+    expect(second.valid).toBe(false);
+  });
+
+  it("flags old-key rows after a checkpoint row that was itself re-signed with the old key", async () => {
+    // The checkpoint row decides whether the next window may still contain
+    // pre-rotation rows. Re-signing that row with the leaked old key would make
+    // it look pre-rotation, and every row after it could then be re-signed the
+    // same way and pass as history. Each row's stored link stays untouched, so
+    // nothing in the chain itself gives it away.
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const checkpoint = await readCheckpointRow();
+
+    await appendRow("u3");
+    const rows = await allRowsById();
+    await resignUnderPreviousKey(checkpoint!.lastVerifiedId);
+    await resignUnderPreviousKey(rows[rows.length - 1].id, "forged-after-rotation");
+
+    const second = await sweepAuditVerify();
+
+    expect(second.scanned).toBe(true);
+    expect(second.previousKeyCount).toBe(0);
+    expect(second.invalidCount).toBe(1);
+    expect(second.valid).toBe(false);
+  });
+
+  it("reports a re-signed checkpoint row as a broken link even when the rows after it are untouched", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const checkpoint = await readCheckpointRow();
+
+    await appendRow("u3");
+    await resignUnderPreviousKey(checkpoint!.lastVerifiedId);
+
+    const second = await sweepAuditVerify();
+
+    expect(second.valid).toBe(false);
+    expect(second.invalidCount).toBe(0);
+    expect(second.chainBreakCount).toBe(1);
+  });
+
+  // The checkpoint is the last report row signed under the earlier key, rows
+  // signed under it follow, then the key switches. Before the first sweep under
+  // the new key, the checkpoint row is deleted. The sweep must name the deletion
+  // as a chain break on the window's first row, although that row only verifies
+  // under the earlier key and the broken checkpoint closes that key for the
+  // window. A full verification then tells the untouched pre-switch rows apart.
+  it("reports a deleted earlier-key checkpoint row as a chain break on the window's first row", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const reportId = (await readCheckpointRow())!.lastVerifiedId;
+    await appendRow("u3");
+    await appendRow("u4");
+    // Everything so far was written while the earlier key was active.
+    await resignChainUnder(previousSecret);
+    const report = (await allRowsById()).find((r) => r.id === reportId)!;
+    await db
+      .update(auditVerifyState)
+      .set({ lastVerifiedHmac: report.rowHmac })
+      .where(eq(auditVerifyState.id, 1));
+    const [u3, u4] = (await allRowsById()).filter((r) => r.id > reportId);
+
+    // The switch: this row is signed under the active key.
+    await appendRow("u5");
+    await deleteRowPastTrigger(reportId);
+
+    const second = await sweepAuditVerify();
+
+    expect(second.valid).toBe(false);
+    expect(second.chainBreakCount).toBe(1);
+    const [failure] = await db
+      .select({ detail: auditLog.detail })
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "audit.integrity_check"))
+      .orderBy(sql`${auditLog.id} desc`)
+      .limit(1);
+    expect(failure.detail).toMatchObject({
+      chainBreakIds: [u3.id],
+      // The run can't place the key change any more, so the earlier-key rows in
+      // its window aren't accepted as pre-change history.
+      invalidIds: [u3.id, u4.id],
+      previousKeyCount: 0,
+    });
+
+    // A full verification establishes the change point from the first row:
+    // the untouched pre-switch rows are signed with the earlier key, and the
+    // deletion is the only finding.
+    const full = await verifyIntegrity();
+    expect(full.invalidIds).toEqual([]);
+    expect(full.chainBreakIds).toEqual([u3.id]);
+    expect(full.previousKeyIds).toEqual(expect.arrayContaining([u3.id, u4.id]));
+  });
+
+  // Same as above, except the earlier-key checkpoint row is deleted while it is
+  // still the newest row, before u3 and u4 are written. They link to the row
+  // before it, so the chain has no gap: a full verification places the change
+  // point and is clean, and the sweep's failure entry is the only record of the
+  // deletion.
+  it("reports a deleted earlier-key checkpoint row that was the newest row only in the sweep", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const reportId = (await readCheckpointRow())!.lastVerifiedId;
+    await deleteRowPastTrigger(reportId);
+    await appendRow("u3");
+    await appendRow("u4");
+    // Everything so far was written while the earlier key was active.
+    await resignChainUnder(previousSecret);
+    const [u3, u4] = (await allRowsById()).filter((r) => r.id > reportId);
+
+    // The switch: this row is signed under the active key.
+    await appendRow("u5");
+
+    const second = await sweepAuditVerify();
+
+    expect(second.valid).toBe(false);
+    expect(second.chainBreakCount).toBe(1);
+    const [failure] = await db
+      .select({ detail: auditLog.detail })
+      .from(auditLog)
+      .where(eq(auditLog.eventType, "audit.integrity_check"))
+      .orderBy(sql`${auditLog.id} desc`)
+      .limit(1);
+    expect(failure.detail).toMatchObject({
+      chainBreakIds: [u3.id],
+      invalidIds: [u3.id, u4.id],
+      previousKeyCount: 0,
+    });
+
+    const full = await verifyIntegrity();
+    expect(full.valid).toBe(true);
+    expect(full.chainBreakIds).toEqual([]);
+    expect(full.invalidIds).toEqual([]);
+    expect(full.previousKeyIds).toEqual(expect.arrayContaining([u3.id, u4.id]));
+  });
+
+  // Content-only tampering: the checkpoint row's content changes, its row_hmac
+  // does not. The remembered hash still matches, so the row reads as intact,
+  // but it verifies under no key any more. Read as "not signed under the active
+  // key", that re-opened the old key for the whole next window and a forged
+  // old-key row after it passed as pre-change history.
+  it("flags an old-key row after a checkpoint row whose content was altered in place", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    expect((await sweepAuditVerify()).valid).toBe(true);
+    const checkpoint = await readCheckpointRow();
+
+    await appendRow("u3");
+    const rows = await allRowsById();
+    await alterContentInPlace(checkpoint!.lastVerifiedId);
+    await resignUnderPreviousKey(rows[rows.length - 1].id, "forged-after-rotation");
+
+    const second = await sweepAuditVerify();
+
+    expect(second.scanned).toBe(true);
+    expect(second.previousKeyCount).toBe(0);
+    expect(second.invalidCount).toBe(1);
+    expect(second.valid).toBe(false);
+  });
+
+  // A second rotation: K1 is still the key file (the previous key), K2 signed
+  // the history up to the checkpoint, K3 is the active env key now. K2 is held
+  // nowhere any more, so the checkpoint row verifies under neither key. That is
+  // a legitimate install, and the sweep must not record a violation for it.
+  it("does not alarm on a checkpoint row signed under a key retired by a second rotation", async () => {
+    const k2 = Buffer.from("cd".repeat(32), "hex");
+    await appendRow("u1");
+    await appendRow("u2");
+    const last = await resignChainUnder(k2);
+    // The sweep that ran while K2 was active verified up to here.
+    await db
+      .insert(auditVerifyState)
+      .values({ id: 1, lastVerifiedId: last.id, lastVerifiedHmac: last.rowHmac, lastStatus: "ok" });
+
+    // Written under K3 after the restart, chained to the last K2 row.
+    await appendRow("u3");
+
+    const result = await sweepAuditVerify();
+
+    expect(result.scanned).toBe(true);
+    expect(result.chainBreakCount).toBe(0);
+    expect(result.invalidCount).toBe(0);
+    expect(result.valid).toBe(true);
+  });
+
+  it("a partial range whose predecessor was altered in place does not re-open the old key", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    await appendRow("u3");
+    const rows = await allRowsById();
+    const forged = rows[2];
+    await alterContentInPlace(rows[1].id);
+    await resignUnderPreviousKey(forged.id, "forged-after-rotation");
+
+    expect(await isActiveKeySeenBefore(forged.id)).toBe(true);
+    const seeded = await verifyIntegrity(forged.id, undefined, {
+      seedActiveKeySeen: await isActiveKeySeenBefore(forged.id),
+    });
+    expect(seeded.invalidIds).toEqual([forged.id]);
+    expect(seeded.previousKeyIds).toEqual([]);
+  });
+
+  // GET /api/audit/verify?fromId= seeds its range this way. Lives here because
+  // this describe owns the two-key setup; the route's own test pins the wiring.
+  it("a partial range past the key change takes its key context from the row before it", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    await appendRow("u3");
+    const rows = await allRowsById();
+    const forged = rows[2];
+    await resignUnderPreviousKey(forged.id, "forged-after-rotation");
+
+    // Control: unseeded, the range can't see that row 2 was already under the
+    // active key, and the forged row passes as pre-change history.
+    const unseeded = await verifyIntegrity(forged.id, undefined);
+    expect(unseeded.previousKeyIds).toEqual([forged.id]);
+    expect(unseeded.valid).toBe(true);
+
+    expect(await isActiveKeySeenBefore(forged.id)).toBe(true);
+    const seeded = await verifyIntegrity(forged.id, undefined, {
+      seedActiveKeySeen: await isActiveKeySeenBefore(forged.id),
+    });
+    expect(seeded.invalidIds).toEqual([forged.id]);
+    expect(seeded.previousKeyIds).toEqual([]);
+    expect(seeded.valid).toBe(false);
+  });
+
+  it("still reports a legitimately rotated chain (old-key rows, then active rows) as valid", async () => {
+    await appendRow("u1");
+    await appendRow("u2");
+    // Model the pre-rotation history: both rows were signed under the key that
+    // was later superseded.
+    await resignChainUnder(previousSecret);
+
+    // Sweep 1 covers only old-key rows: nothing active yet, so the prefix holds.
+    const first = await sweepAuditVerify();
+    expect(first.valid).toBe(true);
+    expect(first.previousKeyCount).toBe(2);
+
+    // Active-key rows after the rotation verify normally in the next window.
+    await appendRow("u3");
+    const second = await sweepAuditVerify();
+    expect(second.valid).toBe(true);
+    expect(second.previousKeyCount).toBe(0);
   });
 });

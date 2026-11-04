@@ -44,14 +44,15 @@ anything the web process reads back. With its own uid the web process owns the
 spool and every batch directory, and the group grants exactly what the
 converter needs:
 
-| Path                     | Mode   | Converter can                                             |
-| ------------------------ | ------ | --------------------------------------------------------- |
-| `<spool>`                | `1770` | create entries of its own (its socket); not touch a batch |
-| `<spool>/<uuid>`         | `0750` | enter and list; not create, rename or remove anything     |
-| `<spool>/<uuid>/in`      | `0750` | read the staged copies; not change or replace them        |
-| `<spool>/<uuid>/out`     | `1770` | write the PDFs; remove only what it wrote                 |
-| `<spool>/<uuid>/profile` | `1770` | write its LibreOffice profile; remove only what it wrote  |
-| `<spool>/converter.sock` | `0660` | (its own) — the web process connects through the group    |
+| Path                     | Mode   | Converter can                                               |
+| ------------------------ | ------ | ----------------------------------------------------------- |
+| `<spool>`                | `1770` | create entries of its own (its socket); not touch a batch   |
+| `<spool>/<uuid>`         | `0750` | enter and list; not create, rename or remove anything       |
+| `<spool>/<uuid>/in`      | `0750` | read the staged copies; not change or replace them          |
+| `<spool>/<uuid>/out`     | `1770` | write the PDFs; remove only what it wrote                   |
+| `<spool>/<uuid>/profile` | `1770` | write its LibreOffice profile; remove only what it wrote    |
+| `<spool>/<uuid>/tmp`     | `1770` | LibreOffice's scratch (`TMPDIR`); remove only what it wrote |
+| `<spool>/converter.sock` | `0660` | (its own) — the web process connects through the group      |
 
 The modes are set with `chmod` after `mkdir`, since the process umask would cut
 a mode passed to `mkdir`. The image creates the spool `1770`, and a fresh named
@@ -64,12 +65,12 @@ already at a staged name is ever written through, and with an explicit mode
 copy, even under a user-private-group umask of `002`.
 
 The converter runs with umask `007`, so its output is group-writable, and it
-empties `profile/` itself after each batch and, for every batch in the spool,
-when it starts (LibreOffice picks the modes of the directories it creates
-there, and a converter that died mid-batch leaves them). LibreOffice's
-`TMPDIR` is `profile/tmp`: it removes its temp files only on a clean exit, and
-the container's `/tmp` is a tmpfs that outlives every batch and counts against
-its memory. It does not empty
+empties `profile/` and `tmp/` itself after each batch and, for every batch in
+the spool, when it starts (LibreOffice picks the modes of the directories it
+creates there, and a converter that died mid-batch leaves them). `tmp/` is
+LibreOffice's `TMPDIR`, as it is in-process (#1243): on the volume the
+free-space checks ask, and not the container's `/tmp`, a tmpfs that outlives
+every batch and counts against its memory. It does not empty
 `out/` when it starts: a PDF there may be one the web process is about to take.
 
 The converter can create entries of its own in the spool root, `out/` and
@@ -87,8 +88,9 @@ walks into it:
   a non-empty regular file, so neither a link nor a FIFO can redirect or stall
   it; an output it cannot open is that document's `infrastructure` outcome,
   not the batch's.
-- It reads at most 64 KB of an answer (a real one is a few fields and at most
-  8 KB of stderr).
+- It reads at most 256 KB of an answer (a real one is a few fields and at most
+  32 KB of stderr — enough for a whole batch's `impl_store` lines — which
+  JSON escapes to at most six times that).
 
 Verified against the real image, as the two uids: the converter's
 `mv`/`rm` of a batch, of a staged input and of a file the web process put in
@@ -119,7 +121,7 @@ HTTP over a **Unix socket** that lives in the spool volume
 the one channel `network_mode: none` leaves open, and it is reachable only by
 containers that mount the spool.
 
-1. Web stages the batch under `<spool>/<uuid>/{in,out,profile}` — the same
+1. Web stages the batch under `<spool>/<uuid>/{in,out,profile,tmp}` — the same
    index-named, preflight-checked copies as before. The spool is mounted at the
    same path in both containers, so paths need no translation.
 2. Web sends `POST /convert {batch, inputs: ["0.docx", …], timeoutMs}`.
@@ -127,11 +129,20 @@ containers that mount the spool.
    timeout) and derives every path itself — it never takes an absolute path
    from the request — then writes the locked profile and runs `soffice`, exactly
    the code that ran in-process before (`office-soffice.ts`). Afterwards it
-   empties the profile and checks that nothing it ran is still running (below).
+   empties the profile and the scratch and checks that nothing it ran is still
+   running (below).
 4. Response: `{code, signal, stderr, timedOut}` — the existing `ConverterResult`.
    OOM and timeouts keep their meaning: the sidecar reports the SIGKILL it saw,
    and a sidecar that dies mid-request is a connection error → `infrastructure`.
-5. Web copies `<spool>/<uuid>/out/<n>.pdf` into a private directory inside the
+5. A killed batch of more than one document (#1243's per-document re-run) is
+   run again one document at a time, each as **a batch of its own**: a fresh
+   `<uuid>` from `createStagingDir`, the document's staged copy written into
+   its `in/` again (exclusive, `0640`), and its own `out/`, `profile/` and
+   `tmp/`. That is the only shape the sidecar accepts — it derives every path
+   from the batch id — and it means nothing the killed process left behind is
+   reused, collected or has to be removed first; every batch, the original and
+   each document's own, is removed the same way afterwards (below).
+6. Web copies `<spool>/<uuid>/out/<n>.pdf` into a private directory inside the
    artifact store (below), verifies that copy and renames it into place — one
    volume, one atomic rename. `put()` still falls back to copy-then-rename on
    `EXDEV` for a caller that hands it a path on another volume.
