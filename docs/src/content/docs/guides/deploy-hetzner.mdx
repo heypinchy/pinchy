@@ -50,7 +50,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
       (Intel/AMD)** is selected before you continue.
     </Aside>
 
-    Scroll down to the server sizes and select the smallest option with **at least 4 GB RAM** and **2 vCPUs**. This is the minimum for Pinchy.
+    Scroll down to the server sizes and select the smallest option with **at least 4 GB RAM** and **2 vCPUs**. This is the minimum for Pinchy: Pinchy's default memory limits add up to about 5 GB, so with 4 GB lower them in `.env` as [Sizing your host](/guides/customizing-deployment/#sizing-your-host) describes, or pick 8 GB to run the defaults.
 
     <Aside type="tip">
       For teams with more than 5 users or heavy agent workloads, pick the next

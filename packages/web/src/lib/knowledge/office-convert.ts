@@ -998,7 +998,7 @@ function failedStoreLine(stderr: string, producedPdf: string): string | null {
 async function probeWritable(dir: string): Promise<string | null> {
   const probe = join(dir, ".write-probe");
   try {
-    const handle = await open(probe, "wx");
+    const handle = await open(probe, "wx", 0o600);
     try {
       await handle.write(Buffer.alloc(4096));
       await handle.sync();
