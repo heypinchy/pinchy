@@ -10,7 +10,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join, resolve } from "node:path";
@@ -80,17 +80,29 @@ describe("office-converter entrypoint", () => {
     expect(stderr).toMatch(/KB_OFFICE_SPOOL_DIR/);
   });
 
-  it("removes its socket on SIGTERM, so the next start is clean", async () => {
+  it("leaves its socket on SIGTERM, so the web process waits for its restart, and starts again over it", async () => {
+    // Docker stops and restarts the converter (`docker compose restart`, a
+    // changed memory limit, a host restart) while the web process may be
+    // mid-run. A socket that is there but refuses is what the web side waits
+    // for; a missing one reads as "no converter service at all".
+    const waitHealthy = async () => {
+      const deadline = Date.now() + 15_000;
+      while ((await health()) !== 200 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return health();
+    };
     child = start({ KB_OFFICE_SPOOL_DIR: spool });
-    const deadline = Date.now() + 15_000;
-    while ((await health()) !== 200 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
+    await waitHealthy();
     child.kill("SIGTERM");
     const code = await new Promise<number | null>((r) => child!.on("close", r));
 
     expect(code).toBe(0);
+    expect(existsSync(join(spool, "converter.sock"))).toBe(true);
     expect(await health()).toBe(0);
+
+    child = start({ KB_OFFICE_SPOOL_DIR: spool });
+    expect(await waitHealthy()).toBe(200);
   });
 
   it("leaves what a conversion writes group-writable, so the web process can clean up after it", async () => {

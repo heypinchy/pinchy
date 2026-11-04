@@ -18,7 +18,6 @@ import {
   sweepSpool,
 } from "../lib/knowledge/office-converter-sidecar";
 import { runSoffice } from "../lib/knowledge/office-soffice";
-import { rm } from "node:fs/promises";
 
 async function main(): Promise<void> {
   const spoolDir = process.env.KB_OFFICE_SPOOL_DIR;
@@ -62,10 +61,12 @@ async function main(): Promise<void> {
   await listenOfficeConverter(server, spoolDir);
   console.log(`[office-converter] listening on ${converterSocketPath(spoolDir)}`);
 
-  const shutdown = () => {
-    server.close();
-    rm(converterSocketPath(spoolDir), { force: true }).finally(() => process.exit(0));
-  };
+  // Stop without closing the server: closing would unlink the socket, and a
+  // missing socket tells the web process there is no converter service at
+  // all. One that is there but refuses connections is what it waits out — a
+  // `docker compose restart`, a changed memory limit, a host restart — and
+  // the next start replaces it (listenOfficeConverter).
+  const shutdown = () => process.exit(0);
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 }

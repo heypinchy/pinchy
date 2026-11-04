@@ -1096,6 +1096,8 @@ jobs:
           wait_converter
           check converted || { docker compose logs office-converter; exit 1; }
           docker compose stop office-converter
+          # The stopped converter leaves its socket, so the web side waits
+          # ~20 s for a restart before it books the batch.
           check infrastructure
           docker compose start office-converter
           wait_converter

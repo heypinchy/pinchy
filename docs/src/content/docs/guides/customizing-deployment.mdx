@@ -157,7 +157,7 @@ Word and PowerPoint files take a detour on their way into the knowledge base: Pi
 
 Two things about that are worth knowing when you size the container.
 
-**LibreOffice is not a daemon.** It starts, converts a batch of documents, and exits. The memory it needs is transient: nothing stays resident between reindexes, and a deployment that never indexes an Office document never pays for it.
+**LibreOffice is not a daemon.** It starts, converts a batch of documents, and exits. The memory it needs is transient: nothing of LibreOffice stays resident between reindexes, and a deployment that never indexes an Office document never pays for it. What does stay up is the `office-converter` container itself, a small Node server waiting for the next batch.
 
 **It has a container to itself.** `OFFICE_CONVERTER_MEM_LIMIT` caps it, so a conversion no longer competes with the web app or with the ~300 MB embedding model that keeps working in the `pinchy` container during a reindex. Before the converter moved out, we measured the worst case of that overlap — 17 Word documents converting in one container while the embedder kept embedding, at several ceilings:
 

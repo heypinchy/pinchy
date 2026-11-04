@@ -86,17 +86,18 @@ PINCHY_ENTERPRISE_KEY=
 
 Docker volumes ensure data survives container restarts:
 
-| Volume                | Mounted at                                                                      | Purpose                                                                                          |
-| --------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `pgdata`              | `/var/lib/postgresql/data`                                                      | PostgreSQL data                                                                                  |
-| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                       | Shared OpenClaw configuration                                                                    |
-| `pinchy-data`         | `/data` (OpenClaw)                                                              | Agent-accessible files (Knowledge Base documents)                                                |
-| `pinchy-workspaces`   | `/root/.openclaw/workspaces` (OpenClaw), `/openclaw-config/workspaces` (Pinchy) | Agent workspaces (SOUL.md, AGENTS.md, `uploads/`, `workbench/`)                                  |
-| `pinchy-secrets`      | `/app/secrets` (Pinchy)                                                         | Auto-generated encryption and HMAC keys                                                          |
-| `openclaw-secrets`    | `/openclaw-secrets` (both)                                                      | **tmpfs** — runtime-only SecretRef bundle. Cleared on container restart and rebuilt from the DB. |
-| `pinchy-pdf-cache`    | `/var/cache/pinchy-files` (Pinchy)                                              | Cached PDF-text extractions so repeated reads of the same upload skip re-parsing                 |
-| `pinchy-kb-artifacts` | `/var/cache/pinchy-kb-artifacts` (Pinchy)                                       | Converted Office-document PDFs. Safe to delete — every artifact is re-derived from its source.   |
-| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw)        | Pinchy plugins for OpenClaw                                                                      |
+| Volume                | Mounted at                                                                      | Purpose                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `pgdata`              | `/var/lib/postgresql/data`                                                      | PostgreSQL data                                                                                      |
+| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                       | Shared OpenClaw configuration                                                                        |
+| `pinchy-data`         | `/data` (OpenClaw)                                                              | Agent-accessible files (Knowledge Base documents)                                                    |
+| `pinchy-workspaces`   | `/root/.openclaw/workspaces` (OpenClaw), `/openclaw-config/workspaces` (Pinchy) | Agent workspaces (SOUL.md, AGENTS.md, `uploads/`, `workbench/`)                                      |
+| `pinchy-secrets`      | `/app/secrets` (Pinchy)                                                         | Auto-generated encryption and HMAC keys                                                              |
+| `openclaw-secrets`    | `/openclaw-secrets` (both)                                                      | **tmpfs** — runtime-only SecretRef bundle. Cleared on container restart and rebuilt from the DB.     |
+| `pinchy-pdf-cache`    | `/var/cache/pinchy-files` (Pinchy)                                              | Cached PDF-text extractions so repeated reads of the same upload skip re-parsing                     |
+| `pinchy-kb-artifacts` | `/var/cache/pinchy-kb-artifacts` (Pinchy)                                       | Converted Office-document PDFs. Safe to delete — every artifact is re-derived from its source.       |
+| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw)        | Pinchy plugins for OpenClaw                                                                          |
+| `pinchy-office-spool` | `/var/spool/pinchy-office` (Pinchy, Office converter)                           | Hand-over folder for Office conversion. Only holds documents while they convert; nothing to back up. |
 
 ### Port configuration
 

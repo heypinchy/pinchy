@@ -151,9 +151,10 @@ export interface SidecarConverterOptions {
   graceMs?: number;
   /**
    * How long to keep trying a socket that is there but refuses connections —
-   * a converter between its exit and its restart (it recycles itself after a
-   * batch that left processes behind, and does not unlink its socket on the
-   * way out). A missing socket is not retried: that is no converter at all.
+   * a converter between its exit and its restart. It never unlinks its socket
+   * on the way out — not when it recycles itself after a batch that left
+   * processes behind, not when Docker stops it — so a missing socket means no
+   * converter service at all, and that is not retried.
    */
   connectRetryMs?: number;
   connectIntervalMs?: number;

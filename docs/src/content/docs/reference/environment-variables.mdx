@@ -133,16 +133,17 @@ Compose merges `docker-compose.override.yml` automatically. [Customizing Your De
 
 Variables configure the stack; volumes hold its state. These survive `docker compose down` and are what a backup must cover.
 
-| Volume                | Purpose                                                                                  |
-| --------------------- | ---------------------------------------------------------------------------------------- |
-| `pgdata`              | PostgreSQL data — users, agents, conversations, the audit log                            |
-| `pinchy-secrets`      | Auto-generated secrets. **Back this up**, or you lose access to encrypted provider keys. |
-| `openclaw-config`     | Shared OpenClaw configuration                                                            |
-| `pinchy-workspaces`   | Agent workspaces (`SOUL.md`, `AGENTS.md`, uploads, workbench)                            |
-| `pinchy-data`         | The knowledge-base corpus, mounted read-only into the web tier                           |
-| `openclaw-extensions` | Pinchy's plugins for OpenClaw                                                            |
-| `pinchy-pdf-cache`    | Cached PDF text extractions — safe to delete, re-derived on demand                       |
-| `pinchy-kb-artifacts` | Converted Office-document PDFs — safe to delete, re-derived on demand                    |
-| `openclaw-secrets`    | **tmpfs**, runtime only. Cleared on restart and rebuilt from the database.               |
+| Volume                | Purpose                                                                                              |
+| --------------------- | ---------------------------------------------------------------------------------------------------- |
+| `pgdata`              | PostgreSQL data — users, agents, conversations, the audit log                                        |
+| `pinchy-secrets`      | Auto-generated secrets. **Back this up**, or you lose access to encrypted provider keys.             |
+| `openclaw-config`     | Shared OpenClaw configuration                                                                        |
+| `pinchy-workspaces`   | Agent workspaces (`SOUL.md`, `AGENTS.md`, uploads, workbench)                                        |
+| `pinchy-data`         | The knowledge-base corpus, mounted read-only into the web tier                                       |
+| `openclaw-extensions` | Pinchy's plugins for OpenClaw                                                                        |
+| `pinchy-pdf-cache`    | Cached PDF text extractions — safe to delete, re-derived on demand                                   |
+| `pinchy-kb-artifacts` | Converted Office-document PDFs — safe to delete, re-derived on demand                                |
+| `openclaw-secrets`    | **tmpfs**, runtime only. Cleared on restart and rebuilt from the database.                           |
+| `pinchy-office-spool` | Hand-over folder for Office conversion — only holds documents while they convert, nothing to back up |
 
 [Installation](/installation/) shows the exact mount paths per container.

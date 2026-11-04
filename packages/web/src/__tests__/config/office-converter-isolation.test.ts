@@ -180,6 +180,39 @@ describe("office-converter sidecar isolation (docker-compose.yml)", () => {
   });
 });
 
+describe("workflows that count the stack's running services", () => {
+  // An end-user install check asserts how many containers are up. A service
+  // added to docker-compose.yml without that count moving turns the check red
+  // where nobody looks until a release — release.yml's copy stops a release
+  // after its images are published.
+  const services = (() => {
+    const lines = COMPOSE.split("\n");
+    const start = lines.indexOf("services:");
+    const names: string[] = [];
+    for (const line of lines.slice(start + 1)) {
+      if (/^\S/.test(line)) break;
+      const m = line.match(/^ {2}([a-z][\w-]*):\s*$/);
+      if (m) names.push(m[1]);
+    }
+    return names;
+  })();
+  const workflowDir = join(REPO_ROOT, ".github/workflows");
+  const counts = readdirSync(workflowDir).flatMap((file) =>
+    [...readFileSync(join(workflowDir, file), "utf8").matchAll(/"\$RUNNING" -ne (\d+)/g)].map(
+      (m) => [file, Number(m[1])] as const
+    )
+  );
+
+  it("finds the checks", () => {
+    expect(services).toContain(SERVICE);
+    expect(counts.map(([file]) => file)).toEqual(expect.arrayContaining(["ci.yml", "release.yml"]));
+  });
+
+  it.each(counts)("%s expects every service in docker-compose.yml", (_file, count) => {
+    expect(count).toBe(services.length);
+  });
+});
+
 describe("the dev overlay", () => {
   // The dev stack runs both services as root (no `pinchy` user in the dev
   // image). A spool the production image prepared — owned by 999, sticky,
