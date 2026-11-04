@@ -4,8 +4,9 @@
 //
 // Why this gate exists and why it is reliable: OC's `agents.list` RPC
 // (openclaw-node >= 0.12.0) reads `getRuntimeConfig()` — the SAME runtime view
-// the chat-dispatch handler checks before accepting a message. So polling it
-// until the agent appears is an authoritative, deterministic readiness signal,
+// the chat-dispatch handler checks before accepting a message. Filtered through
+// `dispatchableAgentIds` (it also lists agent directories from disk while the
+// runtime list is empty), polling it is a deterministic readiness signal,
 // unlike `config.get` which reads the config FILE and leads the applied runtime
 // by seconds-to-minutes while a write propagates. See agent-readiness.ts.
 //
@@ -15,7 +16,8 @@
 // Docker E2E dispatch probes.
 
 import { describe, it, expect, vi } from "vitest";
-import { waitForAgentInRuntime } from "@/server/agent-readiness";
+import type { AgentsListResult } from "openclaw-node";
+import { dispatchableAgentIds, waitForAgentInRuntime } from "@/server/agent-readiness";
 
 /**
  * Fake clock: `delay(ms)` advances `now` by `ms` synchronously so the
@@ -168,5 +170,65 @@ describe("waitForAgentInRuntime", () => {
     );
 
     expect(onWaitObserved).not.toHaveBeenCalled();
+  });
+});
+
+// OpenClaw 2026.7.1's `agents.list` handler (`listAgentsForGateway`) and the
+// `agent` dispatch handler (`listAgentIds`) both read `getRuntimeConfig()`, but
+// they derive different id sets from it. While the runtime `agents.list` is
+// EMPTY (e.g. right after a gateway restart, before Pinchy's agents apply),
+// `agents.list` falls back to every directory under `<stateDir>/agents/` —
+// Pinchy's agents included — whereas dispatch accepts only the default `main`,
+// which Pinchy never dispatches to. A configured entry is recognised by a
+// non-`main` defaultId, or by its `name`/`identity` (Pinchy always writes a
+// name); a disk-only entry has neither. CI run 41569393728.
+describe("dispatchableAgentIds", () => {
+  it("keeps entries that come from the configured runtime agents.list", () => {
+    expect(
+      dispatchableAgentIds({
+        defaultId: "agent-1",
+        agents: [
+          { id: "agent-1", name: "Smithers" },
+          { id: "agent-2", identity: { name: "Ops" } },
+        ],
+      })
+    ).toEqual(["agent-1", "agent-2"]);
+  });
+
+  it("keeps every entry when the configured list is non-empty, even without names", () => {
+    // A non-empty configured list makes OC's default a configured agent (never
+    // `main`) and filters `agents.list` down to configured ids, so every entry
+    // is dispatchable. This keeps the gate working if a future OC stops
+    // echoing the configured `name`.
+    expect(
+      dispatchableAgentIds({
+        defaultId: "agent-1",
+        agents: [{ id: "agent-1" }, { id: "agent-2" }],
+      })
+    ).toEqual(["agent-1", "agent-2"]);
+  });
+
+  it("falls back to the name/identity signal when the result carries no defaultId", () => {
+    expect(
+      dispatchableAgentIds({
+        agents: [
+          { id: "agent-1", name: "Smithers" },
+          { id: "agent-2" },
+          { id: "agent-3", identity: { emoji: "🦞" } },
+          { id: "agent-4", identity: null },
+        ],
+      } as unknown as AgentsListResult)
+    ).toEqual(["agent-1", "agent-3"]);
+  });
+
+  it("drops disk-discovered entries and the `main` fallback while the configured list is empty", () => {
+    // Runtime agents.list empty: OC lists `main` plus the agent directories.
+    expect(
+      dispatchableAgentIds({
+        defaultId: "main",
+        mainKey: "main",
+        agents: [{ id: "main" }, { id: "5747120b-4fee-4c87-8f62-45f663e58a80" }],
+      })
+    ).toEqual([]);
   });
 });

@@ -296,7 +296,10 @@ describe("ClientRouter", () => {
     mockSessionsHistory.mockResolvedValue({ messages: [] });
     // Default: the agent is present in OC's runtime agents.list, so the
     // dispatch-race readiness gate confirms readiness on the first poll.
-    mockAgentsList.mockResolvedValue({ defaultId: "agent-1", agents: [{ id: "agent-1" }] });
+    mockAgentsList.mockResolvedValue({
+      defaultId: "agent-1",
+      agents: [{ id: "agent-1", name: "Smithers" }],
+    });
   });
 
   describe("computeSessionKey", () => {
@@ -1535,6 +1538,57 @@ describe("ClientRouter", () => {
       expect(after).toBeGreaterThan(before);
 
       resolveHang();
+      await handlePromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not re-dispatch while agents.list lists the agent only from disk", async () => {
+    // CI run 41569393728: right after a gateway restart OpenClaw's runtime
+    // agents.list is empty, so its `agents.list` RPC reports every agent
+    // directory on disk — without a `name` — while the dispatch handler rejects
+    // the id. Reading those raw ids as "ready" re-dispatched ~4,800 times in
+    // 19 s. The gate must wait until the response comes from the configured list.
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      async function* raceError() {
+        yield {
+          type: "error" as const,
+          text: 'invalid agent params: unknown agent id "agent-1"',
+          runId: "r0",
+        };
+      }
+      async function* success() {
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValueOnce(raceError()).mockReturnValue(success());
+      mockAgentsList.mockResolvedValue({
+        defaultId: "main",
+        agents: [{ id: "main" }, { id: "agent-1" }],
+      });
+
+      const handlePromise = router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(2_000);
+      // Gate is polling, nothing re-dispatched yet.
+      expect(mockAgentsList.mock.calls.length).toBeGreaterThan(1);
+      expect(mockChat).toHaveBeenCalledTimes(1);
+
+      // The agents apply: the entry now comes from the configured list.
+      mockAgentsList.mockResolvedValue({
+        defaultId: "agent-1",
+        agents: [{ id: "agent-1", name: "Smithers" }],
+      });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(mockChat).toHaveBeenCalledTimes(2);
+
       await handlePromise;
     } finally {
       vi.useRealTimers();

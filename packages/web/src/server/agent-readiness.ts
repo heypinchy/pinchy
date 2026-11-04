@@ -9,14 +9,42 @@
 // `config.apply` rate-limit it can balloon to ~100 s (see chat-dispatch-retry.ts
 // and reference_config_apply_rate_limit_drop in project memory).
 //
-// `agents.list` (openclaw-node >= 0.12.0) is backed by the SAME runtime view
-// (`getRuntimeConfig()`) that OC's chat-dispatch handler checks before accepting
-// a message. Verified against OC 2026.5.28: both the `agent` dispatch handler
-// (`knownAgents = listAgentIds(getRuntimeConfig())`) and the `agents.list`
-// handler (`listAgentsForGateway(getRuntimeConfig())`) read that one view. So
-// polling `agents.list` until the agent id appears is an AUTHORITATIVE,
-// deterministic readiness signal — the gate `config.get` could never be, because
-// `config.get` reads the config FILE, which leads the applied runtime.
+// `agents.list` (openclaw-node >= 0.12.0) and OC's `agent` dispatch handler
+// read the SAME runtime view: re-verified against OC 2026.7.1, the dispatch
+// handler checks `listAgentIds(context.getRuntimeConfig())` and `agents.list`
+// answers `listAgentsForGateway(context.getRuntimeConfig())`. That is what makes
+// it a better gate than `config.get`, which reads the config FILE and leads the
+// applied runtime.
+//
+// Same view, different predicate. `listAgentIds` returns the configured
+// `agents.list` ids (or just `main` when that list is empty).
+// `listAgentsForGateway` adds every directory under `<stateDir>/agents/` and
+// filters them back down to the configured ids — but ONLY when the configured
+// list is non-empty. While the runtime list is empty (right after a gateway
+// restart, before Pinchy's agents apply), `agents.list` therefore reports every
+// agent that has ever had a directory on disk, while the dispatch handler
+// rejects all of them with `unknown agent id`. CI run 41569393728 hit exactly
+// this: the gate said "ready" and the dispatch kept racing.
+//
+// `dispatchableAgentIds` closes that gap. It accepts an entry if either of two
+// signals says it came from the configured list:
+//   1. `defaultId` is not `main`. With a non-empty configured list OC's default
+//      is a configured agent (Pinchy ids are UUIDs, never `main`) and the
+//      response is already filtered down to configured ids. With an empty list
+//      the default is `main`.
+//   2. The entry carries the configured `name` / `identity` (Pinchy always
+//      writes `name`). A disk-only entry has neither.
+// In OC 2026.7.1 signal 1 alone decides; signal 2 is the backup. The OR is a
+// trade: a future OC must break BOTH signals before the gate stops ever saying
+// "ready", but breaking EITHER one (a non-`main` default for an empty list, or
+// an identity on disk-only entries) brings back a false "ready". On the chat
+// path that is bounded by the retry loop, which stops trusting a "ready" the
+// next dispatch contradicts (chat-dispatch-retry.ts). The inbox sweep has no
+// such loop: a false "ready" there lets the run dispatch into the race, which
+// fails that email terminally and notifies the user (see
+// lib/email-workflows/run-adapter.ts). The other direction is loud, not
+// lossless: a gate that never says "ready" makes a chat wait out the whole
+// retry budget and fail, and makes the inbox sweep defer every email.
 //
 // Polling cost is safe under contention: `agents.list` is a READ. Verified
 // against OC 2026.5.28's method descriptors — `config.apply` carries
@@ -29,17 +57,44 @@
 //   - Gateway without agents.list (older OC)  → returns false immediately.
 //   - agents.list RPC errors transiently      → treated as "not yet present".
 //   - agent never appears within the deadline  → returns false.
-// In every false case the caller dispatches anyway; `chatWithDispatchRaceRetry`
-// remains the backstop, so a readiness-probe miss can only ever cost a little
-// latency, never a dropped message.
+// A false answer never drops a message silently. On the chat path
+// `chatWithDispatchRaceRetry` then backs off and re-dispatches while budget
+// remains, and surfaces the race error once it runs out; note it hands this
+// helper the WHOLE remaining retry budget as its deadline, so a gate that never
+// confirms uses up that budget in one wait and the chat fails with the race
+// error. On the inbox sweep a false answer defers the email to the next sweep
+// (`RunDeferredError` in lib/email-workflows/run-adapter.ts).
+
+import type { AgentsListResult } from "openclaw-node";
+
+/**
+ * OC's `DEFAULT_AGENT_ID`: the default agent when no agent is configured, and
+ * the only id its dispatch handler accepts then.
+ */
+const OPENCLAW_FALLBACK_AGENT_ID = "main";
+
+/**
+ * The configured (Pinchy) agent ids from an `agents.list` result — the ones
+ * OC's `agent` dispatch handler accepts — never agent directories OC found on
+ * disk, and never the `main` fallback OC answers with while the configured list
+ * is empty (Pinchy never dispatches to `main`). See the file header for why
+ * `agents.list` and the dispatch handler differ.
+ */
+export function dispatchableAgentIds(result: AgentsListResult): string[] {
+  const configuredListIsNonEmpty =
+    typeof result.defaultId === "string" && result.defaultId !== OPENCLAW_FALLBACK_AGENT_ID;
+  return result.agents
+    .filter((agent) => configuredListIsNonEmpty || Boolean(agent.name) || agent.identity != null)
+    .map((agent) => agent.id);
+}
 
 export interface AgentRuntimeReadinessDeps {
   /** Whether the connected Gateway advertises the `agents.list` RPC. */
   hasAgentsListRpc: () => boolean;
   /**
-   * Resolve the agent ids currently present in OC's RUNTIME config (i.e. the
-   * `id`s returned by `agents.list`). Rejections are caught by the caller and
-   * treated as "agent not yet present".
+   * Resolve the agent ids OC's dispatch handler currently accepts — pass the
+   * `agents.list` result through `dispatchableAgentIds`, not its raw ids.
+   * Rejections are caught by the caller and treated as "agent not yet present".
    */
   listRuntimeAgentIds: () => Promise<string[]>;
   /** Sleep helper, injectable so tests don't wait real time. */
@@ -69,10 +124,10 @@ export interface AgentRuntimeReadinessOptions {
 const DEFAULT_INTERVAL_MS = 500;
 
 /**
- * Resolves `true` once `agentId` is present in OC's runtime `agents.list`, or
- * `false` if it never appears within `deadlineMs` (or readiness is
- * unobservable on this Gateway). Mirrors the dispatch handler's own predicate:
- * a direct membership check on the runtime agent-id list.
+ * Resolves `true` once `agentId` is among the ids `listRuntimeAgentIds`
+ * returns, or `false` if it never appears within `deadlineMs` (or readiness is
+ * unobservable on this Gateway). Mirrors the dispatch handler's own predicate
+ * only when those ids are filtered through `dispatchableAgentIds`.
  */
 export async function waitForAgentInRuntime(
   agentId: string,
