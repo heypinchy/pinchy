@@ -274,7 +274,7 @@ Two calls change for agents you already run. `email_search` now refuses an empty
 
 ### Upgrade notes
 
-This release adds a service to `docker-compose.yml` — the [Office converter](#word-and-powerpoint-files-are-converted-in-a-container-of-their-own) — so fetch the new file along with the version bump. Two things to check first:
+This release adds a service to `docker-compose.yml` — the [Office converter](#word-and-powerpoint-files-are-converted-in-a-container-of-their-own) — so fetch the new file along with the version bump. Three things to check first:
 
 - The new file also passes `AUDIT_HMAC_SECRET` from `.env` into Pinchy. If you pinned a value there, read [that note](#audit_hmac_secret-in-env-now-actually-does-something) before you restart.
 - The new file also maps `ollama.local` to the Docker host for the Pinchy container, so the address checks resolve it like any other name. If an Odoo, mail server or provider is saved under that name, see [Some saved addresses are refused until you act](#some-saved-addresses-are-refused-until-you-act).

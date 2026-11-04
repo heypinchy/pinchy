@@ -1953,6 +1953,64 @@ describe("a batch shared with a converter that runs as another user", () => {
     expect(mode).toBe(0o640);
   });
 
+  it("keeps the documents whose own runs worked when another document's own run fails", async () => {
+    // Through the sidecar, a run of one document can be refused (it left a
+    // process behind, the converter restarted under it). That is about that
+    // document's run, not its batch-mates'.
+    const sources = [
+      await corpusFile("a.doc", "alpha"),
+      await corpusFile("b.doc", "bravo"),
+      await corpusFile("c.doc", "charlie"),
+    ];
+    const run: RunConverter = async (call) => {
+      if (call.inputs.length > 1) return { code: 137, signal: null, stderr: "" };
+      const staged = call.inputs[0];
+      if (basename(staged).startsWith("1.")) {
+        throw new Error("office converter refused the batch: the converter left 1 process(es)");
+      }
+      await writeFile(
+        join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
+        "%PDF-1.4\nwords here\n"
+      );
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(sources, deps({ run, calls: [] }));
+
+    expect(outcomes.map((o) => o.status)).toEqual(["converted", "infrastructure", "converted"]);
+    expect(outcomes[1].reason).toMatch(/converter did not run: .*left 1 process/);
+  });
+
+  it("frees what the killed batch wrote before its documents run on their own", async () => {
+    // Its PDFs and its scratch sit on the volume the re-runs and the
+    // free-space check use.
+    const sources = [await corpusFile("a.doc", "alpha"), await corpusFile("b.doc", "bravo")];
+    let killed: { outDir: string; tmpDir: string } | null = null;
+    const leftOver: boolean[] = [];
+    const run: RunConverter = async (call) => {
+      if (call.inputs.length > 1) {
+        killed = { outDir: call.outDir, tmpDir: call.tmpDir };
+        await writeFile(join(call.outDir, "0.pdf"), "%PDF-1.4\nhalf");
+        await writeFile(join(call.tmpDir, "scratch"), "x");
+        return { code: 137, signal: null, stderr: "" };
+      }
+      leftOver.push(
+        existsSync(join(killed!.outDir, "0.pdf")) || existsSync(join(killed!.tmpDir, "scratch"))
+      );
+      const staged = call.inputs[0];
+      await writeFile(
+        join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
+        "%PDF-1.4\nwords here\n"
+      );
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(sources, deps({ run, calls: [] }));
+
+    expect(outcomes.map((o) => o.status)).toEqual(["converted", "converted"]);
+    expect(leftOver).toEqual([false, false]);
+  });
+
   it("refuses an output that is not a regular file without waiting on it", async () => {
     // Opening a FIFO for reading blocks until something writes to it, and the
     // converter can make one where its PDF should be.

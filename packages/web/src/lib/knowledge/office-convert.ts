@@ -366,6 +366,7 @@ export async function convertOfficeFiles(
   const removeStagingDir =
     options.removeStagingDir ??
     (options.createStagingDir ? removeTree : converter.removeStagingDir);
+  const discardScratch = options.createStagingDir ? removeTree : converter.discardScratch;
   const prepareSource = options.prepareSource ?? defaultPrepareSource;
   const countPdfWords = options.countPdfWords ?? defaultCountPdfWords;
   const countSourceWords =
@@ -428,6 +429,7 @@ export async function convertOfficeFiles(
       runConverter,
       createStagingDir,
       removeStagingDir,
+      discardScratch,
       prepareSource,
       countPdfWords,
       countSourceWords,
@@ -473,6 +475,7 @@ function defaultConverter(store: OfficeArtifactStore): {
   runConverter: RunConverter;
   createStagingDir: () => Promise<string>;
   removeStagingDir: (dir: string) => Promise<void>;
+  discardScratch: (tmpDir: string) => Promise<void>;
 } {
   const spoolDir = process.env.KB_OFFICE_SPOOL_DIR;
   if (spoolDir) return sidecarConverter(spoolDir);
@@ -481,6 +484,7 @@ function defaultConverter(store: OfficeArtifactStore): {
     createStagingDir: () => store.createStagingDir(),
     // In-process, everything in the batch is this process's own.
     removeStagingDir: removeTree,
+    discardScratch: removeTree,
   };
 }
 
@@ -493,6 +497,8 @@ interface BatchDeps {
   runConverter: RunConverter;
   createStagingDir: () => Promise<string>;
   removeStagingDir: (dir: string) => Promise<void>;
+  /** Frees a killed run's scratch space; the sidecar's converter frees its own. */
+  discardScratch: (tmpDir: string) => Promise<void>;
   prepareSource: PrepareSource;
   countPdfWords: (absPath: string) => Promise<number>;
   countSourceWords: (absPath: string, displayPath: string) => Promise<number | null>;
@@ -613,7 +619,17 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         );
       }
 
-      for (const [i, { result }] of runs) {
+      for (const [i, run] of runs) {
+        if ("error" in run) {
+          // This document's own run could not be had — refused, or the
+          // converter went away under it. About that run, not its batch-mates.
+          outcomes[i] = infrastructureFailure(
+            batch[i].absPath,
+            `converter did not run: ${run.error}`
+          );
+          continue;
+        }
+        const { result } = run;
         if (!wasKilled(result)) continue;
         const reason = result.timedOut
           ? "converter exceeded its time budget"
@@ -626,7 +642,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
       for (const [i, item] of batch.entries()) {
         if (outcomes[i]) continue;
         const stagedSource = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
-        const run = runs.get(i)!;
+        const run = runs.get(i) as RunAnswer;
         const producedPdf = join(run.outDir, `${i}.pdf`);
         const outcome = await collectOne(
           { ...item, contentHash: keys[i] },
@@ -680,10 +696,13 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
 }
 
 /** The run that speaks for one document, and where it wrote. */
-interface DocumentRun {
+interface RunAnswer {
   result: ConverterResult;
   outDir: string;
 }
+
+/** That, or why a document's own run could not be had at all. */
+type DocumentRun = RunAnswer | { error: string };
 
 /**
  * Runs the converter over a batch's staged inputs and answers, per batch
@@ -734,30 +753,48 @@ async function runIsolatingKills(
     return runs;
   }
 
+  // What the dead process wrote — PDFs it got to, the last one possibly half
+  // written, and its scratch — is on the volume the runs below and the
+  // free-space check use; it goes first. Unlinked by name: nothing here
+  // walks into a directory the converter made.
+  for (const i of inputs.keys()) {
+    await unlink(join(dirs.outDir, `${i}.pdf`)).catch(() => {});
+  }
+  await deps.discardScratch(dirs.tmpDir).catch(() => {});
+
   for (const [i, staged] of inputs) {
-    const own = await deps.createStagingDir();
-    ownBatches.push(own);
-    const ownDirs = {
-      inDir: join(own, "in"),
-      outDir: join(own, "out"),
-      profileDir: join(own, "profile"),
-      tmpDir: join(own, "tmp"),
-    };
-    for (const dir of Object.values(ownDirs)) await mkdir(dir, { recursive: true });
-    const ownStaged = join(ownDirs.inDir, basename(staged));
-    await restage(staged, ownStaged);
-    runs.set(i, {
-      result: await deps.runConverter({
-        inputs: [ownStaged],
-        outDir: ownDirs.outDir,
-        profileDir: ownDirs.profileDir,
-        tmpDir: ownDirs.tmpDir,
-        timeoutMs: batchTimeoutMs(1),
-      }),
-      outDir: ownDirs.outDir,
-    });
+    try {
+      runs.set(i, await runAlone(staged, deps, ownBatches));
+    } catch (err) {
+      runs.set(i, { error: reasonOf(err) });
+    }
   }
   return runs;
+}
+
+/** One document's run of its own, in a batch of its own (see `runIsolatingKills`). */
+async function runAlone(staged: string, deps: BatchDeps, ownBatches: string[]): Promise<RunAnswer> {
+  const own = await deps.createStagingDir();
+  ownBatches.push(own);
+  const ownDirs = {
+    inDir: join(own, "in"),
+    outDir: join(own, "out"),
+    profileDir: join(own, "profile"),
+    tmpDir: join(own, "tmp"),
+  };
+  for (const dir of Object.values(ownDirs)) await mkdir(dir, { recursive: true });
+  const ownStaged = join(ownDirs.inDir, basename(staged));
+  await restage(staged, ownStaged);
+  return {
+    result: await deps.runConverter({
+      inputs: [ownStaged],
+      outDir: ownDirs.outDir,
+      profileDir: ownDirs.profileDir,
+      tmpDir: ownDirs.tmpDir,
+      timeoutMs: batchTimeoutMs(1),
+    }),
+    outDir: ownDirs.outDir,
+  };
 }
 
 /**

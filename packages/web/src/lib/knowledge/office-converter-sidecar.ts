@@ -166,6 +166,11 @@ export interface SidecarConverter {
   createStagingDir: () => Promise<string>;
   /** Removes a batch without walking into anything the converter made. */
   removeStagingDir: (dir: string) => Promise<void>;
+  /**
+   * A killed run's scratch space is the converter's: it empties `tmp/` itself
+   * once the run has answered. Nothing for the web process to do.
+   */
+  discardScratch: (tmpDir: string) => Promise<void>;
 }
 
 export interface SidecarConverterOptions {
@@ -267,6 +272,7 @@ export function sidecarConverter(
 
   return {
     removeStagingDir: removeBatch,
+    discardScratch: async () => {},
 
     async createStagingDir() {
       await pruneStaleBatches(spoolDir, staleAfterMs, uid);
@@ -381,26 +387,45 @@ async function removeBatch(dir: string): Promise<void> {
  * Only real directories this process owns: the converter can create entries
  * in the spool root too, links among them, and those are not ours to walk.
  */
-async function pruneStaleBatches(
+function pruneStaleBatches(spoolDir: string, staleAfterMs: number, uid: number): Promise<number> {
+  return removeOwnBatches(spoolDir, uid, Date.now() - staleAfterMs);
+}
+
+/**
+ * Removes every batch the web process owns in the spool, however fresh, and
+ * answers how many. For boot, before the first conversion of this process:
+ * whatever is left belongs to an interrupted run — up to a batch of checked
+ * copies and their PDFs — and nothing else ever removes it if no Office
+ * document converts again. The artifact store's `staging/` gets the same at
+ * the same moment (`clearStagedBatches`).
+ */
+export function clearSpoolBatches(
   spoolDir: string,
-  staleAfterMs: number,
-  uid: number
-): Promise<void> {
-  const cutoff = Date.now() - staleAfterMs;
+  options: { uid?: number } = {}
+): Promise<number> {
+  return removeOwnBatches(spoolDir, options.uid ?? process.getuid?.() ?? -1, Infinity);
+}
+
+async function removeOwnBatches(spoolDir: string, uid: number, cutoff: number): Promise<number> {
   let entries: string[];
   try {
     entries = await readdir(spoolDir);
   } catch {
-    return;
+    return 0;
   }
+  let removed = 0;
   for (const entry of entries) {
     if (!BATCH_ID.test(entry)) continue;
     const path = join(spoolDir, entry);
     const info = await lstat(path).catch(() => null);
     if (info?.isDirectory() && info.uid === uid && info.mtimeMs < cutoff) {
-      await removeBatch(path).catch(() => {});
+      await removeBatch(path).then(
+        () => removed++,
+        () => {}
+      );
     }
   }
+  return removed;
 }
 
 // ---------------------------------------------------------------------------

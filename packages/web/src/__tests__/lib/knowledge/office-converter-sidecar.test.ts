@@ -23,6 +23,7 @@ import {
   createOfficeConverterServer,
   leftoverProcesses,
   listenOfficeConverter,
+  clearSpoolBatches,
   sidecarConverter,
   sweepSpool,
 } from "@/lib/knowledge/office-converter-sidecar";
@@ -580,6 +581,35 @@ describe("cleaning up a batch the converter wrote into", () => {
       const left = await readdir(spool);
       expect(left).not.toContain(mine.split("/").pop());
       expect(await readdir(join(target, "in"))).toEqual(["keep"]);
+    } finally {
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it("clears every batch of the web process's at boot, however fresh, and nothing else", async () => {
+    // At boot no batch of ours is running: whatever is left belongs to an
+    // interrupted run, and holds checked copies of documents.
+    await startServer();
+    const mine = await sidecarConverter(spool).createStagingDir();
+    await writeFile(join(mine, "in", "0.docx"), "copy");
+    const target = mkdtempSync(join(tmpdir(), "kb-target-"));
+    try {
+      await symlink(target, join(spool, "11111111-2222-3333-4444-555555555555"));
+      await mkdir(join(spool, "not-a-batch"));
+
+      expect(await clearSpoolBatches(spool, { uid: 424242 })).toBe(0);
+      expect(await readdir(spool)).toContain(mine.split("/").pop());
+
+      expect(await clearSpoolBatches(spool)).toBe(1);
+      const left = await readdir(spool);
+      expect(left).not.toContain(mine.split("/").pop());
+      expect(left).toEqual(
+        expect.arrayContaining([
+          "converter.sock",
+          "not-a-batch",
+          "11111111-2222-3333-4444-555555555555",
+        ])
+      );
     } finally {
       rmSync(target, { recursive: true, force: true });
     }

@@ -140,8 +140,13 @@ containers that mount the spool.
    its `in/` again (exclusive, `0640`), and its own `out/`, `profile/` and
    `tmp/`. That is the only shape the sidecar accepts — it derives every path
    from the batch id — and it means nothing the killed process left behind is
-   reused, collected or has to be removed first; every batch, the original and
-   each document's own, is removed the same way afterwards (below).
+   reused or collected. The killed batch's `out/<n>.pdf` files are unlinked
+   first all the same (by name), so the re-runs and the free-space check do not
+   see a fuller volume; its scratch is the converter's, which empties it. A
+   document whose own run cannot be had — refused, or the converter went away
+   under it — is that document's `infrastructure` outcome, never its
+   batch-mates'. Every batch, the original and each document's own, is removed
+   the same way afterwards (below).
 6. Web copies `<spool>/<uuid>/out/<n>.pdf` into a private directory inside the
    artifact store (below), verifies that copy and renames it into place — one
    volume, one atomic rename. `put()` still falls back to copy-then-rename on
@@ -161,8 +166,11 @@ business, not the store's.
 - **Sidecar OOM**: it now has its own `OFFICE_CONVERTER_MEM_LIMIT` (default
   `1g`), so a large conversion no longer squeezes the web process and the
   embedder. The OOM reason names that variable.
-- **Crash leftovers in the spool** are pruned after 24 h when the next batch is
-  staged (a batch's own budget is minutes).
+- **Crash leftovers in the spool**: at boot, before its first conversion, the
+  index worker removes every batch the web process owns in the spool, beside
+  #1243's `clearStagedBatches` for the artifact store's `staging/`
+  (`clearSpoolBatches`). Later, batches older than 24 h are pruned when the
+  next batch is staged (a batch's own budget is minutes).
 - **A process outlives its batch** (a group kill that missed one, something that
   moved out of its group): it could still write into the batch the web process
   is about to read, or into the next one. After every batch the sidecar reads
