@@ -266,6 +266,7 @@ import {
   MEMORY_EMBEDDING_MODEL_PATH,
 } from "@/lib/openclaw-config";
 import { MAX_EFFECTIVE_CONTEXT_TOKENS } from "@/lib/openclaw-config/effective-context";
+import { OPENCLAW_GATEWAY_BIND, OPENCLAW_GATEWAY_MODE } from "@/lib/openclaw-config/paths";
 import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
 import {
@@ -5151,7 +5152,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
     mockedExistsSync.mockReturnValue(true);
   });
 
-  it("writes overrides when the file is empty / missing all four fields", () => {
+  it("writes every override when the file is empty / missing", () => {
     // Bind-mount-empty scenario: e.g. Pinchy on the host writing into
     // /tmp/pinchy-integration-openclaw before OC's first start, where the
     // bind-mount target doesn't carry the image's baked-in config.
@@ -5180,6 +5181,120 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // seed them off up front so the first regenerate isn't a missing-then-added
     // diff that triggers a SIGUSR1 restart.
     expect(written.gateway?.terminal?.enabled).toBe(false);
+    // OpenClaw has no reload rule for `media`, so the first regenerate adding
+    // ttlHours would restart the gateway — seed it up front too.
+    expect(written.media?.ttlHours).toBe(48);
+    // OpenClaw refuses to start on a config without gateway.mode, and adding
+    // mode/bind in the first regenerate is a restart-class `gateway` diff.
+    expect(written.gateway?.mode).toBe("local");
+    expect(written.gateway?.bind).toBe("lan");
+  });
+
+  it("seeds media.ttlHours when it is missing and keeps OpenClaw's media siblings", () => {
+    // Installs created before the media TTL existed carry every other override
+    // but no `media` block; the seed must add ttlHours without dropping fields
+    // OpenClaw may have enriched under `media`.
+    const existing = {
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: {
+          enabled: false,
+          allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+        },
+        terminal: { enabled: false },
+      },
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+      media: { maxBytes: 1024 },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(true);
+    const written = JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1]));
+    expect(written.media).toEqual({ maxBytes: 1024, ttlHours: 48 });
+  });
+
+  // One fixture per guard condition: every override correct except one. Each row
+  // fails if its condition is dropped from the seed's skip check — a fixture
+  // that misses two fields would stay green with either condition gone.
+  const allOverridesCorrect = () => ({
+    gateway: {
+      mode: "local",
+      bind: "lan",
+      controlUi: {
+        enabled: false,
+        allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+      },
+      terminal: { enabled: false },
+    },
+    discovery: { mdns: { mode: "off" } },
+    update: { checkOnStart: false },
+    canvasHost: { enabled: false },
+    media: { ttlHours: 48 },
+  });
+  type Fixture = ReturnType<typeof allOverridesCorrect>;
+  const onlyOneOverrideOff: Array<{
+    field: string;
+    breakIt: (cfg: Fixture) => void;
+    expectFixed: (written: Fixture) => void;
+  }> = [
+    {
+      field: "gateway.mode (missing)",
+      breakIt: (c) => delete (c.gateway as Partial<Fixture["gateway"]>).mode,
+      expectFixed: (w) => expect(w.gateway.mode).toBe("local"),
+    },
+    {
+      field: "gateway.bind",
+      breakIt: (c) => (c.gateway.bind = "loopback"),
+      expectFixed: (w) => expect(w.gateway.bind).toBe("lan"),
+    },
+    {
+      field: "gateway.controlUi.enabled",
+      breakIt: (c) => (c.gateway.controlUi.enabled = true),
+      expectFixed: (w) => expect(w.gateway.controlUi.enabled).toBe(false),
+    },
+    {
+      field: "discovery.mdns.mode",
+      breakIt: (c) => (c.discovery.mdns.mode = "auto"),
+      expectFixed: (w) => expect(w.discovery.mdns.mode).toBe("off"),
+    },
+    {
+      field: "update.checkOnStart",
+      breakIt: (c) => (c.update.checkOnStart = true),
+      expectFixed: (w) => expect(w.update.checkOnStart).toBe(false),
+    },
+    {
+      field: "canvasHost.enabled",
+      breakIt: (c) => (c.canvasHost.enabled = true),
+      expectFixed: (w) => expect(w.canvasHost.enabled).toBe(false),
+    },
+  ];
+  for (const row of onlyOneOverrideOff) {
+    it(`writes when only ${row.field} is off`, () => {
+      const existing = allOverridesCorrect();
+      row.breakIt(existing);
+      mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+      expect(seedRestartClassOverridesIfMissing()).toBe(true);
+      row.expectFixed(JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1])));
+    });
+  }
+
+  it("refuses to seed (no write) when openclaw.json is EACCES", () => {
+    // readExistingConfig throws on a persistent EACCES (OpenClaw's 0600
+    // restart-write window) precisely so callers don't treat the file as empty:
+    // writing the overrides onto `{}` would replace agents, models, plugins,
+    // secrets and the gateway token with just the overrides.
+    mockedReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
+
+    expect(seedRestartClassOverridesIfMissing()).toBe(false);
+    expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
   });
 
   it("returns false (no write) when file already has all overrides — production case", () => {
@@ -5198,6 +5313,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5212,12 +5328,18 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // Pre-2026.5.28 Pinchy wrote controlUi.enabled=false WITHOUT allowedOrigins.
     // On upgrade, OpenClaw seeds allowedOrigins in memory only; if Pinchy never
     // persists it, the next regenerate drops the field and OC restarts. The seed
-    // must add it even when the other four overrides are already correct.
+    // must add it even when every other override is already correct.
     const existing = {
-      gateway: { mode: "local", bind: "lan", controlUi: { enabled: false } },
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: { enabled: false },
+        terminal: { enabled: false },
+      },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5250,6 +5372,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
       canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5261,15 +5384,54 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.gateway.terminal.enabled).toBe(false);
   });
 
-  it("preserves existing fields outside the four restart-class paths", () => {
-    // Don't clobber other Pinchy/OC state — only flip the four restart-class
+  it("pins gateway.mode/bind when they differ and every other override is correct", () => {
+    // OpenClaw refuses to start on a config without gateway.mode, and a
+    // regenerate that changes mode/bind is a restart-class `gateway` diff.
+    // buildGatewayBlock always writes local/lan, so the seed must too.
+    const existing = {
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        controlUi: {
+          enabled: false,
+          allowedOrigins: ["http://localhost:18789", "http://127.0.0.1:18789"],
+        },
+        terminal: { enabled: false },
+      },
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(true);
+    const written = JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1]));
+    expect(written.gateway.mode).toBe("local");
+    expect(written.gateway.bind).toBe("lan");
+  });
+
+  it("matches entrypoint.sh's minimal seed to the gateway constants the regenerate writes", async () => {
+    // The production image's entrypoint writes a minimal openclaw.json when the
+    // volume has none (pinchy mounts the volume first, so the OpenClaw image's
+    // baked config never lands). If its mode/bind drift from what
+    // buildGatewayBlock writes, the first regenerate is a gateway restart.
+    expect(await readEntrypointSeed()).toEqual({
+      gateway: { mode: OPENCLAW_GATEWAY_MODE, bind: OPENCLAW_GATEWAY_BIND },
+    });
+  });
+
+  it("preserves existing fields outside the restart-class paths", () => {
+    // Don't clobber other Pinchy/OC state — only flip the restart-class
     // overrides. The agents/plugins/secrets/models blocks must round-trip
     // unchanged.
     const existing = {
       meta: { version: "5.3.0", lastTouchedAt: "T1" },
       gateway: {
         mode: "local",
-        bind: "lan",
+        bind: "loopback", // needs flip
         auth: { mode: "token", token: "preserved-token" },
         controlUi: { enabled: true, allowedOrigins: ["http://localhost:18789"] },
       },
@@ -5286,6 +5448,8 @@ describe("seedRestartClassOverridesIfMissing", () => {
     const written = JSON.parse(String(writtenAtomic![1]));
 
     // Restart-class overrides flipped to Pinchy values:
+    expect(written.gateway.mode).toBe("local");
+    expect(written.gateway.bind).toBe("lan");
     expect(written.gateway.controlUi.enabled).toBe(false);
     expect(written.discovery.mdns.mode).toBe("off");
     expect(written.update.checkOnStart).toBe(false);
@@ -5293,8 +5457,6 @@ describe("seedRestartClassOverridesIfMissing", () => {
 
     // Non-restart-class fields preserved byte-for-byte:
     expect(written.meta).toEqual(existing.meta);
-    expect(written.gateway.mode).toBe("local");
-    expect(written.gateway.bind).toBe("lan");
     expect(written.gateway.auth).toEqual(existing.gateway.auth);
     expect(written.gateway.controlUi.allowedOrigins).toEqual(["http://localhost:18789"]);
     expect(written.agents).toEqual(existing.agents);
@@ -5340,7 +5502,287 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.env).toEqual(existing.env);
     expect(written.models).toEqual(existing.models);
   });
+
+  // The seed exists so the first real regenerate is a HOT reload. Every field it
+  // misses becomes a restart-class diff on a fresh install — and an in-process
+  // gateway restart aborts whatever run is in flight ("Agent run belongs to a
+  // stale gateway lifecycle"). `media.ttlHours` was exactly such a miss: build.ts
+  // has written it since the media-TTL change, the seed and the baked config never
+  // did, and OpenClaw has no reload rule for `media`, so it restarts. The
+  // integration suite lost a user's message to it (CI run 41569393728).
+  //
+  // A list of "the restart-class fields" is the hand-maintained mirror that
+  // missed it, so these tests ask OpenClaw instead: the installed binary's own
+  // reload planner, plus the reload rules of its default-enabled bundled plugins,
+  // judge the diff between the booted baseline and the first post-wizard
+  // regenerate.
+  describe("first post-wizard regenerate is not restart-class (OpenClaw's own reload planner)", () => {
+    const readBaked = async (): Promise<Record<string, unknown>> => {
+      const fsActual = await vi.importActual<typeof import("fs")>("fs");
+      const pathMod = await import("path");
+      return JSON.parse(
+        fsActual.readFileSync(
+          pathMod.resolve(__dirname, "../../../../../config/openclaw.json"),
+          "utf-8"
+        )
+      ) as Record<string, unknown>;
+    };
+
+    // What is on the volume before Pinchy's boot seeds run. OpenClaw's own
+    // startup writes nothing to it (2026.7.1: `loadGatewayStartupConfigSnapshot`
+    // never persists, and an empty file stops it with "existing config is missing
+    // gateway.mode"), so the seeded file IS the baseline its first reload diffs.
+    //
+    // All four converge on the same seeded baseline — that convergence is the
+    // point. Each case still guards something different: the pre-media one is
+    // the only case that fails if `needsMediaTtl` is dropped from the skip check
+    // (in the others another override already forces the write), and the baked
+    // one pins config/openclaw.json to the seed.
+    const startingFiles: Array<{
+      name: string;
+      file: () => Promise<Record<string, unknown> | null>;
+      expectNoSeedWrite?: boolean;
+    }> = [
+      // A production-image fresh install: pinchy mounts the shared volume first,
+      // so the OpenClaw image's baked file never reaches it, and entrypoint.sh
+      // writes its minimal seed. CI run 41569393728 started from this.
+      { name: "entrypoint.sh's minimal seed (production image)", file: readEntrypointSeed },
+      {
+        name: "the baked config/openclaw.json (image copy-up)",
+        file: readBaked,
+        expectNoSeedWrite: true,
+      },
+      // The dev image and a host-run Pinchy have no entrypoint seed.
+      { name: "no openclaw.json (dev image / host-run Pinchy)", file: async () => null },
+      {
+        // The seed baseline as it looked before the media TTL: every other
+        // override present, no `media`. The seed is the only thing that adds it
+        // here — this case fails if the seed stops doing so, which the
+        // baked-config case cannot see.
+        name: "a pre-media-TTL seed baseline",
+        file: async () => {
+          const { media: _media, ...rest } = await readBaked();
+          return rest;
+        },
+      },
+    ];
+
+    const wizardProviders: Array<{ name: string; model: string; setting: Record<string, string> }> =
+      [
+        {
+          name: "local Ollama",
+          model: "ollama/llama3.2",
+          setting: { ollama_local_url: "http://host.docker.internal:11434" },
+        },
+        {
+          name: "Anthropic with an API key",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          setting: { anthropic_api_key: "sk-ant-decrypted" },
+        },
+      ];
+
+    for (const start of startingFiles) {
+      for (const provider of wizardProviders) {
+        it(`starting from ${start.name}, wizard on ${provider.name}`, async () => {
+          // Boot, in bootInits order: restart-class seed, then the gateway token.
+          const initial = await start.file();
+          let onDisk: string | null = initial === null ? null : JSON.stringify(initial);
+          mockedReadFileSync.mockImplementation(() => {
+            if (onDisk === null) {
+              throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+            }
+            return onDisk;
+          });
+          const persistSeedWrite = () => {
+            const write = findOpenClawConfigWrite(mockedWriteFileSync);
+            if (write) onDisk = String(write[1]);
+            mockedWriteFileSync.mockClear();
+          };
+          const seedWrote = seedRestartClassOverridesIfMissing();
+          persistSeedWrite();
+          // The baked file must already be what the seed would produce, or the
+          // two have drifted apart.
+          if (start.expectNoSeedWrite) expect(seedWrote).toBe(false);
+          await seedGatewayTokenIfMissing();
+          persistSeedWrite();
+          const baseline = JSON.parse(onDisk ?? "{}") as Record<string, unknown>;
+
+          // The setup wizard's regenerate: Smithers on the chosen provider.
+          mockedDb.select.mockReturnValue({
+            from: mockFrom([
+              { id: "smithers", name: "Smithers", model: provider.model, createdAt: new Date() },
+            ]),
+          } as never);
+          mockedGetSetting.mockImplementation(async (key: string) => provider.setting[key] ?? null);
+          await regenerateOpenClawConfig();
+          const next = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync)) as Record<
+            string,
+            unknown
+          >;
+
+          const planner = await loadOpenClawReloadPlanner();
+          const changedPaths = planner.diffConfigPaths(baseline, next);
+
+          // The scenario must be real: a regenerate that rebuilt the baseline
+          // unchanged would make the restart assertions pass on an empty diff.
+          expect(changedPaths).toEqual(expect.arrayContaining(["agents", "models"]));
+          expect(planner.buildGatewayReloadPlan(changedPaths).restartReasons).toEqual([]);
+          expect(changedPaths.filter(planner.restartsViaPluginRule)).toEqual([]);
+        });
+      }
+    }
+  });
 });
+
+/**
+ * The minimal openclaw.json that entrypoint.sh writes when the shared volume has
+ * none — read from the script itself, so a change there is tested here. Throws if
+ * the seed line can no longer be found.
+ */
+async function readEntrypointSeed(): Promise<Record<string, unknown>> {
+  const fsActual = await vi.importActual<typeof import("fs")>("fs");
+  const pathMod = await import("path");
+  const script = fsActual.readFileSync(
+    pathMod.resolve(__dirname, "../../../../../entrypoint.sh"),
+    "utf-8"
+  );
+  const match = /printf '(\{.*\})\\n' > \/openclaw-config\/openclaw\.json/.exec(script);
+  if (!match) {
+    throw new Error("entrypoint.sh no longer seeds openclaw.json with a printf'd JSON literal.");
+  }
+  return JSON.parse(match[1]) as Record<string, unknown>;
+}
+
+/**
+ * Load OpenClaw's REAL config-reload planner from the installed `openclaw`
+ * package: `diffConfigPaths` + `buildGatewayReloadPlan`, the two functions its
+ * config watcher runs to decide hot reload vs gateway restart. They are not part
+ * of the public exports, so this finds the bundled chunk and reads the export
+ * aliases from its `export { … }` line. If a bump renames or restructures them,
+ * this throws — the signal to re-verify the contract, never a silent pass.
+ *
+ * The chunk's planner sees no plugin registry, but a running gateway merges the
+ * `reload` rules of the plugins it loads, sorted with the base rules by prefix
+ * length — so canvas's `plugins.allow` restart rule beats the hot `plugins` one.
+ * `restartsViaPluginRule` covers that: it imports every bundled plugin OpenClaw
+ * enables by default (`enabledByDefault: true`) and reports a path whose
+ * longest-matching plugin rule is a restart. As of 2026.7.1 that is canvas
+ * (`plugins.enabled/allow/deny`, `plugins.entries.canvas`) and browser
+ * (`browser`, whose rules live in a sibling chunk — hence importing the entry
+ * rather than reading its source). The loader throws if either stops declaring
+ * static rules, so a rename or a move to runtime `registerReload()` is a red
+ * test rather than a quietly smaller check. Third-party plugins Pinchy loads
+ * declare no reload rules.
+ *
+ * This is a deliberate over-approximation: it assumes every default-enabled
+ * plugin is loaded, while Pinchy's own `plugins.allow` keeps canvas out of a
+ * configured gateway (CI shows `plugins.allow` changes hot-reloading there). It
+ * matters only before Pinchy's first regenerate, when OpenClaw runs its
+ * defaults. Today that diff touches `plugins` as a whole (the seeded file has
+ * no `plugins` block), which no plugin rule matches. If a `plugins` block ever
+ * reaches the seeded baseline, a red here means "check this against a real
+ * gateway", not necessarily a proven restart.
+ */
+async function loadOpenClawReloadPlanner(): Promise<{
+  diffConfigPaths: (prev: unknown, next: unknown) => string[];
+  buildGatewayReloadPlan: (paths: string[]) => { restartReasons: string[] };
+  restartsViaPluginRule: (path: string) => boolean;
+}> {
+  const { createRequire } = await import("module");
+  const { pathToFileURL } = await import("url");
+  const pathMod = await import("path");
+  const fsActual = await vi.importActual<typeof import("fs")>("fs");
+  const require = createRequire(import.meta.url);
+  const dist = pathMod.dirname(require.resolve("openclaw"));
+  const chunks = fsActual.readdirSync(dist).filter((n) => /^config-reload-plan-.*\.js$/.test(n));
+  if (chunks.length !== 1) {
+    throw new Error(
+      `Expected one config-reload-plan chunk in ${dist}, found ${String(chunks.length)} — re-verify the reload contract against the installed openclaw version.`
+    );
+  }
+  const file = pathMod.join(dist, chunks[0]);
+  const source = fsActual.readFileSync(file, "utf-8");
+  const alias = (name: string): string => {
+    const match = new RegExp(`\\b${name} as (\\w+)`).exec(source);
+    if (!match) {
+      throw new Error(`${chunks[0]} no longer exports ${name} — re-verify the reload contract.`);
+    }
+    return match[1];
+  };
+  const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+  const diffConfigPaths = mod[alias("diffConfigPaths")];
+  const buildGatewayReloadPlan = mod[alias("buildGatewayReloadPlan")];
+  if (typeof diffConfigPaths !== "function" || typeof buildGatewayReloadPlan !== "function") {
+    throw new Error(`${chunks[0]} exports are not functions — re-verify the reload contract.`);
+  }
+
+  type PluginRule = { prefix: string; restart: boolean };
+  const pluginRules: PluginRule[] = [];
+  const pluginsWithRules = new Set<string>();
+  const extensions = pathMod.join(dist, "extensions");
+  for (const dir of fsActual.readdirSync(extensions)) {
+    const manifestPath = pathMod.join(extensions, dir, "openclaw.plugin.json");
+    const indexPath = pathMod.join(extensions, dir, "index.js");
+    if (!fsActual.existsSync(manifestPath) || !fsActual.existsSync(indexPath)) continue;
+    const manifest = JSON.parse(fsActual.readFileSync(manifestPath, "utf-8")) as {
+      enabledByDefault?: boolean;
+    };
+    if (manifest.enabledByDefault !== true) continue;
+    const entry = (await import(pathToFileURL(indexPath).href)) as {
+      default?: { reload?: Record<string, unknown> };
+    };
+    const reload = entry.default?.reload;
+    if (reload === undefined) continue;
+    for (const [key, restart] of [
+      ["restartPrefixes", true],
+      ["hotPrefixes", false],
+      ["noopPrefixes", false],
+    ] as const) {
+      const prefixes = reload[key] ?? [];
+      if (!Array.isArray(prefixes) || prefixes.some((p) => typeof p !== "string")) {
+        throw new Error(
+          `extensions/${dir} reload.${key} is not a string[] — re-verify the reload contract.`
+        );
+      }
+      for (const prefix of prefixes as string[]) pluginRules.push({ prefix, restart });
+      if ((prefixes as string[]).length > 0) pluginsWithRules.add(dir);
+    }
+  }
+  // The plugins known to declare static reload rules in 2026.7.1. One of them
+  // renaming its entry, dropping `reload`, or moving its rules into a runtime
+  // `registerReload()` would otherwise shrink this check without failing it.
+  for (const expected of ["browser", "canvas"]) {
+    if (!pluginsWithRules.has(expected)) {
+      throw new Error(
+        `extensions/${expected} no longer declares static reload rules — re-verify the reload contract.`
+      );
+    }
+  }
+  if (!pluginRules.some((rule) => rule.restart)) {
+    throw new Error(
+      `No default-enabled bundled plugin in ${extensions} declares reload.restartPrefixes — re-verify the reload contract.`
+    );
+  }
+  const restartsViaPluginRule = (path: string): boolean => {
+    const matching = pluginRules
+      .filter((rule) => path === rule.prefix || path.startsWith(`${rule.prefix}.`))
+      .sort((a, b) => b.prefix.length - a.prefix.length);
+    return matching[0]?.restart === true;
+  };
+  // The matcher must flag at least one rule it was handed, or the assertion
+  // that uses it could never fail.
+  if (!pluginRules.some((rule) => rule.restart && restartsViaPluginRule(rule.prefix))) {
+    throw new Error("restartsViaPluginRule flags none of the plugin restart rules it loaded.");
+  }
+
+  return {
+    diffConfigPaths: diffConfigPaths as (prev: unknown, next: unknown) => string[],
+    buildGatewayReloadPlan: buildGatewayReloadPlan as (paths: string[]) => {
+      restartReasons: string[];
+    },
+    restartsViaPluginRule,
+  };
+}
 
 describe("seedGatewayTokenIfMissing", () => {
   // Background: OC 2026.5.12+ strictly requires gateway.auth.token in

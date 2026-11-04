@@ -20,5 +20,8 @@
   },
   "canvasHost": {
     "enabled": false
+  },
+  "media": {
+    "ttlHours": 48
   }
 }

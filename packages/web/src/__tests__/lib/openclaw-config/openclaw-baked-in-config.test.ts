@@ -28,6 +28,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
+import { OPENCLAW_MEDIA_TTL_HOURS } from "@/lib/openclaw-config/paths";
 
 describe("config/openclaw.json (baked-in config)", () => {
   let config: Record<string, unknown>;
@@ -93,5 +94,15 @@ describe("config/openclaw.json (baked-in config)", () => {
     const terminal = gateway.terminal as Record<string, unknown> | undefined;
     expect(terminal, "config.gateway.terminal must exist").toBeDefined();
     expect(terminal!.enabled).toBe(false);
+  });
+
+  it("has media.ttlHours: 48 — prevents restart-triggering diff on first config.apply", () => {
+    // OpenClaw has no reload rule for `media`, so it treats any change there as
+    // restart-class. Pinchy writes media.ttlHours on every regenerate (see
+    // build.ts); without it baked in, a fresh install's first regenerate is an
+    // in-process gateway restart that aborts the run in flight.
+    const media = config.media as Record<string, unknown> | undefined;
+    expect(media, "config.media must exist").toBeDefined();
+    expect(media!.ttlHours).toBe(OPENCLAW_MEDIA_TTL_HOURS);
   });
 });

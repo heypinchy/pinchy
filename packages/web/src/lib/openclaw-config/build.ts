@@ -47,7 +47,7 @@ import {
 } from "@/lib/workspace";
 import { getSkillBody, isKnownSkill } from "@/lib/skills";
 import { resolveBootstrapCaps } from "./bootstrap-caps";
-import { CONFIG_PATH } from "./paths";
+import { CONFIG_PATH, OPENCLAW_MEDIA_TTL_HOURS } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import {
   readConfigContent,
@@ -859,7 +859,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // (same pattern as canvasHost.enabled above) — any admin- or
     // OpenClaw-tuned ttlHours must not survive a regenerate — but other
     // sibling fields OpenClaw may enrich under `media` are preserved.
-    media: { ...existingMedia, ttlHours: 48 },
+    media: { ...existingMedia, ttlHours: OPENCLAW_MEDIA_TTL_HOURS },
     secrets: {
       providers: {
         pinchy: {
