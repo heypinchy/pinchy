@@ -10,6 +10,7 @@
  * error (which office-convert books as `infrastructure`, retryable).
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { chmod, mkdir, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { createServer, request, type Server } from "node:http";
@@ -82,6 +83,14 @@ async function stagedBatch(names: string[]) {
       timeoutMs: 5_000,
     } satisfies ConverterRun,
   };
+}
+
+/** A socket nobody listens on, as a converter that exits without unlinking it leaves one. */
+function leaveStaleSocket(): void {
+  execFileSync(process.execPath, [
+    "-e",
+    `require("net").createServer().listen(${JSON.stringify(converterSocketPath(spool))}, () => process.exit(0))`,
+  ]);
 }
 
 /** A raw request, for what the client would never send. */
@@ -225,6 +234,41 @@ describe("office-converter sidecar protocol", () => {
     await expect(converter.runConverter(run)).rejects.toThrow(
       /office converter is not reachable at .*converter\.sock.*office-converter service/
     );
+  });
+
+  it("fails at once when there is no socket at all, without waiting for one", async () => {
+    // No socket means no converter service — waiting would only slow every
+    // batch of an install that kept its old docker-compose.yml.
+    const converter = sidecarConverter(spool, { connectRetryMs: 10_000 });
+    const { run } = await stagedBatch(["0.docx"]);
+    const started = Date.now();
+
+    await expect(converter.runConverter(run)).rejects.toThrow(/not reachable/);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("waits for a converter that is restarting: its socket is there, nobody listens yet", async () => {
+    // The converter exits to recycle itself and leaves its socket behind; the
+    // next batch must not land in the gap and fail.
+    leaveStaleSocket();
+    const converter = sidecarConverter(spool, { connectRetryMs: 10_000, connectIntervalMs: 50 });
+    const { run } = await stagedBatch(["0.docx"]);
+    setTimeout(() => void startServer(), 300);
+
+    await expect(converter.runConverter(run)).resolves.toMatchObject({ code: 0 });
+  });
+
+  it("says the converter is not answering, not that the compose file is old, when it never comes back", async () => {
+    leaveStaleSocket();
+    const converter = sidecarConverter(spool, { connectRetryMs: 200, connectIntervalMs: 50 });
+    const { run } = await stagedBatch(["0.docx"]);
+
+    const err = await converter.runConverter(run).catch((e: Error) => e);
+
+    expect(String(err)).toMatch(
+      /not answering .*converter\.sock.*docker compose logs office-converter/
+    );
+    expect(String(err)).not.toMatch(/docker-compose\.yml/);
   });
 
   it("gives up on a sidecar that never answers", async () => {

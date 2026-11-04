@@ -166,7 +166,12 @@ business, not the store's.
   exited, even when something it started still holds its stderr open: after a
   two-second drain the group is killed and the pipe closed, and anything that
   left the group is an orphan the check finds. The recycle does not depend on
-  the web process still listening for the answer.
+  the web process still listening for the answer. The exit leaves the socket behind,
+  so until the new process listens a connection is refused rather than
+  missing: the web side retries a refused connection for up to 20 s before it
+  books the batch (`not answering … docker compose logs office-converter`),
+  and fails at once only when there is no socket at all — no converter
+  service, which waiting would not change.
 
 ### What stays in the web container
 

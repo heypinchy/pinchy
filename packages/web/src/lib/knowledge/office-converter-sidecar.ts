@@ -79,6 +79,14 @@ export const DEFAULT_MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_GRACE_MS = 30_000;
 
 /**
+ * How long a refused connection is retried: a converter that recycled itself
+ * is back within seconds (the restart policy starts it at once, and it only
+ * has to load). Long enough for that on a busy host, short enough that a
+ * converter that keeps crashing costs a batch a short wait, not minutes.
+ */
+const DEFAULT_CONNECT_RETRY_MS = 20_000;
+
+/**
  * A staged batch older than this is a leftover — its web process died before
  * its `finally` could remove it. No batch lives longer than its budget.
  */
@@ -141,6 +149,14 @@ export interface SidecarConverter {
 
 export interface SidecarConverterOptions {
   graceMs?: number;
+  /**
+   * How long to keep trying a socket that is there but refuses connections —
+   * a converter between its exit and its restart (it recycles itself after a
+   * batch that left processes behind, and does not unlink its socket on the
+   * way out). A missing socket is not retried: that is no converter at all.
+   */
+  connectRetryMs?: number;
+  connectIntervalMs?: number;
   staleAfterMs?: number;
   /** The web process's uid: only batches it owns are pruned. */
   uid?: number;
@@ -154,6 +170,54 @@ export function sidecarConverter(
   const graceMs = options.graceMs ?? DEFAULT_GRACE_MS;
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
   const uid = options.uid ?? process.getuid?.() ?? -1;
+  const connectRetryMs = options.connectRetryMs ?? DEFAULT_CONNECT_RETRY_MS;
+  const connectIntervalMs = options.connectIntervalMs ?? 500;
+
+  /** One request; nothing has reached the converter when it fails with ECONNREFUSED. */
+  const send = (body: string, timeoutMs: number) =>
+    new Promise<ConverterResult>((resolve, reject) => {
+      const req = request(
+        {
+          socketPath,
+          // One request per batch, minutes apart: a pooled keep-alive socket
+          // buys nothing and can be closed by the sidecar just as it is reused.
+          agent: false,
+          method: "POST",
+          path: "/convert",
+          headers: { "content-type": "application/json" },
+        },
+        (res) => {
+          readBody(res, MAX_RESPONSE_BYTES)
+            .then((text) => {
+              if (res.statusCode !== 200) {
+                reject(new Error(`office converter refused the batch: ${errorOf(text)}`));
+                return;
+              }
+              resolve(parseResult(text));
+            })
+            .catch(reject);
+        }
+      );
+      req.setTimeout(timeoutMs + graceMs, () => {
+        req.destroy(
+          new Error(
+            `office converter did not answer within ${Math.round((timeoutMs + graceMs) / 1000)} s`
+          )
+        );
+      });
+      req.on("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "ENOENT") {
+          reject(
+            new Error(
+              `office converter is not reachable at ${socketPath} (${err.code}) — is the office-converter service running? See the upgrade notes: it needs the current docker-compose.yml`
+            )
+          );
+          return;
+        }
+        reject(err);
+      });
+      req.end(body);
+    });
 
   return {
     removeStagingDir: removeBatch,
@@ -175,49 +239,20 @@ export function sidecarConverter(
 
     async runConverter(run) {
       const body = JSON.stringify(toRequest(spoolDir, run));
-      return new Promise<ConverterResult>((resolve, reject) => {
-        const req = request(
-          {
-            socketPath,
-            // One request per batch, minutes apart: a pooled keep-alive socket
-            // buys nothing and can be closed by the sidecar just as it is reused.
-            agent: false,
-            method: "POST",
-            path: "/convert",
-            headers: { "content-type": "application/json" },
-          },
-          (res) => {
-            readBody(res, MAX_RESPONSE_BYTES)
-              .then((text) => {
-                if (res.statusCode !== 200) {
-                  reject(new Error(`office converter refused the batch: ${errorOf(text)}`));
-                  return;
-                }
-                resolve(parseResult(text));
-              })
-              .catch(reject);
-          }
-        );
-        req.setTimeout(run.timeoutMs + graceMs, () => {
-          req.destroy(
-            new Error(
-              `office converter did not answer within ${Math.round((run.timeoutMs + graceMs) / 1000)} s`
-            )
-          );
-        });
-        req.on("error", (err: NodeJS.ErrnoException) => {
-          if (err.code === "ENOENT" || err.code === "ECONNREFUSED") {
-            reject(
-              new Error(
-                `office converter is not reachable at ${socketPath} (${err.code}) — is the office-converter service running? See the upgrade notes: it needs the current docker-compose.yml`
-              )
+      const deadline = Date.now() + connectRetryMs;
+      for (;;) {
+        try {
+          return await send(body, run.timeoutMs);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ECONNREFUSED") throw err;
+          if (Date.now() >= deadline) {
+            throw new Error(
+              `office converter is not answering at ${socketPath} (ECONNREFUSED) — it is not running or keeps restarting; see \`docker compose logs office-converter\``
             );
-            return;
           }
-          reject(err);
-        });
-        req.end(body);
-      });
+          await new Promise((resolve) => setTimeout(resolve, connectIntervalMs));
+        }
+      }
     },
   };
 }
