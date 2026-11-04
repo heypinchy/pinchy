@@ -343,6 +343,53 @@ describe("pinchy-web plugin", () => {
       expect(result.content[0].text).toMatch(/no longer connected/i);
     });
 
+    it("rides out 401s on the credentials fetch right after a config apply, then searches", async () => {
+      // Pinchy answers its internal routes 401 while it momentarily cannot
+      // read the shared gateway token. One attempt used to fail the whole
+      // search with "HTTP 401 Unauthorized" on the Brave credentials.
+      vi.useFakeTimers();
+      try {
+        braveSearchMock.mockResolvedValue({ results: [] });
+        const unauthorized = {
+          ok: false,
+          status: 401,
+          statusText: "Unauthorized",
+          json: async () => ({ error: "Unauthorized" }),
+        };
+        const fetchMock = vi
+          .fn()
+          .mockResolvedValueOnce(unauthorized)
+          .mockResolvedValueOnce(unauthorized)
+          .mockResolvedValueOnce({
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            json: async () => ({ credentials: { apiKey: "brave-key-123" } }),
+          });
+        vi.stubGlobal("fetch", fetchMock);
+
+        const factories = collectFactories(
+          credentialsPluginConfig({ "agent-1": { tools: ["pinchy_web_search"] } })
+        );
+        const pending = factories
+          .pinchy_web_search({ agentId: "agent-1" })!
+          .execute("call-1", { query: "test" });
+        await vi.advanceTimersByTimeAsync(250 + 500);
+        const result = await pending;
+
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(braveSearchMock).toHaveBeenCalled();
+        expect(result.isError).not.toBe(true);
+        // Pinchy's own 401 is not Brave rejecting the key: nothing may flag
+        // the connection as auth_failed over it.
+        expect(
+          fetchMock.mock.calls.filter((c) => String(c[0]).includes("report-auth-failure"))
+        ).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("reports a credentials answer that is null as the credentials API's", async () => {
       vi.stubGlobal(
         "fetch",

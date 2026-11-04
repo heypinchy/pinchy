@@ -313,6 +313,79 @@ describe("requestCredentials", () => {
     expect(err.message).not.toContain("10.0.0.2");
   });
 
+  // The route answers 401 only from its gateway-token check (a missing grant
+  // is a 403, #987), and Pinchy fails that check while it momentarily cannot
+  // read the shared token — OpenClaw rewrites openclaw.json root-only on
+  // every config apply. A single attempt turned that moment into a failed
+  // tool call ("HTTP 401 Unauthorized" on the Brave credentials).
+  describe("a 401 from Pinchy's own gateway-token check", () => {
+    const unauthorized = () =>
+      new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        statusText: "Unauthorized",
+      });
+    const ok = () =>
+      new Response(JSON.stringify({ credentials: { apiKey: "k" } }), { status: 200 });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("is retried with growing backoff until Pinchy accepts the token again", async () => {
+      vi.useFakeTimers();
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(unauthorized())
+        .mockResolvedValueOnce(unauthorized())
+        .mockResolvedValueOnce(unauthorized())
+        .mockResolvedValueOnce(ok());
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = requestCredentials(args);
+      // 250, 500, 1000 ms — spread across seconds, not one window.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+
+      await expect(result).resolves.toEqual({ credentials: { apiKey: "k" } });
+    });
+
+    it("surfaces as a 401 CredentialsFetchError once the retries run out", async () => {
+      vi.useFakeTimers();
+      const fetchMock = vi.fn(async () => unauthorized());
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = requestCredentials(args).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(250 + 500 + 1000 + 2000);
+      const err = (await result) as CredentialsFetchError;
+
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+      expect(err).toBeInstanceOf(CredentialsFetchError);
+      expect(err.status).toBe(401);
+      expect(err.message).toContain("HTTP 401 Unauthorized: Unauthorized");
+    });
+
+    it.each([403, 404, 503])("does not hold up a final %i", async (status) => {
+      const fetchMock = vi.fn(
+        async () => new Response(JSON.stringify({ error: "final" }), { status })
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const err = (await requestCredentials(args).catch(
+        (e: unknown) => e
+      )) as CredentialsFetchError;
+      expect(err.status).toBe(status);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it.each([
     ["null", null],
     ["an array", []],

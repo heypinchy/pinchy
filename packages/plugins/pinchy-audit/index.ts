@@ -239,9 +239,13 @@ function toolStartKey(
   return toolName;
 }
 
-const MAX_RETRIES = 2;
-// Deliberately short: this hook runs synchronously in the tool-call path, so
-// every millisecond here is a millisecond the agent's tool call is blocked.
+// Exponential backoff from a short base: 250, 500, 1000, 2000 ms — 3.75 s in
+// all. The base stays short because this hook runs synchronously in the
+// tool-call path, so every millisecond here is a millisecond the agent's tool
+// call is blocked; the growth is what lets the attempts span a disturbance
+// that lasts seconds (a Pinchy restart, a config apply) instead of all
+// landing inside it.
+const MAX_RETRIES = 4;
 const RETRY_BACKOFF_MS = 250;
 
 // Longest reason string worth putting in a warning/error. Pinchy's own API
@@ -310,7 +314,9 @@ function isDefinitiveRejection(status: number): boolean {
 // This hook runs before EVERY tool call of EVERY agent, so an unbounded fetch
 // here blocks all tool dispatch indefinitely. Note the worst case is this
 // times MAX_RETRIES + 1, plus the backoff spent between those attempts — an
-// unreachable Pinchy costs ~30.75s per tool call before the hook fails closed.
+// unreachable Pinchy costs ~53.75s per tool call before the hook fails closed.
+// That is the hung case only: a Pinchy that is down refuses the connection at
+// once, and then the whole retry run costs the 3.75s of backoff.
 const FETCH_TIMEOUT_MS = 10_000;
 
 async function postToolAuditEvent(
@@ -342,12 +348,20 @@ async function postToolAuditEvent(
       // way, so retrying only spends this hook's tool-call-blocking window
       // for nothing. Quote the body so the eventual error names the real
       // reason instead of a bare status code.
+      //
+      // Except a 401, which this hook retries like a 5xx. The Bearer token is
+      // the one gateway token Pinchy and every plugin share (AGENTS.md,
+      // Pattern C), and Pinchy answers 401 while it momentarily cannot read
+      // it — OpenClaw rewrites openclaw.json root-only on every config apply.
+      // Stopping at the first 401 blocked the tool call of whichever agent hit
+      // that moment. The budget gate below keeps 401 definitive: it fails
+      // open, so its only question is what to log.
       if (isDefinitiveRejection(res.status)) {
         const reason = await readErrorBody(res);
         lastError = new Error(
           `[pinchy-audit] audit endpoint rejected ${payload.phase} ${payload.toolName} (${res.status}${reason ? `: ${reason}` : ""})`
         );
-        nonRetryable = true;
+        nonRetryable = res.status !== 401;
       } else {
         lastError = new Error(
           `[pinchy-audit] audit endpoint returned ${res.status} for ${payload.phase} ${payload.toolName}`
@@ -363,7 +377,7 @@ async function postToolAuditEvent(
       logger?.warn?.(
         `[pinchy-audit] audit failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying: ${lastError?.message}`
       );
-      await sleep(RETRY_BACKOFF_MS * (attempt + 1));
+      await sleep(RETRY_BACKOFF_MS * 2 ** attempt);
     }
   }
 
