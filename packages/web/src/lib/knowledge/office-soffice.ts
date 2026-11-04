@@ -246,6 +246,9 @@ const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, timeoutMs }) =
       reject(err);
     });
     child.on("exit", (code, signal) => {
+      // It finished on its own (or was killed): the budget no longer applies,
+      // and must not fire while stderr drains and call a finished batch late.
+      clearTimeout(timer);
       drain = setTimeout(() => {
         // Still held open: by something left in the converter's group, which
         // goes with it, or by something that left the group, which the

@@ -256,6 +256,24 @@ describe("runSoffice", () => {
       expect(await isGone(Number(await readFile(pidFile, "utf8")))).toBe(true);
     }, 30_000);
 
+    it("does not call a converter that exited in time timed out while its stderr drains", async () => {
+      // It exits before the budget; something it started holds stderr past
+      // the budget. The batch finished — its PDFs are written — and must not
+      // be booked as "exceeded its time budget".
+      const pidFile = join(tmpRoot, "late-holder.pid");
+      process.env.KB_SOFFICE_BIN = stub(
+        "soffice-exits-in-time",
+        `sleep 30 &\nprintf '%s' "$!" > ${pidFile}\nsleep 2\nexit 0\n`
+      );
+
+      // Exits at ~2 s; the budget ends at 3.5 s, inside the 2 s drain that
+      // follows — with room for a slow start on a loaded machine.
+      const result = await run({ timeoutMs: 3_500 });
+
+      expect(result).toMatchObject({ code: 0, timedOut: false });
+      expect(await isGone(Number(await readFile(pidFile, "utf8")))).toBe(true);
+    }, 15_000);
+
     it("does not fire for a converter that finishes in time", async () => {
       process.env.KB_SOFFICE_BIN = stub("soffice-quick", "exit 0\n");
 

@@ -16,6 +16,7 @@ import { chmod, mkdir, readdir, rm, stat, symlink, utimes, writeFile } from "nod
 import { createServer, request, type Server } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Worker } from "node:worker_threads";
 
 import {
   converterSocketPath,
@@ -269,6 +270,60 @@ describe("office-converter sidecar protocol", () => {
       /not answering .*converter\.sock.*docker compose logs office-converter/
     );
     expect(String(err)).not.toMatch(/docker-compose\.yml/);
+  });
+
+  it("says the converter went away when it closes the connection before answering", async () => {
+    // A batch already in flight when the converter is stopped or restarted.
+    server = createServer((req) => req.socket.destroy());
+    await new Promise<void>((resolve) => server!.listen(converterSocketPath(spool), resolve));
+    const { converter, run } = await stagedBatch(["0.docx"]);
+
+    await expect(converter.runConverter(run)).rejects.toThrow(
+      /office converter closed the connection before answering/
+    );
+  });
+
+  it("never leaves the socket path missing while it replaces a leftover socket", async () => {
+    // A web process retrying during a restart must find a socket that
+    // refuses or one that answers — never none, which reads as "no converter
+    // service" and is not retried.
+    const path = converterSocketPath(spool);
+    const servers: Server[] = [];
+    servers.push(createOfficeConverterServer({ spoolDir: spool, runConverter: answer }));
+    await listenOfficeConverter(servers[0], spool);
+    const watcher = new Worker(
+      `const { statSync } = require("node:fs");
+       const { parentPort, workerData } = require("node:worker_threads");
+       let missing = 0, stop = false;
+       parentPort.on("message", () => { stop = true; });
+       (function loop() {
+         for (let i = 0; i < 2000; i++) {
+           try { statSync(workerData); } catch { missing++; }
+         }
+         if (stop) parentPort.postMessage(missing); else setImmediate(loop);
+       })();`,
+      { eval: true, workerData: path }
+    );
+    try {
+      await new Promise((r) => setTimeout(r, 50));
+      for (let i = 0; i < 30; i++) {
+        const next = createOfficeConverterServer({ spoolDir: spool, runConverter: answer });
+        servers.push(next);
+        await listenOfficeConverter(next, spool);
+      }
+      const missing = await new Promise<number>((resolve) => {
+        watcher.once("message", resolve);
+        watcher.postMessage("stop");
+      });
+
+      expect(missing).toBe(0);
+      expect((await readdir(spool)).filter((e) => e.startsWith("converter"))).toEqual([
+        "converter.sock",
+      ]);
+    } finally {
+      await watcher.terminate();
+      for (const s of servers) s.close();
+    }
   });
 
   it("gives up on a sidecar that never answers", async () => {

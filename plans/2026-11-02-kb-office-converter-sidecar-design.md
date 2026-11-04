@@ -173,7 +173,13 @@ business, not the store's.
   refused connection for up to 20 s before it books the batch (`not answering
 … docker compose logs office-converter`), and fails at once only when there
   is no socket at all — no converter service, which waiting would not change.
-  The next start replaces the leftover socket.
+  The next start replaces the leftover socket atomically — it binds under a
+  temporary name and renames that over it — so the path is never missing in
+  between. A batch already in flight when the converter is stopped gets its
+  connection closed, and is booked with that reason (`closed the connection
+before answering`), retried on the next run. Once `soffice` has exited, the
+  batch's time budget no longer applies, so a stderr drain cannot turn a
+  finished batch into a timed-out one.
 
 ### What stays in the web container
 

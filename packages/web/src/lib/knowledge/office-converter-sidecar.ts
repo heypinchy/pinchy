@@ -49,7 +49,17 @@
  * app's dependency graph into a container whose point is to hold nothing.
  */
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, rm, rmdir, unlink } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  rmdir,
+  unlink,
+} from "node:fs/promises";
 import { createServer, request, type IncomingMessage, type Server } from "node:http";
 import { basename, dirname, join } from "node:path";
 
@@ -207,6 +217,15 @@ export function sidecarConverter(
         );
       });
       req.on("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "ECONNRESET") {
+          // A batch in flight when the converter was stopped or restarted.
+          reject(
+            new Error(
+              `office converter closed the connection before answering (${err.code}) — it was stopped or restarted during the batch`
+            )
+          );
+          return;
+        }
         if (err.code === "ENOENT") {
           reject(
             new Error(
@@ -458,22 +477,34 @@ function parseRequest(text: string): ConvertRequest | string {
 }
 
 /**
- * Starts listening on the spool's socket, replacing a socket file a previous
- * sidecar left behind (a crash does not unlink it, and `listen` refuses an
- * existing path).
+ * Starts listening on the spool's socket, replacing the socket a previous
+ * converter left behind (it never unlinks it on the way out, and `listen`
+ * refuses an existing path).
+ *
+ * It binds under a temporary name and renames that over the old socket, so
+ * the path is never missing: a web process retrying through a restart finds a
+ * socket that refuses, then one that answers — never none, which would read
+ * as "no converter service" and not be retried.
  */
 export async function listenOfficeConverter(server: Server, spoolDir: string): Promise<void> {
   const socketPath = converterSocketPath(spoolDir);
-  await rm(socketPath, { force: true });
+  // Temporary names of starts that died before their rename; ours to remove.
+  for (const entry of await readdir(spoolDir).catch(() => [] as string[])) {
+    if (/^converter\.sock\.\d+\.new$/.test(entry)) {
+      await rm(join(spoolDir, entry), { force: true }).catch(() => {});
+    }
+  }
+  const fresh = `${socketPath}.${process.pid}.new`;
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(socketPath, () => {
+    server.listen(fresh, () => {
       server.off("error", reject);
       resolve();
     });
   });
   // The web process connects as another uid, through the group.
-  await chmod(socketPath, SOCKET_MODE);
+  await chmod(fresh, SOCKET_MODE);
+  await rename(fresh, socketPath);
 }
 
 /**
