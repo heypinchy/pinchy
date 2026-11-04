@@ -185,6 +185,32 @@ Plan for some headroom on that volume beyond the PDFs themselves. Office files a
 
 The volume also holds a private copy of each document while it is being read — by a reindex, or for a spreadsheet preview — so that no reader ever opens a path in a mounted folder that someone could have swapped for a link. Pinchy streams the file into the copy rather than holding it in memory, and deletes the copy as soon as the read is done; copies an interrupted run left behind are cleared when Pinchy starts. Office documents are converted in batches of 20, so during a conversion that can be 20 copies at once, next to the 20 checked copies above. A document whose private copy doesn't fit counts as `failed` for that run, like one whose checked copy didn't, and a spreadsheet preview answers that the reader is unavailable right now.
 
+### CPU when the knowledge base embeds
+
+The knowledge base's embedding model runs inside the `pinchy` container, and it computes on the CPU. Pinchy sizes its thread pool to the CPU the container may actually use — the smaller of the host's cores and `PINCHY_CPUS`, rounded down — minus one core, which it leaves for the requests, uploads and document extraction running alongside. It never goes above six threads. With the default `PINCHY_CPUS=1.5`, that's one thread on any host; `PINCHY_CPUS=2.5` gives one too, `4` gives three, and anything from `7` up gives six.
+
+That's deliberately fewer threads than the hardware might seem to allow. The model's threads wait for each other many times per document, so a thread without a core of its own holds all the others up. We measured it on two cores capped at 1.5 CPUs, the default on a small VPS:
+
+| Threads | One search query | Three at once | One indexed chunk |
+| ------- | ---------------- | ------------- | ----------------- |
+| 4       | 3–6 s            | up to 15 s    | 3–6 s             |
+| 1       | under 25 ms      | under 60 ms   | under 1 s         |
+
+The spare core matters on bigger boxes too, just less. On four cores, an indexed chunk took 0.27–0.39 s at four threads and 0.31–0.40 s at three; with one other busy process in the container, four threads slowed to 0.4–1.1 s while three stayed at 0.31–0.32 s. Search queries took under 10 ms either way.
+
+What a bigger box buys you is faster indexing, not faster search: a search query is short and already takes milliseconds. To speed up a large first index, raise `PINCHY_CPUS` (and the host's cores with it); Pinchy picks up the extra cores on its next start.
+
+If your host hides its CPU limit from the container, set the thread count yourself in `docker-compose.override.yml`:
+
+```yaml
+services:
+  pinchy:
+    environment:
+      - KB_EMBEDDING_THREADS=2
+```
+
+Any positive whole number works; anything else is ignored and Pinchy decides as above. Leave a core spare where you can; on one or two cores, stay at 1.
+
 ### Health checks
 
 `db` and `pinchy` each have a Docker health check: `db` polls `pg_isready`, and `pinchy` polls its own `/api/internal/openclaw-config-ready` endpoint. `openclaw` has a lightweight **TCP liveness check** — a raw connect to the gateway's WebSocket port (`18789`) that succeeds as soon as the gateway is accepting connections. It doesn't inspect the gateway's internal state, only that something is listening; OpenClaw's own start script already respawns the gateway process if it dies internally, so this check exists to surface a fully stuck container (process alive, port not listening). Note that Compose does **not** restart a container just because it is `unhealthy` — `restart:` policies act on container _exit_, not health status. The check is diagnostic: a stuck container shows as `unhealthy` in `docker compose ps` so you can spot it and restart it yourself, rather than it silently sitting "up" but unreachable.

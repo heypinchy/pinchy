@@ -323,6 +323,31 @@ describe("pinchy-knowledge plugin", () => {
     timeoutSpy.mockRestore();
   });
 
+  // The raw abort reason ("The operation was aborted due to timeout") is what
+  // the model relayed to the user on staging. It says nothing about what timed
+  // out or what to do next; the tool result has to.
+  it("reports a timeout as a timed-out knowledge-base search with its budget, not a raw abort", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    const factory = mockRegisterTool.mock.calls[0][0];
+    const tool = factory({ agentId: "agent-1" });
+
+    global.fetch = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new DOMException("The operation was aborted due to timeout", "TimeoutError")
+      );
+
+    const result = await tool.execute("call-1", { query: "test" });
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("did not answer within 10 seconds");
+    expect(text).not.toContain("aborted");
+    expect(text).toMatch(/retry/i);
+    expect(result.details).toEqual({ error: expect.stringContaining("10 seconds") });
+  });
+
   it("rejects an empty/whitespace query without calling fetch", async () => {
     const api = createMockApi(defaultConfig);
     const { default: plugin } = await import("./index");
