@@ -102,4 +102,58 @@ describe("readGatewayToken", () => {
     void mkdirSync; // silence unused import
     void chmodSync;
   });
+
+  // OpenClaw rewrites openclaw.json root-only on every config apply until
+  // start-openclaw.sh chmods it back, and secrets.json is root-owned. In that
+  // window both reads fail, and validateGatewayToken() used to compare every
+  // plugin's Bearer token against "" — a 401 on every internal route.
+  describe("last good token", () => {
+    it("keeps serving the last token while both files are unreadable", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+
+      rmSync(configPath);
+      expect(readGatewayToken()).toBe("good-token");
+    });
+
+    it("keeps serving the last token while openclaw.json is half-written", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+
+      writeFileSync(configPath, "{ half-written");
+      expect(readGatewayToken()).toBe("good-token");
+    });
+
+    it("picks up a rotated token on the next successful read, and falls back to that one", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "old-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("old-token");
+
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "new-token" } } }));
+      expect(readGatewayToken()).toBe("new-token");
+
+      rmSync(configPath);
+      expect(readGatewayToken()).toBe("new-token");
+    });
+
+    it("still returns empty when no token was ever readable", async () => {
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("");
+    });
+  });
+});
+
+describe("validateGatewayToken", () => {
+  it("keeps accepting the plugins' token while the config files are unreadable", async () => {
+    writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+    const { validateGatewayToken } = await import("@/lib/gateway-auth");
+    const headers = new Headers({ Authorization: "Bearer good-token" });
+    expect(validateGatewayToken(headers)).toBe(true);
+
+    rmSync(configPath);
+    expect(validateGatewayToken(headers)).toBe(true);
+    expect(validateGatewayToken(new Headers({ Authorization: "Bearer wrong" }))).toBe(false);
+  });
 });
