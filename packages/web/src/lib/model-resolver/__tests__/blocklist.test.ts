@@ -16,10 +16,18 @@ describe("isBlocked", () => {
     "anthropic/claude-opus-5-20260901",
     "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-5-5",
-    "anthropic/claude-haiku-5-5",
     "anthropic/claude-fable-5-1",
   ])("blocks %s for tool use until the agent runtime knows it", (model) => {
     expect(isBlocked(model, ["tools"])).toBe(true);
+  });
+
+  // Haiku 5.5 is the one member of that family the pinned runtime can drive:
+  // Pinchy declares it `reasoning: false`, and OpenClaw 2026.7.1 then sends it
+  // no `thinking` field at all — never the `budget_tokens` budget the model
+  // rejects. The unblock is tied to that declaration (see blocklist.ts and
+  // blocklist-haiku-catalog.test.ts), not to the model id.
+  it("allows anthropic/claude-haiku-5-5 for tool use while Pinchy withholds its thinking setting", () => {
+    expect(isBlocked("anthropic/claude-haiku-5-5", ["tools"])).toBe(false);
   });
 
   it.each([
