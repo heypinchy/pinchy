@@ -12,7 +12,9 @@ const mockUnlink = vi.fn();
 const mockFields = vi.fn();
 const mockCallMethod = vi.fn();
 
-vi.mock("odoo-node", () => {
+vi.mock("odoo-node", async (importOriginal) => {
+  // The real OdooError, so error tests throw exactly what odoo-node throws.
+  const { OdooError } = await importOriginal<typeof import("odoo-node")>();
   const MockOdooClient = vi.fn(function (this: Record<string, unknown>) {
     this.searchRead = mockSearchRead;
     this.searchCount = mockSearchCount;
@@ -23,7 +25,7 @@ vi.mock("odoo-node", () => {
     this.fields = mockFields;
     this.callMethod = mockCallMethod;
   });
-  return { OdooClient: MockOdooClient };
+  return { OdooClient: MockOdooClient, OdooError };
 });
 
 // Mock the io wrapper for odoo_attach_file tests
@@ -33,7 +35,7 @@ const { mockReadFile, mockStat } = vi.hoisted(() => ({
 }));
 vi.mock("../io", () => ({ readFile: mockReadFile, stat: mockStat }));
 
-import { OdooClient } from "odoo-node";
+import { OdooClient, OdooError } from "odoo-node";
 import { encodeRef, decodeRef } from "../integration-ref";
 import plugin, {
   compactType,
@@ -3927,25 +3929,15 @@ describe("error handling", () => {
     expect(result.isError).toBe(true);
   });
 
-  // odoo-node 0.3.0 calls `response.json()` unguarded and follows redirects,
-  // so a non-JSON answer — here what AWS's metadata service returns for
-  // /latest/meta-data/iam/security-credentials/ — surfaces as V8's own
-  // SyntaxError, which quotes the start of the body. A tool result goes to
-  // the model and from there to a chat user who may not be an admin.
-  function realNonJsonSyntaxError(body: string): SyntaxError {
-    try {
-      JSON.parse(body);
-    } catch (err) {
-      return err as SyntaxError;
-    }
-    throw new Error("expected JSON.parse to throw");
+  // What odoo-node throws when the answer is not JSON-RPC at all — a page, a
+  // metadata service's plain text. It names status and content type, never
+  // the body.
+  function notJsonRpcError(): OdooError {
+    return new OdooError("Response is not JSON-RPC (HTTP 200, text/plain)", 200);
   }
 
-  it("never quotes a non-JSON Odoo answer back to the model", async () => {
-    const thrown = realNonJsonSyntaxError("my-ec2-role-name\n");
-    // Guard: this is the shape that leaks, not a hand-written stand-in.
-    expect(thrown.message).toContain("my-ec2-role-name");
-    mockSearchRead.mockRejectedValue(thrown);
+  it("tells the model a non-JSON-RPC answer means an admin should check the connection", async () => {
+    mockSearchRead.mockRejectedValue(notJsonRpcError());
 
     const tools = createApi({ [agentId]: agentConfig });
     const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
@@ -3957,10 +3949,159 @@ describe("error handling", () => {
     const text = result.content[0].text;
     const detail = (result.details as { error?: string }).error ?? "";
     for (const out of [text, detail]) {
-      expect(out).not.toContain("my-ec2-role-name");
-      expect(out).not.toContain("Unexpected token");
       expect(out).toContain("not a JSON-RPC response");
+      expect(out).toContain("Settings → Integrations");
     }
+  });
+
+  it("tells the model a redirect was refused, naming the status", async () => {
+    mockSearchRead.mockRejectedValue(
+      new OdooError(
+        "Odoo answered with a redirect (HTTP 308); odoo-node does not follow redirects. " +
+          "Use the address Odoo is actually served from.",
+        308
+      )
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("redirect (HTTP 308)");
+    expect(text).toContain("Settings → Integrations");
+  });
+
+  it("reports a credentials response that is not JSON as Pinchy's, without quoting it", async () => {
+    // The plugin parses one body itself: Pinchy's credentials answer. A parse
+    // error quotes the first characters of what it choked on.
+    fetchMock.mockResolvedValueOnce(new Response("proxy-page-body", { status: 200 }) as never);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("proxy-page");
+    expect(JSON.stringify(result)).not.toContain("Unexpected token");
+    // It was Pinchy that answered, not Odoo.
+    expect(result.content[0].text).toContain("Failed to fetch Odoo credentials");
+    expect(result.content[0].text).not.toContain("JSON-RPC");
+  });
+
+  it.each([
+    [
+      "a connection that drops mid-body",
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new TypeError("terminated"));
+            },
+          }),
+          { status: 200 }
+        ),
+      "the answer from Pinchy broke off",
+    ],
+    [
+      "Pinchy being unreachable",
+      () => {
+        throw new TypeError("fetch failed");
+      },
+      "could not reach Pinchy",
+    ],
+  ])(
+    "reports %s on the credentials fetch as Pinchy's, not Odoo's",
+    async (_label, answer, says) => {
+      fetchMock.mockImplementationOnce(async () => answer() as never);
+
+      const tools = createApi({ [agentId]: agentConfig });
+      const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+        model: "sale.order",
+        filters: [],
+      });
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toContain("Failed to fetch Odoo credentials");
+      expect(text).toContain(says);
+      expect(text).not.toContain("JSON-RPC");
+      expect(text).not.toContain("Odoo answered");
+    }
+  );
+
+  it.each([
+    ["null", null],
+    ["an array", []],
+  ])("reports a credentials answer that is %s as Pinchy's, not Odoo's", async (_label, payload) => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(payload), { status: 200 }) as never
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("credentials API");
+    expect(text).not.toContain("JSON-RPC");
+    expect(text).not.toContain("Odoo answered");
+  });
+
+  it("reports any other TypeError as an unexpected failure, not as a non-JSON-RPC answer", async () => {
+    mockSearchRead.mockRejectedValue(
+      new TypeError("Cannot read properties of undefined (reading 'map')")
+    );
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    // odoo-node raises TypeErrors of its own on a JSON-RPC server that is not
+    // Odoo, so the text must not rule the connection out.
+    expect(text).toBe(
+      "Error: The Odoo tool failed unexpectedly (TypeError reading 'map'): either a bug in the " +
+        "tool, or an answer from the connection's URL that is not what Odoo sends."
+    );
+  });
+
+  it("never repeats an unexpected TypeError's free text to the model", async () => {
+    mockSearchRead.mockRejectedValue(new TypeError("token.secret-value is not a function"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.content[0].text).not.toContain("secret-value");
+    expect(result.content[0].text).toContain("failed unexpectedly (TypeError)");
+  });
+
+  it("does not take an HTTP 405 for a permission denial", async () => {
+    mockSearchRead.mockRejectedValue(new OdooError("HTTP 405: Method Not Allowed", 405));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const text = result.content[0].text;
+    expect(text).toBe("Error: HTTP 405: Method Not Allowed");
+    expect(text).not.toMatch(/denied permission|re-sync/i);
   });
 
   it("does not quote a JSON answer of the wrong shape either (TypeError)", async () => {
@@ -4029,7 +4170,7 @@ describe("error handling", () => {
   // Settings, writes an `integration.auth_failed` audit row blaming the
   // credentials — and nothing clears it on its own.
   it.each([
-    ["a non-JSON answer", () => realNonJsonSyntaxError("my-ec2-role-name\n")],
+    ["a non-JSON-RPC answer", notJsonRpcError],
     ["a transport failure", () => Object.assign(new Error("HTTP 502 Bad Gateway"), { code: 502 })],
     [
       "an Odoo validation error from the model's arguments",

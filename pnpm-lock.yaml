@@ -216,8 +216,8 @@ importers:
   packages/plugins/pinchy-odoo:
     dependencies:
       odoo-node:
-        specifier: ^0.3.0
-        version: 0.3.0
+        specifier: 0.3.1
+        version: 0.3.1
     devDependencies:
       '@types/node':
         specifier: ^26.1.2
@@ -359,8 +359,8 @@ importers:
         specifier: ^10.1.4
         version: 10.2.1
       odoo-node:
-        specifier: 0.3.0
-        version: 0.3.0
+        specifier: 0.3.1
+        version: 0.3.1
       openclaw-node:
         specifier: 0.14.0
         version: 0.14.0
@@ -6338,8 +6338,8 @@ packages:
     resolution: {integrity: sha512-9miFgM2OFba7hB+pRgvtV84pYTBaoTHohvmIgiRt6dRIzbwEOIaNaP+dIlGs2fNFoB0SeISs0Jz5WFVRid6Xyg==}
     engines: {node: '>=12.20.0'}
 
-  odoo-node@0.3.0:
-    resolution: {integrity: sha512-Mos5zrln/P9Rqq+phKoCeGWBBpfUo3WMd67k0q+89e3yz0QQUaG4OkoJkU0hmAy1yE8PrPHNT3QE5iIkKwRqqA==}
+  odoo-node@0.3.1:
+    resolution: {integrity: sha512-iJq93Mm+x5y8w3QKrLPlswRtTarxwrBzk71CMJ9oJOkF9lWZyAdPCLGWuOv4qcslbH2ooI6AAxnJlwxRhuQoLA==}
     engines: {node: '>=20.0.0'}
 
   on-exit-leak-free@2.1.2:
@@ -13997,7 +13997,7 @@ snapshots:
 
   obug@2.1.3: {}
 
-  odoo-node@0.3.0: {}
+  odoo-node@0.3.1: {}
 
   on-exit-leak-free@2.1.2: {}
 

@@ -1,24 +1,67 @@
 import { describe, expect, it } from "vitest";
-import { describeOdooError } from "@/lib/integrations/odoo-error";
+import { OdooError } from "odoo-node";
+import {
+  describeOdooAuthenticateFailure,
+  describeOdooError,
+  odooRedirectRefusedMessage,
+} from "@/lib/integrations/odoo-error";
 
 describe("describeOdooError", () => {
   it("passes an Odoo error message through", () => {
     expect(describeOdooError(new Error("Access Denied"))).toBe("Access Denied");
   });
 
-  it("replaces a JSON parse error, which quotes the response body, with a plain sentence", () => {
-    const parseError = new SyntaxError(`Unexpected token '<', "<html>SECR"... is not valid JSON`);
+  it("says a non-JSON-RPC answer means the URL is not Odoo's, keeping status and content type", () => {
+    const notJsonRpc = new OdooError("Response is not JSON-RPC (HTTP 200, text/html)", 200);
 
-    const message = describeOdooError(parseError);
+    expect(describeOdooError(notJsonRpc)).toBe(
+      "Odoo answered with something that is not a JSON-RPC response (HTTP 200, text/html). " +
+        "Check that the URL points at the Odoo server itself."
+    );
+  });
 
-    expect(message).toMatch(/not a JSON-RPC response/);
-    expect(message).not.toContain("SECR");
+  it("says Pinchy refused a redirect, naming the status, as listing databases does", () => {
+    const redirect = new OdooError(
+      "Odoo answered with a redirect (HTTP 308); odoo-node does not follow redirects. " +
+        "Use the address Odoo is actually served from.",
+      308
+    );
+
+    expect(describeOdooError(redirect)).toBe(odooRedirectRefusedMessage(308));
+    expect(odooRedirectRefusedMessage(308)).toBe(
+      "Odoo answered with a redirect (HTTP 308), and Pinchy does not follow redirects. " +
+        "Enter the address Odoo is actually served from — if this URL starts with http://, that is usually its https:// address."
+    );
   });
 
   it("treats a JSON answer of the wrong shape like a non-JSON one", () => {
     const shapeError = new TypeError("Cannot read properties of undefined (reading 'message')");
 
     expect(describeOdooError(shapeError)).toMatch(/not a JSON-RPC response/);
+  });
+
+  it("reports any other TypeError as an internal error, not as Odoo's answer", () => {
+    const bug = new TypeError("Cannot read properties of undefined (reading 'map')");
+
+    const message = describeOdooError(bug);
+
+    expect(message).not.toMatch(/JSON-RPC/);
+    expect(message).toBe(
+      "Pinchy hit an internal error while talking to Odoo (TypeError reading 'map'). " +
+        "This is not a problem with the connection's settings."
+    );
+  });
+
+  it("never repeats an internal error's free text", () => {
+    const bug = new TypeError("token.secret-value is not a function");
+
+    const message = describeOdooError(bug);
+
+    expect(message).not.toContain("secret-value");
+    expect(message).toBe(
+      "Pinchy hit an internal error while talking to Odoo (TypeError). " +
+        "This is not a problem with the connection's settings."
+    );
   });
 
   it("collapses a multi-line message to one line and caps its length", () => {
@@ -30,5 +73,18 @@ describe("describeOdooError", () => {
 
   it("falls back for an empty message", () => {
     expect(describeOdooError(new Error("   "))).toBe("Connection failed");
+  });
+});
+
+describe("describeOdooAuthenticateFailure", () => {
+  // Our own bug is neither Odoo misbehaving nor a refused login.
+  it("reports an internal error as Pinchy's, without blaming Odoo", () => {
+    const bug = new TypeError("Cannot read properties of undefined (reading 'map')");
+
+    const result = describeOdooAuthenticateFailure(bug);
+
+    expect(result.reason).toBe(describeOdooError(bug));
+    expect(result.reason).not.toMatch(/Odoo didn't answer/);
+    expect(result.transient).toBe(true);
   });
 });

@@ -668,19 +668,16 @@ async function fetchCredentials(
   connectionId: string,
   agentId: string
 ): Promise<{ type: string; credentials: EmailCredentials }> {
-  const data = (await requestCredentials({
+  const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
     connectionId,
     agentId,
     label: "email",
-  })) as {
-    type?: unknown;
-    credentials?: unknown;
-  };
+  });
   if (!data.type || typeof data.type !== "string") {
     throw new Error(
-      `pinchy-email: credentials API returned no type field (got ${JSON.stringify((data as { type?: unknown }).type)})`
+      `pinchy-email: credentials API returned no type field (got ${JSON.stringify(data.type)})`
     );
   }
   // IMAP connections carry host/port/username/password credentials with no

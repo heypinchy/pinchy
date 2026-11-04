@@ -216,13 +216,13 @@ async function fetchCredentials(
   connectionId: string,
   agentId: string
 ): Promise<OdooCredentials> {
-  const data = (await requestCredentials({
+  const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
     connectionId,
     agentId,
     label: "Odoo",
-  })) as { credentials?: unknown };
+  });
   assertCredentialsShape(data.credentials);
   return data.credentials;
 }
@@ -3012,6 +3012,11 @@ function permissionDenied(
 
 function isOdooAccessError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  // An HTTP-level failure (odoo-node: status in `code`, no `data`) is the
+  // server refusing the request — "HTTP 405: Method Not Allowed" — not Odoo
+  // refusing this user a model.
+  const { code, data } = error as Error & { code?: unknown; data?: unknown };
+  if (typeof code === "number" && code >= 100 && data === undefined) return false;
   const msg = error.message.toLowerCase();
   return (
     msg.includes("accesserror") ||
@@ -3031,8 +3036,8 @@ function errorResult(
       `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`
     );
   }
-  // Classify on the raw message, show the described one: a non-JSON answer's
-  // SyntaxError quotes the response body, which must not reach the model.
+  // Classify on the raw message, show the described one: `describeOdooError`
+  // rewrites the failures the model cannot act on.
   const raw = error instanceof Error ? error.message : "";
   const message = describeOdooError(error);
   // A relation field (many2one) that received a display name instead of an id
