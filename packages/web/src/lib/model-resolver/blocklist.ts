@@ -1,9 +1,28 @@
+import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import type { ModelCapability } from "./types";
 
 interface BlockRule {
   modelPattern: RegExp;
   forbiddenWhen: ModelCapability[];
   reason: string;
+  /**
+   * The rule is in force only while this returns true. For a block that exists
+   * because of something Pinchy itself emits, so the block comes back on its
+   * own when the emission changes. Omitted: always in force.
+   */
+  inForce?: () => boolean;
+}
+
+/**
+ * True when Pinchy's Anthropic catalog declares `modelId` with
+ * `reasoning: false`. OpenClaw 2026.7.1's Anthropic transport then sends no
+ * `thinking` field for it at all (the whole thinking block of the request
+ * builder is gated on `model.reasoning`), whatever thinking level a session
+ * resolves to. An undeclared model does not count: Pinchy asserts nothing
+ * about it.
+ */
+function catalogWithholdsThinking(modelId: string): boolean {
+  return getModelCatalogForProvider("anthropic").find((m) => m.id === modelId)?.reasoning === false;
 }
 
 const RULES: BlockRule[] = [
@@ -30,15 +49,15 @@ const RULES: BlockRule[] = [
   // about the runtime, not the model: OpenClaw 2026.7.1 predates the request
   // contract of the newest Claude models. Its adaptive-thinking regex
   // (`supportsClaudeAdaptiveThinking`: fable-5, mythos-5, opus-4-6/7/8,
-  // sonnet-5, sonnet-4-6) does not recognise Opus 5, Opus 5.5 or Haiku 5.5, so
-  // it treats them as legacy Claude and sends `thinking: {type: "disabled"}` or
-  // a `budget_tokens` budget. Opus 5.5 rejects both with HTTP 400 at every
-  // effort level; Opus 5 and Haiku 5.5 reject the budget. Sonnet 5.5 and Fable
-  // 5.1 it mistakes for Sonnet 5 and Fable 5, which misses the "preserved
-  // thinking" check those models run for Anthropic accounts created on or
-  // after 2026-08-31: a thinking block whose conversation prefix changed is a
-  // 400, and only the newer runtime keeps that prefix append-only. Evidence:
-  // OpenClaw's dist (src-*.js, the regex above) and model contracts
+  // sonnet-5, sonnet-4-6) does not recognise Opus 5 or Opus 5.5, so it treats
+  // them as legacy Claude and sends `thinking: {type: "disabled"}` or a
+  // `budget_tokens` budget. Opus 5.5 rejects both with HTTP 400 at every effort
+  // level; Opus 5 rejects the budget. Sonnet 5.5 and Fable 5.1 it mistakes for
+  // Sonnet 5 and Fable 5, which misses the "preserved thinking" check those
+  // models run for Anthropic accounts created on or after 2026-08-31: a
+  // thinking block whose conversation prefix changed is a 400, and only the
+  // newer runtime keeps that prefix append-only. Evidence: OpenClaw's dist
+  // (src-*.js, the regex above) and model contracts
   // (packages/llm-core/src/model-contracts/anthropic.ts) at 2026.7.1 vs
   // 2026.9.33, and Anthropic's API docs for each model.
   //
@@ -48,10 +67,53 @@ const RULES: BlockRule[] = [
   // The models reach the picker anyway, because it lists the provider's live
   // catalog; this rule is what disables them there.
   {
-    modelPattern: /claude-(?:opus|sonnet|haiku)-5-5|claude-fable-5-1|claude-opus-5(?=$|-\d{8}$)/i,
+    modelPattern: /claude-(?:opus|sonnet)-5-5|claude-fable-5-1|claude-opus-5(?=$|-\d{8}$)/i,
     forbiddenWhen: ["tools"],
     reason:
-      "Claude Opus 5, Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 need a newer agent runtime than this Pinchy release ships — their requests are rejected. Claude Sonnet 5 works today.",
+      "Claude Opus 5, Opus 5.5, Sonnet 5.5 and Fable 5.1 need a newer agent runtime than this Pinchy release ships — their requests are rejected. Claude Sonnet 5 works today.",
+  },
+  // Claude Haiku 5.5 is the one model of that family the pinned runtime can
+  // drive, and only because of how Pinchy declares it. OpenClaw 2026.7.1
+  // reaches a thinking setting for it in exactly one way: a catalog entry with
+  // `reasoning: true`. Then the default thinking level resolves to "medium"
+  // (thinking-*.js `resolveThinkingDefaultForModel`) and the transport sends
+  // `{type: "enabled", budget_tokens}` (provider-stream-*.js), which Haiku 5.5
+  // rejects with HTTP 400. With `reasoning: false` the transport skips the
+  // whole thinking block — no budget, no `disabled` — so the model runs on
+  // Anthropic's default, adaptive thinking at effort `medium`. Its thinking
+  // blocks are replayed only for the tool round in progress
+  // (`findActiveAnthropicToolTurnAssistantIndex`); earlier ones are dropped
+  // from the front of the history, which the preserved-thinking check allows.
+  // Pinchy v0.9.x ran Haiku 5.5 with tools on this same runtime (2026-10-27),
+  // in exactly this shape — v0.9.x did not declare it, and OpenClaw resolves an
+  // undeclared model as `reasoning: false`.
+  //
+  // What this does NOT cover: preserved thinking still applies to the blocks
+  // the model produces. If the runtime compacts in the middle of a tool round
+  // (its mid-turn context guard, near the context ceiling), the replayed block's
+  // prefix changes, and on an Anthropic account created on or after 2026-08-31
+  // that request is a 400. The same held on v0.9.x; it goes away with the
+  // runtime update in #1225, not here.
+  //
+  // Nor does it cover sampling. Haiku 5.5 answers a non-default temperature,
+  // top_p or top_k with a 400, and the runtime's default-sampling guard
+  // (`requiresClaudeDefaultSampling`) doesn't know the model, so a temperature
+  // a caller passes goes out whenever thinking is off. Pinchy sets none (pinned
+  // in openclaw-config.test.ts), so agent turns are unaffected. The runtime's
+  // own internal callers do pass one: the Telegram DM-topic auto-label
+  // (temperature 0.3, via the agent's model when no utilityModel is set) fails
+  // and the topic keeps its default name — the error is caught and logged; the
+  // exec auto-reviewer (temperature 0) never runs, because no Pinchy agent is
+  // granted `exec`; `openclaw models scan` is a CLI command Pinchy doesn't run.
+  //
+  // The rule therefore reads the catalog instead of trusting a comment: flip
+  // that entry to `reasoning: true`, or drop it, and Haiku 5.5 is blocked again.
+  {
+    modelPattern: /claude-haiku-5-5(?=$|-\d{8}$)/i,
+    forbiddenWhen: ["tools"],
+    inForce: () => !catalogWithholdsThinking("claude-haiku-5-5"),
+    reason:
+      "Claude Haiku 5.5 needs a newer agent runtime than this Pinchy release ships — its requests are rejected. Claude Sonnet 5 works today.",
   },
   // Observed in production 2026-07-15 (agent "Penny", ollama-cloud stack). The
   // model emits structurally broken tool arguments: every NESTED array collapses
@@ -133,7 +195,9 @@ export function getBlockReason(
 ): string | null {
   const rule = RULES.find(
     (r) =>
-      r.modelPattern.test(modelId) && r.forbiddenWhen.some((c) => requiredCapabilities.includes(c))
+      r.modelPattern.test(modelId) &&
+      r.forbiddenWhen.some((c) => requiredCapabilities.includes(c)) &&
+      (r.inForce?.() ?? true)
   );
   return rule?.reason ?? null;
 }

@@ -8443,6 +8443,103 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     });
   });
 
+  // `reasoning: false` is the whole point of this entry. OpenClaw 2026.7.1 does
+  // not know Haiku 5.5; told it reasons, the runtime defaults it to thinking
+  // level "medium" and sends a `budget_tokens` budget the model rejects with
+  // HTTP 400. Told it does not, the Anthropic transport sends no `thinking`
+  // field at all. The cost is what Usage & Costs and budgets price it with —
+  // without an entry the model had no price and every turn read as free.
+  it("declares Claude Haiku 5.5 without reasoning and with its price", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
+    const config = JSON.parse(written![1] as string);
+    const models =
+      (config.models.providers.anthropic.models as Array<Record<string, unknown>>) ?? [];
+    expect(models.find((m) => m.id === "claude-haiku-5-5")).toMatchObject({
+      reasoning: false,
+      contextWindow: 1000000,
+      input: ["text", "image"],
+      cost: {
+        input: 0.1,
+        output: 0.5,
+        cacheRead: 0.01,
+        cacheWrite: 0.125,
+        tieredPricing: [
+          { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, range: [0, 100001] },
+          { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625, range: [100001] },
+        ],
+      },
+    });
+  });
+
+  // Upgrade path: v0.9.x had no block, so an agent may already sit on Haiku 5.5
+  // with tools. Its row must come through regeneration untouched — same model,
+  // tools still allowed — and now resolve against a declared definition.
+  it("keeps an agent pinned to Claude Haiku 5.5 on that model after an upgrade", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+    const agentsData = [
+      {
+        id: "kb1",
+        name: "Knowledge",
+        model: "anthropic/claude-haiku-5-5",
+        allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({ from: mockFrom(agentsData) } as never);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const agent = config.agents.list.find((a: { id: string }) => a.id === "kb1");
+    const primary = typeof agent.model === "string" ? agent.model : agent.model.primary;
+    expect(primary).toBe("anthropic/claude-haiku-5-5");
+    expect(agent.tools.allow).toEqual(
+      expect.arrayContaining(["pinchy_web_search", "pinchy_web_fetch"])
+    );
+    const declared = (config.models.providers.anthropic.models as Array<{ id: string }>).map(
+      (m) => m.id
+    );
+    expect(declared).toContain("claude-haiku-5-5");
+  });
+
+  // Anthropic answers any non-default temperature / top_p / top_k on Haiku
+  // 5.5 with HTTP 400, and OpenClaw 2026.7.1 forwards a configured temperature
+  // whenever thinking is off — its default-sampling guard does not know the
+  // model. Pinchy never sets a sampling parameter; this pins that for an agent
+  // on Haiku 5.5, wherever in the emitted tree one could be added (model
+  // definition, agents.defaults.models params, the agent entry).
+  it("emits no sampling parameter for an agent on Claude Haiku 5.5", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+    const agentsData = [
+      {
+        id: "kb1",
+        name: "Knowledge",
+        model: "anthropic/claude-haiku-5-5",
+        allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({ from: mockFrom(agentsData) } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
+    expect(written).not.toMatch(/"(temperature|top_p|topP|top_k|topK)"\s*:/);
+  });
+
   it("writes the actual plaintext key to secrets.json under /providers/anthropic/apiKey", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-the-real-key";
