@@ -172,7 +172,12 @@ describe("readGatewayToken", () => {
         expect(readGatewayToken()).toBe("");
 
         // The cap does not re-arm while the reads keep failing: a config that
-        // stays unreadable keeps surfacing as 401s.
+        // stays unreadable keeps surfacing as 401s — right after the cap, and
+        // long after it.
+        vi.advanceTimersByTime(1);
+        expect(readGatewayToken()).toBe("");
+        vi.advanceTimersByTime(30_000);
+        expect(readGatewayToken()).toBe("");
         vi.advanceTimersByTime(5 * 60_000);
         expect(readGatewayToken()).toBe("");
       } finally {
