@@ -176,8 +176,9 @@ business, not the store's.
 … docker compose logs office-converter`), and fails at once only when there
   is no socket at all — no converter service, which waiting would not change. Once
   a 20 s window has run out, later batches get one attempt each, without a
-  window of their own, for 60 s: a stopped converter costs a run one wait,
-  not one per batch, and a converter that is back is used at once.
+  window of their own, until the converter answers again: a stopped converter
+  costs a run one wait, not one per batch, and a converter that is back is
+  used at once.
   The next start replaces the leftover socket atomically — it binds under a
   temporary name and renames that over it — so the path is never missing in
   between. A batch already in flight when the converter is stopped gets its

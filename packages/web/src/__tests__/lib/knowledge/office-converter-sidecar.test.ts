@@ -9,7 +9,7 @@
  * the sidecar refuses, and how every way of NOT getting an answer becomes an
  * error (which office-convert books as `infrastructure`, retryable).
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { chmod, mkdir, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
@@ -362,6 +362,29 @@ describe("office-converter sidecar protocol", () => {
     await expect(sidecarConverter(spool, options).runConverter(run)).resolves.toMatchObject({
       code: 0,
     });
+  });
+
+  it("does not wait out a stopped converter again later in a long run", async () => {
+    leaveStaleSocket();
+    const options = { connectRetryMs: 300, connectIntervalMs: 50 };
+    const { run } = await stagedBatch(["0.docx"]);
+    await expect(sidecarConverter(spool, options).runConverter(run)).rejects.toThrow(
+      /not answering/
+    );
+
+    // Hours later in the same run, the converter still stopped.
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(now + 3 * 60 * 60 * 1000);
+      const started = performance.now();
+      await expect(sidecarConverter(spool, options).runConverter(run)).rejects.toThrow(
+        /not answering/
+      );
+      expect(performance.now() - started).toBeLessThan(150);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("connects only to a socket, never through a link in its place", async () => {
