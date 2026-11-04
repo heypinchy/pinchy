@@ -48,6 +48,35 @@
 const FETCH_TIMEOUT_MS = 10_000;
 
 /**
+ * How `requestCredentials` rides out a 401 from the credentials route:
+ * exponential backoff, 250, 500, 1000, 2000 ms — 3.75 s in all.
+ *
+ * The route answers 401 only from its gateway-token check; a missing grant is
+ * a 403 (#987). The token is the one bootstrap secret Pinchy and every plugin
+ * share (Pattern C), and Pinchy fails that check while it momentarily cannot
+ * read it — OpenClaw rewrites openclaw.json root-only on every config apply.
+ * So a 401 here is a moment that passes, not stale credentials, and a single
+ * attempt turned it into a failed tool call. Every other status is final and
+ * surfaces at once.
+ *
+ * Pinchy remembers the last token it read for exactly that moment, so with a
+ * warm Pinchy this retry rarely fires. It stays for the case Pinchy cannot
+ * cover: each server module instance remembers its own token, and one that
+ * has not read the token since a restart has nothing to fall back on.
+ *
+ * Backoff only — a Pinchy that answers 401 just before each 10 s timeout
+ * could hold a call ~53.75 s, the same bound the audit hook documents.
+ *
+ * INVARIANT: a CredentialsFetchError — including the 401 this gives up on —
+ * must never be fed into `isAuthError`. That 401 is about the gateway token,
+ * not the third-party credentials; classifying it as one would POST
+ * report-auth-failure and flag a healthy connection auth_failed. Every
+ * caller fetches credentials outside the closure its auth retry classifies.
+ */
+const UNAUTHORIZED_MAX_RETRIES = 4;
+const UNAUTHORIZED_BACKOFF_MS = 250;
+
+/**
  * Thrown by `requestCredentials` whenever it cannot hand back a parsed object:
  *
  * - the credentials API answered non-ok — `status` is that HTTP status;
@@ -181,17 +210,29 @@ export async function requestCredentials(args: {
   const transportFailure = (what: string, err: unknown) =>
     new CredentialsFetchError(`${failed}: ${what} (${describeTransportError(err)})`, 0);
   let response: Response;
-  try {
-    response = await fetch(
-      `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
-        `?agentId=${encodeURIComponent(agentId)}`,
-      {
-        headers: { Authorization: `Bearer ${gatewayToken}` },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await fetch(
+        `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials` +
+          `?agentId=${encodeURIComponent(agentId)}`,
+        {
+          headers: { Authorization: `Bearer ${gatewayToken}` },
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        }
+      );
+    } catch (err) {
+      throw transportFailure("could not reach Pinchy", err);
+    }
+    if (response.status !== 401 || attempt >= UNAUTHORIZED_MAX_RETRIES) break;
+    // Release the discarded answer's connection rather than leave it to GC.
+    await response.body?.cancel().catch(() => {});
+    const delay = UNAUTHORIZED_BACKOFF_MS * 2 ** attempt;
+    // Status and connection only: the body is unread, and the token stays out.
+    console.warn(
+      `[${label} credentials] Pinchy answered 401 for connection ${connectionId} ` +
+        `(attempt ${attempt + 1}/${UNAUTHORIZED_MAX_RETRIES + 1}), retrying in ${delay} ms`
     );
-  } catch (err) {
-    throw transportFailure("could not reach Pinchy", err);
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
 
   if (!response.ok) {

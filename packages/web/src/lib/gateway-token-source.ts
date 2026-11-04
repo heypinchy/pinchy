@@ -1,6 +1,6 @@
 import { randomBytes } from "crypto";
 import { getSetting, setSetting } from "@/lib/settings";
-import { readGatewayToken } from "@/lib/gateway-token-reader";
+import { readGatewayTokenUncached } from "@/lib/gateway-token-reader";
 
 const SETTING_KEY = "openclaw_gateway_token";
 
@@ -19,7 +19,7 @@ export async function getOrCreateGatewayToken(): Promise<string> {
   const existing = await getSetting(SETTING_KEY);
   if (existing) return existing;
 
-  const configToken = readGatewayToken();
+  const configToken = readGatewayTokenUncached();
   if (configToken) {
     await setSetting(SETTING_KEY, configToken);
     return configToken;

@@ -6,7 +6,7 @@ vi.mock("@/lib/settings", () => ({
 }));
 
 vi.mock("@/lib/gateway-token-reader", () => ({
-  readGatewayToken: vi.fn().mockReturnValue(""),
+  readGatewayTokenUncached: vi.fn().mockReturnValue(""),
 }));
 
 describe("getOrCreateGatewayToken", () => {
@@ -54,8 +54,8 @@ describe("getOrCreateGatewayToken", () => {
     const { getSetting, setSetting } = await import("@/lib/settings");
     vi.mocked(getSetting).mockResolvedValue(null);
 
-    const { readGatewayToken } = await import("@/lib/gateway-token-reader");
-    vi.mocked(readGatewayToken).mockReturnValue("openclaw-generated-abc123def456ghi789jkl");
+    const { readGatewayTokenUncached } = await import("@/lib/gateway-token-reader");
+    vi.mocked(readGatewayTokenUncached).mockReturnValue("openclaw-generated-abc123def456ghi789jkl");
 
     const { getOrCreateGatewayToken } = await import("@/lib/gateway-token-source");
     const token = await getOrCreateGatewayToken();
@@ -71,8 +71,8 @@ describe("getOrCreateGatewayToken", () => {
     const { getSetting, setSetting } = await import("@/lib/settings");
     vi.mocked(getSetting).mockResolvedValue(null);
 
-    const { readGatewayToken } = await import("@/lib/gateway-token-reader");
-    vi.mocked(readGatewayToken).mockReturnValue("");
+    const { readGatewayTokenUncached } = await import("@/lib/gateway-token-reader");
+    vi.mocked(readGatewayTokenUncached).mockReturnValue("");
 
     const { getOrCreateGatewayToken } = await import("@/lib/gateway-token-source");
     const token = await getOrCreateGatewayToken();
