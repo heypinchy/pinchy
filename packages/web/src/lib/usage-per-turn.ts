@@ -86,7 +86,8 @@ export function buildUsageRows(
               cacheReadTokens: t.cacheReadTokens,
               cacheWriteTokens: t.cacheWriteTokens,
             },
-            pricing
+            pricing,
+            t.contextTokens
           )
         : null,
       runId: t.runId,
@@ -170,7 +171,15 @@ export async function recordSessionTurnsUsage(
               cacheReadTokens: row.cacheReadTokens,
               cacheWriteTokens: row.cacheWriteTokens,
             },
-            pricing
+            pricing,
+            // A turn sums its whole tool loop, but only the last call's prompt
+            // size is known, so the whole turn is priced by that call's tier.
+            // The prompt normally grows within a turn, so a turn that crosses
+            // a tier boundary partway reads slightly high. It reads low when
+            // the runtime compacts mid-turn (the last call is then smaller than
+            // the ones before it) and when the size wasn't reported (flat
+            // rate). Both are documented on the Usage & Costs page.
+            row.contextTokens
           ),
         };
       })
