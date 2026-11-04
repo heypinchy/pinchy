@@ -51,6 +51,10 @@ export function estimateTurnCostUsd(
     pricing.tieredPricing && promptTokens != null
       ? tierFor(pricing.tieredPricing, promptTokens)
       : undefined;
+  // The flat 10% / 125% cache ratios hold for every model the catalog prices
+  // today. They do NOT hold for Opus 5.5 and Sonnet 5.5 (cache reads at 5% of
+  // input) or Fable 5.1 (2.5%): when those models unlock with the runtime
+  // update (#1225), read the model's own cacheRead/cacheWrite here instead.
   const rates = tier ?? {
     input: pricing.input,
     output: pricing.output,

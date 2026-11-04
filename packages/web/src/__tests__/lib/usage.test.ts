@@ -71,9 +71,11 @@ describe("getModelPricing model-id resolution", () => {
   });
 });
 
-// A model with prompt-length pricing (Claude Haiku 5.5) carries its tiers in
-// OpenClaw's `cost.tieredPricing`. Dropping them here would price every long
-// prompt at the short-prompt rate.
+// Regression pin, not new behaviour: getModelPricing has always returned the
+// configured `cost` object verbatim, so it already carries `tieredPricing`.
+// The prompt-length tiers of Claude Haiku 5.5 depend on that — a lookup that
+// one day picks out only input/output would silently price every long prompt
+// at the short-prompt rate, and this test is what notices.
 describe("getModelPricing tiered pricing", () => {
   beforeEach(() => {
     _resetPricingCacheForTest();

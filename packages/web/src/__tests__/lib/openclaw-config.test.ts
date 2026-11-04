@@ -8512,6 +8512,34 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     expect(declared).toContain("claude-haiku-5-5");
   });
 
+  // Anthropic answers any non-default temperature / top_p / top_k on Haiku
+  // 5.5 with HTTP 400, and OpenClaw 2026.7.1 forwards a configured temperature
+  // whenever thinking is off — its default-sampling guard does not know the
+  // model. Pinchy never sets a sampling parameter; this pins that for an agent
+  // on Haiku 5.5, wherever in the emitted tree one could be added (model
+  // definition, agents.defaults.models params, the agent entry).
+  it("emits no sampling parameter for an agent on Claude Haiku 5.5", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+    const agentsData = [
+      {
+        id: "kb1",
+        name: "Knowledge",
+        model: "anthropic/claude-haiku-5-5",
+        allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({ from: mockFrom(agentsData) } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
+    expect(written).not.toMatch(/"(temperature|top_p|topP|top_k|topK)"\s*:/);
+  });
+
   it("writes the actual plaintext key to secrets.json under /providers/anthropic/apiKey", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-the-real-key";

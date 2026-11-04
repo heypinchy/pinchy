@@ -19,9 +19,7 @@ interface BlockRule {
  * `thinking` field for it at all (the whole thinking block of the request
  * builder is gated on `model.reasoning`), whatever thinking level a session
  * resolves to. An undeclared model does not count: Pinchy asserts nothing
- * about it. (A dated snapshot of a declared model rides on the base entry for
- * this purpose only — OpenClaw resolves the undeclared id as `reasoning: false`
- * too. Its price and context size do not: those match the exact id.)
+ * about it.
  */
 function catalogWithholdsThinking(modelId: string): boolean {
   return getModelCatalogForProvider("anthropic").find((m) => m.id === modelId)?.reasoning === false;
@@ -96,6 +94,17 @@ const RULES: BlockRule[] = [
   // prefix changes, and on an Anthropic account created on or after 2026-08-31
   // that request is a 400. The same held on v0.9.x; it goes away with the
   // runtime update in #1225, not here.
+  //
+  // Nor does it cover sampling. Haiku 5.5 answers a non-default temperature,
+  // top_p or top_k with a 400, and the runtime's default-sampling guard
+  // (`requiresClaudeDefaultSampling`) doesn't know the model, so a temperature
+  // a caller passes goes out whenever thinking is off. Pinchy sets none (pinned
+  // in openclaw-config.test.ts), so agent turns are unaffected. The runtime's
+  // own internal callers do pass one: the Telegram DM-topic auto-label
+  // (temperature 0.3, via the agent's model when no utilityModel is set) fails
+  // and the topic keeps its default name — the error is caught and logged; the
+  // exec auto-reviewer (temperature 0) never runs, because no Pinchy agent is
+  // granted `exec`; `openclaw models scan` is a CLI command Pinchy doesn't run.
   //
   // The rule therefore reads the catalog instead of trusting a comment: flip
   // that entry to `reasoning: true`, or drop it, and Haiku 5.5 is blocked again.
