@@ -273,6 +273,12 @@ leaks, the shipped service converts the same documents with nothing.
   drift guard pins the service's isolation properties — the separate uid and
   shared gid, and the spool's mode in the image and the entrypoint among them.
 
+`pids_limit: 256` counts threads. Measured in the image on a 14-core host,
+three conversions in a row peaked at 33 (`pids.peak` of the container's
+cgroup). LibreOffice's thread pool grows with the visible core count, which
+`cpus:` does not reduce, so a host with many times more cores comes closer to
+the limit; not measured there.
+
 ## Not done
 
 - CapRover: Swarm services cannot use `network_mode: none`, and the CapRover
