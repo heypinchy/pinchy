@@ -315,6 +315,39 @@ describe("a JSON-RPC server whose login answer has no user id", () => {
     expect(result.transient).toBe(true);
   });
 
+  // A schema sync does not log in, so it meets the null answer in odoo-node's
+  // fields(), which throws a TypeError of its own. That is the URL's problem.
+  it("POST /api/integrations/[id]/sync reports it as the URL's problem, not as a bug", async () => {
+    storedCredentials = credentials();
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+
+    const response = await POST(
+      post("/api/integrations/conn-1/sync", {}),
+      routeContext({ connectionId: "conn-1" })
+    );
+    const body = await response.json();
+
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/fields_get answer carried no fields/);
+    expect(body.error).toMatch(/Check that the URL points at the Odoo server itself/);
+    expect(body.error).not.toMatch(/internal error/);
+    expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/integrations/sync-preview reports it as the URL's problem, not as a bug", async () => {
+    const { POST } = await import("@/app/api/integrations/sync-preview/route");
+
+    const response = await POST(
+      post("/api/integrations/sync-preview", { type: "odoo", credentials: credentials() }),
+      routeContext()
+    );
+    const body = await response.json();
+
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/fields_get answer carried no fields/);
+    expect(body.error).not.toMatch(/internal error/);
+  });
+
   it("POST /api/integrations/[id]/test stores no uid and does not flag auth_failed", async () => {
     storedCredentials = credentials();
     const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
@@ -329,6 +362,51 @@ describe("a JSON-RPC server whose login answer has no user id", () => {
     expect(body.error).toMatch(/no user id/);
     expect(mockDbUpdate).not.toHaveBeenCalled();
     expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+  });
+});
+
+// Logs in like Odoo, then answers `version` with null: test-credentials reads
+// `server_version` off it inside odoo-node.
+describe("a JSON-RPC server that logs in but answers version with null", () => {
+  let halfOdoo: { server: Server; origin: string };
+
+  beforeAll(async () => {
+    halfOdoo = await listen((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        const { id, params } = JSON.parse(body) as { id: number; params: { method: string } };
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result: params.method === "authenticate" ? 2 : null,
+          })
+        );
+      });
+    });
+  });
+
+  afterAll(() => {
+    halfOdoo.server.close();
+  });
+
+  it("POST /api/integrations/test-credentials reports it as the URL's problem, not as a bug", async () => {
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      post("/api/integrations/test-credentials", {
+        type: "odoo",
+        credentials: { url: halfOdoo.origin, db: "prod", login: "admin", apiKey: "key" },
+      }),
+      routeContext()
+    );
+    const body = await response.json();
+
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/version answer carried no server version/);
+    expect(body.error).not.toMatch(/internal error/);
   });
 });
 

@@ -11,7 +11,7 @@ import {
 import { imapTestSchema } from "@/lib/schemas/imap";
 import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
 import { checkStoredDestination } from "@/lib/integrations/stored-destination";
-import { authenticateOdoo } from "@/lib/integrations/odoo-authenticate";
+import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
 
 /**
  * Verify that credentials work for the given integration type.

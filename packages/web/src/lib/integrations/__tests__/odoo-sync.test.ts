@@ -287,6 +287,25 @@ describe("fetchOdooSchema", () => {
     expect(result.isAuthError).toBe(false);
   });
 
+  it("does not prefix an answer that already says what came back", async () => {
+    vi.useFakeTimers();
+    mockFields.mockRejectedValue(
+      Object.assign(new Error("Response is not JSON-RPC (HTTP 500, text/html)"), { code: 500 })
+    );
+
+    const promise = fetchOdooSchema(creds);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBe(
+      "Odoo answered with something that is not a JSON-RPC response (HTTP 500, text/html). " +
+        "Check that the URL points at the Odoo server itself."
+    );
+  });
+
   it("keeps the read-access message when Odoo grants read access to no model", async () => {
     mockFields.mockResolvedValue([{ name: "id" }]);
     mockCheckAccessRights.mockResolvedValue(false);

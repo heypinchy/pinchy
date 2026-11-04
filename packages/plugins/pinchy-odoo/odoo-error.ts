@@ -34,7 +34,8 @@ function redirectMessage(status: string): string {
  * The model gets a sentence it can relay instead. A JSON-RPC envelope of the
  * wrong shape (`{"error": {}}`) still escapes odoo-node as a `TypeError`
  * reading `error.data.message`, which tells the model nothing either. Any
- * other `TypeError` is a bug on our side, not Odoo's answer, and says so.
+ * other `TypeError` is either a bug in the tool or odoo-node choking on a
+ * non-Odoo answer (`result: null` from another JSON-RPC server), and says so.
  *
  * Everything else is Odoo talking — a validation error, an access error — and
  * the model needs its words, so it passes through, collapsed to one line and
@@ -62,7 +63,10 @@ export function describeOdooError(err: unknown): string {
     // free message, which may carry a value.
     const property = /\(reading '([A-Za-z_$][\w$]{0,40})'\)$/.exec(err.message)?.[1];
     const what = property ? `TypeError reading '${property}'` : "TypeError";
-    return `The Odoo tool hit an internal error (${what}); this is not about the Odoo connection.`;
+    return (
+      `The Odoo tool failed unexpectedly (${what}): either a bug in the tool, ` +
+      "or an answer from the connection's URL that is not what Odoo sends."
+    );
   }
   const message = (err instanceof Error ? err.message : "").replace(/\s+/g, " ").trim();
   if (!message) return "Unknown error";

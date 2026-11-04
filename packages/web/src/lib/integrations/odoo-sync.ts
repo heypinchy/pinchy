@@ -1,6 +1,7 @@
 import { OdooClient } from "odoo-node";
 import { runWithConcurrency } from "@/lib/concurrency";
 import { describeOdooError } from "@/lib/integrations/odoo-error";
+import { readOdooFields } from "@/lib/integrations/odoo-calls";
 
 /**
  * Curated list of common Odoo models organized by category.
@@ -387,7 +388,7 @@ export async function fetchOdooSchema(credentials: {
     return async (): Promise<ProbeResult> => {
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const fields = await client.fields(model);
+          const fields = await readOdooFields(client, model);
 
           // Check per-operation access rights
           const safeCheck = async (
@@ -433,7 +434,11 @@ export async function fetchOdooSchema(credentials: {
               !transient || unreachable
                 ? described
                 : isHttpLevelError(error)
-                  ? `The Odoo address answered with an error: ${described}`
+                  ? // A described message that already says what came back
+                    // ("Odoo answered with …") needs no second prefix.
+                    described.startsWith("HTTP ")
+                    ? `The Odoo address answered with an error: ${described}`
+                    : described
                   : `Odoo did not answer successfully: ${described}`;
             return {
               model,

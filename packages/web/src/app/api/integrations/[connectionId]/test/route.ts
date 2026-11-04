@@ -24,7 +24,7 @@ import {
   OAuthSettingsMissingError,
   type MicrosoftCredentials,
 } from "@/lib/integrations/microsoft-refresh";
-import { authenticateOdoo } from "@/lib/integrations/odoo-authenticate";
+import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 

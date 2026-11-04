@@ -6,7 +6,7 @@ import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { parseRequestBody } from "@/lib/api-validation";
 import { testCredentialsSchema } from "@/lib/schemas/integrations";
 import { describeOdooError } from "@/lib/integrations/odoo-error";
-import { authenticateOdoo } from "@/lib/integrations/odoo-authenticate";
+import { authenticateOdoo, readOdooVersion } from "@/lib/integrations/odoo-calls";
 
 export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(testCredentialsSchema, request);
@@ -48,7 +48,7 @@ export const POST = withAdmin(async (request) => {
       uid,
       apiKey,
     });
-    const version = await client.version();
+    const version = await readOdooVersion(client);
 
     return NextResponse.json({
       success: true,

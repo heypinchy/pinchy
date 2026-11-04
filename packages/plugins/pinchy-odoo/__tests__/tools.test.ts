@@ -4056,7 +4056,7 @@ describe("error handling", () => {
     expect(text).not.toContain("Odoo answered");
   });
 
-  it("reports any other TypeError as an internal error, not as Odoo's answer", async () => {
+  it("reports any other TypeError as an unexpected failure, not as a non-JSON-RPC answer", async () => {
     mockSearchRead.mockRejectedValue(
       new TypeError("Cannot read properties of undefined (reading 'map')")
     );
@@ -4069,13 +4069,15 @@ describe("error handling", () => {
 
     expect(result.isError).toBe(true);
     const text = result.content[0].text;
+    // odoo-node raises TypeErrors of its own on a JSON-RPC server that is not
+    // Odoo, so the text must not rule the connection out.
     expect(text).toBe(
-      "Error: The Odoo tool hit an internal error (TypeError reading 'map'); " +
-        "this is not about the Odoo connection."
+      "Error: The Odoo tool failed unexpectedly (TypeError reading 'map'): either a bug in the " +
+        "tool, or an answer from the connection's URL that is not what Odoo sends."
     );
   });
 
-  it("never repeats an internal error's free text to the model", async () => {
+  it("never repeats an unexpected TypeError's free text to the model", async () => {
     mockSearchRead.mockRejectedValue(new TypeError("token.secret-value is not a function"));
 
     const tools = createApi({ [agentId]: agentConfig });
@@ -4085,7 +4087,7 @@ describe("error handling", () => {
     });
 
     expect(result.content[0].text).not.toContain("secret-value");
-    expect(result.content[0].text).toContain("internal error (TypeError)");
+    expect(result.content[0].text).toContain("failed unexpectedly (TypeError)");
   });
 
   it("does not take an HTTP 405 for a permission denial", async () => {
