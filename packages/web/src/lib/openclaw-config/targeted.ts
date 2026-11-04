@@ -1,5 +1,11 @@
 import { readFileSync, existsSync } from "fs";
-import { CONFIG_PATH, OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS } from "./paths";
+import {
+  CONFIG_PATH,
+  OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
+  OPENCLAW_GATEWAY_BIND,
+  OPENCLAW_GATEWAY_MODE,
+  OPENCLAW_MEDIA_TTL_HOURS,
+} from "./paths";
 import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
 import { restartState } from "@/server/restart-state";
 import { getOrCreateGatewayToken } from "@/lib/gateway-token-source";
@@ -269,7 +275,8 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
       );
       return false;
     }
-    // ENOENT / parse-error means we're on a true cold start with no file.
+    // readExistingConfig returns {} for ENOENT and unparseable files and only
+    // throws on a persistent EACCES, so this is a defensive fallback.
     existing = {};
   }
 
@@ -305,8 +312,9 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
 /**
  * Ensure Pinchy's restart-class overrides are present in openclaw.json BEFORE
  * OpenClaw starts. Writes ONLY the fields that, when missing-then-added later
- * via WS config.apply, hit OC 5.3's BASE_RELOAD_RULES_TAIL `gateway` /
- * `discovery` / `canvasHost` / `update` rules (kind:"restart") and trigger
+ * via WS config.apply, OpenClaw's reload planner classifies as restart-class —
+ * `gateway` / `discovery` (explicit `kind:"restart"` rules) and `canvasHost` /
+ * `update` / `media` (no rule at all, which defaults to restart) — and trigger
  * a SIGUSR1 → in-process restart that crashes with
  * `ConfigMutationConflictError: config changed since last load` (OC 5.3
  * stale-snapshot bug in `prepareGatewayStartupConfig → ensureGatewayStartupAuth →
@@ -321,21 +329,37 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
  * apparently because the bootInits-time regenerate's models/agents block
  * (built from an empty DB) interfered with later setup-wizard regenerate +
  * OC's model registry refresh on hot-reload. Restricting the bootInits write
- * to ONLY the gateway/discovery/canvasHost/update fields avoids that
+ * to ONLY the gateway/discovery/canvasHost/update/media fields avoids that
  * interaction while still aligning OC's compare baseline.
  *
- * This function is idempotent: if the file already has all four overrides
- * with their expected values, no write happens. The skip path also handles
- * the production case (Docker-managed named volume populated from the image's
- * baked-in `config/openclaw.json`, which already carries these fields) — the
- * volume content matches Pinchy's expected overrides → no write → no diff
- * surface for OC to react to.
+ * This function is idempotent: if the file already has all the overrides
+ * with their expected values, no write happens. The skip path covers a volume
+ * populated from the OpenClaw image's baked-in `config/openclaw.json`, which
+ * already carries these fields. A production-image fresh install usually never
+ * gets that file (pinchy mounts the shared volume first); it starts from
+ * entrypoint.sh's minimal `{gateway:{mode,bind}}` seed, and this function
+ * supplies the rest of its baseline.
  */
 export function seedRestartClassOverridesIfMissing(): boolean {
   let existing: Record<string, unknown>;
   try {
     existing = readExistingConfig();
-  } catch {
+  } catch (err) {
+    // EACCES means the file exists but is unreadable right now (OpenClaw's
+    // 0600 restart-write window). Seeding onto `{}` would replace every field
+    // the file carries — agents, models, plugins, secrets, the gateway token —
+    // with these overrides. Skip; the next boot (or regenerate) heals it. Same
+    // defence as seedGatewayTokenIfMissing.
+    if ((err as NodeJS.ErrnoException)?.code === "EACCES") {
+      console.error(
+        "[openclaw-config] seedRestartClassOverridesIfMissing skipped: openclaw.json " +
+          "is currently EACCES (likely OC's 0600 restart-write race). Skipping rather " +
+          "than clobbering existing state."
+      );
+      return false;
+    }
+    // readExistingConfig returns {} for ENOENT and unparseable files and only
+    // throws on a persistent EACCES, so this is a defensive fallback.
     existing = {};
   }
 
@@ -346,7 +370,14 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   const mdns = (discovery.mdns as Record<string, unknown>) || {};
   const update = (existing.update as Record<string, unknown>) || {};
   const canvasHost = (existing.canvasHost as Record<string, unknown>) || {};
+  const media = (existing.media as Record<string, unknown>) || {};
 
+  // The production image's entrypoint.sh already writes mode/bind into an empty
+  // volume. The dev image and a host-run Pinchy do not, and OpenClaw refuses to
+  // start on a config without gateway.mode; the regenerate adding mode/bind
+  // later would also be a restart-class `gateway` diff.
+  const needsGatewayMode =
+    gateway.mode !== OPENCLAW_GATEWAY_MODE || gateway.bind !== OPENCLAW_GATEWAY_BIND;
   const needsControlUi = controlUi.enabled !== false;
   // OpenClaw seeds controlUi.allowedOrigins in memory only (never persisted),
   // so an on-disk config that lacks it makes every later regenerate drop the
@@ -363,14 +394,22 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   const needsMdnsOff = mdns.mode !== "off";
   const needsUpdateCheck = update.checkOnStart !== false;
   const needsCanvasHostOff = canvasHost.enabled !== false;
+  // OpenClaw has no reload rule for `media`, so it falls back to a gateway
+  // restart — and the in-process restart aborts any run in flight ("Agent run
+  // belongs to a stale gateway lifecycle"). build.ts always writes ttlHours;
+  // without it on disk first, the setup wizard's regenerate restarts the gateway
+  // right when a new user sends their first message.
+  const needsMediaTtl = media.ttlHours !== OPENCLAW_MEDIA_TTL_HOURS;
 
   if (
+    !needsGatewayMode &&
     !needsControlUi &&
     !needsAllowedOrigins &&
     !needsTerminalOff &&
     !needsMdnsOff &&
     !needsUpdateCheck &&
-    !needsCanvasHostOff
+    !needsCanvasHostOff &&
+    !needsMediaTtl
   ) {
     return false;
   }
@@ -379,6 +418,8 @@ export function seedRestartClassOverridesIfMissing(): boolean {
     ...existing,
     gateway: {
       ...gateway,
+      mode: OPENCLAW_GATEWAY_MODE,
+      bind: OPENCLAW_GATEWAY_BIND,
       controlUi: {
         ...controlUi,
         enabled: false,
@@ -391,6 +432,7 @@ export function seedRestartClassOverridesIfMissing(): boolean {
     discovery: { ...discovery, mdns: { ...mdns, mode: "off" } },
     update: { ...update, checkOnStart: false },
     canvasHost: { ...canvasHost, enabled: false },
+    media: { ...media, ttlHours: OPENCLAW_MEDIA_TTL_HOURS },
   };
 
   writeConfigAtomic(JSON.stringify(updated, null, 2).trimEnd() + "\n");
