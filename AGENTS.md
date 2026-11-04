@@ -741,7 +741,7 @@ Every Pinchy plugin manifest must declare every config field emitted by `regener
 
 ### Pattern C: Bootstrap credentials
 
-`gateway.auth.token` and `plugins.entries.pinchy-*.config.gatewayToken` are plaintext bootstrap credentials in `openclaw.json`. They are the trust root for the OpenClaw container and cannot be fetched through Pinchy's API. Pinchy keeps the token in its database (`openclaw_gateway_token`) and writes the same value on every config regeneration, so regenerating does not rotate it; there is no rotation control today. While a config apply briefly leaves `openclaw.json` unreadable, `readGatewayToken()` serves the last good token for at most 60 s, and plugins retry a 401 from an internal route for about 3.75 s.
+`gateway.auth.token` and `plugins.entries.pinchy-*.config.gatewayToken` are plaintext bootstrap credentials in `openclaw.json`. They are the trust root for the OpenClaw container and cannot be fetched through Pinchy's API. Pinchy keeps the token in its database (`openclaw_gateway_token`) and writes the same value on every config regeneration, so regenerating does not rotate it; there is no rotation control today. While a config apply briefly leaves `openclaw.json` unreadable, `readGatewayToken()` serves the last good token for at most 60 s, and the audit hook and the credentials fetch retry a 401 from Pinchy for about 3.75 s; other plugins do not retry.
 
 Defense in depth:
 
