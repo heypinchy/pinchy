@@ -12,6 +12,7 @@
  * packages/plugins/pinchy-files/pdf-vision-api.ts (describeViaOllama), but
  * targets Ollama's batch embeddings endpoint instead of chat completions.
  */
+import { isMap, processWideCache } from "@/lib/process-wide-cache";
 
 export interface EmbeddingConfig {
   /** Ollama-compatible base URL, e.g. "http://ollama:11434". Unused when provider === "local". */
@@ -64,6 +65,14 @@ export interface EmbeddingConfig {
    * Defaults to 180000. Unused when provider === "local".
    */
   timeoutMs?: number;
+  /**
+   * llama.cpp worker threads for the in-process embedding context. Only read
+   * when provider === "local", and only when the context is first created —
+   * the context is shared process-wide, so the first caller's value sticks.
+   * Unset = node-llama-cpp's own default (6), which oversubscribes a small box:
+   * see resolveEmbeddingThreads() in kb-embedder.ts for why that matters.
+   */
+  threads?: number;
 }
 
 const DEFAULT_MODEL = "bge-m3";
@@ -137,7 +146,9 @@ function assertEmbeddingShape(
 // per distinct GGUF file. Keyed by modelPath so different models each get
 // their own context; the promise is cached (not just the resolved value) so
 // concurrent callers during the initial load also await the same load
-// rather than triggering it twice.
+// rather than triggering it twice. A load that fails is evicted after
+// LOCAL_MODEL_RETRY_COOLDOWN_MS, so a later call tries again instead of every
+// search failing until a restart.
 //
 // Sharing ONE context across concurrent callers is safe: in the web process
 // the KB search route (one query embed per request) and the KB index worker
@@ -146,15 +157,37 @@ function assertEmbeddingShape(
 // internally (an "evaluate" lock that erases the context token range before
 // every input), so concurrent embeds queue and run one at a time instead of
 // corrupting each other's state — no external mutex needed here.
+//
+// That only holds if there really is ONE context, which a module-level Map
+// does not give: the search route runs in Next's route bundle and the index
+// worker in the custom server, two module instances in one process (see
+// process-wide-cache.ts). Each loaded its own model and context — twice the
+// RAM, and two evaluate locks, so a search and a reindex ran their embeddings
+// at the same time on the same cores instead of queueing. Hence globalThis.
+/**
+ * How long a failed local model load stays failed before the next call tries
+ * again. Short enough that a transient failure (memory pressure during a big
+ * conversion) heals within a minute; long enough that a permanent one (a
+ * corrupt GGUF) costs one load per minute rather than one per search.
+ */
+export const LOCAL_MODEL_RETRY_COOLDOWN_MS = 60_000;
+
 type LlamaEmbeddingContext = {
   getEmbeddingFor(text: string): Promise<{ vector: ArrayLike<number> }>;
 };
-const localEmbeddingContexts = new Map<string, Promise<LlamaEmbeddingContext>>();
 
-function getLocalEmbeddingContext(modelPath: string): Promise<LlamaEmbeddingContext> {
-  let contextPromise = localEmbeddingContexts.get(modelPath);
+function localEmbeddingContexts(): Map<string, Promise<LlamaEmbeddingContext>> {
+  return processWideCache("__pinchyLocalEmbeddingContexts", () => new Map(), isMap);
+}
+
+function getLocalEmbeddingContext(
+  modelPath: string,
+  threads: number | undefined
+): Promise<LlamaEmbeddingContext> {
+  const contexts = localEmbeddingContexts();
+  let contextPromise = contexts.get(modelPath);
   if (!contextPromise) {
-    contextPromise = (async () => {
+    const loading = (async () => {
       // Dynamic import only: node-llama-cpp loads a native .node addon, and
       // a static top-level import would pull it into every process that
       // imports this module — including the fast unit-test suite and
@@ -162,10 +195,32 @@ function getLocalEmbeddingContext(modelPath: string): Promise<LlamaEmbeddingCont
       const { getLlama } = await import("node-llama-cpp");
       const llama = await getLlama();
       const model = await llama.loadModel({ modelPath });
-      const ctx = await model.createEmbeddingContext();
-      return ctx as unknown as LlamaEmbeddingContext;
+      try {
+        const ctx = await model.createEmbeddingContext(threads != null ? { threads } : {});
+        return ctx as unknown as LlamaEmbeddingContext;
+      } catch (err) {
+        // The ~300 MB model is loaded; without a context nobody holds it, and
+        // a retry would load another one next to it. Fire-and-forget, so a
+        // dispose that throws or never settles can neither replace this error
+        // nor hold the load (and its cooldown) open.
+        void Promise.resolve()
+          .then(() => model.dispose())
+          .catch(() => {});
+        throw err;
+      }
     })();
-    localEmbeddingContexts.set(modelPath, contextPromise);
+    contextPromise = loading;
+    contexts.set(modelPath, loading);
+    loading.catch(() => {
+      // Keep the failure cached for a while, so a persistently broken load
+      // fails every search fast instead of loading the model again for each.
+      const evict = setTimeout(() => {
+        // Defensive: only this path sets the key today, but never let an old
+        // timer evict a newer load.
+        if (contexts.get(modelPath) === loading) contexts.delete(modelPath);
+      }, LOCAL_MODEL_RETRY_COOLDOWN_MS);
+      evict.unref?.();
+    });
   }
   return contextPromise;
 }
@@ -182,7 +237,7 @@ async function embedTextsLocal(texts: string[], cfg: EmbeddingConfig): Promise<n
     );
   }
 
-  const ctx = await getLocalEmbeddingContext(cfg.modelPath);
+  const ctx = await getLocalEmbeddingContext(cfg.modelPath, cfg.threads);
 
   const vectors: number[][] = [];
   for (const text of texts) {
