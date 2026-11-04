@@ -142,6 +142,77 @@ describe("readGatewayToken", () => {
       const { readGatewayToken } = await import("@/lib/gateway-token-reader");
       expect(readGatewayToken()).toBe("");
     });
+
+    it("fails closed when openclaw.json reads cleanly but carries no token", async () => {
+      // A config that parses and has no token is an answer, not a read
+      // failure: serving the old token here would keep it valid for the
+      // process lifetime.
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+
+      writeFileSync(configPath, JSON.stringify({ env: {} }));
+      expect(readGatewayToken()).toBe("");
+    });
+
+    it("stops serving the last token once the files stay unreadable past the cap", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date("2026-11-04T10:00:00Z"));
+        writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+        const { readGatewayToken, LAST_GOOD_TOKEN_MAX_AGE_MS } =
+          await import("@/lib/gateway-token-reader");
+        expect(readGatewayToken()).toBe("good-token");
+
+        rmSync(configPath);
+        vi.setSystemTime(Date.now() + LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
+        expect(readGatewayToken()).toBe("good-token");
+
+        vi.setSystemTime(Date.now() + 2);
+        expect(readGatewayToken()).toBe("");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("readGatewayTokenUncached", () => {
+    it("never answers with a remembered token", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken, readGatewayTokenUncached } =
+        await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+      expect(readGatewayTokenUncached()).toBe("good-token");
+
+      rmSync(configPath);
+      expect(readGatewayToken()).toBe("good-token");
+      expect(readGatewayTokenUncached()).toBe("");
+    });
+  });
+});
+
+describe("getOrCreateGatewayToken", () => {
+  it("never persists a remembered token while the config files are unreadable", async () => {
+    // Clearing the DB setting is how an operator forces a fresh token. If the
+    // files are mid-rewrite at that moment, adopting the in-memory fallback
+    // would write the very token they meant to replace back into the DB.
+    vi.doMock("@/lib/settings", () => ({
+      getSetting: vi.fn().mockResolvedValue(null),
+      setSetting: vi.fn().mockResolvedValue(undefined),
+    }));
+    try {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "old-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("old-token");
+      rmSync(configPath);
+
+      const { getOrCreateGatewayToken } = await import("@/lib/gateway-token-source");
+      const token = await getOrCreateGatewayToken();
+      expect(token).not.toBe("old-token");
+      expect(token).toMatch(/^[0-9a-f]{48}$/);
+    } finally {
+      vi.doUnmock("@/lib/settings");
+    }
   });
 });
 

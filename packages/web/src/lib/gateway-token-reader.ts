@@ -19,31 +19,64 @@ import { readSecretsFile } from "@/lib/openclaw-secrets";
  *      start-openclaw.sh chowns it root:root 0600 for OpenClaw's own
  *      resolver, so in the production container this read fails too.
  *
- *   3. **The last token read successfully** — when neither file yields a
- *      token. OpenClaw rewrites openclaw.json root-only on every config
- *      apply until start-openclaw.sh chmods it back, so right after an
- *      agent is created or changed both reads can fail. Without this, every plugin
- *      call to an internal route in that window is answered 401: the audit
- *      hook fails and blocks the tool call, a context save is lost. A fresh
- *      read always wins, so a rotated token takes effect on the next
- *      successful read.
+ *   3. **The last token read successfully** — only when openclaw.json could
+ *      not be read or parsed, secrets.json gave no token either, and that
+ *      last successful read is less than LAST_GOOD_TOKEN_MAX_AGE_MS old.
+ *      OpenClaw rewrites openclaw.json root-only on every config apply until
+ *      start-openclaw.sh's 50 ms permission loop chmods it back, so right
+ *      after an agent is created or changed the read can fail. Without this,
+ *      every plugin call to an internal route in that window is answered
+ *      401: the audit hook fails and blocks the tool call, a context save is
+ *      lost.
+ *
+ *      What this deliberately does NOT cover: an openclaw.json that parses
+ *      and carries no token. That is an answer, not a failed read, and it
+ *      fails closed (""), as it always did. And the fallback ends after the
+ *      cap: a config that stays unreadable is a broken deployment, which
+ *      must surface as 401s rather than keep an old token valid forever.
+ *      A fresh read always wins.
  */
-let lastGoodToken = "";
+
+/**
+ * How long after the last successful read the remembered token may still be
+ * served. The real window is the time until start-openclaw.sh's permission
+ * loop (50 ms tick) restores read access — far below this.
+ */
+export const LAST_GOOD_TOKEN_MAX_AGE_MS = 60_000;
+
+let lastGood: { token: string; at: number } | undefined;
 
 export function readGatewayToken(): string {
   if (process.env.PINCHY_E2E_GATEWAY_TOKEN) {
     return process.env.PINCHY_E2E_GATEWAY_TOKEN;
   }
 
-  const fresh = readGatewayTokenFromFiles();
-  if (fresh) {
-    lastGoodToken = fresh;
-    return fresh;
+  const read = readGatewayTokenFromFiles();
+  if (read.token) {
+    lastGood = { token: read.token, at: Date.now() };
+    return read.token;
   }
-  return lastGoodToken;
+  if (read.configUnreadable && lastGood && Date.now() - lastGood.at < LAST_GOOD_TOKEN_MAX_AGE_MS) {
+    return lastGood.token;
+  }
+  return "";
 }
 
-function readGatewayTokenFromFiles(): string {
+/**
+ * The token as the files say it right now, never a remembered one. For a
+ * caller that persists what it reads (`getOrCreateGatewayToken`): writing a
+ * remembered token into the settings DB would resurrect the token an
+ * operator just cleared the setting to replace.
+ */
+export function readGatewayTokenUncached(): string {
+  if (process.env.PINCHY_E2E_GATEWAY_TOKEN) {
+    return process.env.PINCHY_E2E_GATEWAY_TOKEN;
+  }
+  return readGatewayTokenFromFiles().token;
+}
+
+function readGatewayTokenFromFiles(): { token: string; configUnreadable: boolean } {
+  let configUnreadable = false;
   try {
     const configPath = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
     const config = JSON.parse(readFileSync(configPath, "utf-8")) as {
@@ -51,14 +84,15 @@ function readGatewayTokenFromFiles(): string {
     };
     const tokenFromConfig = config.gateway?.auth?.token;
     if (typeof tokenFromConfig === "string" && tokenFromConfig.length > 0) {
-      return tokenFromConfig;
+      return { token: tokenFromConfig, configUnreadable };
     }
   } catch {
-    // openclaw.json unreadable / malformed / missing — fall through.
+    // openclaw.json unreadable / mid-rewrite / malformed / missing.
+    configUnreadable = true;
   }
   try {
-    return readSecretsFile().gateway?.token ?? "";
+    return { token: readSecretsFile().gateway?.token ?? "", configUnreadable };
   } catch {
-    return "";
+    return { token: "", configUnreadable };
   }
 }

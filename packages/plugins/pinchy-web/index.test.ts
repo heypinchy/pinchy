@@ -349,7 +349,7 @@ describe("pinchy-web plugin", () => {
       // and reported as an auth failure on the connection.
       vi.useFakeTimers();
       try {
-        const fetchMock = vi.fn(async () => ({
+        const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => ({
           ok: false,
           status: 401,
           statusText: "Unauthorized",

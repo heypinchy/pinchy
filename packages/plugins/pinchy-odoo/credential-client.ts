@@ -58,6 +58,20 @@ const FETCH_TIMEOUT_MS = 10_000;
  * So a 401 here is a moment that passes, not stale credentials, and a single
  * attempt turned it into a failed tool call. Every other status is final and
  * surfaces at once.
+ *
+ * Pinchy remembers the last token it read for exactly that moment, so with a
+ * warm Pinchy this retry rarely fires. It stays for the case Pinchy cannot
+ * cover: each server module instance remembers its own token, and one that
+ * has not read the token since a restart has nothing to fall back on.
+ *
+ * Backoff only — a Pinchy that answers 401 just before each 10 s timeout
+ * could hold a call ~53.75 s, the same bound the audit hook documents.
+ *
+ * INVARIANT: a CredentialsFetchError — including the 401 this gives up on —
+ * must never be fed into `isAuthError`. That 401 is about the gateway token,
+ * not the third-party credentials; classifying it as one would POST
+ * report-auth-failure and flag a healthy connection auth_failed. Every
+ * caller fetches credentials outside the closure its auth retry classifies.
  */
 const UNAUTHORIZED_MAX_RETRIES = 4;
 const UNAUTHORIZED_BACKOFF_MS = 250;
@@ -212,7 +226,13 @@ export async function requestCredentials(args: {
     if (response.status !== 401 || attempt >= UNAUTHORIZED_MAX_RETRIES) break;
     // Release the discarded answer's connection rather than leave it to GC.
     await response.body?.cancel().catch(() => {});
-    await new Promise((resolve) => setTimeout(resolve, UNAUTHORIZED_BACKOFF_MS * 2 ** attempt));
+    const delay = UNAUTHORIZED_BACKOFF_MS * 2 ** attempt;
+    // Status and connection only: the body is unread, and the token stays out.
+    console.warn(
+      `[${label} credentials] Pinchy answered 401 for connection ${connectionId} ` +
+        `(attempt ${attempt + 1}/${UNAUTHORIZED_MAX_RETRIES + 1}), retrying in ${delay} ms`
+    );
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
 
   if (!response.ok) {

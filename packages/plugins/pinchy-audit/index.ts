@@ -248,7 +248,11 @@ function toolStartKey(
 // 401 gets four (3.75 s): it means Pinchy momentarily could not read the
 // shared gateway token during a config apply (see the 401 note in
 // postToolAuditEvent), and the growing backoff lets the attempts span that
-// moment instead of all landing inside it.
+// moment instead of all landing inside it. Pinchy remembers the last token it
+// read for that moment, so with a warm Pinchy this rarely fires; it stays for
+// the case Pinchy cannot cover — each server module instance remembers its
+// own token, and one that has not read it since a restart has nothing to fall
+// back on.
 const MAX_RETRIES = 2;
 const MAX_UNAUTHORIZED_RETRIES = 4;
 const RETRY_BACKOFF_MS = 250;

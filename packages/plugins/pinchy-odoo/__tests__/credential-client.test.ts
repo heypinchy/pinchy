@@ -357,6 +357,29 @@ describe("requestCredentials", () => {
       await expect(result).resolves.toEqual({ credentials: { apiKey: "k" } });
     });
 
+    it("warns once per retry, naming the connection but never the token or the body", async () => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(unauthorized())
+        .mockResolvedValueOnce(unauthorized())
+        .mockResolvedValueOnce(ok());
+      vi.stubGlobal("fetch", fetchMock);
+
+      const result = requestCredentials(args);
+      await vi.advanceTimersByTimeAsync(250 + 500);
+      await result;
+
+      expect(warn).toHaveBeenCalledTimes(2);
+      for (const [message] of warn.mock.calls) {
+        expect(String(message)).toContain("conn-1");
+        expect(String(message)).toContain("401");
+        expect(String(message)).not.toContain("gw-token");
+        expect(String(message)).not.toContain("Unauthorized");
+      }
+    });
+
     it("surfaces as a 401 CredentialsFetchError once the retries run out", async () => {
       vi.useFakeTimers();
       const fetchMock = vi.fn(async () => unauthorized());
