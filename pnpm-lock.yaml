@@ -216,7 +216,7 @@ importers:
   packages/plugins/pinchy-odoo:
     dependencies:
       odoo-node:
-        specifier: ^0.3.1
+        specifier: 0.3.1
         version: 0.3.1
     devDependencies:
       '@types/node':

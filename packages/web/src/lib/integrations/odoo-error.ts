@@ -14,6 +14,17 @@ export function odooRedirectRefusedMessage(status: number | string): string {
 }
 
 /**
+ * A `TypeError` that is not odoo-node reading `error.data.message` off a
+ * JSON-RPC error without `data`: a bug on our side. The test is on V8's
+ * message alone, so a bug of ours that reads `message` off undefined is taken
+ * for the envelope case — the code paths that feed these functions call
+ * odoo-node and little else, and nothing in them reads `.message` that way.
+ */
+function isInternalTypeError(err: unknown): err is TypeError {
+  return err instanceof TypeError && !/\(reading 'message'\)$/.test(err.message);
+}
+
+/**
  * The message an admin is shown when an `odoo-node` call fails.
  *
  * `odoo-node` wraps network failures, HTTP errors (`HTTP 502: Bad Gateway`),
@@ -33,17 +44,6 @@ export function odooRedirectRefusedMessage(status: number | string): string {
  * an Odoo-shaped error from a misbehaving server cannot fill a toast with a
  * page of text.
  */
-/**
- * A `TypeError` that is not odoo-node reading `error.data.message` off a
- * JSON-RPC error without `data`: a bug on our side. The test is on V8's
- * message alone, so a bug of ours that reads `message` off undefined is taken
- * for the envelope case — the code paths that feed these functions call
- * odoo-node and little else, and nothing in them reads `.message` that way.
- */
-function isInternalTypeError(err: unknown): err is TypeError {
-  return err instanceof TypeError && !/\(reading 'message'\)$/.test(err.message);
-}
-
 export function describeOdooError(err: unknown): string {
   const notOdoo = "Check that the URL points at the Odoo server itself.";
   if (err instanceof TypeError) {
@@ -99,9 +99,9 @@ export function isOdooAuthFailure(err: unknown): boolean {
 }
 
 /**
- * The probe result for a failed `OdooClient.authenticate`. Used by the probe
- * and by the Test-connection route's uid self-heal, which authenticates first and must
- * classify the same failure the same way.
+ * The probe result for a failed `authenticateOdoo`. Used by the probe and by
+ * the Test-connection route's uid self-heal, which authenticates first and
+ * must classify the same failure the same way.
  */
 export function describeOdooAuthenticateFailure(err: unknown): {
   success: false;
