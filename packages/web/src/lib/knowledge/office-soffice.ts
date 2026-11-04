@@ -36,6 +36,13 @@ export interface ConverterResult {
   stderr: string;
   /** True when WE killed it for taking too long — infrastructure, but not memory. */
   timedOut?: boolean;
+  /**
+   * True when the office-converter found a process of the run still running
+   * after it (office-converter-sidecar.ts). Nothing of the run is trusted, the
+   * converter restarts, and its documents are run one at a time, as after a
+   * kill.
+   */
+  leftovers?: boolean;
 }
 
 export type RunConverter = (run: ConverterRun) => Promise<ConverterResult>;

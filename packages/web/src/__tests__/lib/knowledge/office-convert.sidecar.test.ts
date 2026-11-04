@@ -94,6 +94,36 @@ const counters = {
 };
 
 describe("convertOfficeFiles with the office-converter sidecar", () => {
+  it("re-runs a batch the converter answered as leaving a process behind, one document at a time", async () => {
+    let lastInputs = 0;
+    server = createOfficeConverterServer({
+      spoolDir: spool,
+      runConverter: async (run) => {
+        sidecarRuns++;
+        lastInputs = run.inputs.length;
+        return runSoffice(run);
+      },
+      leftovers: async () => (lastInputs > 1 ? [4242] : []),
+      // The real server exits here; this one stays up for the re-runs.
+      onLeftovers: () => {},
+    });
+    await listenOfficeConverter(server, spool);
+    const store = new OfficeArtifactStore(join(root, "artifacts"));
+    const sources = ["delta", "echo"].map((word) => {
+      const absPath = join(corpus, `${word}.docx`);
+      writeFileSync(absPath, docxWith({ text: `Angebot ${word}`, documentRels: relationships() }));
+      return { absPath };
+    });
+
+    const outcomes = await convertOfficeFiles(sources, { store, ...counters });
+
+    expect(
+      outcomes.map((o) => o.status),
+      outcomes.map((o) => o.reason).join("; ")
+    ).toEqual(["converted", "converted"]);
+    expect(sidecarRuns).toBe(3);
+  });
+
   it("re-runs a killed batch one document at a time through the sidecar, and leaves the spool clean", async () => {
     // Each document's own run is a batch of its own in the spool — the only
     // shape the sidecar accepts, since it derives every path from the batch.

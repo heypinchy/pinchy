@@ -1981,6 +1981,34 @@ describe("a batch shared with a converter that runs as another user", () => {
     expect(outcomes[1].reason).toMatch(/converter did not run: .*left 1 process/);
   });
 
+  it("runs a batch that left a process behind one document at a time, as after a kill", async () => {
+    // Batches are fixed slices of a sorted queue: a document that makes the
+    // converter leave a process running must not take its batch-mates down
+    // with it every night.
+    const sources = [
+      await corpusFile("a.doc", "alpha"),
+      await corpusFile("b.doc", "bravo"),
+      await corpusFile("c.doc", "charlie"),
+    ];
+    const run: RunConverter = async (call) => {
+      if (call.inputs.length > 1) return { code: 0, signal: null, stderr: "", leftovers: true };
+      const staged = call.inputs[0];
+      if (basename(staged).startsWith("1.")) {
+        return { code: 0, signal: null, stderr: "", leftovers: true };
+      }
+      await writeFile(
+        join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
+        "%PDF-1.4\nwords here\n"
+      );
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(sources, deps({ run, calls: [] }));
+
+    expect(outcomes.map((o) => o.status)).toEqual(["converted", "infrastructure", "converted"]);
+    expect(outcomes[1].reason).toMatch(/left a process running/);
+  });
+
   it("frees what the killed batch wrote before its documents run on their own", async () => {
     // Its PDFs and its scratch sit on the volume the re-runs and the
     // free-space check use.

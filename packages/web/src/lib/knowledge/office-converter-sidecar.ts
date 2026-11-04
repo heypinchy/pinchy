@@ -228,6 +228,8 @@ export function sidecarConverter(
           headers: { "content-type": "application/json" },
         },
         (res) => {
+          // An answer of any kind means the converter is there again.
+          gaveUp.delete(socketPath);
           readBody(res, MAX_RESPONSE_BYTES)
             .then((text) => {
               if (res.statusCode !== 200) {
@@ -345,16 +347,23 @@ function parseResult(text: string): ConverterResult {
   if (typeof value !== "object" || value === null) {
     throw new Error("office converter sent an answer that is not a result");
   }
-  const { code, signal, stderr, timedOut } = value as Record<string, unknown>;
+  const { code, signal, stderr, timedOut, leftovers } = value as Record<string, unknown>;
   if (
     (code !== null && typeof code !== "number") ||
     (signal !== null && typeof signal !== "string") ||
     typeof stderr !== "string" ||
-    typeof timedOut !== "boolean"
+    typeof timedOut !== "boolean" ||
+    (leftovers !== undefined && typeof leftovers !== "boolean")
   ) {
     throw new Error("office converter sent an answer that is not a result");
   }
-  return { code, signal: signal as NodeJS.Signals | null, stderr, timedOut };
+  return {
+    code,
+    signal: signal as NodeJS.Signals | null,
+    stderr,
+    timedOut,
+    ...(leftovers ? { leftovers: true } : {}),
+  };
 }
 
 /**
@@ -498,9 +507,20 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
           const recycle = () => options.onLeftovers?.(left);
           if (res.destroyed) recycle();
           else res.once("close", recycle);
-          reply(500, {
-            error: `the converter left ${left.length} process(es) running after the batch; the office-converter restarts`,
-          });
+          // An answer, not a refusal: the web side runs the batch's documents
+          // one at a time, the way it does after a kill. Nothing the run
+          // wrote is trusted — a process still running could change it.
+          console.error(
+            `[office-converter] the batch left ${left.length} process(es) running; restarting`
+          );
+          const base = answer[0] === 200 ? (answer[1] as ConverterResult) : null;
+          reply(200, {
+            code: base?.code ?? null,
+            signal: base?.signal ?? null,
+            stderr: base?.stderr ?? "",
+            timedOut: base?.timedOut ?? false,
+            leftovers: true,
+          } satisfies ConverterResult);
           return;
         }
         reply(...answer);

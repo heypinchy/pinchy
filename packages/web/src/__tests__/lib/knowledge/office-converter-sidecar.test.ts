@@ -392,6 +392,32 @@ describe("office-converter sidecar protocol", () => {
     }
   });
 
+  it("is no longer given up on once the converter answers, even with an error", async () => {
+    // An error is an answer: the converter is there. A later outage gets its
+    // full wait again.
+    leaveStaleSocket();
+    const options = { connectRetryMs: 300, connectIntervalMs: 50 };
+    const { run } = await stagedBatch(["0.docx"]);
+    await expect(sidecarConverter(spool, options).runConverter(run)).rejects.toThrow(
+      /not answering/
+    );
+
+    answer = async () => {
+      throw new Error("soffice could not start");
+    };
+    await startServer();
+    await expect(sidecarConverter(spool, options).runConverter(run)).rejects.toThrow(/refused/);
+    // Closed, its socket stays behind and refuses — a converter gone again.
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
+
+    const started = Date.now();
+    await expect(sidecarConverter(spool, options).runConverter(run)).rejects.toThrow(
+      /not answering/
+    );
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+  });
+
   it("connects only to a socket, never through a link in its place", async () => {
     // The converter owns its socket's entry in the spool and could replace it.
     const elsewhere = mkdtempSync(join(tmpdir(), "kb-else-"));
@@ -504,10 +530,11 @@ describe("office-converter sidecar protocol", () => {
     expect(await readdir(run.profileDir)).toEqual([]);
   });
 
-  it("refuses the batch and recycles itself when the converter left processes running", async () => {
+  it("answers a batch that left processes running as such, and recycles itself", async () => {
     // A process that outlives its batch can still write into the batch the
     // web process is about to read, and into the next one. The answer says
-    // so (infrastructure: retried later), and the container restarts.
+    // so — the web side then runs the batch's documents one at a time, as
+    // after a kill — and the container restarts.
     const recycled: number[][] = [];
     await startServer(undefined, {
       leftovers: async () => [4242],
@@ -515,7 +542,7 @@ describe("office-converter sidecar protocol", () => {
     });
     const { converter, run } = await stagedBatch(["0.docx"]);
 
-    await expect(converter.runConverter(run)).rejects.toThrow(/left 1 process/);
+    await expect(converter.runConverter(run)).resolves.toMatchObject({ leftovers: true });
     expect(recycled).toEqual([[4242]]);
   });
 

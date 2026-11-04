@@ -176,9 +176,15 @@ business, not the store's.
   is about to read, or into the next one. After every batch the sidecar reads
   `/proc` for orphans — processes whose parent is the init (`init: true`) and
   that are not the server — with a two-second grace for one on its way out. If
-  one is left, the batch is answered with an error (`infrastructure`, retried
-  on the next run) and the sidecar exits; the restart policy brings up a clean
-  container. The server's own children are not counted: `soffice` has exited
+  one is left, the batch is answered with `leftovers: true` and the sidecar
+  exits; the restart policy brings up a clean container. The web side trusts
+  nothing of that run and treats it like a kill: a batch of more than one
+  document is run again one document at a time (waiting out the restart
+  through the reconnect retry), and a document that leaves a process behind
+  on its own is its own `infrastructure` outcome, retried on the next run —
+  batches are fixed slices of a sorted queue, so booking the whole batch
+  would keep the same batch-mates out every night. Any answer, an error
+  included, clears the given-up state of the reconnect retry. The server's own children are not counted: `soffice` has exited
   by the time a batch answers, and tsx keeps an `esbuild` child for the
   server's whole life. Processes `docker exec` starts (the healthcheck) have no
   parent inside the container and are not counted either. Verified in the

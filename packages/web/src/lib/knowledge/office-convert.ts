@@ -631,9 +631,11 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         }
         const { result } = run;
         if (!wasKilled(result)) continue;
-        const reason = result.timedOut
-          ? "converter exceeded its time budget"
-          : "converter was killed — out of memory (see OFFICE_CONVERTER_MEM_LIMIT)";
+        const reason = result.leftovers
+          ? "the converter left a process running after this document — it restarts"
+          : result.timedOut
+            ? "converter exceeded its time budget"
+            : "converter was killed — out of memory (see OFFICE_CONVERTER_MEM_LIMIT)";
         outcomes[i] = infrastructureFailure(batch[i].absPath, reason);
       }
 
@@ -1047,7 +1049,14 @@ function outputVolumeFault(
  * timeout.
  */
 function wasKilled(result: ConverterResult): boolean {
-  return result.timedOut === true || result.code === 137 || result.signal === "SIGKILL";
+  return (
+    result.timedOut === true ||
+    result.code === 137 ||
+    result.signal === "SIGKILL" ||
+    // Not a kill, but the same verdict on the run: it says nothing reliable
+    // about any of its documents (office-converter-sidecar.ts).
+    result.leftovers === true
+  );
 }
 
 function documentFailure(sourcePath: string, reason: string): ConversionOutcome {
