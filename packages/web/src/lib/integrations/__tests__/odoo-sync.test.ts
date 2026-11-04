@@ -187,7 +187,10 @@ describe("fetchOdooSchema", () => {
     vi.useRealTimers();
     expect(result.success).toBe(false);
     if (result.success) return;
-    expect(result.error).toBe("Odoo did not answer successfully: HTTP 429: Too Many Requests");
+    // The status may come from a proxy in front of Odoo as much as from Odoo.
+    expect(result.error).toBe(
+      "The Odoo address answered with an error: HTTP 429: Too Many Requests"
+    );
     expect(result.isAuthError).toBe(false);
   });
 

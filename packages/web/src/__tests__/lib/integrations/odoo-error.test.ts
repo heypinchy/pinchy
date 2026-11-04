@@ -47,8 +47,20 @@ describe("describeOdooError", () => {
 
     expect(message).not.toMatch(/JSON-RPC/);
     expect(message).toBe(
-      "Pinchy hit an internal error while talking to Odoo (TypeError: Cannot read properties " +
-        "of undefined (reading 'map')). This is not a problem with the connection's settings."
+      "Pinchy hit an internal error while talking to Odoo (TypeError reading 'map'). " +
+        "This is not a problem with the connection's settings."
+    );
+  });
+
+  it("never repeats an internal error's free text", () => {
+    const bug = new TypeError("token.secret-value is not a function");
+
+    const message = describeOdooError(bug);
+
+    expect(message).not.toContain("secret-value");
+    expect(message).toBe(
+      "Pinchy hit an internal error while talking to Odoo (TypeError). " +
+        "This is not a problem with the connection's settings."
     );
   });
 

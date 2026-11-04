@@ -4069,9 +4069,37 @@ describe("error handling", () => {
 
     expect(result.isError).toBe(true);
     const text = result.content[0].text;
-    expect(text).toContain("internal error");
-    expect(text).toContain("reading 'map'");
-    expect(text).not.toContain("JSON-RPC");
+    expect(text).toBe(
+      "Error: The Odoo tool hit an internal error (TypeError reading 'map'); " +
+        "this is not about the Odoo connection."
+    );
+  });
+
+  it("never repeats an internal error's free text to the model", async () => {
+    mockSearchRead.mockRejectedValue(new TypeError("token.secret-value is not a function"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.content[0].text).not.toContain("secret-value");
+    expect(result.content[0].text).toContain("internal error (TypeError)");
+  });
+
+  it("does not take an HTTP 405 for a permission denial", async () => {
+    mockSearchRead.mockRejectedValue(new OdooError("HTTP 405: Method Not Allowed", 405));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const result = await findTool(tools, "odoo_read", agentId)!.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    const text = result.content[0].text;
+    expect(text).toBe("Error: HTTP 405: Method Not Allowed");
+    expect(text).not.toMatch(/denied permission|re-sync/i);
   });
 
   it("does not quote a JSON answer of the wrong shape either (TypeError)", async () => {

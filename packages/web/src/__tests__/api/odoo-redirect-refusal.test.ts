@@ -30,6 +30,7 @@ vi.mock("@/lib/integrations/url-validation", () => ({
 // The schema-sync route reads a stored connection. Only storage and the
 // auth-state writes are stubbed; the sync itself runs the real odoo-node.
 let storedCredentials: Record<string, unknown> = {};
+const mockDbUpdate = vi.fn();
 vi.mock("@/db", () => ({
   db: {
     select: () => ({
@@ -37,11 +38,15 @@ vi.mock("@/db", () => ({
         where: async () => [{ id: "conn-1", type: "odoo", name: "Odoo", credentials: "enc" }],
       }),
     }),
-    update: () => ({ set: () => ({ where: async () => undefined }) }),
+    update: (...args: unknown[]) => {
+      mockDbUpdate(...args);
+      return { set: () => ({ where: async () => undefined }) };
+    },
   },
 }));
 vi.mock("@/lib/encryption", () => ({
   decrypt: () => JSON.stringify(storedCredentials),
+  encrypt: (value: string) => value,
   getOrCreateSecret: () => Buffer.alloc(32),
 }));
 const mockSetIntegrationAuthFailed = vi.fn();
@@ -105,6 +110,7 @@ beforeEach(() => {
   internalHits = 0;
   redirectStatus = 307;
   mockSetIntegrationAuthFailed.mockClear();
+  mockDbUpdate.mockClear();
   mockGetSession.mockResolvedValue(mockSession());
 });
 
@@ -253,6 +259,75 @@ describe("POST /api/integrations/[id]/test when the login works but every model 
     expect(body.success).toBe(false);
     expect(body.error).toContain("HTTP 403");
     expect(JSON.stringify(body)).not.toContain(SECRET);
+    expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+  });
+});
+
+// A server that speaks JSON-RPC but is not Odoo: its login answer carries no
+// user id. Storing that as the uid would break every later call.
+describe("a JSON-RPC server whose login answer has no user id", () => {
+  let notOdoo: { server: Server; origin: string };
+
+  beforeAll(async () => {
+    notOdoo = await listen((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        const { id } = JSON.parse(body) as { id: number };
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id, result: null }));
+      });
+    });
+  });
+
+  afterAll(() => {
+    notOdoo.server.close();
+  });
+
+  const credentials = () => ({
+    url: notOdoo.origin,
+    db: "prod",
+    login: "admin",
+    apiKey: "key",
+    uid: 2,
+  });
+
+  it("POST /api/integrations/test-credentials reports it", async () => {
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      post("/api/integrations/test-credentials", { type: "odoo", credentials: credentials() }),
+      routeContext()
+    );
+    const body = await response.json();
+
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/no user id/);
+  });
+
+  it("probeIntegrationCredentials reports it as transient", async () => {
+    const { probeIntegrationCredentials } = await import("@/lib/integrations/probe");
+
+    const result = await probeIntegrationCredentials("odoo", credentials());
+
+    if (result.success) throw new Error("expected failure");
+    expect(result.reason).toMatch(/no user id/);
+    expect(result.transient).toBe(true);
+  });
+
+  it("POST /api/integrations/[id]/test stores no uid and does not flag auth_failed", async () => {
+    storedCredentials = credentials();
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      post("/api/integrations/conn-1/test", {}),
+      routeContext({ connectionId: "conn-1" })
+    );
+    const body = await response.json();
+
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/no user id/);
+    expect(mockDbUpdate).not.toHaveBeenCalled();
     expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
   });
 });

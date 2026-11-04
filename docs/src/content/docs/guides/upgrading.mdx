@@ -244,7 +244,7 @@ If none of these is your install, there's nothing to do.
 
 #### An Odoo URL that redirects stops working
 
-Saving it still works — the address itself passes the check — but Pinchy no longer follows the redirect, so testing, syncing and the agent's Odoo tools fail with an error that names the status. The usual case is an `http://` URL in front of a proxy that redirects to `https://`: change it to the address Odoo is actually served from. See [An Odoo URL that redirects now fails instead of being followed](#an-odoo-url-that-redirects-now-fails-instead-of-being-followed).
+Nothing that talks to Odoo works with such a URL any more: Pinchy no longer follows the redirect, so **Test connection**, saving changes to the connection, schema syncs and the agent's Odoo tools all fail with an error that names the status. The usual case is an `http://` URL in front of a proxy that redirects to `https://`: change the connection's URL to the `https://` address and enter the API key again with it. See [An Odoo URL that redirects now fails instead of being followed](#an-odoo-url-that-redirects-now-fails-instead-of-being-followed).
 
 #### Email tools send to one recipient per call
 

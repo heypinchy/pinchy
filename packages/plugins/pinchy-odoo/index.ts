@@ -3012,6 +3012,11 @@ function permissionDenied(
 
 function isOdooAccessError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  // An HTTP-level failure (odoo-node: status in `code`, no `data`) is the
+  // server refusing the request — "HTTP 405: Method Not Allowed" — not Odoo
+  // refusing this user a model.
+  const { code, data } = error as Error & { code?: unknown; data?: unknown };
+  if (typeof code === "number" && code >= 100 && data === undefined) return false;
   const msg = error.message.toLowerCase();
   return (
     msg.includes("accesserror") ||

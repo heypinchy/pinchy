@@ -50,8 +50,12 @@ export function describeOdooError(err: unknown): string {
     if (!isInternalTypeError(err)) {
       return `Odoo answered with something that is not a JSON-RPC response. ${notOdoo}`;
     }
+    // The name and, from V8's "(reading 'x')", the property — never the
+    // free message, which may carry a value.
+    const property = /\(reading '([A-Za-z_$][\w$]{0,40})'\)$/.exec(err.message)?.[1];
+    const what = property ? `TypeError reading '${property}'` : "TypeError";
     return (
-      `Pinchy hit an internal error while talking to Odoo (TypeError: ${err.message}). ` +
+      `Pinchy hit an internal error while talking to Odoo (${what}). ` +
       "This is not a problem with the connection's settings."
     );
   }

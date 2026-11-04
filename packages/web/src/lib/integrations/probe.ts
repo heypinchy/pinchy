@@ -1,4 +1,3 @@
-import { OdooClient } from "odoo-node";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
@@ -12,6 +11,7 @@ import {
 import { imapTestSchema } from "@/lib/schemas/imap";
 import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
 import { checkStoredDestination } from "@/lib/integrations/stored-destination";
+import { authenticateOdoo } from "@/lib/integrations/odoo-authenticate";
 
 /**
  * Verify that credentials work for the given integration type.
@@ -59,7 +59,7 @@ export async function probeIntegrationCredentials(
     // the probe runs with a stale uid against the new key.
     let uid: number;
     try {
-      uid = await OdooClient.authenticate({
+      uid = await authenticateOdoo({
         url: parsed.data.url,
         db: parsed.data.db,
         login: parsed.data.login,

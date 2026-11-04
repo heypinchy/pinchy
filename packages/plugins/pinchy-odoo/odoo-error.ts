@@ -58,7 +58,11 @@ export function describeOdooError(err: unknown): string {
     // `message` off undefined is taken for that case too; tool code reaches
     // odoo-node through this path and reads `.message` only off caught errors.
     if (/\(reading 'message'\)$/.test(err.message)) return NOT_JSON_RPC_MESSAGE;
-    return `The Odoo tool hit an internal error (TypeError: ${err.message}); this is not about the Odoo connection.`;
+    // The name and, from V8's "(reading 'x')", the property — never the
+    // free message, which may carry a value.
+    const property = /\(reading '([A-Za-z_$][\w$]{0,40})'\)$/.exec(err.message)?.[1];
+    const what = property ? `TypeError reading '${property}'` : "TypeError";
+    return `The Odoo tool hit an internal error (${what}); this is not about the Odoo connection.`;
   }
   const message = (err instanceof Error ? err.message : "").replace(/\s+/g, " ").trim();
   if (!message) return "Unknown error";

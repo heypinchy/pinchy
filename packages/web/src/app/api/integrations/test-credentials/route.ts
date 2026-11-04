@@ -6,6 +6,7 @@ import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { parseRequestBody } from "@/lib/api-validation";
 import { testCredentialsSchema } from "@/lib/schemas/integrations";
 import { describeOdooError } from "@/lib/integrations/odoo-error";
+import { authenticateOdoo } from "@/lib/integrations/odoo-authenticate";
 
 export const POST = withAdmin(async (request) => {
   const parsed = await parseRequestBody(testCredentialsSchema, request);
@@ -39,7 +40,7 @@ export const POST = withAdmin(async (request) => {
     const login = credentials.login.trim();
     const apiKey = credentials.apiKey.trim();
 
-    const uid = await OdooClient.authenticate({ url, db, login, apiKey });
+    const uid = await authenticateOdoo({ url, db, login, apiKey });
 
     const client = new OdooClient({
       url,

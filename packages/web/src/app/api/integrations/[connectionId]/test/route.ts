@@ -5,7 +5,6 @@
 // to the admin who clicked, and nothing is written.
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { OdooClient } from "odoo-node";
 import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
@@ -25,6 +24,7 @@ import {
   OAuthSettingsMissingError,
   type MicrosoftCredentials,
 } from "@/lib/integrations/microsoft-refresh";
+import { authenticateOdoo } from "@/lib/integrations/odoo-authenticate";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -63,7 +63,7 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
         const creds = parsed.data;
         let uid: number;
         try {
-          uid = await OdooClient.authenticate({
+          uid = await authenticateOdoo({
             url: creds.url,
             db: creds.db,
             login: creds.login,
