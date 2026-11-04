@@ -20,8 +20,8 @@ import { readSecretsFile } from "@/lib/openclaw-secrets";
  *      resolver, so in the production container this read fails too.
  *
  *   3. **The last token read successfully** — only when openclaw.json could
- *      not be read or parsed, secrets.json gave no token either, and that
- *      last successful read is less than LAST_GOOD_TOKEN_MAX_AGE_MS old.
+ *      not be read or parsed, secrets.json gave no token either, and the
+ *      reads have been failing for less than LAST_GOOD_TOKEN_MAX_AGE_MS.
  *      OpenClaw rewrites openclaw.json root-only on every config apply until
  *      start-openclaw.sh's 50 ms permission loop chmods it back, so right
  *      after an agent is created or changed the read can fail. Without this,
@@ -38,13 +38,16 @@ import { readSecretsFile } from "@/lib/openclaw-secrets";
  */
 
 /**
- * How long after the last successful read the remembered token may still be
- * served. The real window is the time until start-openclaw.sh's permission
- * loop (50 ms tick) restores read access — far below this.
+ * How long the remembered token may be served once the reads start failing.
+ * Measured from the first failed read, not from the last good one: an
+ * instance that served no internal call for a while must still cover the
+ * next config apply. The real window is the time until start-openclaw.sh's
+ * permission loop (50 ms tick) restores read access — far below this.
  */
 export const LAST_GOOD_TOKEN_MAX_AGE_MS = 60_000;
 
-let lastGood: { token: string; at: number } | undefined;
+let lastGoodToken = "";
+let failingSince: number | undefined;
 
 export function readGatewayToken(): string {
   if (process.env.PINCHY_E2E_GATEWAY_TOKEN) {
@@ -53,20 +56,23 @@ export function readGatewayToken(): string {
 
   const read = readGatewayTokenFromFiles();
   if (read.token) {
-    lastGood = { token: read.token, at: Date.now() };
+    lastGoodToken = read.token;
+    failingSince = undefined;
     return read.token;
   }
-  if (read.configUnreadable && lastGood && Date.now() - lastGood.at < LAST_GOOD_TOKEN_MAX_AGE_MS) {
-    return lastGood.token;
+  if (read.configUnreadable && lastGoodToken) {
+    failingSince ??= Date.now();
+    if (Date.now() - failingSince < LAST_GOOD_TOKEN_MAX_AGE_MS) return lastGoodToken;
   }
   return "";
 }
 
 /**
  * The token as the files say it right now, never a remembered one. For a
- * caller that persists what it reads (`getOrCreateGatewayToken`): writing a
- * remembered token into the settings DB would resurrect the token an
- * operator just cleared the setting to replace.
+ * caller that persists what it reads (`getOrCreateGatewayToken` writes it
+ * into the settings DB, where it becomes the authoritative token): a durable
+ * value is taken only from what the files say now, never from the
+ * short-lived stand-in `readGatewayToken` keeps for validating requests.
  */
 export function readGatewayTokenUncached(): string {
   if (process.env.PINCHY_E2E_GATEWAY_TOKEN) {

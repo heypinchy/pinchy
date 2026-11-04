@@ -348,6 +348,7 @@ describe("pinchy-web plugin", () => {
       // when it never clears, it must not be classified as stale credentials
       // and reported as an auth failure on the connection.
       vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       try {
         const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => ({
           ok: false,
@@ -377,6 +378,7 @@ describe("pinchy-web plugin", () => {
         expect(braveSearchMock).not.toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
+        warn.mockRestore();
       }
     });
 
@@ -385,6 +387,7 @@ describe("pinchy-web plugin", () => {
       // read the shared gateway token. One attempt used to fail the whole
       // search with "HTTP 401 Unauthorized" on the Brave credentials.
       vi.useFakeTimers();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       try {
         braveSearchMock.mockResolvedValue({ results: [] });
         const unauthorized = {
@@ -424,6 +427,7 @@ describe("pinchy-web plugin", () => {
         ).toHaveLength(0);
       } finally {
         vi.useRealTimers();
+        warn.mockRestore();
       }
     });
 

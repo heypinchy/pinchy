@@ -165,6 +165,7 @@ describe("readGatewayToken", () => {
         expect(readGatewayToken()).toBe("good-token");
 
         rmSync(configPath);
+        expect(readGatewayToken()).toBe("good-token");
         vi.setSystemTime(Date.now() + LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
         expect(readGatewayToken()).toBe("good-token");
 
@@ -173,6 +174,63 @@ describe("readGatewayToken", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("measures the cap from when the reads started failing, not from the last good read", async () => {
+      // A route instance that served no internal call for a while still has
+      // to cover the next config apply: the cap bounds how long a broken
+      // config is papered over, not how recently the instance was busy.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date("2026-11-04T10:00:00Z"));
+        writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+        const { readGatewayToken, LAST_GOOD_TOKEN_MAX_AGE_MS } =
+          await import("@/lib/gateway-token-reader");
+        expect(readGatewayToken()).toBe("good-token");
+
+        vi.setSystemTime(Date.now() + 5 * 60_000);
+        rmSync(configPath);
+        expect(readGatewayToken()).toBe("good-token");
+
+        vi.setSystemTime(Date.now() + LAST_GOOD_TOKEN_MAX_AGE_MS);
+        expect(readGatewayToken()).toBe("");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("restarts the cap after a successful read in between", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date("2026-11-04T10:00:00Z"));
+        const good = JSON.stringify({ gateway: { auth: { token: "good-token" } } });
+        writeFileSync(configPath, good);
+        const { readGatewayToken, LAST_GOOD_TOKEN_MAX_AGE_MS } =
+          await import("@/lib/gateway-token-reader");
+        expect(readGatewayToken()).toBe("good-token");
+
+        rmSync(configPath);
+        expect(readGatewayToken()).toBe("good-token");
+        vi.setSystemTime(Date.now() + LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
+        writeFileSync(configPath, good);
+        expect(readGatewayToken()).toBe("good-token");
+
+        rmSync(configPath);
+        vi.setSystemTime(Date.now() + LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
+        expect(readGatewayToken()).toBe("good-token");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("prefers a token secrets.json still yields over the remembered one", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "old-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("old-token");
+
+      rmSync(configPath);
+      writeFileSync(secretsPath, JSON.stringify({ gateway: { token: "secrets-token" } }));
+      expect(readGatewayToken()).toBe("secrets-token");
     });
   });
 
@@ -193,9 +251,10 @@ describe("readGatewayToken", () => {
 
 describe("getOrCreateGatewayToken", () => {
   it("never persists a remembered token while the config files are unreadable", async () => {
-    // Clearing the DB setting is how an operator forces a fresh token. If the
-    // files are mid-rewrite at that moment, adopting the in-memory fallback
-    // would write the very token they meant to replace back into the DB.
+    // getOrCreateGatewayToken writes what it reads into the settings DB, where
+    // it becomes the authoritative token. A durable value must come from what
+    // the files say now, never from the short-lived stand-in readGatewayToken
+    // keeps for validating requests.
     vi.doMock("@/lib/settings", () => ({
       getSetting: vi.fn().mockResolvedValue(null),
       setSetting: vi.fn().mockResolvedValue(undefined),

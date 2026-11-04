@@ -700,6 +700,7 @@ describe("credential fetching", () => {
     // A 401 from Pinchy is retried with backoff (250 + 500 + 1000 + 2000 ms)
     // before it surfaces; fake timers keep that out of the test's run time.
     vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     let result: Awaited<ReturnType<typeof tool.execute>>;
     try {
       const pending = tool.execute("call-1", {});
@@ -707,6 +708,7 @@ describe("credential fetching", () => {
       result = await pending;
     } finally {
       vi.useRealTimers();
+      warn.mockRestore();
     }
 
     expect(result.content[0].text).toContain("credential");
