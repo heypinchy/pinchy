@@ -104,7 +104,7 @@ const RULES: BlockRule[] = [
     forbiddenWhen: ["tools"],
     inForce: () => !catalogWithholdsThinking("claude-haiku-5-5"),
     reason:
-      "Claude Haiku 5.5 needs a newer agent runtime than this Pinchy release ships unless Pinchy withholds its thinking setting — its requests are rejected.",
+      "Claude Haiku 5.5 needs a newer agent runtime than this Pinchy release ships — its requests are rejected. Claude Sonnet 5 works today.",
   },
   // Observed in production 2026-07-15 (agent "Penny", ollama-cloud stack). The
   // model emits structurally broken tool arguments: every NESTED array collapses
