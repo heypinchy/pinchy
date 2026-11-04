@@ -11,7 +11,7 @@ import { computeAllowedTools } from "@/lib/tool-registry";
 // test had warmed the cache; each failed when run alone.)
 vi.mock("@/lib/model-capabilities/cache", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/model-capabilities/cache")>()),
-  ensureModelCapabilityCacheLoaded: vi.fn().mockResolvedValue(undefined),
+  ensureModelCapabilityCacheLoaded: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/model-vision", () => ({
@@ -19,14 +19,14 @@ vi.mock("@/lib/model-vision", () => ({
     const provider = modelId.split("/")[0];
     return ["anthropic", "google", "openai", "ollama-cloud"].includes(provider);
   }),
-  setOllamaLocalVisionModels: vi.fn().mockResolvedValue(undefined),
+  setOllamaLocalVisionModels: vi.fn(async () => undefined),
 }));
 
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
   const writeFileSyncMock = vi.fn();
   const readFileSyncMock = vi.fn();
-  const existsSyncMock = vi.fn().mockReturnValue(true);
+  const existsSyncMock = vi.fn(() => true);
   const mkdirSyncMock = vi.fn();
   const renameSyncMock = vi.fn();
   const chmodSyncMock = vi.fn();
@@ -52,15 +52,15 @@ vi.mock("fs", async (importOriginal) => {
 
 vi.mock("@/db", () => ({
   db: {
-    select: vi.fn().mockImplementation(() => ({
-      from: vi.fn().mockImplementation(() =>
+    select: vi.fn(() => ({
+      from: vi.fn(() =>
         Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockReturnValue(
+          innerJoin: vi.fn(() =>
             Object.assign(Promise.resolve([]), {
-              where: vi.fn().mockResolvedValue([]),
+              where: vi.fn(async () => []),
             })
           ),
-          where: vi.fn().mockResolvedValue([]),
+          where: vi.fn(async () => []),
         })
       ),
     })),
@@ -81,7 +81,7 @@ const { mockGetSetting, mockGetSettingsByPrefix, mockGetSettingsByKeys } = vi.ho
     "admin-smithers",
     "agent-id-with-bot",
   ];
-  const getSetting = vi.fn().mockResolvedValue(null);
+  const getSetting = vi.fn<typeof import("@/lib/settings").getSetting>(async () => null);
   return {
     mockGetSetting: getSetting,
     mockGetSettingsByPrefix: vi.fn(async (prefix: string) => {
@@ -103,7 +103,7 @@ vi.mock("@/lib/settings", () => ({
   getSetting: mockGetSetting,
   getSettingsByPrefix: mockGetSettingsByPrefix,
   getSettingsByKeys: mockGetSettingsByKeys,
-  setSetting: vi.fn().mockResolvedValue(undefined),
+  setSetting: vi.fn(async () => undefined),
 }));
 
 const { mockDecrypt } = vi.hoisted(() => ({
@@ -113,7 +113,7 @@ const { mockDecrypt } = vi.hoisted(() => ({
 vi.mock("@/lib/encryption", () => ({
   decrypt: (val: string) => mockDecrypt(val),
   encrypt: (val: string) => val,
-  getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
+  getOrCreateSecret: vi.fn(() => Buffer.alloc(32)),
 }));
 
 vi.mock("@/server/restart-state", () => ({
@@ -127,17 +127,18 @@ vi.mock("@/server/restart-state", () => ({
 // `listOpenAiCompatibleProviders` is mocked so a test can prove regenerate
 // never consults a second read. Default to empty lists so every existing test
 // in this file (which configures no custom instances) is unaffected.
-const { mockListOpenAiCompatibleProviders, mockListProvidersWithApiKeys, mockGetDecryptedApiKey } =
-  vi.hoisted(() => ({
-    mockListOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
-    mockListProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
-    mockGetDecryptedApiKey: vi.fn().mockResolvedValue(null),
-  }));
+const { mockListOpenAiCompatibleProviders, mockListProvidersWithApiKeys } = vi.hoisted(() => ({
+  mockListOpenAiCompatibleProviders: vi.fn<
+    typeof import("@/lib/openai-compatible-providers").listOpenAiCompatibleProviders
+  >(async () => []),
+  mockListProvidersWithApiKeys: vi.fn<
+    typeof import("@/lib/openai-compatible-providers").listProvidersWithApiKeys
+  >(async () => []),
+}));
 
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: mockListOpenAiCompatibleProviders,
   listProvidersWithApiKeys: mockListProvidersWithApiKeys,
-  getDecryptedApiKey: mockGetDecryptedApiKey,
 }));
 
 // #894 backend redesign: build.ts's model-providers emission resolves each
@@ -171,7 +172,9 @@ vi.mock("dns/promises", () => {
 });
 
 const { mockValidateBuiltConfig } = vi.hoisted(() => ({
-  mockValidateBuiltConfig: vi.fn().mockReturnValue({ ok: true }),
+  mockValidateBuiltConfig: vi.fn<
+    typeof import("@/lib/openclaw-config/validate-built-config").validateBuiltConfig
+  >(() => ({ ok: true })),
 }));
 
 vi.mock("@/lib/openclaw-config/validate-built-config", () => ({
@@ -179,7 +182,7 @@ vi.mock("@/lib/openclaw-config/validate-built-config", () => ({
 }));
 
 const { mockedGetOrCreateGatewayToken } = vi.hoisted(() => ({
-  mockedGetOrCreateGatewayToken: vi.fn().mockResolvedValue("test-gateway-token"),
+  mockedGetOrCreateGatewayToken: vi.fn(async () => "test-gateway-token"),
 }));
 
 vi.mock("@/lib/gateway-token-source", () => ({
@@ -188,7 +191,7 @@ vi.mock("@/lib/gateway-token-source", () => ({
 
 const { mockWriteSecretsFile, mockReadSecretsFile, actualSecrets } = vi.hoisted(() => ({
   mockWriteSecretsFile: vi.fn(),
-  mockReadSecretsFile: vi.fn().mockReturnValue({}),
+  mockReadSecretsFile: vi.fn(() => ({})),
   // The real functions, for tests that run them on top of the mocked fs
   // (secretsUnreadableToPinchy).
   actualSecrets: {} as Pick<
@@ -235,12 +238,15 @@ vi.mock("@/lib/provider-models", () => {
   return {
     getDefaultModel: vi.fn(async (provider: string) => defaults.get(provider) ?? ""),
     fetchProviderModels,
-    fetchOllamaLocalModelsFromUrl: vi.fn().mockResolvedValue([]),
+    fetchOllamaLocalModelsFromUrl: vi.fn(async () => []),
   };
 });
 
 const { mockGetClient, mockConfigGet, mockConfigApply } = vi.hoisted(() => ({
-  mockGetClient: vi.fn(),
+  // Default: no WS client. A test simulating a connected client overrides it.
+  mockGetClient: vi.fn((): unknown => {
+    throw new Error("OpenClaw client not initialized");
+  }),
   mockConfigGet: vi.fn(),
   mockConfigApply: vi.fn(),
 }));
@@ -333,15 +339,26 @@ async function drainBackgroundCoroutine(): Promise<void> {
   await new Promise((r) => setImmediate(r));
 }
 
-// Top-level guard: vi.clearAllMocks() in each describe's beforeEach clears
-// call history but NOT mock implementations. A test that calls
-// mockGetClient.mockReturnValue({...}) to simulate a connected client would
-// pollute subsequent sibling describe blocks. This runs before every
-// describe-level beforeEach, resetting to "no WS client" as the baseline.
+// Every test starts from the mocks' defaults, whatever ran before it.
+//
+// vi.clearAllMocks() in the describe-level hooks clears call history only: an
+// implementation a test sets (a configured custom provider, a connected
+// client) and any `mockReturnValueOnce` it did not consume survive into the
+// next test. In file order every describe happened to re-set what it needs;
+// under `--sequence.shuffle` the swisscom-ai provider from the custom-provider
+// block showed up in "no provider configured" tests. So each module-level mock
+// carries its default as `vi.fn(impl)`, and vi.resetAllMocks() — which in
+// Vitest 4 restores exactly that impl and drops queued once-values — runs
+// before every describe-level beforeEach. A new default belongs in the
+// `vi.fn(impl)`, never in a chained `.mockReturnValue(...)`: reset drops those.
+//
+// Verify a change here by shuffling, not by reading:
+//   pnpm -C packages/web exec vitest run src/__tests__/lib/openclaw-config.test.ts \
+//     --sequence.shuffle --sequence.seed=<n>
+let envBeforeTest: NodeJS.ProcessEnv;
 beforeEach(() => {
-  mockGetClient.mockImplementation(() => {
-    throw new Error("OpenClaw client not initialized");
-  });
+  envBeforeTest = { ...process.env };
+  vi.resetAllMocks();
   // Same cross-describe class, one layer deeper. A push coroutine OUTLIVES the
   // test that spawned it — the not-connected path naps 2 s at a time for up to
   // 60 s, the rate-limit path parks 33–53 s — and on resume it calls into
@@ -360,6 +377,16 @@ beforeEach(() => {
   // (scheduleShrinkResume): it is a timer, not a coroutine, so superseding
   // does not reach it — left alone it fires a regenerate into a later test.
   _resetConfigPushState();
+});
+
+// Tests here set provider base URLs and E2E switches directly on process.env,
+// and several switch to fake timers; not every one undoes it on every path.
+afterEach(() => {
+  vi.useRealTimers();
+  for (const key of Object.keys(process.env)) {
+    if (!Object.hasOwn(envBeforeTest, key)) Reflect.deleteProperty(process.env, key);
+  }
+  Object.assign(process.env, envBeforeTest);
 });
 
 // The regenerate queue is reset after every test by the shared setup
@@ -9303,7 +9330,6 @@ describe("regenerateOpenClawConfig size-drop guard vs deliberate provider remova
     mockedDb.select.mockReturnValue({ from: mockFrom([]) } as never);
     mockListOpenAiCompatibleProviders.mockResolvedValue([]);
     mockListProvidersWithApiKeys.mockResolvedValue([]);
-    mockGetDecryptedApiKey.mockResolvedValue(null);
     mockResolveCustomProviderModels.mockImplementation(async (p: { models: unknown }) => p.models);
     mockedReadFileSync.mockImplementation(() => {
       throw new Error("ENOENT: no such file or directory");
@@ -10235,7 +10261,6 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     // key-free `listOpenAiCompatibleProviders` must stay unconsulted.
     mockListOpenAiCompatibleProviders.mockResolvedValue([]);
     mockListProvidersWithApiKeys.mockResolvedValue([]);
-    mockGetDecryptedApiKey.mockResolvedValue(null);
     // Identity pass-through by default — see the mock's doc-comment above.
     mockResolveCustomProviderModels.mockImplementation(async (p: { models: unknown }) => p.models);
   });
