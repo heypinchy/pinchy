@@ -52,7 +52,7 @@ describe("resolveEmbeddingThreads", () => {
   it("honours the container's CPU quota, which the core count does not show", () => {
     // docker-compose.yml's default `cpus: 1.5` on the 2-vCPU staging VM.
     expect(resolveEmbeddingThreads({ cpus: 2, cpuQuota: 1.5 })).toBe(1);
-    // Same quota on a big host: the 14 visible cores are not ours to use.
+    // Same quota on a big host, read by a runtime whose core count ignores it.
     expect(resolveEmbeddingThreads({ cpus: 14, cpuQuota: 1.5 })).toBe(1);
     expect(resolveEmbeddingThreads({ cpus: 16, cpuQuota: 4 })).toBe(3);
   });

@@ -36,12 +36,16 @@ const MAX_EMBEDDING_THREADS = 6;
  * embedding took 3.0-5.8 s at 4 threads and 16-24 ms at 1 thread; three
  * parallel queries took 5.8/8.7/14.1 s against 17/35/56 ms. A 512-token
  * indexing chunk took 3.3-6.2 s against 0.85-0.93 s. The spare core is for
- * everything else in the container — Postgres queries, request serving, PDF
- * extraction — which a full-width thread pool would otherwise fight.
+ * everything else in the container — request serving, the database client,
+ * PDF and Office extraction — which a full-width thread pool would otherwise
+ * fight.
  *
- * `cpuQuota` matters as much as `cpus`: docker-compose.yml caps the pinchy
- * container (`PINCHY_CPUS`, default 1.5), and that cap is invisible to the core
- * count, which reports the host's.
+ * The CPU that counts is the container's, not the host's: docker-compose.yml
+ * caps pinchy at `PINCHY_CPUS` (default 1.5). Node 22's availableParallelism()
+ * already folds the cgroup quota in (libuv 1.51: `--cpus=1.5` on a 14-core
+ * host reports 1, where os.cpus() reports 14). `cpuQuota`, read from cgroup
+ * v2's cpu.max, is a second source for a runtime that doesn't; a fractional
+ * quota rounds down.
  *
  * `override` is `KB_EMBEDDING_THREADS`, for a host where neither signal is
  * right; anything but a positive integer is ignored.
