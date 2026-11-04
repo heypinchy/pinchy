@@ -156,9 +156,8 @@ describe("readGatewayToken", () => {
     });
 
     it("stops serving the last token once the files stay unreadable past the cap", async () => {
-      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.useFakeTimers({ toFake: ["Date", "performance"] });
       try {
-        vi.setSystemTime(new Date("2026-11-04T10:00:00Z"));
         writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
         const { readGatewayToken, LAST_GOOD_TOKEN_MAX_AGE_MS } =
           await import("@/lib/gateway-token-reader");
@@ -166,10 +165,20 @@ describe("readGatewayToken", () => {
 
         rmSync(configPath);
         expect(readGatewayToken()).toBe("good-token");
-        vi.setSystemTime(Date.now() + LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
+        vi.advanceTimersByTime(LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
         expect(readGatewayToken()).toBe("good-token");
 
-        vi.setSystemTime(Date.now() + 2);
+        vi.advanceTimersByTime(2);
+        expect(readGatewayToken()).toBe("");
+
+        // The cap does not re-arm while the reads keep failing: a config that
+        // stays unreadable keeps surfacing as 401s — right after the cap, and
+        // long after it.
+        vi.advanceTimersByTime(1);
+        expect(readGatewayToken()).toBe("");
+        vi.advanceTimersByTime(30_000);
+        expect(readGatewayToken()).toBe("");
+        vi.advanceTimersByTime(5 * 60_000);
         expect(readGatewayToken()).toBe("");
       } finally {
         vi.useRealTimers();
@@ -180,19 +189,18 @@ describe("readGatewayToken", () => {
       // A route instance that served no internal call for a while still has
       // to cover the next config apply: the cap bounds how long a broken
       // config is papered over, not how recently the instance was busy.
-      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.useFakeTimers({ toFake: ["Date", "performance"] });
       try {
-        vi.setSystemTime(new Date("2026-11-04T10:00:00Z"));
         writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
         const { readGatewayToken, LAST_GOOD_TOKEN_MAX_AGE_MS } =
           await import("@/lib/gateway-token-reader");
         expect(readGatewayToken()).toBe("good-token");
 
-        vi.setSystemTime(Date.now() + 5 * 60_000);
+        vi.advanceTimersByTime(5 * 60_000);
         rmSync(configPath);
         expect(readGatewayToken()).toBe("good-token");
 
-        vi.setSystemTime(Date.now() + LAST_GOOD_TOKEN_MAX_AGE_MS);
+        vi.advanceTimersByTime(LAST_GOOD_TOKEN_MAX_AGE_MS);
         expect(readGatewayToken()).toBe("");
       } finally {
         vi.useRealTimers();
@@ -200,9 +208,8 @@ describe("readGatewayToken", () => {
     });
 
     it("restarts the cap after a successful read in between", async () => {
-      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.useFakeTimers({ toFake: ["Date", "performance"] });
       try {
-        vi.setSystemTime(new Date("2026-11-04T10:00:00Z"));
         const good = JSON.stringify({ gateway: { auth: { token: "good-token" } } });
         writeFileSync(configPath, good);
         const { readGatewayToken, LAST_GOOD_TOKEN_MAX_AGE_MS } =
@@ -211,12 +218,29 @@ describe("readGatewayToken", () => {
 
         rmSync(configPath);
         expect(readGatewayToken()).toBe("good-token");
-        vi.setSystemTime(Date.now() + LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
+        vi.advanceTimersByTime(LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
         writeFileSync(configPath, good);
         expect(readGatewayToken()).toBe("good-token");
 
         rmSync(configPath);
-        vi.setSystemTime(Date.now() + LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
+        vi.advanceTimersByTime(LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
+        expect(readGatewayToken()).toBe("good-token");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("measures the cap on a monotonic clock, unmoved by a wall-clock jump", async () => {
+      vi.useFakeTimers({ toFake: ["Date", "performance"] });
+      try {
+        writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+        const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+        expect(readGatewayToken()).toBe("good-token");
+
+        rmSync(configPath);
+        expect(readGatewayToken()).toBe("good-token");
+        // NTP step: the wall clock jumps an hour; no time actually passed.
+        vi.setSystemTime(Date.now() + 60 * 60_000);
         expect(readGatewayToken()).toBe("good-token");
       } finally {
         vi.useRealTimers();

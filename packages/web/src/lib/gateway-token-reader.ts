@@ -2,6 +2,21 @@ import { readFileSync } from "fs";
 import { readSecretsFile } from "@/lib/openclaw-secrets";
 
 /**
+ * How long the remembered token may be served once the reads start failing.
+ * Measured on the monotonic clock (a wall-clock step must not stretch or cut
+ * it short), from the first failed read, not from the last good one: an
+ * instance that served no internal call for a while must still cover the
+ * next config apply — unless its last read was itself a failed one more
+ * than a minute ago; the audit hook's and the credentials fetch's 401 retry
+ * cover that case. The real window is the time until start-openclaw.sh's
+ * permission loop (50 ms tick) restores read access — far below this.
+ */
+export const LAST_GOOD_TOKEN_MAX_AGE_MS = 60_000;
+
+let lastGoodToken = "";
+let failingSince: number | undefined;
+
+/**
  * Reads the OpenClaw gateway token Pinchy needs to authenticate its
  * WebSocket connection, and that `validateGatewayToken()` compares every
  * plugin's Bearer token against on the internal routes.
@@ -36,19 +51,6 @@ import { readSecretsFile } from "@/lib/openclaw-secrets";
  *      must surface as 401s rather than keep an old token valid forever.
  *      A fresh read always wins.
  */
-
-/**
- * How long the remembered token may be served once the reads start failing.
- * Measured from the first failed read, not from the last good one: an
- * instance that served no internal call for a while must still cover the
- * next config apply. The real window is the time until start-openclaw.sh's
- * permission loop (50 ms tick) restores read access — far below this.
- */
-export const LAST_GOOD_TOKEN_MAX_AGE_MS = 60_000;
-
-let lastGoodToken = "";
-let failingSince: number | undefined;
-
 export function readGatewayToken(): string {
   if (process.env.PINCHY_E2E_GATEWAY_TOKEN) {
     return process.env.PINCHY_E2E_GATEWAY_TOKEN;
@@ -67,8 +69,10 @@ export function readGatewayToken(): string {
     return "";
   }
   if (lastGoodToken) {
-    failingSince ??= Date.now();
-    if (Date.now() - failingSince < LAST_GOOD_TOKEN_MAX_AGE_MS) return lastGoodToken;
+    failingSince ??= performance.now();
+    if (performance.now() - failingSince < LAST_GOOD_TOKEN_MAX_AGE_MS) return lastGoodToken;
+    // Past the cap: stay closed until a read succeeds. Never re-arm here, or
+    // a config that stays unreadable would get a fresh minute every minute.
   }
   return "";
 }
