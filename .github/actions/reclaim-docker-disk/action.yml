@@ -13,7 +13,8 @@ description: >
   left on device", CI run 42014766282).
 
   It failed only on AWS-hosted runners: of 31 docker-smoke attempts on
-  2026-11-05, all three on AWS died of ENOSPC and all 27 on Azure passed. An
+  2026-11-05, all three on AWS died of ENOSPC; of the 28 on Azure, 27 passed
+  and one failed for an unrelated reason. An
   Azure ubuntu-26.04 runner has a 145G root with 88G free at job start, so
   that half never came close. Measured there (PR #1293): pulling the two CI
   images costs ~10G, and the dev build alone ~16G (58G -> 74G on the disk; the
@@ -32,15 +33,17 @@ description: >
     (12G), GHC/ghcup (3.7G) and CodeQL's bundle in the tool cache. The rest of
     /opt/hostedtoolcache stays: setup-node and friends read it.
 
-  Then it requires `min-free-gb` free on the filesystem holding Docker's data
-  root (not necessarily /). Below that it fails naming the shortfall, instead
+  Then it requires `min-free-gb` free on the filesystems holding Docker's data
+  root and containerd's (/var/lib/containerd — the image store the hosted
+  runners use keeps layers there), not just on /. Below that it fails naming the shortfall, instead
   of letting the build die halfway through a COPY.
 inputs:
   min-free-gb:
     description: >
-      Free space the next build needs on the filesystem holding Docker's data
-      root, in whole GB. Default: the 16G dev build measured on Azure, plus
-      headroom for growth — an estimate; raise it from the printed df.
+      Free space the next build needs on the filesystems holding Docker's and
+      containerd's data, in whole GB. Default: the 16G dev build measured on Azure, plus
+      headroom for growth — an estimate. If a build runs out of space after
+      passing it, raise it from the printed df.
     default: "22"
 runs:
   using: composite
@@ -51,9 +54,14 @@ runs:
         MIN_FREE_GB: ${{ inputs.min-free-gb }}
       run: |
         set -euo pipefail
-        root=$(docker info -f '{{.DockerRootDir}}')
-        echo "== before (Docker data root: $root) =="
-        df -h / "$root"
+        # With the containerd image store (what the hosted runners use) image
+        # layers and BuildKit snapshots live under /var/lib/containerd, not the
+        # Docker data root, so measure both and judge the tighter one.
+        dirs=$(docker info -f '{{.DockerRootDir}}')
+        [ -d /var/lib/containerd ] && dirs="$dirs /var/lib/containerd"
+        echo "== before (measuring: $dirs) =="
+        # shellcheck disable=SC2086 # one path per word
+        df -h / $dirs
         docker system df
         # Every repository under ghcr.io/heypinchy — the -ci refs a job pulled,
         # the :latest tags compose reads, the images a fork-PR fallback built —
@@ -70,16 +78,23 @@ runs:
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
         echo "removed unused toolchains in $(( $(date +%s) - start ))s"
         echo "== after =="
-        df -h / "$root"
+        # shellcheck disable=SC2086 # one path per word
+        df -h / $dirs
         docker system df
-        # MiB, not GiB: `df -BG` rounds up, so 21.1G would pass a 22G floor.
-        free_mb=$(df --output=avail -BM "$root" | tail -1 | tr -dc '0-9')
-        if ! [[ "$free_mb" =~ ^[0-9]+$ && "$MIN_FREE_GB" =~ ^[0-9]+$ ]]; then
-          echo "::error::cannot read free space on $root ('$free_mb') or min-free-gb ('$MIN_FREE_GB')"
+        if ! [[ "$MIN_FREE_GB" =~ ^[0-9]+$ ]]; then
+          echo "::error::min-free-gb must be a whole number of GB, got '$MIN_FREE_GB'"
           exit 1
         fi
-        if [ "$free_mb" -lt $(( MIN_FREE_GB * 1024 )) ]; then
-          echo "::error::only $(( free_mb / 1024 ))G free on $root after reclaiming, the next build needs ${MIN_FREE_GB}G — see the df output above for what holds the rest"
-          exit 1
-        fi
-        echo "$(( free_mb / 1024 ))G free on $root (need ${MIN_FREE_GB}G)"
+        for dir in $dirs; do
+          # MiB, not GiB: `df -BG` rounds up, so 21.1G would pass a 22G floor.
+          free_mb=$(df --output=avail -BM "$dir" | tail -1 | tr -dc '0-9')
+          if ! [[ "$free_mb" =~ ^[0-9]+$ ]]; then
+            echo "::error::cannot read free space on $dir (got '$free_mb')"
+            exit 1
+          fi
+          if [ "$free_mb" -lt $(( MIN_FREE_GB * 1024 )) ]; then
+            echo "::error::only $(( free_mb / 1024 ))G free on $dir after reclaiming, the next build needs ${MIN_FREE_GB}G — see the df output above for what holds the rest"
+            exit 1
+          fi
+          echo "$(( free_mb / 1024 ))G free on $dir (need ${MIN_FREE_GB}G)"
+        done

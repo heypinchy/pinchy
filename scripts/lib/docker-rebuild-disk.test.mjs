@@ -253,3 +253,24 @@ test("a reclaim with `if: always()` still clears", () => {
     [],
   );
 });
+
+test("only a bare `always()` counts as unconditional for a reclaim", () => {
+  for (const cond of ["always()", "${{ always() }}"])
+    assert.deepEqual(
+      problems([
+        PULL,
+        `- if: ${JSON.stringify(cond)}\n  uses: ${RECLAIM_ACTION}`,
+        DEV_BUILD,
+      ]),
+      [],
+      cond,
+    );
+  assert.equal(
+    problems([
+      PULL,
+      `- if: "always() && github.event_name == 'push'"\n  uses: ${RECLAIM_ACTION}`,
+      DEV_BUILD,
+    ]).length,
+    1,
+  );
+});
