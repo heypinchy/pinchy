@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { desc, eq, type SQL } from "drizzle-orm";
+import { desc, eq, like, type SQL } from "drizzle-orm";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -668,7 +668,7 @@ describe("approval routes (integration, real DB)", () => {
       expect(refused[0].outcome).toBe("failure");
       expect(refused[0].detail).toMatchObject({
         agent: { id: agent.id, name: "Smithers" },
-        requester: { id: user.id },
+        requester: { name: "U" },
         toolName: "odoo_write",
         argsDigest: computeArgsDigest(params),
         reason: "too-large-to-show",
@@ -1064,6 +1064,97 @@ describe("approval routes (integration, real DB)", () => {
 
     const retry = await (await gateCheck(gateReq(gateBody()))).json();
     expect(retry.decision).toBe("block");
+  });
+
+  // `detail` is stored verbatim in an immutable, HMAC-chained row that GDPR
+  // crypto-erasure cannot rewrite; only the `actorId` column is pseudonymized
+  // (#824). So no approval row may carry the person's raw users.id — not as the
+  // requester, not as the approver — and an address typed into a denial's
+  // free-text reason is scrubbed before it is written.
+  describe("the user's raw id never reaches an approval audit row (#1273)", () => {
+    async function approvalRows() {
+      await flushAfter();
+      return db.select().from(auditLog).where(like(auditLog.eventType, "approval.%"));
+    }
+    function expectNoRawUserId(rows: Awaited<ReturnType<typeof approvalRows>>) {
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(JSON.stringify(row.detail), row.eventType).not.toContain(user.id);
+        expect((row.detail as { requester?: unknown }).requester, row.eventType).toEqual({
+          name: "U",
+        });
+      }
+    }
+
+    it("on a request, its approval and the consumed grant", async () => {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      setSession(user);
+      await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
+      await gateCheck(gateReq(gateBody()));
+
+      const rows = await approvalRows();
+      expect(rows.map((r) => r.eventType).sort()).toEqual([
+        "approval.consumed",
+        "approval.granted",
+        "approval.requested",
+      ]);
+      expectNoRawUserId(rows);
+      const granted = rows.find((r) => r.eventType === "approval.granted")!;
+      expect((granted.detail as { approver?: unknown }).approver).toEqual({ name: "U" });
+      // The approver is still identifiable: as the row's (pseudonymized) actor.
+      expect(granted.actorType).toBe("user");
+    });
+
+    it("on a denial, with an address in its reason scrubbed", async () => {
+      const blocked = await (await gateCheck(gateReq(gateBody()))).json();
+      setSession(user);
+      await decide(
+        decideReq({ decision: "deny", reason: "wrong partner, ask jane.doe@example.com" }),
+        ctx(blocked.requestId)
+      );
+
+      const rows = await approvalRows();
+      expectNoRawUserId(rows);
+      const denied = rows.find((r) => r.eventType === "approval.denied")!;
+      expect((denied.detail as { reason?: unknown }).reason).toBe(
+        "wrong partner, ask <email-redacted>"
+      );
+      expect(JSON.stringify(denied.detail)).not.toContain("jane.doe");
+    });
+
+    it("on a resolution the runtime reports", async () => {
+      await gateCheck(gateReq({ ...gateBody(), toolCallId: "call_9" }));
+      await reportResolution(
+        new NextRequest("http://localhost/api/internal/approvals/resolution", {
+          method: "POST",
+          headers: { "content-type": "application/json", Authorization: `Bearer ${GW}` },
+          body: JSON.stringify({ toolCallId: "call_9", decision: "timeout" }),
+        })
+      );
+
+      const rows = await approvalRows();
+      expect(rows.map((r) => r.eventType).sort()).toEqual([
+        "approval.expired",
+        "approval.requested",
+      ]);
+      expectNoRawUserId(rows);
+    });
+
+    it("on a refused call", async () => {
+      agent = await seedAgent(user.id, ["pinchy_write"]);
+      await gateCheck(
+        gateReq(
+          gateBody({
+            toolName: "pinchy_write",
+            params: { path: "/data/out/a.md", content: "x".repeat(250_000) },
+          })
+        )
+      );
+
+      const rows = await approvalRows();
+      expect(rows.map((r) => r.eventType)).toEqual(["approval.refused"]);
+      expectNoRawUserId(rows);
+    });
   });
 
   // #1132. `onResolution` is the runtime reporting what it DID. It is the only
