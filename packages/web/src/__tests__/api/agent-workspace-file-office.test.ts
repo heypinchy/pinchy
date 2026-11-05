@@ -21,7 +21,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { servePosture, weakStoredFileEtag } from "@/lib/session-scoped-cache";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -406,8 +406,13 @@ describe("workspace-file — the artifact volume is not a failure of the documen
 describe("workspace-file — a cached converted PDF is re-checked on every reuse", () => {
   it("answers an unchanged converted PDF with 304 and no body", async () => {
     const source = writeSource("angebot.docx");
-    await storeArtifactFor(DOCX_BYTES);
+    const artifact = await storeArtifactFor(DOCX_BYTES);
     const etag = (await callGET(source)).headers.get("etag")!;
+    // The store touches an artifact on every read; move its clock well past
+    // the first request so a timestamp in the validator could not hide in
+    // one millisecond.
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(artifact, later, later);
 
     mockDeferAuditLog.mockClear();
     const res = await callGET(source, {}, { "if-none-match": etag });

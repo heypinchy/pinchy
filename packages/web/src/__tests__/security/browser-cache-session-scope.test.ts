@@ -214,4 +214,43 @@ describe("browser cache is scoped to the session (#1286)", () => {
       "stale entry: the file no longer sets a lifetime"
     ).toEqual([]);
   });
+
+  it("lists every route that answers 304, each with a test that a revoked reader never gets one", () => {
+    // A 304 tells the browser to show what it holds, so it is only safe after
+    // the route's access check. That ordering lives in each route; this makes
+    // every new one a reviewed addition that ships its own revocation test.
+    const ANSWERS_304: Array<{ route: string; revocationTest: string }> = [
+      {
+        route: "app/api/agents/[agentId]/workspace-file/route.ts",
+        revocationTest: "__tests__/api/agent-workspace-file.test.ts",
+      },
+      {
+        route: "app/api/agents/[agentId]/uploads/[filename]/route.ts",
+        revocationTest: "__tests__/server/agent-uploads-route.test.ts",
+      },
+      {
+        route: "app/api/agents/[agentId]/artifacts/[filename]/route.ts",
+        revocationTest: "__tests__/server/agent-artifacts-route.test.ts",
+      },
+    ];
+    const SERVING_HELPER = path.join(webSrcDir, "lib", "serve-workspace-file.ts");
+    const found = productionSources(webSrcDir)
+      .filter((f) => f !== HELPER && f !== SERVING_HELPER)
+      .filter((f) => /\b(?:ifNoneMatchHits|streamWorkspaceFile)\b/.test(readFileSync(f, "utf8")))
+      .map((f) => path.relative(webSrcDir, f));
+    const listed = ANSWERS_304.map((e) => e.route);
+
+    expect(
+      found.filter((f) => !listed.includes(f)),
+      "add the route to ANSWERS_304 with a test that a revoked reader gets 403/404, never 304"
+    ).toEqual([]);
+    expect(
+      listed.filter((f) => !found.includes(f)),
+      "stale entry: the route no longer answers 304"
+    ).toEqual([]);
+    for (const { route, revocationTest } of ANSWERS_304) {
+      const test = readFileSync(path.join(webSrcDir, revocationTest), "utf8");
+      expect(/"if-none-match"/.test(test) && /never with 304/.test(test), route).toBe(true);
+    }
+  });
 });
