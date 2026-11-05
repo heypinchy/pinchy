@@ -94,7 +94,7 @@ function formatTimestamp(iso: string): string {
 const MessageTimestamp: FC = () => {
   const timestamp = useMessage((s) => s.metadata?.custom?.timestamp as string | undefined);
   if (!timestamp) return null;
-  return <span className="text-xs text-muted-foreground/60">{formatTimestamp(timestamp)}</span>;
+  return <span className="text-xs text-muted-foreground">{formatTimestamp(timestamp)}</span>;
 };
 
 const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMessages }) => {
@@ -308,7 +308,7 @@ export const ThreadWelcome: FC = () => {
           <p className="text-sm font-medium text-muted-foreground">Starting agent...</p>
           <p
             data-testid="startup-message"
-            className="text-xs text-muted-foreground/60 transition-opacity duration-300"
+            className="text-xs text-muted-foreground transition-opacity duration-300"
           >
             {STARTUP_MESSAGES[messageIndex]}
           </p>

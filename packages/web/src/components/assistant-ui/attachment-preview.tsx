@@ -125,7 +125,7 @@ export const AttachmentPreview: FC = () => {
 };
 
 const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
-  <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">{message}</p>
+  <p className="mt-1 text-xs text-amber-700 dark:text-amber-500">{message}</p>
 );
 
 /**

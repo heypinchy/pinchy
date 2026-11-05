@@ -101,7 +101,7 @@ export function KnowledgeUnsearchableList({
           everything in scope. So "4 unsearchable" over "25 documents…" is the
           normal case, and without the scope named it reads as a contradiction. */}
       {noText > 0 && (
-        <p className="text-sm text-amber-600 dark:text-amber-500">
+        <p className="text-sm text-amber-700 dark:text-amber-500">
           {noText === 1
             ? "1 document in this agent's folders is indexed but holds no searchable text"
             : `${noText} documents in this agent's folders are indexed but hold no searchable text`}{" "}

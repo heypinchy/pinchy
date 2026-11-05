@@ -69,7 +69,7 @@ export function AccessCell({ value, onChange, label, disabled }: AccessCellProps
                   : state === "allow"
                     ? "bg-primary/10 text-primary"
                     : "bg-muted text-muted-foreground"
-                : "text-muted-foreground/40 hover:text-muted-foreground"
+                : "text-muted-foreground hover:text-foreground"
             )}
           >
             <Icon className="h-3.5 w-3.5" aria-hidden="true" />

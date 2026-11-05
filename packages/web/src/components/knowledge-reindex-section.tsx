@@ -386,7 +386,7 @@ function UnavailableFoldersNote({ count }: { count: number }) {
     count === 1
       ? "One folder couldn't be read, so its documents were left as they were. If it lives on a network share, check that it is mounted."
       : `${count} folders couldn't be read, so their documents were left as they were. If they live on a network share, check that it is mounted.`;
-  return <p className="text-sm text-amber-600 dark:text-amber-500">{text}</p>;
+  return <p className="text-sm text-amber-700 dark:text-amber-500">{text}</p>;
 }
 
 function SucceededState({ job }: { job: ReindexJob }) {
@@ -434,7 +434,7 @@ function CountsSummary({ counts }: { counts: IngestResult }) {
       )}
       <span
         className={
-          counts.unsearchable > 0 ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground"
+          counts.unsearchable > 0 ? "text-amber-700 dark:text-amber-500" : "text-muted-foreground"
         }
       >
         {counts.unsearchable} unsearchable
