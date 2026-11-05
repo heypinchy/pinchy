@@ -15,6 +15,7 @@ import { DevToolbar } from "@/components/dev-toolbar";
 import { ChatSessionProvider } from "@/components/chat-session-provider";
 import { ChatSessionMounts } from "@/components/chat-session-mounts";
 import { ApprovalsInbox } from "@/components/approvals-inbox";
+import { AccountGuard } from "@/components/account-guard";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await cookies();
@@ -39,21 +40,25 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const isAdmin = session?.user?.role === "admin";
 
   return (
-    <AgentsProvider initialAgents={visibleAgents}>
-      <ChatSessionProvider>
-        <SidebarProvider>
-          <AppSidebar isAdmin={isAdmin} />
-          <SidebarInset className="h-dvh overflow-hidden">
-            <InsecureBanner isAdmin={isAdmin} />
-            <EnterpriseBanner isAdmin={isAdmin} />
-            <BudgetBanner isAdmin={isAdmin} />
-            <AppShell isAdmin={isAdmin}>{children}</AppShell>
-          </SidebarInset>
-        </SidebarProvider>
-        <ChatSessionMounts />
-        <ApprovalsInbox />
-        {process.env.NODE_ENV === "development" && <DevToolbar />}
-      </ChatSessionProvider>
-    </AgentsProvider>
+    // AccountGuard renders first, so it clears another person's browser
+    // storage before anything below reads it (#1286).
+    <AccountGuard userId={userId!}>
+      <AgentsProvider initialAgents={visibleAgents}>
+        <ChatSessionProvider>
+          <SidebarProvider>
+            <AppSidebar isAdmin={isAdmin} />
+            <SidebarInset className="h-dvh overflow-hidden">
+              <InsecureBanner isAdmin={isAdmin} />
+              <EnterpriseBanner isAdmin={isAdmin} />
+              <BudgetBanner isAdmin={isAdmin} />
+              <AppShell isAdmin={isAdmin}>{children}</AppShell>
+            </SidebarInset>
+          </SidebarProvider>
+          <ChatSessionMounts />
+          <ApprovalsInbox />
+          {process.env.NODE_ENV === "development" && <DevToolbar />}
+        </ChatSessionProvider>
+      </AgentsProvider>
+    </AccountGuard>
   );
 }

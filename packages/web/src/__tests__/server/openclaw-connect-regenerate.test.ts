@@ -10,7 +10,10 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { regenerateOnConnect } from "@/server/openclaw-connect-regenerate";
 import {
   _resetConfigPushState,
+  noteFileOnlyDelivery,
+  nextConfigPushGeneration,
   noteUndeliveredConfigChange,
+  trackConfigPushStarted,
 } from "@/lib/openclaw-config/push-state";
 
 describe("regenerateOnConnect", () => {
@@ -32,6 +35,41 @@ describe("regenerateOnConnect", () => {
 
   it("regenerates on a reconnect when a change could not be delivered", () => {
     noteUndeliveredConfigChange(1);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const regenerate = vi.fn(async () => {});
+    regenerateOnConnect({ firstConnect: false }, regenerate);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("regenerates on a reconnect when a push reached only openclaw.json", () => {
+    // A running OpenClaw may never reload a file Pinchy wrote while it was
+    // not connected (CI run 41906476538): the connect is what can deliver it.
+    noteFileOnlyDelivery();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const regenerate = vi.fn(async () => {});
+    regenerateOnConnect({ firstConnect: false }, regenerate);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a file-only delivery to the newest push while it is in flight", () => {
+    // That push retries over the new connection and settles it when its
+    // apply lands. A second regenerate would only add an apply — and if an
+    // apply restarts OpenClaw before it answers, a reconnect that regenerates
+    // again would repeat that for as long as it happens.
+    noteFileOnlyDelivery();
+    trackConfigPushStarted(nextConfigPushGeneration());
+    const regenerate = vi.fn(async () => {});
+    regenerateOnConnect({ firstConnect: false }, regenerate);
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it("regenerates for a file-only delivery when only a superseded push is in flight", () => {
+    // A push parked in a rate-limit wait that a newer push superseded still
+    // counts as pending, but it returns without applying when it wakes: it
+    // can never settle the delivery.
+    trackConfigPushStarted(nextConfigPushGeneration());
+    nextConfigPushGeneration();
+    noteFileOnlyDelivery();
     vi.spyOn(console, "log").mockImplementation(() => {});
     const regenerate = vi.fn(async () => {});
     regenerateOnConnect({ firstConnect: false }, regenerate);

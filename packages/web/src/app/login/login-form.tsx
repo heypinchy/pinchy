@@ -2,11 +2,12 @@
 
 import { Suspense, useState } from "react";
 import { authClient } from "@/lib/auth-client";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { isSafeReturnTo } from "@/lib/return-to";
+import { enterAccount } from "@/lib/account-switch";
 import { SIGN_IN_RATE_LIMIT_WINDOW_SECONDS } from "@/lib/auth-rate-limit";
 import { Button } from "@/components/ui/button";
 import { PasswordInput } from "@/components/password-input";
@@ -77,7 +78,6 @@ export default function LoginForm() {
 }
 
 function LoginFormInner() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -92,7 +92,7 @@ function LoginFormInner() {
     setError("");
 
     try {
-      const { error } = await authClient.signIn.email({
+      const { data, error } = await authClient.signIn.email({
         email: values.email,
         password: values.password,
       });
@@ -101,7 +101,9 @@ function LoginFormInner() {
         setError(loginErrorMessage(error.status));
       } else {
         const returnTo = searchParams.get("returnTo");
-        router.push(isSafeReturnTo(returnTo) ? returnTo : "/");
+        // A full load, not router.push: the previous person's in-memory state
+        // must not carry over into this account (#1286).
+        await enterAccount(data?.user.id, isSafeReturnTo(returnTo) ? returnTo : "/");
       }
     } catch {
       setError(GENERIC_LOGIN_ERROR);

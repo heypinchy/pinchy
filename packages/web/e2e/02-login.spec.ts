@@ -22,5 +22,10 @@ test.describe("Login", () => {
     // First login after setup → redirected to provider configuration
     // (generous timeout: scrypt hashing + cold compilation of / and /setup/provider on CI)
     await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
+
+    // Signed in, /login has nothing to offer: it sends you back into the app.
+    await page.goto("/login");
+    await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
+    await expect(page.getByLabel(/email/i)).toHaveCount(0);
   });
 });

@@ -24,6 +24,9 @@ export const ADMIN_USER = {
 } as const;
 
 export async function loginAsAdmin(page: Page) {
+  // A signed-in visit to /login redirects into the app, so start signed out:
+  // these helpers mean "be this user now", whoever was signed in before.
+  await page.context().clearCookies();
   await page.goto("/login");
   await page.getByLabel(/email/i).fill(ADMIN_USER.email);
   await page.getByLabel("Password", { exact: true }).fill(ADMIN_USER.password);
@@ -105,6 +108,9 @@ export async function createSecondUserViaInvite(
  * Logs in via the UI as a specific user.
  */
 export async function loginAs(page: Page, email: string, password: string): Promise<void> {
+  // A signed-in visit to /login redirects into the app, so start signed out:
+  // these helpers mean "be this user now", whoever was signed in before.
+  await page.context().clearCookies();
   await page.goto("/login");
   await page.getByLabel(/email/i).fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);

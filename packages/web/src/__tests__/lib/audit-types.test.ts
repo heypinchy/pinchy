@@ -90,6 +90,10 @@ describe("AuditLogEntry knowledge.source_viewed (#824)", () => {
       document: { name: string };
       reason?: string;
       partial?: boolean;
+      // A 304 row: the reader reused the copy their browser held. Typed so a
+      // reader narrowing these rows cannot count it as a whole-file read.
+      revalidated?: true;
+      representation?: "original" | "converted" | "rows";
     }>();
     expectTypeOf<"knowledge.source_viewed">().toExtend<AuditEventType>();
   });

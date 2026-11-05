@@ -308,7 +308,14 @@ export async function runProviderSmokeTest(page: Page, spec: ProviderSmokeTestSp
   // The submit button label in ProviderKeyForm is "Continue" (the default
   // submitLabel) on the setup-wizard path — not "Connect" or "Save", those
   // only appear in /settings/providers where `configuredProviders` is passed.
-  await page.getByRole("button", { name: spec.buttonName }).click();
+  // The provider click is retried: signing in is a full page load (#1286), so
+  // the URL can match before the page has hydrated, and a click that lands
+  // first is silently dropped (same fix as 03-provider.spec.ts). The retry
+  // waits on the field the next step fills.
+  await expect(async () => {
+    await page.getByRole("button", { name: spec.buttonName }).click();
+    await expect(page.getByPlaceholder(spec.placeholderRegex)).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 15000 });
   await page.getByPlaceholder(spec.placeholderRegex).fill(spec.keyValue);
   await page.getByRole("button", { name: /^continue$/i }).click();
   await expect(page.getByText(/provider connected/i)).toBeVisible({ timeout: 15000 });

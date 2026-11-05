@@ -15,7 +15,7 @@
 // the custom server (which also triggers regenerates) can load SEPARATE module
 // instances — same reason as server/openclaw-client.ts.
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   trackConfigPushStarted,
   trackConfigPushSettled,
@@ -31,6 +31,11 @@ import {
   settleUndeliveredConfigChange,
   noteFullRegenerateDelivered,
   fullRegenerateDeliveredSince,
+  noteFileOnlyDelivery,
+  settleFileOnlyDelivery,
+  scheduleFileOnlyFollowUp,
+  FILE_ONLY_FOLLOW_UP_DELAY_MS,
+  FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS,
   _resetConfigPushState,
 } from "@/lib/openclaw-config/push-state";
 
@@ -52,18 +57,18 @@ describe("config push pending-state tracker", () => {
   });
 
   it("counts started pushes and settles them back to zero", () => {
-    trackConfigPushStarted();
+    trackConfigPushStarted(1);
     expect(getPendingConfigPushCount()).toBe(1);
-    trackConfigPushStarted();
+    trackConfigPushStarted(2);
     expect(getPendingConfigPushCount()).toBe(2);
-    trackConfigPushSettled();
+    trackConfigPushSettled(1);
     expect(getPendingConfigPushCount()).toBe(1);
-    trackConfigPushSettled();
+    trackConfigPushSettled(2);
     expect(getPendingConfigPushCount()).toBe(0);
   });
 
   it("floors at zero on a spurious extra settle (never goes negative)", () => {
-    trackConfigPushSettled();
+    trackConfigPushSettled(1);
     expect(getPendingConfigPushCount()).toBe(0);
   });
 
@@ -72,7 +77,7 @@ describe("config push pending-state tracker", () => {
     // own module instance of push-state. A plain module-level variable would
     // give the health route a counter the server's pushes never touch. Pin the
     // contract: the state lives under a well-known globalThis key.
-    trackConfigPushStarted();
+    trackConfigPushStarted(1);
     const state = (globalThis as Record<string, unknown>).__pinchyConfigPushState as {
       pending: number;
     };
@@ -132,8 +137,8 @@ describe("config push pending-state tracker", () => {
     (globalThis as Record<string, unknown>).__pinchyConfigPushState = { generation: 4 };
 
     expect(getPendingConfigPushCount()).toBe(0);
-    trackConfigPushStarted();
-    trackConfigPushSettled();
+    trackConfigPushStarted(4);
+    trackConfigPushSettled(4);
     expect(getPendingConfigPushCount()).toBe(0);
     expect(getCurrentConfigPushGeneration()).toBe(4);
   });
@@ -243,5 +248,110 @@ describe("a config change Pinchy could not deliver", () => {
     expect(other.undeliveredConfigChange()).toBe(true);
     other.settleUndeliveredConfigChange(3);
     expect(undeliveredConfigChange()).toBe(false);
+  });
+});
+
+// A file-only delivery with no reconnect coming — the rate-limit fallback while
+// OpenClaw stays connected — has nothing else to deliver it: the follow-up
+// regenerate is what does (noteFileOnlyDelivery in push-state.ts).
+describe("the follow-up regenerate for a file-only delivery", () => {
+  beforeEach(() => {
+    _resetConfigPushState();
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("regenerates one rate-limit window after the fallback", () => {
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS - 1);
+    expect(regenerate).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps at most one pending, however many fallbacks schedule one", () => {
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 2);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("is cancelled once an apply lands", () => {
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+    settleFileOnlyDelivery();
+
+    expect(vi.getTimerCount(), "the timer itself is cleared").toBe(0);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 2);
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it("re-arms itself when a follow-up delivers nothing and schedules nothing", () => {
+    // The follow-up's push can end without an apply and without a fallback
+    // (a refused write, a regenerate that bails out): the chain must not end
+    // there while the delivery is still pending.
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 2);
+    expect(regenerate).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits while the newest push is still in flight, which settles it itself", () => {
+    noteFileOnlyDelivery();
+    const generation = nextConfigPushGeneration();
+    trackConfigPushStarted(generation);
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 3);
+    expect(regenerate).not.toHaveBeenCalled();
+
+    trackConfigPushSettled(generation);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("backs off between follow-ups but never stops while a delivery is pending", () => {
+    // Each follow-up that is rate-limited again falls back and schedules the
+    // next. A cap would strand the next, unrelated change exactly as before;
+    // a backoff keeps the cost to a few refused applies per window.
+    noteFileOnlyDelivery();
+    const fired: number[] = [];
+    const regenerate = vi.fn(() => {
+      fired.push(Date.now());
+      scheduleFileOnlyFollowUp(regenerate);
+    });
+    const start = Date.now();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS * 4);
+    const gaps = fired.map((t, i) => t - (i === 0 ? start : fired[i - 1]));
+    expect(gaps.slice(0, 4)).toEqual([
+      FILE_ONLY_FOLLOW_UP_DELAY_MS,
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 2,
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 4,
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 8,
+    ]);
+    expect(Math.max(...gaps)).toBe(FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS);
+    expect(gaps.at(-1)).toBe(FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS);
+
+    // A landed apply ends the episode; the next fallback starts at one window.
+    settleFileOnlyDelivery();
+    noteFileOnlyDelivery();
+    const next = vi.fn();
+    scheduleFileOnlyFollowUp(next);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS);
+    expect(next).toHaveBeenCalledTimes(1);
   });
 });
