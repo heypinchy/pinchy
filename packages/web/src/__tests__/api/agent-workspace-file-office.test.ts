@@ -432,7 +432,10 @@ describe("workspace-file — a cached converted PDF is re-checked on every reuse
 
     const revised = Buffer.from("PK pretend this is the revised .docx\n");
     writeSource("angebot.docx", revised);
-    await storeArtifactFor(revised, Buffer.from("%PDF-1.4\nthe revised conversion\n%%EOF"));
+    // Same length as the first conversion, so the size is not what tells them apart.
+    const revisedPdf = Buffer.from("%PDF-1.4\nthe revised conversion, at last!\n%%EOF");
+    expect(revisedPdf.length).toBe(ARTIFACT_BYTES.length);
+    await storeArtifactFor(revised, revisedPdf);
     const res = await callGET(source, {}, { "if-none-match": etag });
 
     expect(res.status).toBe(200);

@@ -24,6 +24,8 @@ import {
   ftruncateSync,
   closeSync,
   readdirSync,
+  statSync,
+  utimesSync,
 } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -614,6 +616,26 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
     expect(res.status).toBe(200);
     expect(res.headers.get("etag")).not.toBe(etag);
     expect(Buffer.from(await res.arrayBuffer()).equals(changed)).toBe(true);
+  });
+
+  it("sends a same-length correction whose mtime was carried over, as `cp -p` or `rsync -a` leave it", async () => {
+    // Size, mtime and inode can all survive such a replacement; only ctime
+    // moves. A validator built without it would answer 304 for the old edition.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const { mtime } = statSync(pdfPath);
+    const etag = await cachedEtag(pdfPath);
+
+    const corrected = Buffer.from(PDF_BYTES.toString("latin1").replace("fake", "real"), "latin1");
+    expect(corrected.length).toBe(PDF_BYTES.length);
+    // Let ctime's clock tick so the rewrite is observably later.
+    await new Promise((r) => setTimeout(r, 20));
+    writeFileSync(pdfPath, corrected);
+    utimesSync(pdfPath, mtime, mtime);
+    const res = await callGET("agent-1", pdfPath, { "if-none-match": etag });
+
+    expect(res.status).toBe(200);
+    expect(Buffer.from(await res.arrayBuffer()).equals(corrected)).toBe(true);
   });
 
   it("logs a revalidated reuse as a view, because the reader is looking at the document again", async () => {
