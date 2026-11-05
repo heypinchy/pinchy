@@ -673,6 +673,25 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
     });
   });
 
+  it("reads a range under If-Range the same way on a 304 as on a 200: as the whole file", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+    mockDeferAuditLog.mockClear();
+
+    const res = await callGET("agent-1", pdfPath, {
+      "if-none-match": etag,
+      range: "bytes=0-3",
+      "if-range": etag,
+    });
+
+    expect(res.status).toBe(304);
+    expect(mockDeferAuditLog.mock.calls[0][0].detail).toMatchObject({
+      revalidated: true,
+      partial: false,
+    });
+  });
+
   it("leaves a read that sent bytes without the revalidated flag", async () => {
     const pdfPath = join(allowedRoot, "handbook.pdf");
     writeFileSync(pdfPath, PDF_BYTES);

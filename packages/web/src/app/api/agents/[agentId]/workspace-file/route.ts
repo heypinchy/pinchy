@@ -585,6 +585,14 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const etag = artifactPath
     ? weakStoredFileEtag(info, artifactPath, representation)
     : weakFileEtag(info, representation);
+
+  // A range continues a copy the client already holds. With If-Range it is
+  // asked for only if that copy is current, which a weak validator cannot
+  // vouch for — so the whole document is sent rather than a spliced one.
+  // Read once, so the 304 below audits the request the 200 would have served.
+  const range = rangeAllowedByIfRange(req.headers.get("if-range"))
+    ? parseRangeHeader(req.headers.get("range"), info.size)
+    : ({ kind: "full" } as const);
   if (ifNoneMatchHits(req.headers.get("if-none-match"), etag)) {
     await fh.close();
     deferAuditLog(
@@ -598,19 +606,13 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
         revalidated: true,
         // Whether the reuse was a chunk request, so a viewer reading a cached
         // document in ranges is not counted as many reopens.
-        partial: parseRangeHeader(req.headers.get("range"), info.size).kind === "partial",
+        partial: range.kind === "partial",
         representation,
       })
     );
     return new NextResponse(null, { status: 304, headers: sessionScopedRevalidateHeaders(etag) });
   }
 
-  // A range continues a copy the client already holds. With If-Range it is
-  // asked for only if that copy is current, which a weak validator cannot
-  // vouch for — so the whole document is sent rather than a spliced one.
-  const range = rangeAllowedByIfRange(req.headers.get("if-range"))
-    ? parseRangeHeader(req.headers.get("range"), info.size)
-    : ({ kind: "full" } as const);
   if (range.kind === "unsatisfiable") {
     await fh.close();
     auditFailure("range_not_satisfiable");

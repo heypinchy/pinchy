@@ -98,6 +98,11 @@ function weakEtag(numbers: number[], tag: string): string {
  * comparison, a comma-separated list, or `*` for any current representation.
  * Callers MUST evaluate this only after the access check — a match answers
  * 304, which tells the browser to show what it already holds.
+ *
+ * Only If-None-Match and If-Range are honoured. If-Match and
+ * If-Unmodified-Since are not evaluated (no browser sends them on a GET), so
+ * such a request is answered as if they were absent, after the same access
+ * check.
  */
 export function ifNoneMatchHits(header: string | null, etag: string): boolean {
   if (!header) return false;
