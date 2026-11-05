@@ -30,7 +30,7 @@ vi.mock("@/lib/integrations/url-validation", () => ({
   resolveExternalUrlTarget: async (url: string) => ({
     valid: true,
     url: new URL(url).origin,
-    target: { address: new URL(url).hostname, family: 4 },
+    target: [{ address: new URL(url).hostname, family: 4 }],
   }),
 }));
 

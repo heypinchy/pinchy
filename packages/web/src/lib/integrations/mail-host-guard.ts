@@ -147,7 +147,9 @@ export async function assertMailHostAllowed(
  * resolution there is no later connect to "fail naturally", and the original
  * `ENOTFOUND` keeps the probe's "could not resolve the host" message for the
  * typo case. When the name has several addresses every one was checked and
- * the first is used.
+ * the first is used: imapflow and nodemailer take a single `host`, so unlike
+ * `pinnedFetch` there is no lookup hook to hand the rest to. A mail host whose
+ * first address is down fails the test instead of falling back.
  */
 export async function resolveAllowedMailHost(
   host: string,

@@ -627,7 +627,7 @@ describe("resolveExternalUrlTarget", () => {
     ).resolves.toEqual({
       valid: true,
       url: "https://odoo.example.com",
-      target: { address: "93.184.216.34", family: 4 },
+      target: [{ address: "93.184.216.34", family: 4 }],
     });
   });
 
@@ -639,9 +639,25 @@ describe("resolveExternalUrlTarget", () => {
     ).resolves.toEqual({
       valid: true,
       url: "http://[2606:2800:220:1::1]:8069",
-      target: { address: "2606:2800:220:1::1", family: 6 },
+      target: [{ address: "2606:2800:220:1::1", family: 6 }],
     });
     expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it("returns every address it classified, so a dual-stack host keeps its fallback", async () => {
+    await expect(
+      resolveExternalUrlTarget(
+        "https://odoo.example.com",
+        resolveTo(["2606:2800:220:1::1", "93.184.216.34"])
+      )
+    ).resolves.toEqual({
+      valid: true,
+      url: "https://odoo.example.com",
+      target: [
+        { address: "2606:2800:220:1::1", family: 6 },
+        { address: "93.184.216.34", family: 4 },
+      ],
+    });
   });
 
   it("refuses a name whose lookup fails, instead of failing open", async () => {
@@ -679,7 +695,7 @@ describe("resolveExternalUrlTarget", () => {
     ).resolves.toEqual({
       valid: true,
       url: "http://odoo-mock:8069",
-      target: { address: "172.18.0.4", family: 4 },
+      target: [{ address: "172.18.0.4", family: 4 }],
     });
   });
 });

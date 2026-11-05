@@ -784,7 +784,7 @@ describe("fetchModels — the request goes to the address the guard classified",
     expect(mockPinnedFetch).toHaveBeenCalledWith(
       "https://rebind.acme.example/v1/models",
       expect.anything(),
-      { address: PUBLIC_ANSWER, family: 4 }
+      [{ address: PUBLIC_ANSWER, family: 4 }]
     );
     // One resolution per hop: the one that was classified.
     expect(mockLookup).toHaveBeenCalledTimes(1);
@@ -795,20 +795,32 @@ describe("fetchModels — the request goes to the address the guard classified",
 
     await fetchOpenAiCompatibleModels("https://v6.acme.example/v1", "sk-key");
 
-    expect(mockPinnedFetch).toHaveBeenCalledWith(expect.any(String), expect.anything(), {
-      address: "2606:2800:220:1::1",
-      family: 6,
-    });
+    expect(mockPinnedFetch).toHaveBeenCalledWith(expect.any(String), expect.anything(), [
+      { address: "2606:2800:220:1::1", family: 6 },
+    ]);
+  });
+
+  it("pins every checked answer of a dual-stack name, so the connect can fall back", async () => {
+    mockLookup.mockResolvedValue([
+      { address: "2606:2800:220:1::1", family: 6 },
+      { address: PUBLIC_ANSWER, family: 4 },
+    ]);
+
+    await fetchOpenAiCompatibleModels("https://dual.acme.example/v1", "sk-key");
+
+    expect(mockPinnedFetch).toHaveBeenCalledWith(expect.any(String), expect.anything(), [
+      { address: "2606:2800:220:1::1", family: 6 },
+      { address: PUBLIC_ANSWER, family: 4 },
+    ]);
   });
 
   it("pins an address literal to itself, without a lookup", async () => {
     await fetchOpenAiCompatibleModels("http://10.0.0.5:8000/v1", "sk-key");
 
     expect(mockLookup).not.toHaveBeenCalled();
-    expect(mockPinnedFetch).toHaveBeenCalledWith(expect.any(String), expect.anything(), {
-      address: "10.0.0.5",
-      family: 4,
-    });
+    expect(mockPinnedFetch).toHaveBeenCalledWith(expect.any(String), expect.anything(), [
+      { address: "10.0.0.5", family: 4 },
+    ]);
   });
 
   it("never requests a name whose lookup failed", async () => {
@@ -845,8 +857,8 @@ describe("fetchModels — the request goes to the address the guard classified",
     await fetchOpenAiCompatibleModels("https://api.acme.example/v1", "sk-key");
 
     expect(mockPinnedFetch.mock.calls.map((call) => [call[0], call[2]])).toEqual([
-      ["https://api.acme.example/v1/models", { address: PUBLIC_ANSWER, family: 4 }],
-      ["https://cdn.acme.example/v1/models", { address: "93.184.216.35", family: 4 }],
+      ["https://api.acme.example/v1/models", [{ address: PUBLIC_ANSWER, family: 4 }]],
+      ["https://cdn.acme.example/v1/models", [{ address: "93.184.216.35", family: 4 }]],
     ]);
   });
 });

@@ -1655,7 +1655,7 @@ describe("POST /api/integrations/list-databases", () => {
     expect(mockPinnedFetch).toHaveBeenCalledWith(
       "https://odoo.example.com/web/database/list",
       expect.objectContaining({ redirect: "manual" }),
-      { address: "93.184.216.34", family: 4 }
+      [{ address: "93.184.216.34", family: 4 }]
     );
     expect(mockDnsLookup).toHaveBeenCalledTimes(1);
   });

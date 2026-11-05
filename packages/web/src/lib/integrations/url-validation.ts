@@ -10,7 +10,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 // design; see ip-address.ts.
 import { classifyIpAddress, type IpAddressClass } from "../../../../plugins/pinchy-web/ip-address";
 
-import { toPinnedAddress, type PinnedAddress } from "@/lib/pinned-connection";
+import { toPinnedTarget, type PinnedTarget } from "@/lib/pinned-connection";
 
 export { classifyIpAddress, type IpAddressClass };
 
@@ -153,22 +153,23 @@ const UNRESOLVABLE_ERROR = "Could not resolve the server's host name. Check the 
 
 /**
  * {@link validateExternalUrl} for a caller that makes the request itself: the
- * verdict plus the address it classified, so the request can be pinned to it
- * (`pinnedFetch`) instead of resolving the name a second time.
+ * verdict plus the addresses it classified, so the request can be pinned to
+ * them (`pinnedFetch`) instead of resolving the name a second time.
  *
  * Does NOT fail open. With one lookup there is no later fetch to "fail
  * naturally" — a name with no answer is refused here, with a message that
- * says so rather than one about private networks. When the name has several
- * addresses, every one was checked and the first is used.
+ * says so rather than one about private networks. Every address is returned,
+ * since every one was checked — the connector can still fall back between
+ * them.
  */
 export async function resolveExternalUrlTarget(
   urlString: string,
   resolver: UrlHostResolver = defaultUrlHostResolver
-): Promise<{ valid: true; url: string; target: PinnedAddress } | { valid: false; error: string }> {
+): Promise<{ valid: true; url: string; target: PinnedTarget } | { valid: false; error: string }> {
   const checked = await checkExternalUrl(urlString, resolver);
   if (!checked.valid) return checked;
   if (checked.addresses.length === 0) return { valid: false, error: UNRESOLVABLE_ERROR };
-  return { valid: true, url: checked.url, target: toPinnedAddress(checked.addresses[0]) };
+  return { valid: true, url: checked.url, target: toPinnedTarget(checked.addresses) };
 }
 
 /**

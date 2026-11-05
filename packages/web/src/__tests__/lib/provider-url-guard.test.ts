@@ -343,13 +343,13 @@ describe("resolveAllowedProviderTarget", () => {
   it("returns the address it classified", async () => {
     await expect(
       resolveAllowedProviderTarget("https://api.together.xyz/v1", resolveTo(["93.184.216.34"]))
-    ).resolves.toEqual({ address: "93.184.216.34", family: 4 });
+    ).resolves.toEqual([{ address: "93.184.216.34", family: 4 }]);
   });
 
   it("returns an IPv6 answer with its family", async () => {
     await expect(
       resolveAllowedProviderTarget("https://v6.example/v1", resolveTo(["2606:2800:220:1::1"]))
-    ).resolves.toEqual({ address: "2606:2800:220:1::1", family: 6 });
+    ).resolves.toEqual([{ address: "2606:2800:220:1::1", family: 6 }]);
   });
 
   it("returns an address literal as itself, asking no resolver", async () => {
@@ -357,8 +357,20 @@ describe("resolveAllowedProviderTarget", () => {
 
     await expect(
       resolveAllowedProviderTarget("http://[fd00::5]:8000/v1", resolver)
-    ).resolves.toEqual({ address: "fd00::5", family: 6 });
+    ).resolves.toEqual([{ address: "fd00::5", family: 6 }]);
     expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it("returns every address it classified, so a dual-stack host keeps its fallback", async () => {
+    await expect(
+      resolveAllowedProviderTarget(
+        "https://dual.example/v1",
+        resolveTo(["2606:2800:220:1::1", "93.184.216.34"])
+      )
+    ).resolves.toEqual([
+      { address: "2606:2800:220:1::1", family: 6 },
+      { address: "93.184.216.34", family: 4 },
+    ]);
   });
 
   it("refuses a name whose lookup fails, instead of failing open", async () => {

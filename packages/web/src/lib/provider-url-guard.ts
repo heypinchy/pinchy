@@ -56,7 +56,7 @@
 import { lookup as dnsLookup } from "dns/promises";
 import { isIP } from "net";
 import { classifyIpAddress } from "@/lib/integrations/url-validation";
-import { toPinnedAddress, type PinnedAddress } from "@/lib/pinned-connection";
+import { toPinnedTarget, type PinnedTarget } from "@/lib/pinned-connection";
 
 export type ProviderUrlBlockReason = "unsupported_scheme" | "blocked_address" | "private_address";
 
@@ -209,22 +209,21 @@ export async function assertAllowedProviderUrl(
 }
 
 /**
- * The address a probe of `rawUrl` must connect to — the one this guard just
- * classified — or a throw: {@link ProviderUrlBlockedError} for a refused
+ * The addresses a probe of `rawUrl` must connect to — the ones this guard
+ * just classified — or a throw: {@link ProviderUrlBlockedError} for a refused
  * target, {@link ProviderUrlUnresolvableError} when the name has no answer.
  *
  * Unlike {@link assertAllowedProviderUrl} this does NOT fail open. There is
  * only one lookup, and with no answer there is nothing to connect to: the
  * request fails here instead of resolving the name a second time on its own.
- * When the name has several addresses, every one was checked and the first
- * is used.
+ * Every address is returned, since every one was checked — the connector can
+ * then still fall back from one to the next.
  */
 export async function resolveAllowedProviderTarget(
   rawUrl: string,
   resolver: HostResolver = resolveHostAddresses
-): Promise<PinnedAddress> {
-  const addresses = await allowedProviderAddresses(rawUrl, resolver);
-  return toPinnedAddress(addresses[0]);
+): Promise<PinnedTarget> {
+  return toPinnedTarget(await allowedProviderAddresses(rawUrl, resolver));
 }
 
 /**

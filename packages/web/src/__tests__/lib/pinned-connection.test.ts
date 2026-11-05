@@ -1,7 +1,12 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { pinnedFetch, pinnedLookup, toPinnedAddress } from "@/lib/pinned-connection";
+import {
+  pinnedFetch,
+  pinnedLookup,
+  toPinnedAddress,
+  toPinnedTarget,
+} from "@/lib/pinned-connection";
 
 // Real sockets, real undici: what is under test is where the connection
 // actually goes. A mocked fetch cannot tell a pinned request from an unpinned
@@ -40,7 +45,7 @@ describe("pinnedFetch", () => {
     const res = await pinnedFetch(
       `http://rebound.invalid:${port}/v1/models`,
       { signal: AbortSignal.timeout(5_000) },
-      toPinnedAddress("127.0.0.1")
+      toPinnedTarget(["127.0.0.1"])
     );
 
     expect(res.status).toBe(200);
@@ -54,7 +59,7 @@ describe("pinnedFetch", () => {
     const res = await pinnedFetch(
       `http://rebound.invalid:${port}/`,
       { signal: AbortSignal.timeout(5_000) },
-      toPinnedAddress("127.0.0.1")
+      toPinnedTarget(["127.0.0.1"])
     );
 
     expect(await res.json()).toEqual({ data: [{ id: "m" }] });
@@ -69,7 +74,7 @@ describe("pinnedFetch", () => {
     const res = await pinnedFetch(
       `http://rebound.invalid:${port}/`,
       { redirect: "manual", signal: AbortSignal.timeout(5_000) },
-      toPinnedAddress("127.0.0.1")
+      toPinnedTarget(["127.0.0.1"])
     );
 
     expect(res.status).toBe(302);
@@ -93,7 +98,7 @@ describe("pinnedFetch", () => {
     const res = await pinnedFetch(
       `http://rebound.invalid:${port}/`,
       { signal: AbortSignal.timeout(5_000) },
-      toPinnedAddress("127.0.0.1")
+      toPinnedTarget(["127.0.0.1"])
     );
 
     expect(res.status).toBe(302);
@@ -105,7 +110,7 @@ describe("pinnedFetch", () => {
       pinnedFetch(
         `http://rebound.invalid:${port}/`,
         { redirect: "follow", signal: AbortSignal.timeout(5_000) },
-        toPinnedAddress("127.0.0.1")
+        toPinnedTarget(["127.0.0.1"])
       )
     ).rejects.toThrow(/redirect/);
     expect(seen).toHaveLength(0);
@@ -115,7 +120,7 @@ describe("pinnedFetch", () => {
     await pinnedFetch(
       `http://rebound.invalid:${port}/`,
       { headers: { Authorization: "Bearer sk-key" }, signal: AbortSignal.timeout(5_000) },
-      toPinnedAddress("127.0.0.1")
+      toPinnedTarget(["127.0.0.1"])
     );
 
     expect(seen[0].headers.authorization).toBe("Bearer sk-key");
@@ -130,7 +135,7 @@ describe("pinnedFetch", () => {
       pinnedFetch(
         `http://rebound.invalid:${port}/`,
         { signal: AbortSignal.timeout(200) },
-        toPinnedAddress("127.0.0.1")
+        toPinnedTarget(["127.0.0.1"])
       )
     ).rejects.toThrow();
   });
@@ -138,7 +143,7 @@ describe("pinnedFetch", () => {
 
 describe("pinnedLookup", () => {
   it("answers both halves of the dns.lookup contract with the pinned address", () => {
-    const lookup = pinnedLookup(toPinnedAddress("2001:db8::1"));
+    const lookup = pinnedLookup(toPinnedTarget(["2001:db8::1"]));
 
     const flat: unknown[] = [];
     lookup("anything.example", {}, (...args: unknown[]) => flat.push(...args));
@@ -147,6 +152,54 @@ describe("pinnedLookup", () => {
     const all: unknown[] = [];
     lookup("anything.example", { all: true }, (...args: unknown[]) => all.push(...args));
     expect(all).toEqual([null, [{ address: "2001:db8::1", family: 6 }]]);
+  });
+});
+
+describe("pinnedLookup with several checked addresses", () => {
+  it("answers the all-form with every one of them, the flat form with the first", () => {
+    // Every address was classified, so handing all of them over loses no
+    // safety — and lets the connector fall back when the first is down.
+    const lookup = pinnedLookup(toPinnedTarget(["2606:2800:220:1::1", "93.184.216.34"]));
+
+    const all: unknown[] = [];
+    lookup("anything.example", { all: true }, (...args: unknown[]) => all.push(...args));
+    expect(all).toEqual([
+      null,
+      [
+        { address: "2606:2800:220:1::1", family: 6 },
+        { address: "93.184.216.34", family: 4 },
+      ],
+    ]);
+
+    const flat: unknown[] = [];
+    lookup("anything.example", {}, (...args: unknown[]) => flat.push(...args));
+    expect(flat).toEqual([null, "2606:2800:220:1::1", 6]);
+  });
+
+  it("falls back to the next checked address when the first refuses", async () => {
+    // The listener is on 127.0.0.1 only, so ::1 refuses and the connector has
+    // to move on to the second pinned address to get an answer at all.
+    const res = await pinnedFetch(
+      `http://rebound.invalid:${port}/`,
+      { signal: AbortSignal.timeout(5_000) },
+      toPinnedTarget(["::1", "127.0.0.1"])
+    );
+
+    expect(res.status).toBe(200);
+    expect(seen).toHaveLength(1);
+  });
+});
+
+describe("toPinnedTarget", () => {
+  it("keeps every address, in order", () => {
+    expect(toPinnedTarget(["93.184.216.34", "[2001:db8::1]"])).toEqual([
+      { address: "93.184.216.34", family: 4 },
+      { address: "2001:db8::1", family: 6 },
+    ]);
+  });
+
+  it("refuses an empty list: nothing to connect to", () => {
+    expect(() => toPinnedTarget([])).toThrow();
   });
 });
 

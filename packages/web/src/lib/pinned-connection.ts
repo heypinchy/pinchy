@@ -47,6 +47,21 @@ export function toPinnedAddress(ip: string): PinnedAddress {
   return { address: bare, family: family === 6 ? 6 : 4 };
 }
 
+/**
+ * Every address a guard classified for one host, in the resolver's order —
+ * never empty. The whole set is pinned, not only the first: each one was
+ * checked, so handing all of them to the connector costs no safety and keeps
+ * its fallback (Happy Eyeballs, or the next record when one is down).
+ */
+export type PinnedTarget = readonly [PinnedAddress, ...PinnedAddress[]];
+
+/** `ips` as a {@link PinnedTarget}. Throws on an empty list or a non-address. */
+export function toPinnedTarget(ips: readonly string[]): PinnedTarget {
+  if (ips.length === 0) throw new Error("A pinned target needs at least one address.");
+  const [first, ...rest] = ips.map(toPinnedAddress);
+  return [first, ...rest];
+}
+
 type LookupAddress = { address: string; family: number };
 type LookupCallback = (
   err: Error | null,
@@ -62,21 +77,28 @@ type LookupFunction = (
 /**
  * A `dns.lookup`-shaped function that answers every name with `target`.
  *
- * Honours both halves of the contract: undici's connector asks with
- * `all: true` and reads an array; answering it in the flat form leaves it
- * reading `undefined` as the address (ERR_INVALID_IP_ADDRESS, surfaced only as
- * "fetch failed").
+ * Honours both halves of the contract: with `all: true` (how undici's
+ * connector and Node's address fallback ask) it answers every pinned address
+ * as an array; answering that in the flat form leaves the caller reading
+ * `undefined` as the address (ERR_INVALID_IP_ADDRESS, surfaced only as
+ * "fetch failed"). The flat form gets the first.
  */
-export function pinnedLookup(target: PinnedAddress): LookupFunction {
+export function pinnedLookup(target: PinnedTarget): LookupFunction {
   return (_hostname, options, callback) => {
-    if (options?.all) callback(null, [{ address: target.address, family: target.family }]);
-    else callback(null, target.address, target.family);
+    if (options?.all) {
+      callback(
+        null,
+        target.map(({ address, family }) => ({ address, family }))
+      );
+    } else {
+      callback(null, target[0].address, target[0].family);
+    }
   };
 }
 
 /**
- * `fetch(url, init)`, connecting to `target` instead of resolving the URL's
- * host. The URL is otherwise untouched, so the Host header, TLS SNI and
+ * `fetch(url, init)`, connecting to `target`'s checked addresses instead of
+ * resolving the URL's host. The URL is otherwise untouched, so the Host header, TLS SNI and
  * certificate verification still use the name.
  *
  * MUST use the npm `undici`'s fetch together with its `Agent`: Node's global
@@ -92,7 +114,7 @@ export function pinnedLookup(target: PinnedAddress): LookupFunction {
 export async function pinnedFetch(
   url: string,
   init: RequestInit,
-  target: PinnedAddress
+  target: PinnedTarget
 ): Promise<Response> {
   if (init.redirect === "follow") {
     throw new TypeError(
