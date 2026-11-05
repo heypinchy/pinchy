@@ -207,13 +207,11 @@ describe("AttachmentPreview — fallback chip", () => {
   });
 
   it("links a user's own non-previewable upload to the UPLOADS route", async () => {
-    mockUseMessagePartFile.mockReturnValue({
-      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      filename: "budget.xlsx",
-    });
+    // CSV is one of the text types a user can upload; it has no preview.
+    mockUseMessagePartFile.mockReturnValue({ mimeType: "text/csv", filename: "data.csv" });
     await renderWithAgent("agent-1");
-    expect(screen.getByRole("link", { name: "Download budget.xlsx" }).getAttribute("href")).toBe(
-      "/api/agents/agent-1/uploads/budget.xlsx"
+    expect(screen.getByRole("link", { name: "Download data.csv" }).getAttribute("href")).toBe(
+      "/api/agents/agent-1/uploads/data.csv"
     );
   });
 

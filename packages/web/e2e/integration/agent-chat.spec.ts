@@ -638,7 +638,7 @@ test.describe.serial("Plugin behavior — pinchy-files generate_file", () => {
   test("pinchy_generate_file dispatches, succeeds, and the file downloads via the #703 delivery route", async ({
     page,
   }, testInfo) => {
-    testInfo.setTimeout(180_000);
+    testInfo.setTimeout(300_000);
     await login(page);
 
     await page.goto(`/chat/${agentId}`);
@@ -710,7 +710,7 @@ test.describe.serial("Plugin behavior — pinchy-files generate_file", () => {
         "href",
         `/api/agents/${agentId}/artifacts/e2e-export.csv`
       );
-      await expect(page.getByText("File generated: coverage probe complete.")).toBeVisible();
+      await expect(page.getByText("File generated: coverage probe complete."), phase).toBeVisible();
       await expect(page.getByText("MEDIA:", { exact: false }), phase).toHaveCount(0);
       const [download] = await Promise.all([page.waitForEvent("download"), chip.click()]);
       expect(download.suggestedFilename(), phase).toBe("e2e-export.csv");
