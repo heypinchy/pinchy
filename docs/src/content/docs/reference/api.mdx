@@ -1415,11 +1415,11 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 
 **Request body:**
 
-| Field      | Type   | Required | Description                         |
-| ---------- | ------ | -------- | ----------------------------------- |
-| `token`    | string | Yes      | The invite/reset token from the URL |
-| `name`     | string | Yes      | Display name for the new user       |
-| `password` | string | Yes      | Password (min 8 characters)         |
+| Field      | Type   | Required | Description                                                           |
+| ---------- | ------ | -------- | --------------------------------------------------------------------- |
+| `token`    | string | Yes      | The invite/reset token from the URL                                   |
+| `name`     | string | Yes      | Display name for the new user (ignored for a password reset)          |
+| `password` | string | Yes      | Password: at least 12 characters, with at least one letter and number |
 
 **Response:** `201 Created`
 
