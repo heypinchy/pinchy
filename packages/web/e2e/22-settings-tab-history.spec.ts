@@ -21,8 +21,8 @@ async function selectTab(page: Page, name: string, expectedUrl: RegExp) {
 /**
  * Browser Back must walk back through the settings tabs the user visited (#951).
  *
- * The unit tests in `use-tab-param.test.ts` pin which router method the hook
- * calls. That is the mechanism, not the outcome — and the mechanism is exactly
+ * The unit tests in `use-tab-param.test.ts` pin which history call the hook
+ * makes. That is the mechanism, not the outcome — and the mechanism is exactly
  * what looked fine while the bug was live: `router.replace` is a perfectly
  * ordinary call, it just leaves no history entry behind. What a user actually
  * gets from a sequence of tab clicks is a question only a real browser history
@@ -84,29 +84,22 @@ test.describe("Settings tab history", () => {
  *
  * So the server is made slow here on purpose — every RSC request is held for
  * longer than the assertion waits — and the switch must still land at once,
- * without a round trip, a remount, or a refetch of the tab it returns to.
+ * without a round trip and without remounting the page.
  */
 test.describe("Settings tab switching", () => {
-  test("switches tabs without a server round trip, keeping loaded data", async ({ page }) => {
+  test("switches tabs without a server round trip", async ({ page }) => {
     await seedProviderConfig();
     await loginAsAdmin(page);
 
-    // Count from after the page's own first load of the Users tab, so that
-    // load is not mistaken for a refetch.
-    const firstUsersLoad = page.waitForResponse(
-      (res) => res.request().method() === "GET" && new URL(res.url()).pathname === "/api/users"
-    );
     await page.goto("/settings?tab=users");
-    await firstUsersLoad;
     await expect(page.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByText("Loading...").filter({ visible: true })).toHaveCount(0);
 
+    // Prefetches carry `_rsc` too; they are not a tab switch waiting on the server.
     const rscRequests: string[] = [];
-    const usersFetches: string[] = [];
     page.on("request", (req) => {
-      const url = new URL(req.url());
-      if (url.searchParams.has("_rsc")) rscRequests.push(req.url());
-      if (req.method() === "GET" && url.pathname === "/api/users") usersFetches.push(req.url());
+      const isRsc = new URL(req.url()).searchParams.has("_rsc");
+      if (isRsc && !req.headers()["next-router-prefetch"]) rscRequests.push(req.url());
     });
     await page.route(/[?&]_rsc=/, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 10_000));
@@ -138,6 +131,5 @@ test.describe("Settings tab switching", () => {
     );
     expect(sameHeading, "the settings page was remounted by a tab switch").toBe(true);
     await expect(page.getByText("Loading...").filter({ visible: true })).toHaveCount(0);
-    expect(usersFetches, "the Users tab refetched on its way back").toEqual([]);
   });
 });

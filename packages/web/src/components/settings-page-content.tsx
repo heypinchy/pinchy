@@ -68,12 +68,10 @@ const TAB_LABELS: Record<SettingsTab, string> = {
 };
 
 export function SettingsPageContent({
-  initialTab,
   isAdmin,
   initialLicense,
   oauthError,
 }: {
-  initialTab?: string;
   isAdmin: boolean;
   initialLicense?: LicenseInfo;
   oauthError?: string;
@@ -84,7 +82,7 @@ export function SettingsPageContent({
   const visibleTabs: SettingsTab[] = isAdmin
     ? [...SETTINGS_TABS]
     : ["context", "profile", "telegram", "support"];
-  const [activeTab, setActiveTab, isTabExplicit] = useTabParam("context", visibleTabs, initialTab, {
+  const [activeTab, setActiveTab, isTabExplicit] = useTabParam("context", visibleTabs, {
     keepParamForDefault: true,
   });
   // Mark the (admin-only) Integrations tab when a connection needs attention, so
@@ -106,8 +104,8 @@ export function SettingsPageContent({
     params.delete("tab");
     //
     // Native replaceState rather than router.replace, for the same reason
-    // useTabParam pushes natively: a router navigation to a new ?tab= remounts
-    // the whole settings page and every tab refetches (#1271).
+    // useTabParam pushes natively: a router navigation re-renders the page on
+    // the server and the tap waits for that round trip (#1271).
     const query = params.toString();
     window.history.replaceState(null, "", query ? `${pathname}?${query}` : pathname);
   }, [pathname, searchParams]);

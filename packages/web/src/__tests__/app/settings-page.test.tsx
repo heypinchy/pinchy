@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
@@ -209,6 +209,9 @@ describe("Settings Page", () => {
 
   afterEach(() => {
     fetchSpy.mockRestore();
+    // Tab clicks write jsdom's history for real now; the location must not
+    // carry into the next test.
+    window.history.replaceState(null, "", "/");
   });
 
   // The nightly reindex is read in the org timezone, so it lives next to it.
@@ -653,6 +656,7 @@ describe("Settings Page", () => {
 
     it("clears the tab param when the back control is clicked", async () => {
       const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+      onTestFinished(() => replaceState.mockRestore());
       vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile"));
       setupAdminFetchMocks();
 
@@ -661,15 +665,15 @@ describe("Settings Page", () => {
       const backButton = await screen.findByRole("button", { name: /back to settings/i });
       await userEvent.click(backButton);
 
-      // Native replaceState, not router.replace: a router navigation to a new
-      // ?tab= remounts the whole settings page (#1271).
+      // Native replaceState, not router.replace: a router navigation waits on
+      // a server round trip before the menu shows (#1271).
       expect(replaceState).toHaveBeenCalledWith(null, "", "/settings");
       expect(useRouter().replace).not.toHaveBeenCalled();
-      replaceState.mockRestore();
     });
 
     it("preserves unrelated query params when the back control is clicked", async () => {
       const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+      onTestFinished(() => replaceState.mockRestore());
       vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile&foo=bar"));
       setupAdminFetchMocks();
 
@@ -678,11 +682,10 @@ describe("Settings Page", () => {
       const backButton = await screen.findByRole("button", { name: /back to settings/i });
       await userEvent.click(backButton);
 
-      // Native replaceState, not router.replace: a router navigation to a new
-      // ?tab= remounts the whole settings page (#1271).
+      // Native replaceState, not router.replace: a router navigation waits on
+      // a server round trip before the menu shows (#1271).
       expect(replaceState).toHaveBeenCalledWith(null, "", "/settings?foo=bar");
       expect(useRouter().replace).not.toHaveBeenCalled();
-      replaceState.mockRestore();
     });
 
     it("keeps the active tab indicator on the sidebar variant", async () => {

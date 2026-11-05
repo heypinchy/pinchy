@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { useSearchParams, usePathname } from "next/navigation";
 
 export const SETTINGS_TABS = [
@@ -37,9 +37,11 @@ export type AgentSettingsTab = (typeof AGENT_SETTINGS_TABS)[number];
  * Validates the URL param against the provided set of valid tabs.
  * Falls back to `defaultTab` when the param is missing or invalid.
  *
- * Accepts an optional `initialTab` from server-side searchParams to
- * avoid SSR/hydration flicker. Falls back to useSearchParams() for
- * client-side navigation.
+ * The URL is the only source. Both settings pages render dynamically, so
+ * `useSearchParams()` already holds the real query during SSR. A tab handed
+ * down from the server render would go stale (#1271): `router.refresh()`
+ * re-renders that page without remounting it, and Back can replay a cached
+ * render, so the server's tab can describe a URL the user has since left.
  *
  * The third return value, `isExplicit`, is true when the resolved tab
  * came from an explicit (valid) `?tab=` param rather than the fallback
@@ -55,30 +57,21 @@ export type AgentSettingsTab = (typeof AGENT_SETTINGS_TABS)[number];
  * programmatic normalisation of the URL belongs in a `replaceState`.
  *
  * It writes history with the browser's own `pushState`, never
- * `router.push` (#1271). The App Router keys a page segment by its search
- * params, so a router navigation to a new `?tab=` re-renders the server page
- * and remounts the whole tab set — every tab refetches and shows
- * "Loading..." on each switch. Next.js syncs a native `pushState` into
+ * `router.push` (#1271). A router navigation to a new `?tab=` re-renders the
+ * page on the server, and the click waits for that round trip — about three
+ * seconds per switch on staging. Next.js syncs a native `pushState` into
  * `useSearchParams` and restores it on Back, with no round trip.
  */
 export function useTabParam<T extends string>(
   defaultTab: T,
   validTabs: readonly T[],
-  initialTab?: string | null,
   options?: { keepParamForDefault?: boolean }
 ): readonly [T, (tab: string) => void, boolean] {
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const keepParamForDefault = options?.keepParamForDefault ?? false;
 
-  // initialTab is the server render's view of the URL, and tab switches no
-  // longer re-run that render (see below), so the prop never updates. Only
-  // trust it while the URL is still the one the page was rendered for;
-  // otherwise a URL without `?tab=` would fall back to the first tab opened.
-  const search = searchParams.toString();
-  const [searchAtMount] = useState(search);
-  const fallbackTab = search === searchAtMount ? initialTab : null;
-  const rawTab = (searchParams.get("tab") ?? fallbackTab ?? null) as T | null;
+  const rawTab = searchParams.get("tab") as T | null;
   const isExplicit = Boolean(rawTab && validTabs.includes(rawTab));
   const tab = isExplicit ? (rawTab as T) : defaultTab;
 
