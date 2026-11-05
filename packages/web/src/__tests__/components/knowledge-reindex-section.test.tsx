@@ -61,6 +61,7 @@ type Job = {
     removed: number;
     unsearchable: number;
     failed: number;
+    archived?: number;
   } | null;
   error: string | null;
   createdAt: string;
@@ -94,8 +95,10 @@ describe("KnowledgeReindexSection", () => {
   it("shows a 'not yet indexed' state and an enabled trigger when directories are granted", async () => {
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled());
-    expect(screen.getByText(/not.*indexed/i)).toBeInTheDocument();
+    // About this agent's runs, not "nothing is searchable": the index is
+    // shared, so another agent's run may already cover these folders.
+    expect(await screen.findByText(/this agent hasn't been indexed yet/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
     expect(mockGet).toHaveBeenCalledWith("/api/agents/a1/knowledge/reindex");
   });
 
@@ -157,10 +160,11 @@ describe("KnowledgeReindexSection", () => {
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
     await waitFor(() => expect(screen.getByText(/last indexed/i)).toBeInTheDocument());
-    // The counters that mean "this document will never answer a question".
-    expect(screen.getByText(/4/)).toBeInTheDocument(); // unsearchable
-    expect(screen.getByText(/unsearchable/i)).toBeInTheDocument();
-    expect(screen.getByText(/failed/i)).toBeInTheDocument();
+    // The counters that mean "this document will never answer a question" —
+    // in words an admin understands: "unsearchable" was not (#1305).
+    expect(screen.getByText("4 without readable text")).toBeInTheDocument();
+    expect(screen.getByText("1 failed")).toBeInTheDocument();
+    expect(screen.getByText("90 new or changed")).toBeInTheDocument();
     // A file whose content hash matched is unchanged, not skipped: "skipped"
     // reads like something went wrong.
     expect(screen.getByText("5 unchanged")).toBeInTheDocument();
@@ -341,14 +345,14 @@ describe("KnowledgeReindexSection", () => {
       mockGet.mockReturnValue(new Promise(() => {}));
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
       expect(await statusText()).toMatch(/checking/i);
-      expect(await statusText()).not.toMatch(/not indexed/i);
+      expect(await statusText()).not.toMatch(/no runs yet/i);
     });
 
     it("says so when the status could not be read, instead of claiming nothing is indexed", async () => {
       mockGet.mockRejectedValue(new Error("network down"));
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
       await waitFor(async () => expect(await statusText()).toMatch(/couldn't load/i));
-      expect(await statusText()).not.toMatch(/not indexed/i);
+      expect(await statusText()).not.toMatch(/no runs yet/i);
     });
 
     it("reads 'No directories' when none is granted", async () => {
@@ -356,9 +360,9 @@ describe("KnowledgeReindexSection", () => {
       await waitFor(async () => expect(await statusText()).toMatch(/no directories/i));
     });
 
-    it("reads 'Not indexed' before any run", async () => {
+    it("reads 'No runs yet' before this agent's first run", async () => {
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
-      await waitFor(async () => expect(await statusText()).toMatch(/not indexed/i));
+      await waitFor(async () => expect(await statusText()).toMatch(/no runs yet/i));
     });
 
     it("reads 'Indexing' while a run is in flight, without the moving numbers", async () => {
@@ -403,6 +407,107 @@ describe("KnowledgeReindexSection", () => {
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
       await waitFor(async () => expect(await statusText()).toMatch(/^failed/i));
     });
+  });
+
+  // The run's outcome in one line, readable without the counts below: what
+  // the product owner asked for after a run ended with only a new timestamp.
+  it("summarizes the last run in the status line", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "succeeded",
+        counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /13 documents checked, 2 new or changed/
+    );
+  });
+
+  it("says 'nothing new' when the run found no changes", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "succeeded",
+        counts: { indexed: 0, skipped: 13, removed: 0, unsearchable: 0, failed: 0 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /13 documents checked, nothing new/
+    );
+  });
+
+  // Archive handling is a selling point, and the count was in the job all along.
+  it("shows how many documents sit in archive folders, and what that means", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "succeeded",
+        counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0, archived: 3 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    expect(await screen.findByText("3 in archive folders")).toBeInTheDocument();
+    expect(screen.getByText(/only when asked about the archive/i)).toBeInTheDocument();
+  });
+
+  it("leaves the archive count out at zero", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "succeeded",
+        counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0, archived: 0 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    await screen.findByText("2 new or changed");
+    expect(screen.queryByText(/archive folders/)).not.toBeInTheDocument();
+  });
+
+  // A small corpus can finish between two polls, so the bar never shows "x of
+  // y" and the run just... ends. The toast is the moment it ended.
+  it("confirms a run it watched finish with a success toast", async () => {
+    mockGet
+      .mockResolvedValueOnce({ job: job({ status: "running", processed: 3, total: 13 }) })
+      .mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        "Reindex finished: 13 documents checked, 2 new or changed."
+      )
+    );
+  });
+
+  it("does not toast about a run that had already finished before the page opened", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "succeeded",
+        counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    await screen.findByText("2 new or changed");
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("reports a run it watched fail with an error toast", async () => {
+    mockGet
+      .mockResolvedValueOnce({ job: job({ status: "running", processed: 3, total: 13 }) })
+      .mockResolvedValue({ job: job({ status: "failed", error: "Embedding model crashed" }) });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Reindex failed: Embedding model crashed")
+    );
+  });
+
+  // Reindexing before saving would index the OLD folders.
+  it("holds Reindex now back while directory changes are unsaved, and says why", async () => {
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} hasUnsavedPathChanges />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeDisabled());
+    expect(screen.getByText(/save your directory changes first/i)).toBeInTheDocument();
   });
 
   it("gives the progress bar an accessible name", async () => {

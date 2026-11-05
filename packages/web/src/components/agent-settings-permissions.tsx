@@ -4,9 +4,8 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { DirectoryPicker } from "@/components/directory-picker";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { CircleAlert } from "lucide-react";
-import { sameDirectorySet } from "@/lib/directory-path";
+import { isSameDirectory, sameDirectorySet } from "@/lib/directory-path";
 import {
   getToolsByCategory,
   getOdooToolsForAccessLevel,
@@ -362,14 +361,12 @@ export function AgentSettingsPermissions({
               block below: it is a fact about this form, and only an admin has
               a Reindex button for it to apply to. */}
           {hasUnsavedPathChanges && (
-            <Alert className="border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
-              <CircleAlert aria-hidden="true" />
-              <AlertDescription className="text-current">
-                {isAdmin
-                  ? "These changes aren't saved yet. Until you save, the agent and Reindex now keep using the saved directories."
-                  : "These changes aren't saved yet. Until you save, the agent keeps using the saved directories."}
-              </AlertDescription>
-            </Alert>
+            <UnsavedDirectoriesNotice
+              directories={directories}
+              saved={savedAllowedPaths}
+              selected={allowedPaths}
+              isAdmin={isAdmin}
+            />
           )}
         </div>
 
@@ -377,7 +374,11 @@ export function AgentSettingsPermissions({
             server-side (#714); this is the surface to start a run and watch it.
             Gated on isAdmin because the route is admin-only (withAdmin). */}
         {isAdmin && (
-          <KnowledgeReindexSection agentId={agent.id} allowedPathCount={savedAllowedPaths.length} />
+          <KnowledgeReindexSection
+            agentId={agent.id}
+            allowedPathCount={savedAllowedPaths.length}
+            hasUnsavedPathChanges={hasUnsavedPathChanges}
+          />
         )}
 
         {/* Explicit KB tool toggles (safe, non-integration) — empty after pinchy_ls/pinchy_read became implicit */}
@@ -464,6 +465,67 @@ export function AgentSettingsPermissions({
           in Settings.
         </p>
       )}
+    </div>
+  );
+}
+
+const listFormat = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
+
+/**
+ * What saving the directory change will do, in terms of the agent — named
+ * folders, not "grants". The earlier "a reindex uses the saved grants" was not
+ * understood by the product owner (#1305). What it rests on:
+ * - search reads the SAVED folders on every query, so a save takes effect at
+ *   once in both directions;
+ * - the index is shared and nothing is purged, so an untick only takes the
+ *   folder out of this agent's answers;
+ * - a newly ticked folder is searchable as far as it's already indexed (by
+ *   any agent); the rest is added by the next run.
+ */
+function UnsavedDirectoriesNotice({
+  directories,
+  saved,
+  selected,
+  isAdmin,
+}: {
+  directories: Array<{ path: string; name: string }>;
+  saved: string[];
+  selected: string[];
+  isAdmin: boolean;
+}) {
+  const nameOf = (path: string) =>
+    directories.find((d) => isSameDirectory(d.path, path))?.name ??
+    path.replace(/\/+$/, "").split("/").pop() ??
+    path;
+  const notIn = (list: string[]) => (path: string) => !list.some((p) => isSameDirectory(p, path));
+  const added = selected.filter(notIn(saved)).map(nameOf);
+  const removed = saved.filter(notIn(selected)).map(nameOf);
+
+  const changes = [
+    added.length > 0 ? `starts reading ${listFormat.format(added)}` : null,
+    removed.length > 0 ? `stops reading ${listFormat.format(removed)}` : null,
+  ].filter(Boolean);
+
+  const sentences = [
+    "Not saved yet.",
+    changes.length > 0 ? `Once you save, the agent ${changes.join(" and ")}.` : null,
+    added.length > 0 && isAdmin
+      ? "Documents there that aren't indexed yet are added by the next reindex."
+      : null,
+    removed.length > 0
+      ? `${removed.length === 1 ? "Its" : "Their"} documents stay in the index, but no longer show up in this agent's answers.`
+      : null,
+  ].filter(Boolean);
+
+  return (
+    // role="status", not Alert's role="alert": a form hint that appears as you
+    // tick a box shouldn't interrupt whatever the screen reader is saying.
+    <div
+      role="status"
+      className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100"
+    >
+      <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <p>{sentences.join(" ")}</p>
     </div>
   );
 }

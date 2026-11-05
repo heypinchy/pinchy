@@ -93,8 +93,21 @@ describe("DirectoryPicker", () => {
     expect(screen.getByText("1 of 3 selected")).toBeInTheDocument();
   });
 
+  // The whole row is the hit target; clicking the name must toggle exactly
+  // once (a label around a Radix checkbox button could otherwise double-fire).
+  it("toggles once when the folder's name is clicked", () => {
+    const onChange = vi.fn();
+    render(<DirectoryPicker directories={directories} selected={[]} onChange={onChange} />);
+    fireEvent.click(screen.getByText("support"));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(["/data/support"]);
+  });
+
   it("should show empty state message when no directories available", () => {
     render(<DirectoryPicker directories={[]} selected={[]} onChange={vi.fn()} />);
-    expect(screen.getByText(/mount directories/i)).toBeInTheDocument();
+    expect(screen.getByText(/mounted under/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /how to mount data directories/i })
+    ).toBeInTheDocument();
   });
 });

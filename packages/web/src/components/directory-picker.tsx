@@ -4,6 +4,7 @@ import { useId } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Folder, FolderOpen } from "lucide-react";
 import { isSameDirectory } from "@/lib/directory-path";
+import { DocsLink } from "@/components/docs-link";
 
 interface Directory {
   path: string;
@@ -26,8 +27,11 @@ export function DirectoryPicker({ directories, selected, onChange, label }: Dire
       <div className="flex items-start gap-3 rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
         <FolderOpen className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
         <p>
-          No directories available yet. Mount directories under <code>/data/</code> in your
-          docker-compose.yml to make them available to agents.
+          No directories are available yet. They show up here once they&apos;re mounted under{" "}
+          <code>/data/</code>.{" "}
+          <DocsLink path="guides/mount-data-directories" className="font-medium underline">
+            How to mount data directories
+          </DocsLink>
         </p>
       </div>
     );

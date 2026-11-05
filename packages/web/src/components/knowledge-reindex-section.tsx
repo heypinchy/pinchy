@@ -81,6 +81,12 @@ export interface KnowledgeReindexSectionProps {
    * instead of letting the admin click into an honest-but-confusing no-op.
    */
   allowedPathCount: number;
+  /**
+   * True while the directory picker holds changes that aren't saved. A reindex
+   * reads the SAVED grants, so it would run over the old folders: the trigger
+   * waits until the change is saved, and says so.
+   */
+  hasUnsavedPathChanges?: boolean;
   /** Poll cadence while a run is in flight. Injectable so tests need not wait seconds. */
   pollIntervalMs?: number;
 }
@@ -93,8 +99,8 @@ export interface KnowledgeReindexSectionProps {
  *
  * Belongs under the "Allowed Directories" picker because a reindex operates on
  * exactly the folders granted there. The picker owns the "unsaved changes"
- * notice: a reindex reads the SAVED grants, and the notice belongs beside the
- * checkboxes that made the change (#1305).
+ * notice, which says what saving will change; this section only holds the
+ * trigger back until then (#1305).
  *
  * Layout (#1305): a status line an admin can read at a glance — a badge that
  * says healthy / needs attention / failed / indexing, and one sentence — with
@@ -104,6 +110,7 @@ export interface KnowledgeReindexSectionProps {
 export function KnowledgeReindexSection({
   agentId,
   allowedPathCount,
+  hasUnsavedPathChanges = false,
   pollIntervalMs = 3000,
 }: KnowledgeReindexSectionProps) {
   const [job, setJob] = useState<ReindexJob | null>(null);
@@ -148,6 +155,24 @@ export function KnowledgeReindexSection({
   // Poll ONLY while a run is in flight; the effect tears the interval down the
   // moment the status leaves pending/running, so a finished run stops polling.
   const active = isActive(job);
+
+  // The moment a run this section watched comes to an end. A small corpus can
+  // finish between two polls, so the bar never gets to say "x of y" — without
+  // this, a run ended with nothing but a new timestamp (#1305). A run that had
+  // already ended when the page opened is not news, and gets no toast.
+  const wasActive = useRef(false);
+  useEffect(() => {
+    if (wasActive.current && !active && job) {
+      if (job.status === "succeeded") {
+        toast.success(
+          job.counts ? `Reindex finished: ${summarizeRun(job.counts)}.` : "Reindex finished."
+        );
+      } else if (job.status === "failed") {
+        toast.error(job.error ? `Reindex failed: ${job.error}` : "Reindex failed.");
+      }
+    }
+    wasActive.current = active;
+  }, [active, job]);
   useEffect(() => {
     if (!active) return;
     const id = setInterval(() => void fetchStatus(), pollIntervalMs);
@@ -221,7 +246,7 @@ export function KnowledgeReindexSection({
     }
   }, [url, fetchStatus]);
 
-  const triggerDisabled = allowedPathCount === 0 || active || submitting;
+  const triggerDisabled = allowedPathCount === 0 || active || submitting || hasUnsavedPathChanges;
 
   const status = describeStatus(allowedPathCount, job, active, read);
 
@@ -256,9 +281,14 @@ export function KnowledgeReindexSection({
           </Button>
         </div>
 
-        {allowedPathCount > 0 && (
+        {(allowedPathCount > 0 || hasUnsavedPathChanges) && (
           <div className="space-y-3 px-4 pb-4 empty:hidden">
-            {active && job ? (
+            {hasUnsavedPathChanges && !active && (
+              <p className="text-sm text-muted-foreground">
+                Save your directory changes first. Reindex now works on the saved directories.
+              </p>
+            )}
+            {allowedPathCount === 0 ? null : active && job ? (
               <RunningState job={job} now={now} samples={samples} />
             ) : job?.status === "succeeded" ? (
               <SucceededState job={job} />
@@ -279,7 +309,7 @@ export function KnowledgeReindexSection({
                 indexed"; after a FAILED one it would sit under "Last reindex
                 failed" and read as an all-clear about a run that stopped early.
                 Both are reassurances the evidence doesn't support. */}
-            {!active && (
+            {allowedPathCount > 0 && !active && (
               <KnowledgeUnsearchableList
                 agentId={agentId}
                 announceNone={job?.status === "succeeded"}
@@ -361,20 +391,37 @@ function describeStatus(
     // Anything an admin did not start, Pinchy did: the nightly run, or the one
     // it starts itself after an update changed how documents are converted.
     const how = job.trigger !== undefined && job.trigger !== "manual" ? "automatically " : "";
-    const headline = `Last indexed ${how}${formatWhen(job.finishedAt)}.`;
+    const summary = job.counts ? ` — ${summarizeRun(job.counts)}` : "";
+    const headline = `Last indexed ${how}${formatWhen(job.finishedAt)}${summary}.`;
     const needsAttention =
       (job.counts?.failed ?? 0) > 0 ||
       (job.counts?.unsearchable ?? 0) > 0 ||
       (job.unavailableFolders ?? 0) > 0;
+    // A green badge says the last run went well. It can't say that folders
+    // granted SINCE that run are in it: the route doesn't hand out the run's
+    // paths. The nightly run (or Reindex now) closes that gap.
     return needsAttention
       ? { tone: "attention", label: "Needs attention", headline }
       : { tone: "good", label: "Indexed", headline };
   }
+  // About THIS agent's runs, not about what it can find: the index is shared,
+  // so another agent's run may already have made these folders searchable.
   return {
     tone: "neutral",
-    label: "Not indexed",
-    headline: "Nothing is searchable yet. Reindex now builds the index.",
+    label: "No runs yet",
+    headline: "This agent hasn't been indexed yet. Reindex now builds its index.",
   };
+}
+
+/** "13 documents checked, 2 new or changed" — a run in words, for the status line and the toast. */
+function summarizeRun(counts: IngestResult): string {
+  const checked = counts.indexed + counts.skipped + counts.unsearchable + counts.failed;
+  const changes = [
+    counts.indexed > 0 ? `${counts.indexed} new or changed` : null,
+    counts.removed > 0 ? `${counts.removed} removed` : null,
+  ].filter((part): part is string => part !== null);
+  const what = changes.length > 0 ? changes.join(", ") : "nothing new";
+  return `${checked} ${checked === 1 ? "document" : "documents"} checked, ${what}`;
 }
 
 // Same palette as StatusBadge (status-badge.tsx), so "healthy" looks the same
@@ -642,26 +689,42 @@ function FailedState({ job }: { job: ReindexJob }) {
  * at zero — rather than folded into a single "done" number.
  */
 function CountsSummary({ counts }: { counts: IngestResult }) {
+  const archived = counts.archived ?? 0;
   return (
-    <ul aria-label="Last run" className="flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
-      <li className="text-muted-foreground">{counts.indexed} indexed</li>
-      {/* The ingest counter is `skipped`, but every path into it is a file
-          whose content hash matched: nothing to do, not something left out. */}
-      <li className="text-muted-foreground">{counts.skipped} unchanged</li>
-      {counts.removed > 0 && <li className="text-muted-foreground">{counts.removed} removed</li>}
-      <li
-        className={
-          counts.unsearchable > 0
-            ? "font-medium text-amber-700 dark:text-amber-400"
-            : "text-muted-foreground"
-        }
-      >
-        {counts.unsearchable} unsearchable
-      </li>
-      <li className={counts.failed > 0 ? "font-medium text-destructive" : "text-muted-foreground"}>
-        {counts.failed} failed
-      </li>
-    </ul>
+    <div className="space-y-1">
+      <ul aria-label="Last run" className="flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
+        <li className="text-muted-foreground">{counts.indexed} new or changed</li>
+        {/* The ingest counter is `skipped`, but every path into it is a file
+            whose content hash matched: nothing to do, not something left out. */}
+        <li className="text-muted-foreground">{counts.skipped} unchanged</li>
+        {counts.removed > 0 && <li className="text-muted-foreground">{counts.removed} removed</li>}
+        {/* `unsearchable` in the API; "unsearchable" on screen was not
+            understood. The list below names them when there are any. */}
+        <li
+          className={
+            counts.unsearchable > 0
+              ? "font-medium text-amber-700 dark:text-amber-400"
+              : "text-muted-foreground"
+          }
+        >
+          {counts.unsearchable} without readable text
+        </li>
+        <li
+          className={counts.failed > 0 ? "font-medium text-destructive" : "text-muted-foreground"}
+        >
+          {counts.failed} failed
+        </li>
+        {/* Orthogonal to the others: an archived document is also new or
+            unchanged. Shown only when there are some. */}
+        {archived > 0 && <li className="text-muted-foreground">{archived} in archive folders</li>}
+      </ul>
+      {archived > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Documents in archive folders (like OLD or Archiv) are indexed, but the agent searches them
+          only when asked about the archive. Everyday answers come from current documents.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -677,7 +740,8 @@ export function formatWhen(iso: string | null, now: Date = new Date()): string {
   if (Number.isNaN(at.getTime())) return "just now";
   const time = at.toLocaleTimeString(undefined, CLOCK);
   const days = localDaysBetween(at, now);
-  if (days === 0) return `today at ${time}`;
+  // <= 0: a server clock a little ahead of this one is still "today".
+  if (days <= 0) return `today at ${time}`;
   if (days === 1) return `yesterday at ${time}`;
   return `on ${at.toLocaleDateString(undefined, { dateStyle: "medium" })} at ${time}`;
 }
