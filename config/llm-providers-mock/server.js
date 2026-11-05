@@ -191,7 +191,7 @@ app.post("/openai/v1/chat/completions", (req, res) => {
 
 // ---- Anthropic ----
 // Shaped like the real list (October 2026), because Pinchy picks its default
-// from it: models newer than Pinchy's curated catalog (the 5.5 line), and an
+// from it: models newer than Pinchy's curated catalog (Opus and Sonnet 5.5), and an
 // older dated snapshot that a date-first sort used to promote over every
 // dateless id. A list holding only curated models cannot catch either.
 app.get("/anthropic/v1/models", (req, res) => {

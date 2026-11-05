@@ -102,4 +102,224 @@ describe("readGatewayToken", () => {
     void mkdirSync; // silence unused import
     void chmodSync;
   });
+
+  // OpenClaw rewrites openclaw.json root-only on every config apply until
+  // start-openclaw.sh chmods it back, and secrets.json is root-owned. In that
+  // window both reads fail, and validateGatewayToken() used to compare every
+  // plugin's Bearer token against "" — a 401 on every internal route.
+  describe("last good token", () => {
+    it("keeps serving the last token while both files are unreadable", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+
+      rmSync(configPath);
+      expect(readGatewayToken()).toBe("good-token");
+    });
+
+    it("keeps serving the last token while openclaw.json is half-written", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+
+      writeFileSync(configPath, "{ half-written");
+      expect(readGatewayToken()).toBe("good-token");
+    });
+
+    it("picks up a rotated token on the next successful read, and falls back to that one", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "old-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("old-token");
+
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "new-token" } } }));
+      expect(readGatewayToken()).toBe("new-token");
+
+      rmSync(configPath);
+      expect(readGatewayToken()).toBe("new-token");
+    });
+
+    it("still returns empty when no token was ever readable", async () => {
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("");
+    });
+
+    it("fails closed when openclaw.json reads cleanly but carries no token", async () => {
+      // A config that parses and has no token is an answer, not a read
+      // failure: serving the old token here would keep it valid for the
+      // process lifetime.
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+
+      writeFileSync(configPath, JSON.stringify({ env: {} }));
+      expect(readGatewayToken()).toBe("");
+    });
+
+    it("stops serving the last token once the files stay unreadable past the cap", async () => {
+      vi.useFakeTimers({ toFake: ["Date", "performance"] });
+      try {
+        writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+        const { readGatewayToken, LAST_GOOD_TOKEN_MAX_AGE_MS } =
+          await import("@/lib/gateway-token-reader");
+        expect(readGatewayToken()).toBe("good-token");
+
+        rmSync(configPath);
+        expect(readGatewayToken()).toBe("good-token");
+        vi.advanceTimersByTime(LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
+        expect(readGatewayToken()).toBe("good-token");
+
+        vi.advanceTimersByTime(2);
+        expect(readGatewayToken()).toBe("");
+
+        // The cap does not re-arm while the reads keep failing: a config that
+        // stays unreadable keeps surfacing as 401s — right after the cap, and
+        // long after it.
+        vi.advanceTimersByTime(1);
+        expect(readGatewayToken()).toBe("");
+        vi.advanceTimersByTime(30_000);
+        expect(readGatewayToken()).toBe("");
+        vi.advanceTimersByTime(5 * 60_000);
+        expect(readGatewayToken()).toBe("");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("measures the cap from when the reads started failing, not from the last good read", async () => {
+      // A route instance that served no internal call for a while still has
+      // to cover the next config apply: the cap bounds how long a broken
+      // config is papered over, not how recently the instance was busy.
+      vi.useFakeTimers({ toFake: ["Date", "performance"] });
+      try {
+        writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+        const { readGatewayToken, LAST_GOOD_TOKEN_MAX_AGE_MS } =
+          await import("@/lib/gateway-token-reader");
+        expect(readGatewayToken()).toBe("good-token");
+
+        vi.advanceTimersByTime(5 * 60_000);
+        rmSync(configPath);
+        expect(readGatewayToken()).toBe("good-token");
+
+        vi.advanceTimersByTime(LAST_GOOD_TOKEN_MAX_AGE_MS);
+        expect(readGatewayToken()).toBe("");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("restarts the cap after a successful read in between", async () => {
+      vi.useFakeTimers({ toFake: ["Date", "performance"] });
+      try {
+        const good = JSON.stringify({ gateway: { auth: { token: "good-token" } } });
+        writeFileSync(configPath, good);
+        const { readGatewayToken, LAST_GOOD_TOKEN_MAX_AGE_MS } =
+          await import("@/lib/gateway-token-reader");
+        expect(readGatewayToken()).toBe("good-token");
+
+        rmSync(configPath);
+        expect(readGatewayToken()).toBe("good-token");
+        vi.advanceTimersByTime(LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
+        writeFileSync(configPath, good);
+        expect(readGatewayToken()).toBe("good-token");
+
+        rmSync(configPath);
+        vi.advanceTimersByTime(LAST_GOOD_TOKEN_MAX_AGE_MS - 1);
+        expect(readGatewayToken()).toBe("good-token");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("measures the cap on a monotonic clock, unmoved by a wall-clock jump", async () => {
+      vi.useFakeTimers({ toFake: ["Date", "performance"] });
+      try {
+        writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+        const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+        expect(readGatewayToken()).toBe("good-token");
+
+        rmSync(configPath);
+        expect(readGatewayToken()).toBe("good-token");
+        // NTP step: the wall clock jumps an hour; no time actually passed.
+        vi.setSystemTime(Date.now() + 60 * 60_000);
+        expect(readGatewayToken()).toBe("good-token");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("forgets the remembered token once a clean read says there is none", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+
+      writeFileSync(configPath, JSON.stringify({ env: {} }));
+      expect(readGatewayToken()).toBe("");
+
+      rmSync(configPath);
+      expect(readGatewayToken()).toBe("");
+    });
+
+    it("prefers a token secrets.json still yields over the remembered one", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "old-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("old-token");
+
+      rmSync(configPath);
+      writeFileSync(secretsPath, JSON.stringify({ gateway: { token: "secrets-token" } }));
+      expect(readGatewayToken()).toBe("secrets-token");
+    });
+  });
+
+  describe("readGatewayTokenUncached", () => {
+    it("never answers with a remembered token", async () => {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+      const { readGatewayToken, readGatewayTokenUncached } =
+        await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("good-token");
+      expect(readGatewayTokenUncached()).toBe("good-token");
+
+      rmSync(configPath);
+      expect(readGatewayToken()).toBe("good-token");
+      expect(readGatewayTokenUncached()).toBe("");
+    });
+  });
+});
+
+describe("getOrCreateGatewayToken", () => {
+  it("never persists a remembered token while the config files are unreadable", async () => {
+    // getOrCreateGatewayToken writes what it reads into the settings DB, where
+    // it becomes the authoritative token. A durable value must come from what
+    // the files say now, never from the short-lived stand-in readGatewayToken
+    // keeps for validating requests.
+    vi.doMock("@/lib/settings", () => ({
+      getSetting: vi.fn().mockResolvedValue(null),
+      setSetting: vi.fn().mockResolvedValue(undefined),
+    }));
+    try {
+      writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "old-token" } } }));
+      const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+      expect(readGatewayToken()).toBe("old-token");
+      rmSync(configPath);
+
+      const { getOrCreateGatewayToken } = await import("@/lib/gateway-token-source");
+      const token = await getOrCreateGatewayToken();
+      expect(token).not.toBe("old-token");
+      expect(token).toMatch(/^[0-9a-f]{48}$/);
+    } finally {
+      vi.doUnmock("@/lib/settings");
+    }
+  });
+});
+
+describe("validateGatewayToken", () => {
+  it("keeps accepting the plugins' token while the config files are unreadable", async () => {
+    writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "good-token" } } }));
+    const { validateGatewayToken } = await import("@/lib/gateway-auth");
+    const headers = new Headers({ Authorization: "Bearer good-token" });
+    expect(validateGatewayToken(headers)).toBe(true);
+
+    rmSync(configPath);
+    expect(validateGatewayToken(headers)).toBe(true);
+    expect(validateGatewayToken(new Headers({ Authorization: "Bearer wrong" }))).toBe(false);
+  });
 });

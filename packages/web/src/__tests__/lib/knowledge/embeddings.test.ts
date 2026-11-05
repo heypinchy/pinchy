@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { embedTexts } from "@/lib/knowledge/embeddings";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { embedTexts, LOCAL_MODEL_RETRY_COOLDOWN_MS } from "@/lib/knowledge/embeddings";
 
 global.fetch = vi.fn();
 
@@ -366,5 +366,102 @@ describe("embedTexts (provider: local, node-llama-cpp mocked)", () => {
     expect(loadModel).toHaveBeenCalledTimes(1);
     expect(createEmbeddingContext).toHaveBeenCalledTimes(1);
     expect(getEmbeddingFor).toHaveBeenCalledTimes(2);
+  });
+
+  it("concurrent first callers share one model load instead of each loading their own", async () => {
+    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+    const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/concurrent.gguf" };
+
+    // Three parallel knowledge_search calls arriving before the model is loaded.
+    await Promise.all([embedTexts(["a"], cfg), embedTexts(["b"], cfg), embedTexts(["c"], cfg)]);
+
+    expect(loadModel).toHaveBeenCalledTimes(1);
+    expect(createEmbeddingContext).toHaveBeenCalledTimes(1);
+  });
+
+  // One Pinchy process loads src/lib twice — once for the custom server (where
+  // the KB index worker runs) and once for Next's route bundles (where the
+  // search route runs); see process-wide-cache.ts. A module-level cache gave
+  // each its own model and its own context: twice the RAM, and two evaluate
+  // locks, so a search and a reindex embedded at the same time and fought over
+  // the same cores instead of queueing behind each other.
+  it("shares one loaded model across module instances in the same process", async () => {
+    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+    const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/two-instances.gguf" };
+
+    await embedTexts(["from the index worker"], cfg);
+    vi.resetModules();
+    const { embedTexts: embedTextsFromRouteBundle } = await import("@/lib/knowledge/embeddings");
+    await embedTextsFromRouteBundle(["from the search route"], cfg);
+
+    expect(loadModel).toHaveBeenCalledTimes(1);
+    expect(createEmbeddingContext).toHaveBeenCalledTimes(1);
+    expect(getEmbeddingFor).toHaveBeenCalledTimes(2);
+  });
+
+  it("creates the embedding context with the configured thread count", async () => {
+    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+
+    await embedTexts(["a"], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/threads.gguf",
+      threads: 1,
+    });
+
+    expect(createEmbeddingContext).toHaveBeenCalledWith({ threads: 1 });
+  });
+
+  describe("a failed load", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("is retried once the cooldown has passed instead of failing every search until restart", async () => {
+      vi.useFakeTimers();
+      getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+      loadModel.mockRejectedValueOnce(new Error("ENOMEM"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/flaky-load.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("ENOMEM");
+      await vi.advanceTimersByTimeAsync(LOCAL_MODEL_RETRY_COOLDOWN_MS);
+      await expect(embedTexts(["b"], cfg)).resolves.toEqual([[1, 2, 3]]);
+      expect(loadModel).toHaveBeenCalledTimes(2);
+    });
+
+    // A persistently broken load (a corrupt GGUF, a container out of memory)
+    // must not load another ~300 MB model on every search.
+    it("is not retried within the cooldown: searches fail fast on the same error", async () => {
+      vi.useFakeTimers();
+      loadModel.mockRejectedValue(new Error("ENOMEM"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/broken-load.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("ENOMEM");
+      await vi.advanceTimersByTimeAsync(LOCAL_MODEL_RETRY_COOLDOWN_MS - 1);
+      await expect(embedTexts(["b"], cfg)).rejects.toThrow("ENOMEM");
+      await expect(embedTexts(["c"], cfg)).rejects.toThrow("ENOMEM");
+      expect(loadModel).toHaveBeenCalledTimes(1);
+    });
+
+    it("disposes a model that loaded when its embedding context could not be created", async () => {
+      const dispose = vi.fn().mockResolvedValue(undefined);
+      loadModel.mockResolvedValueOnce({ createEmbeddingContext, dispose });
+      createEmbeddingContext.mockRejectedValueOnce(new Error("context: out of memory"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/no-context.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("context: out of memory");
+      expect(dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports the context error even when disposing the model throws", async () => {
+      const dispose = vi.fn(() => {
+        throw new Error("dispose failed");
+      });
+      loadModel.mockResolvedValueOnce({ createEmbeddingContext, dispose });
+      createEmbeddingContext.mockRejectedValueOnce(new Error("context: out of memory"));
+      const cfg = { baseUrl: "unused", provider: "local", modelPath: "/models/bad-dispose.gguf" };
+
+      await expect(embedTexts(["a"], cfg)).rejects.toThrow("context: out of memory");
+    });
   });
 });

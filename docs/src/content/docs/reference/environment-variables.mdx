@@ -144,6 +144,8 @@ Every container carries a memory and CPU cap so one runaway agent cannot take th
 | `DB_MEM_LIMIT`               | `1g`    | Memory for the `db` container (PostgreSQL 17 + pgvector)                 |
 | `DB_CPUS`                    | `1`     | CPU cores for `db`                                                       |
 
+`PINCHY_CPUS` also decides how many threads the knowledge base's embedding model gets; [CPU when the knowledge base embeds](/guides/customizing-deployment/#cpu-when-the-knowledge-base-embeds) explains how, and how to set `KB_EMBEDDING_THREADS` through an override file when your host hides its CPU limit from the container.
+
 Lowering `OPENCLAW_MEM_LIMIT` too far gets the gateway OOM-killed mid-conversation, which looks like a dropped chat rather than an out-of-memory error. [Customizing Your Deployment](/guides/customizing-deployment/) has sizing tables, including what the knowledge base needs while it indexes Office documents.
 
 ## Anything else
