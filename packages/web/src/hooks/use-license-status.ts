@@ -67,8 +67,11 @@ interface UseLicenseStatusOptions {
   /** A status the server already rendered. Used as-is; no fetch on mount. */
   initial?: LicenseInfo | null;
   /**
-   * While false, the hook fetches only when `refetch()` is called (a closed
-   * dialog; a list that refreshes the status together with its own data).
+   * While false, the hook starts a fetch only when `refetch()` is called (a
+   * closed dialog; a list that refreshes the status together with its own
+   * data). A failed `refetch()` still retries until it succeeds, the caller
+   * unmounts, or `enabled`/`refreshKey` changes — so don't combine a changing
+   * `refreshKey` with `enabled: false`.
    */
   enabled?: boolean;
   /** Changing it refetches. The last known status stays visible meanwhile. */
@@ -149,6 +152,9 @@ export function useLicenseStatus({
   useEffect(() => {
     if (!enabled) {
       stopRetrying();
+      // `initial` stands in for the first fetch only while it is fresh; once
+      // the caller has been disabled, enabling it again fetches.
+      skipInitialFetch.current = false;
       return;
     }
     // Under React StrictMode the simulated remount fetches anyway — one extra

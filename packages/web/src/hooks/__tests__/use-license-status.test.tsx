@@ -300,4 +300,66 @@ describe("useLicenseStatus", () => {
     expect(b.result.current.license).toEqual(enterpriseStatus);
     expect(toast.dismiss).toHaveBeenCalledWith(LICENSE_STATUS_TOAST_ID);
   });
+
+  it("bounds each attempt, so a request that never settles still leads to a retry", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    fetchSpy
+      .mockImplementationOnce(
+        (_url: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("timeout")));
+          })
+      )
+      .mockResolvedValue(jsonResponse(enterpriseStatus));
+
+    const { result } = renderHook(() => useLicenseStatus());
+    await act(async () => {});
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/enterprise/status",
+      expect.objectContaining({ signal: controller.signal })
+    );
+
+    await act(async () => {
+      controller.abort();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LICENSE_STATUS_RETRY_DELAYS_MS[0]);
+    });
+    expect(result.current.license).toEqual(enterpriseStatus);
+    timeoutSpy.mockRestore();
+  });
+
+  it("raises and releases the toast for refetch() while disabled", async () => {
+    vi.useFakeTimers();
+    fetchSpy
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(jsonResponse(enterpriseStatus));
+    const { result } = renderHook(() =>
+      useLicenseStatus({ enabled: false, notifyOnFailure: true })
+    );
+    await act(async () => {
+      await result.current.refetch();
+    });
+    expect(toast.error).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LICENSE_STATUS_RETRY_DELAYS_MS[0]);
+    });
+    expect(result.current.license).toEqual(enterpriseStatus);
+    expect(toast.dismiss).toHaveBeenCalledWith(LICENSE_STATUS_TOAST_ID);
+  });
+
+  it("fetches when enabled later even if it was given an initial status", async () => {
+    const fresh = { ...enterpriseStatus, seatsUsed: 9 };
+    fetchSpy.mockResolvedValue(jsonResponse(fresh));
+    const { result, rerender } = renderHook(
+      ({ on }) => useLicenseStatus({ initial: enterpriseStatus, enabled: on }),
+      { initialProps: { on: false } }
+    );
+    rerender({ on: true });
+    await waitFor(() => expect(result.current.license).toEqual(fresh));
+  });
 });
