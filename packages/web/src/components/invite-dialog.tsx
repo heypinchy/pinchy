@@ -47,10 +47,16 @@ type InviteFormValues = z.infer<typeof inviteSchema>;
 
 type CreatedInvite = { url: string; email: string; expiresAt: string | null };
 
-// The admin reads the expiry against their own clock, so it is rendered in
-// their time zone. en-US like every other date in the UI (PERSONALITY.md).
+// Rendered in the admin's time zone, and named, because they may pass the
+// deadline on to someone in another one. en-US for the same reason as
+// lib/format-date.ts: an English month name can't be misread as 4/8 vs 8/4.
 function formatExpiry(iso: string): string {
-  return new Date(iso).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+  const date = new Date(iso);
+  const when = date.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+  const zone = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
+    .formatToParts(date)
+    .find((part) => part.type === "timeZoneName")?.value;
+  return zone ? `${when} ${zone}` : when;
 }
 
 interface InviteDialogProps {
@@ -186,7 +192,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
                 doesn't — the admin delivers the link (#1265). */}
             <div className="space-y-1 text-sm text-muted-foreground">
               <p>
-                Pinchy doesn&apos;t send emails. Copy the link and send it to {created?.email}{" "}
+                Pinchy doesn&apos;t email this link. Copy it and send it to {created?.email}{" "}
                 yourself.
               </p>
               {created?.expiresAt && (

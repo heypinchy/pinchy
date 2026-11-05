@@ -1425,7 +1425,7 @@ What kind of flow this token opens, and what the page shows before the form. **N
 | ----------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `type`      | string         | `invite` for a new-user claim, `reset` for a password reset on an existing account. The reset form has no name field, so a reset can't overwrite the user's display name. |
 | `email`     | string         | The address the account signs in with                                                                                                                                     |
-| `invitedBy` | string \| null | Display name of the admin who created the invite. `null` on a reset, or if that admin has no name                                                                         |
+| `invitedBy` | string \| null | Display name of the admin who created the invite. `null` on a reset, or if that admin has no name or has been deactivated                                                 |
 
 The token is the only credential here, so the response holds nothing its holder shouldn't see: their own sign-in address and the inviter's display name, never the inviter's email. An unknown, claimed or expired token gets only an error.
 

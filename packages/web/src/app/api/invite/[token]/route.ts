@@ -31,12 +31,14 @@ export async function GET(
   let invitedBy: string | null = null;
   if (flow.type === "invite") {
     // Name only. `invites.createdBy` cascades on user delete, so the row is
-    // always there; a blank name falls back to the generic heading.
+    // always there; a blank name falls back to the generic heading. A
+    // deactivated inviter isn't named: their name would vouch for a link
+    // from someone who is no longer here.
     const inviter = await db.query.users.findFirst({
       where: eq(users.id, flow.invite.createdBy),
-      columns: { name: true },
+      columns: { name: true, banned: true },
     });
-    invitedBy = inviter?.name?.trim() || null;
+    invitedBy = inviter && !inviter.banned ? inviter.name?.trim() || null : null;
   }
 
   const body: InviteTokenInfo = {

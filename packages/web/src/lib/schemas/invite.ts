@@ -27,6 +27,9 @@ export type InviteTokenInfo = {
   type: "invite" | "reset";
   /** The sign-in address. Always set: a token without one gets a 410. */
   email: string;
-  /** Display name of the admin who created the invite; `null` on a reset. */
+  /**
+   * Display name of the admin who created the invite. `null` on a reset, and
+   * when that admin has no name or has been deactivated.
+   */
   invitedBy: string | null;
 };

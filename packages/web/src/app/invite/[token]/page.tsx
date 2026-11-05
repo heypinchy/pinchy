@@ -151,6 +151,10 @@ function ClaimForm({ token, info }: { token: string; info: InviteTokenInfo }) {
   const isReset = type === "reset";
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  // The password was set, but sign-in answered 403: the account is
+  // deactivated. Promising "you can now sign in" would send the person to a
+  // login page that refuses them.
+  const [cannotSignIn, setCannotSignIn] = useState(false);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(isReset ? resetSchema : inviteClaimSchema),
@@ -189,6 +193,7 @@ function ClaimForm({ token, info }: { token: string; info: InviteTokenInfo }) {
         await enterAccount(data.user.id, "/");
         return;
       }
+      if (error?.status === 403) setCannotSignIn(true);
     } catch {
       // Fall through to the success screen.
     }
@@ -204,13 +209,19 @@ function ClaimForm({ token, info }: { token: string; info: InviteTokenInfo }) {
             <CheckCircle2 className="size-12 text-primary" />
           </div>
           <CardTitle>{SUCCESS_TITLE[type]}</CardTitle>
-          <CardDescription>{successDescription(email)}</CardDescription>
+          <CardDescription>
+            {cannotSignIn
+              ? "This account can't sign in. Please contact your administrator."
+              : successDescription(email)}
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          <Button onClick={() => router.push("/login")} className="w-full">
-            Continue to sign in
-          </Button>
-        </CardContent>
+        {!cannotSignIn && (
+          <CardContent>
+            <Button onClick={() => router.push("/login")} className="w-full">
+              Continue to sign in
+            </Button>
+          </CardContent>
+        )}
       </>
     );
   }
@@ -236,7 +247,7 @@ function ClaimForm({ token, info }: { token: string; info: InviteTokenInfo }) {
                 value={email}
                 readOnly
                 autoComplete="username"
-                className="bg-muted text-muted-foreground"
+                className="bg-muted"
               />
             </div>
 

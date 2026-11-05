@@ -130,7 +130,7 @@ describe("InviteDialog", () => {
       mockFetchForInvite(
         jsonResponse({
           token: "invite-token-abc",
-          email: "ada@example.com",
+          email: "stored@example.com",
           expiresAt: "2026-11-12T14:30:00.000Z",
         })
       )
@@ -142,7 +142,7 @@ describe("InviteDialog", () => {
 
     expect(
       await screen.findByText(
-        "Pinchy doesn't send emails. Copy the link and send it to ada@example.com yourself."
+        "Pinchy doesn't email this link. Copy it and send it to ada@example.com yourself."
       )
     ).toBeInTheDocument();
   });
@@ -165,7 +165,12 @@ describe("InviteDialog", () => {
       timeStyle: "short",
     });
     expect(
-      await screen.findByText(`The link works once and expires on ${expected}.`)
+      // ...followed by the zone name: the admin may pass the deadline on to
+      // someone in another time zone.
+      await screen.findByText((text) => {
+        const prefix = `The link works once and expires on ${expected} `;
+        return text.startsWith(prefix) && /^\S+\.$/.test(text.slice(prefix.length));
+      })
     ).toBeInTheDocument();
   });
 

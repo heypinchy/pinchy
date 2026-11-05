@@ -30,7 +30,7 @@ test.describe.serial("User invite flow", () => {
     // ...with the reminder that Pinchy doesn't deliver it, and its expiry (#1265).
     await expect(
       page.getByText(
-        "Pinchy doesn't send emails. Copy the link and send it to invitee@test.local yourself."
+        "Pinchy doesn't email this link. Copy it and send it to invitee@test.local yourself."
       )
     ).toBeVisible();
     await expect(page.getByText(/The link works once and expires on /)).toBeVisible();
@@ -103,7 +103,7 @@ test.describe.serial("User invite flow", () => {
       timeout: 10000,
     });
     await expect(inviteePage.getByText(/invalid|expired|revoked|not found/i)).toBeVisible();
-    await expect(inviteePage.getByText(/invited you to Pinchy/)).toHaveCount(0);
+    await expect(inviteePage.getByText(/invited (you )?to Pinchy/)).toHaveCount(0);
     await expect(inviteePage.getByLabel("Name")).toHaveCount(0);
 
     await freshContext.close();
@@ -141,7 +141,7 @@ test.describe.serial("User invite flow", () => {
 
     // Reset-specific UI — NOT the invite copy.
     await expect(resetPage.getByText("Reset your Pinchy password")).toBeVisible({ timeout: 10000 });
-    await expect(resetPage.getByText(/invited you to Pinchy/)).toHaveCount(0);
+    await expect(resetPage.getByText(/invited (you )?to Pinchy/)).toHaveCount(0);
     await expect(resetPage.getByText("Set a new password for your account.")).toBeVisible();
 
     // No name field is offered during a reset.
@@ -154,6 +154,9 @@ test.describe.serial("User invite flow", () => {
 
     // Signed in with the new password and taken into the app.
     await expect(resetPage).not.toHaveURL(/\/(invite|login)(\/|$)/, { timeout: 15000 });
+    const resetSessionRes = await resetPage.request.get("/api/auth/get-session");
+    expect(resetSessionRes.ok()).toBeTruthy();
+    expect((await resetSessionRes.json())?.user?.email).toBe(email);
     await freshContext.close();
 
     // The display name was NOT overwritten by the reset.

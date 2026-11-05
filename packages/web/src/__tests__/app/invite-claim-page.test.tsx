@@ -241,6 +241,7 @@ describe("Invite Claim Page", () => {
       await waitFor(() => {
         expect(toast.error).toHaveBeenCalledWith("Invalid or expired invite link");
       });
+      expect(signInMock).not.toHaveBeenCalled();
     });
 
     it("should submit to /api/invite/claim with token, name, and password", async () => {
@@ -350,6 +351,38 @@ describe("Invite Claim Page", () => {
       });
     });
 
+    it("falls back to the success screen when signing in throws", async () => {
+      const user = userEvent.setup();
+      mockTokenType("invite", { email: "newcomer@example.com" });
+      signInMock.mockRejectedValue(new TypeError("Failed to fetch"));
+      render(<InviteClaimPage />);
+
+      await submitValidInvite(user);
+
+      expect(await screen.findByText("Account created!")).toBeInTheDocument();
+      expect(enterAccountMock).not.toHaveBeenCalled();
+    });
+
+    it("says a deactivated account can't sign in instead of promising it can", async () => {
+      const user = userEvent.setup();
+      mockTokenType("reset", { email: "gone@example.com" });
+      signInMock.mockResolvedValue({ data: null, error: { status: 403 } });
+      render(<InviteClaimPage />);
+
+      await user.type(await screen.findByLabelText(/^password$/i), "Br1ghtNova!2");
+      await user.click(screen.getByRole("button", { name: /reset password/i }));
+
+      expect(await screen.findByText("Password reset!")).toBeInTheDocument();
+      expect(
+        screen.getByText("This account can't sign in. Please contact your administrator.")
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/you can now sign in/i)).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /continue to sign in/i })
+      ).not.toBeInTheDocument();
+      expect(enterAccountMock).not.toHaveBeenCalled();
+    });
+
     it("repeats the sign-in email on the fallback success screen", async () => {
       const user = userEvent.setup();
       mockTokenType("invite", { email: "newcomer@example.com" });
@@ -362,6 +395,7 @@ describe("Invite Claim Page", () => {
       expect(
         screen.getByText(/sign in with newcomer@example\.com and your new password/i)
       ).toBeInTheDocument();
+      expect(enterAccountMock).not.toHaveBeenCalled();
     });
 
     it("shows the email on the reset form and its fallback success screen too", async () => {

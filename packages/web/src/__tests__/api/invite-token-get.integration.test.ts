@@ -13,7 +13,7 @@ import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";
 
 import { db } from "@/db";
-import { invites } from "@/db/schema";
+import { invites, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { createInvite, INVITE_WITHOUT_EMAIL_ERROR } from "@/lib/invites";
 import { auth } from "@/lib/auth";
@@ -91,6 +91,21 @@ describe("GET /api/invite/[token] (integration)", () => {
       email: "existing@test.local",
       invitedBy: null,
     });
+  });
+
+  it("doesn't name an inviter who has since been deactivated", async () => {
+    const adminId = await seedAdmin();
+    const { token } = await createInvite({
+      email: "newcomer@test.local",
+      role: "member",
+      type: "invite",
+      createdBy: adminId,
+    });
+    await db.update(users).set({ banned: true }).where(eq(users.id, adminId));
+
+    const response = await GET(makeRequest(token), makeContext(token));
+    expect(response.status).toBe(200);
+    expect((await response.json()).invitedBy).toBeNull();
   });
 
   it("never returns the inviter's email address, only their display name", async () => {
