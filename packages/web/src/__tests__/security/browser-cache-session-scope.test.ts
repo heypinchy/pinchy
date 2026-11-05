@@ -17,14 +17,28 @@ import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
  * different session cookie is a cache miss and the request reaches the
  * server again. This guard fails on any cache lifetime written by hand
  * anywhere else in production source, so the pairing cannot be forgotten.
- * It also flags the literal in a comment: say "a short private cache" in
- * prose instead.
+ * It reads lines, comments included, so a comment naming a lifetime trips it
+ * too: describe it in prose ("a short private cache") instead.
  */
 
 const webSrcDir = path.resolve(__dirname, "../..");
 const HELPER = path.join(webSrcDir, "lib", "session-scoped-cache.ts");
 const EXCLUDED_DIR_NAMES = new Set(["__tests__", "node_modules", "test-helpers"]);
-const CACHE_LIFETIME_RE = /\b(?:private|public)\s*,\s*(?:s-)?max-?age\s*=/gi;
+// Any non-zero max-age or s-maxage, in any position and whether written out or
+// templated (`max-age=${n}`), plus an `expires` header key. max-age=0 keeps
+// nothing, so it is not a lifetime.
+const CACHE_LIFETIME_RES = [/\b(?:s-)?max-?age\s*=\s*(?!0\b)/i, /["']expires["']\s*:/i];
+
+// Lines that match the pattern but are not an HTTP cache, each with the
+// reason. An entry that no longer matches its file fails, so it cannot
+// outlive the line it excuses.
+const NOT_AN_HTTP_CACHE: Array<{ file: string; includes: string; reason: string }> = [
+  {
+    file: "components/ui/sidebar.tsx",
+    includes: "document.cookie",
+    reason: "a cookie's own lifetime attribute, not a response the browser caches",
+  },
+];
 
 function productionSources(dir: string): string[] {
   const out: string[] = [];
@@ -52,20 +66,36 @@ describe("browser cache is scoped to the session (#1286)", () => {
     // A walker that finds nothing would pass in silence.
     expect(files.length).toBeGreaterThan(200);
 
+    // next.config.ts is scanned too: a header set there wins over the route
+    // handler's (see the X-Frame-Options gate), so a cache lifetime written
+    // there would override everything the helper declares.
+    const roots = ["../server.ts", "../next.config.ts"].map((f) => path.resolve(webSrcDir, f));
+
     const offenders: string[] = [];
-    for (const file of [...files, path.resolve(webSrcDir, "../server.ts")]) {
+    const usedExemptions = new Set<string>();
+    for (const file of [...files, ...roots]) {
       if (file === HELPER) continue;
+      const rel = path.relative(webSrcDir, file);
       const lines = readFileSync(file, "utf8").split("\n");
       lines.forEach((line, i) => {
-        if (CACHE_LIFETIME_RE.test(line)) {
-          offenders.push(`${path.relative(webSrcDir, file)}:${i + 1}: ${line.trim()}`);
+        if (!CACHE_LIFETIME_RES.some((re) => re.test(line))) return;
+        const exemption = NOT_AN_HTTP_CACHE.find(
+          (e) => e.file === rel && line.includes(e.includes)
+        );
+        if (exemption) {
+          usedExemptions.add(exemption.file);
+          return;
         }
-        CACHE_LIFETIME_RE.lastIndex = 0;
+        offenders.push(`${rel}:${i + 1}: ${line.trim()}`);
       });
     }
     expect(
       offenders,
       "Use sessionScopedCacheHeaders() from @/lib/session-scoped-cache instead"
+    ).toEqual([]);
+    expect(
+      NOT_AN_HTTP_CACHE.map((e) => e.file).filter((f) => !usedExemptions.has(f)),
+      "stale exemption: it no longer matches a line in its file"
     ).toEqual([]);
   });
 });

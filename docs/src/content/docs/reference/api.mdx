@@ -399,11 +399,11 @@ The chat asks this when you press Retry, not when the run failed — see [Retryi
 
 ### `GET /api/agents/:agentId/uploads/:filename`
 
-Download a file the caller uploaded to this agent.
+Download a file the caller uploaded to this agent. Cached like `workspace-file` below: for an hour, and only for the same session.
 
 ### `GET /api/agents/:agentId/artifacts/:filename`
 
-Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files).
+Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files). Cached like `workspace-file` below: for an hour, and only for the same session.
 
 Serves a file the caller was actually handed, not whatever currently carries that name. Each delivery records where the file was and a checksum of its contents, and the download is refused with `404` unless the file on disk still matches one of the caller's own deliveries of that name. On a shared agent that matters: everyone's chats write into the same workspace, so without it a later file of the same name — from a conversation you cannot see — would be served under your download link.
 
@@ -419,7 +419,7 @@ Write a file into the agent's own workspace.
 
 Serve a file from a directory this agent is granted under `allowed_paths` — the path behind a knowledge-base citation you click. Supports byte ranges, so a PDF viewer can jump straight to the cited page.
 
-The bytes are sent with `Cache-Control: private, max-age=3600` and `Vary: Cookie`. Uploads and artifacts are sent the same way. The browser reuses its copy within one session; a different session, such as another person signing in on the same browser, asks the server again and goes through the access check.
+The bytes are sent with `Cache-Control: private, max-age=3600` and `Vary: Cookie`. The browser reuses its copy only while the request carries the same cookies; a different session, such as another person signing in on the same browser, asks the server again and goes through the access check.
 
 **Query parameters:**
 
@@ -1115,7 +1115,7 @@ Capability flags for every model in the catalog. Used to gate model selection ag
 }
 ```
 
-Backed by the models table, so it reflects the catalog seed and any provider the admin has added or removed. The response is sent with `Cache-Control: private, max-age=60` and `Vary: Cookie`, so the browser keeps it for one session only and never serves it to the next person who signs in on the same browser.
+Backed by the models table, so it reflects the catalog seed and any provider the admin has added or removed. The response is sent with `Cache-Control: private, max-age=60` and `Vary: Cookie`, so the browser reuses it only for the same session and never serves it to the next person who signs in on the same browser.
 
 ## Domain Lock (admin only)
 
