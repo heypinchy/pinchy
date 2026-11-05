@@ -16,58 +16,68 @@ description: >
   2026-11-05, all three on AWS died of ENOSPC and all 27 on Azure passed. An
   Azure ubuntu-26.04 runner has a 145G root with 88G free at job start, so
   that half never came close. Measured there (PR #1293): pulling the two CI
-  images costs ~10G, and the dev build alone ~16G (58G -> 74G: 7.8G of images
-  plus 11.4G of BuildKit cache, partly shared).
+  images costs ~10G, and the dev build alone ~16G (58G -> 74G on the disk; the
+  two built images are 4.5G + 3.3G, the rest is BuildKit cache, which
+  `docker system df` counts partly twice).
 
-  So this action frees three things, each with a reason:
-  - every ghcr.io/heypinchy/* image and bare pinchy* tag. They are not inputs
-    to the rebuild — a plain `docker build` does not use a pulled image as
-    cache — so removing them costs nothing but the space.
-  - all BuildKit cache, which a fork-PR fallback's local build leaves behind.
+  So this action frees two things, each with a reason:
+  - every ghcr.io/heypinchy/* image and bare pinchy* tag. A pulled image is
+    not an input to the rebuild — a plain `docker build` does not use one as
+    cache — so removing it costs nothing but the space. The BuildKit cache is
+    kept on purpose: on a fork PR it holds the local prod build of
+    Dockerfile.openclaw, which the dev build reuses (same file, same
+    context); pruning it would turn that into a full rebuild.
   - preinstalled toolchains no Pinchy job uses: .NET (5.8G), the Android SDK
     (12G), GHC/ghcup (3.7G) and CodeQL's bundle in the tool cache. The rest of
     /opt/hostedtoolcache stays: setup-node and friends read it.
 
-  Then it requires `min-free-gb` free on /. Below that it fails naming the
-  shortfall, instead of letting the build die halfway through a COPY.
+  Then it requires `min-free-gb` free on the filesystem holding Docker's data
+  root (not necessarily /). Below that it fails naming the shortfall, instead
+  of letting the build die halfway through a COPY.
 inputs:
   min-free-gb:
     description: >
-      Free space on / the next build needs, in GB. Default: the measured 16G
+      Free space the next build needs on the filesystem holding Docker's data root, in GB. Default: the measured 16G
       dev build plus headroom for growth.
     default: "22"
 runs:
   using: composite
   steps:
-    - name: Remove Pinchy images, build cache and unused toolchains
+    - name: Remove Pinchy images and unused toolchains
       shell: bash
       env:
         MIN_FREE_GB: ${{ inputs.min-free-gb }}
       run: |
         set -euo pipefail
-        echo "== before =="
-        df -h /
+        root=$(docker info -f '{{.DockerRootDir}}')
+        echo "== before (Docker data root: $root) =="
+        df -h / "$root"
         docker system df
         # Every repository under ghcr.io/heypinchy — the -ci refs a job pulled,
         # the :latest tags compose reads, the images a fork-PR fallback built —
         # and the bare `pinchy*` tags some jobs build (`pinchy:e2e`). Filters on
-        # the same key are ORed. Third-party images (postgres, caddy, mocks)
-        # stay, so the next `up` does not pull them again.
+        # the same key are ORed. `pinchy*` also matches mocks compose built
+        # under the `pinchy` project name; those are small and rebuilt on the
+        # next `up`. Pulled third-party images (postgres, caddy) stay.
         ids=$(docker image ls --filter 'reference=ghcr.io/heypinchy/*' --filter 'reference=pinchy*' --format '{{.ID}}' | sort -u)
         if [ -n "$ids" ]; then
           # shellcheck disable=SC2086 # one ID per word
           docker image rm -f $ids
         fi
-        docker builder prune -af
         start=$(date +%s)
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
         echo "removed unused toolchains in $(( $(date +%s) - start ))s"
         echo "== after =="
-        df -h /
+        df -h / "$root"
         docker system df
-        free_gb=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
-        if [ "$free_gb" -lt "$MIN_FREE_GB" ]; then
-          echo "::error::only ${free_gb}G free on / after reclaiming, the next build needs ${MIN_FREE_GB}G — see the df output above for what holds the rest"
+        # MiB, not GiB: `df -BG` rounds up, so 21.1G would pass a 22G floor.
+        free_mb=$(df --output=avail -BM "$root" | tail -1 | tr -dc '0-9')
+        if ! [[ "$free_mb" =~ ^[0-9]+$ && "$MIN_FREE_GB" =~ ^[0-9]+$ ]]; then
+          echo "::error::cannot read free space on $root ('$free_mb') or min-free-gb ('$MIN_FREE_GB')"
           exit 1
         fi
-        echo "${free_gb}G free on / (need ${MIN_FREE_GB}G)"
+        if [ "$free_mb" -lt $(( MIN_FREE_GB * 1024 )) ]; then
+          echo "::error::only $(( free_mb / 1024 ))G free on $root after reclaiming, the next build needs ${MIN_FREE_GB}G — see the df output above for what holds the rest"
+          exit 1
+        fi
+        echo "$(( free_mb / 1024 ))G free on $root (need ${MIN_FREE_GB}G)"
