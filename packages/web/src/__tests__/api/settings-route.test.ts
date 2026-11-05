@@ -258,16 +258,34 @@ describe("POST /api/settings", () => {
       expires: "",
     } as any);
 
-    const { setSetting } = await import("@/lib/settings");
+    // The allowed key, so the 400 can only come from the missing value — with
+    // any other key the allow-list would answer first and this would prove
+    // nothing about `value`.
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "org.timezone" }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    expect(setOrgTimezone).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 on a non-string value for the allowed key", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
 
     const request = new NextRequest("http://localhost/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "some_key" }),
+      body: JSON.stringify({ key: "org.timezone", value: 42 }),
     });
     const response = await POST(request);
     expect(response.status).toBe(400);
-    expect(setSetting).not.toHaveBeenCalled();
+    expect(setOrgTimezone).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 400 on malformed JSON", async () => {
