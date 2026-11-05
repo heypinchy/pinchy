@@ -7,6 +7,7 @@ import { ALLOWED_ATTACHMENT_MIMES, ALLOWED_TEXT_MIMES } from "@/lib/upload-valid
 import { EXTENSION_TO_MIME } from "@/lib/attachment-mime";
 import {
   ifNoneMatchHits,
+  servePosture,
   sessionScopedRevalidateHeaders,
   weakFileEtag,
 } from "@/lib/session-scoped-cache";
@@ -111,13 +112,13 @@ export async function streamWorkspaceFile(
     return new NextResponse("Not found", { status: 404 });
   }
   let buffer: Buffer;
-  let etag: string;
+  let stat: { size: number; mtimeMs: number; ctimeMs: number; ino: number };
   try {
     const info = await fh.stat();
     if (!info.isFile()) {
       return new NextResponse("Not found", { status: 404 });
     }
-    etag = weakFileEtag(info, "file");
+    stat = info;
     buffer = await fh.readFile();
   } finally {
     await fh.close();
@@ -147,6 +148,10 @@ export async function streamWorkspaceFile(
     }
     servedMime = detected.mime;
   }
+
+  // The served type is part of what a cached copy stands for (servePosture):
+  // the same bytes served as CSV instead of text are a different response.
+  const etag = weakFileEtag(stat, `file${servePosture(servedMime, "inline")}`);
 
   // After the MIME check, so a 304 always vouches for a file this route would
   // serve — a bare `*` included. Reading first costs a local read of a small

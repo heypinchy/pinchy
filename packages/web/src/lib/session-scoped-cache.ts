@@ -102,6 +102,31 @@ function weakEtag(numbers: number[], tag: string): string {
 }
 
 /**
+ * Bump when a header these document routes send changes for unchanged bytes
+ * in a way `servePosture`'s arguments do not show — `x-frame-options` (here
+ * or in next.config.ts), `x-content-type-options`, the disposition rules.
+ */
+export const SERVE_POSTURE_VERSION = 1;
+
+/**
+ * A short tag for HOW a document is served, to fold into its validator.
+ *
+ * A 304 carries no content-type or disposition, and browsers keep the headers
+ * they stored with their copy (Chrome ignores a content-type on a 304
+ * outright). A validator over the bytes alone would therefore keep a cached
+ * copy under the old headers forever once a release changes how such a file
+ * is served — an inline type made `attachment`, say. Pass every header value
+ * the route derives per request; the rest is covered by
+ * SERVE_POSTURE_VERSION.
+ */
+export function servePosture(...headerValues: string[]): string {
+  return createHash("sha256")
+    .update([SERVE_POSTURE_VERSION, ...headerValues].join("\n"))
+    .digest("hex")
+    .slice(0, 8);
+}
+
+/**
  * Whether `If-None-Match` names this representation (RFC 9110 §13.1.2): weak
  * comparison, a comma-separated list, or `*` for any current representation.
  * Callers MUST evaluate this only after the access check — a match answers

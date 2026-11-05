@@ -744,6 +744,20 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
     });
   });
 
+  it("does not let a copy cached as a view stand in for a download", async () => {
+    // The disposition differs, and a 304 keeps the stored headers: the
+    // validator has to say so.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const viewEtag = await cachedEtag(pdfPath);
+
+    const res = await callGET("agent-1", pdfPath, { "if-none-match": viewEtag }, { download: "1" });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toMatch(/^attachment;/);
+    expect(res.headers.get("etag")).not.toBe(viewEtag);
+  });
+
   it("leaves a read that sent bytes without the revalidated flag", async () => {
     const pdfPath = join(allowedRoot, "handbook.pdf");
     writeFileSync(pdfPath, PDF_BYTES);

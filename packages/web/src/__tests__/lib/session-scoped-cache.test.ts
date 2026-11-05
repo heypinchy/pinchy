@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   ifNoneMatchHits,
   rangeAllowedByIfRange,
+  servePosture,
   sessionScopedRevalidateHeaders,
   weakFileEtag,
   weakStoredFileEtag,
@@ -100,5 +101,18 @@ describe("weakStoredFileEtag", () => {
     expect(weakStoredFileEtag(STAT, "/store/v1/ab/abc.pdf", "converted")).not.toBe(
       weakFileEtag(STAT, "converted")
     );
+  });
+});
+
+describe("servePosture", () => {
+  // A 304 keeps the headers the browser stored with its copy, so a validator
+  // that ignored how the bytes are served would pin an old content type or
+  // disposition forever once a release tightens them.
+  it("is a short tag that changes with every serving header it is given", () => {
+    const base = servePosture("application/pdf", "inline");
+    expect(base).toMatch(/^[a-z0-9]{8,}$/);
+    expect(servePosture("application/pdf", "attachment")).not.toBe(base);
+    expect(servePosture("text/plain", "inline")).not.toBe(base);
+    expect(servePosture("application/pdf", "inline")).toBe(base);
   });
 });

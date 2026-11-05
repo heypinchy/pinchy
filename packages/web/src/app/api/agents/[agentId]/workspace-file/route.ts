@@ -46,6 +46,7 @@ import type { AgentPluginConfig } from "@/db/schema";
 import {
   ifNoneMatchHits,
   rangeAllowedByIfRange,
+  servePosture,
   sessionScopedRevalidateHeaders,
   weakFileEtag,
   weakStoredFileEtag,
@@ -583,9 +584,22 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // which therefore runs before a 304 too: the hash is what tells a current
   // conversion from one of a document since replaced, so it cannot be skipped
   // for a reuse. A 304 saves sending the PDF, not reading the source.
+  // `attachment` is the stricter of the two, so forcing it can only narrow what
+  // the browser is allowed to do with these bytes — it never relaxes the
+  // extension-derived anti-XSS split, it only ever overrides `inline`.
+  // Derived from the name the bytes are SERVED under, not from the source's:
+  // the converted artifact is a PDF and has to be typed and dispositioned as
+  // one, or the viewer gets an `application/msword` attachment where it asked
+  // for something to render.
+  const { contentType, disposition: servedDisposition } = contentTypeForFile(servedName);
+  const disposition = isDownload ? "attachment" : servedDisposition;
+
+  // How the bytes are served is part of what a cached copy stands for: a 304
+  // leaves the browser on the headers it stored (see servePosture).
+  const variantTag = representation + servePosture(contentType, disposition);
   const etag = artifactPath
-    ? weakStoredFileEtag(info, artifactPath, representation)
-    : weakFileEtag(info, representation);
+    ? weakStoredFileEtag(info, artifactPath, variantTag)
+    : weakFileEtag(info, variantTag);
 
   // A range continues a copy the client already holds. With If-Range it is
   // asked for only if that copy is current, which a weak validator cannot
@@ -629,16 +643,6 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const start = isPartial ? range.start : 0;
   const end = isPartial ? range.end : Math.max(0, info.size - 1);
   const contentLength = info.size === 0 ? 0 : end - start + 1;
-
-  // `attachment` is the stricter of the two, so forcing it can only narrow what
-  // the browser is allowed to do with these bytes — it never relaxes the
-  // extension-derived anti-XSS split, it only ever overrides `inline`.
-  // Derived from the name the bytes are SERVED under, not from the source's:
-  // the converted artifact is a PDF and has to be typed and dispositioned as
-  // one, or the viewer gets an `application/msword` attachment where it asked
-  // for something to render.
-  const { contentType, disposition: servedDisposition } = contentTypeForFile(servedName);
-  const disposition = isDownload ? "attachment" : servedDisposition;
 
   deferAuditLog(
     sourceAccessAuditEntry({

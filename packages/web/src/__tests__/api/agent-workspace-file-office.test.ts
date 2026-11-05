@@ -22,7 +22,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from "node:fs";
-import { weakStoredFileEtag } from "@/lib/session-scoped-cache";
+import { servePosture, weakStoredFileEtag } from "@/lib/session-scoped-cache";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { NextRequest, NextResponse } from "next/server";
@@ -454,7 +454,11 @@ describe("workspace-file — a cached converted PDF is re-checked on every reuse
     // so pin the validator itself: it is derived from the ARTIFACT's store
     // path, which is what changes with the source's content.
     expect(res.headers.get("etag")).toBe(
-      weakStoredFileEtag(statSync(secondArtifact), secondArtifact, "converted")
+      weakStoredFileEtag(
+        statSync(secondArtifact),
+        secondArtifact,
+        `converted${servePosture(res.headers.get("content-type")!, "inline")}`
+      )
     );
   });
 

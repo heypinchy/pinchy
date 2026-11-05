@@ -116,6 +116,19 @@ describe("streamWorkspaceFile caching (#1286)", () => {
     expect(res.headers.get("vary")).toBe("Cookie");
   });
 
+  it("gives the same bytes served as a different type a different validator", async () => {
+    // Same file, served under a name that makes it CSV rather than text: the
+    // browser must not keep the text copy's content-type on a 304.
+    const path = join(tmpRoot, "notes.txt");
+    writeFileSync(path, "a,b\n1,2\n");
+    const asText = (await streamWorkspaceFile(path, "notes.txt")).headers.get("etag")!;
+
+    const res = await streamWorkspaceFile(path, "notes.csv", { "if-none-match": asText });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("etag")).not.toBe(asText);
+  });
+
   it("sends the new bytes when the file changed since it was cached", async () => {
     const path = join(tmpRoot, "notes.txt");
     writeFileSync(path, "hello");
