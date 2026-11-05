@@ -154,6 +154,8 @@ poll `configPushesPending` on the same health endpoint until it is `0`.
 
 List agents visible to the current user. Admins see every shared agent, of any visibility; non-admin users see shared agents their visibility setting admits them to. Everyone additionally sees their own personal Smithers, and nobody sees anyone else's — admins included.
 
+The list is sent with `Cache-Control: no-store`: it differs per user, so the browser never keeps a copy the next person signing in on the same browser could be shown.
+
 **Response:**
 
 ```json
@@ -397,11 +399,11 @@ The chat asks this when you press Retry, not when the run failed — see [Retryi
 
 ### `GET /api/agents/:agentId/uploads/:filename`
 
-Download a file the caller uploaded to this agent.
+Download a file the caller uploaded to this agent. Cached like `workspace-file` below: kept, but checked again on every reuse (`304` when unchanged), and only for the same session. Unlike `workspace-file`, downloads here are not written to the audit trail, a `304` included.
 
 ### `GET /api/agents/:agentId/artifacts/:filename`
 
-Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files).
+Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files). Cached like `workspace-file` below: kept, but checked again on every reuse (`304` when unchanged), and only for the same session. Unlike `workspace-file`, downloads here are not written to the audit trail, a `304` included.
 
 Serves a file the caller was actually handed, not whatever currently carries that name. Each delivery records where the file was and a checksum of its contents, and the download is refused with `404` unless the file on disk still matches one of the caller's own deliveries of that name. On a shared agent that matters: everyone's chats write into the same workspace, so without it a later file of the same name — from a conversation you cannot see — would be served under your download link.
 
@@ -417,6 +419,10 @@ Write a file into the agent's own workspace.
 
 Serve a file from a directory this agent is granted under `allowed_paths` — the path behind a knowledge-base citation you click. Supports byte ranges, so a PDF viewer can jump straight to the cited page.
 
+The bytes are sent with `Cache-Control: private, no-cache`, `Vary: Cookie` and a weak `ETag`. The browser keeps its copy but asks the server before every reuse, and the server answers only after the access check: if the agent's grant was removed, or you lost access to the agent, every new request for the document is answered `403` or `404` instead of letting the browser reuse its copy. A page the browser restores from its own history (the Back button) can still show what it displayed before; that is not a new request and no cache header prevents it short of not storing the document at all. An unchanged document you may still see is answered `304 Not Modified` without its bytes, so a large PDF is not sent again; that reuse is logged like any other read (`knowledge.source_viewed`, or `knowledge.source_downloaded` with `download=1`), marked `revalidated: true`. `Vary: Cookie` keeps a copy from crossing sessions, such as another person signing in on the same browser.
+
+A `Range` request is honoured on its own. Sent with `If-Range`, it is answered with the whole file instead: `If-Range` needs a strong validator, and splicing a range of a newer edition onto a cached copy of an older one would corrupt the document.
+
 **Query parameters:**
 
 | Field      | Required | Description                                                                                                            |
@@ -430,7 +436,7 @@ Serve a file from a directory this agent is granted under `allowed_paths` — th
 
 `variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`, and one that is too large to read safely answers `413` — refused without being opened when it is over 100 MB, unpacks to far more than it weighs, has a sheet (or another part the reader reads as text) over 16 MB or a picture over 32 MB, and refused after the attempt when reading it needs more memory than the separate process the rows are read in may use (384 MB). That process is why a heavy workbook never costs Pinchy's own memory. `503` is about the reader, never the workbook: there was no room on the artifact volume for the private copy the rows are read from, the process could not be started, ran past its two-minute limit or was stopped by the system — or two reads are already waiting for it, in which case the answer carries `Retry-After`. Workbooks are read one at a time, the index's reads included, so a request that is abandoned while it waits or reads (a reload, a closed preview) has its read dropped; its audit row says `cancelled`.
 
-`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation left (`original`, `converted` or `rows`).
+`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation was served — or, on a `304`, which one was checked (`original`, `converted` or `rows`).
 
 ### `GET /api/agents/:agentId/telegram-chat`
 
@@ -1149,7 +1155,7 @@ Capability flags for every model in the catalog. Used to gate model selection ag
 }
 ```
 
-Backed by the models table, so it reflects the catalog seed and any provider the admin has added or removed. The response is sent with `Cache-Control: private, max-age=60`.
+Backed by the models table, so it reflects the catalog seed and any provider the admin has added or removed. The response is sent with `Cache-Control: private, max-age=60` and `Vary: Cookie`, so the browser reuses it only for the same session and never serves it to the next person who signs in on the same browser.
 
 ## Domain Lock (admin only)
 
@@ -1370,11 +1376,11 @@ Create an invite for a new user. Returns the full invite object including a plai
 
 **Request body:**
 
-| Field      | Type     | Required | Description                                                 |
-| ---------- | -------- | -------- | ----------------------------------------------------------- |
-| `role`     | string   | Yes      | Role for the invited user (`admin` or `member`)             |
-| `email`    | string   | No       | Email address of the invited user (optional, for reference) |
-| `groupIds` | string[] | No       | Group IDs to assign the user to on account creation         |
+| Field      | Type     | Required | Description                                                          |
+| ---------- | -------- | -------- | -------------------------------------------------------------------- |
+| `email`    | string   | Yes      | Email address of the invited user. Their account is created with it. |
+| `role`     | string   | Yes      | Role for the invited user (`admin` or `member`)                      |
+| `groupIds` | string[] | No       | Group IDs to assign the user to on account creation                  |
 
 **Response:** `201 Created`
 
@@ -1395,7 +1401,7 @@ The admin constructs the invite URL from the returned token: `{origin}/invite/{t
 
 **Errors:**
 
-- `400` — missing or invalid role
+- `400` — missing or invalid email or role
 - `401` — not authenticated
 - `403` — not an admin, or seat cap reached (enterprise license `maxUsers` limit exceeded — see `GET /api/enterprise/status`)
 
@@ -1445,7 +1451,7 @@ What kind of flow this token opens, so the page can render the right form. **No 
 
 **Response:** `{ "type": "invite" }` for a new-user claim, `{ "type": "reset" }` for a password reset on an existing account. The distinction matters: the reset form deliberately has no name field, so resetting a password can't overwrite the user's display name.
 
-**Errors:** `404` / `410` with an `error` message when the token is unknown, already claimed, or expired.
+**Errors:** an `error` message with `410` when the token is unknown, already claimed or expired, or the invite has no email address; `404` when a reset token's user no longer exists.
 
 ### `POST /api/invite/claim`
 
@@ -1453,13 +1459,13 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 
 **Request body:**
 
-| Field      | Type   | Required | Description                         |
-| ---------- | ------ | -------- | ----------------------------------- |
-| `token`    | string | Yes      | The invite/reset token from the URL |
-| `name`     | string | Yes      | Display name for the new user       |
-| `password` | string | Yes      | Password (min 8 characters)         |
+| Field      | Type   | Required          | Description                                                                    |
+| ---------- | ------ | ----------------- | ------------------------------------------------------------------------------ |
+| `token`    | string | Yes               | The invite/reset token from the URL                                            |
+| `name`     | string | For a new account | Display name for the new user (ignored for a password reset)                   |
+| `password` | string | Yes               | Password: at least 12 characters, a letter and a number, not a common password |
 
-**Response:** `201 Created`
+**Response:** `201 Created` for a new account, `200 OK` for a password reset
 
 ```json
 {
@@ -1469,7 +1475,10 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 
 **Errors:**
 
-- `400` — missing fields, invalid token, or token expired
+- `400` — missing fields, or a password that fails the password policy
+- `404` — a reset token whose user no longer exists
+- `410` — the token is unknown, expired or already claimed, or the invite has no email address (invites created before the email became required). The `error` message says when the invite lacks an email address.
+- `500` — the account could not be created, or the password reset failed. When sign-up or the reset itself is refused, the token stays usable and an `outcome: failure` audit entry is written (`user.created` or `auth.password_reset_completed`).
 
 ## Telegram Channels
 

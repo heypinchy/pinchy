@@ -5,6 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { ChevronRight, Folder } from "lucide-react";
 import { apiGet } from "@/lib/api-client";
+import { directoryKey as key } from "@/lib/directory-path";
 
 interface Directory {
   path: string;
@@ -35,15 +36,6 @@ function fetchChildren(path: string): Promise<DirectoryChildren> {
   return apiGet<DirectoryChildren>(
     `/api/data-directories/children?path=${encodeURIComponent(path)}`
   );
-}
-
-/**
- * The comparison form of a folder path. Grants are stored with a trailing
- * slash (`sanitizePath`), listings come without one — comparing raw strings is
- * what made a granted folder render unticked (#1264).
- */
-function key(path: string): string {
-  return path.length > 1 ? path.replace(/\/+$/, "") : path;
 }
 
 /** Strictly below — `/data/suppliers-archive` is not inside `/data/suppliers`. */
