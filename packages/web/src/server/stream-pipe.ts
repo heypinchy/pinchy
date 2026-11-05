@@ -1139,7 +1139,7 @@ export class StreamPipe {
       // still be in flight right now — `false` here does not mean the run was
       // read-only (#1013). `runStartedAt` goes into the row so `resolveRetryGate`
       // can ask the same question again when the user reaches for Retry.
-      const sideEffects = await agentRanToolSince(args.agent.id, args.runStartedAt);
+      const sideEffects = await agentRanToolSince(args.agent.id, userId, args.runStartedAt);
       // EVERY failed run is recorded, because every failed run can be retried
       // and every retry needs the gate. Whether it also re-surfaces as a
       // "paused" banner is a separate question: a persistent problem with
