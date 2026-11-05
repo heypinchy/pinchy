@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useEffect } from "react";
+import { createContext, useContext, useEffect } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { AssistantRuntime } from "@assistant-ui/react";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
@@ -18,6 +18,7 @@ import { AiDisclosureLabel } from "@/components/ai-disclosure-label";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { type ChatStatus, useChatStatus } from "@/hooks/use-chat-status";
+import { usePendingApprovals } from "@/hooks/use-pending-approvals";
 import { recordLastChat } from "@/lib/last-chat-store";
 
 function getStatusIndicator(status: ChatStatus): { colorClass: string; label: string } {
@@ -95,6 +96,26 @@ export const RetryPendingUploadContext = createContext<(localId: string) => void
  */
 export const ChatStatusContext = createContext<ChatStatus>({ kind: "starting" });
 
+/**
+ * The hint for a reply that is slow to arrive. A run parked on one of this
+ * agent's confirmations is not slow — it waits for the user, and blaming
+ * "high demand" sends them looking for a problem that isn't there (#1301).
+ * Same filter as `ThreadApprovals`, which draws that confirmation in the
+ * thread.
+ */
+function DelayHint() {
+  const agentId = useContext(AgentIdContext);
+  const { approvals } = usePendingApprovals();
+  const awaitingConfirmation = agentId !== null && approvals.some((a) => a.agentId === agentId);
+  return (
+    <div className="px-4 py-2 text-center text-xs text-muted-foreground border-t">
+      {awaitingConfirmation
+        ? "Waiting for your confirmation."
+        : "The agent is taking longer than usual. This may be due to high demand."}
+    </div>
+  );
+}
+
 interface ChatStatusBannerProps {
   status: ChatStatus;
   isDelayed: boolean;
@@ -102,11 +123,7 @@ interface ChatStatusBannerProps {
 
 function ChatStatusBanner({ status, isDelayed }: ChatStatusBannerProps) {
   if (status.kind === "responding" && isDelayed) {
-    return (
-      <div className="px-4 py-2 text-center text-xs text-muted-foreground border-t">
-        The agent is taking longer than usual. This may be due to high demand.
-      </div>
-    );
+    return <DelayHint />;
   }
   if (status.kind === "unavailable" && status.reason === "exhausted") {
     return (

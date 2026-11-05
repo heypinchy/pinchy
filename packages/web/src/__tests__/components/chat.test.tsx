@@ -5,14 +5,36 @@ import "@testing-library/jest-dom";
 import { Chat } from "@/components/chat";
 import { makeAgent } from "@/test-helpers/fixtures";
 
-const { mockGetAgent, mockUseChatStatus, mockUseChatSession, mockRecordLastChat } = vi.hoisted(
-  () => ({
-    mockGetAgent: vi.fn() as ReturnType<typeof vi.fn>,
-    mockUseChatStatus: vi.fn(),
-    mockUseChatSession: vi.fn(),
-    mockRecordLastChat: vi.fn(),
-  })
-);
+const {
+  mockGetAgent,
+  mockUseChatStatus,
+  mockUseChatSession,
+  mockRecordLastChat,
+  mockUsePendingApprovals,
+} = vi.hoisted(() => ({
+  mockGetAgent: vi.fn() as ReturnType<typeof vi.fn>,
+  mockUseChatStatus: vi.fn(),
+  mockUseChatSession: vi.fn(),
+  mockRecordLastChat: vi.fn(),
+  mockUsePendingApprovals: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-pending-approvals", () => ({
+  usePendingApprovals: mockUsePendingApprovals,
+}));
+
+function pendingApprovalFor(agentId: string) {
+  return {
+    id: `approval-${agentId}`,
+    agentId,
+    agentName: "Scout",
+    toolName: "odoo_write",
+    argsSummary: {},
+    sessionKey: `agent:${agentId}:direct:user-1`,
+    createdAt: "2026-11-05T10:00:00.000Z",
+    expiresAt: "2026-11-05T10:15:00.000Z",
+  };
+}
 
 vi.mock("@/lib/last-chat-store", () => ({
   recordLastChat: (...args: unknown[]) => mockRecordLastChat(...args),
@@ -111,6 +133,13 @@ describe("Chat", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetAgent.mockReturnValue(undefined);
+    mockUsePendingApprovals.mockReturnValue({
+      approvals: [],
+      openId: null,
+      open: vi.fn(),
+      busy: null,
+      decide: vi.fn(),
+    });
     mockUseChatStatus.mockReturnValue({ kind: "ready" });
     mockUseChatSession.mockReturnValue({
       bundle: DEFAULT_BUNDLE,
@@ -383,6 +412,45 @@ describe("Chat", () => {
       });
       render(<Chat agentId="agent-1" agentName="Smithers" />);
       expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
+    });
+
+    describe("while the agent waits for the user's confirmation (#1301)", () => {
+      function delayedResponding() {
+        mockUseChatStatus.mockReturnValue({ kind: "responding" });
+        mockUseChatSession.mockReturnValue({
+          bundle: { ...DEFAULT_BUNDLE, isDelayed: true, isRunning: true },
+          publish: vi.fn(),
+          remove: vi.fn(),
+        });
+      }
+
+      it("says it is waiting for the confirmation, not that the agent is slow", () => {
+        delayedResponding();
+        mockUsePendingApprovals.mockReturnValue({
+          approvals: [pendingApprovalFor("agent-1")],
+          openId: null,
+          open: vi.fn(),
+          busy: null,
+          decide: vi.fn(),
+        });
+        render(<Chat agentId="agent-1" agentName="Smithers" />);
+        expect(screen.getByText(/waiting for your confirmation/i)).toBeInTheDocument();
+        expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument();
+      });
+
+      it("still shows the delay hint when only another agent waits for a confirmation", () => {
+        delayedResponding();
+        mockUsePendingApprovals.mockReturnValue({
+          approvals: [pendingApprovalFor("agent-2")],
+          openId: null,
+          open: vi.fn(),
+          busy: null,
+          decide: vi.fn(),
+        });
+        render(<Chat agentId="agent-1" agentName="Smithers" />);
+        expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
+        expect(screen.queryByText(/waiting for your confirmation/i)).not.toBeInTheDocument();
+      });
     });
 
     it("shows exhausted message when unavailable/exhausted", () => {
