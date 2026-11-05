@@ -704,6 +704,46 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
     });
   });
 
+  it("audits a revalidated download as a download, not as a view", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const first = await callGET("agent-1", pdfPath, undefined, { download: "1" });
+    const etag = first.headers.get("etag")!;
+    await first.body?.cancel();
+    mockDeferAuditLog.mockClear();
+
+    const res = await callGET("agent-1", pdfPath, { "if-none-match": etag }, { download: "1" });
+
+    expect(res.status).toBe(304);
+    expect(mockDeferAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "knowledge.source_downloaded",
+        outcome: "success",
+        detail: expect.objectContaining({ revalidated: true }),
+      })
+    );
+  });
+
+  it("answers an unchanged document with 304 even when its range is past the end", async () => {
+    // The precondition decides first (RFC 9110 §13.2.2); a cached view must
+    // not be audited as a failed range read.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+    mockDeferAuditLog.mockClear();
+
+    const res = await callGET("agent-1", pdfPath, {
+      "if-none-match": etag,
+      range: "bytes=999999-",
+    });
+
+    expect(res.status).toBe(304);
+    expect(mockDeferAuditLog.mock.calls[0][0]).toMatchObject({
+      outcome: "success",
+      detail: { revalidated: true, partial: false },
+    });
+  });
+
   it("leaves a read that sent bytes without the revalidated flag", async () => {
     const pdfPath = join(allowedRoot, "handbook.pdf");
     writeFileSync(pdfPath, PDF_BYTES);

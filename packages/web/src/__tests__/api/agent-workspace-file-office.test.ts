@@ -409,10 +409,15 @@ describe("workspace-file — a cached converted PDF is re-checked on every reuse
     await storeArtifactFor(DOCX_BYTES);
     const etag = (await callGET(source)).headers.get("etag")!;
 
+    mockDeferAuditLog.mockClear();
     const res = await callGET(source, {}, { "if-none-match": etag });
 
     expect(res.status).toBe(304);
     expect(res.body).toBeNull();
+    expect(auditEntries()[0]).toMatchObject({
+      outcome: "success",
+      detail: { revalidated: true, representation: "converted" },
+    });
   });
 
   it("gives the original and its converted PDF different validators", async () => {

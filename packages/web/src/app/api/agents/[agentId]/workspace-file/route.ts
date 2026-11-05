@@ -575,7 +575,8 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // allowed_paths checks above, which is the point: a revoked grant answers
   // 403 here, never 304. Only an unchanged document the reader may still see
   // is answered 304, without its bytes. A 304 is the reader looking at the
-  // document again, so it is audited as a view like any other.
+  // document again, so it is audited like the read it replaces (a view, or a
+  // download with `download=1`).
   // The artifact store touches each artifact on read, so its timestamps move
   // every request; its content-addressed path identifies it instead. That
   // path comes from hashing the source in full (resolveConvertedArtifact),
