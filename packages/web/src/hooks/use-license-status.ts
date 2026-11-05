@@ -16,6 +16,12 @@ export const LICENSE_STATUS_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_00
 /** One toast for every mounted caller: sonner replaces a toast with the same id. */
 export const LICENSE_STATUS_TOAST_ID = "license-status-unavailable";
 
+/**
+ * A request held open by a restarting server or a proxy would never settle,
+ * and an attempt that never settles never schedules its retry.
+ */
+const REQUEST_TIMEOUT_MS = 10_000;
+
 const UNAVAILABLE_MESSAGE = "Couldn't load your license status. We'll keep trying.";
 
 /**
@@ -90,7 +96,7 @@ export function useLicenseStatus({
     const gen = ++generation.current;
     clearTimeout(retryTimer.current);
     try {
-      const next = await fetchLicenseStatus();
+      const next = await fetchLicenseStatus(AbortSignal.timeout(REQUEST_TIMEOUT_MS));
       if (gen !== generation.current) return;
       failures.current = 0;
       setLicense(next);
@@ -103,7 +109,10 @@ export function useLicenseStatus({
       const attempt = failures.current++;
       if (attempt === 0 && notifyOnFailure) {
         notified.current = true;
-        toast.error(UNAVAILABLE_MESSAGE, { id: LICENSE_STATUS_TOAST_ID });
+        // Stays up until the status arrives (or the caller unmounts): the
+        // component sits in its loading state the whole time, and a toast
+        // that faded after 4 s would leave that unexplained.
+        toast.error(UNAVAILABLE_MESSAGE, { id: LICENSE_STATUS_TOAST_ID, duration: Infinity });
       }
       const delays = LICENSE_STATUS_RETRY_DELAYS_MS;
       retryTimer.current = setTimeout(
@@ -115,6 +124,8 @@ export function useLicenseStatus({
 
   useEffect(() => {
     if (!enabled) return;
+    // Under React StrictMode the simulated remount fetches anyway — one extra
+    // GET in development, harmless.
     if (skipInitialFetch.current) {
       skipInitialFetch.current = false;
     } else {

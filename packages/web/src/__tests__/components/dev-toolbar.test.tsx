@@ -39,9 +39,9 @@ describe("DevToolbar", () => {
     render(<DevToolbar />);
 
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-    });
+    // Let the failed response settle before asserting it rendered nothing.
+    await act(async () => {});
+    await act(async () => {});
 
     expect(screen.queryByText("Community")).not.toBeInTheDocument();
     expect(screen.queryByText("Enterprise")).not.toBeInTheDocument();

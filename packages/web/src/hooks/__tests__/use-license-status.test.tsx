@@ -126,7 +126,10 @@ describe("useLicenseStatus", () => {
     renderHook(() => useLicenseStatus({ notifyOnFailure: true }));
     await act(async () => {});
     expect(toast.error).toHaveBeenCalledTimes(1);
-    expect(toast.error).toHaveBeenCalledWith(expect.any(String), { id: LICENSE_STATUS_TOAST_ID });
+    expect(toast.error).toHaveBeenCalledWith(expect.any(String), {
+      id: LICENSE_STATUS_TOAST_ID,
+      duration: Infinity,
+    });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(LICENSE_STATUS_RETRY_DELAYS_MS[0]);
@@ -178,5 +181,63 @@ describe("useLicenseStatus", () => {
     renderHook(() => useLicenseStatus({ enabled: false }));
     await act(async () => {});
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("ignores a response that a newer attempt superseded", async () => {
+    const stale = { ...enterpriseStatus, enterprise: false, state: "community" as const };
+    let resolveFirst!: (r: Response) => void;
+    fetchSpy
+      .mockImplementationOnce(() => new Promise<Response>((r) => (resolveFirst = r)))
+      .mockResolvedValueOnce(jsonResponse(enterpriseStatus));
+
+    const { result } = renderHook(() => useLicenseStatus());
+    await act(async () => {
+      await result.current.refetch();
+    });
+    expect(result.current.license).toEqual(enterpriseStatus);
+
+    await act(async () => {
+      resolveFirst(jsonResponse(stale));
+    });
+    expect(result.current.license).toEqual(enterpriseStatus);
+  });
+
+  it("cancels a pending retry when disabled", async () => {
+    vi.useFakeTimers();
+    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
+    const { rerender } = renderHook(({ on }) => useLicenseStatus({ enabled: on }), {
+      initialProps: { on: true },
+    });
+    await act(async () => {});
+    rerender({ on: false });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps retrying a failed refetch() while disabled", async () => {
+    vi.useFakeTimers();
+    fetchSpy
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(jsonResponse(enterpriseStatus));
+    const { result } = renderHook(() => useLicenseStatus({ enabled: false }));
+    await act(async () => {
+      await result.current.refetch();
+    });
+    expect(result.current.license).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LICENSE_STATUS_RETRY_DELAYS_MS[0]);
+    });
+    expect(result.current.license).toEqual(enterpriseStatus);
+  });
+
+  it("dismisses its toast on unmount", async () => {
+    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
+    const { unmount } = renderHook(() => useLicenseStatus({ notifyOnFailure: true }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    unmount();
+    expect(toast.dismiss).toHaveBeenCalledWith(LICENSE_STATUS_TOAST_ID);
   });
 });

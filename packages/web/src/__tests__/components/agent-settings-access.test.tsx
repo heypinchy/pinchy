@@ -212,9 +212,12 @@ describe("AgentSettingsAccess", () => {
     );
 
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/license status/i), {
-        id: expect.any(String),
-      });
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/license status/i),
+        expect.objectContaining({
+          id: expect.any(String),
+        })
+      );
     });
     expect(screen.queryByText("Access Control")).not.toBeInTheDocument();
     expect(screen.queryByText("Pro")).not.toBeInTheDocument();

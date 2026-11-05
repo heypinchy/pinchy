@@ -304,9 +304,12 @@ describe("SettingsUsers", () => {
       await openMaxSheet();
 
       await waitFor(() => {
-        expect(mockToast.error).toHaveBeenCalledWith(expect.stringMatching(/license status/i), {
-          id: expect.any(String),
-        });
+        expect(mockToast.error).toHaveBeenCalledWith(
+          expect.stringMatching(/license status/i),
+          expect.objectContaining({
+            id: expect.any(String),
+          })
+        );
       });
       expect(screen.queryByText(/requires an active license/i)).not.toBeInTheDocument();
     });
