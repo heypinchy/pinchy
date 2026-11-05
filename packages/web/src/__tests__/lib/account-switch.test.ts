@@ -177,6 +177,21 @@ describe("account switch on a shared browser (#1286)", () => {
     }
   });
 
+  it("keeps a recent share on the first sign-in in a browser with no record yet", async () => {
+    // Installed from the login page and shared before ever signing in: no one
+    // else's state can be here, and the share is what the person came to send.
+    const cacheDelete = vi.fn(async () => true);
+    vi.stubGlobal("caches", { delete: cacheDelete });
+    try {
+      await enterAccount("user-a", "/share?share_id=s1");
+
+      expect(cacheDelete).not.toHaveBeenCalled();
+      expect(mockSweepStaleShares).toHaveBeenCalledWith(TEN_MINUTES);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("still wipes and moves on when the sign-out request itself fails", async () => {
     // Offline or a restarting server: the fetch rejects instead of answering.
     mockSignOut.mockRejectedValue(new TypeError("Failed to fetch"));

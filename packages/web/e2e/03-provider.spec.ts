@@ -28,11 +28,14 @@ test.describe("Provider configuration", () => {
 
     await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
 
-    // Select Anthropic
-    await page.getByRole("button", { name: /anthropic/i }).click();
-
-    // API key input should be visible with correct placeholder
-    await expect(page.getByPlaceholder(/sk-ant-/i)).toBeVisible();
+    // Select Anthropic, retrying the click: signing in is a full page load
+    // (#1286), so the URL can match before the page has hydrated, and a click
+    // that lands first is silently dropped (see 06-user-management.spec.ts).
+    // The retry waits on the same thing the test asserts.
+    await expect(async () => {
+      await page.getByRole("button", { name: /anthropic/i }).click();
+      await expect(page.getByPlaceholder(/sk-ant-/i)).toBeVisible({ timeout: 1000 });
+    }).toPass({ timeout: 15000 });
   });
 
   test("app loads after provider is configured via DB", async ({ page }) => {

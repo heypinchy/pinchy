@@ -127,10 +127,10 @@ export async function claimAccount(userId: string): Promise<void> {
   if (previous === userId) return;
   wipePinchyStorage();
   recordAccount(userId);
-  // After a sign-out the earlier shares are already gone, so any share there
-  // now was made while nobody was signed in. Keep a recent one for the person
-  // signing in; when someone else's session merely expired, drop them all.
-  if (previous?.startsWith(SIGNED_OUT_PREFIX)) await keepRecentShares();
+  // After a sign-out (or in a browser nobody has signed in to yet) any share
+  // there was made while nobody was signed in. Keep a recent one for the
+  // person signing in; when someone else's session merely expired, drop all.
+  if (previous === null || previous.startsWith(SIGNED_OUT_PREFIX)) await keepRecentShares();
   else await forgetShares();
 }
 
