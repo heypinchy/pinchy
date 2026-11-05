@@ -5,6 +5,7 @@ import { getAgentWithAccess } from "@/lib/agent-access";
 import { parseRequestBody } from "@/lib/api-validation";
 import { knowledgeReindexSchema } from "@/lib/schemas/knowledge-base";
 import { type AgentPluginConfig } from "@/db/schema";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 import { enqueueIndexJob, getLatestIndexJobForAgent } from "@/lib/knowledge/index-jobs";
 import { isScheduledIndexAgent } from "@/lib/knowledge/index-schedule";
 import { getIndexScheduleStatus } from "@/lib/knowledge/index-schedule-store";
@@ -23,8 +24,7 @@ type RouteContext = { params: Promise<{ agentId: string }> };
  * arbitrary host directory.
  */
 function resolveTargetPaths(agent: { pluginConfig: unknown }, requested?: string[]): string[] {
-  const granted =
-    (agent.pluginConfig as AgentPluginConfig | null)?.["pinchy-files"]?.allowed_paths ?? [];
+  const granted = grantedDataPaths(agent.pluginConfig as AgentPluginConfig | null);
   return requested ? requested.filter((p) => granted.includes(p)) : granted;
 }
 

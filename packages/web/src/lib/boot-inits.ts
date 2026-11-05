@@ -17,6 +17,7 @@ import { loadModelCapabilityCache } from "@/lib/model-capabilities/cache";
 import { checkSecretsVolumeWritable } from "@/lib/openclaw-secrets";
 import { recordConfigRegenSuccess, recordConfigRegenFailure } from "@/lib/openclaw-config-health";
 import { reportUnknownOriginUsers } from "@/lib/user-provenance";
+import { stripUngrantablePaths } from "@/lib/strip-ungrantable-paths";
 
 /**
  * Runs all one-time boot initializations in the correct order and performs
@@ -168,6 +169,25 @@ export async function bootInits(): Promise<boolean> {
     if (await isSetupComplete()) {
       setupComplete = true;
       await migrateExistingSmithers();
+
+      // Rows written before v0.9.1 can grant folders outside /data (#1272).
+      // Every reader already ignores those entries; this removes them from the
+      // rows and audits each removal. Own try/catch: it must never cost the
+      // instance its config regeneration below.
+      try {
+        const stripped = await stripUngrantablePaths();
+        if (stripped > 0) {
+          console.warn(
+            `[pinchy] Removed file-access grants outside /data from ${stripped} agent(s) — ` +
+              "see agent.updated in the audit trail"
+          );
+        }
+      } catch (err) {
+        console.error(
+          "[pinchy] Failed to remove file-access grants outside /data:",
+          err instanceof Error ? err.message : err
+        );
+      }
 
       // Bring un-customized Smithers souls up to the soul this build ships.
       // Own try/catch: SOUL.md drift must never cost the instance its config

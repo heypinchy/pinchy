@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   DEFAULT_INDEX_SCHEDULE,
+  grantedKnowledgePaths,
   isScheduledIndexAgent,
   isSlotDue,
   latestPassedSlot,
@@ -180,5 +181,33 @@ describe("isScheduledIndexAgent", () => {
 
   it("leaves out a deleted agent", () => {
     expect(isScheduledIndexAgent({ ...kbAgent, deletedAt: new Date() })).toBe(false);
+  });
+
+  // A row written before v0.9.1 confined allowed_paths to /data can still
+  // carry a folder outside it (#1272). That entry grants nothing, so an agent
+  // holding only such entries has nothing for the nightly run to index.
+  it("leaves out an agent whose only grants are pre-lockdown paths outside /data", () => {
+    const preLockdown = {
+      ...kbAgent,
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/root/.openclaw/workspaces", "/"] } },
+    };
+    expect(isScheduledIndexAgent(preLockdown)).toBe(false);
+  });
+});
+
+describe("grantedKnowledgePaths", () => {
+  it("drops pre-lockdown entries outside /data and keeps the ones under it (#1272)", () => {
+    expect(
+      grantedKnowledgePaths({
+        "pinchy-files": {
+          allowed_paths: [
+            "/data/handbook",
+            "/root/.openclaw/workspaces",
+            "/database",
+            "/data/../etc",
+          ],
+        },
+      })
+    ).toEqual(["/data/handbook"]);
   });
 });

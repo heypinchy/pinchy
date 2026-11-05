@@ -43,6 +43,7 @@ import {
   type VerifiedSource,
 } from "@/lib/knowledge/verified-source";
 import type { AgentPluginConfig } from "@/db/schema";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 
 type Params = { params: Promise<{ agentId: string }> };
 
@@ -267,8 +268,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // /api/internal/knowledge/search/route.ts): an agent's file-serving scope
   // is exactly the folders an admin has granted it, no separate allowlist to
   // drift. An empty/missing list denies by default.
-  const allowedPaths =
-    (agent.pluginConfig as AgentPluginConfig | null)?.["pinchy-files"]?.allowed_paths ?? [];
+  const allowedPaths = grantedDataPaths(agent.pluginConfig as AgentPluginConfig | null);
 
   const resolved = await resolveAllowedFile(requestedPath, allowedPaths);
   if (!resolved.ok) {
