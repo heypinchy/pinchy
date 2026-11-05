@@ -272,6 +272,9 @@ describe("POST /api/settings", () => {
   });
 
   it("returns 400 on a non-string value for the allowed key", async () => {
+    // An array, not a number: `["Europe/Vienna"]` stringifies to a valid zone,
+    // so only the schema's string check stops it. A number would also fail
+    // the route's IANA check and pass with the type check removed.
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
@@ -280,7 +283,7 @@ describe("POST /api/settings", () => {
     const request = new NextRequest("http://localhost/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "org.timezone", value: 42 }),
+      body: JSON.stringify({ key: "org.timezone", value: ["Europe/Vienna"] }),
     });
     const response = await POST(request);
     expect(response.status).toBe(400);
