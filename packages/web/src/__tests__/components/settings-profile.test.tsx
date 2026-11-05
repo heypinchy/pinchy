@@ -20,6 +20,11 @@ vi.mock("@/lib/auth-client", () => ({
   },
 }));
 
+const { mockLeaveAccount } = vi.hoisted(() => ({ mockLeaveAccount: vi.fn() }));
+vi.mock("@/lib/account-switch", () => ({
+  leaveAccount: (...args: unknown[]) => mockLeaveAccount(...args),
+}));
+
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
@@ -333,17 +338,19 @@ describe("SettingsProfile", () => {
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
   });
 
-  it("should call signOut and redirect when Log out is clicked", async () => {
+  it("should leave the account when Log out is clicked", async () => {
     const user = userEvent.setup();
-    const { authClient } = await import("@/lib/auth-client");
 
     render(<SettingsProfile userName="Alice" />);
 
     await user.click(screen.getByRole("button", { name: "Log out" }));
 
-    expect(authClient.signOut).toHaveBeenCalled();
+    // leaveAccount signs out, wipes this browser's Pinchy storage and does a
+    // full load (#1286); a client-side push would keep the previous person's
+    // in-memory state alive for whoever signs in next.
     await waitFor(() => {
-      expect(mockRouterPush).toHaveBeenCalledWith("/login");
+      expect(mockLeaveAccount).toHaveBeenCalledTimes(1);
     });
+    expect(mockRouterPush).not.toHaveBeenCalled();
   });
 });

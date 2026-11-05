@@ -14,13 +14,28 @@ type UserRow = typeof users.$inferSelect;
  *
  * - Unknown / expired / claimed token → `{ ok: false, status: 410 }`.
  * - Reset token whose target user no longer exists → `{ ok: false, status: 404 }`.
+ * - New-user invite without an email → `{ ok: false, status: 410 }` with
+ *   `reason: "invite_has_no_email"`. Better Auth needs an email to create the
+ *   account, so such a link can never work. The email has been required since
+ *   #1263; invites created before that can still carry none.
  * - Otherwise the discriminated `type` carries the data each caller needs: a
  *   reset resolution guarantees a non-null `user`.
  */
 export type InviteFlowResolution =
-  | { ok: false; status: number; error: string }
-  | { ok: true; type: "invite"; invite: InviteRow }
+  | { ok: false; status: number; error: string; reason?: undefined }
+  | {
+      ok: false;
+      status: 410;
+      error: string;
+      reason: "invite_has_no_email";
+      // Carried so the claim route can name the invite in its failure row.
+      invite: InviteRow;
+    }
+  | { ok: true; type: "invite"; invite: InviteRow & { email: string } }
   | { ok: true; type: "reset"; invite: InviteRow; user: UserRow };
+
+export const INVITE_WITHOUT_EMAIL_ERROR =
+  "This invite has no email address, so it can't create an account. Ask your administrator for a new invite.";
 
 export async function resolveInviteFlow(token: string): Promise<InviteFlowResolution> {
   const invite = await validateInviteToken(token);
@@ -38,7 +53,17 @@ export async function resolveInviteFlow(token: string): Promise<InviteFlowResolu
     return { ok: true, type: "reset", invite, user };
   }
 
-  return { ok: true, type: "invite", invite };
+  if (!invite.email) {
+    return {
+      ok: false,
+      status: 410,
+      error: INVITE_WITHOUT_EMAIL_ERROR,
+      reason: "invite_has_no_email",
+      invite,
+    };
+  }
+
+  return { ok: true, type: "invite", invite: { ...invite, email: invite.email } };
 }
 
 const TOKEN_BYTES = 32;
