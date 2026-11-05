@@ -29,14 +29,21 @@ import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
 const webSrcDir = path.resolve(__dirname, "../..");
 const HELPER = path.join(webSrcDir, "lib", "session-scoped-cache.ts");
 const EXCLUDED_DIR_NAMES = new Set(["__tests__", "node_modules", "test-helpers"]);
-// Any non-zero max-age or s-maxage, in any position and whether written out or
-// templated (`max-age=${n}`), plus an `expires` header, whether written as an
-// object key or passed to `headers.set("Expires", …)`, and a Last-Modified,
-// which grants a heuristic lifetime. max-age=0 keeps nothing, so it is not a
+// Any non-zero max-age, s-maxage or stale-* extension, in any position and
+// whether written out or templated (`max-age=${n}`), plus an `expires` header,
+// whether written as a quoted or bare object key or passed to
+// `headers.set("Expires", …)`, and a Last-Modified, which grants a heuristic
+// lifetime. max-age=0 keeps nothing, so it is not a
 // lifetime.
 const CACHE_LIFETIME_RES = [
   /\b(?:s-)?max-?age\s*=\s*(?!0\b)/i,
+  // Serves the stored copy at once and asks only afterwards, so a revoked
+  // reader still gets it on that reuse.
+  /\bstale-(?:while-revalidate|if-error)\s*=\s*(?!0\b)/i,
   /["']expires["']\s*[:,]/i,
+  // `Expires` needs no quotes as an object key. Capitalised only: prose says
+  // "the copy expires:" in lowercase.
+  /(?:^|[\s{,])Expires\s*:/,
   // Without Cache-Control, Last-Modified alone lets a browser reuse a
   // response for a fraction of its age without asking (RFC 9111 §4.2.2).
   /["']last-modified["']\s*[:,]/i,
@@ -50,6 +57,11 @@ const NOT_AN_HTTP_CACHE: Array<{ file: string; includes: string; reason: string 
     file: "components/ui/sidebar.tsx",
     includes: "document.cookie",
     reason: "a cookie's own lifetime attribute, not a response the browser caches",
+  },
+  {
+    file: "components/settings-license.tsx",
+    includes: "formatLicenseDate(license.expiresAt)",
+    reason: "the license's expiry date as visible text, not a header",
   },
 ];
 
@@ -67,6 +79,34 @@ function productionSources(dir: string): string[] {
 }
 
 describe("browser cache is scoped to the session (#1286)", () => {
+  it("recognises every way of writing a lifetime, and not what merely looks like one", () => {
+    // A narrowed pattern passes the scan below in silence, so its reach is
+    // pinned here line by line.
+    const lifetimes = [
+      `"cache-control": "private, max-age=3600"`,
+      "`private, max-age=${n}`",
+      `"cache-control": "public, s-maxage=60"`,
+      `"cache-control": "private, max-age=0, stale-while-revalidate=3600"`,
+      `"cache-control": "private, no-cache, stale-if-error=86400"`,
+      `"expires": new Date().toUTCString(),`,
+      `headers.set("Expires", when);`,
+      `headers: { Expires: new Date().toUTCString() },`,
+      `    Expires: later,`,
+      `"last-modified": stat.mtime.toUTCString(),`,
+      `headers.set("Last-Modified", when);`,
+    ];
+    const notLifetimes = [
+      `"cache-control": "private, max-age=0"`,
+      `"cache-control": "private, no-cache"`,
+      `"cache-control": "private, max-age=0, stale-while-revalidate=0"`,
+      "document.cookie = `sidebar=1; path=/; expires=${d}`;",
+      ` * reading the document until the copy expires: the grant was removed`,
+    ];
+    const hits = (line: string) => CACHE_LIFETIME_RES.some((re) => re.test(line));
+    expect(lifetimes.filter((l) => !hits(l))).toEqual([]);
+    expect(notLifetimes.filter(hits)).toEqual([]);
+  });
+
   it("pairs every cache lifetime with Vary: Cookie", () => {
     expect(sessionScopedCacheHeaders(60)).toEqual({
       "cache-control": "private, max-age=60",
