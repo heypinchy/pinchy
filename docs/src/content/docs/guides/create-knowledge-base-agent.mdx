@@ -195,7 +195,9 @@ If the indexed documents don't contain the answer, the agent says so instead of 
 
 ### Cross-language
 
-The agent answers in the language you asked in, even if the source documents are written in a different language.
+The agent answers in the language you asked in, even if the source documents are written in a different language. Ask in Polish about a German test report and you get a Polish answer. The quote and the document title stay in German, as they appear in the file you open.
+
+Like the citation contract, this rule travels with every `knowledge_search` result. It comes right after the passages, so it is the last thing the model reads before it writes. Smaller models need that: a block of German passages otherwise outweighs a language rule that sits far up in the agent's instructions. We measure it with a cross-lingual eval: German documents, questions in Polish, Italian and English.
 
 ### Current documents first
 

@@ -108,6 +108,30 @@ fallback (an unparseable reply counts _against_ groundedness, never for it).
 Both the LLM judge and the future sidecar satisfy the same `NliClient`
 interface (`nli.ts`), so swapping one for the other later touches no caller.
 
+### Cross-lingual answer sweep (`answer-language/`, #1296)
+
+A narrower Layer-3 sibling with no judge in the loop. Three invented,
+German-only documents go through the stack's real ingest pipeline, and a
+Knowledge Base agent answers questions in Polish, Italian and English
+(`answer-language/questions.ts`). `gradeAnswerLanguage`
+(`src/lib/eval/kb/answer-language.ts`) reads which language each sentence of
+the answer is in, after removing the Sources list, quoted wording and
+citations. An answer passes only if it is in the question's language
+throughout, so one that switches to German mid-sentence fails.
+
+It exists because Claude Haiku 5.5 answered Polish questions in German when
+the passages were German. Its default candidates are Anthropic models for
+that reason, and it needs `ANTHROPIC_API_KEY` instead of an Ollama Cloud key:
+
+```bash
+ANTHROPIC_API_KEY=... KB_LANG_EVAL_CONDITION=after EVAL_N=3 pnpm -C packages/web kb-eval:language
+```
+
+`KB_LANG_EVAL_CONDITION` labels the rows, so a before/after comparison can
+share one results file. Each row also records whether the OpenClaw container's
+`pinchy-knowledge` plugin really carried the language reminder, read from the
+container itself. A mislabelled run shows up in its own rows.
+
 ## The corpus decision
 
 CI only ever sees one corpus: a **synthetic, fully-invented, committed**
