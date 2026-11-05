@@ -20,7 +20,14 @@ import { summarizeCall } from "@/lib/approvals/summary";
 import { summarizeArgs } from "@/test-helpers/approvals";
 import { PREVIEW_LEN, WHOLE_MAX, displayScalar, textOf, type Shown } from "@/lib/approvals/display";
 
-function approval(argsSummary: Record<string, unknown> | null, toolName = "email_send") {
+/**
+ * A tool the card has no preview for, so every value is drawn once, in the
+ * field list. The value-rendering tests below use it; the previews have their
+ * own tests at the end of this file.
+ */
+const GENERIC_TOOL = "pinchy_save_user_context";
+
+function approval(argsSummary: Record<string, unknown> | null, toolName = GENERIC_TOOL) {
   return {
     id: "req-1",
     agentId: "a1",
@@ -96,11 +103,11 @@ function renderCard(argsSummary: Record<string, unknown> | null, toolName?: stri
  * value — and be honest about anything it shortens.
  */
 describe("ApprovalCard shows what will actually run", () => {
-  it("names the agent, the tool and its arguments", () => {
+  it("names the agent, what the call does and its arguments", () => {
     renderCard({ subject: "Invoice" });
     expect(screen.getByText(/Smithers needs your confirmation/)).toBeInTheDocument();
-    expect(screen.getByText("email_send")).toBeInTheDocument();
-    expect(screen.getByText("subject")).toBeInTheDocument();
+    expect(screen.getByText(GENERIC_TOOL)).toBeInTheDocument();
+    expect(screen.getByText("Subject")).toBeInTheDocument();
     expect(screen.getByText("Invoice")).toBeInTheDocument();
   });
 
@@ -122,7 +129,7 @@ describe("ApprovalCard shows what will actually run", () => {
     renderCard(summarizeArgs(params));
     expect(screen.getByText("attacker@evil.com")).toBeInTheDocument();
     expect(screen.getByText("boss@firma.at")).toBeInTheDocument();
-    expect(screen.getByText("to")).toBeInTheDocument();
+    expect(screen.getByText("To")).toBeInTheDocument();
     expect(screen.getByText('"to "')).toBeInTheDocument();
   });
 
@@ -131,7 +138,7 @@ describe("ApprovalCard shows what will actually run", () => {
       { model: "res.partner.bank", ids: [42], values: { acc_number: "AT61 1904", amount: 99999 } },
       "odoo_write"
     );
-    expect(screen.getByText("acc_number")).toBeInTheDocument();
+    expect(screen.getByText("Acc number")).toBeInTheDocument();
     expect(screen.getByText("AT61 1904")).toBeInTheDocument();
     expect(screen.getByText("99999")).toBeInTheDocument();
     expect(screen.getByText("42")).toBeInTheDocument();
@@ -218,8 +225,8 @@ describe("ApprovalCard shows what will actually run", () => {
     const object = renderCard({ values: {} }).container;
     expect(drawnText(object)).not.toBe(listDrawn);
     expect(spokenText(object)).not.toBe(listSpoken);
-    expect(listDrawn).toContain("values[]");
-    expect(drawnText(object)).toContain("values{}");
+    expect(listDrawn).toContain("Values[]");
+    expect(drawnText(object)).toContain("Values{}");
     expect(listSpoken).toContain("empty list");
     expect(spokenText(object)).toContain("empty object");
   });
@@ -240,7 +247,8 @@ describe("ApprovalCard shows what will actually run", () => {
   it("shows a path in full, never behind a preview", () => {
     const path = `/data/reports/old-draft.md${"\u2800".repeat(180)}/../../contracts/signed.pdf`;
     renderCard(summarizeArgs({ path, content: "x" }), "pinchy_write");
-    expect(screen.getByText(/\/\.\.\/\.\.\/contracts\/signed\.pdf$/)).toBeInTheDocument();
+    // In the sentence, and under "File".
+    expect(screen.getAllByText(/\/\.\.\/\.\.\/contracts\/signed\.pdf$/)).toHaveLength(2);
     expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
   });
 
@@ -307,7 +315,7 @@ describe("ApprovalCard shows what will actually run", () => {
 
   it("renders a call without arguments", () => {
     renderCard(null, "pinchy_web_search");
-    expect(screen.getByText("pinchy_web_search")).toBeInTheDocument();
+    expect(screen.getByText("Search the web")).toBeInTheDocument();
   });
 
   // Previewed like prose, an email address or URL under a key the card does
@@ -499,7 +507,7 @@ describe("ApprovalCard shows what will actually run", () => {
   it("lists the recipient and target fields first, whatever order they arrive in", () => {
     renderCard({ body: "hi", subject: "Q3", values: { name: "x", model: "y" }, to: "a@b.at" });
     const labels = screen.getAllByRole("term").map((term) => term.textContent);
-    expect(labels).toEqual(["to", "body", "subject", "values", "model", "name"]);
+    expect(labels).toEqual(["To", "Body", "Subject", "Values", "Model", "Name"]);
   });
 
   // Left to the bidi algorithm, `/data/חוזים/2024.md` and `/data/2024/חוזים.md`
@@ -690,8 +698,8 @@ describe("ApprovalCard shows what will actually run", () => {
       });
       const spoken = spokenText(container);
       expect(spoken).toContain('"record reference res.partner #7 \\"Acme GmbH\\""');
-      expect(spoken).toContain('flag"false"');
-      expect(spoken).toContain("activefalse");
+      expect(spoken).toContain('Flag"false"');
+      expect(spoken).toContain("Activefalse");
     });
 
     it("reads an annotation as Pinchy's note, outside the value's quotes", () => {
@@ -844,7 +852,11 @@ describe("ApprovalCard shows what will actually run", () => {
     });
 
     it("contains no parsing or segmentation that differs between browsers", () => {
-      for (const file of ["../approval-card.tsx", "../../lib/approvals/display.ts"]) {
+      for (const file of [
+        "../approval-card.tsx",
+        "../../lib/approvals/display.ts",
+        "../../lib/approvals/intent.ts",
+      ]) {
         const code = readFileSync(resolve(import.meta.dirname, file), "utf8")
           .split("\n")
           .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
@@ -913,6 +925,12 @@ describe("opening a card", () => {
 
     const deny = screen.getByRole("button", { name: "Deny" });
     const approve = screen.getByRole("button", { name: "Approve" });
+    // The first stop is the card's own "Show technical details"; the next is
+    // Deny — never the next card's Review.
+    await user.tab();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: /show technical details/i })
+    );
     await user.tab();
     expect(document.activeElement).toBe(deny);
     for (const button of [deny, approve]) {
@@ -945,7 +963,9 @@ describe("opening a card", () => {
     review.focus();
     fireEvent.click(review);
 
-    const details = screen.getByRole("group", { name: /request to run email_send for smithers/i });
+    const details = screen.getByRole("group", {
+      name: `Request from Smithers: Use the tool ${GENERIC_TOOL}`,
+    });
     expect(details.id).toBe(controls);
     expect(document.activeElement).toBe(details);
     expect(within(details).getByText("a@b.c")).toBeInTheDocument();
@@ -1109,5 +1129,195 @@ describe("pressing Approve", () => {
     fireEvent.pointerUp(approve);
     fireEvent.click(approve, { detail: 1 });
     expect(onDecide).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #1310. The card says what will happen in words, previews the effect, and
+ * keeps the raw call behind "Show technical details" — without moving any
+ * value out of view (#1242): what the card shows is what will run.
+ */
+describe("says what will happen, in words", () => {
+  it("names the file it creates and draws its rows as a table", () => {
+    const summary = summarizeArgs({
+      filename: "test",
+      format: "csv",
+      columns: ["Name", "Wert"],
+      rows: [["A", 1]],
+    });
+    const { container } = renderCard(summary, "pinchy_generate_file");
+    const group = screen.getByRole("group");
+    expect(drawnText(group)).toContain("Create a CSV file named test with 2 columns and 1 row");
+
+    const table = screen.getByRole("table");
+    expect(within(table).getAllByRole("columnheader").map(drawnText)).toEqual(["Name", "Wert"]);
+    const [row] = within(table).getAllByRole("row").slice(1);
+    expect(within(row).getAllByRole("cell").map(drawnText)).toEqual(["A", "1"]);
+    // No list of lists: the rows used to read "• • A / • 1".
+    expect(container.querySelector("ul ul, li > ul")).toBeNull();
+    // The raw parameter names stay behind the disclosure.
+    expect(screen.queryByText("filename")).toBeNull();
+    expect(screen.queryByText("rows")).toBeNull();
+  });
+
+  it("names the recipient and subject of an email and says it goes out right away", () => {
+    renderCard(
+      summarizeArgs({ to: "ada@example.com", subject: "Q3 numbers", body: "Hi Ada" }),
+      "email_send"
+    );
+    const group = screen.getByRole("group", { name: "Request from Smithers: Send an email" });
+    expect(drawnText(group)).toContain(
+      "Send an email to ada@example.com with the subject Q3 numbers"
+    );
+    expect(screen.getAllByRole("term").map((term) => term.textContent)).toEqual([
+      "To",
+      "Subject",
+      "Message",
+    ]);
+    expect(screen.getByText(/sent right away/)).toBeInTheDocument();
+  });
+
+  it("names an Odoo record type in words beside its technical name", () => {
+    renderCard(
+      summarizeArgs({ model: "res.partner", ids: [7], values: { name: "Acme", is_company: true } }),
+      "odoo_write"
+    );
+    expect(drawnText(screen.getByRole("group"))).toContain(
+      "Change 1 record in Contacts (res.partner) in Odoo"
+    );
+    expect(screen.getByText("Is company")).toBeInTheDocument();
+  });
+
+  it("says when an action can't be undone", () => {
+    renderCard(summarizeArgs({ path: "/data/a.md" }), "pinchy_delete");
+    expect(screen.getByText("A deleted file can't be restored.")).toBeInTheDocument();
+  });
+
+  // The sentence is built from the values the tool will run with. Whatever the
+  // agent said in the chat, the card names the address the call carries.
+  it("names the recipient the call carries, in the sentence and below it", () => {
+    renderCard(summarizeArgs({ to: "attacker@evil.com", subject: "x", body: "y" }), "email_send");
+    expect(screen.getAllByText("attacker@evil.com")).toHaveLength(2);
+  });
+
+  it("repeats a recipient's notes in the sentence too", () => {
+    renderCard(summarizeArgs({ to: "Boss <boss@f\u0456rma.at>", subject: "x" }), "email_send");
+    expect(document.querySelectorAll('[data-annotation="host"]')).toHaveLength(2);
+  });
+
+  it("reads a value in the sentence in quotes, apart from the words around it", () => {
+    renderCard(summarizeArgs({ path: "/data/a.md" }), "pinchy_delete");
+    expect(spokenText(screen.getByRole("group"))).toContain('Delete the file "/data/a.md"');
+  });
+});
+
+describe("shows every value without opening anything", () => {
+  /** Every text and number the summary holds, as the card reads it aloud. */
+  function leaves(value: unknown): string[] {
+    if (typeof value === "string") return [`"${value.replace(/["\\]/g, "\\$&")}"`];
+    if (typeof value === "number") return [String(value)];
+    if (Array.isArray(value)) return value.flatMap(leaves);
+    if (value && typeof value === "object") return Object.values(value).flatMap(leaves);
+    return [];
+  }
+
+  // `bcc` and `notify` are no parameter of these tools: the tools refuse
+  // them, but the card is drawn before that, and must not hide them because a
+  // preview did not expect them.
+  it.each([
+    ["pinchy_generate_file", { filename: "q3", format: "csv", columns: ["a"], rows: [["1"]] }],
+    ["email_send", { to: "ada@example.com", subject: "Hi", body: "Text", replyTo: "m1" }],
+    ["email_draft", { to: "ada@example.com", subject: "Hi", body: "Text" }],
+    ["pinchy_write", { path: "/data/a.md", content: "Report", overwrite: true }],
+    ["pinchy_delete", { path: "/data/a.md" }],
+    ["odoo_create", { model: "res.partner", values: { name: "Acme" }, allow_duplicate: true }],
+    ["odoo_write", { model: "res.partner", ids: [7], values: { name: "Acme" } }],
+    ["odoo_delete", { model: "res.partner", targets: ["r1"] }],
+    ["odoo_confirm_order", { order_id: 9 }],
+  ])("draws every value of %s, an unexpected field included", (tool, args) => {
+    const summary = summarizeArgs({ ...args, bcc: "spy@evil.com", notify: 42 });
+    renderCard(summary, tool);
+    const spoken = spokenText(screen.getByRole("group"));
+    // A known file format is said in words — "a CSV file" — the one value the
+    // card names rather than draws, since it maps one to one onto them.
+    const { format, ...drawn } = summary;
+    if (format !== undefined) expect(spoken).toContain("Create a CSV file");
+    for (const leaf of leaves(drawn)) expect(spoken, leaf).toContain(leaf);
+    expect(screen.getByText("Bcc")).toBeInTheDocument();
+  });
+
+  it("says which values the preview does not cover", () => {
+    renderCard(summarizeArgs({ path: "/a.md", content: "x", mode: "append" }), "pinchy_write");
+    expect(screen.getByText("Also included")).toBeInTheDocument();
+    expect(screen.getByText("Mode")).toBeInTheDocument();
+  });
+
+  it("draws a list of rows as a table under any tool", () => {
+    const { container } = renderCard({
+      matrix: [
+        ["a", "b"],
+        ["c", "d"],
+      ],
+    });
+    const table = screen.getByRole("table");
+    expect(within(table).getAllByRole("row")).toHaveLength(2);
+    expect(container.querySelector("li > ul")).toBeNull();
+  });
+
+  it("keeps an empty row in a list, rather than drawing it as nothing", () => {
+    const { container } = renderCard({ matrix: [["a"], []] });
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(container.querySelector("dd > ul")!.children).toHaveLength(2);
+    expect(screen.getByText("[]")).toBeInTheDocument();
+  });
+});
+
+describe("technical details", () => {
+  it("are closed until asked for, then show the call under its raw names", async () => {
+    renderCard(
+      summarizeArgs({ filename: "test", format: "csv", columns: ["a"], rows: [["1"]] }),
+      "pinchy_generate_file"
+    );
+    const toggle = screen.getByRole("button", { name: "Show technical details" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(document.getElementById(toggle.getAttribute("aria-controls")!)).not.toBeVisible();
+    expect(screen.queryByText("pinchy_generate_file")).toBeNull();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveAccessibleName("Hide technical details");
+    expect(screen.getByText("pinchy_generate_file")).toBeInTheDocument();
+    expect(screen.getByText("filename")).toBeInTheDocument();
+    expect(screen.getByText("rows")).toBeInTheDocument();
+  });
+});
+
+describe("a closed card", () => {
+  it("says what the agent wants to do, without any value", () => {
+    render(
+      <ApprovalCard
+        approval={approval(summarizeArgs({ to: "ada@example.com", subject: "Hi" }), "email_send")}
+        busy={false}
+        open={false}
+        onDecide={vi.fn()}
+      />
+    );
+    expect(screen.getByText("Send an email")).toBeInTheDocument();
+    expect(screen.queryByText("ada@example.com")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Review the request from Smithers: Send an email" })
+    ).toBeInTheDocument();
+  });
+});
+
+describe("a list inside a list", () => {
+  // Odoo's command tuples: `[[0, 0, {…}]]` drew "• • 0".
+  it("is set off as a block, not given a second bullet", () => {
+    const { container } = renderCard({ lines: [[0, 0, { name: "Server" }]] });
+    const outer = container.querySelector("dd > ul")!;
+    const [item] = [...outer.children];
+    expect(item.className).toContain("list-none");
+    expect(item.querySelector(":scope > ul")).not.toBeNull();
+    expect(screen.getByText("Server")).toBeInTheDocument();
   });
 });
