@@ -17,19 +17,28 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { apiPut, apiDelete, errorMessage } from "@/lib/api-client";
+import { apiPut, apiDelete, apiGet, errorMessage } from "@/lib/api-client";
 import type { SetLicenseKeyInput } from "@/lib/schemas/enterprise";
 import type { LicenseInfo } from "@/lib/enterprise";
 import { PRICING_URL, PORTAL_URL, conversionLink } from "@/lib/conversion-links";
 import { formatLicenseDate } from "@/lib/format-date";
+import { AdminOnlyAgentsNotice } from "@/components/admin-only-agents-notice";
+import type { AgentRef } from "@/lib/admin-only-agents";
 
 interface SettingsLicenseProps {
   onEnterpriseActivated?: () => void;
   initialLicense?: LicenseInfo | null;
+  /** Shared agents that are Restricted with no group (#1278), read by the page. */
+  initialAdminOnlyAgents?: AgentRef[];
 }
 
-export function SettingsLicense({ onEnterpriseActivated, initialLicense }: SettingsLicenseProps) {
+export function SettingsLicense({
+  onEnterpriseActivated,
+  initialLicense,
+  initialAdminOnlyAgents,
+}: SettingsLicenseProps) {
   const [license, setLicense] = useState<LicenseInfo | null>(initialLicense ?? null);
+  const [adminOnlyAgents, setAdminOnlyAgents] = useState<AgentRef[]>(initialAdminOnlyAgents ?? []);
   const [loading, setLoading] = useState(!initialLicense);
   const [keyInput, setKeyInput] = useState("");
   const [saving, setSaving] = useState(false);
@@ -54,6 +63,28 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
     if (initialLicense) return;
     fetchStatus();
   }, [fetchStatus, initialLicense]);
+
+  // Read on activation and after the bulk action, not on mount: the page
+  // hands in the first list, and the license card stays one status request.
+  const fetchAdminOnlyAgents = useCallback(async () => {
+    try {
+      const data = await apiGet<{ agents: AgentRef[] }>("/api/agents/admin-only");
+      setAdminOnlyAgents(Array.isArray(data.agents) ? data.agents : []);
+    } catch {
+      // The notice is advisory; a failed read leaves the last known list.
+    }
+  }, []);
+
+  // Drop what the server confirmed it changed first, so a failed re-read
+  // cannot leave agents listed that members can already see.
+  const handleAgentsOpened = useCallback(
+    async (opened: AgentRef[]) => {
+      const openedIds = new Set(opened.map((a) => a.id));
+      setAdminOnlyAgents((prev) => prev.filter((a) => !openedIds.has(a.id)));
+      await fetchAdminOnlyAgents();
+    },
+    [fetchAdminOnlyAgents]
+  );
 
   const handleRemoveGatedConfig = async () => {
     setRemovingGated(true);
@@ -86,6 +117,9 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
       setShowInput(false);
       window.dispatchEvent(new Event("license-updated"));
       if (data.enterprise) {
+        // The moment a key turns on, Restricted-with-no-group starts meaning
+        // "admins only". Show which agents that just hid from members.
+        await fetchAdminOnlyAgents();
         onEnterpriseActivated?.();
       }
     } catch (e) {
@@ -134,8 +168,8 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
             ) : (
               license.expiresAt && (
                 <p className="text-sm">
-                  Expires: {formatLicenseDate(license.expiresAt)} ({license.daysRemaining} days
-                  remaining)
+                  Expires: {formatLicenseDate(license.expiresAt)} ({license.daysRemaining} day
+                  {license.daysRemaining === 1 ? "" : "s"} remaining)
                 </p>
               )
             )}
@@ -156,6 +190,11 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
                 Seats: {license.seatsUsed} / {license.maxUsers} used
               </p>
             )}
+            <AdminOnlyAgentsNotice
+              agents={adminOnlyAgents}
+              licenseActive
+              onOpened={handleAgentsOpened}
+            />
             {license.managedByEnv && (
               <p className="text-sm text-muted-foreground">
                 Managed via <code className="bg-muted px-1 rounded">PINCHY_ENTERPRISE_KEY</code>{" "}
@@ -209,6 +248,14 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
               )}
             </p>
           </div>
+        )}
+
+        {(!license || license.state === "community") && (
+          <AdminOnlyAgentsNotice
+            agents={adminOnlyAgents}
+            licenseActive={false}
+            onOpened={handleAgentsOpened}
+          />
         )}
 
         {!license?.enterprise && license?.hasGatedConfig && (

@@ -91,8 +91,11 @@ function readClaims(payload: jose.JWTPayload): Omit<LicenseStatus, "active" | "e
   const paidUntilAt =
     typeof payload.paidUntil === "number" ? new Date(payload.paidUntil * 1000) : undefined;
   const now = new Date();
+  // Round up: a partial day still counts as a day the key works. Rounding
+  // down showed "6 days remaining" on a 7-day trial issued seconds ago (#1278),
+  // and "0 days" for a key with hours left. 0 means expired.
   const daysRemaining = expiresAt
-    ? Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 86400000))
+    ? Math.max(0, Math.ceil((expiresAt.getTime() - now.getTime()) / 86400000))
     : undefined;
 
   return {

@@ -528,4 +528,107 @@ describe("SettingsLicense", () => {
     expect(onLicenseUpdated).not.toHaveBeenCalled();
     window.removeEventListener("license-updated", onLicenseUpdated);
   });
+
+  describe("admin-only shared agents (#1278)", () => {
+    const activePaid = {
+      ...noLicenseStatus,
+      enterprise: true,
+      state: "paid" as const,
+      type: "paid" as const,
+      org: "Acme",
+    };
+
+    it("names them under an active license", () => {
+      render(
+        <SettingsLicense
+          initialLicense={activePaid}
+          initialAdminOnlyAgents={[{ id: "a1", name: "Sales Bot" }]}
+        />
+      );
+      expect(screen.getByText("1 shared agent only admins can use")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Sales Bot" })).toBeInTheDocument();
+    });
+
+    it("warns before activation on a community instance", () => {
+      render(
+        <SettingsLicense
+          initialLicense={noLicenseStatus}
+          initialAdminOnlyAgents={[{ id: "a1", name: "Sales Bot" }]}
+        />
+      );
+      expect(screen.getByText("1 shared agent has no group yet")).toBeInTheDocument();
+    });
+
+    it("stays quiet after expiry — the escape hatch covers that state", () => {
+      render(
+        <SettingsLicense
+          initialLicense={{ ...noLicenseStatus, state: "expired" }}
+          initialAdminOnlyAgents={[{ id: "a1", name: "Sales Bot" }]}
+        />
+      );
+      expect(screen.queryByRole("link", { name: "Sales Bot" })).not.toBeInTheDocument();
+    });
+
+    it("re-reads the list right after a key is activated, so the admin sees what changed", async () => {
+      fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/enterprise/key") return jsonResponse({ enterprise: true });
+        if (url === "/api/agents/admin-only") {
+          return jsonResponse({ agents: [{ id: "a1", name: "Sales Bot" }] });
+        }
+        return jsonResponse(activePaid);
+      });
+
+      render(<SettingsLicense initialLicense={noLicenseStatus} initialAdminOnlyAgents={[]} />);
+
+      await userEvent.type(screen.getByLabelText(/license key/i), "eyJvalid");
+      await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+      expect(await screen.findByText("1 shared agent only admins can use")).toBeInTheDocument();
+    });
+  });
+
+  it("says '1 day remaining' on the last day, not '1 days'", () => {
+    render(
+      <SettingsLicense
+        initialLicense={{
+          ...noLicenseStatus,
+          enterprise: true,
+          state: "trial",
+          type: "trial",
+          expiresAt: "2026-11-06T00:00:00Z",
+          daysRemaining: 1,
+        }}
+      />
+    );
+    expect(screen.getByText(/\(1 day remaining\)/)).toBeInTheDocument();
+  });
+
+  it("drops agents made visible to everyone even when re-reading the list fails", async () => {
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/agents/admin-only/open-to-all") {
+        return jsonResponse({ agents: [{ id: "a1", name: "Sales Bot" }] });
+      }
+      if (url === "/api/agents/admin-only") throw new TypeError("Failed to fetch");
+      return jsonResponse(noLicenseStatus);
+    });
+    render(
+      <SettingsLicense
+        initialLicense={{ ...noLicenseStatus, enterprise: true, state: "paid", type: "paid" }}
+        initialAdminOnlyAgents={[
+          { id: "a1", name: "Sales Bot" },
+          { id: "a2", name: "HR Bot" },
+        ]}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Make visible to everyone" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Make visible" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("link", { name: "Sales Bot" })).not.toBeInTheDocument()
+    );
+    expect(screen.getByRole("link", { name: "HR Bot" })).toBeInTheDocument();
+  });
 });
