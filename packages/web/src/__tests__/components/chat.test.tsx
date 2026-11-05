@@ -23,14 +23,15 @@ vi.mock("@/hooks/use-pending-approvals", () => ({
   usePendingApprovals: mockUsePendingApprovals,
 }));
 
-function pendingApprovalFor(agentId: string) {
+function pendingApprovalFor(agentId: string, chatId?: string) {
   return {
-    id: `approval-${agentId}`,
+    id: `approval-${agentId}-${chatId ?? "default"}`,
     agentId,
     agentName: "Scout",
     toolName: "odoo_write",
     argsSummary: {},
-    sessionKey: `agent:${agentId}:direct:user-1`,
+    // OpenClaw lowercases session keys.
+    sessionKey: `agent:${agentId}:direct:user-1${chatId ? `:${chatId}` : ""}`.toLowerCase(),
     createdAt: "2026-11-05T10:00:00.000Z",
     expiresAt: "2026-11-05T10:15:00.000Z",
   };
@@ -436,6 +437,41 @@ describe("Chat", () => {
         render(<Chat agentId="agent-1" agentName="Smithers" />);
         expect(screen.getByText(/waiting for your confirmation/i)).toBeInTheDocument();
         expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument();
+      });
+
+      it.each([
+        ["another chat with this agent", "agent-1", "Chat-B", undefined],
+        ["the default chat, from a named one", "agent-1", undefined, "Chat-A"],
+      ])(
+        "still shows the delay hint when the confirmation waits in %s",
+        (_label, approvalAgent, approvalChat, openChat) => {
+          // A confirmation stalls only the run of its own session; approving it
+          // does nothing for this chat's run (#508 per-chat sessions).
+          delayedResponding();
+          mockUsePendingApprovals.mockReturnValue({
+            approvals: [pendingApprovalFor(approvalAgent, approvalChat)],
+            openId: null,
+            open: vi.fn(),
+            busy: null,
+            decide: vi.fn(),
+          });
+          render(<Chat agentId="agent-1" agentName="Smithers" chatId={openChat} />);
+          expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
+          expect(screen.queryByText(/waiting for your confirmation/i)).not.toBeInTheDocument();
+        }
+      );
+
+      it("says it is waiting when the confirmation waits in this named chat", () => {
+        delayedResponding();
+        mockUsePendingApprovals.mockReturnValue({
+          approvals: [pendingApprovalFor("agent-1", "Chat-A")],
+          openId: null,
+          open: vi.fn(),
+          busy: null,
+          decide: vi.fn(),
+        });
+        render(<Chat agentId="agent-1" agentName="Smithers" chatId="Chat-A" />);
+        expect(screen.getByText(/waiting for your confirmation/i)).toBeInTheDocument();
       });
 
       it("still shows the delay hint when only another agent waits for a confirmation", () => {

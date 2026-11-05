@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { type ChatStatus, useChatStatus } from "@/hooks/use-chat-status";
 import { usePendingApprovals } from "@/hooks/use-pending-approvals";
+import { directSessionChatId } from "@/lib/session-key";
 import { recordLastChat } from "@/lib/last-chat-store";
 
 function getStatusIndicator(status: ChatStatus): { colorClass: string; label: string } {
@@ -97,16 +98,25 @@ export const RetryPendingUploadContext = createContext<(localId: string) => void
 export const ChatStatusContext = createContext<ChatStatus>({ kind: "starting" });
 
 /**
- * The hint for a reply that is slow to arrive. A run parked on one of this
- * agent's confirmations is not slow — it waits for the user, and blaming
- * "high demand" sends them looking for a problem that isn't there (#1301).
- * Same filter as `ThreadApprovals`, which draws that confirmation in the
- * thread.
+ * The hint for a reply that is slow to arrive. A run parked on a confirmation
+ * is not slow — it waits for the user, and blaming "high demand" sends them
+ * looking for a problem that isn't there (#1301).
+ *
+ * Only a confirmation of THIS chat's session explains it: a confirmation stalls
+ * the run of its own session, and approving one waiting in another chat with
+ * the same agent (#508) does nothing for this one. Stricter than
+ * `ThreadApprovals`' agent filter on purpose — that one decides where a card
+ * is drawn, this one claims why this run is waiting. A card the 5 s poll has
+ * not brought in yet shows the ordinary hint until it does.
  */
 function DelayHint() {
   const agentId = useContext(AgentIdContext);
+  const chatId = useContext(ChatIdContext);
   const { approvals } = usePendingApprovals();
-  const awaitingConfirmation = agentId !== null && approvals.some((a) => a.agentId === agentId);
+  const openChat = chatId?.toLowerCase() ?? null;
+  const awaitingConfirmation =
+    agentId !== null &&
+    approvals.some((a) => a.agentId === agentId && directSessionChatId(a.sessionKey) === openChat);
   return (
     <div className="px-4 py-2 text-center text-xs text-muted-foreground border-t">
       {awaitingConfirmation
