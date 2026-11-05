@@ -23,7 +23,7 @@ Only admins can invite new users. Here is how:
 1. Go to **Settings → Users**.
 2. Click the **Invite User** button in the top right.
 3. Fill out the invite form:
-   - **Email** (optional) — Pre-fills the email for the new user's account. If left empty, the invite link can be used by anyone.
+   - **Email** — The new user's account is created with this address, and they sign in with it.
    - **Role** — Choose **Member** or **Admin**.
    - **Groups** <Badge text="Enterprise" variant="note" /> — If you have an active enterprise license and have created groups, you can assign the new user to one or more groups during invitation. See [Groups](/concepts/groups/) for details.
 4. Click **Create Invite**.
@@ -32,9 +32,8 @@ Only admins can invite new users. Here is how:
 On devices that support it, a **Share** button appears instead of Copy, letting you send the link directly via your operating system's share sheet.
 
 <Aside type="tip">
-  The email field is optional. If you leave it empty, anyone with the link can
-  claim the invite. If you enter an email, the new account is created with that
-  address.
+  Anyone who has the link can claim the invite, and the account they create gets
+  the email you entered. Share the link only with the person you invited.
 </Aside>
 
 <Aside type="note">
@@ -178,7 +177,7 @@ The check can also miss one: a self-registered account that an admin promoted re
 Pending and expired invites appear in the user list alongside active users:
 
 - **Pending invites** show a Pending status badge and a **Revoke** button to cancel the invite.
-- **Expired invites** show an Expired status badge and a **Resend** button to generate a fresh invite link.
+- **Expired invites** show an Expired status badge and a **Resend** button to generate a fresh invite link. An expired invite without an email (created before v0.10) shows **Revoke** instead, since a fresh invite needs an email.
 
 ## Profile settings
 
@@ -203,6 +202,12 @@ If you enter the wrong current password repeatedly, Pinchy stops accepting attem
 ### Logging out
 
 Click the **Log out** button in the Session section to end your current session and return to the login page.
+
+Logging out also clears what Pinchy kept in this browser for you: unsent message drafts, attachments you staged but didn't send, anything you shared into the installed app but didn't send, and which chat you last had open for each agent. Other Pinchy tabs in the same browser reload, so none of them keeps showing your chats. Unsaved changes in those tabs, such as agent settings you were still editing, are discarded. On a shared computer, the next person who signs in starts clean.
+
+If your session expires instead, nothing is cleared until the next sign-in. When someone else signs in, Pinchy clears the same things first. When you sign back in yourself, your drafts are still there.
+
+One exception: if you share a file into the installed app while nobody is signed in, Pinchy opens the login page. It keeps that file for whoever signs in there within 10 minutes. Pinchy cannot tell who shared it, so on a shared computer, sign in right away or close the login page.
 
 ## Emergency admin password reset (CLI)
 
@@ -256,4 +261,4 @@ All user management actions are logged in the audit trail:
 | User deactivated             | `user.deleted`                  |
 | Password reset completed     | `auth.password_reset_completed` |
 
-Each admin action records which admin took it, and `user.created` records the new account itself as the actor — via the setup wizard or an invite. Entries record the affected user's name, and the before/after role or group diffs. We never store the affected user's email address in plaintext: deactivation events omit it entirely (GDPR Art. 17), and invite events store a keyed HMAC hash plus a short masked preview instead. Password resets also revoke the target user's active sessions in the same database transaction, so a partial failure rolls back the whole reset — the old password keeps working and the reset link stays usable. The audit row is written after that transaction commits, and a failed reset records its own `outcome: failure` entry. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.
+Each admin action records which admin took it, and `user.created` records the new account itself as the actor — via the setup wizard or an invite. A claim that fails to create the account is recorded too, with `system` as the actor. Entries record the affected user's name, and the before/after role or group diffs. We never store the affected user's email address in plaintext: deactivation events omit it entirely (GDPR Art. 17), and invite events store a keyed HMAC hash plus a short masked preview instead. Password resets also revoke the target user's active sessions in the same database transaction, so a partial failure rolls back the whole reset — the old password keeps working and the reset link stays usable. The audit row is written after that transaction commits, and a failed reset records its own `outcome: failure` entry. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.
