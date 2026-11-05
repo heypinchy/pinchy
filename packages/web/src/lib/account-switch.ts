@@ -49,28 +49,21 @@ export const navigation = {
 // Storage can throw (Safari private mode, blocked site data). Wiping is a
 // best effort and must never stand between a person and signing in or out.
 // The account record itself is left alone: callers overwrite it, and removing
-// it first would let another tab read "nobody" in between. Returns whether it
-// removed anything a page could have rendered from.
-function wipePinchyStorage(): boolean {
-  let removed = false;
+// it first would let another tab read "nobody" in between.
+function wipePinchyStorage(): void {
   try {
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i);
-      if (key?.startsWith(PINCHY_PREFIX) && key !== ACCOUNT_KEY) {
-        localStorage.removeItem(key);
-        removed = true;
-      }
+      if (key?.startsWith(PINCHY_PREFIX) && key !== ACCOUNT_KEY) localStorage.removeItem(key);
     }
   } catch {
     // ignore
   }
   try {
-    if (sessionStorage.length > 0) removed = true;
     sessionStorage.clear();
   } catch {
     // ignore
   }
-  return removed;
 }
 
 function forgetAccount(): void {
@@ -118,23 +111,20 @@ function recordAccount(value: string): void {
 
 /**
  * Makes this browser's storage belong to `userId`: wipes it if someone else
- * was recorded (or nobody), then records them. Returns whether a tab that
- * already rendered from that storage should reload: only when the wipe removed
- * something AND the record stuck. Where storage cannot be read or written,
- * every load would otherwise look like a switch and reload again, forever; and
- * a fresh browser with nothing in it needs no reload at all.
+ * was recorded (or nobody), then records them. The wipe and the record happen
+ * synchronously, before the returned promise first waits, so a caller in a
+ * render can rely on clean storage for everything rendered after it.
  */
-export async function claimAccount(userId: string): Promise<boolean> {
+export async function claimAccount(userId: string): Promise<void> {
   const previous = recordedAccount();
-  if (previous === userId) return false;
-  const removed = wipePinchyStorage();
+  if (previous === userId) return;
+  wipePinchyStorage();
   recordAccount(userId);
   // After a sign-out the earlier shares are already gone, so any share there
   // now was made while nobody was signed in. Keep a recent one for the person
   // signing in; when someone else's session merely expired, drop them all.
   if (previous?.startsWith(SIGNED_OUT_PREFIX)) await keepRecentShares();
   else await forgetShares();
-  return removed && recordedAccount() === userId;
 }
 
 /**

@@ -234,20 +234,21 @@ describe("account switch on a shared browser (#1286)", () => {
 
       // A tab that loads with user-b's session (one that never went through
       // the login page here, e.g. it predates this check).
-      expect(await claimAccount("user-b")).toBe(true);
+      await claimAccount("user-b");
       expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
       expect(localStorage.getItem("pinchy:account")).toBe("user-b");
 
       seedPreviousUsersState();
-      expect(await claimAccount("user-b")).toBe(false);
+      await claimAccount("user-b");
       expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBe("half-written reply");
     });
 
-    it("asks for no reload when there was nothing of anyone's to wipe", async () => {
-      // A fresh browser (or an E2E context signed in over the API) has no
-      // record and no state: claiming it must not reload the page under the
-      // person already using it.
-      expect(await claimAccount("user-a")).toBe(false);
+    it("wipes and records synchronously, before the share cache is awaited", () => {
+      // AccountGuard claims during its first render, so the wipe must be done
+      // by the time the call returns, not after a microtask.
+      seedPreviousUsersState();
+      void claimAccount("user-a");
+      expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
       expect(localStorage.getItem("pinchy:account")).toBe("user-a");
     });
 
