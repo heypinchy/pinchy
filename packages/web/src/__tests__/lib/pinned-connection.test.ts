@@ -77,6 +77,40 @@ describe("pinnedFetch", () => {
     expect(seen).toHaveLength(1);
   });
 
+  it("never follows a redirect, even when the caller did not ask for manual", async () => {
+    // A followed hop is a connection nobody checked — and to an address
+    // literal it needs no lookup, so the pin does not even apply.
+    respond = (req, res) => {
+      if (req.url === "/landed") {
+        res.writeHead(200);
+        res.end("followed");
+        return;
+      }
+      res.writeHead(302, { location: `http://127.0.0.1:${port}/landed` });
+      res.end();
+    };
+
+    const res = await pinnedFetch(
+      `http://rebound.invalid:${port}/`,
+      { signal: AbortSignal.timeout(5_000) },
+      toPinnedAddress("127.0.0.1")
+    );
+
+    expect(res.status).toBe(302);
+    expect(seen.map((req) => req.url)).toEqual(["/"]);
+  });
+
+  it("refuses a caller that asks for redirects to be followed", async () => {
+    await expect(
+      pinnedFetch(
+        `http://rebound.invalid:${port}/`,
+        { redirect: "follow", signal: AbortSignal.timeout(5_000) },
+        toPinnedAddress("127.0.0.1")
+      )
+    ).rejects.toThrow(/redirect/);
+    expect(seen).toHaveLength(0);
+  });
+
   it("sends the request headers it was given", async () => {
     await pinnedFetch(
       `http://rebound.invalid:${port}/`,

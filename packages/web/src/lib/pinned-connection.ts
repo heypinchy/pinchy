@@ -83,18 +83,27 @@ export function pinnedLookup(target: PinnedAddress): LookupFunction {
  * fetch is backed by Node's bundled undici, whose request handlers reject the
  * npm package's Agent (UND_ERR_INVALID_ARG, reported only as "fetch failed").
  *
- * Follows no redirect on its own behalf — a caller that wants to follow one
- * passes `redirect: "manual"` and pins the next hop itself.
+ * Never follows a redirect: a followed hop is a connection nobody checked,
+ * and to an address literal it needs no lookup, so the pin would not even
+ * apply. A redirect comes back as the 3xx it is (`redirect: "manual"` is the
+ * default here, whatever fetch's own default is); a caller that wants to
+ * follow it checks and pins the next hop itself. Asking for `"follow"` throws.
  */
 export async function pinnedFetch(
   url: string,
   init: RequestInit,
   target: PinnedAddress
 ): Promise<Response> {
+  if (init.redirect === "follow") {
+    throw new TypeError(
+      'pinnedFetch never follows a redirect; pass redirect: "manual" and check the next hop.'
+    );
+  }
   const dispatcher = new Agent({ connect: { lookup: pinnedLookup(target) } });
   try {
     return (await undiciFetch(url, {
       ...(init as Record<string, unknown>),
+      redirect: init.redirect ?? "manual",
       dispatcher,
     })) as unknown as Response;
   } finally {
