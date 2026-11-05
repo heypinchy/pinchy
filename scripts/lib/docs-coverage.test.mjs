@@ -71,6 +71,20 @@ test("extractRouteHandlers sees a destructured library re-export", () => {
   ]);
 });
 
+test("extractRouteHandlers sees a handler re-exported from another route", () => {
+  // The citation viewer's named url is one line — `export { GET } from
+  // "../route"` (#1268). It serves a real endpoint, so it belongs in the set.
+  const handlers = extractRouteHandlers([
+    {
+      path: "api/agents/[agentId]/workspace-file/[name]/route.ts",
+      source: '/** doc */\nexport { GET, HEAD as Ignored } from "../route";',
+    },
+  ]);
+  assert.deepEqual(handlers, [
+    { route: "/api/agents/[agentId]/workspace-file/[name]", methods: ["GET"] },
+  ]);
+});
+
 test("extractRouteHandlers does not mistake a mentioned method for an exported one", () => {
   const handlers = extractRouteHandlers([
     {

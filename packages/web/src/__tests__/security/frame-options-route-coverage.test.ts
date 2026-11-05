@@ -20,7 +20,7 @@
 // See AGENTS.md § "Embeddable Serving Routes Need A next.config Entry".
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { resolveHeader, routeFileToSource } from "@/test-helpers/next-headers";
 
 const APP_DIR = resolve(__dirname, "../../app");
@@ -51,14 +51,36 @@ function walkRouteFiles(dir: string): string[] {
   return result;
 }
 
+/**
+ * The route file a route re-exports its GET handler from, if it does — the
+ * citation viewer's `workspace-file/[name]` is `export { GET } from "../route"`
+ * (#1268). Such a route serves exactly what its target serves, under a url of
+ * its own, so it needs its own relaxation; a scan reading only its own text
+ * would see an empty file and let the url ship with DENY.
+ */
+function reExportedGetTarget(file: string, content: string): string | null {
+  const match = /export\s*\{[^}]*\bGET\b[^}]*\}\s*from\s*["'](\.{1,2}\/[^"']+)["']/.exec(content);
+  if (!match) return null;
+  const target = resolve(dirname(file), match[1]);
+  return /\.tsx?$/.test(target) ? target : `${target}.ts`;
+}
+
+function servesEmbeddableContent(file: string, seen = new Set<string>()): boolean {
+  if (seen.has(file)) return false;
+  seen.add(file);
+  const content = readFileSync(file, "utf8");
+  const setsHeaderDirectly = /["']x-frame-options["']\s*:\s*["']SAMEORIGIN["']/i.test(content);
+  const usesHelper = SAMEORIGIN_HELPERS.some((helper) => content.includes(`${helper}(`));
+  if (setsHeaderDirectly || usesHelper) return true;
+  const target = reExportedGetTarget(file, content);
+  return target !== null && servesEmbeddableContent(target, seen);
+}
+
 /** Routes whose responses are meant to be embedded same-origin. */
 function findEmbeddableServingRoutes(): { file: string; source: string; samplePath: string }[] {
   const found: { file: string; source: string; samplePath: string }[] = [];
   for (const file of walkRouteFiles(API_DIR)) {
-    const content = readFileSync(file, "utf8");
-    const setsHeaderDirectly = /["']x-frame-options["']\s*:\s*["']SAMEORIGIN["']/i.test(content);
-    const usesHelper = SAMEORIGIN_HELPERS.some((helper) => content.includes(`${helper}(`));
-    if (!setsHeaderDirectly && !usesHelper) continue;
+    if (!servesEmbeddableContent(file)) continue;
     found.push({
       file: relative(APP_DIR, file),
       ...routeFileToSource(relative(APP_DIR, file)),
@@ -73,6 +95,14 @@ describe("embeddable serving routes are relaxed in next.config.ts", () => {
     // enforcing nothing — the failure mode of every grep-based guard.
     const routes = findEmbeddableServingRoutes();
     expect(routes.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("follows a route that re-exports a serving route's handler", () => {
+    // The citation viewer's named url (#1268) is one line — a re-export — and
+    // serves exactly what the bare route does. Missing it here would let that
+    // url ship with the global DENY: the blank viewer pane this guard exists for.
+    const sources = findEmbeddableServingRoutes().map((r) => r.source);
+    expect(sources).toContain("/api/agents/:agentId/workspace-file/:name");
   });
 
   it.each(findEmbeddableServingRoutes())(

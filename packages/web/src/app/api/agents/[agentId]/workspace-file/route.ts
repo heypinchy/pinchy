@@ -44,7 +44,28 @@ import {
 } from "@/lib/knowledge/verified-source";
 import type { AgentPluginConfig } from "@/db/schema";
 
-type Params = { params: Promise<{ agentId: string }> };
+/**
+ * `name` is present only when the request arrived through `[name]/route.ts`,
+ * which re-exports this handler: the citation viewer's url, ending in the
+ * document's name so a browser's PDF viewer has something to title it by
+ * (#1268). It never selects anything — see `namesServedBytes`.
+ */
+type Params = { params: Promise<{ agentId: string; name?: string }> };
+
+/**
+ * Whether a viewer url's trailing name is the name of the bytes it is about to
+ * receive. Accepted percent-encoded or decoded, because which of the two a
+ * dynamic segment arrives as is the framework's business, and a name with a
+ * literal `%` must neither throw nor match something it does not spell.
+ */
+function namesServedBytes(name: string, servedName: string): boolean {
+  if (name === servedName) return true;
+  try {
+    return decodeURIComponent(name) === servedName;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Which representation of one document the caller wants.
@@ -227,7 +248,7 @@ function sourceAccessAuditEntry(args: {
  * whether a given out-of-scope path exists.
  */
 export const GET = withAuth<Params>(async (req, { params }, session) => {
-  const { agentId } = await params;
+  const { agentId, name } = await params;
 
   // Access check FIRST — same gate as the chat itself, and the same helper
   // every other agent-scoped route uses (see uploads/[filename]/route.ts,
@@ -514,6 +535,17 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const servedPath = artifactPath ?? realPath;
   const servedName = artifactPath ? convertedPdfName(documentName) : documentName;
   const representation: Variant = artifactPath ? "converted" : "original";
+
+  // A viewer url names the document it shows. A name that is not the name of
+  // these bytes would title one document while serving another — in front of a
+  // reader whose whole purpose is checking a claim — so it is refused like a
+  // missing file. Decided AFTER the access check, so varying the name teaches
+  // a probe nothing about a path it may not read.
+  if (name !== undefined && !namesServedBytes(name, servedName)) {
+    await source.handle.close();
+    auditFailure("name_mismatch");
+    return new NextResponse("Not found", { status: 404 });
+  }
 
   // The original is served from the verified descriptor itself. The artifact
   // is opened from the store — a path derived from the content key, which no
