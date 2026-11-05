@@ -138,7 +138,9 @@ export async function validateLicenseToken(
 
 /**
  * Get the full license status. Cached for 1 hour.
- * Pass publicKeyPem only in tests — production uses the hardcoded key.
+ * Pass publicKeyPem only in tests — production uses the hardcoded key. The
+ * cache is not keyed on it: a non-default key would read, and seed, the
+ * verdict for the whole process.
  */
 export async function getLicenseStatus(
   publicKeyPem: string = PRODUCTION_PUBLIC_KEY
