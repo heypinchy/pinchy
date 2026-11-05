@@ -696,13 +696,15 @@ describe("KnowledgeReindexSection", () => {
     // "today" and "tomorrow" are the viewer's too: 02:00 UTC is still today
     // for someone in New York at 20:00 the evening before.
     it("says today or tomorrow by the viewer's calendar, not the organization's", async () => {
-      viewIn("America/New_York", "2026-10-17T00:00:00.000Z"); // 20:00 on the 16th in New York
+      // 19:00 on the 16th in New York, 23:00 on the 16th in UTC: the run at
+      // 02:00 UTC is tomorrow for the organization and still today here.
+      viewIn("America/New_York", "2026-10-16T23:00:00.000Z");
       mockGet.mockResolvedValue({
         job: null,
         schedule: {
           ...nightly,
           timezone: "UTC",
-          nextRun: { ...nightly.nextRun, day: "today", at: "2026-10-17T02:00:00.000Z" },
+          nextRun: { ...nightly.nextRun, day: "tomorrow", at: "2026-10-17T02:00:00.000Z" },
         },
       });
 
