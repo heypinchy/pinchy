@@ -751,7 +751,9 @@ jobs:
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 2x the slowest green run (11m52 on #1293, including ~70s for
+    # reclaim-docker-disk), plus room for the fork path's two local builds.
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -1192,6 +1194,15 @@ jobs:
       - name: Tear down production
         if: always()
         run: docker compose down -v
+
+      # The dev stack rebuilds both images from scratch (~16G); the production
+      # ones above are not inputs to that build and must not share the disk
+      # with it. AWS-hosted runners ran out of space here. On a fork PR
+      # the prod images were built here and their cache stays, so the dev
+      # OpenClaw build reuses it and only the dev Pinchy build adds new data.
+      - uses: ./.github/actions/reclaim-docker-disk
+        with:
+          min-free-gb: ${{ needs.build-image.result == 'skipped' && '12' || '22' }}
 
       - name: Start dev stack
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d

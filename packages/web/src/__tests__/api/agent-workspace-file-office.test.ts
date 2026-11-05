@@ -21,7 +21,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, utimesSync } from "node:fs";
+import { servePosture, weakStoredFileEtag } from "@/lib/session-scoped-cache";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { NextRequest, NextResponse } from "next/server";
@@ -88,12 +89,16 @@ afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-async function callGET(requestedPath: string, extraParams: Record<string, string> = {}) {
+async function callGET(
+  requestedPath: string,
+  extraParams: Record<string, string> = {},
+  headers?: HeadersInit
+) {
   const { GET } = await import("@/app/api/agents/[agentId]/workspace-file/route");
   const url = new URL("http://localhost/api/agents/agent-1/workspace-file");
   url.searchParams.set("path", requestedPath);
   for (const [key, value] of Object.entries(extraParams)) url.searchParams.set(key, value);
-  return GET(new NextRequest(url), {
+  return GET(new NextRequest(url, headers ? { headers } : undefined), {
     params: Promise.resolve({ agentId: "agent-1" }),
   } as unknown as Parameters<typeof GET>[1]);
 }
@@ -395,5 +400,85 @@ describe("workspace-file — the artifact volume is not a failure of the documen
 
     expect(res.status).toBe(404);
     expect(res).toBeInstanceOf(NextResponse);
+  });
+});
+
+describe("workspace-file — a cached converted PDF is re-checked on every reuse", () => {
+  it("answers an unchanged converted PDF with 304 and no body", async () => {
+    const source = writeSource("angebot.docx");
+    const artifact = await storeArtifactFor(DOCX_BYTES);
+    const etag = (await callGET(source)).headers.get("etag")!;
+    // The store touches an artifact on every read; move its clock well past
+    // the first request so a timestamp in the validator could not hide in
+    // one millisecond.
+    const later = new Date(Date.now() + 60_000);
+    utimesSync(artifact, later, later);
+
+    mockDeferAuditLog.mockClear();
+    const res = await callGET(source, {}, { "if-none-match": etag });
+
+    expect(res.status).toBe(304);
+    expect(res.body).toBeNull();
+    expect(auditEntries()[0]).toMatchObject({
+      outcome: "success",
+      detail: { revalidated: true, representation: "converted" },
+    });
+  });
+
+  it("gives the original and its converted PDF different validators", async () => {
+    const source = writeSource("angebot.docx");
+    await storeArtifactFor(DOCX_BYTES);
+    const converted = (await callGET(source)).headers.get("etag")!;
+
+    const res = await callGET(source, { variant: "original" }, { "if-none-match": converted });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("etag")).not.toBe(converted);
+  });
+
+  it("sends the new conversion when the source changed since it was cached", async () => {
+    const source = writeSource("angebot.docx");
+    const firstArtifact = await storeArtifactFor(DOCX_BYTES);
+    const etag = (await callGET(source)).headers.get("etag")!;
+    // Gone before the next conversion lands, as after an LRU sweep: the
+    // filesystem may hand its inode to the new artifact, so only the store
+    // path is left to tell the two apart.
+    rmSync(firstArtifact);
+
+    const revised = Buffer.from("PK pretend this is the revised .docx\n");
+    writeSource("angebot.docx", revised);
+    // Same length as the first conversion, so the size is not what tells them apart.
+    const revisedPdf = Buffer.from("%PDF-1.4\nthe revised conversion, at last!\n%%EOF");
+    expect(revisedPdf.length).toBe(ARTIFACT_BYTES.length);
+    const secondArtifact = await storeArtifactFor(revised, revisedPdf);
+    const res = await callGET(source, {}, { "if-none-match": etag });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("the revised conversion");
+    // Whether the inode was reused is up to the filesystem (APFS never does),
+    // so pin the validator itself: it is derived from the ARTIFACT's store
+    // path, which is what changes with the source's content.
+    expect(res.headers.get("etag")).toBe(
+      weakStoredFileEtag(
+        statSync(secondArtifact),
+        secondArtifact,
+        `converted${servePosture(res.headers.get("content-type")!, "inline", "angebot.pdf")}`
+      )
+    );
+  });
+
+  it("refuses a revoked grant with 403 instead of 304", async () => {
+    const source = writeSource("angebot.docx");
+    await storeArtifactFor(DOCX_BYTES);
+    const etag = (await callGET(source)).headers.get("etag")!;
+    mockGetAgentWithAccess.mockResolvedValue({
+      id: "agent-1",
+      name: "Smithers",
+      pluginConfig: { "pinchy-files": { allowed_paths: [outsideDir] } },
+    });
+
+    const res = await callGET(source, {}, { "if-none-match": etag });
+
+    expect(res.status).toBe(403);
   });
 });

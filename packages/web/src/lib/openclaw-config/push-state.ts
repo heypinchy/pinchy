@@ -66,6 +66,14 @@ interface ConfigPushState {
    * OpenClaw, 0 before any (see noteFullRegenerateDelivered).
    */
   deliveredSeq: number;
+  /** See noteFileOnlyDelivery. */
+  fileOnlyDelivery: boolean;
+  /** Generations of the push coroutines in flight (see newestPushInFlight). */
+  inFlightGenerations: Set<number>;
+  /** Pending follow-up regenerate for a file-only delivery (scheduleFileOnlyFollowUp). */
+  fileOnlyFollowUp: ReturnType<typeof setTimeout> | undefined;
+  /** Follow-ups fired for the pending file-only delivery (sets the backoff). */
+  fileOnlyFollowUps: number;
 }
 
 /**
@@ -109,6 +117,10 @@ function state(): ConfigPushState {
       lastGoodBound: undefined,
       undeliveredSeq: 0,
       deliveredSeq: 0,
+      fileOnlyDelivery: false,
+      inFlightGenerations: new Set(),
+      fileOnlyFollowUp: undefined,
+      fileOnlyFollowUps: 0,
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -118,12 +130,17 @@ function state(): ConfigPushState {
   existing.regenerateSeq ??= 0;
   existing.undeliveredSeq ??= 0;
   existing.deliveredSeq ??= 0;
+  existing.fileOnlyDelivery ??= false;
+  existing.inFlightGenerations ??= new Set();
+  existing.fileOnlyFollowUps ??= 0;
   return existing as ConfigPushState;
 }
 
 /** Record that a `pushConfigInBackground` coroutine has started. */
-export function trackConfigPushStarted(): void {
-  state().pending++;
+export function trackConfigPushStarted(generation: number): void {
+  const s = state();
+  s.pending++;
+  s.inFlightGenerations.add(generation);
 }
 
 /**
@@ -131,9 +148,23 @@ export function trackConfigPushStarted(): void {
  * superseded by a newer push, or file-write fallback. Floors at zero so a
  * spurious double-settle can never wedge the counter negative.
  */
-export function trackConfigPushSettled(): void {
+// `generation` is required so `.finally(trackConfigPushSettled)` cannot type-
+// check: called with no argument, it would leave the generation in the set,
+// and newestPushInFlight() would defer every reconnect to a push long gone.
+export function trackConfigPushSettled(generation: number): void {
   const s = state();
   s.pending = Math.max(0, s.pending - 1);
+  s.inFlightGenerations.delete(generation);
+}
+
+/**
+ * Whether the push holding the newest generation is still in flight. Unlike
+ * the pending count, a push a newer one superseded does not count: it returns
+ * without applying when it next wakes (see `getCurrentConfigPushGeneration`).
+ */
+export function newestPushInFlight(): boolean {
+  const s = state();
+  return s.inFlightGenerations.has(s.generation);
 }
 
 /** Number of push coroutines currently in flight (0 = config is settled). */
@@ -331,6 +362,143 @@ export function fullRegenerateDeliveredSince(seq: number): boolean {
   return state().deliveredSeq > seq;
 }
 
+/**
+ * Record that a push over a WS client gave up on config.apply and wrote
+ * openclaw.json instead (the file fallbacks in write.ts). The file then holds
+ * the newest config, but nothing says OpenClaw's runtime does: OpenClaw may
+ * have been running all along, only not connected to Pinchy yet — and a
+ * running OpenClaw does not reliably reload a file Pinchy renames into place
+ * (#464). CI run 41906476538 is that shape: the setup wizard's push waited out
+ * OpenClaw's restart, wrote the file 0.3 s before Pinchy reconnected, and
+ * Smithers stayed out of the runtime.
+ *
+ * Until a config.apply lands (settleFileOnlyDelivery), openclaw.json is no
+ * proof of what OpenClaw runs: a regenerate that finds its target there still
+ * pushes it (build.ts), the push's no-op guard stands down — config.get reads
+ * that same file (write.ts) — and a reconnect regenerates
+ * (server/openclaw-connect-regenerate.ts).
+ *
+ * Every fallback except OpenClaw refusing the config itself gets a follow-up
+ * regenerate one rate-limit window later (scheduleFileOnlyFollowUp) — the one
+ * delivery there is when no reconnect is coming: the rate-limit retries ran
+ * out, or config.apply timed out, while OpenClaw stayed connected, the shapes
+ * a fresh install's first restarts can produce.
+ *
+ * Gap, stated rather than closed here: the no-client write at boot does not
+ * set this, so a Pinchy restart that changes openclaw.json while OpenClaw
+ * keeps running relies on OpenClaw reloading the file. Setting it would cost
+ * one config.apply (a rate-limit slot) on every boot that changed the file,
+ * also where OpenClaw then starts on that file anyway — a trade that needs
+ * its own evidence.
+ *
+ * Process-wide only, not persisted, and that is a second gap: a Pinchy restart
+ * drops a pending delivery, and the first connect's regenerate then takes an
+ * unchanged openclaw.json for the runtime again.
+ */
+export function noteFileOnlyDelivery(): void {
+  state().fileOnlyDelivery = true;
+}
+
+/** Whether openclaw.json may hold a config OpenClaw's runtime never loaded (noteFileOnlyDelivery). */
+export function fileOnlyDeliveryPending(): boolean {
+  return state().fileOnlyDelivery;
+}
+
+/**
+ * The newest push was applied over config.apply, so OpenClaw's runtime now
+ * holds everything the file does.
+ */
+export function settleFileOnlyDelivery(): void {
+  const s = state();
+  s.fileOnlyDelivery = false;
+  s.fileOnlyFollowUps = 0;
+  clearFileOnlyFollowUp(s);
+}
+
+/**
+ * Stop the follow-up chain, leaving the delivery pending: OpenClaw refused the
+ * config itself (write.ts), so a retry would be refused the same way. The next
+ * change, or a reconnect, still delivers what the file holds. Until one lands,
+ * every regenerate — an unchanged one too — and every reconnect pushes
+ * (config.get, its refused applies, a file rewrite — and for "Config write
+ * rejected" one more openclaw.json.rejected.<ts> file on OpenClaw's side per
+ * attempt) instead of taking the build.ts fast path; nothing schedules those,
+ * so it is bounded by them.
+ */
+export function cancelFileOnlyFollowUp(): void {
+  clearFileOnlyFollowUp(state());
+}
+
+function clearFileOnlyFollowUp(s: ConfigPushState): void {
+  if (s.fileOnlyFollowUp !== undefined) clearTimeout(s.fileOnlyFollowUp);
+  s.fileOnlyFollowUp = undefined;
+}
+
+/**
+ * How long a file-only delivery waits before its follow-up regenerate: one
+ * window of OpenClaw's control-plane write limit (3 per 60 s in the pinned
+ * OpenClaw, per e2e/shared/dispatch-probe.ts; write.ts's older notes say
+ * ~45 s for OC 5.3), so the apply it sends is not refused by the same limit
+ * that caused the fallback.
+ */
+export const FILE_ONLY_FOLLOW_UP_DELAY_MS = 60_000;
+/** While the newest push is in flight, the follow-up re-checks this often. */
+const FILE_ONLY_FOLLOW_UP_RECHECK_MS = 2_000;
+/**
+ * The longest a follow-up waits; each one fired doubles the wait up to this.
+ * The chain does not stop while a delivery is pending — a cap would strand the
+ * next change exactly like the bug it fixes. Each fire costs a full regenerate
+ * (database reads, secrets.json and auth-profile writes) and its push's
+ * config.get/config.apply attempts. A fallback after OpenClaw refused the
+ * config itself starts none and ends a running one (cancelFileOnlyFollowUp in
+ * write.ts); any other cause is one that passes. A landed apply resets the
+ * backoff (settleFileOnlyDelivery); until then it stays where it got to, so a
+ * later fallback in the same pending delivery waits that long too.
+ */
+export const FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS = 600_000;
+
+/**
+ * Queue one follow-up regenerate for a file-only delivery (noteFileOnlyDelivery).
+ * The flag makes that regenerate push past openclaw.json, and its landed apply
+ * settles the delivery.
+ *
+ * Coalesced process-wide: one pending at most, the latest caller's
+ * `regenerate` wins, and a new fallback restarts the wait. Cancelled when an
+ * apply lands, skipped when none is pending any more, and deferred while the
+ * newest push is in flight — that one settles the delivery itself, and a
+ * regenerate would only supersede it. Backs off per follow-up fired
+ * (FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS).
+ */
+export function scheduleFileOnlyFollowUp(regenerate: () => void): void {
+  const s = state();
+  const backoffMs = () =>
+    Math.min(
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 2 ** Math.min(s.fileOnlyFollowUps, 16),
+      FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS
+    );
+  const arm = (delayMs: number) => {
+    clearFileOnlyFollowUp(s);
+    s.fileOnlyFollowUp = setTimeout(fire, delayMs);
+    s.fileOnlyFollowUp.unref?.();
+  };
+  const fire = () => {
+    s.fileOnlyFollowUp = undefined;
+    if (!s.fileOnlyDelivery) return;
+    if (newestPushInFlight()) {
+      arm(FILE_ONLY_FOLLOW_UP_RECHECK_MS);
+      return;
+    }
+    s.fileOnlyFollowUps++;
+    // The timer owns the chain: re-armed before the regenerate, so a push that
+    // ends without an apply AND without a fallback (a refused write, a
+    // regenerate that bails out) does not end it. A landed apply clears it, a
+    // fallback's own call replaces it.
+    arm(backoffMs());
+    regenerate();
+  };
+  arm(backoffMs());
+}
+
 /** `value` with every string replaced by "": which SecretRefs it resolves, and nothing else. */
 function shapeOf<T>(value: T): T {
   if (typeof value === "string") return "" as T;
@@ -380,6 +548,10 @@ export function _resetConfigPushState(): void {
   s.pending = 0;
   s.undeliveredSeq = 0;
   s.deliveredSeq = 0;
+  s.fileOnlyDelivery = false;
+  s.fileOnlyFollowUps = 0;
+  clearFileOnlyFollowUp(s);
+  s.inFlightGenerations.clear();
   s.unservedCalls = undefined;
   s.writtenSecretsShape = undefined;
   s.lastGoodBound = undefined;
