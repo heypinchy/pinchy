@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
   SYSTEM_ACTOR_LABELS,
+  SYSTEM_ACTOR_PREFIX_LABELS,
   resolveActorDisplay,
   systemActorLabel,
   type ActorDisplayInput,
@@ -74,6 +75,11 @@ describe("systemActorLabel", () => {
     expect(systemActorLabel("system", "some-new-job")).toBe("some-new-job");
   });
 
+  it("names a plugin-reported row after the plugin", () => {
+    // report-auth-failure writes `plugin:<pluginId>` for an integration's 401s.
+    expect(systemActorLabel("system", "plugin:pinchy-odoo")).toBe("Plugin pinchy-odoo");
+  });
+
   it("does not read inherited object keys as labels", () => {
     expect(systemActorLabel("system", "constructor")).toBe("constructor");
   });
@@ -84,6 +90,9 @@ describe("systemActorLabel", () => {
 // wrong (AGENTS.md); this reads the code instead.
 describe("SYSTEM_ACTOR_LABELS covers every system actorId in the source", () => {
   const srcRoot = path.resolve(__dirname, "../..");
+  // server.ts sits beside src/ and writes system rows of its own.
+  const serverEntry = path.resolve(srcRoot, "../server.ts");
+  const displaySource = readFileSync(path.join(srcRoot, "lib/audit-actor-display.ts"), "utf8");
 
   function walk(dir: string): string[] {
     return readdirSync(dir).flatMap((entry) => {
@@ -95,30 +104,61 @@ describe("SYSTEM_ACTOR_LABELS covers every system actorId in the source", () => 
     });
   }
 
-  function systemActorIds(): Map<string, string> {
-    const found = new Map<string, string>();
-    for (const file of walk(srcRoot)) {
+  // Every way a system actor id is spelled in the tree today: a string
+  // literal, a SCREAMING_CASE constant, or a `prefix:${…}` template (the
+  // `{ type: "system", id: … }` actor objects in lib/integrations).
+  type Found = {
+    literals: Map<string, string>;
+    constants: Map<string, string>;
+    prefixes: Map<string, string>;
+  };
+
+  function systemActorIds(): Found {
+    const found: Found = { literals: new Map(), constants: new Map(), prefixes: new Map() };
+    for (const file of [...walk(srcRoot), serverEntry]) {
       const lines = readFileSync(file, "utf8").split("\n");
       lines.forEach((line, i) => {
-        if (!/actorType:\s*"system"/.test(line)) return;
-        // The actorId sits within a few lines of its actorType in every call.
+        if (!/(actorType|type):\s*"system"/.test(line)) return;
+        const where = `${path.relative(srcRoot, file)}:${i + 1}`;
+        // The id sits within a few lines of its type in every call.
         for (const near of lines.slice(Math.max(0, i - 6), i + 7)) {
-          const m = near.match(/actorId:\s*"([^"]+)"/);
-          if (m) found.set(m[1], `${path.relative(srcRoot, file)}:${i + 1}`);
+          const literal = near.match(/(?:actorId|\bid):\s*"([^"]+)"/);
+          if (literal) found.literals.set(literal[1], where);
+          const constant = near.match(/actorId:\s*([A-Z][A-Z0-9_]+)\b/);
+          if (constant) found.constants.set(constant[1], where);
+          const prefix = near.match(/(?:actorId|\bid):\s*`([a-z-]+:)\$\{/);
+          if (prefix) found.prefixes.set(prefix[1], where);
         }
       });
     }
     return found;
   }
 
-  it("finds a real corpus", () => {
-    expect(systemActorIds().size).toBeGreaterThanOrEqual(8);
+  it("finds a real corpus in every spelling", () => {
+    const found = systemActorIds();
+    expect(found.literals.size).toBeGreaterThanOrEqual(8);
+    expect(found.constants.size).toBeGreaterThanOrEqual(2);
+    expect(found.prefixes.size).toBeGreaterThanOrEqual(1);
   });
 
-  it("has a label for each one", () => {
-    const missing = [...systemActorIds()]
+  it("has a label for each literal id", () => {
+    const missing = [...systemActorIds().literals]
       .filter(([id]) => !Object.hasOwn(SYSTEM_ACTOR_LABELS, id))
       .map(([id, where]) => `${id} (${where})`);
     expect(missing, "add these to SYSTEM_ACTOR_LABELS in lib/audit-actor-display.ts").toEqual([]);
+  });
+
+  it("has a label for each constant id (the label map imports the constant)", () => {
+    const missing = [...systemActorIds().constants]
+      .filter(([name]) => !new RegExp(`\\[${name}\\]:`).test(displaySource))
+      .map(([name, where]) => `${name} (${where})`);
+    expect(missing, "key SYSTEM_ACTOR_LABELS by these constants").toEqual([]);
+  });
+
+  it("has a label for each id prefix", () => {
+    const missing = [...systemActorIds().prefixes]
+      .filter(([prefix]) => !Object.hasOwn(SYSTEM_ACTOR_PREFIX_LABELS, prefix))
+      .map(([prefix, where]) => `${prefix} (${where})`);
+    expect(missing, "add these to SYSTEM_ACTOR_PREFIX_LABELS").toEqual([]);
   });
 });

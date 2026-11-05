@@ -13,9 +13,11 @@ import { KB_INDEX_SCHEDULER_ACTOR, KB_INDEX_WORKER_ACTOR } from "@/lib/knowledge
 /**
  * Readable labels for the `actorId`s that `actorType: "system"` rows carry.
  *
- * `system-actor-labels-drift.test.ts` scans the source for every literal
- * system actorId and fails until it has an entry here. An id that reaches the
- * table without one still reads as itself, untruncated — never as `kb-index…`.
+ * The drift guard in `__tests__/lib/audit-actor-display.test.ts` scans
+ * `src/` and `server.ts` for system actor ids written as a string literal, a
+ * constant or a `prefix:${…}` template, and fails until each has an entry
+ * here or in SYSTEM_ACTOR_PREFIX_LABELS. An id computed any other way is not
+ * seen; it still reads as itself, untruncated — never as `kb-index…`.
  */
 export const SYSTEM_ACTOR_LABELS: Readonly<Record<string, string>> = {
   system: "System",
@@ -23,7 +25,7 @@ export const SYSTEM_ACTOR_LABELS: Readonly<Record<string, string>> = {
   [KB_INDEX_WORKER_ACTOR]: "Knowledge base indexer",
   "upload-gc": "Upload cleanup",
   "chat-error-gc": "Chat error cleanup",
-  "approval-sweep": "Approval expiry",
+  "approval-sweep": "Approval sweep",
   "audit-verify-job": "Audit verification",
   "budget-monitor": "Budget monitor",
   "channel-media-mirror": "Channel media mirror",
@@ -33,9 +35,20 @@ export const SYSTEM_ACTOR_LABELS: Readonly<Record<string, string>> = {
   "invite-claim": "Invite claim",
 };
 
+/** Labels for system actor ids of the form `<prefix><name>`, e.g. `plugin:pinchy-odoo`. */
+export const SYSTEM_ACTOR_PREFIX_LABELS: Readonly<Record<string, string>> = {
+  "plugin:": "Plugin",
+};
+
 export function systemActorLabel(actorType: string, actorId: string): string | null {
   if (actorType !== "system") return null;
-  return Object.hasOwn(SYSTEM_ACTOR_LABELS, actorId) ? SYSTEM_ACTOR_LABELS[actorId] : actorId;
+  if (Object.hasOwn(SYSTEM_ACTOR_LABELS, actorId)) return SYSTEM_ACTOR_LABELS[actorId];
+  for (const [prefix, label] of Object.entries(SYSTEM_ACTOR_PREFIX_LABELS)) {
+    if (actorId.startsWith(prefix) && actorId.length > prefix.length) {
+      return `${label} ${actorId.slice(prefix.length)}`;
+    }
+  }
+  return actorId;
 }
 
 /** The joined columns `auditSelectWithJoins` returns for the actor. */

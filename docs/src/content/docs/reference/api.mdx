@@ -2292,7 +2292,7 @@ Retrieve a paginated, filterable audit log. **Admin only.**
 }
 ```
 
-`actorName` is resolved when the log is read, never stored: a user's current name, an agent's name for `actorType: "agent"` rows, the key's name for `api_key` rows, and a readable label for `system` rows (for example `"Scheduled reindex"` for `kb-index-scheduler`). It is `null` when nothing resolves — an erased user, or an agent that no longer exists. `actorDeleted` is `true` for a deactivated user or a deleted agent. `actorId` is always the raw value the row was written with.
+`actorName` is resolved when the log is read: a user's current name, an agent's current name for `actorType: "agent"` rows, the key's name for `api_key` rows (snapshotted into `detail` when the row was written), and a readable label for `system` rows (for example `"Scheduled reindex"` for `kb-index-scheduler`). It is `null` when nothing resolves — an erased user, or an agent that no longer exists. `actorDeleted` is `true` for a deactivated user or a deleted agent. `actorId` is always the raw value the row was written with.
 
 `outcome` is one of `"success"` or `"failure"`. `error` is `null` for successes and a short error message for failures (e.g. `"seat_cap"` on a blocked invite). Both fields are part of the HMAC-signed v2 row shape.
 
