@@ -420,8 +420,10 @@ export function settleFileOnlyDelivery(): void {
  * config itself (write.ts), so a retry would be refused the same way. The next
  * change, or a reconnect, still delivers what the file holds. Until one lands,
  * every regenerate — an unchanged one too — and every reconnect pushes
- * (config.get, its refused applies, a file rewrite) instead of taking the
- * build.ts fast path; nothing schedules those, so it is bounded by them.
+ * (config.get, its refused applies, a file rewrite — and for "Config write
+ * rejected" one more openclaw.json.rejected.<ts> file on OpenClaw's side per
+ * attempt) instead of taking the build.ts fast path; nothing schedules those,
+ * so it is bounded by them.
  */
 export function cancelFileOnlyFollowUp(): void {
   clearFileOnlyFollowUp(state());
