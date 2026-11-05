@@ -281,7 +281,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     // Only offered for invites that have an email: one created before the
     // email became required gets Revoke instead (#1263).
     const email = item.email;
-    if (!email) return;
+    if (!email) return; // unreachable: such a row shows Revoke; narrows the type
     try {
       await apiDelete(`/api/users/invites/${item.id}`);
     } catch (e) {
