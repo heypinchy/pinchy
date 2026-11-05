@@ -1,27 +1,48 @@
 name: Reclaim Docker disk before a rebuild
 description: >
-  Removes every ghcr.io/heypinchy image and all BuildKit cache, so a job that
-  already pulled (or built) the Pinchy and OpenClaw images can build them
-  again without holding both copies on the runner's disk at once.
+  Frees the runner's disk so a job that already pulled (or built) the Pinchy
+  and OpenClaw images can build them again, and fails with a clear error if
+  the build still would not fit.
 
   docker-smoke is the job this exists for: it pulls the pre-built production
   images, tests them, tears the stack down — which removes containers and
   volumes but no images — and then runs the dev stack with `up --build`,
   which builds Dockerfile.pinchy.dev and Dockerfile.openclaw from scratch.
-  With the pulled images still on disk, the second OpenClaw build ran out of
-  space while copying /opt/llama-cpp-deps ("ResourceExhausted: failed to copy
-  files: copy file range failed: no space left on device", CI run
-  42014766282). The pulled images are not inputs to that build — a plain
-  `docker build` does not use a pulled image as cache — so removing them costs
-  nothing but the space.
+  The second OpenClaw build ran out of space while copying /opt/llama-cpp-deps
+  ("ResourceExhausted: failed to copy files: copy file range failed: no space
+  left on device", CI run 42014766282).
 
-  Prints `df` and `docker system df` before and after, so the next time the
-  runner gets tight the log already says by how much.
+  It failed only on AWS-hosted runners: of 31 docker-smoke attempts on
+  2026-11-05, all three on AWS died of ENOSPC and all 27 on Azure passed. An
+  Azure ubuntu-26.04 runner has a 145G root with 88G free at job start, so
+  that half never came close. Measured there (PR #1293): pulling the two CI
+  images costs ~10G, and the dev build alone ~16G (58G -> 74G: 7.8G of images
+  plus 11.4G of BuildKit cache, partly shared).
+
+  So this action frees three things, each with a reason:
+  - every ghcr.io/heypinchy/* image and bare pinchy* tag. They are not inputs
+    to the rebuild — a plain `docker build` does not use a pulled image as
+    cache — so removing them costs nothing but the space.
+  - all BuildKit cache, which a fork-PR fallback's local build leaves behind.
+  - preinstalled toolchains no Pinchy job uses: .NET (5.8G), the Android SDK
+    (12G), GHC/ghcup (3.7G) and CodeQL's bundle in the tool cache. The rest of
+    /opt/hostedtoolcache stays: setup-node and friends read it.
+
+  Then it requires `min-free-gb` free on /. Below that it fails naming the
+  shortfall, instead of letting the build die halfway through a COPY.
+inputs:
+  min-free-gb:
+    description: >
+      Free space on / the next build needs, in GB. Default: the measured 16G
+      dev build plus headroom for growth.
+    default: "22"
 runs:
   using: composite
   steps:
-    - name: Remove Pinchy images and build cache
+    - name: Remove Pinchy images, build cache and unused toolchains
       shell: bash
+      env:
+        MIN_FREE_GB: ${{ inputs.min-free-gb }}
       run: |
         set -euo pipefail
         echo "== before =="
@@ -38,6 +59,15 @@ runs:
           docker image rm -f $ids
         fi
         docker builder prune -af
+        start=$(date +%s)
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+        echo "removed unused toolchains in $(( $(date +%s) - start ))s"
         echo "== after =="
         df -h /
         docker system df
+        free_gb=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+        if [ "$free_gb" -lt "$MIN_FREE_GB" ]; then
+          echo "::error::only ${free_gb}G free on / after reclaiming, the next build needs ${MIN_FREE_GB}G — see the df output above for what holds the rest"
+          exit 1
+        fi
+        echo "${free_gb}G free on / (need ${MIN_FREE_GB}G)"

@@ -766,12 +766,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: TEMP measure runner disk
-        run: |
-          df -h /
-          sudo du -sh /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/local/.ghcup 2>/dev/null || true
-          docker system df
-
       # Log in first: docker-mirror's docker.io fallback is authenticated
       # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
@@ -1199,8 +1193,9 @@ jobs:
         if: always()
         run: docker compose down -v
 
-      # The dev stack rebuilds both images from scratch; the production ones
-      # above are not inputs to that build and must not share the disk with it.
+      # The dev stack rebuilds both images from scratch (~16G); the production
+      # ones above are not inputs to that build and must not share the disk
+      # with it. Smaller AWS-hosted runners ran out of space here.
       - uses: ./.github/actions/reclaim-docker-disk
 
       - name: Start dev stack
@@ -1208,13 +1203,6 @@ jobs:
         env:
           BETTER_AUTH_SECRET: ci-test-secret-not-for-production
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-
-      - name: TEMP measure disk after dev build
-        if: always()
-        run: |
-          df -h /
-          docker system df
-          docker image ls
 
       - name: Wait for health (dev)
         run: |
