@@ -347,7 +347,7 @@ function Empty({ list }: { list: boolean }) {
  * values print as their literal (`false`, `1`, `null`), so a string "false"
  * (shown `"false"`) cannot pass for the boolean.
  *
- * `human` labels an object's fields in words (`humanLabels`), at any depth.
+ * `human` labels an object's fields in words (`fieldLabels`), at any depth.
  */
 function ArgValue({ value, human = false }: { value: unknown; human?: boolean }) {
   if (typeof value === "string") return <StoredText value={value} />;
@@ -450,8 +450,9 @@ function DataTable({
  * that order does not survive the round trip — it is restored here.
  *
  * `human` writes each field name in words where it reads as words
- * (`humanLabels`); a name that is quoted, unusual, or that two fields would
- * share once written in words stays as the summary wrote it.
+ * (`fieldLabels`); a name that is quoted, unusual, or that would read like
+ * another field's or a label in `taken` stays as the summary wrote it, drawn
+ * in code type.
  */
 function ArgFields({
   fields,
