@@ -54,8 +54,13 @@ export function sessionScopedRevalidateHeaders(etag: string): {
  * ctime is in it because mtime alone can be carried over: `rsync -a
  * --inplace` or `cp -p` replaces a document with a same-length correction
  * and keeps size, mtime and inode, which would answer 304 for the old
- * edition. No tool can set ctime. `variant` separates two representations of
- * one document (an Office original and its converted PDF).
+ * edition. No ordinary copy tool can set ctime on a local filesystem. Some
+ * network/FUSE mounts (sshfs, rclone) report mtime as ctime and synthesize
+ * inodes; there such an in-place edit can still look unchanged, and the
+ * reader keeps the old edition until the browser evicts it. That is
+ * staleness, not an access bypass: the access check runs either way.
+ * `variant` separates two representations of one document (an Office
+ * original and its converted PDF).
  */
 export function weakFileEtag(
   stat: { size: number; mtimeMs: number; ctimeMs: number; ino: number },

@@ -148,9 +148,10 @@ export async function streamWorkspaceFile(
     servedMime = detected.mime;
   }
 
-  // After the MIME check, so a conditional request can never turn a 415 into
-  // a 304. The file is small (uploads are capped at upload time), so reading
-  // it before answering costs little; what a 304 saves is the transfer.
+  // After the MIME check, so a 304 always vouches for a file this route would
+  // serve — a bare `*` included. Reading first costs a local read of a small
+  // file (uploads are capped at upload time, and the artifacts route has
+  // already hashed it in full); what a 304 saves is the transfer.
   if (ifNoneMatchHits(request.headers.get("if-none-match"), etag)) {
     return new NextResponse(null, { status: 304, headers: sessionScopedRevalidateHeaders(etag) });
   }
