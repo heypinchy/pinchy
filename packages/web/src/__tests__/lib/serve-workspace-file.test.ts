@@ -129,6 +129,17 @@ describe("streamWorkspaceFile caching (#1286)", () => {
     expect(res.headers.get("etag")).not.toBe(asText);
   });
 
+  it("gives the same bytes under a different file name a different validator", async () => {
+    // The name is in content-disposition, which a 304 cannot update.
+    const path = join(tmpRoot, "notes.txt");
+    writeFileSync(path, "hello");
+    const asNotes = (await streamWorkspaceFile(path, "notes.txt")).headers.get("etag")!;
+
+    const res = await streamWorkspaceFile(path, "minutes.txt", { "if-none-match": asNotes });
+
+    expect(res.status).toBe(200);
+  });
+
   it("sends the new bytes when the file changed since it was cached", async () => {
     const path = join(tmpRoot, "notes.txt");
     writeFileSync(path, "hello");

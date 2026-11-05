@@ -571,19 +571,6 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     return new NextResponse("Not found", { status: 404 });
   }
 
-  // The browser keeps this document `no-cache`, so every reuse of its copy
-  // arrives here as a conditional request — past the agent-access and
-  // allowed_paths checks above, which is the point: a revoked grant answers
-  // 403 here, never 304. Only an unchanged document the reader may still see
-  // is answered 304, without its bytes. A 304 is the reader looking at the
-  // document again, so it is audited like the read it replaces (a view, or a
-  // download with `download=1`).
-  // The artifact store touches each artifact on read, so its timestamps move
-  // every request; its content-addressed path identifies it instead. That
-  // path comes from hashing the source in full (resolveConvertedArtifact),
-  // which therefore runs before a 304 too: the hash is what tells a current
-  // conversion from one of a document since replaced, so it cannot be skipped
-  // for a reuse. A 304 saves sending the PDF, not reading the source.
   // `attachment` is the stricter of the two, so forcing it can only narrow what
   // the browser is allowed to do with these bytes — it never relaxes the
   // extension-derived anti-XSS split, it only ever overrides `inline`.
@@ -595,8 +582,16 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const disposition = isDownload ? "attachment" : servedDisposition;
 
   // How the bytes are served is part of what a cached copy stands for: a 304
-  // leaves the browser on the headers it stored (see servePosture).
-  const variantTag = representation + servePosture(contentType, disposition);
+  // leaves the browser on the headers it stored (see servePosture). The name
+  // is in content-disposition, and a symlink can change it at the same URL.
+  const variantTag = representation + servePosture(contentType, disposition, servedName);
+
+  // The artifact store touches each artifact on read, so its timestamps move
+  // every request; its content-addressed path identifies it instead. That
+  // path comes from hashing the source in full (resolveConvertedArtifact),
+  // which therefore runs before a 304 too: the hash is what tells a current
+  // conversion from one of a document since replaced, so it cannot be skipped
+  // for a reuse. A 304 saves sending the PDF, not reading the source.
   const etag = artifactPath
     ? weakStoredFileEtag(info, artifactPath, variantTag)
     : weakFileEtag(info, variantTag);
@@ -608,6 +603,14 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const range = rangeAllowedByIfRange(req.headers.get("if-range"))
     ? parseRangeHeader(req.headers.get("range"), info.size)
     : ({ kind: "full" } as const);
+
+  // The browser keeps this document `no-cache`, so every reuse of its copy
+  // arrives here as a conditional request — past the agent-access and
+  // allowed_paths checks above, which is the point: a revoked grant answers
+  // 403 here, never 304. Only an unchanged document the reader may still see
+  // is answered 304, without its bytes. A 304 is the reader looking at the
+  // document again, so it is audited like the read it replaces (a view, or a
+  // download with `download=1`).
   if (ifNoneMatchHits(req.headers.get("if-none-match"), etag)) {
     await fh.close();
     deferAuditLog(

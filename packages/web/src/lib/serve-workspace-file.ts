@@ -151,7 +151,7 @@ export async function streamWorkspaceFile(
 
   // The served type is part of what a cached copy stands for (servePosture):
   // the same bytes served as CSV instead of text are a different response.
-  const etag = weakFileEtag(stat, `file${servePosture(servedMime, "inline")}`);
+  const etag = weakFileEtag(stat, `file${servePosture(servedMime, "inline", safeName)}`);
 
   // After the MIME check, so a 304 always vouches for a file this route would
   // serve — a bare `*` included. Reading first costs a local read of a small

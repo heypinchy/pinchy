@@ -462,7 +462,7 @@ describe("workspace-file — a cached converted PDF is re-checked on every reuse
       weakStoredFileEtag(
         statSync(secondArtifact),
         secondArtifact,
-        `converted${servePosture(res.headers.get("content-type")!, "inline")}`
+        `converted${servePosture(res.headers.get("content-type")!, "inline", "angebot.pdf")}`
       )
     );
   });
