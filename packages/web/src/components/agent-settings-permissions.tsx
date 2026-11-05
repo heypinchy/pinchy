@@ -513,7 +513,7 @@ function UnsavedDirectoriesNotice({
       ? "Documents there that aren't indexed yet are added by the next reindex."
       : null,
     removed.length > 0
-      ? `${removed.length === 1 ? "Its" : "Their"} documents stay in the index, but no longer show up in this agent's answers.`
+      ? "Documents from folders you untick stay in the index, but no longer show up in this agent's answers."
       : null,
   ].filter(Boolean);
 

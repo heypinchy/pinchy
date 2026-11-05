@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -120,6 +120,12 @@ export function KnowledgeReindexSection({
   // before any did. Without it the section said "Not indexed" while it was
   // still asking — about an index that might be perfectly fine.
   const [read, setRead] = useState<"pending" | "ok" | "failed">("pending");
+  // Documents in this agent's folders with no readable text, across the whole
+  // corpus — reported up by the list. The last run's counts alone can't carry
+  // the badge: a scan found last week is merely "unchanged" tonight.
+  const [noTextCount, setNoTextCount] = useState(0);
+  const statusId = useId();
+  const saveFirstId = useId();
   const url = `/api/agents/${agentId}/knowledge/reindex`;
 
   // Monotonic ticket per status read: a response only lands if it is still the
@@ -167,9 +173,9 @@ export function KnowledgeReindexSection({
         toast.success(
           job.counts ? `Reindex finished: ${summarizeRun(job.counts)}.` : "Reindex finished."
         );
-      } else if (job.status === "failed") {
-        toast.error(job.error ? `Reindex failed: ${job.error}` : "Reindex failed.");
       }
+      // A failure gets no toast: it stays inline, where it is until fixed
+      // (AGENTS.md: never inline and toast for the same action).
     }
     wasActive.current = active;
   }, [active, job]);
@@ -206,9 +212,12 @@ export function KnowledgeReindexSection({
       setSamples((prev) => (prev.length === 0 ? prev : []));
       return;
     }
-    setSamples((prev) =>
-      appendProgressSample(prev, { at: Date.now(), processedBytes: job.processedBytes })
-    );
+    // Read the clock HERE, when the reading arrived — not inside the updater,
+    // which React may run a render later. Dated late, the first reading
+    // shortened the measured span and the estimate came out too short; it made
+    // "projects the remaining time" fail whenever the first render was slow.
+    const sample = { at: Date.now(), processedBytes: job.processedBytes };
+    setSamples((prev) => appendProgressSample(prev, sample));
   }, [active, job]);
 
   const handleReindex = useCallback(async () => {
@@ -248,7 +257,7 @@ export function KnowledgeReindexSection({
 
   const triggerDisabled = allowedPathCount === 0 || active || submitting || hasUnsavedPathChanges;
 
-  const status = describeStatus(allowedPathCount, job, active, read);
+  const status = describeStatus(allowedPathCount, job, active, read, noTextCount);
 
   return (
     <div className="space-y-3">
@@ -258,19 +267,37 @@ export function KnowledgeReindexSection({
           {/* Badge + one sentence, and nothing that changes per poll: a live
               region that re-reads "Indexing 41 of 300" every three seconds is
               noise. The moving numbers live below, outside it. */}
-          <div
-            role="status"
-            className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm"
-          >
-            <IndexStatusBadge tone={status.tone} label={status.label} />
-            <span>{status.headline}</span>
+          <div className="min-w-0 space-y-1">
+            <div
+              role="status"
+              className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+            >
+              <IndexStatusBadge tone={status.tone} label={status.label} />
+              <span id={statusId}>{status.headline}</span>
+            </div>
+            {read === "failed" && !active && (
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0"
+                onClick={() => void fetchStatus()}
+              >
+                Try again
+              </Button>
+            )}
           </div>
           <Button
             size="sm"
             variant="outline"
             onClick={handleReindex}
             disabled={triggerDisabled}
-            aria-busy={active || submitting}
+            aria-describedby={
+              triggerDisabled && !active
+                ? hasUnsavedPathChanges
+                  ? saveFirstId
+                  : statusId
+                : undefined
+            }
             className="w-full shrink-0 sm:w-auto"
           >
             <RefreshCw
@@ -284,8 +311,8 @@ export function KnowledgeReindexSection({
         {(allowedPathCount > 0 || hasUnsavedPathChanges) && (
           <div className="space-y-3 px-4 pb-4 empty:hidden">
             {hasUnsavedPathChanges && !active && (
-              <p className="text-sm text-muted-foreground">
-                Save your directory changes first. Reindex now works on the saved directories.
+              <p id={saveFirstId} className="text-sm text-muted-foreground">
+                Save your directory changes first: a reindex works on the saved directories.
               </p>
             )}
             {allowedPathCount === 0 ? null : active && job ? (
@@ -312,7 +339,8 @@ export function KnowledgeReindexSection({
             {allowedPathCount > 0 && !active && (
               <KnowledgeUnsearchableList
                 agentId={agentId}
-                announceNone={job?.status === "succeeded"}
+                announceNone={status.tone === "good"}
+                onNoTextCount={setNoTextCount}
                 reloadKey={`${allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
               />
             )}
@@ -352,7 +380,8 @@ function describeStatus(
   allowedPathCount: number,
   job: ReindexJob | null,
   active: boolean,
-  read: "pending" | "ok" | "failed"
+  read: "pending" | "ok" | "failed",
+  noTextCount: number
 ): IndexStatus {
   if (allowedPathCount === 0) {
     return {
@@ -370,7 +399,7 @@ function describeStatus(
     return {
       tone: "neutral",
       label: "Unknown",
-      headline: "Couldn't load the index status. Reload the page to try again.",
+      headline: "Couldn't load the index status.",
     };
   }
   if (active) {
@@ -396,6 +425,7 @@ function describeStatus(
     const needsAttention =
       (job.counts?.failed ?? 0) > 0 ||
       (job.counts?.unsearchable ?? 0) > 0 ||
+      noTextCount > 0 ||
       (job.unavailableFolders ?? 0) > 0;
     // A green badge says the last run went well. It can't say that folders
     // granted SINCE that run are in it: the route doesn't hand out the run's
@@ -409,7 +439,7 @@ function describeStatus(
   return {
     tone: "neutral",
     label: "No runs yet",
-    headline: "This agent hasn't been indexed yet. Reindex now builds its index.",
+    headline: "This agent hasn't been indexed yet. Start its first run with Reindex now.",
   };
 }
 
@@ -425,9 +455,10 @@ function summarizeRun(counts: IngestResult): string {
 }
 
 // Same palette as StatusBadge (status-badge.tsx), so "healthy" looks the same
-// here as on the Users and Groups pages. Each pair clears 4.5:1.
+// here as on the Users and Groups pages. Each pair clears 4.5:1 in light and
+// dark (muted-foreground on muted does not: 4.34:1).
 const TONE_CLASSES: Record<StatusTone, string> = {
-  neutral: "bg-muted text-muted-foreground",
+  neutral: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200",
   busy: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
   good: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
   attention: "bg-amber-100 text-amber-900 dark:bg-amber-900 dark:text-amber-100",
@@ -446,10 +477,8 @@ function IndexStatusBadge({ tone, label }: { tone: StatusTone; label: string }) 
   const Icon = TONE_ICONS[tone];
   return (
     <Badge variant="outline" className={`border-transparent ${TONE_CLASSES[tone]}`}>
-      <Icon
-        className={tone === "busy" ? "animate-spin motion-reduce:animate-none" : undefined}
-        aria-hidden="true"
-      />
+      {/* Static even while busy: the button beside it already spins. */}
+      <Icon aria-hidden="true" />
       {label}
     </Badge>
   );
@@ -486,7 +515,7 @@ function RunningState({
   if (job.total === null) {
     return (
       <div className="space-y-2">
-        <Progress value={0} aria-label="Indexing progress" />
+        <Progress value={null} aria-label="Indexing progress" />
         <p className="text-sm text-muted-foreground">
           Discovering documents…{elapsedSuffix}
           {etaSuffix}
@@ -678,8 +707,15 @@ function FailedState({ job }: { job: ReindexJob }) {
           <AlertDescription>{job.error}</AlertDescription>
         </Alert>
       )}
-      {job.counts && <CountsSummary counts={job.counts} />}
+      {job.counts && !allZero(job.counts) && <CountsSummary counts={job.counts} />}
     </>
+  );
+}
+
+/** A run that stopped before reading anything has nothing to count. */
+function allZero(counts: IngestResult): boolean {
+  return (
+    counts.indexed + counts.skipped + counts.removed + counts.unsearchable + counts.failed === 0
   );
 }
 

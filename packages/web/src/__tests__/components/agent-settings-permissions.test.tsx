@@ -452,7 +452,7 @@ describe("AgentSettingsPermissions", () => {
 
     const notice = screen.getByText(/not saved yet/i);
     expect(notice).toHaveTextContent(/the agent stops reading reports/i);
-    expect(notice).toHaveTextContent(/stay in the index/i);
+    expect(notice).toHaveTextContent(/documents from folders you untick stay in the index/i);
     expect(notice).not.toHaveTextContent(/starts reading/i);
   });
 

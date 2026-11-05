@@ -39,6 +39,8 @@ export interface KnowledgeUnsearchableListProps {
    * doesn't have to hold a ref to this component.
    */
   reloadKey?: string;
+  /** Called with the number of documents that have no readable text, so the section's badge can agree with this list. */
+  onNoTextCount?: (count: number) => void;
 }
 
 /**
@@ -54,6 +56,7 @@ export function KnowledgeUnsearchableList({
   agentId,
   announceNone,
   reloadKey,
+  onNoTextCount,
 }: KnowledgeUnsearchableListProps) {
   const [result, setResult] = useState<UnsearchableResponse | null>(null);
   const url = `/api/agents/${agentId}/knowledge/unsearchable`;
@@ -68,13 +71,19 @@ export function KnowledgeUnsearchableList({
     void (async () => {
       try {
         const res = await apiGet<UnsearchableResponse>(url);
-        if (seq === fetchSeq.current) setResult(res);
+        if (seq === fetchSeq.current) {
+          setResult(res);
+          onNoTextCount?.(res.totals.no_text);
+        }
       } catch {
         // A failed read stays silent rather than claiming an all-clear. No
         // toast either: this panel is a detail beside the reindex control, and
         // an unreachable API already surfaces there.
       }
     })();
+    // onNoTextCount is a state setter in practice; re-reading on its identity
+    // would be a request per parent render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, reloadKey]);
 
   if (!result) return null;
@@ -101,7 +110,7 @@ export function KnowledgeUnsearchableList({
           everything in scope. So "4 unsearchable" over "25 documents…" is the
           normal case, and without the scope named it reads as a contradiction. */}
       {noText > 0 && (
-        <p className="text-sm text-amber-600 dark:text-amber-500">
+        <p className="text-sm text-amber-700 dark:text-amber-400">
           {noText === 1
             ? "1 document in this agent's folders is indexed but holds no searchable text"
             : `${noText} documents in this agent's folders are indexed but hold no searchable text`}{" "}

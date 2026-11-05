@@ -28,20 +28,31 @@ vi.mock("sonner", () => ({
 // knowledge-unsearchable-list.test.tsx). Stubbed here so this file keeps testing
 // ONE network conversation, with the props rendered as attributes so the
 // section's decisions about WHEN to show it stay assertable.
-vi.mock("@/components/knowledge-unsearchable-list", () => ({
-  KnowledgeUnsearchableList: (props: {
-    agentId: string;
-    announceNone: boolean;
-    reloadKey: string;
-  }) => (
-    <div
-      data-testid="unsearchable-list"
-      data-agent-id={props.agentId}
-      data-announce-none={String(props.announceNone)}
-      data-reload-key={props.reloadKey}
-    />
-  ),
-}));
+// `mockNoTextCount` is what the stub reports back up as the corpus-wide count
+// of documents without readable text — the number the badge has to agree with.
+let mockNoTextCount = 0;
+vi.mock("@/components/knowledge-unsearchable-list", async () => {
+  const { useEffect } = await import("react");
+  return {
+    KnowledgeUnsearchableList: (props: {
+      agentId: string;
+      announceNone: boolean;
+      reloadKey: string;
+      onNoTextCount?: (count: number) => void;
+    }) => {
+      const { onNoTextCount } = props;
+      useEffect(() => onNoTextCount?.(mockNoTextCount), [onNoTextCount]);
+      return (
+        <div
+          data-testid="unsearchable-list"
+          data-agent-id={props.agentId}
+          data-announce-none={String(props.announceNone)}
+          data-reload-key={props.reloadKey}
+        />
+      );
+    },
+  };
+});
 
 const mockGet = vi.mocked(apiGet);
 const mockPost = vi.mocked(apiPost);
@@ -89,6 +100,7 @@ function job(overrides: Partial<Job>): Job {
 describe("KnowledgeReindexSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockNoTextCount = 0;
     mockGet.mockResolvedValue({ job: null });
   });
 
@@ -252,7 +264,7 @@ describe("KnowledgeReindexSection", () => {
       mockGet.mockResolvedValue({
         job: job({
           status: "succeeded",
-          counts: { indexed: 90, skipped: 5, removed: 0, unsearchable: 4, failed: 1 },
+          counts: { indexed: 90, skipped: 5, removed: 0, unsearchable: 0, failed: 0 },
         }),
       });
 
@@ -266,6 +278,22 @@ describe("KnowledgeReindexSection", () => {
     // The index is corpus-wide: another agent's run can have left unsearchable
     // documents inside this agent's scope, so the list is still asked for — it
     // just may not reassure about a zero it has no run to stand on.
+    // "Every document came back with searchable text" under a red "1 failed"
+    // is the all-clear the badge just withheld.
+    it("doesn't let it announce zero after a run that needs attention", async () => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 90, skipped: 5, removed: 0, unsearchable: 0, failed: 1 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const list = await screen.findByTestId("unsearchable-list");
+      expect(list).toHaveAttribute("data-announce-none", "false");
+    });
+
     it("still shows the list before any run of its own, but without announcing zero", async () => {
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
@@ -400,6 +428,29 @@ describe("KnowledgeReindexSection", () => {
       await waitFor(async () => expect(await statusText()).toMatch(/needs attention/i));
     });
 
+    // The last run's counts only cover what it touched: a scan found last
+    // week is "unchanged" tonight. The list below is corpus-wide, and the badge
+    // must not turn green over documents it still lists.
+    it("reads 'Needs attention' while documents without text remain, even after a clean run", async () => {
+      mockNoTextCount = 4;
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 0, skipped: 13, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/needs attention/i));
+    });
+
+    it("offers to try again when the status couldn't be loaded", async () => {
+      const user = userEvent.setup();
+      mockGet.mockRejectedValueOnce(new Error("network down")).mockResolvedValue({ job: null });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await user.click(await screen.findByRole("button", { name: /try again/i }));
+      await waitFor(async () => expect(await statusText()).toMatch(/no runs yet/i));
+    });
+
     it("reads 'Failed' after a failed run", async () => {
       mockGet.mockResolvedValue({
         job: job({ status: "failed", error: "Embedding model crashed" }),
@@ -493,14 +544,29 @@ describe("KnowledgeReindexSection", () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it("reports a run it watched fail with an error toast", async () => {
+  // A failure is shown inline, where it stays until it's fixed — not also as
+  // a toast: AGENTS.md, "Do not mix inline errors and toast errors for the
+  // same action."
+  it("reports a run it watched fail inline only, without a toast", async () => {
     mockGet
       .mockResolvedValueOnce({ job: job({ status: "running", processed: 3, total: 13 }) })
       .mockResolvedValue({ job: job({ status: "failed", error: "Embedding model crashed" }) });
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith("Reindex failed: Embedding model crashed")
-    );
+    expect(await screen.findByText("Embedding model crashed")).toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("leaves out a row of zeros under a run that failed before reading anything", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "failed",
+        error: "None of the granted folders could be read.",
+        counts: { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    await screen.findByText("None of the granted folders could be read.");
+    expect(screen.queryByText("0 failed")).not.toBeInTheDocument();
   });
 
   // Reindexing before saving would index the OLD folders.
@@ -516,11 +582,13 @@ describe("KnowledgeReindexSection", () => {
     expect(await screen.findByRole("progressbar", { name: /indexing progress/i })).toBeVisible();
   });
 
-  it("marks the trigger busy while a run is in flight", async () => {
-    mockGet.mockResolvedValue({ job: job({ status: "running", processed: 3, total: 10 }) });
-    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+  // A disabled button can't be focused, so the reason has to travel with it.
+  it("describes a disabled trigger with the reason it is disabled", async () => {
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={0} />);
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /reindex/i })).toHaveAttribute("aria-busy", "true")
+      expect(screen.getByRole("button", { name: /reindex/i })).toHaveAccessibleDescription(
+        /grant at least one directory/i
+      )
     );
   });
 
