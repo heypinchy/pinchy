@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiGet, apiDelete } from "@/lib/api-client";
-import { useChatSessionHasInlineError } from "@/components/chat-session-provider";
+import {
+  useChatSessionHasInlineError,
+  useChatSessionIsRunning,
+} from "@/components/chat-session-provider";
 import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat-error-message";
 import type { TransientReason } from "@/lib/schemas/chat-frames";
 import { Button } from "@/components/ui/button";
@@ -48,8 +51,9 @@ function toChatError(error: ActiveError): ChatError {
 }
 
 /**
- * Durable "paused" banner (Concern 1). On mount it asks the server for the
- * session's latest un-resolved agent error and re-surfaces it — so a rate-limit
+ * Durable "paused" banner (Concern 1). On mount, and again whenever a turn in
+ * the chat ends, it asks the server for the session's latest un-resolved agent
+ * error and re-surfaces it — so a rate-limit
  * (or any agent error) the live bubble lost to a reload/reconnect is still
  * visible when the user comes back. Dismiss clears it server-side; Retry resends
  * the last user message, gated behind a duplicate-write confirmation when the
@@ -73,6 +77,19 @@ export function ChatErrorBanner({
   // truth; the banner only fills in when no inline error is present.
   const hasInlineError = useChatSessionHasInlineError(agentId, chatId ?? undefined);
 
+  // Ask again each time a turn in this chat ends (#1301). A turn that went
+  // through supersedes the error server-side, and without this the banner
+  // stayed above the very answer that resolved it until the next reload. The
+  // server stays the judge: a turn that failed leaves the error (or a newer
+  // one) active, and the refetch shows that instead.
+  const isRunning = useChatSessionIsRunning(agentId, chatId ?? undefined);
+  const wasRunning = useRef(isRunning);
+  const [turnsEnded, setTurnsEnded] = useState(0);
+  useEffect(() => {
+    if (wasRunning.current && !isRunning) setTurnsEnded((n) => n + 1);
+    wasRunning.current = isRunning;
+  }, [isRunning]);
+
   useEffect(() => {
     let cancelled = false;
     const url = chatId
@@ -88,7 +105,7 @@ export function ChatErrorBanner({
     return () => {
       cancelled = true;
     };
-  }, [agentId, chatId]);
+  }, [agentId, chatId, turnsEnded]);
 
   if (!error || hasInlineError) return null;
 

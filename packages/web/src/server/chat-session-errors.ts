@@ -114,8 +114,9 @@ export const ACTIVE_ERROR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The newest un-superseded, un-dismissed, banner-eligible error for the exact
- * session, younger than `ACTIVE_ERROR_MAX_AGE_MS`, or null. `showBanner` is what keeps the classes recorded only for
- * the retry gate (#1013) out of a surface they were never shown on.
+ * session, younger than `ACTIVE_ERROR_MAX_AGE_MS`, or null. `showBanner` is
+ * what keeps the classes recorded only for the retry gate (#1013) out of a
+ * surface they were never shown on.
  */
 export async function getActiveChatSessionError(
   sessionKey: string
@@ -197,6 +198,10 @@ export async function resolveRetryGate({
  * practice the banner then sat above every later answer, reload after reload,
  * hours after the fact (#1301) — and the docs had promised all along that it
  * "clears itself automatically as soon as a message goes through again".
+ *
+ * `before` is app time compared against `created_at`, which the database fills
+ * with `now()` — the same convention as `agentRanToolSince`, and sound on the
+ * UTC session the Pinchy stack runs its database with.
  */
 export async function supersedeChatSessionErrors({
   sessionKey,

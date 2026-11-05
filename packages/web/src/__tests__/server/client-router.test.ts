@@ -543,6 +543,27 @@ describe("ClientRouter", () => {
       expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
     });
 
+    it("does NOT supersede on a turn boundary inside a run that then fails", async () => {
+      // openclaw-node emits `done` between the turns of one run ("one moment",
+      // a tool, then the reply). The run has not gone through until it ends.
+      async function* stream() {
+        yield { type: "text" as const, text: "One moment", runId: "r1" };
+        yield { type: "done" as const, text: "", runId: "r1" };
+        yield { type: "error" as const, text: "Rate limit reached", runId: "r1" };
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-mid",
+      });
+
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+
     it("does NOT supersede on a turn that said nothing", async () => {
       // A silent run is a failure of its own (the silent-stream banner), not a
       // message that went through.
