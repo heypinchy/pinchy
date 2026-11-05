@@ -284,6 +284,89 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(detail.reason).toBe("oversize");
   });
 
+  it("rejects a huge Content-Length with 413 and an audit row, without parsing the body", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+    const formDataSpy = vi.spyOn(Request.prototype, "formData");
+
+    try {
+      const req = new NextRequest(`http://localhost/api/agents/${agent.id}/uploads`, {
+        method: "POST",
+        headers: {
+          "x-pinchy-draft-id": TEST_DRAFT_ID,
+          "content-type": "multipart/form-data; boundary=x",
+          "content-length": String(1024 * 1024 * 1024),
+        },
+        body: "--x--",
+      });
+      const resp = await POST(req, makeParams(agent.id));
+
+      expect(resp.status).toBe(413);
+      expect(formDataSpy).not.toHaveBeenCalled();
+
+      const rows = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.actorId, user.auditPseudonym));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].eventType).toBe("file.upload.staged");
+      expect(rows[0].outcome).toBe("failure");
+      expect((rows[0].detail as Record<string, unknown>).reason).toBe("oversize");
+    } finally {
+      formDataSpy.mockRestore();
+    }
+  });
+
+  it("rejects a chunked body over the limit (no Content-Length) with 413 and stops reading", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+    const formDataSpy = vi.spyOn(Request.prototype, "formData");
+
+    const chunk = new Uint8Array(1024 * 1024).fill(0x41);
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // Endless body: a reader that does not stop at the limit never returns.
+        pulled += 1;
+        controller.enqueue(chunk);
+      },
+    });
+
+    try {
+      const req = new NextRequest(`http://localhost/api/agents/${agent.id}/uploads`, {
+        method: "POST",
+        headers: {
+          "x-pinchy-draft-id": TEST_DRAFT_ID,
+          "content-type": "multipart/form-data; boundary=x",
+        },
+        body: stream,
+        duplex: "half",
+      });
+      expect(req.headers.get("content-length")).toBeNull();
+
+      const resp = await POST(req, makeParams(agent.id));
+
+      expect(resp.status).toBe(413);
+      expect(formDataSpy).not.toHaveBeenCalled();
+      expect(pulled).toBeLessThan(40);
+
+      const rows = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.actorId, user.auditPseudonym));
+      expect(rows).toHaveLength(1);
+      expect((rows[0].detail as Record<string, unknown>).reason).toBe("oversize");
+    } finally {
+      formDataSpy.mockRestore();
+    }
+  });
+
   // ── MIME validation ────────────────────────────────────────────────────
 
   it("returns 415 and an audit failure row for a disallowed MIME type", async () => {
