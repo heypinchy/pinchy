@@ -275,8 +275,8 @@ describe("groupTemplatesByCategory", () => {
 
   it("returns runnable categories in stable thematic order, Knowledge & Compliance first", () => {
     // Provide templates from different categories in scrambled order.
-    // Knowledge & Compliance leads because its templates need no integration,
-    // only a folder (#1270).
+    // Knowledge & Compliance leads because its templates need no integration
+    // (#1270).
     const result = groupTemplatesByCategory([resumeScreener, salesTemplate, knowledgeBase]);
     const labels = result.categories.map((c) => c.label);
     expect(labels).toEqual(["Knowledge & Compliance", "Sales & Customers", "HR & Recruiting"]);
