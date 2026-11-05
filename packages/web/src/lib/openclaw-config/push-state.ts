@@ -381,8 +381,9 @@ export function fullRegenerateDeliveredSince(seq: number): boolean {
  * reconnect that ends without an apply, is delivered by the next regenerate,
  * whatever triggers it.
  *
- * Process-wide only, not persisted: after a Pinchy restart the first connect
- * regenerates anyway.
+ * Process-wide only, not persisted, and that is a third gap: a Pinchy restart
+ * drops a pending delivery, and the first connect's regenerate then takes an
+ * unchanged openclaw.json for the runtime again.
  */
 export function noteFileOnlyDelivery(): void {
   state().fileOnlyDelivery = true;
