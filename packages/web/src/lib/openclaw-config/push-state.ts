@@ -351,11 +351,15 @@ export function fullRegenerateDeliveredSince(seq: number): boolean {
  * that same file (write.ts) — and a reconnect regenerates
  * (server/openclaw-connect-regenerate.ts).
  *
- * Two gaps, stated rather than closed here. The no-client write at boot does
- * not set this: making it do so would send a config.apply on every Pinchy
- * boot, which needs its own evidence. And a fallback written after the
- * rate-limit retries ran out, with OpenClaw still connected, has no reconnect
- * coming: it is delivered by the next regenerate, whatever triggers it.
+ * Gaps, stated rather than closed here. The no-client write at boot does not
+ * set this, so a Pinchy restart that changes openclaw.json while OpenClaw
+ * keeps running relies on OpenClaw reloading the file. Setting it would cost
+ * one config.apply (a rate-limit slot) on every boot that changed the file,
+ * also where OpenClaw then starts on that file anyway — a trade that needs
+ * its own evidence. And a fallback with no reconnect coming (rate-limit
+ * retries ran out with OpenClaw still connected), or a push in flight at
+ * reconnect that ends without an apply, is delivered by the next regenerate,
+ * whatever triggers it.
  *
  * Process-wide only, not persisted: after a Pinchy restart the first connect
  * regenerates anyway.

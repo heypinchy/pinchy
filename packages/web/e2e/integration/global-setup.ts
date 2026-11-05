@@ -264,7 +264,9 @@ export default async function globalSetup() {
   await waitForAgentDispatchable(
     // A reset while the connect's push lands is a "not yet", like step 7's.
     (agentId) =>
-      fetch(`${PINCHY_URL}/api/health/openclaw?agentId=${agentId}`).catch(() => ({
+      fetch(`${PINCHY_URL}/api/health/openclaw?agentId=${agentId}`, {
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => ({
         ok: false,
         json: async () => ({}),
       })),

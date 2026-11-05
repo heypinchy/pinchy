@@ -4797,6 +4797,9 @@ describe("regenerateOpenClawConfig", () => {
           openclawWrite,
           "writeConfigAtomic must run as the last-resort fallback so the change is not lost"
         ).toBeDefined();
+        // The connected OpenClaw may not reload it: the next regenerate must
+        // still push it rather than take the file for the runtime.
+        expect(fileOnlyDeliveryPending()).toBe(true);
       } finally {
         vi.useRealTimers();
       }
