@@ -62,9 +62,9 @@ Both previews survive page reloads — the file lives in the agent workspace, no
 
 ## Receive files from the agent
 
-Files flow the other way too. When an agent produces or fetches a file — an email attachment it downloaded, a document it wrote — it hands the file straight back to you in chat as a downloadable chip, right next to its reply. PDFs and images preview inline exactly like your own uploads; CSV, Excel, text, Markdown and JSON files are a chip that downloads the file when you click it. No "it's in your workspace, go find it" — the file is one click away in the conversation.
+Files flow the other way too. When an agent produces or fetches a file — an email attachment it downloaded, a document it wrote — it hands the file straight back to you in chat as a downloadable chip, right next to its reply. PDFs and images preview inline exactly like your own uploads; CSV, Excel (`.xlsx`), text, Markdown and JSON files show up as a chip that downloads the file when you click it. No "it's in your workspace, go find it" — the file is one click away in the conversation.
 
-Today this happens two ways: whenever an agent downloads an email attachment with `email_get_attachment`, and whenever an agent generates a file from data it already has. Both land in the workspace _and_ appear as a chip you can open. One exception: an email attachment Pinchy can't serve to a browser safely — a Word document, a ZIP, an unknown binary — is saved to the workspace without a chip.
+Today this happens two ways: whenever an agent downloads an email attachment with `email_get_attachment`, and whenever an agent generates a file from data it already has. Both land in the workspace _and_ appear as a chip you can open. One exception: an email attachment Pinchy can't serve to a browser safely — a Word document, an old `.xls`, a ZIP, an unknown binary — is saved to the workspace without a chip.
 
 Delivered files are scoped to the chat they were delivered in: only you can download a file an agent handed to _your_ conversation, even on a shared agent where several people talk to the same agent. The chip reappears after a reload, just like your own attachments, because the authorization to download it is recorded durably — not held in browser memory.
 
