@@ -6,7 +6,7 @@ import "@testing-library/jest-dom";
 import { SettingsUsers } from "@/components/settings-users";
 import { jsonResponse } from "@/test-helpers/fetch";
 
-const mockToast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+const mockToast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn(), dismiss: vi.fn() }));
 vi.mock("sonner", () => ({ toast: mockToast }));
 
 // Mock window.location.origin for invite link generation
@@ -254,6 +254,68 @@ describe("SettingsUsers", () => {
       expect(tableView.getByText("Marketing")).toBeInTheDocument();
       expect(tableView.getByText("+2 more")).toBeInTheDocument();
       expect(tableView.queryByText("Sales")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("license status the client could not read", () => {
+    const memberInGroup = [
+      {
+        id: "u1",
+        name: "Max",
+        email: "max@test.com",
+        role: "member",
+        banned: false,
+        groups: [{ id: "g1", name: "Engineering" }],
+      },
+    ];
+
+    function mockWithStatus(statusResponse: () => Promise<Response>) {
+      vi.mocked(global.fetch).mockImplementation(async (url) => {
+        if (String(url) === "/api/users") return jsonResponse({ users: memberInGroup });
+        if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (String(url) === "/api/groups") {
+          return jsonResponse([{ id: "g1", name: "Engineering", description: null }]);
+        }
+        if (String(url) === "/api/enterprise/status") return statusResponse();
+        return jsonResponse(undefined, { status: 400 });
+      });
+    }
+
+    async function openMaxSheet() {
+      const user = userEvent.setup();
+      render(<SettingsUsers currentUserId="admin-1" />);
+      await waitFor(() => {
+        expect(within(screen.getByRole("table")).getByText("Max")).toBeInTheDocument();
+      });
+      await user.click(within(screen.getByRole("table")).getByText("Max"));
+      await waitFor(() => expect(screen.getByRole("combobox")).toBeInTheDocument());
+    }
+
+    // "Couldn't ask" is not "no license": the sheet must not tell an admin
+    // that adding to groups needs a license they may well have.
+    it.each([
+      ["rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+      [
+        "answers 500",
+        async () => jsonResponse({ error: "Internal Server Error" }, { status: 500 }),
+      ],
+    ])("does not claim a missing license when the status fetch %s", async (_l, response) => {
+      mockWithStatus(response);
+      await openMaxSheet();
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith(expect.stringMatching(/license status/i), {
+          id: expect.any(String),
+        });
+      });
+      expect(screen.queryByText(/requires an active license/i)).not.toBeInTheDocument();
+    });
+
+    it("still says so for a real enterprise: false", async () => {
+      mockWithStatus(async () => jsonResponse({ enterprise: false, maxUsers: 0, seatsUsed: 0 }));
+      await openMaxSheet();
+
+      expect(await screen.findByText(/requires an active license/i)).toBeInTheDocument();
     });
   });
 

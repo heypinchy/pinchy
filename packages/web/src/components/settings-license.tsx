@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import { apiPut, apiDelete, errorMessage } from "@/lib/api-client";
 import type { SetLicenseKeyInput } from "@/lib/schemas/enterprise";
 import type { LicenseInfo } from "@/lib/enterprise";
+import { useLicenseStatus } from "@/hooks/use-license-status";
 import { PRICING_URL, PORTAL_URL, conversionLink } from "@/lib/conversion-links";
 import { formatLicenseDate } from "@/lib/format-date";
 
@@ -29,31 +30,18 @@ interface SettingsLicenseProps {
 }
 
 export function SettingsLicense({ onEnterpriseActivated, initialLicense }: SettingsLicenseProps) {
-  const [license, setLicense] = useState<LicenseInfo | null>(initialLicense ?? null);
-  const [loading, setLoading] = useState(!initialLicense);
+  // null = unknown (not loaded yet, or the status fetch keeps failing): stay
+  // in the loading state rather than render "No active license key".
+  const { license, refetch: fetchStatus } = useLicenseStatus({
+    initial: initialLicense ?? null,
+    notifyOnFailure: true,
+  });
   const [keyInput, setKeyInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showInput, setShowInput] = useState(false);
   const [confirmRemoveGated, setConfirmRemoveGated] = useState(false);
   const [removingGated, setRemovingGated] = useState(false);
-
-  const fetchStatus = useCallback(async () => {
-    try {
-      const res = await fetch("/api/enterprise/status");
-      if (res.ok) {
-        const data = await res.json();
-        setLicense(data);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (initialLicense) return;
-    fetchStatus();
-  }, [fetchStatus, initialLicense]);
 
   const handleRemoveGatedConfig = async () => {
     setRemovingGated(true);
@@ -95,7 +83,7 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
     }
   };
 
-  if (loading) {
+  if (!license) {
     return (
       <Card>
         <CardHeader>

@@ -5,6 +5,9 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { SettingsLicense } from "@/components/settings-license";
 import { jsonResponse } from "@/test-helpers/fetch";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), dismiss: vi.fn() }) }));
 
 const noLicenseStatus = {
   enterprise: false,
@@ -26,6 +29,7 @@ describe("SettingsLicense", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    vi.mocked(toast.error).mockClear();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
     // Default: status fetch returns no-license (used by tests without initialLicense)
     fetchSpy.mockResolvedValue(statusOkResponse(noLicenseStatus));
@@ -50,6 +54,34 @@ describe("SettingsLicense", () => {
     );
     render(<SettingsLicense />);
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
+  });
+
+  // A dropped or failed status fetch must not render the community state
+  // ("No active license key…") — that tells an enterprise admin their key is
+  // gone. Unknown stays in the loading state while the hook retries.
+  it.each([
+    ["the status fetch rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+    [
+      "the status fetch answers 500",
+      async () => jsonResponse({ error: "Internal Server Error" }, { status: 500 }),
+    ],
+  ])("does not render the community state when %s", async (_label, statusResponse) => {
+    fetchSpy.mockImplementation(statusResponse);
+    render(<SettingsLicense />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/license status/i), {
+        id: expect.any(String),
+      });
+    });
+    expect(screen.getByText(/loading/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no active license key/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/see pricing/i)).not.toBeInTheDocument();
+  });
+
+  it("still renders the community state for a real enterprise: false", async () => {
+    render(<SettingsLicense />);
+    expect(await screen.findByText(/no active license key/i)).toBeInTheDocument();
   });
 
   it("shows no-license state when enterprise is false", async () => {

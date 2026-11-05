@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { useLicenseStatus } from "@/hooks/use-license-status";
 import { buildInviteUrl } from "@/lib/invite-url";
 import { apiPost, errorMessage } from "@/lib/api-client";
 import type { InviteUserInput } from "@/lib/schemas/users";
@@ -52,8 +53,14 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const { isCopied: copied, copy: copyInviteLink } = useCopyToClipboard();
-  const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
-  const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
+  // Refetched on every open. Unknown hides the group picker, as Community does;
+  // the dialog says nothing about the license either way.
+  const { license } = useLicenseStatus({ enabled: open });
+  const isEnterprise = license?.enterprise ?? null;
+  const seatInfo =
+    typeof license?.maxUsers === "number" && typeof license?.seatsUsed === "number"
+      ? { maxUsers: license.maxUsers, seatsUsed: license.seatsUsed }
+      : null;
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
 
@@ -77,19 +84,6 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
       setSelectedGroupIds([]);
     }
   }
-
-  useEffect(() => {
-    if (!open) return;
-    fetch("/api/enterprise/status")
-      .then((r) => r.json())
-      .then((d) => {
-        setIsEnterprise(d.enterprise);
-        if (typeof d.maxUsers === "number" && typeof d.seatsUsed === "number") {
-          setSeatInfo({ maxUsers: d.maxUsers, seatsUsed: d.seatsUsed });
-        }
-      })
-      .catch(() => setIsEnterprise(false));
-  }, [open]);
 
   useEffect(() => {
     if (!open || !isEnterprise) return;
