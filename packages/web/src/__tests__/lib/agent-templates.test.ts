@@ -1763,8 +1763,8 @@ describe("defaultStarterPrompts (per-agent starter prompts, #570)", () => {
   // chat (thread.tsx ThreadWelcome). Every role-specific template ships a
   // small, curated set so a brand-new user is never staring at an empty
   // composer — matching how Custom GPTs, Gemini Gems, and Copilot Studio all
-  // ship per-assistant conversation starters. `custom` is the deliberate
-  // exception: a blank agent has no role to suggest prompts for.
+  // ship per-assistant conversation starters. The deliberate exceptions, each
+  // with its reason, are listed in NO_STARTER_PROMPTS below.
   const MAX_PROMPTS = 4; // hard display ceiling; see research in PR #620
   const MAX_PROMPT_LENGTH = MAX_STARTER_PROMPT_LENGTH; // chips must stay on one or two short lines
 

@@ -132,8 +132,8 @@ export type CategoryId =
   | "knowledge-compliance"
   | "email";
 
-// Thematic order. Knowledge & Compliance leads because its templates need
-// nothing but a folder, so they run on every instance — the integration
+// Thematic order. Knowledge & Compliance leads because its templates need no
+// integration, only a folder (and a vision-capable model) — the integration
 // categories follow (#1270). groupTemplatesByCategory then moves any category
 // with nothing runnable to the end.
 const CATEGORY_DEFINITIONS: readonly { id: CategoryId; label: string }[] = [
@@ -237,7 +237,7 @@ export function groupTemplatesByCategory(templates: TemplateItem[]): Categorized
 
   // Categories the instance can use come first. A category where nothing is
   // runnable (e.g. every Sales template without an Odoo connection) renders
-  // as a collapsed "N templates available with Odoo" line, and must not push
+  // as a collapsed line or as greyed-out cards, and must not push
   // a usable category below the fold (#1270). Array#sort is stable, so the
   // thematic order holds within each group.
   categories.sort((a, b) => {
