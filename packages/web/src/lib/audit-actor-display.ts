@@ -30,6 +30,7 @@ export const SYSTEM_ACTOR_LABELS: Readonly<Record<string, string>> = {
   "channel-watchdog": "Channel watchdog",
   watchdog: "Chat run watchdog",
   "inbox-sweep": "Inbox sweep",
+  "invite-claim": "Invite claim",
 };
 
 export function systemActorLabel(actorType: string, actorId: string): string | null {
