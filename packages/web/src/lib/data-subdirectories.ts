@@ -80,11 +80,14 @@ export async function listDataSubdirectories(
     // below the root is a link. Comparing against the root's OWN real path
     // keeps this correct where the root sits under a linked ancestor (macOS
     // `/var` -> `/private/var` in tests) without letting a link below it pass.
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- the data root constant (or a test sandbox), never request input.
     const realRoot = await realpath(lexicalRoot);
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- lexical already passed the root-boundary check above; resolving it IS the symlink check.
     realFolder = await realpath(lexical);
     if (realFolder !== join(realRoot, relative(lexicalRoot, lexical))) {
       return { ok: false, reason: "not_listable" };
     }
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- realFolder equals the boundary-checked lexical path (no link below the root).
     if (!(await stat(realFolder)).isDirectory()) {
       return { ok: false, reason: "not_listable" };
     }
@@ -94,6 +97,7 @@ export async function listDataSubdirectories(
 
   let entries;
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- realFolder equals the boundary-checked lexical path (no link below the root).
     entries = await readdir(realFolder, { withFileTypes: true });
   } catch {
     return { ok: false, reason: "not_listable" };
