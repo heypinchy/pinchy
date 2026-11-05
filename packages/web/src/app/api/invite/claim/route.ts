@@ -115,6 +115,8 @@ export async function POST(request: NextRequest) {
   let signUpError = "Sign-up returned no user";
   try {
     result = await auth.api.signUpEmail({
+      // `flow`, not the destructured `invite`: only the narrowed flow knows
+      // the email is present.
       body: { name: name.trim(), email: flow.invite.email, password },
     });
   } catch (err) {
