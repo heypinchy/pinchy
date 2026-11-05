@@ -72,7 +72,7 @@ vi.mock("@/lib/invites", async (importOriginal) => {
 
 import { db } from "@/db";
 import { invites, users, userGroups, groups, inviteGroups, sessions, auditLog } from "@/db/schema";
-import { createInvite, claimInvite } from "@/lib/invites";
+import { createInvite, claimInvite, INVITE_WITHOUT_EMAIL_ERROR } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { auth } from "@/lib/auth";
@@ -302,6 +302,82 @@ describe("POST /api/invite/claim (integration)", () => {
     const serialized = JSON.stringify(rows[0]);
     expect(serialized).not.toContain("audited@test.local");
     expect(serialized).not.toContain(user!.id);
+  });
+
+  it("refuses an invite without an email and records the failed claim (#1263)", async () => {
+    // Invites created before the email became required have none. Better
+    // Auth cannot create an account without one, so the claim used to fail
+    // with a bare 500 and leave no trace in the audit trail.
+    const adminId = await seedAdmin();
+    const invite = await createInvite({ role: "member", type: "invite", createdBy: adminId });
+
+    const response = await POST(
+      makeRequest({ token: invite.token, name: "No Mail", password: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ error: INVITE_WITHOUT_EMAIL_ERROR });
+    await flushAfter();
+
+    const created = await db.query.users.findFirst({ where: eq(users.name, "No Mail") });
+    expect(created).toBeUndefined();
+    const row = await db.query.invites.findFirst({ where: eq(invites.id, invite.id) });
+    expect(row?.claimedAt).toBeNull();
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorType: "system",
+      actorId: "invite-claim",
+      outcome: "failure",
+    });
+    expect(rows[0].detail).toEqual({
+      name: "No Mail",
+      role: "member",
+      via: "invite",
+      invite: { id: invite.id },
+      reason: "invite_has_no_email",
+    });
+  });
+
+  it("records a failure row when Better Auth refuses the sign-up (#1263)", async () => {
+    // An account already holds the invite's email, so signUpEmail rejects.
+    // The invite must stay usable and the attempt must be on the record.
+    const adminId = await seedAdmin();
+    await auth.api.signUpEmail({
+      body: { name: "Taken", email: "taken@test.local", password: "originalpassword1" },
+    });
+    const invite = await createInvite({
+      email: "taken@test.local",
+      role: "member",
+      type: "invite",
+      createdBy: adminId,
+    });
+
+    const response = await POST(
+      makeRequest({ token: invite.token, name: "Second Taker", password: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Failed to create account" });
+    await flushAfter();
+
+    const row = await db.query.invites.findFirst({ where: eq(invites.id, invite.id) });
+    expect(row?.claimedAt).toBeNull();
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorType: "system",
+      actorId: "invite-claim",
+      outcome: "failure",
+    });
+    expect(rows[0].detail).toEqual({
+      name: "Second Taker",
+      role: "member",
+      via: "invite",
+      invite: { id: invite.id },
+      reason: "sign_up_failed",
+    });
+    expect(JSON.stringify(rows[0])).not.toContain("taken@test.local");
   });
 
   it("writes no user.created row for a password-reset claim", async () => {

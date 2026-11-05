@@ -273,13 +273,14 @@ describe("SettingsUsers", () => {
 
     vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ token: "invite-token-abc" }));
 
+    await user.type(screen.getByLabelText("Email"), "new@example.com");
     await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: "", role: "member" }),
+        body: JSON.stringify({ email: "new@example.com", role: "member" }),
       });
     });
 
@@ -315,6 +316,7 @@ describe("SettingsUsers", () => {
       await waitFor(() => expect(screen.getByLabelText("Role")).toBeInTheDocument());
 
       vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ token: "invite-token-abc" }));
+      await user.type(screen.getByLabelText("Email"), "new@example.com");
       await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
       await waitFor(() =>
@@ -763,6 +765,30 @@ describe("SettingsUsers", () => {
           screen.getByText("http://localhost:7777/invite/resend-token-xyz")
         ).toBeInTheDocument();
       });
+    });
+
+    it("does not revoke an expired invite that has no email, and says why (#1263)", async () => {
+      // Invites made before the email became required have none. A fresh
+      // invite needs one, so revoking first would only destroy the old row
+      // and then fail to create its replacement.
+      const user = userEvent.setup();
+      const noEmailExpired = { ...expiredInvite, email: null };
+      mockFetchForUsers(mockUsers, [noEmailExpired]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("table")).toBeInTheDocument();
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getByRole("button", { name: "Resend" }).closest("tr")!;
+      await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith(expect.stringMatching(/no email/i));
+      });
+      expect(global.fetch).not.toHaveBeenCalledWith("/api/users/invites/inv-2", expect.anything());
+      expect(global.fetch).not.toHaveBeenCalledWith("/api/users/invite", expect.anything());
     });
 
     // The test above only proves the link is *rendered*. Its Copy button is a

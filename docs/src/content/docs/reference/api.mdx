@@ -1332,11 +1332,11 @@ Create an invite for a new user. Returns the full invite object including a plai
 
 **Request body:**
 
-| Field      | Type     | Required | Description                                                 |
-| ---------- | -------- | -------- | ----------------------------------------------------------- |
-| `role`     | string   | Yes      | Role for the invited user (`admin` or `member`)             |
-| `email`    | string   | No       | Email address of the invited user (optional, for reference) |
-| `groupIds` | string[] | No       | Group IDs to assign the user to on account creation         |
+| Field      | Type     | Required | Description                                                          |
+| ---------- | -------- | -------- | -------------------------------------------------------------------- |
+| `email`    | string   | Yes      | Email address of the invited user. Their account is created with it. |
+| `role`     | string   | Yes      | Role for the invited user (`admin` or `member`)                      |
+| `groupIds` | string[] | No       | Group IDs to assign the user to on account creation                  |
 
 **Response:** `201 Created`
 
@@ -1431,7 +1431,9 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 
 **Errors:**
 
-- `400` — missing fields, invalid token, or token expired
+- `400` — missing fields, or a password that fails the password policy
+- `410` — the token is unknown, expired or already claimed, or the invite has no email address (invites created before the email became required). The response's `error` says which.
+- `500` — the account could not be created. The invite stays unclaimed and a `user.created` audit entry with `outcome: failure` is written.
 
 ## Telegram Channels
 

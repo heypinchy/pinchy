@@ -36,7 +36,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 
 const inviteSchema = z.object({
-  email: z.email("Invalid email").optional().or(z.literal("")),
+  // Required: the invitee's account is created with this address, so an
+  // invite without one could never be claimed (#1263).
+  email: z.string().trim().min(1, "Email is required").pipe(z.email("Invalid email")),
   role: z.enum(["member", "admin"]),
 });
 
@@ -182,7 +184,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
                 name="email"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Email (optional)</FormLabel>
+                    <FormLabel>Email</FormLabel>
                     <FormControl>
                       <Input type="email" placeholder="user@example.com" {...field} />
                     </FormControl>

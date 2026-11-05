@@ -30,6 +30,9 @@ export async function POST(request: NextRequest) {
   // user is gone).
   const flow = await resolveInviteFlow(token);
   if (!flow.ok) {
+    if (flow.reason === "invite_has_no_email") {
+      await auditFailedAccountCreation(flow.invite, name, "invite_has_no_email", flow.error);
+    }
     return NextResponse.json({ error: flow.error }, { status: flow.status });
   }
   const { invite } = flow;
@@ -108,12 +111,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Name is required" }, { status: 400 });
   }
 
-  const result = await auth.api.signUpEmail({
-    body: { name: name.trim(), email: invite.email!, password },
-  });
+  let result: Awaited<ReturnType<typeof auth.api.signUpEmail>> | null = null;
+  let signUpError = "Sign-up returned no user";
+  try {
+    result = await auth.api.signUpEmail({
+      body: { name: name.trim(), email: flow.invite.email, password },
+    });
+  } catch (err) {
+    signUpError = err instanceof Error ? err.message : "unknown";
+  }
 
   if (!result?.user) {
-    return NextResponse.json({ error: "Failed to create user" }, { status: 500 });
+    await auditFailedAccountCreation(invite, name, "sign_up_failed", signUpError);
+    return NextResponse.json({ error: "Failed to create account" }, { status: 500 });
   }
 
   // The inviter's `user.invited` row says an invite was issued; this one says
@@ -162,4 +172,31 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ success: true }, { status: 201 });
+}
+
+/**
+ * The failure twin of the `user.created` row a successful claim writes. There
+ * is no account to act as, so the actor is the claim flow itself. No email in
+ * detail, as on the success row.
+ */
+async function auditFailedAccountCreation(
+  invite: { id: string; role: string },
+  name: string | undefined,
+  reason: "invite_has_no_email" | "sign_up_failed",
+  message: string
+): Promise<void> {
+  await appendAuditLog({
+    actorType: "system",
+    actorId: "invite-claim",
+    eventType: "user.created",
+    detail: {
+      ...(name?.trim() ? { name: name.trim() } : {}),
+      role: invite.role,
+      via: "invite",
+      invite: { id: invite.id },
+      reason,
+    },
+    outcome: "failure",
+    error: { message },
+  });
 }

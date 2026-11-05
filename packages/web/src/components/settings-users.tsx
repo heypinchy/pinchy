@@ -277,6 +277,16 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     // Resend = revoke the old invite, then create a fresh one. Report which of
     // the two steps failed so the admin knows whether the old invite is still
     // live (revoke failed) or simply no replacement was issued (create failed).
+    //
+    // An invite created before the email became required has none, and a new
+    // invite needs one (#1263). Stop before revoking anything.
+    const email = item.email;
+    if (!email) {
+      toast.error(
+        "This invite has no email address, so it can't be resent. Use Invite User to invite the person with their email."
+      );
+      return;
+    }
     try {
       await apiDelete(`/api/users/invites/${item.id}`);
     } catch (e) {
@@ -286,7 +296,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     }
     try {
       const data = await apiPost<{ token: string }, InviteUserInput>("/api/users/invite", {
-        email: item.email || undefined,
+        email,
         role: item.role,
       });
       setResetLink(buildInviteUrl(window.location.origin, data.token));
