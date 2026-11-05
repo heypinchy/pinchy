@@ -11,6 +11,7 @@ import { regenerateOnConnect } from "@/server/openclaw-connect-regenerate";
 import {
   _resetConfigPushState,
   noteFileOnlyDelivery,
+  nextConfigPushGeneration,
   noteUndeliveredConfigChange,
   trackConfigPushStarted,
 } from "@/lib/openclaw-config/push-state";
@@ -50,16 +51,29 @@ describe("regenerateOnConnect", () => {
     expect(regenerate).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves a file-only delivery to a push still in flight", () => {
-    // That push retries over the new connection and settles it itself. A
-    // second regenerate would only add an apply — and if an apply restarts
-    // OpenClaw before it answers, a reconnect that regenerates again would
-    // repeat that for as long as it happens.
+  it("leaves a file-only delivery to the newest push while it is in flight", () => {
+    // That push retries over the new connection and settles it when its
+    // apply lands. A second regenerate would only add an apply — and if an
+    // apply restarts OpenClaw before it answers, a reconnect that regenerates
+    // again would repeat that for as long as it happens.
     noteFileOnlyDelivery();
-    trackConfigPushStarted();
+    trackConfigPushStarted(nextConfigPushGeneration());
     const regenerate = vi.fn(async () => {});
     regenerateOnConnect({ firstConnect: false }, regenerate);
     expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it("regenerates for a file-only delivery when only a superseded push is in flight", () => {
+    // A push parked in a rate-limit wait that a newer push superseded still
+    // counts as pending, but it returns without applying when it wakes: it
+    // can never settle the delivery.
+    trackConfigPushStarted(nextConfigPushGeneration());
+    nextConfigPushGeneration();
+    noteFileOnlyDelivery();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const regenerate = vi.fn(async () => {});
+    regenerateOnConnect({ firstConnect: false }, regenerate);
+    expect(regenerate).toHaveBeenCalledTimes(1);
   });
 
   it("logs a failed regenerate instead of rejecting", async () => {

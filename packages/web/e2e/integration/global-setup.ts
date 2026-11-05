@@ -252,8 +252,8 @@ export default async function globalSetup() {
   }
   console.log("[integration-setup] Pinchy reconnected to OpenClaw");
 
-  // 8. Wait until OpenClaw's runtime accepts Smithers — what the first spec
-  //    of every shard dispatches to. A connection says nothing about the
+  // 8. Wait until OpenClaw's runtime accepts Smithers — the agent most specs
+  //    chat with or reconfigure. A connection says nothing about the
   //    runtime's agent list: in CI run 41906476538 the setup wizard's push
   //    waited out the restart above, fell back to writing openclaw.json, and
   //    the running OpenClaw never reloaded it, so the first chat was rejected

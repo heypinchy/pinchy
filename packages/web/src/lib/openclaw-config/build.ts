@@ -2114,8 +2114,10 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     //
     // This regenerate settles it itself: openclaw.json already holds its
     // target, and the file is what OpenClaw runs or will run. A running
-    // OpenClaw wrote it (config.apply persists what it applies) or hot-reloads
-    // it, as it does a push's file fallback; a stopped one starts on it.
+    // OpenClaw wrote it (config.apply persists what it applies); a stopped one
+    // starts on it. A push's file fallback is the exception — a running
+    // OpenClaw may never reload it — which is why this branch is only reached
+    // while no file-only delivery is pending (noteFileOnlyDelivery).
     // Pinchy writes nothing under OpenClaw's read-side line
     // (last-good-bound.ts), and should OpenClaw's startup restore `.bak` all
     // the same, that rewrites the file, so it still holds what OpenClaw runs.

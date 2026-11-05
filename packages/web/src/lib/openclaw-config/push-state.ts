@@ -68,6 +68,8 @@ interface ConfigPushState {
   deliveredSeq: number;
   /** See noteFileOnlyDelivery. */
   fileOnlyDelivery: boolean;
+  /** Generations of the push coroutines in flight (see newestPushInFlight). */
+  inFlightGenerations: Set<number>;
 }
 
 /**
@@ -112,6 +114,7 @@ function state(): ConfigPushState {
       undeliveredSeq: 0,
       deliveredSeq: 0,
       fileOnlyDelivery: false,
+      inFlightGenerations: new Set(),
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -122,12 +125,15 @@ function state(): ConfigPushState {
   existing.undeliveredSeq ??= 0;
   existing.deliveredSeq ??= 0;
   existing.fileOnlyDelivery ??= false;
+  existing.inFlightGenerations ??= new Set();
   return existing as ConfigPushState;
 }
 
 /** Record that a `pushConfigInBackground` coroutine has started. */
-export function trackConfigPushStarted(): void {
-  state().pending++;
+export function trackConfigPushStarted(generation?: number): void {
+  const s = state();
+  s.pending++;
+  if (generation !== undefined) s.inFlightGenerations.add(generation);
 }
 
 /**
@@ -135,9 +141,20 @@ export function trackConfigPushStarted(): void {
  * superseded by a newer push, or file-write fallback. Floors at zero so a
  * spurious double-settle can never wedge the counter negative.
  */
-export function trackConfigPushSettled(): void {
+export function trackConfigPushSettled(generation?: number): void {
   const s = state();
   s.pending = Math.max(0, s.pending - 1);
+  if (generation !== undefined) s.inFlightGenerations.delete(generation);
+}
+
+/**
+ * Whether the push holding the newest generation is still in flight. Unlike
+ * the pending count, a push a newer one superseded does not count: it returns
+ * without applying when it next wakes (see `getCurrentConfigPushGeneration`).
+ */
+export function newestPushInFlight(): boolean {
+  const s = state();
+  return s.inFlightGenerations.has(s.generation);
 }
 
 /** Number of push coroutines currently in flight (0 = config is settled). */
@@ -431,6 +448,7 @@ export function _resetConfigPushState(): void {
   s.undeliveredSeq = 0;
   s.deliveredSeq = 0;
   s.fileOnlyDelivery = false;
+  s.inFlightGenerations.clear();
   s.unservedCalls = undefined;
   s.writtenSecretsShape = undefined;
   s.lastGoodBound = undefined;

@@ -5171,6 +5171,22 @@ describe("regenerateOpenClawConfig", () => {
       expect(mockConfigApply).toHaveBeenCalledTimes(1);
     });
 
+    it("is applied by a push even when config.get already returns it", async () => {
+      // config.get reads openclaw.json, so after a fallback it matches the
+      // payload; the no-op guard must not take that for the runtime.
+      const payload = { gateway: { mode: "local" }, agents: { list: [{ id: "a1" }] } };
+      noteFileOnlyDelivery();
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      mockConfigGet.mockResolvedValue({ hash: "h", config: payload });
+      mockConfigApply.mockResolvedValue(undefined);
+
+      pushConfigInBackground(JSON.stringify(payload));
+      await drainBackgroundCoroutine();
+
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+      expect(fileOnlyDeliveryPending()).toBe(false);
+    });
+
     it("stays pending when the push that applied was superseded before it answered", async () => {
       noteFileOnlyDelivery();
       mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });

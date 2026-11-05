@@ -392,7 +392,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
   // coroutine 33–53 s, during which the change is NOT in OC's runtime while
   // everything else looks healthy. `.finally` below settles on EVERY terminal
   // exit — applied, no-op skip, superseded, or file-write fallback.
-  trackConfigPushStarted();
+  trackConfigPushStarted(generation);
 
   void (async () => {
     // Brief retry across transient WS disconnects. Beyond ~3.5 s the WS is
@@ -688,7 +688,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // file a push just wrote and the running OpenClaw may never have
         // loaded. It names the change already, so the guard would skip the
         // one apply that can deliver it. config.apply diffs against OpenClaw's
-        // own runtime and hot-reloads what differs.
+        // own runtime and hot-reloads what differs (CI run 41906476538's late
+        // apply: `reload applied (agents.list, …)`, no restart). That an apply
+        // equivalent to the runtime never restarts the pinned OpenClaw is not
+        // measured here (#193); the first landed apply settles the delivery,
+        // so the cost is one apply per pending episode either way.
         if (current.config && !fileOnlyDeliveryPending()) {
           const supplementedConfig = JSON.parse(supplemented) as Record<string, unknown>;
           if (
@@ -890,7 +894,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       }
     }
   })()
-    .finally(trackConfigPushSettled)
+    .finally(() => trackConfigPushSettled(generation))
     .catch((err: unknown) => {
       // Terminal safety net. Everything inside the retry loop already handles
       // its own errors, but the pre-loop section does not: the plaintext guard
