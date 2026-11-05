@@ -188,9 +188,10 @@ describe("browser cache is scoped to the session (#1286)", () => {
     // Matched by name anywhere in the file, an aliased import included.
     // This bounds who may set a LIFETIME; it does not prove that a route
     // without one sends a validator. That is the serving routes' own tests'
-    // job — and harmless if missed, since without Last-Modified there is no
-    // heuristic freshness either (the scan above treats that header as a
-    // lifetime too).
+    // job — and harmless if missed in practice: browsers derive heuristic
+    // freshness only from Last-Modified (RFC 9111 §4.2.2 suggests, but does
+    // not require, that basis), and the scan above treats that header as a
+    // lifetime too.
     const MAY_SET_A_LIFETIME: Array<{ file: string; reason: string }> = [
       {
         file: "app/api/models/capabilities/route.ts",

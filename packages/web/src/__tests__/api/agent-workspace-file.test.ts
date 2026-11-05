@@ -528,6 +528,8 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
     expect(first.status).toBe(200);
     const etag = first.headers.get("etag");
     expect(etag).toMatch(/^W\/"[^"]+"$/);
+    // Release the streamed body's descriptor now rather than at GC.
+    await first.body?.cancel();
     return etag!;
   }
 
@@ -777,7 +779,8 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
       await callGET("agent-1", pdfPath, { "if-none-match": etag });
     }
 
-    expect(countOpenDescriptors()).toBeLessThanOrEqual(before);
+    // Slack for descriptors the runner opens meanwhile; a leak here is 20.
+    expect(countOpenDescriptors() - before).toBeLessThan(10);
   });
 });
 
