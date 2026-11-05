@@ -240,4 +240,15 @@ describe("useLicenseStatus", () => {
     unmount();
     expect(toast.dismiss).toHaveBeenCalledWith(LICENSE_STATUS_TOAST_ID);
   });
+
+  it("dismisses its toast when disabled, since nothing retries any more", async () => {
+    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
+    const { rerender } = renderHook(
+      ({ on }) => useLicenseStatus({ enabled: on, notifyOnFailure: true }),
+      { initialProps: { on: true } }
+    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    rerender({ on: false });
+    expect(toast.dismiss).toHaveBeenCalledWith(LICENSE_STATUS_TOAST_ID);
+  });
 });

@@ -87,9 +87,16 @@ export function useLicenseStatus({
   const notified = useRef(false);
   const skipInitialFetch = useRef(initial !== null);
 
+  // Stops the current attempt and its retries. A toast promising "we'll keep
+  // trying" goes with them, and the next attempt starts a fresh streak.
   const cancel = useCallback(() => {
     generation.current++;
     clearTimeout(retryTimer.current);
+    failures.current = 0;
+    if (notified.current) {
+      notified.current = false;
+      toast.dismiss(LICENSE_STATUS_TOAST_ID);
+    }
   }, []);
 
   const load = useCallback(async (): Promise<void> => {
@@ -135,14 +142,8 @@ export function useLicenseStatus({
   }, [enabled, refreshKey, load, cancel]);
 
   // Unmount ends everything, including attempts started by `refetch()` while
-  // disabled. Leaving the page while the toast is up must not leave it behind.
-  useEffect(
-    () => () => {
-      cancel();
-      if (notified.current) toast.dismiss(LICENSE_STATUS_TOAST_ID);
-    },
-    [cancel]
-  );
+  // disabled, and takes the toast with it.
+  useEffect(() => cancel, [cancel]);
 
   return { license, refetch: load };
 }
