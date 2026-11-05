@@ -497,13 +497,15 @@ export function AuditLogTable() {
                     <button
                       type="button"
                       aria-label={`${entry.eventType} details`}
-                      className="min-w-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="flex min-w-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedEntry(entry);
                       }}
                     >
-                      <Badge variant="secondary" className="max-w-full truncate">
+                      {/* `block`, not the badge's inline-flex: an ellipsis only applies
+                          to a block box. */}
+                      <Badge variant="secondary" className="block max-w-full truncate">
                         {entry.eventType}
                       </Badge>
                     </button>

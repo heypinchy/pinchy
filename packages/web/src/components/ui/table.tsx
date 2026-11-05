@@ -15,7 +15,9 @@ function useOverflowsX(ref: React.RefObject<HTMLDivElement | null>) {
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const measure = () => setOverflows(el.scrollWidth > el.clientWidth);
+    // > 1, not > 0: fractional widths can round scrollWidth up by a pixel
+    // when nothing actually scrolls.
+    const measure = () => setOverflows(el.scrollWidth - el.clientWidth > 1);
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
