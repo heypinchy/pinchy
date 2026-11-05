@@ -96,6 +96,7 @@ let capturedReindexProps: {
   agentId: string;
   allowedPathCount: number;
   hasUnsavedPathChanges?: boolean;
+  savedPathsKey?: string;
 } | null = null;
 
 vi.mock("@/components/knowledge-reindex-section", () => ({
@@ -103,6 +104,7 @@ vi.mock("@/components/knowledge-reindex-section", () => ({
     agentId: string;
     allowedPathCount: number;
     hasUnsavedPathChanges?: boolean;
+    savedPathsKey?: string;
   }) => {
     capturedReindexProps = props;
     return <div data-testid="knowledge-reindex-section" />;
@@ -415,7 +417,10 @@ describe("AgentSettingsPermissions", () => {
       />
     );
 
-    expect(capturedReindexProps).toMatchObject({ allowedPathCount: 2 });
+    expect(capturedReindexProps).toMatchObject({
+      allowedPathCount: 2,
+      savedPathsKey: "/data/docs|/data/reports",
+    });
     expect(screen.queryByText(/not saved yet/i)).not.toBeInTheDocument();
   });
 
@@ -454,6 +459,29 @@ describe("AgentSettingsPermissions", () => {
     expect(notice).toHaveTextContent(/the agent stops reading reports/i);
     expect(notice).toHaveTextContent(/documents from folders you untick stay in the index/i);
     expect(notice).not.toHaveTextContent(/starts reading/i);
+  });
+
+  it("names both directions when folders are added and removed in one change", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/reports"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "docs" }));
+    await user.click(screen.getByRole("checkbox", { name: "reports" }));
+
+    expect(screen.getByText(/not saved yet/i)).toHaveTextContent(
+      /once you save, the agent starts reading docs, and it stops reading reports\./i
+    );
   });
 
   // A non-admin has no Reindex button, so the notice must not point at one.

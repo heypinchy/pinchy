@@ -87,6 +87,11 @@ export interface KnowledgeReindexSectionProps {
    * waits until the change is saved, and says so.
    */
   hasUnsavedPathChanges?: boolean;
+  /**
+   * The saved folders, normalized and joined. Swapping one folder for another
+   * keeps the count, so the list (and the badge it feeds) re-reads on this.
+   */
+  savedPathsKey?: string;
   /** Poll cadence while a run is in flight. Injectable so tests need not wait seconds. */
   pollIntervalMs?: number;
 }
@@ -111,6 +116,7 @@ export function KnowledgeReindexSection({
   agentId,
   allowedPathCount,
   hasUnsavedPathChanges = false,
+  savedPathsKey,
   pollIntervalMs = 3000,
 }: KnowledgeReindexSectionProps) {
   const [job, setJob] = useState<ReindexJob | null>(null);
@@ -170,9 +176,16 @@ export function KnowledgeReindexSection({
   useEffect(() => {
     if (wasActive.current && !active && job) {
       if (job.status === "succeeded") {
-        toast.success(
-          job.counts ? `Reindex finished: ${summarizeRun(job.counts)}.` : "Reindex finished."
-        );
+        const finished = job.counts
+          ? `Reindex finished: ${summarizeRun(job.counts)}.`
+          : "Reindex finished.";
+        // Not a green "done" beside a red "2 failed": the badge decides, and
+        // the toast agrees with it.
+        if (runNeedsAttention(job)) {
+          toast.info(`${finished} Some need your attention.`);
+        } else {
+          toast.success(finished);
+        }
       }
       // A failure gets no toast: it stays inline, where it is until fixed
       // (AGENTS.md: never inline and toast for the same action).
@@ -275,12 +288,15 @@ export function KnowledgeReindexSection({
               <IndexStatusBadge tone={status.tone} label={status.label} />
               <span id={statusId}>{status.headline}</span>
             </div>
-            {read === "failed" && !active && (
+            {read === "failed" && !active && allowedPathCount > 0 && (
               <Button
                 variant="link"
                 size="sm"
                 className="h-auto p-0"
-                onClick={() => void fetchStatus()}
+                onClick={() => {
+                  setRead("pending");
+                  void fetchStatus();
+                }}
               >
                 Try again
               </Button>
@@ -341,7 +357,7 @@ export function KnowledgeReindexSection({
                 agentId={agentId}
                 announceNone={status.tone === "good"}
                 onNoTextCount={setNoTextCount}
-                reloadKey={`${allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
+                reloadKey={`${savedPathsKey ?? allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
               />
             )}
           </div>
@@ -422,11 +438,7 @@ function describeStatus(
     const how = job.trigger !== undefined && job.trigger !== "manual" ? "automatically " : "";
     const summary = job.counts ? ` — ${summarizeRun(job.counts)}` : "";
     const headline = `Last indexed ${how}${formatWhen(job.finishedAt)}${summary}.`;
-    const needsAttention =
-      (job.counts?.failed ?? 0) > 0 ||
-      (job.counts?.unsearchable ?? 0) > 0 ||
-      noTextCount > 0 ||
-      (job.unavailableFolders ?? 0) > 0;
+    const needsAttention = runNeedsAttention(job) || noTextCount > 0;
     // A green badge says the last run went well. It can't say that folders
     // granted SINCE that run are in it: the route doesn't hand out the run's
     // paths. The nightly run (or Reindex now) closes that gap.
@@ -441,6 +453,15 @@ function describeStatus(
     label: "No runs yet",
     headline: "This agent hasn't been indexed yet. Start its first run with Reindex now.",
   };
+}
+
+/** Whether the run itself left something an agent can't answer from. */
+function runNeedsAttention(job: ReindexJob): boolean {
+  return (
+    (job.counts?.failed ?? 0) > 0 ||
+    (job.counts?.unsearchable ?? 0) > 0 ||
+    (job.unavailableFolders ?? 0) > 0
+  );
 }
 
 /** "13 documents checked, 2 new or changed" — a run in words, for the status line and the toast. */

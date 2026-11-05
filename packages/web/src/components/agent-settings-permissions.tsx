@@ -5,7 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { CircleAlert } from "lucide-react";
-import { isSameDirectory, sameDirectorySet } from "@/lib/directory-path";
+import { directoryKey, isSameDirectory, sameDirectorySet } from "@/lib/directory-path";
 import {
   getToolsByCategory,
   getOdooToolsForAccessLevel,
@@ -378,6 +378,7 @@ export function AgentSettingsPermissions({
             agentId={agent.id}
             allowedPathCount={savedAllowedPaths.length}
             hasUnsavedPathChanges={hasUnsavedPathChanges}
+            savedPathsKey={savedAllowedPaths.map(directoryKey).sort().join("|")}
           />
         )}
 
@@ -508,7 +509,7 @@ function UnsavedDirectoriesNotice({
 
   const sentences = [
     "Not saved yet.",
-    changes.length > 0 ? `Once you save, the agent ${changes.join(" and ")}.` : null,
+    changes.length > 0 ? `Once you save, the agent ${changes.join(", and it ")}.` : null,
     added.length > 0 && isAdmin
       ? "Documents there that aren't indexed yet are added by the next reindex."
       : null,

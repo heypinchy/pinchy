@@ -357,6 +357,33 @@ describe("KnowledgeReindexSection", () => {
         afterJob2
       );
     });
+
+    // Swapping one saved folder for another keeps the count: the list (and
+    // the badge built on it) must still re-read, or it reports on a folder the
+    // agent no longer reads until the page is reloaded.
+    it("re-reads the list when a saved folder is swapped for another", async () => {
+      mockGet.mockResolvedValue({ job: job({ id: "job-1", status: "succeeded" }) });
+      const view = render(
+        <KnowledgeReindexSection
+          agentId="a1"
+          allowedPathCount={2}
+          savedPathsKey="/data/a|/data/b"
+        />
+      );
+      const before = (await screen.findByTestId("unsearchable-list")).getAttribute(
+        "data-reload-key"
+      );
+      view.rerender(
+        <KnowledgeReindexSection
+          agentId="a1"
+          allowedPathCount={2}
+          savedPathsKey="/data/b|/data/c"
+        />
+      );
+      expect(screen.getByTestId("unsearchable-list").getAttribute("data-reload-key")).not.toBe(
+        before
+      );
+    });
   });
 
   // The badge answers "is this healthy?" before anyone reads a number (#1305).
@@ -532,6 +559,25 @@ describe("KnowledgeReindexSection", () => {
     );
   });
 
+  // A green "finished" beside a red "2 failed" would contradict the badge.
+  it("says how many documents need attention in the finish toast, as info", async () => {
+    mockGet
+      .mockResolvedValueOnce({ job: job({ status: "running", processed: 3, total: 13 }) })
+      .mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 0, skipped: 11, removed: 0, unsearchable: 0, failed: 2 },
+        }),
+      });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith(
+        "Reindex finished: 13 documents checked, nothing new. Some need your attention."
+      )
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it("does not toast about a run that had already finished before the page opened", async () => {
     mockGet.mockResolvedValue({
       job: job({
@@ -573,7 +619,9 @@ describe("KnowledgeReindexSection", () => {
   it("holds Reindex now back while directory changes are unsaved, and says why", async () => {
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} hasUnsavedPathChanges />);
     await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeDisabled());
-    expect(screen.getByText(/save your directory changes first/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reindex/i })).toHaveAccessibleDescription(
+      /save your directory changes first/i
+    );
   });
 
   it("gives the progress bar an accessible name", async () => {
