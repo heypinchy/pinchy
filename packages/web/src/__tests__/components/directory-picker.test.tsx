@@ -33,8 +33,8 @@ describe("DirectoryPicker", () => {
     expect(onChange).toHaveBeenCalledWith(["/data/documents"]);
   });
 
-  // A stored grant may carry a trailing slash (sanitizePath's canonical form),
-  // while /api/data-directories lists mounts without one. A grant must still
+  // A stored grant may carry a trailing slash (written through the API or by an
+  // older version), while /api/data-directories lists mounts without one. A grant must still
   // read as checked, and unticking it must remove the stored entry (#1264).
   it("checks a directory whose grant is stored with a trailing slash", () => {
     render(
