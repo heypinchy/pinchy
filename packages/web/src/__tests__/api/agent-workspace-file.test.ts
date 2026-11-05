@@ -508,21 +508,6 @@ describe("GET /api/agents/[agentId]/workspace-file — large files and byte rang
   });
 });
 
-/**
- * Streaming replaced a buffered read, and it brought a failure mode buffering
- * did not have: the descriptor now outlives the handler. `createReadStream` on
- * an open handle closes it when the stream ENDS or is CANCELLED — but a body
- * that is never touched at all does neither, and the handle stays open until a
- * garbage collection that may not come ("Warning: Closing file descriptor N on
- * garbage collection").
- *
- * That is not a hypothetical path. Next.js auto-implements HEAD by calling the
- * GET handler (`auto-implement-methods.js`) and then throws the body away
- * unread, so every HEAD request against this route parks a descriptor — and a
- * file-serving route is exactly what proxies, monitors and PDF viewers probe
- * with HEAD. Any authenticated user could then exhaust the process's descriptor
- * limit with a loop.
- */
 describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached copy is re-checked", () => {
   // A cached document used to be reused for an hour without asking the
   // server, so revoking the agent's grant (or the user's access to the agent)
@@ -735,6 +720,21 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
   });
 });
 
+/**
+ * Streaming replaced a buffered read, and it brought a failure mode buffering
+ * did not have: the descriptor now outlives the handler. `createReadStream` on
+ * an open handle closes it when the stream ENDS or is CANCELLED — but a body
+ * that is never touched at all does neither, and the handle stays open until a
+ * garbage collection that may not come ("Warning: Closing file descriptor N on
+ * garbage collection").
+ *
+ * That is not a hypothetical path. Next.js auto-implements HEAD by calling the
+ * GET handler (`auto-implement-methods.js`) and then throws the body away
+ * unread, so every HEAD request against this route parks a descriptor — and a
+ * file-serving route is exactly what proxies, monitors and PDF viewers probe
+ * with HEAD. Any authenticated user could then exhaust the process's descriptor
+ * limit with a loop.
+ */
 describe("GET /api/agents/[agentId]/workspace-file — HEAD does not leak descriptors", () => {
   // Larger than the read stream's internal buffer. Below that the stream drains
   // itself and closes the handle by accident, which would make this pass

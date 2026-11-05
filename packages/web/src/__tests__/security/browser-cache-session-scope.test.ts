@@ -19,6 +19,11 @@ import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
  * anywhere else in production source, so the pairing cannot be forgotten.
  * It reads lines, comments included, so a comment naming a lifetime trips it
  * too: describe it in prose ("a short private cache") instead.
+ *
+ * A lifetime is itself the exception. Within one session it still lets the
+ * browser reuse its copy without asking, past a revoked grant, so access-
+ * checked content uses `sessionScopedRevalidateHeaders` (no-cache + ETag)
+ * and only the routes in MAY_SET_A_LIFETIME below may use the helper above.
  */
 
 const webSrcDir = path.resolve(__dirname, "../..");
@@ -92,7 +97,7 @@ describe("browser cache is scoped to the session (#1286)", () => {
     }
     expect(
       offenders,
-      "Use sessionScopedCacheHeaders() from @/lib/session-scoped-cache instead"
+      "Use sessionScopedRevalidateHeaders(etag) from @/lib/session-scoped-cache for access-checked content, or sessionScopedCacheHeaders() if the route is in MAY_SET_A_LIFETIME"
     ).toEqual([]);
     expect(
       NOT_AN_HTTP_CACHE.map((e) => e.file).filter((f) => !usedExemptions.has(f)),

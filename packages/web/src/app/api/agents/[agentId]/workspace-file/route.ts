@@ -577,7 +577,11 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // is answered 304, without its bytes. A 304 is the reader looking at the
   // document again, so it is audited as a view like any other.
   // The artifact store touches each artifact on read, so its timestamps move
-  // every request; its content-addressed path identifies it instead.
+  // every request; its content-addressed path identifies it instead. That
+  // path comes from hashing the source in full (resolveConvertedArtifact),
+  // which therefore runs before a 304 too: the hash is what tells a current
+  // conversion from one of a document since replaced, so it cannot be skipped
+  // for a reuse. A 304 saves sending the PDF, not reading the source.
   const etag = artifactPath
     ? weakStoredFileEtag(info, artifactPath, representation)
     : weakFileEtag(info, representation);
