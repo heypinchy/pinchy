@@ -162,13 +162,37 @@ const CITATION_CONTRACT =
   "If they do not answer the question, say so instead of answering from memory.";
 
 /**
+ * Which language the answer is written in, stated after the passages (#1296).
+ *
+ * A Knowledge Base agent on Claude Haiku 5.5 answered Polish questions in
+ * German whenever the passages were German, although SOUL.md and the
+ * knowledge-search skill both say to answer in the user's language. Both
+ * sit far above the tool results, and the skill reaches the model only if it
+ * reads SKILL.md first. The last thing the model saw before writing was a
+ * block of German text, and that won.
+ *
+ * So this sentence trails, unlike CITATION_CONTRACT. The contract tells the
+ * model how to treat the passages and leads them. This one is about the answer
+ * that comes next, so it sits directly before the model starts writing.
+ *
+ * It names no language on purpose. The plugin sees only the search query, and
+ * the model may have written that query in the documents' language rather
+ * than the user's.
+ */
+const ANSWER_LANGUAGE =
+  "Write your answer in the language of the user's question, even when these passages " +
+  "are in another language: translate what they say, and keep document paths, titles " +
+  "and quoted wording as written.";
+
+/**
  * The other half of grounding, and the half a template is least likely to
  * spell out: an empty retrieval is a fact about the corpus, not an invitation
  * to fall back on training data.
  */
 const NO_RESULTS =
-  "No matching passages found in the knowledge base. Tell the user the knowledge base " +
-  "does not cover this instead of answering from memory.";
+  "No matching passages found in the knowledge base. Tell the user, in the language of " +
+  "their question, that the knowledge base does not cover this instead of answering " +
+  "from memory.";
 
 /**
  * Render retrieval results as a numbered, citable source list so the model
@@ -202,7 +226,7 @@ export function formatWithCitations(results: KnowledgeSearchResult[]): string {
       return `[${index + 1}] ${result.citationPath}${anchor}: "${result.text}"`;
     })
     .join("\n\n");
-  return `${CITATION_CONTRACT}\n\n${sources}`;
+  return `${CITATION_CONTRACT}\n\n${sources}\n\n${ANSWER_LANGUAGE}`;
 }
 
 function normalizeBaseUrl(url: string): string {

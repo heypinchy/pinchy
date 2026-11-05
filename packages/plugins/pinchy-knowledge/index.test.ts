@@ -173,7 +173,10 @@ describe("pinchy-knowledge plugin", () => {
           "giving each number you cited the document path and position exactly as written above — " +
           "every number you cite, and no number you did not. " +
           "If they do not answer the question, say so instead of answering from memory.\n\n" +
-          '[1] kb/a.pdf (p. 3): "Snippet one."',
+          '[1] kb/a.pdf (p. 3): "Snippet one."\n\n' +
+          "Write your answer in the language of the user's question, even when these passages " +
+          "are in another language: translate what they say, and keep document paths, titles " +
+          "and quoted wording as written.",
       },
     ]);
     // details keeps the human-readable docName: an audit reviewer wants to
@@ -407,9 +410,15 @@ describe("formatWithCitations", () => {
     "every number you cite, and no number you did not. " +
     "If they do not answer the question, say so instead of answering from memory.\n\n";
 
+  // The language reminder, spelled once for the same reason as CONTRACT.
+  const LANGUAGE =
+    "\n\nWrite your answer in the language of the user's question, even when these passages " +
+    "are in another language: translate what they say, and keep document paths, titles " +
+    "and quoted wording as written.";
+
   it("formats results as numbered, citable sources with citationPath and locator", () => {
     expect(formatWithCitations(results)).toBe(
-      CONTRACT + '[1] kb/a.pdf (p. 3): "Snippet one."\n\n[2] kb/b.pdf: "Snippet two."'
+      CONTRACT + '[1] kb/a.pdf (p. 3): "Snippet one."\n\n[2] kb/b.pdf: "Snippet two."' + LANGUAGE
     );
   });
 
@@ -486,7 +495,7 @@ describe("formatWithCitations", () => {
     ];
     const out = formatWithCitations(noack);
     expect(out).toBe(
-      CONTRACT + '[1] OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf (p. 2): "Incubate 24 h."'
+      CONTRACT + '[1] OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf (p. 2): "Incubate 24 h."' + LANGUAGE
     );
     expect(out).not.toContain("/data/");
   });
@@ -573,15 +582,46 @@ describe("formatWithCitations", () => {
       CONTRACT +
         '[1] QM/handbook.docx (§ Quality > Incoming goods): "Goods are checked on arrival."\n\n' +
         '[2] Sales/review.pptx (slide 4): "Q3 revenue was flat."\n\n' +
-        '[3] Platform/suppliers.xlsx (Suppliers, rows 5-12): "Acme GmbH, DE, approved."'
+        '[3] Platform/suppliers.xlsx (Suppliers, rows 5-12): "Acme GmbH, DE, approved."' +
+        LANGUAGE
     );
   });
 
   it("returns a deterministic empty-state message for no results", () => {
     expect(formatWithCitations([])).toBe(
-      "No matching passages found in the knowledge base. Tell the user the knowledge base " +
-        "does not cover this instead of answering from memory."
+      "No matching passages found in the knowledge base. Tell the user, in the language of " +
+        "their question, that the knowledge base does not cover this instead of answering " +
+        "from memory."
     );
+  });
+
+  it("ends with a reminder to answer in the user's language, after the last passage", () => {
+    // #1296: a Knowledge Base agent on Claude Haiku 5.5 answered a Polish
+    // question in German, because the passages were German. The rule to answer
+    // in the user's language was there, twice: SOUL.md and the knowledge-search
+    // skill. Both sit far above the tool results, and the skill only reaches
+    // the model if it reads SKILL.md first. The last thing the model read
+    // before writing was a block of German text, and that won.
+    //
+    // So this rule trails, unlike the citation contract. The contract is about
+    // how to handle the passages and leads them. The language rule is about the
+    // answer that comes next, so it goes last, directly before the model starts
+    // writing. It names no language: the plugin only sees the search query,
+    // and the model may have written that query in the documents' language.
+    const out = formatWithCitations(results);
+    const lastPassage = out.lastIndexOf('"Snippet two."');
+    const reminder = out.indexOf("Write your answer in the language of the user's question");
+    expect(lastPassage).toBeGreaterThanOrEqual(0);
+    expect(reminder).toBeGreaterThan(lastPassage);
+    expect(out.endsWith("quoted wording as written.")).toBe(true);
+  });
+
+  it("asks for the miss to be reported in the user's language too", () => {
+    // An empty result is the other answer the model writes from this tool's
+    // output, and it is just as easy to write in the wrong language: the
+    // model may have phrased its query in the documents' language rather
+    // than the user's.
+    expect(formatWithCitations([])).toMatch(/in the language of their question/);
   });
 });
 
