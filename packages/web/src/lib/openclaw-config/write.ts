@@ -24,6 +24,7 @@ import {
   fullRegenerateDeliveredSince,
   noteFileOnlyDelivery,
   scheduleFileOnlyFollowUp,
+  cancelFileOnlyFollowUp,
   fileOnlyDeliveryPending,
   settleFileOnlyDelivery,
 } from "./push-state";
@@ -384,6 +385,17 @@ export interface PushConfigOptions {
 }
 
 /**
+ * How OpenClaw 2026.7.1's config.apply words a refusal of the config itself
+ * (gateway/server-methods/config.ts): schema issues
+ * (`summarizeConfigValidationIssues` → "invalid config: …"), an unresolvable
+ * SecretRef ("invalid config: active SecretRef resolution failed …"), and the
+ * bare "invalid config" fallback. The same payload would be refused again, so
+ * such a fallback queues no follow-up. Everything else — a timeout, a stale
+ * hash past its retries, a disconnect, a rate limit — passes.
+ */
+const CONFIG_REFUSED_ERROR_FRAGMENT = "invalid config";
+
+/**
  * The follow-up regenerate a file-only delivery schedules (push-state.ts).
  * Imported lazily: build.ts imports this module.
  */
@@ -558,10 +570,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     };
     // A file-write fallback for a shrink would land the target past OpenClaw's
     // guard (see MAX_SHRINK_STEPS) — refuse it instead.
-    // `transient`: the apply failed for a reason that passes (rate limit, no
-    // connection). Only then is a follow-up queued: a refusal that would be
-    // repeated (a validation error) leaves the file unconfirmed but is not
-    // retried on a timer.
+    // `transient`: the apply failed for a reason that passes — anything but
+    // OpenClaw refusing the config itself (CONFIG_REFUSED_ERROR_FRAGMENT). A
+    // transient fallback queues a follow-up; a refusal leaves the file
+    // unconfirmed and ends any running follow-up chain, because a retry would
+    // be refused the same way.
     const writeFallback = (content: string, { transient }: { transient: boolean }): boolean => {
       if (shrinkKnown()) {
         dropShrink("could not be delivered over config.apply", { transient: true });
@@ -573,6 +586,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       // A disconnect delivers it on the reconnect too; a fallback while
       // OpenClaw stays connected (rate limit) has nothing else coming.
       if (transient) scheduleFileOnlyFollowUp(regenerateForFileOnlyDelivery);
+      else cancelFileOnlyFollowUp();
       return true;
     };
     let client;
@@ -919,7 +933,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           const fallback = lastSupplemented ?? supplementPayloadWithFileFields(newContent);
           if (
             writeFallback(fallback, {
-              transient: message.includes(WS_DISCONNECTED_ERROR_FRAGMENT),
+              transient: !message.includes(CONFIG_REFUSED_ERROR_FRAGMENT),
             })
           ) {
             targetReached();

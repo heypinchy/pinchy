@@ -5227,6 +5227,58 @@ describe("regenerateOpenClawConfig", () => {
       expect(fileOnlyDeliveryPending()).toBe(false);
     });
 
+    /** Drive a push whose every config.get/apply fails with `error` into its fallback. */
+    async function pushIntoFallback(error: string, failOn: "get" | "apply"): Promise<void> {
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      if (failOn === "get") mockConfigGet.mockRejectedValue(new Error(error));
+      else {
+        mockConfigGet.mockResolvedValue({ hash: "h" });
+        mockConfigApply.mockRejectedValue(new Error(error));
+      }
+      pushConfigInBackground(JSON.stringify({ gateway: { mode: "local" } }));
+      for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(2_100);
+      expect(fileOnlyDeliveryPending(), "precondition: it fell back").toBe(true);
+    }
+    /** OpenClaw accepts again; how many applies land over the next `minutes`. */
+    async function appliesOver(minutes: number): Promise<number> {
+      mockConfigGet.mockReset().mockResolvedValue({ hash: "h" });
+      mockConfigApply.mockReset().mockResolvedValue(undefined);
+      for (let i = 0; i < minutes; i++) await vi.advanceTimersByTimeAsync(60_000);
+      return mockConfigApply.mock.calls.length;
+    }
+
+    it.each([
+      ["OpenClaw was not connected", "Not connected to OpenClaw Gateway", "get"],
+      ["config.apply timed out", "Request config.apply timed out", "apply"],
+    ] as const)("queues a follow-up when %s", async (_why, error, failOn) => {
+      vi.useFakeTimers();
+      try {
+        await pushIntoFallback(error, failOn);
+        expect(await appliesOver(2)).toBe(1);
+        expect(fileOnlyDeliveryPending()).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ends a running follow-up chain when OpenClaw refuses the config itself", async () => {
+      vi.useFakeTimers();
+      try {
+        await pushIntoFallback("rate limit exceeded for config.apply; retry after 1s", "apply");
+        // The follow-up's push is refused as invalid: retrying it would be
+        // refused the same way, so the chain stops instead of re-arming.
+        mockConfigApply.mockReset().mockRejectedValue(new Error("invalid config: models.x"));
+        for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(60_000);
+        const refused = mockConfigApply.mock.calls.length;
+        expect(refused, "precondition: the follow-up ran").toBeGreaterThan(0);
+
+        for (let i = 0; i < 30; i++) await vi.advanceTimersByTimeAsync(60_000);
+        expect(mockConfigApply.mock.calls.length).toBe(refused);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     // A refusal that is not transient (a validation error) would be refused
     // again: the file stays unconfirmed, but nothing is retried on a timer.
     it("queues no follow-up when the apply failed for a reason that would not pass", async () => {

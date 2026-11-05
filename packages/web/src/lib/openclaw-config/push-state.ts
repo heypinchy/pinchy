@@ -415,6 +415,15 @@ export function settleFileOnlyDelivery(): void {
   clearFileOnlyFollowUp(s);
 }
 
+/**
+ * Stop the follow-up chain, leaving the delivery pending: OpenClaw refused the
+ * config itself (write.ts), so a retry would be refused the same way. The next
+ * change, or a reconnect, still delivers what the file holds.
+ */
+export function cancelFileOnlyFollowUp(): void {
+  clearFileOnlyFollowUp(state());
+}
+
 function clearFileOnlyFollowUp(s: ConfigPushState): void {
   if (s.fileOnlyFollowUp !== undefined) clearTimeout(s.fileOnlyFollowUp);
   s.fileOnlyFollowUp = undefined;
@@ -435,10 +444,11 @@ const FILE_ONLY_FOLLOW_UP_RECHECK_MS = 2_000;
  * The chain does not stop while a delivery is pending — a cap would strand the
  * next change exactly like the bug it fixes. Each fire costs a full regenerate
  * (database reads, secrets.json and auth-profile writes) and its push's
- * config.get/config.apply attempts. It starts only on a transient fallback
- * (write.ts), whose cause passes; should OpenClaw refuse for good afterwards,
- * that cost recurs every 10 min until an apply lands or Pinchy restarts. A
- * landed apply resets it (settleFileOnlyDelivery).
+ * config.get/config.apply attempts. A fallback after OpenClaw refused the
+ * config itself starts none and ends a running one (cancelFileOnlyFollowUp in
+ * write.ts); any other cause is one that passes. A landed apply resets the
+ * backoff (settleFileOnlyDelivery); until then it stays where it got to, so a
+ * later fallback in the same pending delivery waits that long too.
  */
 export const FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS = 600_000;
 

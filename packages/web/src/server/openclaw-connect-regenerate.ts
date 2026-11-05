@@ -31,9 +31,9 @@ import {
  * in flight: that one retries over the new connection and settles it when its
  * apply lands, and a second apply could restart OpenClaw into another
  * reconnect. A superseded push in flight does not count — it returns without
- * applying. Should the newest one end without an apply, the follow-up
- * regenerate a fallback queued — an earlier one's, or its own — delivers it
- * (scheduleFileOnlyFollowUp).
+ * applying. Should the newest one end in a fallback, its follow-up regenerate
+ * delivers it (scheduleFileOnlyFollowUp) — unless OpenClaw refused the config
+ * itself, which a retry would not change; the next change delivers it then.
  *
  * Every other reconnect runs none, to prevent a cascade: if a push triggers an
  * OC restart (large diff on fresh install), the reconnect after it must not
