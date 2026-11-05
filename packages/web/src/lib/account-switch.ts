@@ -1,5 +1,8 @@
 import { authClient } from "@/lib/auth-client";
-import { CACHE_NAME as SHARE_TARGET_CACHE_NAME } from "@/lib/share-target/share-cache";
+import {
+  CACHE_NAME as SHARE_TARGET_CACHE_NAME,
+  sweepStaleShares,
+} from "@/lib/share-target/share-cache";
 
 /**
  * Signing out and signing in on a shared browser (#1286).
@@ -28,6 +31,10 @@ import { CACHE_NAME as SHARE_TARGET_CACHE_NAME } from "@/lib/share-target/share-
 const PINCHY_PREFIX = "pinchy:";
 const ACCOUNT_KEY = `${PINCHY_PREFIX}account`;
 const SIGNED_OUT_PREFIX = "signed-out:";
+// How old a share may be and still be kept at sign-in. Nothing tells who made
+// a share, so only one young enough to belong to the person at the keyboard,
+// sent to the login page by sharing it, survives.
+const RECENT_SHARE_MS = 10 * 60 * 1000;
 
 /** Indirection so tests can observe the full-page navigation jsdom cannot perform. */
 export const navigation = {
@@ -67,6 +74,14 @@ async function forgetShares(): Promise<void> {
   }
 }
 
+async function keepRecentShares(): Promise<void> {
+  try {
+    await sweepStaleShares(RECENT_SHARE_MS);
+  } catch {
+    // ignore
+  }
+}
+
 async function wipeAll(): Promise<void> {
   wipePinchyStorage();
   await forgetShares();
@@ -101,10 +116,11 @@ export async function claimAccount(userId: string): Promise<boolean> {
   const wiped = previous !== userId;
   if (wiped) {
     wipePinchyStorage();
-    // After a sign-out the shares were already forgotten, so any share there
-    // now was made while nobody was signed in — by the person signing in, who
-    // was sent here from it with its id in returnTo. Keep it for them.
-    if (!previous?.startsWith(SIGNED_OUT_PREFIX)) await forgetShares();
+    // After a sign-out the earlier shares are already gone, so any share there
+    // now was made while nobody was signed in. Keep a recent one for the
+    // person signing in; someone else's session merely expired, drop them all.
+    if (previous?.startsWith(SIGNED_OUT_PREFIX)) await keepRecentShares();
+    else await forgetShares();
   }
   recordAccount(userId);
   return wiped && recordedAccount() === userId;
@@ -125,8 +141,9 @@ export async function leaveAccount(): Promise<void> {
 
 /** Enters the account that just signed in, with a full load to `target`. */
 export async function enterAccount(userId: string | undefined, target: string): Promise<void> {
-  if (userId) await claimAccount(userId);
-  else await wipeAll();
+  if (!userId) await wipeAll();
+  else if (recordedAccount() === userId) await keepRecentShares();
+  else await claimAccount(userId);
   navigation.assign(target);
 }
 

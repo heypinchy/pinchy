@@ -4,6 +4,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { mockSignOut } = vi.hoisted(() => ({ mockSignOut: vi.fn() }));
 vi.mock("@/lib/auth-client", () => ({ authClient: { signOut: mockSignOut } }));
 
+const { mockSweepStaleShares } = vi.hoisted(() => ({ mockSweepStaleShares: vi.fn() }));
+vi.mock("@/lib/share-target/share-cache", () => ({
+  CACHE_NAME: "share-target",
+  sweepStaleShares: (...args: unknown[]) => mockSweepStaleShares(...args),
+}));
+
+const TEN_MINUTES = 10 * 60 * 1000;
+
 import {
   claimAccount,
   enterAccount,
@@ -30,6 +38,7 @@ describe("account switch on a shared browser (#1286)", () => {
     localStorage.clear();
     sessionStorage.clear();
     mockSignOut.mockReset().mockResolvedValue(undefined);
+    mockSweepStaleShares.mockReset().mockResolvedValue(undefined);
     assign = vi.spyOn(navigation, "assign").mockImplementation(() => {});
     reload = vi.spyOn(navigation, "reload").mockImplementation(() => {});
   });
@@ -120,31 +129,34 @@ describe("account switch on a shared browser (#1286)", () => {
     });
     vi.stubGlobal("caches", { delete: cacheDelete });
     assign.mockImplementation(() => order.push("assign"));
+    mockSweepStaleShares.mockImplementation(async () => {
+      order.push("keep-recent");
+    });
     try {
       await leaveAccount();
       expect(cacheDelete).toHaveBeenCalledWith("share-target");
       expect(order).toEqual(["delete", "assign"]);
 
-      // Signing in after a sign-out keeps shares (see the next test); when
-      // someone else's session merely expired here, whatever they shared goes.
+      // Signing in after a sign-out keeps only recent shares (see the next
+      // test); when someone else's session merely expired here, everything goes.
       order.length = 0;
       await enterAccount("user-a", "/");
       await enterAccount("user-b", "/");
-      expect(order).toEqual(["assign", "delete", "assign"]);
+      expect(order).toEqual(["keep-recent", "assign", "delete", "assign"]);
 
-      // The same person again: nothing to forget.
+      // The same person again: likewise only recent shares stay.
       order.length = 0;
       await enterAccount("user-b", "/");
-      expect(order).toEqual(["assign"]);
+      expect(order).toEqual(["keep-recent", "assign"]);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("keeps a file shared while signed out, for the person who signs in to send it", async () => {
+  it("keeps only a recent share made while signed out, for whoever signs in to send it", async () => {
     // Sharing into the installed app while signed out redirects to the login
-    // page with the share's id in returnTo. Sign-out already forgot every
-    // earlier share, so anything there now was shared by whoever is signing in.
+    // page with the share's id in returnTo. Nothing can tell who shared it, so
+    // only a share young enough to belong to the person at the keyboard stays.
     const cacheDelete = vi.fn(async () => true);
     vi.stubGlobal("caches", { delete: cacheDelete });
     try {
@@ -156,6 +168,7 @@ describe("account switch on a shared browser (#1286)", () => {
       await enterAccount("user-a", "/share?share_id=s1");
 
       expect(cacheDelete).not.toHaveBeenCalled();
+      expect(mockSweepStaleShares).toHaveBeenCalledWith(TEN_MINUTES);
       // Storage is still wiped: the marker says nobody's state belongs here.
       expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
       expect(assign).toHaveBeenLastCalledWith("/share?share_id=s1");

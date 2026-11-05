@@ -27,11 +27,13 @@ describe("AccountGuard (#1286)", () => {
     unmount();
   });
 
-  it("does nothing on load for the person already recorded here", () => {
+  it("does nothing on load for the person already recorded here", async () => {
     const reload = vi.spyOn(navigation, "reload").mockImplementation(() => {});
     localStorage.setItem("pinchy:account", "user-b");
 
     render(<AccountGuard userId="user-b" />);
+    // The claim is async: let it settle before asserting it did not reload.
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(reload).not.toHaveBeenCalled();
   });
