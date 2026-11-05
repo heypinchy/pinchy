@@ -24,8 +24,8 @@ import {
   ftruncateSync,
   closeSync,
   readdirSync,
-  statSync,
-  utimesSync,
+  fstatSync,
+  futimesSync,
 } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -631,19 +631,25 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
     // moves. A validator built without it would answer 304 for the old edition.
     const pdfPath = join(allowedRoot, "handbook.pdf");
     writeFileSync(pdfPath, PDF_BYTES);
-    const { mtime } = statSync(pdfPath);
     const etag = await cachedEtag(pdfPath);
 
     const corrected = Buffer.from(PDF_BYTES.toString("latin1").replace("fake", "real"), "latin1");
     expect(corrected.length).toBe(PDF_BYTES.length);
     // Let ctime's clock tick so the rewrite is observably later.
     await new Promise((r) => setTimeout(r, 20));
-    const ctimeBefore = statSync(pdfPath).ctimeMs;
-    writeFileSync(pdfPath, corrected);
-    utimesSync(pdfPath, mtime, mtime);
-    // Precondition, not the claim: on a filesystem whose ctime is coarser than
-    // the wait above this fails here, plainly, instead of as a 304.
-    expect(statSync(pdfPath).ctimeMs).not.toBe(ctimeBefore);
+    // One descriptor for the whole in-place rewrite, as `rsync --inplace`
+    // does it: the stat, the write and the restored mtime all hit one file.
+    const fd = openSync(pdfPath, "r+");
+    try {
+      const before = fstatSync(fd);
+      writeSync(fd, corrected, 0, corrected.length, 0);
+      futimesSync(fd, before.atime, before.mtime);
+      // Precondition, not the claim: on a filesystem whose ctime is coarser
+      // than the wait above this fails here, plainly, instead of as a 304.
+      expect(fstatSync(fd).ctimeMs).not.toBe(before.ctimeMs);
+    } finally {
+      closeSync(fd);
+    }
     const res = await callGET("agent-1", pdfPath, { "if-none-match": etag });
 
     expect(res.status).toBe(200);
