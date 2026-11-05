@@ -1,4 +1,5 @@
 import { authClient } from "@/lib/auth-client";
+import { CACHE_NAME as SHARE_TARGET_CACHE_NAME } from "@/lib/share-target/share-cache";
 
 /**
  * Signing out and signing in on a shared browser (#1286).
@@ -7,7 +8,9 @@ import { authClient } from "@/lib/auth-client";
  * composer drafts, the draft ids staged uploads hang off, and the last-chat
  * pointer live in localStorage under `pinchy:`, a "Save as instruction"
  * handoff in sessionStorage, and module-level caches (the chat list, in-memory
- * drafts) survive any client-side navigation. A `router.push` between two
+ * drafts) survive any client-side navigation. A file shared into the
+ * installed app and never sent waits in the service worker's `share-target`
+ * cache. A `router.push` between two
  * accounts therefore shows the next person what the last one left behind.
  *
  * So leaving an account wipes that storage and reloads the page, and entering
@@ -53,7 +56,23 @@ function wipePinchyStorage(): void {
   }
 }
 
-function previousAccount(): string | null {
+// Async, so callers wait for it before the page moves on: a navigation can
+// cut an unfinished Cache Storage call short.
+async function forgetShares(): Promise<void> {
+  try {
+    if (typeof caches !== "undefined") await caches.delete(SHARE_TARGET_CACHE_NAME);
+  } catch {
+    // ignore
+  }
+}
+
+async function wipeAll(): Promise<void> {
+  wipePinchyStorage();
+  await forgetShares();
+}
+
+/** The account this browser's Pinchy storage was last claimed for, if readable. */
+export function recordedAccount(): string | null {
   try {
     return localStorage.getItem(ACCOUNT_KEY);
   } catch {
@@ -76,11 +95,11 @@ function recordAccount(value: string): void {
  * record stuck. Where storage cannot be read or written, every load would
  * otherwise look like a switch and reload again, forever.
  */
-export function claimAccount(userId: string): boolean {
-  const wiped = previousAccount() !== userId;
-  if (wiped) wipePinchyStorage();
+export async function claimAccount(userId: string): Promise<boolean> {
+  const wiped = recordedAccount() !== userId;
+  if (wiped) await wipeAll();
   recordAccount(userId);
-  return wiped && previousAccount() === userId;
+  return wiped && recordedAccount() === userId;
 }
 
 /**
@@ -90,16 +109,16 @@ export function claimAccount(userId: string): boolean {
  */
 export async function leaveAccount(): Promise<void> {
   await authClient.signOut();
-  wipePinchyStorage();
+  await wipeAll();
   // Always a new value, so every other tab gets a storage event.
   recordAccount(`signed-out:${Date.now()}`);
   navigation.assign("/login");
 }
 
 /** Enters the account that just signed in, with a full load to `target`. */
-export function enterAccount(userId: string | undefined, target: string): void {
-  if (userId) claimAccount(userId);
-  else wipePinchyStorage();
+export async function enterAccount(userId: string | undefined, target: string): Promise<void> {
+  if (userId) await claimAccount(userId);
+  else await wipeAll();
   navigation.assign(target);
 }
 

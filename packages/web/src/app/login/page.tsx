@@ -103,7 +103,7 @@ function LoginForm() {
         const returnTo = searchParams.get("returnTo");
         // A full load, not router.push: the previous person's in-memory state
         // must not carry over into this account (#1286).
-        enterAccount(data?.user.id, isSafeReturnTo(returnTo) ? returnTo : "/");
+        await enterAccount(data?.user.id, isSafeReturnTo(returnTo) ? returnTo : "/");
       }
     } catch {
       setError(GENERIC_LOGIN_ERROR);

@@ -58,11 +58,11 @@ describe("account switch on a shared browser (#1286)", () => {
     expect(assign).toHaveBeenCalledWith("/login");
   });
 
-  it("wipes the previous person's storage when someone else signs in here", () => {
-    enterAccount("user-a", "/");
+  it("wipes the previous person's storage when someone else signs in here", async () => {
+    await enterAccount("user-a", "/");
     seedPreviousUsersState();
 
-    enterAccount("user-b", "/chat");
+    await enterAccount("user-b", "/chat");
 
     expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
     expect(sessionStorage.length).toBe(0);
@@ -70,29 +70,29 @@ describe("account switch on a shared browser (#1286)", () => {
     expect(assign).toHaveBeenLastCalledWith("/chat");
   });
 
-  it("keeps the person's own drafts when they sign back in after their session expired", () => {
-    enterAccount("user-a", "/");
+  it("keeps the person's own drafts when they sign back in after their session expired", async () => {
+    await enterAccount("user-a", "/");
     seedPreviousUsersState();
 
-    enterAccount("user-a", "/");
+    await enterAccount("user-a", "/");
 
     expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBe("half-written reply");
     expect(assign).toHaveBeenLastCalledWith("/");
   });
 
-  it("wipes when it cannot tell who was here before", () => {
+  it("wipes when it cannot tell who was here before", async () => {
     seedPreviousUsersState();
 
-    enterAccount("user-a", "/");
+    await enterAccount("user-a", "/");
 
     expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
   });
 
-  it("wipes and records nobody when the sign-in answer carries no user id", () => {
-    enterAccount("user-a", "/");
+  it("wipes and records nobody when the sign-in answer carries no user id", async () => {
+    await enterAccount("user-a", "/");
     seedPreviousUsersState();
 
-    enterAccount(undefined, "/");
+    await enterAccount(undefined, "/");
 
     expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
     expect(localStorage.getItem("pinchy:account")).toBeNull();
@@ -108,6 +108,33 @@ describe("account switch on a shared browser (#1286)", () => {
 
     expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
     expect(assign).toHaveBeenCalledWith("/login");
+  });
+
+  it("forgets unsent PWA shares before the page moves on", async () => {
+    // A file shared into the installed app and never sent waits in the
+    // service worker's cache; the next person must not be able to open it.
+    const order: string[] = [];
+    const cacheDelete = vi.fn(async () => {
+      order.push("delete");
+      return true;
+    });
+    vi.stubGlobal("caches", { delete: cacheDelete });
+    assign.mockImplementation(() => order.push("assign"));
+    try {
+      await leaveAccount();
+      expect(cacheDelete).toHaveBeenCalledWith("share-target");
+      expect(order).toEqual(["delete", "assign"]);
+
+      order.length = 0;
+      await enterAccount("user-b", "/");
+      expect(order).toEqual(["delete", "assign"]);
+
+      order.length = 0;
+      await enterAccount("user-b", "/");
+      expect(order).toEqual(["assign"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   describe("other open tabs", () => {
@@ -149,28 +176,28 @@ describe("account switch on a shared browser (#1286)", () => {
       expect(reload).not.toHaveBeenCalled();
     });
 
-    it("claims the browser for the signed-in person, wiping what someone else left", () => {
-      enterAccount("user-a", "/");
+    it("claims the browser for the signed-in person, wiping what someone else left", async () => {
+      await enterAccount("user-a", "/");
       seedPreviousUsersState();
 
       // A tab that loads with user-b's session (one that never went through
       // the login page here, e.g. it predates this check).
-      expect(claimAccount("user-b")).toBe(true);
+      expect(await claimAccount("user-b")).toBe(true);
       expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
       expect(localStorage.getItem("pinchy:account")).toBe("user-b");
 
       seedPreviousUsersState();
-      expect(claimAccount("user-b")).toBe(false);
+      expect(await claimAccount("user-b")).toBe(false);
       expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBe("half-written reply");
     });
   });
 
-  it("still signs in when storage is unavailable", () => {
+  it("still signs in when storage is unavailable", async () => {
     const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("SecurityError");
     });
     try {
-      enterAccount("user-a", "/");
+      await enterAccount("user-a", "/");
       expect(assign).toHaveBeenCalledWith("/");
     } finally {
       getItem.mockRestore();
