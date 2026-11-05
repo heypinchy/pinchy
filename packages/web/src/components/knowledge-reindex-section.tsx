@@ -367,12 +367,78 @@ function ScheduleNote({ schedule }: { schedule: ReindexSchedule }) {
     text =
       "The nightly reindex skips this agent because it doesn't use knowledge search. Reindex it here when its documents change.";
   } else {
-    const next = schedule.nextRun
-      ? ` Next run: ${schedule.nextRun.day} at ${schedule.nextRun.time}.`
-      : "";
-    text = `New and changed documents are picked up every night at ${schedule.time} (${schedule.timezone}).${next}`;
+    text = `New and changed documents are picked up every night at ${nightlyTimeText(schedule)}.${nextRunText(schedule.nextRun)}`;
   }
   return <p className="text-sm text-muted-foreground">{text}</p>;
+}
+
+const CLOCK: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
+
+/** A valid instant from the route's `nextRun.at`, or null. */
+function nextRunInstant(nextRun: NextIndexRun | null): Date | null {
+  if (!nextRun?.at) return null;
+  const at = new Date(nextRun.at);
+  return Number.isNaN(at.getTime()) ? null : at;
+}
+
+/**
+ * The nightly time in the viewer's own clock, like every other time on the
+ * page ("Last indexed" included).
+ *
+ * The setting is a wall-clock time in the organization's time zone. For a
+ * viewer in that zone it is shown as set — read off the next run instead, it
+ * would say 03:00 on the eve of the spring-forward night, when 02:00 does not
+ * happen. For a viewer elsewhere it is converted through the next run, with
+ * the setting beside it: Settings → Organization shows that one, and the two
+ * must be recognisably the same schedule.
+ */
+function nightlyTimeText(schedule: ReindexSchedule): string {
+  const at = nextRunInstant(schedule.nextRun);
+  if (!at) return `${schedule.time} (${schedule.timezone})`;
+  let orgClock: string;
+  try {
+    orgClock = at.toLocaleTimeString(undefined, { ...CLOCK, timeZone: schedule.timezone });
+  } catch {
+    // A zone this browser doesn't know: say it the way it is stored.
+    return `${schedule.time} (${schedule.timezone})`;
+  }
+  const viewerClock = at.toLocaleTimeString(undefined, CLOCK);
+  if (orgClock === viewerClock) {
+    const [hours, minutes] = schedule.time.split(":").map(Number);
+    return new Date(Date.UTC(2000, 0, 1, hours, minutes)).toLocaleTimeString(undefined, {
+      ...CLOCK,
+      timeZone: "UTC",
+    });
+  }
+  return `${viewerClock} your time (${schedule.time} ${schedule.timezone})`;
+}
+
+/** Midnight-to-midnight days between two instants, on the viewer's calendar. */
+function localDaysBetween(from: Date, to: Date): number {
+  const day = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  return Math.round((day(to) - day(from)) / 86_400_000);
+}
+
+/**
+ * "Next run: tomorrow at 04:00." — day and time on the viewer's calendar and
+ * clock. The route's own `day` is the organization's, which is not the
+ * viewer's: 02:00 UTC is still today for someone in New York the evening
+ * before.
+ */
+function nextRunText(nextRun: NextIndexRun | null): string {
+  if (!nextRun) return "";
+  const at = nextRunInstant(nextRun);
+  if (!at) return ` Next run: ${nextRun.day} at ${nextRun.time}.`;
+  // The next run is at most a day ahead, so this is today or tomorrow —
+  // except on a 25-hour night, where it can be the day after.
+  const days = localDaysBetween(new Date(), at);
+  const day =
+    days <= 0
+      ? "today"
+      : days === 1
+        ? "tomorrow"
+        : at.toLocaleDateString(undefined, { weekday: "long" });
+  return ` Next run: ${day} at ${at.toLocaleTimeString(undefined, CLOCK)}.`;
 }
 
 /**
@@ -428,7 +494,9 @@ function CountsSummary({ counts }: { counts: IngestResult }) {
   return (
     <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
       <span className="text-muted-foreground">{counts.indexed} indexed</span>
-      <span className="text-muted-foreground">{counts.skipped} skipped</span>
+      {/* The ingest counter is `skipped`, but every path into it is a file
+          whose content hash matched: nothing to do, not something left out. */}
+      <span className="text-muted-foreground">{counts.skipped} unchanged</span>
       {counts.removed > 0 && (
         <span className="text-muted-foreground">{counts.removed} removed</span>
       )}

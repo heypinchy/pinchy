@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
@@ -157,6 +157,10 @@ describe("KnowledgeReindexSection", () => {
     expect(screen.getByText(/4/)).toBeInTheDocument(); // unsearchable
     expect(screen.getByText(/unsearchable/i)).toBeInTheDocument();
     expect(screen.getByText(/failed/i)).toBeInTheDocument();
+    // A file whose content hash matched is unchanged, not skipped: "skipped"
+    // reads like something went wrong.
+    expect(screen.getByText("5 unchanged")).toBeInTheDocument();
+    expect(screen.queryByText(/skipped/i)).not.toBeInTheDocument();
     // Button is enabled again — the run is over.
     expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
   });
@@ -618,35 +622,142 @@ describe("KnowledgeReindexSection", () => {
   // this section. The answer is the nightly reindex, so the section says
   // whether it covers this agent and when it runs next.
   describe("the nightly reindex", () => {
+    // 02:00 in Vienna on 2026-10-17 (CEST) — the instant the route reports.
     const nightly = {
       enabled: true,
       time: "02:00",
       timezone: "Europe/Vienna",
-      nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+      nextRun: {
+        date: "2026-10-17",
+        time: "02:00",
+        day: "tomorrow",
+        at: "2026-10-17T00:00:00.000Z",
+      },
       included: true,
     };
 
-    it("says the index updates itself every night, and when next", async () => {
+    // The times are the viewer's, formatted the way their browser formats a
+    // time — the same as "Last indexed". The expectations are built with the
+    // same call so they hold in any locale the suite runs under.
+    const clockTime = (iso: string) =>
+      new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+    const originalTz = process.env.TZ;
+    afterEach(() => {
+      process.env.TZ = originalTz;
+      vi.useRealTimers();
+    });
+
+    function viewIn(timeZone: string, nowIso: string) {
+      process.env.TZ = timeZone;
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date(nowIso));
+    }
+
+    it("says the index updates itself every night, and when next, in the viewer's time", async () => {
+      viewIn("Europe/Vienna", "2026-10-16T12:00:00.000Z");
       mockGet.mockResolvedValue({ job: null, schedule: nightly });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const t = clockTime(nightly.nextRun.at);
+      expect(
+        await screen.findByText(
+          `New and changed documents are picked up every night at ${t}. Next run: tomorrow at ${t}.`
+        )
+      ).toBeInTheDocument();
+    });
+
+    // Staging reported "02:00 (UTC)" to an admin in Vienna, for whom that is
+    // 03:00 or 04:00. The viewer's clock comes first; the setting it was made
+    // in stays beside it, because Settings → Organization shows that one.
+    it("converts the time for a viewer outside the organization's time zone", async () => {
+      viewIn("Europe/Vienna", "2026-10-16T12:00:00.000Z");
+      mockGet.mockResolvedValue({
+        job: null,
+        schedule: {
+          ...nightly,
+          timezone: "UTC",
+          nextRun: { ...nightly.nextRun, at: "2026-10-17T02:00:00.000Z" },
+        },
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const t = clockTime("2026-10-17T02:00:00.000Z"); // 04:00 CEST
+      expect(t).toMatch(/04/);
+      expect(
+        await screen.findByText(
+          `New and changed documents are picked up every night at ${t} your time (02:00 UTC). Next run: tomorrow at ${t}.`
+        )
+      ).toBeInTheDocument();
+    });
+
+    // "today" and "tomorrow" are the viewer's too: 02:00 UTC is still today
+    // for someone in New York at 20:00 the evening before.
+    it("says today or tomorrow by the viewer's calendar, not the organization's", async () => {
+      viewIn("America/New_York", "2026-10-17T00:00:00.000Z"); // 20:00 on the 16th in New York
+      mockGet.mockResolvedValue({
+        job: null,
+        schedule: {
+          ...nightly,
+          timezone: "UTC",
+          nextRun: { ...nightly.nextRun, day: "today", at: "2026-10-17T02:00:00.000Z" },
+        },
+      });
 
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
       expect(
         await screen.findByText(
-          "New and changed documents are picked up every night at 02:00 (Europe/Vienna). Next run: tomorrow at 02:00."
+          new RegExp(`Next run: today at ${clockTime("2026-10-17T02:00:00.000Z")}\\.`)
         )
       ).toBeInTheDocument();
     });
 
-    it("says today when the next run is still ahead today", async () => {
+    it("says tomorrow when the next run falls on the viewer's next day", async () => {
+      viewIn("Europe/Vienna", "2026-10-16T20:00:00.000Z"); // 22:00 on the 16th in Vienna
       mockGet.mockResolvedValue({
         job: null,
-        schedule: { ...nightly, nextRun: { date: "2026-10-17", time: "02:00", day: "today" } },
+        schedule: { ...nightly, nextRun: { ...nightly.nextRun, day: "today" } },
       });
 
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
-      expect(await screen.findByText(/Next run: today at 02:00\./)).toBeInTheDocument();
+      expect(
+        await screen.findByText(
+          new RegExp(`Next run: tomorrow at ${clockTime(nightly.nextRun.at)}\\.`)
+        )
+      ).toBeInTheDocument();
+    });
+
+    // On the spring-forward night 02:00 never happens in Vienna and the run
+    // starts at 03:00 — true of that night, not of every night.
+    it("keeps the nightly time as set when only the next run is shifted by a clock change", async () => {
+      viewIn("Europe/Vienna", "2026-03-28T12:00:00.000Z");
+      mockGet.mockResolvedValue({
+        job: null,
+        schedule: {
+          ...nightly,
+          time: "02:30",
+          nextRun: {
+            date: "2026-03-29",
+            time: "02:30",
+            day: "tomorrow",
+            at: "2026-03-29T01:00:00.000Z",
+          },
+        },
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const nightlyAt = clockTime("2026-03-28T01:30:00.000Z"); // 02:30 CET
+      const nextAt = clockTime("2026-03-29T01:00:00.000Z"); // 03:00 CEST
+      expect(
+        await screen.findByText(
+          `New and changed documents are picked up every night at ${nightlyAt}. Next run: tomorrow at ${nextAt}.`
+        )
+      ).toBeInTheDocument();
     });
 
     it("says so when the nightly reindex is off, and where to turn it on", async () => {

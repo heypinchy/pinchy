@@ -73,7 +73,12 @@ describe("GET /api/settings/knowledge-index-schedule", () => {
       enabled: true,
       time: "02:00",
       timezone: "Europe/Vienna",
-      nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+      nextRun: {
+        date: "2026-10-17",
+        time: "02:00",
+        day: "tomorrow",
+        at: "2026-10-17T00:00:00.000Z",
+      },
       currentSweep: null,
       lastSweep: null,
     });
@@ -132,7 +137,12 @@ describe("PUT /api/settings/knowledge-index-schedule", () => {
       enabled: true,
       time: "23:30",
       timezone: "Europe/Vienna",
-      nextRun: { date: "2026-10-16", time: "23:30", day: "today" },
+      nextRun: {
+        date: "2026-10-16",
+        time: "23:30",
+        day: "today",
+        at: "2026-10-16T21:30:00.000Z",
+      },
     });
     expect(await getIndexSchedule()).toEqual({ enabled: true, time: "23:30" });
   });
