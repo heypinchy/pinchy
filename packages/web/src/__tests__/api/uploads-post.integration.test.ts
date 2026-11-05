@@ -282,6 +282,29 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(row.outcome).toBe("failure");
     const detail = row.detail as Record<string, unknown>;
     expect(detail.reason).toBe("oversize");
+    // The per-file check answered, not the body-level one: only that path has
+    // parsed the part and knows its name. A body limit without the multipart
+    // allowance would refuse this request before parsing, with no filename.
+    expect(detail.filename).toBe("big.pdf");
+  });
+
+  it("accepts a file of exactly 15 MB — the body limit leaves room for the multipart framing", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+
+    const exact = Buffer.concat([
+      VALID_PDF,
+      Buffer.alloc(15 * 1024 * 1024 - VALID_PDF.length, 0x20),
+    ]);
+    expect(exact.length).toBe(15 * 1024 * 1024);
+    const file = new File([exact], "exact.pdf", { type: "application/pdf" });
+
+    const resp = await POST(makeRequest(agent.id, { file }), makeParams(agent.id));
+
+    expect(resp.status).toBe(201);
   });
 
   it("rejects a huge Content-Length with 413 and an audit row, without parsing the body", async () => {
@@ -290,7 +313,10 @@ describe("POST /api/agents/[agentId]/uploads", () => {
       user: { id: user.id, email: user.email, role: "admin" },
     });
     const agent = await seedAgent(null);
+    // Both prototypes: the route parses through `new Response(bytes)`, so a
+    // spy on Request alone could only ever see the old `req.formData()` call.
     const formDataSpy = vi.spyOn(Request.prototype, "formData");
+    const responseFormDataSpy = vi.spyOn(Response.prototype, "formData");
 
     try {
       const req = new NextRequest(`http://localhost/api/agents/${agent.id}/uploads`, {
@@ -306,6 +332,7 @@ describe("POST /api/agents/[agentId]/uploads", () => {
 
       expect(resp.status).toBe(413);
       expect(formDataSpy).not.toHaveBeenCalled();
+      expect(responseFormDataSpy).not.toHaveBeenCalled();
 
       const rows = await db
         .select()
@@ -317,6 +344,7 @@ describe("POST /api/agents/[agentId]/uploads", () => {
       expect((rows[0].detail as Record<string, unknown>).reason).toBe("oversize");
     } finally {
       formDataSpy.mockRestore();
+      responseFormDataSpy.mockRestore();
     }
   });
 
@@ -332,9 +360,12 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     let pulled = 0;
     const stream = new ReadableStream<Uint8Array>({
       pull(controller) {
-        // Endless body: a reader that does not stop at the limit never returns.
+        // Far past the limit, but finite: a reader that does not stop at the
+        // limit fails the `pulled` assertion instead of buffering until the
+        // worker runs out of memory.
         pulled += 1;
-        controller.enqueue(chunk);
+        if (pulled > 200) controller.close();
+        else controller.enqueue(chunk);
       },
     });
 
