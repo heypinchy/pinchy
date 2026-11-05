@@ -20,8 +20,9 @@
 // See AGENTS.md § "Embeddable Serving Routes Need A next.config Entry".
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { resolveHeader, routeFileToSource } from "@/test-helpers/next-headers";
+import { relativeReExports } from "@/test-helpers/route-reexports";
 
 const APP_DIR = resolve(__dirname, "../../app");
 const API_DIR = join(APP_DIR, "api");
@@ -51,20 +52,6 @@ function walkRouteFiles(dir: string): string[] {
   return result;
 }
 
-/**
- * The route file a route re-exports its GET handler from, if it does — the
- * citation viewer's `workspace-file/[name]` is `export { GET } from "../route"`
- * (#1268). Such a route serves exactly what its target serves, under a url of
- * its own, so it needs its own relaxation; a scan reading only its own text
- * would see an empty file and let the url ship with DENY.
- */
-function reExportedGetTarget(file: string, content: string): string | null {
-  const match = /export\s*\{[^}]*\bGET\b[^}]*\}\s*from\s*["'](\.{1,2}\/[^"']+)["']/.exec(content);
-  if (!match) return null;
-  const target = resolve(dirname(file), match[1]);
-  return /\.tsx?$/.test(target) ? target : `${target}.ts`;
-}
-
 function servesEmbeddableContent(file: string, seen = new Set<string>()): boolean {
   if (seen.has(file)) return false;
   seen.add(file);
@@ -72,8 +59,13 @@ function servesEmbeddableContent(file: string, seen = new Set<string>()): boolea
   const setsHeaderDirectly = /["']x-frame-options["']\s*:\s*["']SAMEORIGIN["']/i.test(content);
   const usesHelper = SAMEORIGIN_HELPERS.some((helper) => content.includes(`${helper}(`));
   if (setsHeaderDirectly || usesHelper) return true;
-  const target = reExportedGetTarget(file, content);
-  return target !== null && servesEmbeddableContent(target, seen);
+  // A route that re-exports a serving route's GET (the citation viewer's named
+  // url, #1268) serves exactly what its target serves, under a url of its own,
+  // so it needs its own relaxation; its own text is just the re-export line.
+  return relativeReExports(file, content).some(
+    ({ target, names }) =>
+      names.some(({ exported }) => exported === "GET") && servesEmbeddableContent(target, seen)
+  );
 }
 
 /** Routes whose responses are meant to be embedded same-origin. */

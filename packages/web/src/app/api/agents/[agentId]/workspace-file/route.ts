@@ -56,23 +56,29 @@ import {
  * `name` is present only when the request arrived through `[name]/route.ts`,
  * which re-exports this handler: the citation viewer's url, ending in the
  * document's name so a browser's PDF viewer has something to title it by
- * (#1268). It never selects anything — see `namesServedBytes`.
+ * (#1268). It never selects anything — see `acceptedViewerNames`.
  */
 type Params = { params: Promise<{ agentId: string; name?: string }> };
 
 /**
- * Whether a viewer url's trailing name is the name of the bytes it is about to
- * receive. Accepted percent-encoded or decoded, because which of the two a
- * dynamic segment arrives as is the framework's business, and a name with a
- * literal `%` must neither throw nor match something it does not spell.
+ * The names a viewer url may carry for these bytes. Compared exactly: Next.js
+ * hands the handler the segment already decoded, and decoding it again would
+ * let `a%2520b.pdf` stand for `a b.pdf` — a name the viewer would title as
+ * something the document is not called.
+ *
+ * Two, because a grant may point at a single file through a link: the citation
+ * (and so the viewer url) carries the LINK's name, the resolved path the
+ * target's. Both name this document. For an Office source each is swapped to
+ * its converted name when the converted PDF is what is served.
  */
-function namesServedBytes(name: string, servedName: string): boolean {
-  if (name === servedName) return true;
-  try {
-    return decodeURIComponent(name) === servedName;
-  } catch {
-    return false;
-  }
+function acceptedViewerNames(
+  requestedPath: string,
+  realPath: string,
+  converted: boolean
+): string[] {
+  return [basename(realPath), basename(requestedPath)].map((name) =>
+    converted ? convertedPdfName(name) : name
+  );
 }
 
 /**
@@ -554,7 +560,10 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // reader whose whole purpose is checking a claim — so it is refused like a
   // missing file. Decided AFTER the access check, so varying the name teaches
   // a probe nothing about a path it may not read.
-  if (name !== undefined && !namesServedBytes(name, servedName)) {
+  if (
+    name !== undefined &&
+    !acceptedViewerNames(requestedPath, realPath, artifactPath !== null).includes(name)
+  ) {
     await source.handle.close();
     auditFailure("name_mismatch");
     return new NextResponse("Not found", { status: 404 });

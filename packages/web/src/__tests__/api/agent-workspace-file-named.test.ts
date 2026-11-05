@@ -18,7 +18,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { NextRequest } from "next/server";
@@ -91,9 +91,9 @@ async function callNamedGET(
   url.searchParams.set("path", requestedPath);
   for (const [key, value] of Object.entries(extraParams)) url.searchParams.set(key, value);
   return GET(new NextRequest(url), {
-    // Next.js hands a dynamic segment to the handler still percent-encoded
-    // exactly as it was in the url.
-    params: Promise.resolve({ agentId: "agent-1", name: encodeURIComponent(name) }),
+    // Next.js hands a dynamic segment to the handler already percent-DECODED
+    // (`decode(match)` in next/dist/shared/lib/router/utils/route-matcher.js).
+    params: Promise.resolve({ agentId: "agent-1", name }),
   } as unknown as Parameters<typeof GET>[1]);
 }
 
@@ -154,7 +154,40 @@ describe("workspace-file/[name] — the url a viewer titles the document by", ()
   });
 });
 
+describe("workspace-file/[name] — a grant that is a link to a single file", () => {
+  it("accepts the name the citation knows, not only the name the link resolves to", () => {
+    // A grant may point at one file through a link ("a share mounted elsewhere
+    // is a normal way to set one up", ingest.ts). The citation — and so the
+    // viewer url — carries the LINK's name; the bytes resolve to the target's.
+    // Both name the same document, and refusing the first would blank a
+    // citation that opened before the viewer url carried a name.
+    const target = writeFile(outsideDir, "Handbook_v7.pdf", PDF_BYTES);
+    const link = join(allowedRoot, "handbook.pdf");
+    symlinkSync(target, link);
+    mockGetAgentWithAccess.mockResolvedValue({
+      id: "agent-1",
+      name: "Smithers",
+      pluginConfig: { "pinchy-files": { allowed_paths: [link] } },
+    });
+
+    return callNamedGET("handbook.pdf", link).then((res) => {
+      expect(res.status).toBe(200);
+    });
+  });
+});
+
 describe("workspace-file/[name] — a name that does not name the served bytes", () => {
+  it("is refused when it only matches after a second decode", async () => {
+    // The framework has already decoded the segment once. Decoding again would
+    // let `a%2520b.pdf` stand for `a b.pdf` — a name the viewer would title as
+    // `a%20b.pdf`, i.e. not the document's name.
+    const doc = writeFile(allowedRoot, "a b.pdf", PDF_BYTES);
+
+    const res = await callNamedGET("a%20b.pdf", doc);
+
+    expect(res.status).toBe(404);
+  });
+
   it("is a 404, so no url can title one document while serving another", async () => {
     const doc = writeFile(allowedRoot, "salaries.pdf", PDF_BYTES);
 
