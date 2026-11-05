@@ -227,7 +227,7 @@ export function KnowledgeReindexSection({
       ) : active && job ? (
         <RunningState job={job} now={now} samples={samples} />
       ) : job?.status === "succeeded" ? (
-        <SucceededState job={job} />
+        <SucceededState job={job} agentId={agentId} />
       ) : job?.status === "failed" ? (
         <FailedState job={job} />
       ) : (
@@ -389,7 +389,40 @@ function UnavailableFoldersNote({ count }: { count: number }) {
   return <p className="text-sm text-amber-600 dark:text-amber-500">{text}</p>;
 }
 
-function SucceededState({ job }: { job: ReindexJob }) {
+/**
+ * Files on the share whose type Pinchy can't read (#1267) — a `.tif` scan, an
+ * old `.xls`. Not documents in the index at all, so nothing else on this page
+ * mentions them, and without this line a gap in the agent's answers reads as
+ * the model's fault.
+ *
+ * The list is a download, not a panel: a real share can hold 100k such files,
+ * and a spreadsheet is where an admin sorts them by type to decide what to
+ * convert. A plain link, so the browser streams the file to disk instead of
+ * this page holding it in memory.
+ *
+ * Shown after a successful run only. After a failed one the list is still the
+ * previous run's (it is written when a run reaches the end), and the count
+ * beside it is this run's — two numbers that need not agree.
+ */
+function UnsupportedFilesNote({ agentId, count }: { agentId: string; count: number }) {
+  const files = count === 1 ? "1 file is" : `${count} files are`;
+  return (
+    <p className="text-sm text-muted-foreground">
+      {files} of a type Pinchy can&apos;t read, like scans saved as .tif or old .xls spreadsheets.
+      Your agent can&apos;t answer from {count === 1 ? "it" : "them"}. Saved as PDF, Word,
+      PowerPoint or .xlsx, {count === 1 ? "it's" : "they're"} picked up by the next run.{" "}
+      <a
+        href={`/api/agents/${agentId}/knowledge/unsupported`}
+        download
+        className="font-medium text-foreground underline underline-offset-4"
+      >
+        Download the list
+      </a>
+    </p>
+  );
+}
+
+function SucceededState({ job, agentId }: { job: ReindexJob; agentId: string }) {
   // Anything an admin did not start, Pinchy did: the nightly run, or the one
   // it starts itself after an update changed how documents are converted.
   const how = job.trigger !== undefined && job.trigger !== "manual" ? "automatically " : "";
@@ -400,6 +433,9 @@ function SucceededState({ job }: { job: ReindexJob }) {
         {formatWhen(job.finishedAt)}.
       </p>
       {job.counts && <CountsSummary counts={job.counts} />}
+      {(job.counts?.unsupported ?? 0) > 0 && (
+        <UnsupportedFilesNote agentId={agentId} count={job.counts!.unsupported!} />
+      )}
       {(job.unavailableFolders ?? 0) > 0 && (
         <UnavailableFoldersNote count={job.unavailableFolders!} />
       )}
@@ -442,6 +478,11 @@ function CountsSummary({ counts }: { counts: IngestResult }) {
       <span className={counts.failed > 0 ? "text-destructive" : "text-muted-foreground"}>
         {counts.failed} failed
       </span>
+      {/* Absent on a run that finished before these were counted: it never
+          looked, and a zero would say it found none. */}
+      {counts.unsupported !== undefined && (
+        <span className="text-muted-foreground">{counts.unsupported} not supported</span>
+      )}
     </div>
   );
 }

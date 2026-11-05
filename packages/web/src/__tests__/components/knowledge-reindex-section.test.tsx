@@ -57,6 +57,7 @@ type Job = {
     removed: number;
     unsearchable: number;
     failed: number;
+    unsupported?: number;
   } | null;
   error: string | null;
   createdAt: string;
@@ -159,6 +160,53 @@ describe("KnowledgeReindexSection", () => {
     expect(screen.getByText(/failed/i)).toBeInTheDocument();
     // Button is enabled again — the run is over.
     expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
+  });
+
+  // #1267: files whose type the indexer cannot read were invisible — counted
+  // nowhere, listed nowhere. The count sits with the others, and the list is a
+  // download, because a real share can hold 100k of them.
+  describe("files the index can't read", () => {
+    const counts = { indexed: 11, skipped: 0, removed: 0, unsearchable: 0, failed: 0 };
+
+    it("counts them beside the run's other findings and offers the list as a download", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 2 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText("2 not supported")).toBeInTheDocument();
+      const link = screen.getByRole("link", { name: /download the list/i });
+      expect(link).toHaveAttribute("href", "/api/agents/a1/knowledge/unsupported");
+      expect(link).toHaveAttribute("download");
+      expect(screen.getByText(/2 files are of a type pinchy can't read/i)).toBeInTheDocument();
+    });
+
+    it("speaks of one file in the singular", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 1 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText(/1 file is of a type pinchy can't read/i)).toBeInTheDocument();
+    });
+
+    it("says nothing more than the zero when every file could be read", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 0 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText("0 not supported")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /download the list/i })).not.toBeInTheDocument();
+    });
+
+    // A run that finished before this was counted never looked. "0 not
+    // supported" would claim it did.
+    it("shows no count at all for a run that finished before files were counted", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      await screen.findByText(/last indexed/i);
+      expect(screen.queryByText(/not supported/i)).not.toBeInTheDocument();
+    });
   });
 
   it("surfaces a concurrent-run conflict (409) as an error toast naming the blocking agent", async () => {

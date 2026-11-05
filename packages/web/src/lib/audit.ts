@@ -1017,6 +1017,8 @@ export type AuditLogEntry =
         unsearchable?: number;
         failed?: number;
         archived?: number;
+        // Files under the run's folders whose type the indexer cannot read (#1267). The count only: the list lives in kb_unsupported_files.
+        unsupported?: number;
         ocr?: { model: string; documents: number; pages: number; skippedPages: number };
         unavailableFolders?: number;
         // Files refused because their path no longer led to a regular file in the folder (a swapped link); also in `failed`.

@@ -543,7 +543,9 @@ The agent's most recent index run — in flight or last finished — and whether
       "skipped": 12,
       "removed": 1,
       "unsearchable": 2,
-      "failed": 0
+      "failed": 0,
+      "archived": 0,
+      "unsupported": 4
     },
     "error": null,
     "createdAt": "2026-07-17T10:00:00.000Z",
@@ -566,6 +568,7 @@ The agent's most recent index run — in flight or last finished — and whether
 | `counts.removed`                | Source file no longer on disk; the document and its chunks were deleted. Stays `0` until the run's final pass.                                                                                                                                                                                                                                                                                                                                                                                               |
 | `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved — a workbook whose sheets are all hidden, or a scan that no vision model was available to read.                                                                                                                                                                                                                                                                                                     |
 | `counts.failed`                 | The file could not be read or parsed, or was refused because it had been [swapped for a symbolic link](/guides/mount-data-directories/#links-inside-a-mounted-folder) during the run. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                             |
+| `counts.unsupported`            | Files in the granted folders whose type the index can't read — a `.tif` scan, an old `.xls`, a `.txt`. Not part of the counts above, because they never become documents. Known from the moment discovery finishes. Absent on a run that finished before Pinchy counted them. [`GET …/knowledge/unsupported`](#get-apiagentsagentidknowledgeunsupported) lists them.                                                                                                                                         |
 | `error`                         | Why the run failed. `null` unless `status` is `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 `schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
@@ -687,6 +690,34 @@ Scoped to the folders that agent is granted, exactly like search itself, so the 
 | `total`                  | How many there are. `documents` holds at most 100; `total` is never capped.                                                                                                                                                                                                                |
 | `totals`                 | `total` per reason, `no_text` and `awaiting_conversion`. Never capped either, so it counts documents `documents` doesn't show.                                                                                                                                                             |
 | `searchesIndex`          | Whether the agent has `knowledge_search`. Pinchy converts the `awaiting_conversion` files again on its own only for an agent that searches the index; for any other agent, a reindex converts them.                                                                                        |
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/unsupported`
+
+A CSV of the files in the agent's granted folders whose type the index can't read — the ones `counts.unsupported` counts. **Admin only.**
+
+The answer is a download (`Content-Disposition: attachment`), streamed, so a share with a hundred thousand such files works as well as one with three. It holds what the last run that finished found; nothing here walks the share. Scoped to the agent's granted folders, exactly like search itself. Hidden files and operating-system or Office clutter (`Thumbs.db`, `~$Report.docx`, `*.tmp`) are never listed.
+
+**Response:** `text/csv; charset=utf-8`, UTF-8 with a byte-order mark, one row per file, ordered by path:
+
+```csv
+"path","type"
+"/data/hr/Budget 2019.xls",".xls"
+"/data/hr/scans/Nameplate.tif",".tif"
+"/data/hr/README",""
+```
+
+| Column | Description                                                            |
+| ------ | ---------------------------------------------------------------------- |
+| `path` | The file's full path.                                                  |
+| `type` | Its extension, lowercased, with the dot. Empty for a file without one. |
+
+A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed with `'`, because a file name is text anyone who can write to the share chose.
 
 **Errors:**
 
