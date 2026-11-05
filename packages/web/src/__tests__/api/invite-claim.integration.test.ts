@@ -360,6 +360,27 @@ describe("POST /api/invite/claim (integration)", () => {
     });
   });
 
+  it.each([
+    ["an emoji split by the length cap", "x".repeat(199) + "\u{1F600}"],
+    ["a lone surrogate in the body", "Broken \uD83D name"],
+  ])("still writes the failure row for a name with %s (#1263)", async (_label, name) => {
+    // Postgres jsonb refuses a lone UTF-16 surrogate. A name that leaves one
+    // behind would make the audit write throw, and the failed claim would
+    // again leave no trace.
+    const adminId = await seedAdmin();
+    const invite = await createInvite({ role: "member", type: "invite", createdBy: adminId });
+
+    const response = await POST(
+      makeRequest({ token: invite.token, name, password: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(410);
+    await flushAfter();
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].detail).toMatchObject({ reason: "invite_has_no_email" });
+  });
+
   it("records a failure row when Better Auth refuses the sign-up (#1263)", async () => {
     // An account already holds the invite's email, so signUpEmail rejects.
     // The invite must stay usable and the attempt must be on the record.

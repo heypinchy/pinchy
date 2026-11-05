@@ -135,7 +135,12 @@ export async function POST(request: NextRequest) {
     actorType: "user",
     actorId: result.user.id,
     eventType: "user.created",
-    detail: { name: name.trim(), role: invite.role, via: "invite", invite: { id: invite.id } },
+    detail: {
+      name: auditSafeName(name),
+      role: invite.role,
+      via: "invite",
+      invite: { id: invite.id },
+    },
     outcome: "success",
   });
 
@@ -178,6 +183,18 @@ export async function POST(request: NextRequest) {
 const AUDIT_NAME_MAX_CHARS = 200;
 
 /**
+ * Cap by code point, not UTF-16 unit, so the cut never splits an emoji, and
+ * replace any lone surrogate the client sent: Postgres jsonb refuses both, and
+ * the audit write would throw.
+ */
+function auditSafeName(name: string): string {
+  return Array.from(name.trim())
+    .slice(0, AUDIT_NAME_MAX_CHARS)
+    .join("")
+    .replace(/[\uD800-\uDFFF]/gu, "\uFFFD");
+}
+
+/**
  * The failure twin of the `user.created` row a successful claim writes. There
  * is no account to act as, so the actor is the claim flow itself. No email in
  * detail, as on the success row.
@@ -195,7 +212,7 @@ async function auditFailedAccountCreation(
     detail: {
       // The name is whoever holds the link's to choose; cap it so it can't
       // push the detail past the size limit and take invite and reason with it.
-      ...(name?.trim() ? { name: name.trim().slice(0, AUDIT_NAME_MAX_CHARS) } : {}),
+      ...(name?.trim() ? { name: auditSafeName(name) } : {}),
       role: invite.role,
       via: "invite",
       invite: { id: invite.id },

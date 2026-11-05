@@ -780,8 +780,12 @@ describe("SettingsUsers", () => {
         expect(screen.getByRole("table")).toBeInTheDocument();
       });
 
+      // The mobile cards and the desktop table are both rendered (CSS picks
+      // one), and each carries its own copy of the button condition.
+      expect(screen.queryAllByRole("button", { name: "Resend" })).toHaveLength(0);
+      expect(screen.getAllByRole("button", { name: "Revoke" })).toHaveLength(2);
+
       const table = screen.getByRole("table");
-      expect(within(table).queryByRole("button", { name: "Resend" })).not.toBeInTheDocument();
       await user.click(within(table).getByRole("button", { name: "Revoke" }));
 
       await waitFor(() => {
