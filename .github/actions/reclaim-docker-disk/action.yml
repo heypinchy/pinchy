@@ -1,0 +1,42 @@
+name: Reclaim Docker disk before a rebuild
+description: >
+  Removes every ghcr.io/heypinchy image and all BuildKit cache, so a job that
+  already pulled (or built) the Pinchy and OpenClaw images can build them
+  again without holding both copies on the runner's disk at once.
+
+  docker-smoke is the job this exists for: it pulls the pre-built production
+  images, tests them, tears the stack down — which removes containers and
+  volumes but no images — and then runs the dev stack with `up --build`,
+  which builds Dockerfile.pinchy.dev and Dockerfile.openclaw from scratch.
+  With the pulled images still on disk, the second OpenClaw build ran out of
+  space while copying /opt/llama-cpp-deps ("ResourceExhausted: failed to copy
+  files: copy file range failed: no space left on device", CI run
+  42014766282). The pulled images are not inputs to that build — a plain
+  `docker build` does not use a pulled image as cache — so removing them costs
+  nothing but the space.
+
+  Prints `df` and `docker system df` before and after, so the next time the
+  runner gets tight the log already says by how much.
+runs:
+  using: composite
+  steps:
+    - name: Remove Pinchy images and build cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "== before =="
+        df -h /
+        docker system df
+        # Every repository under ghcr.io/heypinchy: the -ci refs a job pulled,
+        # the :latest tags compose reads, and the images a fork-PR fallback
+        # built locally. Third-party images (postgres, caddy, mocks) stay, so
+        # the next `up` does not pull them again.
+        ids=$(docker image ls --filter 'reference=ghcr.io/heypinchy/*' --format '{{.ID}}' | sort -u)
+        if [ -n "$ids" ]; then
+          # shellcheck disable=SC2086 # one ID per word
+          docker image rm -f $ids
+        fi
+        docker builder prune -af
+        echo "== after =="
+        df -h /
+        docker system df
