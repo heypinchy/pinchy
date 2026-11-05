@@ -399,11 +399,11 @@ The chat asks this when you press Retry, not when the run failed — see [Retryi
 
 ### `GET /api/agents/:agentId/uploads/:filename`
 
-Download a file the caller uploaded to this agent. Cached like `workspace-file` below: for an hour, and only for the same session.
+Download a file the caller uploaded to this agent. Cached like `workspace-file` below: for an hour, and never for a different session.
 
 ### `GET /api/agents/:agentId/artifacts/:filename`
 
-Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files). Cached like `workspace-file` below: for an hour, and only for the same session.
+Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files). Cached like `workspace-file` below: for an hour, and never for a different session.
 
 Serves a file the caller was actually handed, not whatever currently carries that name. Each delivery records where the file was and a checksum of its contents, and the download is refused with `404` unless the file on disk still matches one of the caller's own deliveries of that name. On a shared agent that matters: everyone's chats write into the same workspace, so without it a later file of the same name — from a conversation you cannot see — would be served under your download link.
 

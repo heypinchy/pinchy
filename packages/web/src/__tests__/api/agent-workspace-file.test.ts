@@ -413,6 +413,12 @@ describe("GET /api/agents/[agentId]/workspace-file — large files and byte rang
 
     expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
     expect(res.headers.get("vary")).toBe("Cookie");
+
+    // A PDF viewer reads in ranges, so the partial answers are the ones the
+    // browser actually caches — they must be keyed to the session too.
+    const partial = await callGET("agent-1", pdfPath, { Range: "bytes=0-7" });
+    expect(partial.status).toBe(206);
+    expect(partial.headers.get("vary")).toBe("Cookie");
   });
 
   it("answers a byte range from a file too large to buffer, reading only that span", async () => {

@@ -19,6 +19,10 @@ import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
  * anywhere else in production source, so the pairing cannot be forgotten.
  * It reads lines, comments included, so a comment naming a lifetime trips it
  * too: describe it in prose ("a short private cache") instead.
+ *
+ * A green run does not mean nothing is cacheable. A response without a
+ * lifetime can still be cached heuristically when it carries Last-Modified;
+ * nothing sets that today, and this guard does not look for it.
  */
 
 const webSrcDir = path.resolve(__dirname, "../..");
