@@ -39,7 +39,7 @@ const CACHE_LIFETIME_RES = [
   /["']expires["']\s*[:,]/i,
   // Route segment config: Next.js then writes s-maxage itself, so no header
   // literal appears in the source at all.
-  /\bexport\s+const\s+revalidate\s*=(?!\s*(?:0|false)\b)/,
+  /\bexport\s+const\s+revalidate\s*(?::\s*[\w|\s]+?)?=(?!\s*(?:0|false)\b)/,
   /\bexport\s+const\s+dynamic\s*=\s*["']force-static["']/,
 ];
 // An unquoted `Expires:` key is a valid Headers init too. In a .tsx file the
@@ -87,8 +87,8 @@ describe("browser cache is scoped to the session (#1286)", () => {
   });
 
   it("refuses a lifetime that is not a positive whole number of seconds", () => {
-    // Browsers ignore an invalid max-age (NaN, negative, fractional) and fall
-    // back to their own heuristics, so a bad value must fail loudly here.
+    // NaN, a fraction or a negative is not a valid max-age; 0 is valid but
+    // keeps nothing, which `no-store` says plainly. Either way a mistake.
     for (const bad of [Number.NaN, -1, 0, 1.5, Number.POSITIVE_INFINITY]) {
       expect(() => sessionScopedCacheHeaders(bad)).toThrow(/positive whole number/);
     }
@@ -110,6 +110,7 @@ describe("browser cache is scoped to the session (#1286)", () => {
       // Route segment config: Next.js then emits s-maxage itself, so no
       // header literal appears anywhere in the source.
       `export const revalidate = 60;`,
+      `export const revalidate: number = 60;`,
       `export const dynamic = "force-static";`,
     ]) {
       expect(setsCacheLifetime(route, line), line).toBe(true);

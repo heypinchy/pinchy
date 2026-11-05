@@ -14,8 +14,9 @@ export function sessionScopedCacheHeaders(maxAgeSeconds: number): {
   "cache-control": string;
   vary: string;
 } {
-  // An invalid value is ignored by the browser, which then falls back to its
-  // own heuristics — refuse it instead of emitting it.
+  // Anything else is either invalid on the wire (NaN, a fraction, a negative)
+  // or keeps nothing (0, where `no-store` says what is meant), so a caller
+  // passing it has made a mistake worth failing on.
   if (!Number.isInteger(maxAgeSeconds) || maxAgeSeconds <= 0) {
     throw new Error(
       `cache lifetime must be a positive whole number of seconds, got ${maxAgeSeconds}`
