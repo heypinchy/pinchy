@@ -7,8 +7,12 @@ import { AgentIdContext, ChatStatusContext } from "@/components/chat";
 import { useAgentsContext } from "@/components/agents-provider";
 import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
 
-/** Remembered per browser: the shared-memory note is shown once, not per chat. */
-export const SHARED_MEMORY_NOTICE_STORAGE_KEY = "pinchy.sharedMemoryNotice.dismissed";
+/**
+ * Remembered per browser: the shared-memory note is shown once, not per chat.
+ * Under `pinchy:` so the account-switch wipe (lib/account-switch.ts) resets it
+ * for the next person on a shared computer.
+ */
+export const SHARED_MEMORY_NOTICE_STORAGE_KEY = "pinchy:sharedMemoryNotice:dismissed";
 
 function readNoticeDismissed(): boolean {
   try {
@@ -66,6 +70,7 @@ const SharedMemoryNotice: FC = () => {
             writeNoticeDismissed();
             setDismissed(true);
           }}
+          aria-label="Got it, don't show this note about shared memory again"
           className="underline underline-offset-2 hover:text-foreground"
         >
           Got it
@@ -103,12 +108,16 @@ const NewConversationContent: FC = () => {
  * opens every new conversation with the greeting as an assistant message, so
  * the thread is never empty once the chat is ready. The starter prompts used
  * to sit behind `isEmpty` and therefore never rendered. An empty thread is
- * still ThreadWelcome's to handle.
+ * still ThreadWelcome's to handle. Hidden while the composer holds text.
  */
 export const NewConversationPrompts: FC = () => (
   <AuiIf
     condition={(s) =>
-      s.thread.messages.length > 0 && s.thread.messages.every((m) => m.role !== "user")
+      s.thread.messages.length > 0 &&
+      s.thread.messages.every((m) => m.role !== "user") &&
+      // A chip sends and then clears the composer; while the user is typing
+      // it would throw their draft away, so it steps aside.
+      s.composer.isEmpty
     }
   >
     <NewConversationContent />

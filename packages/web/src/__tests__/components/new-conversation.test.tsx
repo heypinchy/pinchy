@@ -13,13 +13,14 @@
 // AuiIf mock: the bug was a gate evaluated against real thread state, and a
 // mocked gate cannot see it.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import type { FC } from "react";
 import {
   AssistantRuntimeProvider,
   ThreadPrimitive,
   useExternalStoreRuntime,
+  type AssistantRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 
@@ -50,16 +51,18 @@ import { AgentIdContext, ChatStatusContext } from "@/components/chat";
 const greeting: ThreadMessageLike = { role: "assistant", content: "Hi, I'm Ada." };
 const userTurn: ThreadMessageLike = { role: "user", content: "What is our leave policy?" };
 
-const Harness: FC<{ messages: ThreadMessageLike[]; status?: "ready" | "starting" }> = ({
-  messages,
-  status = "ready",
-}) => {
+const Harness: FC<{
+  messages: ThreadMessageLike[];
+  status?: "ready" | "starting";
+  onRuntime?: (runtime: AssistantRuntime) => void;
+}> = ({ messages, status = "ready", onRuntime }) => {
   const runtime = useExternalStoreRuntime({
     messages,
     isRunning: false,
     convertMessage: (m: ThreadMessageLike) => m,
     onNew: async () => {},
   });
+  onRuntime?.(runtime);
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ChatStatusContext.Provider value={{ kind: status }}>
@@ -104,6 +107,25 @@ describe("NewConversationPrompts — starter prompts", () => {
     expect(screen.queryByText("Summarize the onboarding guide")).not.toBeInTheDocument();
   });
 
+  it("steps aside while the user is typing, so a chip can't wipe their draft", async () => {
+    // A chip sends its prompt and then clears the composer (assistant-ui's
+    // Suggestion default), which would throw away a half-written question.
+    mockAgent = sharedKbAgent;
+    let runtime: AssistantRuntime | undefined;
+    render(<Harness messages={[greeting]} onRuntime={(r) => (runtime = r)} />);
+    expect(screen.getByText("Summarize the onboarding guide")).toBeInTheDocument();
+
+    await act(async () => runtime!.thread.composer.setText("What does our travel"));
+    await waitFor(() =>
+      expect(screen.queryByText("Summarize the onboarding guide")).not.toBeInTheDocument()
+    );
+
+    await act(async () => runtime!.thread.composer.setText(""));
+    await waitFor(() =>
+      expect(screen.getByText("Summarize the onboarding guide")).toBeInTheDocument()
+    );
+  });
+
   it("leaves the empty thread to ThreadWelcome", () => {
     mockAgent = sharedKbAgent;
     render(<Harness messages={[]} />);
@@ -144,6 +166,13 @@ describe("NewConversationPrompts — shared memory notice", () => {
     expect(screen.queryByText(noticeText)).not.toBeInTheDocument();
     // The starter prompts are not part of what was dismissed.
     expect(screen.getByText("Summarize the onboarding guide")).toBeInTheDocument();
+  });
+
+  it("keeps its dismissal under the pinchy: prefix, so an account switch resets it", () => {
+    // wipePinchyStorage() (lib/account-switch.ts) clears only `pinchy:` keys
+    // when someone else signs in. A dismissal outside that prefix would hide
+    // this note from the next person on a shared computer.
+    expect(SHARED_MEMORY_NOTICE_STORAGE_KEY.startsWith("pinchy:")).toBe(true);
   });
 
   it("still shows when browser storage is unavailable", () => {
