@@ -44,6 +44,14 @@ import {
 } from "@/lib/knowledge/verified-source";
 import type { AgentPluginConfig } from "@/db/schema";
 import { grantedDataPaths } from "@/lib/agent-granted-paths";
+import {
+  ifNoneMatchHits,
+  rangeAllowedByIfRange,
+  servePosture,
+  sessionScopedRevalidateHeaders,
+  weakFileEtag,
+  weakStoredFileEtag,
+} from "@/lib/session-scoped-cache";
 
 type Params = { params: Promise<{ agentId: string }> };
 
@@ -181,6 +189,7 @@ function sourceAccessAuditEntry(args: {
   outcome: "success" | "failure";
   reason?: string;
   partial?: boolean;
+  revalidated?: boolean;
   representation?: Variant;
 }): AuditLogEntry {
   return {
@@ -208,6 +217,10 @@ function sourceAccessAuditEntry(args: {
       // reading a file in chunks must not be a way to read it unobserved — and
       // this flag is what lets an analyst count views rather than chunks.
       ...(args.partial !== undefined ? { partial: args.partial } : {}),
+      // A 304: the reader looked at the copy their browser already held, after
+      // the access check allowed it. `partial` says whether a range would have
+      // been served, so a viewer re-reading in ranges counts as one view.
+      ...(args.revalidated ? { revalidated: true } : {}),
     },
   };
 }
@@ -558,7 +571,66 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     return new NextResponse("Not found", { status: 404 });
   }
 
-  const range = parseRangeHeader(req.headers.get("range"), info.size);
+  // `attachment` is the stricter of the two, so forcing it can only narrow what
+  // the browser is allowed to do with these bytes — it never relaxes the
+  // extension-derived anti-XSS split, it only ever overrides `inline`.
+  // Derived from the name the bytes are SERVED under, not from the source's:
+  // the converted artifact is a PDF and has to be typed and dispositioned as
+  // one, or the viewer gets an `application/msword` attachment where it asked
+  // for something to render.
+  const { contentType, disposition: servedDisposition } = contentTypeForFile(servedName);
+  const disposition = isDownload ? "attachment" : servedDisposition;
+
+  // How the bytes are served is part of what a cached copy stands for: a 304
+  // leaves the browser on the headers it stored (see servePosture). The name
+  // is in content-disposition, and a symlink can change it at the same URL.
+  const variantTag = representation + servePosture(contentType, disposition, servedName);
+
+  // The artifact store touches each artifact on read, so its timestamps move
+  // every request; its content-addressed path identifies it instead. That
+  // path comes from hashing the source in full (resolveConvertedArtifact),
+  // which therefore runs before a 304 too: the hash is what tells a current
+  // conversion from one of a document since replaced, so it cannot be skipped
+  // for a reuse. A 304 saves sending the PDF, not reading the source.
+  const etag = artifactPath
+    ? weakStoredFileEtag(info, artifactPath, variantTag)
+    : weakFileEtag(info, variantTag);
+
+  // A range continues a copy the client already holds. With If-Range it is
+  // asked for only if that copy is current, which a weak validator cannot
+  // vouch for — so the whole document is sent rather than a spliced one.
+  // Read once, so the 304 below audits the request the 200 would have served.
+  const range = rangeAllowedByIfRange(req.headers.get("if-range"))
+    ? parseRangeHeader(req.headers.get("range"), info.size)
+    : ({ kind: "full" } as const);
+
+  // The browser keeps this document `no-cache`, so every reuse of its copy
+  // arrives here as a conditional request — past the agent-access and
+  // allowed_paths checks above, which is the point: a revoked grant answers
+  // 403 here, never 304. Only an unchanged document the reader may still see
+  // is answered 304, without its bytes. A 304 is the reader looking at the
+  // document again, so it is audited like the read it replaces (a view, or a
+  // download with `download=1`).
+  if (ifNoneMatchHits(req.headers.get("if-none-match"), etag)) {
+    await fh.close();
+    deferAuditLog(
+      sourceAccessAuditEntry({
+        eventType,
+        userId: session.user.id!,
+        agentId: agent.id,
+        agentName: agent.name,
+        documentName,
+        outcome: "success",
+        revalidated: true,
+        // Whether the reuse was a chunk request, so a viewer reading a cached
+        // document in ranges is not counted as many reopens.
+        partial: range.kind === "partial",
+        representation,
+      })
+    );
+    return new NextResponse(null, { status: 304, headers: sessionScopedRevalidateHeaders(etag) });
+  }
+
   if (range.kind === "unsatisfiable") {
     await fh.close();
     auditFailure("range_not_satisfiable");
@@ -574,16 +646,6 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const start = isPartial ? range.start : 0;
   const end = isPartial ? range.end : Math.max(0, info.size - 1);
   const contentLength = info.size === 0 ? 0 : end - start + 1;
-
-  // `attachment` is the stricter of the two, so forcing it can only narrow what
-  // the browser is allowed to do with these bytes — it never relaxes the
-  // extension-derived anti-XSS split, it only ever overrides `inline`.
-  // Derived from the name the bytes are SERVED under, not from the source's:
-  // the converted artifact is a PDF and has to be typed and dispositioned as
-  // one, or the viewer gets an `application/msword` attachment where it asked
-  // for something to render.
-  const { contentType, disposition: servedDisposition } = contentTypeForFile(servedName);
-  const disposition = isDownload ? "attachment" : servedDisposition;
 
   deferAuditLog(
     sourceAccessAuditEntry({
@@ -626,7 +688,10 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       // document before rendering anything.
       "accept-ranges": "bytes",
       ...(isPartial ? { "content-range": `bytes ${start}-${end}/${info.size}` } : {}),
-      "cache-control": "private, max-age=3600",
+      // Kept, but revalidated on every reuse so the reuse passes the access
+      // check above; keyed to the session so a copy never reaches the next
+      // user on the same browser (#1286).
+      ...sessionScopedRevalidateHeaders(etag),
       // nosniff so the browser can never override our extension-derived
       // Content-Type via its own MIME sniffing — the anti-XSS control that
       // makes the inline/attachment split above meaningful.

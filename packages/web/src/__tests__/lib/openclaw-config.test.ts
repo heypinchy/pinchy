@@ -275,12 +275,16 @@ import { MAX_EFFECTIVE_CONTEXT_TOKENS } from "@/lib/openclaw-config/effective-co
 import { OPENCLAW_GATEWAY_BIND, OPENCLAW_GATEWAY_MODE } from "@/lib/openclaw-config/paths";
 import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
+import { regenerateOnConnect } from "@/server/openclaw-connect-regenerate";
 import {
   getPendingConfigPushCount,
   _resetConfigPushState,
   nextRegenerateSequence,
   noteUndeliveredConfigChange,
   undeliveredConfigChange,
+  noteFileOnlyDelivery,
+  fileOnlyDeliveryPending,
+  nextConfigPushGeneration,
   trackConfigPushStarted,
   trackConfigPushSettled,
   scheduleShrinkResume,
@@ -4830,6 +4834,9 @@ describe("regenerateOpenClawConfig", () => {
           openclawWrite,
           "writeConfigAtomic must run as the last-resort fallback so the change is not lost"
         ).toBeDefined();
+        // The connected OpenClaw may not reload it: the next regenerate must
+        // still push it rather than take the file for the runtime.
+        expect(fileOnlyDeliveryPending()).toBe(true);
       } finally {
         vi.useRealTimers();
       }
@@ -5136,16 +5143,266 @@ describe("regenerateOpenClawConfig", () => {
     it("stays owed while a push is still in flight, which may still land other content", async () => {
       await settleOnDiskTarget();
       noteUndeliveredConfigChange(nextRegenerateSequence());
-      trackConfigPushStarted();
+      const inFlight = nextConfigPushGeneration();
+      trackConfigPushStarted(inFlight);
 
       try {
         await regenerateOpenClawConfig();
         await drainBackgroundCoroutine();
       } finally {
-        trackConfigPushSettled();
+        trackConfigPushSettled(inFlight);
       }
 
       expect(undeliveredConfigChange()).toBe(true);
+    });
+  });
+
+  // CI run 41906476538: the setup wizard's push waited out OpenClaw's restart
+  // ("Not connected"), gave up, and wrote openclaw.json instead. OpenClaw was
+  // already running by then and never reloaded that file, so Smithers stayed
+  // out of its runtime. The regenerate on the connect that followed 0.3 s later
+  // found openclaw.json already equal to its target and pushed nothing — the
+  // file says nothing about a running OpenClaw that never read it.
+  describe("a config that reached openclaw.json only through a push's file fallback", () => {
+    /**
+     * What OpenClaw's config.get answers once Pinchy wrote the file: it reads
+     * openclaw.json (see server/agent-readiness.ts), so it already names the
+     * change its runtime never loaded.
+     */
+    let onDiskAfterFallback = "";
+    const configGetReadingTheFile = () => ({
+      hash: "h-file",
+      config: JSON.parse(onDiskAfterFallback) as Record<string, unknown>,
+    });
+
+    /** Regenerate while OpenClaw is unreachable until the push falls back to the file. */
+    async function regenerateIntoFileFallback(): Promise<void> {
+      mockConfigGet.mockRejectedValue(new Error("Not connected to OpenClaw Gateway"));
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      vi.useFakeTimers();
+      try {
+        // Not awaited before the clock runs: regenerate itself waits on timers.
+        const regenerated = regenerateOpenClawConfig();
+        // 60 s "Not connected" budget, then the backoff slots.
+        for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(2_100);
+        for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
+        await regenerated;
+      } finally {
+        vi.useRealTimers();
+      }
+      const onDisk = writtenOpenClawConfig(mockedWriteFileSync);
+      onDiskAfterFallback = onDisk;
+      mockedWriteFileSync.mockClear();
+      mockedReadFileSync.mockReturnValue(onDisk);
+      expect(mockConfigApply, "precondition: nothing reached config.apply").not.toHaveBeenCalled();
+    }
+
+    it("leaves the reconnect after it to regenerate (the push that wrote it has ended)", async () => {
+      await regenerateIntoFileFallback();
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const regenerate = vi.fn(async () => {});
+
+      regenerateOnConnect({ firstConnect: false }, regenerate);
+
+      expect(regenerate).toHaveBeenCalledTimes(1);
+    });
+
+    it("is pushed by the next regenerate although openclaw.json already holds it", async () => {
+      await regenerateIntoFileFallback();
+      mockConfigGet.mockReset().mockImplementation(async () => configGetReadingTheFile());
+      mockConfigApply.mockReset().mockResolvedValue(undefined);
+
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+    });
+
+    it("is applied by a push even when config.get already returns it", async () => {
+      // config.get reads openclaw.json, so after a fallback it matches the
+      // payload; the no-op guard must not take that for the runtime.
+      const payload = { gateway: { mode: "local" }, agents: { list: [{ id: "a1" }] } };
+      noteFileOnlyDelivery();
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      mockConfigGet.mockResolvedValue({ hash: "h", config: payload });
+      mockConfigApply.mockResolvedValue(undefined);
+
+      pushConfigInBackground(JSON.stringify(payload));
+      await drainBackgroundCoroutine();
+
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+      expect(fileOnlyDeliveryPending()).toBe(false);
+    });
+
+    // OpenClaw stays connected, so no reconnect regenerates: the follow-up
+    // one rate-limit window later is what delivers it.
+    it("is delivered by a follow-up when the rate limit outlasted the push", async () => {
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      // OpenClaw is up and connected, its file still without the change.
+      mockConfigGet.mockResolvedValue({ hash: "h-file", config: { gateway: { mode: "local" } } });
+      mockConfigApply.mockRejectedValue(
+        new Error("rate limit exceeded for config.apply; retry after 1s")
+      );
+      vi.useFakeTimers();
+      try {
+        const regenerated = regenerateOpenClawConfig();
+        for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(5_000);
+        await regenerated;
+        expect(fileOnlyDeliveryPending(), "precondition: the push fell back").toBe(true);
+        mockedReadFileSync.mockReturnValue(writtenOpenClawConfig(mockedWriteFileSync));
+
+        mockConfigApply.mockReset().mockResolvedValue(undefined);
+        for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(2_000);
+      } finally {
+        vi.useRealTimers();
+      }
+      await drainBackgroundCoroutine();
+
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+      expect(fileOnlyDeliveryPending()).toBe(false);
+    });
+
+    /** Drive a push whose every config.get/apply fails with `error` into its fallback. */
+    async function pushIntoFallback(error: string, failOn: "get" | "apply"): Promise<void> {
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      if (failOn === "get") mockConfigGet.mockRejectedValue(new Error(error));
+      else {
+        mockConfigGet.mockResolvedValue({ hash: "h" });
+        mockConfigApply.mockRejectedValue(new Error(error));
+      }
+      pushConfigInBackground(JSON.stringify({ gateway: { mode: "local" } }));
+      // Only until the fallback: further, and a follow-up would already fire
+      // against mocks that still fail.
+      for (let i = 0; i < 40 && !fileOnlyDeliveryPending(); i++) {
+        await vi.advanceTimersByTimeAsync(2_000);
+      }
+      expect(fileOnlyDeliveryPending(), "precondition: it fell back").toBe(true);
+    }
+    /** OpenClaw accepts again; how many applies land over the next `minutes`. */
+    async function appliesOver(minutes: number): Promise<number> {
+      mockConfigGet.mockReset().mockResolvedValue({ hash: "h" });
+      mockConfigApply.mockReset().mockResolvedValue(undefined);
+      for (let i = 0; i < minutes; i++) await vi.advanceTimersByTimeAsync(60_000);
+      return mockConfigApply.mock.calls.length;
+    }
+
+    it.each([
+      ["OpenClaw was not connected", "Not connected to OpenClaw Gateway", "get"],
+      ["config.apply timed out", "Request config.apply timed out", "apply"],
+    ] as const)("queues a follow-up when %s", async (_why, error, failOn) => {
+      vi.useFakeTimers();
+      try {
+        await pushIntoFallback(error, failOn);
+        expect(await appliesOver(2)).toBe(1);
+        expect(fileOnlyDeliveryPending()).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // OpenClaw 2026.7.1 refuses these for good (config-*.js / io-*.js /
+    // redact-snapshot-*.js): retrying would only repeat the refusal.
+    it.each([
+      ["a schema issue", "invalid config: agents.list.0.model"],
+      [
+        "a refused write",
+        "Config write rejected: /root/.openclaw/openclaw.json (gateway-mode-removed)",
+      ],
+      [
+        "a redaction sentinel",
+        'Sentinel value "__OPENCLAW_REDACTED__" in key models.x.apiKey is not valid as real data',
+      ],
+    ])("queues no follow-up for %s", async (_what, error) => {
+      vi.useFakeTimers();
+      try {
+        await pushIntoFallback(error, "apply");
+        expect(await appliesOver(30)).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ends a running follow-up chain when OpenClaw refuses the config itself", async () => {
+      vi.useFakeTimers();
+      try {
+        await pushIntoFallback("rate limit exceeded for config.apply; retry after 1s", "apply");
+        // The follow-up's push is refused as invalid: retrying it would be
+        // refused the same way, so the chain stops instead of re-arming.
+        mockConfigApply.mockReset().mockRejectedValue(new Error("invalid config: models.x"));
+        for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(60_000);
+        const refused = mockConfigApply.mock.calls.length;
+        expect(refused, "precondition: the follow-up ran").toBeGreaterThan(0);
+
+        for (let i = 0; i < 30; i++) await vi.advanceTimersByTimeAsync(60_000);
+        expect(mockConfigApply.mock.calls.length).toBe(refused);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // A refusal that is not transient (a validation error) would be refused
+    // again: the file stays unconfirmed, but nothing is retried on a timer.
+    it("queues no follow-up when the apply failed for a reason that would not pass", async () => {
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      mockConfigGet.mockResolvedValue({ hash: "h" });
+      mockConfigApply.mockRejectedValue(new Error("invalid config: agents.list.0.model"));
+      vi.useFakeTimers();
+      try {
+        pushConfigInBackground(JSON.stringify({ gateway: { mode: "local" } }));
+        for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(2_000);
+        expect(fileOnlyDeliveryPending(), "precondition: it fell back").toBe(true);
+        const attempts = mockConfigApply.mock.calls.length;
+
+        for (let i = 0; i < 30; i++) await vi.advanceTimersByTimeAsync(60_000);
+
+        expect(mockConfigApply.mock.calls.length).toBe(attempts);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stays pending when the push that applied was superseded before it answered", async () => {
+      noteFileOnlyDelivery();
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      mockConfigGet.mockResolvedValue({ hash: "h" });
+      let answerOlder: () => void = () => {};
+      let answerNewer: () => void = () => {};
+      mockConfigApply
+        .mockImplementationOnce(() => new Promise<void>((r) => (answerOlder = r)))
+        .mockImplementationOnce(() => new Promise<void>((r) => (answerNewer = r)));
+
+      pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+      await drainBackgroundCoroutine();
+      pushConfigInBackground(JSON.stringify({ env: { X: "2" } }));
+      await drainBackgroundCoroutine();
+      expect(mockConfigApply, "precondition: both pushes are applying").toHaveBeenCalledTimes(2);
+
+      answerOlder();
+      await drainBackgroundCoroutine();
+      expect(fileOnlyDeliveryPending(), "the older push no longer speaks for the file").toBe(true);
+
+      answerNewer();
+      await drainBackgroundCoroutine();
+      expect(fileOnlyDeliveryPending()).toBe(false);
+    });
+
+    it("is trusted to openclaw.json again once a push reached OpenClaw's runtime", async () => {
+      await regenerateIntoFileFallback();
+      mockConfigGet.mockReset().mockImplementation(async () => configGetReadingTheFile());
+      mockConfigApply.mockReset().mockResolvedValue(undefined);
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+      expect(mockConfigApply, "precondition: the change was pushed").toHaveBeenCalledTimes(1);
+
+      // An unchanged regenerate is back on the fast path: no config.get, no
+      // config.apply slot spent on a config OpenClaw already runs.
+      mockConfigGet.mockClear();
+      mockConfigApply.mockClear();
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+
+      expect(mockConfigGet).not.toHaveBeenCalled();
+      expect(mockConfigApply).not.toHaveBeenCalled();
     });
   });
 });

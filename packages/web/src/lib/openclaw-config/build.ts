@@ -64,6 +64,7 @@ import {
   deletesAProvider,
 } from "./size-drop";
 import {
+  fileOnlyDeliveryPending,
   getPendingConfigPushCount,
   nextConfigPushGeneration,
   nextRegenerateSequence,
@@ -1862,8 +1863,15 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // `BASE_RELOAD_RULES` to the default full-restart trigger. Result: every
   // settings save costs 15-30 s of "Agent runtime is not available" downtime
   // (#193). Removable when we bump OpenClaw past the upstream fix; tracked in #215.
+  //
+  // The file stands for OpenClaw's runtime only while every push reached that
+  // runtime. After a push fell back to writing the file (noteFileOnlyDelivery),
+  // a running OpenClaw may never have loaded it, so the target goes to
+  // pushConfigInBackground, which delivers it over config.apply (its no-op
+  // guard stands down too: config.get reads the same file).
   const unchanged =
     onDiskContent !== undefined &&
+    !fileOnlyDeliveryPending() &&
     (onDiskContent === newContent ||
       configsAreEquivalentUpToOpenClawMetadata(onDiskContent, newContent));
   // Set below when the guard lets a deletion through that OpenClaw will refuse.
@@ -2108,8 +2116,10 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     //
     // This regenerate settles it itself: openclaw.json already holds its
     // target, and the file is what OpenClaw runs or will run. A running
-    // OpenClaw wrote it (config.apply persists what it applies) or hot-reloads
-    // it, as it does a push's file fallback; a stopped one starts on it.
+    // OpenClaw wrote it (config.apply persists what it applies); a stopped one
+    // starts on it. A push's file fallback is the exception — a running
+    // OpenClaw may never reload it — which is why this branch is only reached
+    // while no file-only delivery is pending (noteFileOnlyDelivery).
     // Pinchy writes nothing under OpenClaw's read-side line
     // (last-good-bound.ts), and should OpenClaw's startup restore `.bak` all
     // the same, that rewrites the file, so it still holds what OpenClaw runs.
