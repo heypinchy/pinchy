@@ -15,11 +15,14 @@ import { queueFirstIndex } from "@/lib/knowledge/first-index";
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const visibleAgents = await getVisibleAgents(session.user.id!, session.user.role ?? "member");
-  // Short private cache absorbs back-and-forth agent-switch navigation
-  // without re-querying on every mount; the list is per-user (private) and
-  // 5 s keeps it fresh for operational changes (#261).
+  // Never cached. The browser keys its cache by URL, not by user, so a short
+  // private cache served one user's list to the next person signing in on
+  // the same browser (#1286). It no longer bought anything either: the list
+  // lives in AgentsProvider's client state, so navigation does not refetch
+  // (#261's reason for the cache), and the poll/focus/refresh fetches that
+  // remain want fresh data.
   return NextResponse.json(visibleAgents, {
-    headers: { "Cache-Control": "private, max-age=5, must-revalidate" },
+    headers: { "Cache-Control": "no-store" },
   });
 });
 
