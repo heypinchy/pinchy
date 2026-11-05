@@ -3,6 +3,7 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Folder } from "lucide-react";
+import { isSameDirectory } from "@/lib/directory-path";
 
 interface Directory {
   path: string;
@@ -25,9 +26,12 @@ export function DirectoryPicker({ directories, selected, onChange }: DirectoryPi
     );
   }
 
+  // A grant may be stored as "/data/x/" while the list says "/data/x" (#1264).
+  const isSelected = (path: string) => selected.some((p) => isSameDirectory(p, path));
+
   function handleToggle(path: string) {
-    if (selected.includes(path)) {
-      onChange(selected.filter((p) => p !== path));
+    if (isSelected(path)) {
+      onChange(selected.filter((p) => !isSameDirectory(p, path)));
     } else {
       onChange([...selected, path]);
     }
@@ -39,7 +43,7 @@ export function DirectoryPicker({ directories, selected, onChange }: DirectoryPi
         <div key={dir.path} className="flex items-center space-x-3">
           <Checkbox
             id={dir.path}
-            checked={selected.includes(dir.path)}
+            checked={isSelected(dir.path)}
             onCheckedChange={() => handleToggle(dir.path)}
             aria-label={dir.name}
           />

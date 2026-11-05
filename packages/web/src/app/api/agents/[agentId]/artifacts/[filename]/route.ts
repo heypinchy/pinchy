@@ -21,7 +21,7 @@ import {
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
-export const GET = withAuth<Params>(async (_req, { params }, session) => {
+export const GET = withAuth<Params>(async (req, { params }, session) => {
   const { agentId, filename: rawFilename } = await params;
 
   // Access check FIRST — same gate as the chat itself. The helper returns
@@ -115,7 +115,7 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
     // this check buys is a much larger window closed, not the absence of one:
     // before it, every download after an overwrite served the new bytes, with
     // no timing needed at all.
-    const res = await streamWorkspaceFile(realPath, safeName);
+    const res = await streamWorkspaceFile(realPath, safeName, req);
     if (res.status !== 404) return res;
   }
 
@@ -132,7 +132,7 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
     for (const zone of DELIVERY_ZONES) {
       const realPath = await resolveInZone(agentId, zone, safeName);
       if (!realPath) continue;
-      const res = await streamWorkspaceFile(realPath, safeName);
+      const res = await streamWorkspaceFile(realPath, safeName, req);
       if (res.status !== 404) return res;
     }
   }
