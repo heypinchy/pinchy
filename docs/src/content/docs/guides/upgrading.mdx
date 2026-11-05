@@ -309,11 +309,11 @@ The API-key list in **Settings → API Keys** also now flags keys created by an 
 
 #### Security: file access outside `/data` is removed from older agents
 
-Since v0.9.1, an agent's **Knowledge Base** folders can only be directories under `/data`, and only admins can change them. Before that, the settings API accepted any path, and a member could point their own agent at a folder outside `/data` — the directory that holds every agent's uploads, workbench files and memory, for example. v0.9.1 refused new paths like that but left existing ones in place, and they still worked.
+Since v0.9.1, an agent's **Allowed Directories** (under **Knowledge Base** in its permissions) can only be directories under `/data`, and only admins can change them. Before that, the settings API accepted any path, and a member could point their own agent at a folder outside `/data` — the directory that holds every agent's uploads, workbench files and memory, for example. v0.9.1 refused new paths like that but left existing ones in place, and they still worked.
 
 This release no longer honours them anywhere: file tools, knowledge-base search, reindexing and file previews only use folders under `/data`. On its first start, Pinchy also removes those paths from the agents that still have them, and writes one `agent.updated` row per agent to the [audit trail](/concepts/audit-trail/), with `reason: "allowed_paths_outside_data_root"` and the removed paths under `removed`. The agent's other folders and settings stay as they were. A fresh install, or one where nobody set such a path, gets no rows.
 
-To see whether any agent lost access, filter the audit trail for `agent.updated` from the actor `system`. If an agent needs one of those folders, put the files under `/data` and grant the folder in **Agent Settings → Permissions**.
+To see whether any agent lost access, look in the audit trail for `agent.updated` rows whose actor is `system`. If an agent needs one of those folders, put the files under `/data` and grant the folder in the agent's **Permissions** tab, under **Knowledge Base → Allowed Directories**.
 
 #### Memory is now its own permission — and most agents gain it on upgrade
 
