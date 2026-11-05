@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { summarizeArgs } from "@/test-helpers/approvals";
-import { describeIntent, humanLabels, isTable, type Intent, type PhrasePart } from "./intent";
+import {
+  describeIntent,
+  humanLabels,
+  isTable,
+  rowsLayout,
+  type Intent,
+  type PhrasePart,
+} from "./intent";
 
 /** The headline as plain text, each value written as ‹value›. */
 function headline(intent: Intent): string {
@@ -424,6 +431,47 @@ describe("review: wording", () => {
       iban: "IBAN",
       bcc: "BCC",
       body_html: "Body HTML",
+    });
+  });
+});
+
+describe("rowsLayout: how rows fit the card, every value whole", () => {
+  it("draws up to three columns of short values as a table", () => {
+    expect(rowsLayout(["Customer", "Invoice", "Amount"], [["Acme GmbH", "INV-1", 1240.5]])).toEqual(
+      {
+        kind: "table",
+      }
+    );
+  });
+
+  it("draws more than three columns as blocks that repeat each column's name", () => {
+    expect(rowsLayout(["a", "b", "c", "d"], [["1", "2", "3", "4"]])).toEqual({
+      kind: "blocks",
+      repeatLabels: true,
+    });
+  });
+
+  // An address does not wrap, so it would push the third column past the
+  // corner card's edge, where nothing says it is there.
+  it("draws a row holding a long unbreakable value as blocks, however few columns", () => {
+    expect(rowsLayout(["Name", "Email"], [["Anna", "anna.schmidt@nordwind-logistik.de"]])).toEqual({
+      kind: "blocks",
+      repeatLabels: true,
+    });
+    expect(rowsLayout(["anna.schmidt@nordwind-logistik.de"], [["1"]])).toEqual({
+      kind: "blocks",
+      repeatLabels: true,
+    });
+  });
+
+  // Repeated in every row, costly column names would draw far more than the
+  // summary charged against DRAW_BUDGET; they are drawn once instead.
+  it("names columns once when repeating their names would cost too much to draw", () => {
+    const label = "📄".repeat(31);
+    const rows = Array.from({ length: 120 }, () => ["", "", "", ""]);
+    expect(rowsLayout([label, label, label, label], rows)).toEqual({
+      kind: "blocks",
+      repeatLabels: false,
     });
   });
 });

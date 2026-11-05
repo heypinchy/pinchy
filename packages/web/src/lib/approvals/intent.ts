@@ -27,7 +27,7 @@
  */
 import { TOOL_REGISTRY } from "@/lib/tool-registry";
 import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-model-catalog";
-import { drawCost, drawnOf, readNode, readShown } from "./display";
+import { DRAW_BUDGET, drawCost, drawnOf, readNode, readShown } from "./display";
 
 /** A piece of the headline: our words, a tool id, a summary value, or a model. */
 export type PhrasePart =
@@ -194,6 +194,70 @@ export function isTable(rows: unknown, width?: number): rows is unknown[][] {
     length > 0 &&
     rows.every((row) => Array.isArray(row) && row.length === length && row.every(isCell))
   );
+}
+
+/** The most columns drawn as a table; wider rows are drawn as blocks. */
+export const TABLE_MAX_COLUMNS = 3;
+
+/** The longest run without a space a table cell holds before it would not fit. */
+const TABLE_MAX_RUN = 20;
+
+/**
+ * What repeating the column names in every block may cost to draw, on top of
+ * what the summary charged (DRAW_BUDGET counts each name once).
+ */
+const REPEAT_BUDGET = DRAW_BUDGET / 2;
+
+/**
+ * The text a cell or column name draws whole, or null for one drawn otherwise:
+ * as an annotation (a record reference, a hidden secret) or as a preview.
+ */
+function cellText(value: unknown): string | null {
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return String(value);
+  }
+  const node = readNode(value);
+  const shown =
+    node && node !== "unreadable" && node["@"] === "noted" ? node.text : readShown(value);
+  return typeof shown === "string" ? drawnOf(shown) : null;
+}
+
+/** Whether a cell is too wide for a table column: a long run, or not plain text. */
+function hasLongRun(value: unknown): boolean {
+  const text = cellText(value);
+  if (text === null) return true;
+  return text.split(/\s+/).some((run) => [...run].length > TABLE_MAX_RUN);
+}
+
+/** What drawing a column name costs (`drawCost`); an annotation by its JSON size. */
+function labelCost(value: unknown): number {
+  const text = cellText(value);
+  return text === null ? JSON.stringify(value).length : drawCost(text);
+}
+
+/**
+ * How rectangular rows (`isTable`) are drawn so every value stays whole and
+ * in view, decided from the values alone so every browser draws the same:
+ *
+ * - `table`: up to TABLE_MAX_COLUMNS columns, no value with a run longer than
+ *   TABLE_MAX_RUN. A table sizes a column to its longest unbreakable run, so
+ *   an address would push the next column past the corner card's edge.
+ * - `blocks`: one block per row, each value under its column's name. The
+ *   names repeat in every block only while that stays within REPEAT_BUDGET;
+ *   past it they are drawn once, in a legend, and the blocks say "Column N".
+ */
+export function rowsLayout(
+  columns: readonly unknown[],
+  rows: readonly unknown[][]
+): { kind: "table" } | { kind: "blocks"; repeatLabels: boolean } {
+  const width = rows[0]?.length ?? 0;
+  const fits =
+    width <= TABLE_MAX_COLUMNS &&
+    !columns.some(hasLongRun) &&
+    !rows.some((row) => row.some(hasLongRun));
+  if (fits) return { kind: "table" };
+  const perRow = columns.reduce<number>((sum, column) => sum + labelCost(column), 0);
+  return { kind: "blocks", repeatLabels: perRow * rows.length <= REPEAT_BUDGET };
 }
 
 function generateFile(b: Builder): Intent {

@@ -1361,8 +1361,9 @@ describe("review: wide and long previews", () => {
   it("draws a row of more than three columns as a block of column: value lines", () => {
     renderCard(summarizeArgs(wide), "pinchy_generate_file");
     expect(screen.queryByRole("table")).toBeNull();
-    expect(screen.getByText("2 rows · 6 columns")).toBeInTheDocument();
-    const rows = screen.getAllByRole("listitem", { name: /^Row \d$/ });
+    expect(screen.getByText("6 columns · 2 rows")).toBeInTheDocument();
+    expect(screen.getByText("Row 1")).toBeInTheDocument();
+    const rows = within(screen.getByRole("list", { name: "Contents" })).getAllByRole("listitem");
     expect(rows).toHaveLength(2);
     const terms = within(rows[0]).getAllByRole("term").map(drawnText);
     expect(terms).toEqual(wide.columns);
@@ -1383,7 +1384,18 @@ describe("review: wide and long previews", () => {
     const table = screen.getByRole("table");
     expect(table.className).not.toContain("table-fixed");
     expect(table.innerHTML).not.toContain("overflow-wrap:anywhere");
-    expect(screen.getByText("1 row · 3 columns")).toBeInTheDocument();
+    expect(screen.getByText("3 columns · 1 row")).toBeInTheDocument();
+  });
+
+  it("names costly columns once, and each block's cells by number", () => {
+    const label = "📄".repeat(31);
+    const rows = Array.from({ length: 120 }, (_, i) => [`v${i}`, "", "", ""]);
+    const { container } = renderCard(
+      summarizeArgs({ filename: "q", format: "csv", columns: [label, "b", "c", "d"], rows }),
+      "pinchy_generate_file"
+    );
+    expect(container.textContent!.split(label).length - 1).toBe(2); // drawn + spoken, once
+    expect(screen.getAllByText("Column 1").length).toBe(120 + 1);
   });
 
   it("shows every row, however many there are", () => {
@@ -1392,7 +1404,9 @@ describe("review: wide and long previews", () => {
       summarizeArgs({ ...wide, columns: ["a", "b", "c", "d"], rows }),
       "pinchy_generate_file"
     );
-    expect(screen.getAllByRole("listitem", { name: /^Row \d+$/ })).toHaveLength(40);
+    expect(
+      within(screen.getByRole("list", { name: "Contents" })).getAllByRole("listitem")
+    ).toHaveLength(40);
     expect(screen.getByText("r39")).toBeInTheDocument();
   });
 
