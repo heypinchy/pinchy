@@ -4,7 +4,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { mockSignOut } = vi.hoisted(() => ({ mockSignOut: vi.fn() }));
 vi.mock("@/lib/auth-client", () => ({ authClient: { signOut: mockSignOut } }));
 
-import { enterAccount, leaveAccount, navigation } from "@/lib/account-switch";
+import {
+  claimAccount,
+  enterAccount,
+  leaveAccount,
+  navigation,
+  watchAccount,
+} from "@/lib/account-switch";
 
 /**
  * A shared browser must not hand one person's client-side state to the next
@@ -17,12 +23,15 @@ import { enterAccount, leaveAccount, navigation } from "@/lib/account-switch";
  */
 describe("account switch on a shared browser (#1286)", () => {
   let assign: ReturnType<typeof vi.spyOn>;
+  let reload: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    vi.restoreAllMocks();
     localStorage.clear();
     sessionStorage.clear();
     mockSignOut.mockReset().mockResolvedValue(undefined);
     assign = vi.spyOn(navigation, "assign").mockImplementation(() => {});
+    reload = vi.spyOn(navigation, "reload").mockImplementation(() => {});
   });
 
   function seedPreviousUsersState() {
@@ -30,7 +39,7 @@ describe("account switch on a shared browser (#1286)", () => {
     localStorage.setItem("pinchy:composer:agent-1:draftId", "draft-uuid");
     localStorage.setItem("pinchy:lastChat:agent-1", "chat-9");
     localStorage.setItem("theme", "dark");
-    sessionStorage.setItem("pinchy:instruction-handoff:agent-1", "secret instruction");
+    sessionStorage.setItem("pinchy:instruction-draft:agent-1", "secret instruction");
   }
 
   it("signs out, wipes this browser's Pinchy storage, and reloads into the login page", async () => {
@@ -77,6 +86,82 @@ describe("account switch on a shared browser (#1286)", () => {
     enterAccount("user-a", "/");
 
     expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+  });
+
+  it("wipes and records nobody when the sign-in answer carries no user id", () => {
+    enterAccount("user-a", "/");
+    seedPreviousUsersState();
+
+    enterAccount(undefined, "/");
+
+    expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+    expect(localStorage.getItem("pinchy:account")).toBeNull();
+    expect(assign).toHaveBeenLastCalledWith("/");
+  });
+
+  it("wipes even when the server refuses the sign-out, so the next person still starts clean", async () => {
+    // Better Auth reports a failed sign-out as { error } rather than throwing.
+    mockSignOut.mockResolvedValue({ error: { status: 500 } });
+    seedPreviousUsersState();
+
+    await leaveAccount();
+
+    expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+    expect(assign).toHaveBeenCalledWith("/login");
+  });
+
+  describe("other open tabs", () => {
+    // Cookies are shared across tabs, but a tab's in-memory state is not: a
+    // second tab of the previous person keeps their chat list and drafts, and
+    // would write a draft back into storage after the wipe.
+    function storageEvent(key: string | null, newValue: string | null) {
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+    }
+
+    it("leaving writes a marker another tab can see, even if nobody was recorded", async () => {
+      await leaveAccount();
+      expect(localStorage.getItem("pinchy:account")).toMatch(/^signed-out:/);
+    });
+
+    it("reloads a tab when another tab switches to a different account or signs out", () => {
+      const stop = watchAccount("user-a");
+      try {
+        storageEvent("pinchy:account", "user-b");
+        expect(reload).toHaveBeenCalledTimes(1);
+        storageEvent("pinchy:account", "signed-out:123");
+        expect(reload).toHaveBeenCalledTimes(2);
+      } finally {
+        stop();
+      }
+    });
+
+    it("leaves a tab alone when the same account is recorded again or another key changes", () => {
+      const stop = watchAccount("user-a");
+      try {
+        storageEvent("pinchy:account", "user-a");
+        storageEvent("pinchy:lastChat:agent-1", "chat-2");
+        expect(reload).not.toHaveBeenCalled();
+      } finally {
+        stop();
+      }
+      storageEvent("pinchy:account", "user-b");
+      expect(reload).not.toHaveBeenCalled();
+    });
+
+    it("claims the browser for the signed-in person, wiping what someone else left", () => {
+      enterAccount("user-a", "/");
+      seedPreviousUsersState();
+
+      // A tab that loads with user-b's session (one that never went through
+      // the login page here, e.g. it predates this check).
+      expect(claimAccount("user-b")).toBe(true);
+      expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+      expect(localStorage.getItem("pinchy:account")).toBe("user-b");
+
+      seedPreviousUsersState();
+      expect(claimAccount("user-b")).toBe(false);
+      expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBe("half-written reply");
+    });
   });
 
   it("still signs in when storage is unavailable", () => {

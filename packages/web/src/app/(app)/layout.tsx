@@ -15,6 +15,7 @@ import { DevToolbar } from "@/components/dev-toolbar";
 import { ChatSessionProvider } from "@/components/chat-session-provider";
 import { ChatSessionMounts } from "@/components/chat-session-mounts";
 import { ApprovalsInbox } from "@/components/approvals-inbox";
+import { AccountGuard } from "@/components/account-guard";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await cookies();
@@ -52,6 +53,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </SidebarProvider>
         <ChatSessionMounts />
         <ApprovalsInbox />
+        <AccountGuard userId={userId!} />
         {process.env.NODE_ENV === "development" && <DevToolbar />}
       </ChatSessionProvider>
     </AgentsProvider>
