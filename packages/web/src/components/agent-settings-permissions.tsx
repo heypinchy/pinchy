@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { DirectoryPicker } from "@/components/directory-picker";
+import { sameDirectorySet } from "@/lib/directory-path";
 import {
   getToolsByCategory,
   getOdooToolsForAccessLevel,
@@ -161,8 +162,7 @@ export function AgentSettingsPermissions({
   // unsaved selection, which the server cannot see yet. The parent refetches
   // the agent after a save, so this recomputes to the new truth on its own.
   const savedAllowedPaths = agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
-  const hasUnsavedPathChanges =
-    JSON.stringify([...allowedPaths].sort()) !== JSON.stringify([...savedAllowedPaths].sort());
+  const hasUnsavedPathChanges = !sameDirectorySet(allowedPaths, savedAllowedPaths);
 
   // Check if the agent has sensitive data access (any allowed paths or odoo/email tools)
   const hasSensitiveDataAccess =
@@ -236,8 +236,7 @@ export function AgentSettingsPermissions({
     const kbDirty =
       JSON.stringify([...allowedKbTools].sort()) !==
         JSON.stringify([...initialKbToolsRef.current].sort()) ||
-      JSON.stringify([...allowedPaths].sort()) !==
-        JSON.stringify([...initialAllowedPaths.current].sort());
+      !sameDirectorySet(allowedPaths, initialAllowedPaths.current);
     const webConfigDirty =
       JSON.stringify(webSearchConfig) !== JSON.stringify(initialWebSearchConfig.current);
     const confirmDirty = !sameConfirmMap(confirm, initialConfirm.current);

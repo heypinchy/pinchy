@@ -125,6 +125,76 @@ describe("getLicenseStatus", () => {
   });
 });
 
+// One Pinchy process loads this module twice: once for the custom server
+// (`server.ts` → ClientRouter, the WS chat path) and once for Next's route
+// bundles (`PUT /api/enterprise/key`, which clears the cache after saving a
+// key). A module-level cache gave each its own copy, so the clear never reached
+// the chat server, which kept answering "community" — and treating every
+// "restricted" agent as "all" — for up to the 1 h TTL (#1277).
+//
+// Two instances are simulated with `vi.resetModules()` between two imports.
+describe("the license cache is shared by every module instance in the process", () => {
+  async function twoInstances() {
+    const server = await import("@/lib/enterprise");
+    vi.resetModules();
+    const route = await import("@/lib/enterprise");
+    expect(server).not.toBe(route);
+    return [server, route] as const;
+  }
+
+  it("a clearLicenseCache() through one instance makes the other re-read the key", async () => {
+    const token = await createTestToken();
+    let storedKey: string | null = null;
+    vi.mocked(getSetting).mockImplementation(async () => storedKey);
+    const [server, route] = await twoInstances();
+
+    // The chat server reads the license before anyone entered a key.
+    expect((await server.getLicenseStatus(testPublicKeyPem)).active).toBe(false);
+
+    // An admin saves a key; the route clears the cache through ITS instance.
+    storedKey = token;
+    route.clearLicenseCache();
+
+    // The chat server must see the new license on its next access check.
+    expect((await server.getLicenseStatus(testPublicKeyPem)).active).toBe(true);
+  });
+
+  it("both instances answer from one cached status", async () => {
+    process.env.PINCHY_ENTERPRISE_KEY = await createTestToken();
+    const [server, route] = await twoInstances();
+
+    const fromServer = await server.getLicenseStatus(testPublicKeyPem);
+    expect(await route.getLicenseStatus(testPublicKeyPem)).toBe(fromServer);
+  });
+
+  it("a read that started before a clear does not cache its stale answer", async () => {
+    const token = await createTestToken();
+    // The first read loads the key while it is still unset, and is held there
+    // until the admin's save (and its clear) has happened.
+    let releaseStaleRead!: () => void;
+    const staleRead = new Promise<void>((resolve) => (releaseStaleRead = resolve));
+    let storedKey: string | null = null;
+    vi.mocked(getSetting)
+      .mockImplementationOnce(async () => {
+        const seen = storedKey;
+        await staleRead;
+        return seen;
+      })
+      .mockImplementation(async () => storedKey);
+    const [server, route] = await twoInstances();
+
+    const inFlight = server.getLicenseStatus(testPublicKeyPem);
+    storedKey = token;
+    route.clearLicenseCache();
+    releaseStaleRead();
+
+    // The in-flight caller still gets the answer it computed …
+    expect((await inFlight).active).toBe(false);
+    // … but it must not become the cached answer for the next hour.
+    expect((await server.getLicenseStatus(testPublicKeyPem)).active).toBe(true);
+  });
+});
+
 describe("validateLicenseToken", () => {
   it("validates a token without reading or writing settings", async () => {
     const token = await createTestToken({ type: "paid" }, "365d");
@@ -209,10 +279,12 @@ describe("validateLicenseToken", () => {
       "not-a-token",
       "",
     ] as const) {
-      vi.resetModules();
       vi.mocked(getSetting).mockResolvedValue(token);
 
       const mod = await import("@/lib/enterprise");
+      // The cache is process-wide (#1277), so a fresh module instance no
+      // longer starts empty: clear it as the license route does on a save.
+      mod.clearLicenseCache();
       const viaStatus = await mod.getLicenseStatus(testPublicKeyPem);
       const viaValidate = await mod.validateLicenseToken(token, testPublicKeyPem);
 

@@ -1,6 +1,7 @@
 // audit-exempt: read-only capability lookup
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/api-auth";
+import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
 import { db } from "@/db";
 import { models } from "@/db/schema";
 
@@ -24,7 +25,8 @@ export const GET = withAuth(async () => {
   // The capability map changes only at boot (catalog seed) or when the admin
   // adds/removes a provider. A 60-second private cache avoids a DB round-trip
   // on every cold tab while staying fresh enough for operational changes.
+  // Keyed to the session like every cached response (#1286).
   return NextResponse.json(out, {
-    headers: { "Cache-Control": "private, max-age=60" },
+    headers: sessionScopedCacheHeaders(60),
   });
 });
