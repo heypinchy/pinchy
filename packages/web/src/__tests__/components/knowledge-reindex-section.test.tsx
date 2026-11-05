@@ -334,6 +334,23 @@ describe("KnowledgeReindexSection", () => {
   describe("status at a glance", () => {
     const statusText = async () => (await screen.findByRole("status")).textContent ?? "";
 
+    // Before the first read answers, "Not indexed" would be a guess — and on a
+    // slow load it was the guess an admin saw first, about an index that was
+    // fine.
+    it("says it is checking until the first status read answers", async () => {
+      mockGet.mockReturnValue(new Promise(() => {}));
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      expect(await statusText()).toMatch(/checking/i);
+      expect(await statusText()).not.toMatch(/not indexed/i);
+    });
+
+    it("says so when the status could not be read, instead of claiming nothing is indexed", async () => {
+      mockGet.mockRejectedValue(new Error("network down"));
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/couldn't load/i));
+      expect(await statusText()).not.toMatch(/not indexed/i);
+    });
+
     it("reads 'No directories' when none is granted", async () => {
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={0} />);
       await waitFor(async () => expect(await statusText()).toMatch(/no directories/i));

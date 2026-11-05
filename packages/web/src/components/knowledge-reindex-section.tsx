@@ -109,6 +109,10 @@ export function KnowledgeReindexSection({
   const [job, setJob] = useState<ReindexJob | null>(null);
   const [schedule, setSchedule] = useState<ReindexSchedule | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Whether ANY status read has answered yet, and whether the last one failed
+  // before any did. Without it the section said "Not indexed" while it was
+  // still asking — about an index that might be perfectly fine.
+  const [read, setRead] = useState<"pending" | "ok" | "failed">("pending");
   const url = `/api/agents/${agentId}/knowledge/reindex`;
 
   // Monotonic ticket per status read: a response only lands if it is still the
@@ -125,8 +129,12 @@ export function KnowledgeReindexSection({
       if (seq === fetchSeq.current) {
         setJob(res.job);
         if (res.schedule) setSchedule(res.schedule);
+        setRead("ok");
       }
     } catch {
+      // Only a section that has never had an answer says so; once one landed,
+      // the last-known state stands (see below).
+      if (seq === fetchSeq.current) setRead((prev) => (prev === "ok" ? prev : "failed"));
       // A failed status read is non-fatal: keep the last-known state and let the
       // next poll (or the user) retry. Deliberately no toast — a polling error
       // would spam one every interval.
@@ -215,7 +223,7 @@ export function KnowledgeReindexSection({
 
   const triggerDisabled = allowedPathCount === 0 || active || submitting;
 
-  const status = describeStatus(allowedPathCount, job, active);
+  const status = describeStatus(allowedPathCount, job, active, read);
 
   return (
     <div className="space-y-3">
@@ -313,13 +321,26 @@ interface IndexStatus {
 function describeStatus(
   allowedPathCount: number,
   job: ReindexJob | null,
-  active: boolean
+  active: boolean,
+  read: "pending" | "ok" | "failed"
 ): IndexStatus {
   if (allowedPathCount === 0) {
     return {
       tone: "neutral",
       label: "No directories",
       headline: "Grant at least one directory above and save to build this agent's index.",
+    };
+  }
+  // A run this component just started is known without a read; anything else
+  // isn't until the first read answers.
+  if (!active && read === "pending") {
+    return { tone: "neutral", label: "Checking", headline: "Checking the index…" };
+  }
+  if (!active && read === "failed") {
+    return {
+      tone: "neutral",
+      label: "Unknown",
+      headline: "Couldn't load the index status. Reload the page to try again.",
     };
   }
   if (active) {
