@@ -222,12 +222,10 @@ describe("useTabParam", () => {
     expect(pushedUrls()).toEqual([]);
   });
 
-  it("a server re-render cannot pin the page to a tab the URL no longer names", () => {
-    // router.refresh() re-renders the server page for the URL the user is on
-    // without remounting, so a server-provided tab can describe a URL the user
-    // has since left. Agent settings: open with no tab, switch to Personality,
-    // Save (router.refresh), click General → the URL has no tab again.
-    // The hook takes no server-provided tab at all any more; the URL decides.
+  it("follows the URL across re-renders, whichever tab came first (#1271)", () => {
+    // The hook used to take a server-rendered tab as a fallback. router.refresh()
+    // re-rendered it without a remount, so it could name a tab the URL had
+    // since left. The URL is now the only input: tab, then no tab, is default.
     const { result, rerender } = renderHook(() => useTabParam("context", SETTINGS_TABS));
     mockSearchParams.set("tab", "profile");
     rerender();

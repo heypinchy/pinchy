@@ -211,7 +211,9 @@ describe("Settings Page", () => {
     fetchSpy.mockRestore();
     // Tab clicks write jsdom's history for real now; the location must not
     // carry into the next test.
-    window.history.replaceState(null, "", "/");
+    // Through the prototype: a test's own replaceState spy is restored only
+    // after afterEach runs (onTestFinished), and would swallow this call.
+    History.prototype.replaceState.call(window.history, null, "", "/");
   });
 
   // The nightly reindex is read in the org timezone, so it lives next to it.
