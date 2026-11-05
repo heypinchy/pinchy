@@ -168,9 +168,21 @@ export function DirectoryPicker({
 
   // A grant is "found" once the folder that should list it has been listed
   // and does. Until then it is shown where it belongs, as soon as that loads.
+  // Walked down from the mounts, not collected from every loaded listing:
+  // ancestors of a grant load in parallel, so a folder can be listed while
+  // the level above it does not list IT (cut from a truncated listing, or
+  // hidden) — and a grant inside such a folder is in no row anyone can reach.
   const shownKeys = new Set(directories.map((dir) => key(dir.path)));
-  for (const state of children.values()) {
-    if (state.status === "loaded") state.directories.forEach((dir) => shownKeys.add(key(dir.path)));
+  const toWalk = [...shownKeys];
+  for (let folder = toWalk.pop(); folder !== undefined; folder = toWalk.pop()) {
+    const state = children.get(folder);
+    if (state?.status !== "loaded") continue;
+    for (const child of state.directories) {
+      const childKey = key(child.path);
+      if (shownKeys.has(childKey)) continue;
+      shownKeys.add(childKey);
+      toWalk.push(childKey);
+    }
   }
   const missing = selected.filter((grant) => {
     const k = key(grant);

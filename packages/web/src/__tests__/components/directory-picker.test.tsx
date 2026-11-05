@@ -324,3 +324,35 @@ describe("DirectoryPicker — without subfolder browsing", () => {
     expect(screen.getByRole("checkbox", { name: "/data/suppliers/food" })).toBeChecked();
   });
 });
+
+describe("DirectoryPicker — grants below a folder the tree cannot reach", () => {
+  it("lists a deep grant whose ancestor is cut from a truncated listing, so it can be revoked", async () => {
+    const onChange = vi.fn();
+    const loadChildren = vi.fn(async (path: string) => {
+      if (path === "/data/suppliers") {
+        // `zfolder` sorts beyond the 500-folder cut.
+        return { directories: [{ path: "/data/suppliers/a", name: "a" }], truncated: true };
+      }
+      if (path === "/data/suppliers/zfolder") {
+        return {
+          directories: [{ path: "/data/suppliers/zfolder/2026", name: "2026" }],
+          truncated: false,
+        };
+      }
+      return { directories: [], truncated: false };
+    });
+    render(
+      <DirectoryPicker
+        directories={[{ path: "/data/suppliers", name: "suppliers" }]}
+        selected={["/data/suppliers/zfolder/2026/"]}
+        onChange={onChange}
+        loadChildren={loadChildren}
+      />
+    );
+
+    const grant = await screen.findByRole("checkbox", { name: "/data/suppliers/zfolder/2026" });
+    expect(grant).toBeChecked();
+    fireEvent.click(grant);
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
+});
