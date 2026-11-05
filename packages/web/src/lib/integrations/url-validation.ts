@@ -10,6 +10,8 @@ import { lookup as dnsLookup } from "node:dns/promises";
 // design; see ip-address.ts.
 import { classifyIpAddress, type IpAddressClass } from "../../../../plugins/pinchy-web/ip-address";
 
+import { toPinnedAddress, type PinnedAddress } from "@/lib/pinned-connection";
+
 export { classifyIpAddress, type IpAddressClass };
 
 const PRIVATE_HOSTNAMES = new Set(["localhost", "localhost.", "ip6-localhost", "ip6-loopback"]);
@@ -124,10 +126,14 @@ function blockMessageFor(addressClass: IpAddressClass): string {
  * metadata) or an RFC-1918 address can't sneak past a check that only ever
  * read the hostname string.
  *
- * What this does NOT cover is rebinding between the two lookups: the address
- * is classified here, and the eventual Odoo request resolves the name again.
- * Closing that would mean pinning the connection to the address we checked,
- * the same caveat `mail-host-guard.ts` carries for imapflow/nodemailer.
+ * What this does NOT cover is rebinding between this lookup and the request
+ * that follows: the address is classified here, and whoever connects next
+ * resolves the name again. A caller that makes the request itself uses
+ * {@link resolveExternalUrlTarget} and pins it. Callers that hand the URL to
+ * odoo-node cannot: odoo-node calls the global `fetch` and takes no
+ * dispatcher, so `test-credentials`, `sync-preview`, the schema sync and the
+ * create/update checks keep the window. So does pinchy-odoo, which resolves
+ * the stored URL inside the OpenClaw container for every tool call.
  *
  * Fails open on DNS resolution failure: a name that doesn't resolve can't be
  * classified, and the far more likely cause is a typo — blocking it here
@@ -138,6 +144,42 @@ export async function validateExternalUrl(
   urlString: string,
   resolver: UrlHostResolver = defaultUrlHostResolver
 ): Promise<ValidationResult> {
+  const checked = await checkExternalUrl(urlString, resolver);
+  if (!checked.valid) return checked;
+  return { valid: true, url: checked.url };
+}
+
+const UNRESOLVABLE_ERROR = "Could not resolve the server's host name. Check the URL for a typo.";
+
+/**
+ * {@link validateExternalUrl} for a caller that makes the request itself: the
+ * verdict plus the address it classified, so the request can be pinned to it
+ * (`pinnedFetch`) instead of resolving the name a second time.
+ *
+ * Does NOT fail open. With one lookup there is no later fetch to "fail
+ * naturally" — a name with no answer is refused here, with a message that
+ * says so rather than one about private networks. When the name has several
+ * addresses, every one was checked and the first is used.
+ */
+export async function resolveExternalUrlTarget(
+  urlString: string,
+  resolver: UrlHostResolver = defaultUrlHostResolver
+): Promise<{ valid: true; url: string; target: PinnedAddress } | { valid: false; error: string }> {
+  const checked = await checkExternalUrl(urlString, resolver);
+  if (!checked.valid) return checked;
+  if (checked.addresses.length === 0) return { valid: false, error: UNRESOLVABLE_ERROR };
+  return { valid: true, url: checked.url, target: toPinnedAddress(checked.addresses[0]) };
+}
+
+/**
+ * The shared check: a refusal, or the origin plus every address it reaches —
+ * the literal itself, the resolver's answers, or none when the name did not
+ * resolve (which each caller treats its own way).
+ */
+async function checkExternalUrl(
+  urlString: string,
+  resolver: UrlHostResolver
+): Promise<{ valid: true; url: string; addresses: string[] } | { valid: false; error: string }> {
   let url: URL;
   try {
     url = new URL(urlString);
@@ -162,23 +204,25 @@ export async function validateExternalUrl(
   };
 
   const hostname = url.hostname;
+  let addresses: string[];
   // Address literal or well-known private name: decided from the string
   // alone, no DNS involved.
   const hostClass = classifyHostname(hostname);
   if (hostClass !== null) {
     const refusal = refusalFor(hostClass);
     if (refusal !== null) return { valid: false, error: refusal };
-    // A literal is already fully classified — DNS has nothing to add.
+    // A literal is already fully classified — DNS has nothing to add. (Every
+    // well-known name is loopback and refused above, so this is a literal.)
+    addresses = [hostname];
   } else {
     // A genuine DNS name. The address it points at is what actually gets
     // connected to, so resolve it and classify every answer: a name aimed at
     // 169.254.169.254 (cloud metadata) or an RFC-1918 address must not walk
     // past a check that only ever read the hostname string.
-    let addresses: string[];
     try {
       addresses = await resolver(hostname);
     } catch {
-      addresses = []; // unresolvable name — fail open, see doc-comment above
+      addresses = []; // unresolvable name — each caller decides, see above
     }
     for (const address of addresses) {
       const refusal = refusalFor(classifyIpAddress(address));
@@ -187,5 +231,5 @@ export async function validateExternalUrl(
   }
 
   // Return normalized origin (scheme + host + port, no path/query)
-  return { valid: true, url: url.origin };
+  return { valid: true, url: url.origin, addresses };
 }

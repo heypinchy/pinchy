@@ -132,6 +132,30 @@ vi.mock("@/lib/integrations/auth-state", () => ({
   setIntegrationAuthFailed: (...args: unknown[]) => mockSetIntegrationAuthFailed(...args),
 }));
 
+// The SSRF guard resolves the Odoo host. No test here may depend on real DNS:
+// every name answers with one public address unless a test says otherwise.
+const { mockDnsLookup } = vi.hoisted(() => ({ mockDnsLookup: vi.fn() }));
+vi.mock("node:dns/promises", () => ({
+  lookup: mockDnsLookup,
+  default: { lookup: mockDnsLookup },
+}));
+
+// A request Pinchy makes after the guard goes to the address the guard
+// classified (`pinnedFetch`, real sockets in pinned-connection.test.ts). Here
+// it hands over to the mocked global fetch and records that address.
+const { mockPinnedFetch } = vi.hoisted(() => ({ mockPinnedFetch: vi.fn() }));
+vi.mock("@/lib/pinned-connection", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/pinned-connection")>()),
+  pinnedFetch: mockPinnedFetch,
+}));
+
+beforeEach(() => {
+  mockDnsLookup.mockReset();
+  mockDnsLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+  mockPinnedFetch.mockReset();
+  mockPinnedFetch.mockImplementation((url: string, init: RequestInit) => fetch(url, init));
+});
+
 import { NextRequest } from "next/server";
 import { routeContext } from "@/test-helpers/route";
 
@@ -1606,6 +1630,54 @@ describe("POST /api/integrations/list-databases", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "call", params: {} }),
       redirect: "manual",
     });
+  });
+
+  it("sends the request to the address the guard classified, not to a second lookup", async () => {
+    // DNS rebinding: checked against a public answer, then fetched by name —
+    // and the second lookup is free to say 127.0.0.1.
+    mockDnsLookup
+      .mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }])
+      .mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: ["production"] }),
+    });
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://odoo.example.com" }),
+      }),
+      routeContext()
+    );
+
+    expect(mockPinnedFetch).toHaveBeenCalledWith(
+      "https://odoo.example.com/web/database/list",
+      expect.objectContaining({ redirect: "manual" }),
+      { address: "93.184.216.34", family: 4 }
+    );
+    expect(mockDnsLookup).toHaveBeenCalledTimes(1);
+  });
+
+  it("requests nothing when the host does not resolve", async () => {
+    mockDnsLookup.mockRejectedValue(
+      Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" })
+    );
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://odoo.example.com" }),
+      }),
+      routeContext()
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/resolve/);
+    expect(mockPinnedFetch).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("should return error when fetch throws", async () => {
