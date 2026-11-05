@@ -6,8 +6,8 @@
  * they configure as a pre-lockdown leftover (#1272). Those tests are about what
  * the route does WITH a grant, so they move the boundary rather than switch it
  * off — the same thing they already do for `FILE_SERVE_ROOTS`. The real rule is
- * covered by `lib/agent-granted-paths.test.ts`, and through the workspace-file
- * route by `agent-workspace-file-legacy-grant.test.ts`.
+ * covered by `lib/agent-granted-paths.test.ts`, and on the path that feeds the
+ * pinchy-files runtime by the #1272 case in `openclaw-config.test.ts`.
  *
  * Use as `vi.mock("@/lib/agent-granted-paths", () => import("@/test-helpers/granted-paths-under-tmpdir"))`.
  */

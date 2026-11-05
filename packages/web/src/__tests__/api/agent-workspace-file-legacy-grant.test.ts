@@ -11,9 +11,16 @@
  *
  * Deliberately a separate file from `agent-workspace-file.test.ts`: that one
  * moves `FILE_SERVE_ROOTS` to a temp directory so its fixtures can live on
- * disk. These cases are about the REAL ceiling, so nothing here is mocked
- * away, and the paths probed are the ones the exploit actually reached — the
+ * disk. These cases are about the REAL ceiling, so it is not mocked away,
+ * and the paths probed are the ones the exploit actually reached — the
  * secrets a `docker-compose.yml` volume puts inside this container.
+ *
+ * The route now holds the line twice: `grantedDataPaths` drops a stored entry
+ * outside /data before the ceiling ever sees it (#1272). With that layer in
+ * place a grant of `/` filters to nothing and every case here would pass on
+ * the empty list alone, proving nothing about the ceiling. So the accessor is
+ * passed through unfiltered below, and the ceiling is what must refuse. The
+ * accessor's own rule is covered in `lib/agent-granted-paths.test.ts`.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
@@ -31,6 +38,12 @@ vi.mock("next/headers", () => ({
 }));
 
 vi.mock("@/lib/audit-deferred", () => ({ deferAuditLog: vi.fn() }));
+
+// The stored list, unfiltered — see the header for why.
+vi.mock("@/lib/agent-granted-paths", () => ({
+  grantedDataPaths: (config: { "pinchy-files"?: { allowed_paths?: string[] } } | null) =>
+    config?.["pinchy-files"]?.allowed_paths ?? [],
+}));
 
 /** A grant of the kind only a pre-clamp write could have produced. */
 function agentGrantedEverything() {
