@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { buildInviteUrl } from "@/lib/invite-url";
 import { apiPost, errorMessage } from "@/lib/api-client";
-import type { InviteUserInput } from "@/lib/schemas/users";
+import { inviteUserSchema, type InviteUserInput } from "@/lib/schemas/users";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -35,9 +35,12 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 
-const inviteSchema = z.object({
-  email: z.email("Invalid email").optional().or(z.literal("")),
-  role: z.enum(["member", "admin"]),
+// Derived from the route's schema so the two can't drift; only the email is
+// redefined, to give the form its own messages. It is required: the invitee's
+// account is created with this address, so an invite without one could never
+// be claimed (#1263).
+const inviteSchema = inviteUserSchema.pick({ role: true }).extend({
+  email: z.string().trim().min(1, "Email is required").pipe(z.email("Invalid email")),
 });
 
 type InviteFormValues = z.infer<typeof inviteSchema>;
@@ -182,7 +185,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
                 name="email"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Email (optional)</FormLabel>
+                    <FormLabel>Email</FormLabel>
                     <FormControl>
                       <Input type="email" placeholder="user@example.com" {...field} />
                     </FormControl>

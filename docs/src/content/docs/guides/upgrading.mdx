@@ -565,6 +565,12 @@ Comma-separated addresses or CIDR ranges; loopback is trusted already. Leave it 
 
 Blocked-request entries in the audit trail now carry `clientAddress` beside `remoteAddress`. `remoteAddress` still means what it always did — the machine that opened the connection, i.e. your proxy — and `clientAddressSource` tells you whether the client address came from the forwarded header (`forwarded`) or is just the connection's own peer because nothing forwarded one (`socket`).
 
+#### An invite now needs an email address
+
+The **Invite User** dialog used to call the email optional, but an invite without one could never be claimed: the account it creates needs an address, so the invitee only ever saw "Failed to create account". The email is now required, in the dialog and in `POST /api/users/invite`.
+
+An invite created without an email still can't be used, and its link now says so up front. Revoke it in **Settings → Users** and invite the person again with their email. An expired one shows **Revoke** instead of **Resend**, because a fresh invite needs an email.
+
 ### Database migrations
 
 The migrations `0056`–`0079` run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
