@@ -399,11 +399,11 @@ The chat asks this when you press Retry, not when the run failed — see [Retryi
 
 ### `GET /api/agents/:agentId/uploads/:filename`
 
-Download a file the caller uploaded to this agent. Cached like `workspace-file` below: for an hour, and never for a different session.
+Download a file the caller uploaded to this agent. Cached like `workspace-file` below: kept, but checked again on every reuse (`304` when unchanged), and only for the same session. Unlike `workspace-file`, downloads here are not written to the audit trail, a `304` included.
 
 ### `GET /api/agents/:agentId/artifacts/:filename`
 
-Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files). Cached like `workspace-file` below: for an hour, and never for a different session.
+Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files). Cached like `workspace-file` below: kept, but checked again on every reuse (`304` when unchanged), and only for the same session. Unlike `workspace-file`, downloads here are not written to the audit trail, a `304` included.
 
 Serves a file the caller was actually handed, not whatever currently carries that name. Each delivery records where the file was and a checksum of its contents, and the download is refused with `404` unless the file on disk still matches one of the caller's own deliveries of that name. On a shared agent that matters: everyone's chats write into the same workspace, so without it a later file of the same name — from a conversation you cannot see — would be served under your download link.
 
@@ -419,7 +419,9 @@ Write a file into the agent's own workspace.
 
 Serve a file from a directory this agent is granted under `allowed_paths` — the path behind a knowledge-base citation you click. Supports byte ranges, so a PDF viewer can jump straight to the cited page.
 
-The bytes are sent with `Cache-Control: private, max-age=3600` and `Vary: Cookie`. The browser reuses its copy only while the request carries the same cookies; a different session, such as another person signing in on the same browser, asks the server again and goes through the access check.
+The bytes are sent with `Cache-Control: private, no-cache`, `Vary: Cookie` and a weak `ETag`. The browser keeps its copy but asks the server before every reuse, and the server answers only after the access check: if the agent's grant was removed, or you lost access to the agent, every new request for the document is answered `403` or `404` instead of letting the browser reuse its copy. A page the browser restores from its own history (the Back button) can still show what it displayed before; that is not a new request and no cache header prevents it short of not storing the document at all. An unchanged document you may still see is answered `304 Not Modified` without its bytes, so a large PDF is not sent again; that reuse is logged like any other read (`knowledge.source_viewed`, or `knowledge.source_downloaded` with `download=1`), marked `revalidated: true`. `Vary: Cookie` keeps a copy from crossing sessions, such as another person signing in on the same browser.
+
+A `Range` request is honoured on its own. Sent with `If-Range`, it is answered with the whole file instead: `If-Range` needs a strong validator, and splicing a range of a newer edition onto a cached copy of an older one would corrupt the document.
 
 **Query parameters:**
 
@@ -434,7 +436,7 @@ The bytes are sent with `Cache-Control: private, max-age=3600` and `Vary: Cookie
 
 `variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`, and one that is too large to read safely answers `413` — refused without being opened when it is over 100 MB, unpacks to far more than it weighs, has a sheet (or another part the reader reads as text) over 16 MB or a picture over 32 MB, and refused after the attempt when reading it needs more memory than the separate process the rows are read in may use (384 MB). That process is why a heavy workbook never costs Pinchy's own memory. `503` is about the reader, never the workbook: there was no room on the artifact volume for the private copy the rows are read from, the process could not be started, ran past its two-minute limit or was stopped by the system — or two reads are already waiting for it, in which case the answer carries `Retry-After`. Workbooks are read one at a time, the index's reads included, so a request that is abandoned while it waits or reads (a reload, a closed preview) has its read dropped; its audit row says `cancelled`.
 
-`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation left (`original`, `converted` or `rows`).
+`download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation was served — or, on a `304`, which one was checked (`original`, `converted` or `rows`).
 
 ### `GET /api/agents/:agentId/telegram-chat`
 

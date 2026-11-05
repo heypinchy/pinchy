@@ -20,9 +20,10 @@ import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
  * It reads lines, comments included, so a comment naming a lifetime trips it
  * too: describe it in prose ("a short private cache") instead.
  *
- * A green run does not mean nothing is cacheable. A response without a
- * lifetime can still be cached heuristically when it carries Last-Modified;
- * nothing sets that today, and this guard does not look for it.
+ * A lifetime is itself the exception. Within one session it still lets the
+ * browser reuse its copy without asking, past a revoked grant, so access-
+ * checked content uses `sessionScopedRevalidateHeaders` (no-cache + ETag)
+ * and only the routes in MAY_SET_A_LIFETIME below may use the helper above.
  */
 
 const webSrcDir = path.resolve(__dirname, "../..");
@@ -33,7 +34,8 @@ const EXCLUDED_DIR_NAMES = new Set(["__tests__", "node_modules", "test-helpers"]
 // browser serve a stored copy on their own. The hyphen is required so a
 // `maxAge = …` variable is not mistaken for a header. max-age=0 keeps nothing, so it is not
 // a lifetime. Plus an `expires` header: a quoted object key, or the name
-// passed to `headers.set("Expires", …)`.
+// passed to `headers.set("Expires", …)`. And a Last-Modified, which grants
+// a heuristic lifetime.
 const CACHE_LIFETIME_RES = [
   /\b(?:s-maxage|max-age|stale-while-revalidate|stale-if-error)\s*=(?!\s*0\b)/i,
   /["']expires["']\s*[:,]/i,
@@ -41,6 +43,9 @@ const CACHE_LIFETIME_RES = [
   // literal appears in the source at all.
   /\bexport\s+const\s+revalidate\s*(?::\s*[\w|\s]+?)?=(?!\s*(?:0|false)\b)/,
   /\bexport\s+const\s+dynamic\s*=\s*["']force-static["']/,
+  // Without Cache-Control, Last-Modified alone lets a browser reuse a
+  // response for a fraction of its age without asking (RFC 9111 §4.2.2).
+  /["']last-modified["']\s*[:,]/i,
 ];
 // An unquoted `Expires:` key is a valid Headers init too. In a .tsx file the
 // same text is ordinary JSX copy (the license page shows "Expires: <date>"),
@@ -112,6 +117,9 @@ describe("browser cache is scoped to the session (#1286)", () => {
       `export const revalidate = 60;`,
       `export const revalidate: number = 60;`,
       `export const dynamic = "force-static";`,
+      // A heuristic lifetime (RFC 9111 §4.2.2) when no Cache-Control says otherwise.
+      `"last-modified": stat.mtime.toUTCString(),`,
+      `res.headers.set("Last-Modified", d.toUTCString())`,
     ]) {
       expect(setsCacheLifetime(route, line), line).toBe(true);
     }
@@ -162,7 +170,7 @@ describe("browser cache is scoped to the session (#1286)", () => {
     }
     expect(
       offenders,
-      "Use sessionScopedCacheHeaders() from @/lib/session-scoped-cache instead"
+      "Use sessionScopedRevalidateHeaders(etag) from @/lib/session-scoped-cache for access-checked content, or sessionScopedCacheHeaders() if the route is in MAY_SET_A_LIFETIME"
     ).toEqual([]);
     expect(
       NOT_AN_HTTP_CACHE.filter((e) => !usedExemptions.has(e)).map(
@@ -170,5 +178,79 @@ describe("browser cache is scoped to the session (#1286)", () => {
       ),
       "stale exemption: it no longer matches a line in its file"
     ).toEqual([]);
+  });
+
+  it("lets only the listed routes give a response a lifetime", () => {
+    // A lifetime lets the browser reuse its copy without asking, so revoking
+    // an agent's grant, or a reader's access to the agent, does not stop a
+    // browser that already holds the response. A served document must be
+    // revalidated on every reuse (sessionScopedRevalidateHeaders) instead.
+    // Matched by name anywhere in the file, an aliased import included.
+    // This bounds who may set a LIFETIME; it does not prove that a route
+    // without one sends a validator. That is the serving routes' own tests'
+    // job — and harmless if missed in practice: browsers derive heuristic
+    // freshness only from Last-Modified (RFC 9111 §4.2.2 suggests, but does
+    // not require, that basis), and the scan above treats that header as a
+    // lifetime too.
+    const MAY_SET_A_LIFETIME: Array<{ file: string; reason: string }> = [
+      {
+        file: "app/api/models/capabilities/route.ts",
+        reason:
+          "the model catalog, identical for every member; a revoked user loses nothing by seeing it a minute longer",
+      },
+    ];
+    const files = productionSources(webSrcDir).filter((f) => f !== HELPER);
+    const users = files
+      .filter((file) => /\bsessionScopedCacheHeaders\b/.test(readFileSync(file, "utf8")))
+      .map((file) => path.relative(webSrcDir, file));
+    const allowed = MAY_SET_A_LIFETIME.map((e) => e.file);
+
+    expect(
+      users.filter((f) => !allowed.includes(f)),
+      "Use sessionScopedRevalidateHeaders(etag), or add the route to MAY_SET_A_LIFETIME with a reason"
+    ).toEqual([]);
+    expect(
+      allowed.filter((f) => !users.includes(f)),
+      "stale entry: the file no longer sets a lifetime"
+    ).toEqual([]);
+  });
+
+  it("lists every route that answers 304, each with a test that a revoked reader never gets one", () => {
+    // A 304 tells the browser to show what it holds, so it is only safe after
+    // the route's access check. That ordering lives in each route; this makes
+    // every new one a reviewed addition that ships its own revocation test.
+    const ANSWERS_304: Array<{ route: string; revocationTest: string }> = [
+      {
+        route: "app/api/agents/[agentId]/workspace-file/route.ts",
+        revocationTest: "__tests__/api/agent-workspace-file.test.ts",
+      },
+      {
+        route: "app/api/agents/[agentId]/uploads/[filename]/route.ts",
+        revocationTest: "__tests__/server/agent-uploads-route.test.ts",
+      },
+      {
+        route: "app/api/agents/[agentId]/artifacts/[filename]/route.ts",
+        revocationTest: "__tests__/server/agent-artifacts-route.test.ts",
+      },
+    ];
+    const SERVING_HELPER = path.join(webSrcDir, "lib", "serve-workspace-file.ts");
+    const found = productionSources(webSrcDir)
+      .filter((f) => f !== HELPER && f !== SERVING_HELPER)
+      .filter((f) => /\b(?:ifNoneMatchHits|streamWorkspaceFile)\b/.test(readFileSync(f, "utf8")))
+      .map((f) => path.relative(webSrcDir, f));
+    const listed = ANSWERS_304.map((e) => e.route);
+
+    expect(
+      found.filter((f) => !listed.includes(f)),
+      "add the route to ANSWERS_304 with a test that a revoked reader gets 403/404, never 304"
+    ).toEqual([]);
+    expect(
+      listed.filter((f) => !found.includes(f)),
+      "stale entry: the route no longer answers 304"
+    ).toEqual([]);
+    for (const { route, revocationTest } of ANSWERS_304) {
+      const test = readFileSync(path.join(webSrcDir, revocationTest), "utf8");
+      expect(/"if-none-match"/.test(test) && /never with 304/.test(test), route).toBe(true);
+    }
   });
 });

@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { streamWorkspaceFile } from "@/lib/serve-workspace-file";
+import { streamWorkspaceFile as serve } from "@/lib/serve-workspace-file";
+
+/** Unconditional GET unless headers say otherwise. */
+function streamWorkspaceFile(path: string, name: string, headers?: HeadersInit) {
+  return serve(path, name, new Request("http://localhost/file", { headers }));
+}
 // Real xlsx bytes from the actual renderer used by pinchy_generate_file (#788),
 // not a hand-faked MIME — proves the serve route accepts what the plugin
 // really produces. Cross-package relative import: this file's own
@@ -92,7 +97,67 @@ describe("streamWorkspaceFile caching (#1286)", () => {
     const res = await streamWorkspaceFile(path, "notes.txt");
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(res.headers.get("cache-control")).toBe("private, no-cache");
     expect(res.headers.get("vary")).toBe("Cookie");
+    expect(res.headers.get("etag")).toMatch(/^W\/"[^"]+"$/);
+  });
+
+  it("answers an unchanged file with 304 and no body, so a reuse costs a round trip, not the bytes", async () => {
+    const path = join(tmpRoot, "notes.txt");
+    writeFileSync(path, "hello");
+    const etag = (await streamWorkspaceFile(path, "notes.txt")).headers.get("etag")!;
+
+    const res = await streamWorkspaceFile(path, "notes.txt", { "if-none-match": etag });
+
+    expect(res.status).toBe(304);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("etag")).toBe(etag);
+    expect(res.headers.get("cache-control")).toBe("private, no-cache");
+    expect(res.headers.get("vary")).toBe("Cookie");
+  });
+
+  it("gives the same bytes served as a different type a different validator", async () => {
+    // Same file, served under a name that makes it CSV rather than text: the
+    // browser must not keep the text copy's content-type on a 304.
+    const path = join(tmpRoot, "notes.txt");
+    writeFileSync(path, "a,b\n1,2\n");
+    const asText = (await streamWorkspaceFile(path, "notes.txt")).headers.get("etag")!;
+
+    const res = await streamWorkspaceFile(path, "notes.csv", { "if-none-match": asText });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("etag")).not.toBe(asText);
+  });
+
+  it("gives the same bytes under a different file name a different validator", async () => {
+    // The name is in content-disposition, which a 304 cannot update.
+    const path = join(tmpRoot, "notes.txt");
+    writeFileSync(path, "hello");
+    const asNotes = (await streamWorkspaceFile(path, "notes.txt")).headers.get("etag")!;
+
+    const res = await streamWorkspaceFile(path, "minutes.txt", { "if-none-match": asNotes });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("sends the new bytes when the file changed since it was cached", async () => {
+    const path = join(tmpRoot, "notes.txt");
+    writeFileSync(path, "hello");
+    const etag = (await streamWorkspaceFile(path, "notes.txt")).headers.get("etag")!;
+    writeFileSync(path, "hello, revised");
+
+    const res = await streamWorkspaceFile(path, "notes.txt", { "if-none-match": etag });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("hello, revised");
+  });
+
+  it("still refuses an unservable file with 415 even when the request is conditional", async () => {
+    const path = join(tmpRoot, "binary.txt");
+    writeFileSync(path, Buffer.from([0x68, 0x00, 0x69]));
+
+    const res = await streamWorkspaceFile(path, "binary.txt", { "if-none-match": "*" });
+
+    expect(res.status).toBe(415);
   });
 });
