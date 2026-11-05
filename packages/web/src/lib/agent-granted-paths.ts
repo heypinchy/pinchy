@@ -1,7 +1,7 @@
 /**
  * The folders an agent's `pinchy-files.allowed_paths` actually grants.
  *
- * Since v0.9.1 every writer of that column confines it to the data root
+ * Since v0.9.0 every writer of that column confines it to the data root
  * (`pluginConfigSchema`, domain-validation.ts). Rows written before then were
  * never rewritten, and the old PATCH let a member point their own agent
  * anywhere — the workspaces root, which holds every other agent's uploads,

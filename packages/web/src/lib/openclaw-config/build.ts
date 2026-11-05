@@ -665,7 +665,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // Both are READABLE for every agent, so an agent can revisit what the user
     // gave it and what it produced earlier (#418). Only workbench/ is writable,
     // and only on the grant — see the write_paths block below.
-    // Only entries under /data: a row written before v0.9.1 confined the
+    // Only entries under /data: a row written before v0.9.0 confined the
     // column can still name the workspaces root or `/` (#1272).
     const adminPaths = grantedDataPaths(agent.pluginConfig as AgentPluginConfig | null);
     const workspaceUploads = `${getOpenClawWorkspacePath(agent.id)}/uploads`;

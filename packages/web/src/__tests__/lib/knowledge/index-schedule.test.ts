@@ -183,7 +183,7 @@ describe("isScheduledIndexAgent", () => {
     expect(isScheduledIndexAgent({ ...kbAgent, deletedAt: new Date() })).toBe(false);
   });
 
-  // A row written before v0.9.1 confined allowed_paths to /data can still
+  // A row written before v0.9.0 confined allowed_paths to /data can still
   // carry a folder outside it (#1272). That entry grants nothing, so an agent
   // holding only such entries has nothing for the nightly run to index.
   it("leaves out an agent whose only grants are pre-lockdown paths outside /data", () => {

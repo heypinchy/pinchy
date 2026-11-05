@@ -69,7 +69,7 @@ describe("bootInits", () => {
     mocks.stripUngrantablePaths.mockResolvedValue(0);
   });
 
-  // #1272: rows written before the v0.9.1 lockdown can grant folders outside
+  // #1272: rows written before the v0.9.0 lockdown can grant folders outside
   // /data. The cleanup must run before the boot regenerate, so the config
   // OpenClaw starts with is built from rows that no longer carry them.
   it("removes pre-lockdown grants outside /data before regenerating the config", async () => {

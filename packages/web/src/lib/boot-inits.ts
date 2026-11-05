@@ -170,7 +170,7 @@ export async function bootInits(): Promise<boolean> {
       setupComplete = true;
       await migrateExistingSmithers();
 
-      // Rows written before v0.9.1 can grant folders outside /data (#1272).
+      // Rows written before v0.9.0 can grant folders outside /data (#1272).
       // Every reader already ignores those entries; this removes them from the
       // rows and audits each removal. Own try/catch: it must never cost the
       // instance its config regeneration below.

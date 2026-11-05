@@ -1998,7 +1998,7 @@ describe("regenerateOpenClawConfig", () => {
   });
 
   it("drops a pre-lockdown allowed_paths entry outside /data from the emitted pinchy-files config (#1272)", async () => {
-    // A row written before v0.9.1 confined allowed_paths to /data: a member
+    // A row written before v0.9.0 confined allowed_paths to /data: a member
     // pointed their agent at the workspaces root, which would let pinchy_read
     // reach every other agent's uploads, workbench and MEMORY.md. The stored
     // row is old data; this build is new code. It must not emit the grant.

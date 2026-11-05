@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import { grantedDataPaths, ungrantablePaths } from "@/lib/agent-granted-paths";
 
-// Since v0.9.1 every writer of `pinchy-files.allowed_paths` confines it to
+// Since v0.9.0 every writer of `pinchy-files.allowed_paths` confines it to
 // /data (pluginConfigSchema). Rows written before that can still carry other
 // folders (#1272); these two functions are how every reader tells them apart.
 describe("grantedDataPaths", () => {
