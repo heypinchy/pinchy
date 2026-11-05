@@ -41,6 +41,14 @@ describe("isArchivedPath", () => {
     "Obsolete",
     "old-versions",
     "OLD2019",
+    "Archives",
+    "ARCHIVES",
+    "Archiviert",
+    "Alte Versionen",
+    "alte Dokumente",
+    "Ältere Versionen",
+    "ÄLTERE VERSIONEN",
+    "Veraltet",
   ])("flags a document under the folder %j", (folder) => {
     expect(isArchivedPath(`/data/Supplier/${folder}/certificate.pdf`)).toBe(true);
   });
@@ -57,7 +65,6 @@ describe("isArchivedPath", () => {
     "Gold Standard Diagnostics - EUS",
     "Goldakte",
     "Bold",
-    "archives-tools",
     "Archivübersicht",
     "Holder",
     "Oldtimer",
@@ -65,6 +72,10 @@ describe("isArchivedPath", () => {
     // archive-paths.ts.
     "Alt",
     "Logo alt",
+    // `alter` is also German "age".
+    "Alter",
+    // A case change does not split a word (see archive-paths.ts).
+    "OldVersions",
   ])("does not flag a document under the folder %j", (folder) => {
     expect(isArchivedPath(`/data/Supplier/${folder}/certificate.pdf`)).toBe(false);
   });

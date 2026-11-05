@@ -4,7 +4,9 @@
 -- DIRECTORY segment (never the basename) holds an archive word as a whole
 -- token — a run of letters bounded by non-letters or the segment's ends —
 -- case-insensitively (#1290). Letters are spelled as code-point ranges, not
--- [[:alpha:]], because that class depends on the database locale. This regex
+-- [[:alpha:]], because that class depends on the database locale, and the
+-- non-ASCII word ältere spells both cases out, since ~* folds non-ASCII
+-- letters only under some locales. This regex
 -- mirrors the rule exactly — the trailing '/' is what restricts the match to
 -- directory segments — and the archive-backfill migration integration test
 -- pins the two implementations together against a shared fixture set, so
@@ -18,4 +20,4 @@
 UPDATE "kb_documents"
 SET "status" = 'archived'
 WHERE "status" = 'active'
-  AND "source_path" ~* '(^|/)([^/]*[^/a-zA-ZÀ-ÖØ-öø-ɏ])?(old|older|xold|archive|archived|archiv|expired|obsolete)([^/a-zA-ZÀ-ÖØ-öø-ɏ][^/]*)?/';
+  AND "source_path" ~* '(^|/)([^/]*[^/a-zA-ZÀ-ÖØ-öø-ɏ])?(old|older|xold|archive|archived|archiv|archives|archiviert|alte|(Ä|ä)ltere|veraltet|expired|obsolete)([^/a-zA-ZÀ-ÖØ-öø-ɏ][^/]*)?/';

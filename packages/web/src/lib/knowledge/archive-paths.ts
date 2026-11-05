@@ -15,7 +15,15 @@
  * - `xold` is a token of its own: `xOLD/` is the glued form of `X_OLD/`.
  * - `alt` (German "old") is deliberately NOT an archive word. As a token it
  *   is just as often "alternative" (`Logo alt/`, `ALT layouts/`), and German
- *   archives are almost always called `Archiv/`, which is covered.
+ *   archives are almost always called `Archiv/`, which is covered. The
+ *   inflected `alte`/`ältere` (`Alte Versionen/`) are unambiguous and count;
+ *   `alter` does not — it is also "age".
+ * - Case changes do not split a word: `OldVersions/` is one token and is not
+ *   flagged (Postgres's `~*` cannot express a case boundary, so the SQL mirror
+ *   could not follow). `xold` covers the one glued form seen in practice.
+ * - A current folder whose name uses an archive word on its own
+ *   (`Old Mill Foods/`) is archived too. Accepted: `old inserts/` and
+ *   `Old MSDS/` need exactly that reading.
  * - A letter is an ASCII letter or a Latin accented one (U+00C0–U+024F,
  *   without × and ÷), spelled as explicit code-point ranges. So
  *   `Archivübersicht/` stays one word, and the rule reads the same in
@@ -42,6 +50,11 @@ export const ARCHIVE_TOKENS: readonly string[] = [
   "archive",
   "archived",
   "archiv",
+  "archives",
+  "archiviert",
+  "alte",
+  "ältere",
+  "veraltet",
   "expired",
   "obsolete",
 ];
@@ -56,9 +69,10 @@ export function isArchivedPath(sourcePath: string): boolean {
   // Drop the basename: the rule targets directories only.
   return segments.slice(0, -1).some((segment) =>
     segment
-      .toLowerCase()
+      // Split first, then lowercase: lowercasing can move a character into
+      // or out of LETTER_CLASS (`İ`, `ẞ`), which Postgres does not do.
       .split(NON_LETTER_RUN)
-      .some((token) => ARCHIVE_TOKENS.includes(token))
+      .some((token) => ARCHIVE_TOKENS.includes(token.toLowerCase()))
   );
 }
 
