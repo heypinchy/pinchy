@@ -387,7 +387,7 @@ function ProviderConnectStep({
         {/* Section 1: Copy redirect URI TO the provider console */}
         <div className="space-y-2">
           <p className="text-sm font-medium">1. Copy this redirect URI to {copy_.redirectTarget}</p>
-          <CopyField value={redirectUrl} label="Redirect URI" monospace />
+          <CopyField value={redirectUrl} label="Redirect URI" monospace copyVariant="outline" />
           <p className="text-xs text-muted-foreground">
             Open{" "}
             <a

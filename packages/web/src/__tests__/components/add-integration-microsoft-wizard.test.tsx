@@ -86,7 +86,9 @@ describe("Add Integration Dialog — Microsoft flow", () => {
       // It used to be an icon-only button with no accessible name, so a screen
       // reader announced just "button". It now says what it does.
       const group = screen.getByRole("group", { name: "Redirect URI" });
-      expect(within(group).getByRole("button", { name: "Copy" })).toBeInTheDocument();
+      const copy = within(group).getByRole("button", { name: "Copy" });
+      // Outline, not primary: "Save & Continue" is this step's primary action.
+      expect(copy).toHaveAttribute("data-variant", "outline");
     });
 
     it("shows a link to Azure Portal or setup instructions", async () => {

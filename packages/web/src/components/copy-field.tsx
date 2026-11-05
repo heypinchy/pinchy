@@ -21,6 +21,11 @@ interface CopyFieldProps {
   share?: { title: string };
   /** Render the value in a monospace font (keys, tokens). */
   monospace?: boolean;
+  /**
+   * Style of the Copy button. Primary by default; "outline" where the copy is
+   * one step of a form that has its own primary button (OAuth setup).
+   */
+  copyVariant?: "default" | "outline";
   className?: string;
 }
 
@@ -38,18 +43,29 @@ const noWebShareOnServer = () => false;
  * installs, denied permission), the value is selected and the person is told
  * to press Ctrl+C / ⌘C instead.
  */
-export function CopyField({
+export function CopyField(props: CopyFieldProps) {
+  // Resend and Reset Password hand a new link to the same mounted field; a
+  // fresh instance per value keeps the last link's "Copied" or "press Ctrl+C"
+  // from standing under the new one.
+  return <CopyFieldForValue key={props.value} {...props} />;
+}
+
+function CopyFieldForValue({
   value,
   label,
   copyLabel = "Copy",
   share,
   monospace = false,
+  copyVariant = "default",
   className,
 }: CopyFieldProps) {
   const { isCopied, copy } = useCopyToClipboard();
   const [copyFailed, setCopyFailed] = useState(false);
   const valueRef = useRef<HTMLElement>(null);
   const canShare = useSyncExternalStore(noopSubscribe, hasWebShare, noWebShareOnServer);
+  // The hook's isCopied lasts ~2 s; a failed attempt inside that window must
+  // win over the earlier success.
+  const showCopied = isCopied && !copyFailed;
 
   async function handleCopy() {
     const ok = await copy(value);
@@ -78,7 +94,7 @@ export function CopyField({
   }
 
   let announcement = "";
-  if (isCopied) announcement = `${label} copied.`;
+  if (showCopied) announcement = `${label} copied.`;
   else if (copyFailed)
     announcement = "Couldn't copy automatically. It's selected — press Ctrl+C (⌘C on a Mac).";
 
@@ -95,9 +111,9 @@ export function CopyField({
           {value}
         </code>
         <div className="flex shrink-0 gap-2">
-          <Button type="button" onClick={handleCopy}>
-            {isCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-            {isCopied ? "Copied" : copyLabel}
+          <Button type="button" variant={copyVariant} onClick={handleCopy}>
+            {showCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+            {showCopied ? "Copied" : copyLabel}
           </Button>
           {share && canShare && (
             <Button type="button" variant="outline" onClick={handleShare}>
@@ -110,7 +126,7 @@ export function CopyField({
       <p
         role="status"
         aria-live="polite"
-        className={copyFailed && !isCopied ? "text-sm text-muted-foreground" : "sr-only"}
+        className={copyFailed ? "text-sm text-muted-foreground" : "sr-only"}
       >
         {announcement}
       </p>
