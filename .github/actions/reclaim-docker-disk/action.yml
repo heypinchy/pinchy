@@ -24,9 +24,10 @@ description: >
   - every ghcr.io/heypinchy/* image and bare pinchy* tag. A pulled image is
     not an input to the rebuild — a plain `docker build` does not use one as
     cache — so removing it costs nothing but the space. The BuildKit cache is
-    kept on purpose: on a fork PR it holds the local prod build of
-    Dockerfile.openclaw, which the dev build reuses (same file, same
-    context); pruning it would turn that into a full rebuild.
+    kept on purpose: on a fork PR it holds the local prod builds, so removing
+    their tags frees little there, but the dev build of Dockerfile.openclaw
+    (same file, same context) reuses that cache and adds almost nothing.
+    Callers on that path pass a lower `min-free-gb`.
   - preinstalled toolchains no Pinchy job uses: .NET (5.8G), the Android SDK
     (12G), GHC/ghcup (3.7G) and CodeQL's bundle in the tool cache. The rest of
     /opt/hostedtoolcache stays: setup-node and friends read it.
@@ -37,8 +38,9 @@ description: >
 inputs:
   min-free-gb:
     description: >
-      Free space the next build needs on the filesystem holding Docker's data root, in GB. Default: the measured 16G
-      dev build plus headroom for growth.
+      Free space the next build needs on the filesystem holding Docker's data
+      root, in whole GB. Default: the 16G dev build measured on Azure, plus
+      headroom for growth — an estimate; raise it from the printed df.
     default: "22"
 runs:
   using: composite

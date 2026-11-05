@@ -246,3 +246,10 @@ test("--build-arg alone is not a compose build", () => {
     [],
   );
 });
+
+test("a reclaim with `if: always()` still clears", () => {
+  assert.deepEqual(
+    problems([PULL, `- if: always()\n  uses: ${RECLAIM_ACTION}`, DEV_BUILD]),
+    [],
+  );
+});

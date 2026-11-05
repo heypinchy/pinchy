@@ -189,7 +189,11 @@ export function rebuildDiskProblems(file, text, readFile) {
       if (localAction(step) === RECLAIM_PATH) {
         // A conditional reclaim may not run, so it clears nothing: put the
         // condition on the build instead, or run the reclaim unconditionally.
-        if (step.if === undefined) holders = [];
+        if (
+          step.if === undefined ||
+          /^\s*(?:\$\{\{\s*)?always\(\)(?:\s*\}\})?\s*$/.test(String(step.if))
+        )
+          holders = [];
         return;
       }
       if (isBuildStep(step, readFile)) {
