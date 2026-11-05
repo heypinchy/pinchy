@@ -62,12 +62,12 @@ When the agent reaches a gated tool, it doesn't run it — it **waits**, mid-tur
 
 The preview shows the action the way you'd picture its result:
 
-| Action                                   | What the card shows                                                                                                                                                                                  |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Create a CSV, Excel or PDF file          | The file name and the table it will hold, with its columns as headers — _"Create a CSV file named **test** with 2 columns and 1 row"_                                                                |
-| Send an email, or save a draft           | Recipient, subject and the message (its start, with **Show full text** for the rest), and whether it goes out right away or stays a draft                                                            |
-| Create, update or delete records in Odoo | The record type by its name from the permissions page — _Contacts (`res.partner`)_, or _Sales Orders_ where two areas share a name — beside its technical name, the records, and every field it sets |
-| Write or delete a file                   | The file, whether it may replace one that's already there, and the content                                                                                                                           |
+| Action                                   | What the card shows                                                                                                                                                                                                                      |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create a CSV, Excel or PDF file          | The file name and every row it will hold — up to three columns as a table, a wider row as a block of _column: value_ lines, so each value stays whole on a narrow screen — _"Create a CSV file named **test** with 2 columns and 1 row"_ |
+| Send an email, or save a draft           | Recipient, subject and the message (its start, with **Show full text** for the rest), and whether it goes out right away or stays a draft                                                                                                |
+| Create, update or delete records in Odoo | The record type by its name from the permissions page — _Contacts (`res.partner`)_, or _Sales Orders_ where two areas share a name — beside its technical name, the records, and every field it sets                                     |
+| Write or delete a file                   | The file, whether it may replace one that's already there, and the content                                                                                                                                                               |
 
 Any other tool is named the way the agent's permissions name it — _"Odoo: Confirm sale order"_ — with its fields listed by name in plain words (`partner_id` reads _Partner ID_). An action that can't be undone — a sent email, a deleted file or record, a file written over — says so under the sentence.
 

@@ -389,11 +389,22 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
+/** The most columns drawn as a table; wider rows are drawn as blocks. */
+const TABLE_MAX_COLUMNS = 3;
+
 /**
- * Rows drawn as a table, every cell by `ArgValue`, so a cell is drawn exactly
- * as the same value is anywhere else on the card. Only a rectangular list
- * reaches here (`isTable`): every cell drawn is a value the summary charged,
- * and none is padding.
+ * Rows drawn cell for cell, every cell by `ArgValue`, so a cell is drawn
+ * exactly as the same value is anywhere else on the card. Only a rectangular
+ * list reaches here (`isTable`): every cell drawn is a value the summary
+ * charged, and none is padding.
+ *
+ * Every value stays whole and in view, at the corner's 320px too. Up to
+ * TABLE_MAX_COLUMNS it is a table sized to its content, where a cell wraps
+ * only between words. A wider row is a block of "column: value" lines: a
+ * table scrolling sideways hid the columns past the edge with nothing saying
+ * so, and a fixed-width one broke a number in the middle ("1240.5" read
+ * "124" / "0.5"). Every row is drawn — the preview box scrolls — since a row
+ * left to "Show technical details" would be approved unseen.
  */
 function DataTable({
   columns,
@@ -404,14 +415,45 @@ function DataTable({
   rows: unknown[][];
   label: string;
 }) {
+  const width = rows[0]?.length ?? 0;
+  const size = `${plural(rows.length, "row")} · ${plural(width, "column")}`;
+  const heading = (index: number) =>
+    columns.length > 0 ? <ArgValue value={columns[index]} /> : `Column ${index + 1}`;
+  if (width > TABLE_MAX_COLUMNS) {
+    return (
+      <div>
+        <p className="text-xs text-muted-foreground">{size}</p>
+        <ol aria-label={label} className="mt-1 space-y-1">
+          {rows.map((row, rowIndex) => (
+            <li
+              key={rowIndex}
+              aria-label={`Row ${rowIndex + 1}`}
+              className="rounded border bg-background/60 p-1.5"
+            >
+              <dl className="space-y-0.5">
+                {row.map((cell, index) => (
+                  <div key={index} className="flex gap-2">
+                    <dt className="w-2/5 shrink-0 text-xs text-muted-foreground break-words">
+                      {heading(index)}
+                    </dt>
+                    <dd className="min-w-0 break-words">
+                      <ArgValue value={cell} />
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </li>
+          ))}
+        </ol>
+      </div>
+    );
+  }
   return (
-    // Fitted to the card, never scrolled sideways: in the 320px corner a
-    // scrolling table showed two columns of five, with nothing saying more
-    // were there. Every column gets a share of the width and cells wrap.
     <div>
-      <table className="w-full table-fixed border-collapse text-left text-sm">
+      <p className="text-xs text-muted-foreground">{size}</p>
+      <table className="mt-1 w-full border-collapse text-left text-sm">
         <caption className="sr-only">
-          {label}, {plural(rows[0]?.length ?? 0, "column")}, {plural(rows.length, "row")}
+          {label}, {size}
         </caption>
         {columns.length > 0 && (
           <thead>
@@ -420,7 +462,7 @@ function DataTable({
                 <th
                   key={index}
                   scope="col"
-                  className="border-b px-2 py-1 align-bottom font-medium [overflow-wrap:anywhere] first:pl-0"
+                  className="border-b px-2 py-1 align-bottom font-medium break-words first:pl-0"
                 >
                   <ArgValue value={column} />
                 </th>
@@ -432,7 +474,7 @@ function DataTable({
           {rows.map((row, rowIndex) => (
             <tr key={rowIndex} className="border-b last:border-b-0">
               {row.map((cell, index) => (
-                <td key={index} className="px-2 py-1 align-top [overflow-wrap:anywhere] first:pl-0">
+                <td key={index} className="px-2 py-1 align-top break-words first:pl-0">
                   <ArgValue value={cell} />
                 </td>
               ))}

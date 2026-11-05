@@ -1345,21 +1345,55 @@ describe("review: a ragged list of rows", () => {
 });
 
 describe("review: wide and long previews", () => {
-  // In the 320px corner, a sideways-scrolling table showed two columns of
-  // five with nothing saying three more were there.
-  it("fits a wide table to the card instead of scrolling it sideways", () => {
+  // In the 320px corner a sideways-scrolling table hid columns past the
+  // edge, and a fixed-width one broke numbers mid-value ("124" / "0.5").
+  // Past three columns each row is a block of "column: value" lines.
+  const wide = {
+    filename: "invoices",
+    format: "csv",
+    columns: ["Customer", "Invoice", "Date", "Net", "VAT", "Gross"],
+    rows: [
+      ["Acme GmbH", "INV-1", "2026-11-05", 1240.5, 248.1, 1488.6],
+      ["Nordwind AG", "INV-2", "2026-11-06", -860, -172, -1032],
+    ],
+  };
+
+  it("draws a row of more than three columns as a block of column: value lines", () => {
+    renderCard(summarizeArgs(wide), "pinchy_generate_file");
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByText("2 rows · 6 columns")).toBeInTheDocument();
+    const rows = screen.getAllByRole("listitem", { name: /^Row \d$/ });
+    expect(rows).toHaveLength(2);
+    const terms = within(rows[0]).getAllByRole("term").map(drawnText);
+    expect(terms).toEqual(wide.columns);
+    const values = within(rows[0]).getAllByRole("definition").map(drawnText);
+    expect(values).toEqual(["Acme GmbH", "INV-1", "2026-11-05", "1240.5", "248.1", "1488.6"]);
+  });
+
+  it("keeps a table of up to three columns, sized to its content", () => {
     renderCard(
       summarizeArgs({
-        filename: "customers",
+        filename: "q",
         format: "csv",
-        columns: ["Name", "Email", "City", "Country", "Phone"],
-        rows: [["Ada", "ada@example.com", "Wien", "AT", "+43 1"]],
+        columns: ["a", "b", "c"],
+        rows: [["1", 2, 3]],
       }),
       "pinchy_generate_file"
     );
     const table = screen.getByRole("table");
-    expect(table.className).toContain("table-fixed");
-    expect(table.closest(".overflow-x-auto")).toBeNull();
+    expect(table.className).not.toContain("table-fixed");
+    expect(table.innerHTML).not.toContain("overflow-wrap:anywhere");
+    expect(screen.getByText("1 row · 3 columns")).toBeInTheDocument();
+  });
+
+  it("shows every row, however many there are", () => {
+    const rows = Array.from({ length: 40 }, (_, i) => [`r${i}`, i, i, i]);
+    renderCard(
+      summarizeArgs({ ...wide, columns: ["a", "b", "c", "d"], rows }),
+      "pinchy_generate_file"
+    );
+    expect(screen.getAllByRole("listitem", { name: /^Row \d+$/ })).toHaveLength(40);
+    expect(screen.getByText("r39")).toBeInTheDocument();
   });
 
   it("lets the keyboard reach and scroll the preview", () => {
