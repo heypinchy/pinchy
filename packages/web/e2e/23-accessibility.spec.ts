@@ -53,11 +53,19 @@ type Ready = (page: Page) => Locator;
 type Paths = { chat: string; sharedAgent: string };
 type Target = { name: string; path: (paths: Paths) => string; ready: Ready };
 
+/**
+ * This stack runs no OpenClaw, so the thread settles on "Reconnecting to the
+ * agent..." about 2s after the composer appears (the disconnect hysteresis).
+ * Waiting for that end state scans the same page every run, instead of
+ * whichever of "Starting agent..." and "Reconnecting..." axe happens to catch.
+ */
+const chatReady: Ready = (page) => page.getByText("Reconnecting to the agent...");
+
 const ADMIN_PAGES: Target[] = [
   {
     name: "chat",
     path: ({ chat }) => chat,
-    ready: (page) => page.getByPlaceholder("Send a message, or type / for commands"),
+    ready: chatReady,
   },
   {
     // A shared agent: personal agents have no Permissions or Access tab.
@@ -78,7 +86,9 @@ const ADMIN_PAGES: Target[] = [
   {
     name: "settings › security",
     path: () => "/settings?tab=security",
-    ready: (page) => page.getByText(/domain/i).first(),
+    // A control that only the loaded state renders: the card title alone
+    // also shows on the "Failed to load" branch.
+    ready: (page) => page.getByRole("button", { name: "Lock this domain" }),
   },
   {
     name: "audit trail",
@@ -104,7 +114,7 @@ const MEMBER_PAGES: Target[] = [
   {
     name: "chat",
     path: ({ chat }) => chat,
-    ready: (page) => page.getByPlaceholder("Send a message, or type / for commands"),
+    ready: chatReady,
   },
   {
     name: "settings › context",
@@ -155,12 +165,12 @@ const SHARED_AGENT_NAME = "A11y Shared Agent";
  * - A shared agent: personal agents have no Permissions or Access tab.
  * - A member, for the pages a member sees differently.
  */
-async function seed(request: APIRequestContext, smithersId: string): Promise<string> {
+async function seed(request: APIRequestContext, landingAgentId: string): Promise<string> {
   const { default: postgres } = await import("postgres");
   const sql = postgres(TEST_DB_URL);
   try {
     const [admin] = await sql`SELECT id FROM "user" WHERE email = ${ADMIN_USER.email}`;
-    const sessionKey = `agent:${smithersId}:direct:${admin.id}`;
+    const sessionKey = `agent:${landingAgentId}:direct:${admin.id}`;
     await sql`DELETE FROM usage_records WHERE session_key = ${sessionKey}`;
     for (const daysAgo of [2, 1]) {
       await sql`
@@ -168,7 +178,7 @@ async function seed(request: APIRequestContext, smithersId: string): Promise<str
           (timestamp, user_id, agent_id, agent_name, session_key, model,
            input_tokens, output_tokens, estimated_cost_usd)
         VALUES
-          (now() - make_interval(days => ${daysAgo}), ${admin.id}, ${smithersId}, 'Smithers',
+          (now() - make_interval(days => ${daysAgo}), ${admin.id}, ${landingAgentId}, 'Smithers',
            ${sessionKey}, 'anthropic/claude-haiku-4-5', ${40_000 + daysAgo * 5_000}, 5000, 0.12)
       `;
     }
@@ -210,11 +220,17 @@ async function show(page: Page, mode: Mode, url: string, ready: Ready) {
   await page.setViewportSize({ width: mode.width, height: 812 });
   await page.emulateMedia({ colorScheme: mode.colorScheme });
   await page.goto(url);
-  // Generous: the dev server JIT-compiles each route on its first visit.
-  await expect(ready(page)).toBeVisible({ timeout: 30_000 });
+  // Generous: the dev server JIT-compiles each route on its first visit. The
+  // describe's 90s test timeout leaves room for navigation and axe on top.
+  await expect(ready(page)).toBeVisible({ timeout: 60_000 });
 }
 
 test.describe("Accessibility (axe, WCAG 2.1 AA)", () => {
+  // The suite's default is 30s per test, and several of these routes are
+  // first compiled by the dev server here (no earlier spec visits /usage).
+  // The ready wait in `show()` gets 60s of that; navigation and axe the rest.
+  test.describe.configure({ timeout: 90_000 });
+
   let admin: Page;
   let member: Page;
   let adminPaths: Paths;
@@ -264,7 +280,7 @@ test.describe("Accessibility (axe, WCAG 2.1 AA)", () => {
     const filters = [
       page.getByRole("combobox", { name: "Event Type" }),
       page.getByRole("combobox", { name: "Status" }),
-      page.getByLabel("From"),
+      page.getByLabel("From", { exact: true }),
       page.getByLabel("To", { exact: true }),
     ];
     for (const filter of filters) {
