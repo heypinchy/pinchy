@@ -132,8 +132,24 @@ vi.mock("@/lib/integrations/auth-state", () => ({
   setIntegrationAuthFailed: (...args: unknown[]) => mockSetIntegrationAuthFailed(...args),
 }));
 
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+}));
+
 import { NextRequest } from "next/server";
 import { routeContext } from "@/test-helpers/route";
+
+/** One `db.select().from()` result, awaitable directly or through `.where()`. */
+function selectOnce(rows: unknown[]) {
+  mockSelectFrom.mockImplementationOnce(() => {
+    const result = Promise.resolve(rows) as Promise<unknown[]> & {
+      where: ReturnType<typeof vi.fn>;
+    };
+    result.where = vi.fn().mockResolvedValue(rows);
+    return result;
+  });
+}
 
 function makeRequest(path: string, options?: ConstructorParameters<typeof NextRequest>[1]) {
   return new NextRequest(`http://localhost:7777${path}`, options);
@@ -389,6 +405,49 @@ describe("POST /api/integrations", () => {
       db: "prod",
       login: "admin",
     });
+  });
+
+  // #1297: web agents load pinchy-web without a connectionId while no
+  // provider exists. Adding the key must rewrite openclaw.json, or search
+  // keeps answering "not configured" until some unrelated save.
+  it("regenerates the OpenClaw config after creating a web-search connection", async () => {
+    selectOnce([]); // no existing web-search connection
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "web-search",
+          name: "Brave Search",
+          credentials: { apiKey: "BSA-test-key" },
+        }),
+      }),
+      routeContext()
+    );
+
+    expect(response.status).toBe(201);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("still creates the web-search connection when the config regenerate fails", async () => {
+    selectOnce([]);
+    mockRegenerateOpenClawConfig.mockRejectedValueOnce(new Error("gateway down"));
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "web-search",
+          name: "Brave Search",
+          credentials: { apiKey: "BSA-test-key" },
+        }),
+      }),
+      routeContext()
+    );
+
+    expect(response.status).toBe(201);
   });
 
   it("should return 409 when creating a duplicate web-search connection", async () => {
@@ -723,6 +782,20 @@ describe("DELETE /api/integrations/[connectionId]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
+  });
+
+  // #1297: the plugin keeps a removed connection's id until the config is
+  // rewritten, so search would fail with a stale id instead of "not configured".
+  it("regenerates the OpenClaw config after deleting a web-search connection", async () => {
+    selectOnce([{ ...mockConnection, id: "ws-1", type: "web-search", name: "Brave Search" }]);
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await DELETE(makeRequest("/api/integrations/ws-1", { method: "DELETE" }), {
+      params: Promise.resolve({ connectionId: "ws-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
   });
 
   it("should return 401 when not authenticated", async () => {

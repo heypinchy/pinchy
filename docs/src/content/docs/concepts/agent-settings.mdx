@@ -106,7 +106,7 @@ Why not just let the agent remember it? Because memory isn't loaded by scheduled
 
 The Permissions tab controls which tools an agent can use. Pinchy uses an **allow-list** model: agents start with zero tools enabled, and admins grant specific capabilities.
 
-Tools are organised into three sections that are always shown — **Memory**, **Workspace** and **Knowledge Base** — plus sections that only appear when a matching connection exists. The three permanent sections follow the zones of an agent's workspace: what it remembers, what it may produce, and what it may read.
+Tools are organised into three sections that are always shown — **Memory**, **Workspace** and **Knowledge Base** — plus sections that appear when a matching connection exists (Web Search also appears when the agent already holds a web tool; see below). The three permanent sections follow the zones of an agent's workspace: what it remembers, what it may produce, and what it may read.
 
 **Memory** — the **Memory** (`pinchy_memory`) toggle, which lets the agent write and re-read `MEMORY.md` and the daily notes under `memory/`. Without it the agent has no memory and is not offered the recall tools, so it will not claim one. See [Understanding Agent Memory](/explanation/agent-memory/#memory-is-a-permission).
 

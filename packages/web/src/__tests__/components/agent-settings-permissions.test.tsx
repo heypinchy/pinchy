@@ -564,6 +564,24 @@ describe("AgentSettingsPermissions", () => {
       );
     });
 
+    it("keeps the web section while the last web tool is unchecked before saving", async () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search", "pinchy_web_fetch"] }}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Search the web"));
+      await userEvent.click(screen.getByLabelText("Fetch web pages"));
+
+      expect(screen.getByText("Web Search")).toBeInTheDocument();
+      expect(screen.getByLabelText("Fetch web pages")).not.toBeChecked();
+    });
+
     it("hides the web section when there is no search provider and no web tool", () => {
       render(
         <AgentSettingsPermissions
