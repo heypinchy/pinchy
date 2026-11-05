@@ -115,7 +115,8 @@ describe("account switch on a shared browser (#1286)", () => {
     // second tab of the previous person keeps their chat list and drafts, and
     // would write a draft back into storage after the wipe.
     function storageEvent(key: string | null, newValue: string | null) {
-      window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+      // Built from a plain Event: only `key` and `newValue` are read.
+      window.dispatchEvent(Object.assign(new Event("storage"), { key, newValue }));
     }
 
     it("leaving writes a marker another tab can see, even if nobody was recorded", async () => {

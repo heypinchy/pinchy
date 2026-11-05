@@ -21,7 +21,7 @@ describe("AccountGuard (#1286)", () => {
     expect(reload).toHaveBeenCalledTimes(1);
 
     window.dispatchEvent(
-      new StorageEvent("storage", { key: "pinchy:account", newValue: "signed-out:1" })
+      Object.assign(new Event("storage"), { key: "pinchy:account", newValue: "signed-out:1" })
     );
     expect(reload).toHaveBeenCalledTimes(2);
     unmount();
