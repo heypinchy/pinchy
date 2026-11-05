@@ -126,6 +126,9 @@ export function KnowledgeReindexSection({
   // before any did. Without it the section said "Not indexed" while it was
   // still asking — about an index that might be perfectly fine.
   const [read, setRead] = useState<"pending" | "ok" | "failed">("pending");
+  // While a retry is in flight the button stays (disabled) rather than
+  // unmounting under the keyboard focus that just pressed it.
+  const [retrying, setRetrying] = useState(false);
   // Documents in this agent's folders with no readable text, across the whole
   // corpus — reported up by the list. The last run's counts alone can't carry
   // the badge: a scan found last week is merely "unchanged" tonight.
@@ -179,10 +182,10 @@ export function KnowledgeReindexSection({
         const finished = job.counts
           ? `Reindex finished: ${summarizeRun(job.counts)}.`
           : "Reindex finished.";
-        // Not a green "done" beside a red "2 failed": the badge decides, and
-        // the toast agrees with it.
+        // Not a green "done" beside a red "2 failed". The toast reports this
+        // run; the badge may also reflect documents without text from earlier.
         if (runNeedsAttention(job)) {
-          toast.info(`${finished} Some need your attention.`);
+          toast.info(`${finished} Something needs your attention.`);
         } else {
           toast.success(finished);
         }
@@ -288,14 +291,17 @@ export function KnowledgeReindexSection({
               <IndexStatusBadge tone={status.tone} label={status.label} />
               <span id={statusId}>{status.headline}</span>
             </div>
-            {read === "failed" && !active && allowedPathCount > 0 && (
+            {(read === "failed" || retrying) && !active && allowedPathCount > 0 && (
               <Button
                 variant="link"
                 size="sm"
                 className="h-auto p-0"
-                onClick={() => {
+                disabled={retrying}
+                onClick={async () => {
+                  setRetrying(true);
                   setRead("pending");
-                  void fetchStatus();
+                  await fetchStatus();
+                  setRetrying(false);
                 }}
               >
                 Try again

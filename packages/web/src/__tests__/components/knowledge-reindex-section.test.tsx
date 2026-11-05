@@ -572,7 +572,7 @@ describe("KnowledgeReindexSection", () => {
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
     await waitFor(() =>
       expect(toast.info).toHaveBeenCalledWith(
-        "Reindex finished: 13 documents checked, nothing new. Some need your attention."
+        "Reindex finished: 13 documents checked, nothing new. Something needs your attention."
       )
     );
     expect(toast.success).not.toHaveBeenCalled();
