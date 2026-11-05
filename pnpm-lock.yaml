@@ -422,8 +422,8 @@ importers:
         specifier: ^1.0.2
         version: 1.0.2
       undici:
-        specifier: ^8.12.2
-        version: 8.12.2
+        specifier: ^7.30.1
+        version: 7.30.1
       ws:
         specifier: ^8.21.1
         version: 8.21.1

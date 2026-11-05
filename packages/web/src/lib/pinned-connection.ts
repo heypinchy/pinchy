@@ -16,6 +16,13 @@ import { Agent, fetch as undiciFetch } from "undici";
 // imported from there: a plugin directory is mounted standalone and owns its
 // own `undici`, so the two copies share the idea, not the module.
 //
+// Pinned to undici 7, the major Node 22 bundles. undici 8 installs its own
+// global dispatcher when it loads (it reads a global slot Node 22 never sets)
+// and so replaces the one Node's `fetch` uses — for the whole process, since
+// this module loads at boot. An operator's NODE_USE_ENV_PROXY egress proxy
+// would vanish from every plain fetch in Pinchy.
+// pinned-connection-global-dispatcher.test.ts holds that line.
+//
 // What this does NOT reach: the connections that matter most at runtime are
 // made from the OpenClaw container — inference against a custom provider's
 // base URL (OpenClaw), Odoo JSON-RPC and IMAP/SMTP (pinchy-odoo, pinchy-email).
