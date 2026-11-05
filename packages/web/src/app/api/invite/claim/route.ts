@@ -12,7 +12,7 @@ import { getOpenClawClient } from "@/server/openclaw-client";
 import { validatePassword } from "@/lib/validate-password";
 import { parseRequestBody } from "@/lib/api-validation";
 import { claimInviteSchema } from "@/lib/schemas/invite";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 
 export async function POST(request: NextRequest) {
@@ -118,7 +118,8 @@ export async function POST(request: NextRequest) {
       body: { name: name.trim(), email: flow.invite.email, password },
     });
   } catch (err) {
-    signUpError = err instanceof Error ? err.message : "unknown";
+    // A library message is not ours to vouch for: scrub any address it carries.
+    signUpError = safeProviderError(err instanceof Error ? err.message : "unknown");
   }
 
   if (!result?.user) {
