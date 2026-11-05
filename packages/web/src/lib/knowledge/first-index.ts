@@ -20,7 +20,7 @@
  * searchable file in it is as indexed as one with a thousand, and asking the
  * documents would run it again every time the worker looks.
  */
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { sep } from "node:path";
 
 import { db } from "@/db";
@@ -28,7 +28,7 @@ import { agents, kbDocuments, kbIndexJobs } from "@/db/schema";
 import { safeProviderError, type AuditLogEntry, type EntityRef } from "@/lib/audit";
 
 import { DEFAULT_ORG_ID } from "./constants";
-import { enqueueIndexJob, findActiveIndexJob, getLatestIndexJobForAgent } from "./index-jobs";
+import { enqueueIndexJob, findActiveIndexJob } from "./index-jobs";
 import { grantedKnowledgePaths, isScheduledIndexAgent } from "./index-schedule";
 import { kbEmbedderAvailable } from "./kb-embedder";
 import type { FirstIndexStatus } from "./first-index-status";
@@ -37,10 +37,23 @@ import { reindexAuditEntry } from "./reindex-audit";
 
 export type { FirstIndexStatus } from "./first-index-status";
 
+/**
+ * A grant spelled without its trailing separator. The same folder reaches the
+ * agents row both ways — `POST /api/agents` stores `/data/hr/`
+ * (`validateAllowedPaths`), the Permissions tab `/data/hr` — and comparing
+ * the spellings as strings would call an indexed folder unindexed.
+ */
+function normalize(path: string): string {
+  let out = path;
+  while (out.length > 1 && out.endsWith(sep)) out = out.slice(0, -1);
+  return out;
+}
+
 /** `path` is `root` or lies inside it — the same boundary buildPathFilter draws. */
 function isWithin(path: string, root: string): boolean {
-  if (path === root) return true;
-  return path.startsWith(root.endsWith(sep) ? root : root + sep);
+  const p = normalize(path);
+  const r = normalize(root);
+  return p === r || p.startsWith(r === sep ? r : r + sep);
 }
 
 async function hasDocumentsUnder(path: string): Promise<boolean> {
@@ -57,6 +70,31 @@ async function hasDocumentsUnder(path: string): Promise<boolean> {
   return row !== undefined;
 }
 
+/** Every folder a run was asked to go through, and those of runs that finished. */
+export interface RunPaths {
+  all: string[];
+  finished: string[];
+}
+
+/**
+ * The folders the org's runs went through — distinct, so the read stays a
+ * handful of rows however many nights `kb_index_jobs` has recorded. Read once
+ * per question and handed to `neverIndexedPaths`, so asking about every agent
+ * is still one read.
+ */
+export async function loadRunPaths(): Promise<RunPaths> {
+  const rows = await db.execute<{ path: string; finished: boolean }>(sql`
+    SELECT DISTINCT p.path, (j.status IN ('succeeded', 'failed')) AS finished
+    FROM kb_index_jobs j, jsonb_array_elements_text(j.paths) AS p(path)
+    WHERE j.org_id = ${DEFAULT_ORG_ID}
+  `);
+  const list = [...rows];
+  return {
+    all: [...new Set(list.map((row) => row.path))],
+    finished: [...new Set(list.filter((row) => row.finished).map((row) => row.path))],
+  };
+}
+
 export interface NeverIndexedOptions {
   /**
    * Count only runs that FINISHED as having gone through a folder. Off, a run
@@ -65,6 +103,8 @@ export interface NeverIndexedOptions {
    * index still to come?", for the progress the chat shows.
    */
   finishedOnly?: boolean;
+  /** The runs to judge against, when the caller already read them (`loadRunPaths`). */
+  runs?: RunPaths;
 }
 
 /**
@@ -85,21 +125,13 @@ export async function neverIndexedPaths(
   opts: NeverIndexedOptions = {}
 ): Promise<string[]> {
   if (paths.length === 0) return [];
-  const jobs = await db
-    .select({ paths: kbIndexJobs.paths, status: kbIndexJobs.status })
-    .from(kbIndexJobs)
-    .where(eq(kbIndexJobs.orgId, DEFAULT_ORG_ID));
-  const allRunPaths = jobs.flatMap((job) => job.paths);
-  const coveringPaths = opts.finishedOnly
-    ? jobs
-        .filter((job) => job.status === "succeeded" || job.status === "failed")
-        .flatMap((job) => job.paths)
-    : allRunPaths;
+  const runs = opts.runs ?? (await loadRunPaths());
+  const covering = opts.finishedOnly ? runs.finished : runs.all;
 
   const never: string[] = [];
   for (const path of paths) {
-    if (coveringPaths.some((root) => isWithin(path, root))) continue;
-    const explainedByARun = allRunPaths.some((runPath) => isWithin(runPath, path));
+    if (covering.some((root) => isWithin(path, root))) continue;
+    const explainedByARun = runs.all.some((runPath) => isWithin(runPath, path));
     if (!explainedByARun && (await hasDocumentsUnder(path))) continue;
     never.push(path);
   }
@@ -124,9 +156,12 @@ export async function agentsOwedFirstIndex(): Promise<string[]> {
     .from(agents)
     .where(isNull(agents.deletedAt))
     .orderBy(asc(agents.createdAt));
+  const searching = rows.filter(isScheduledIndexAgent);
+  if (searching.length === 0) return [];
+  const runs = await loadRunPaths();
   const owed: string[] = [];
-  for (const agent of rows.filter(isScheduledIndexAgent)) {
-    if ((await neverIndexedPaths(grantedKnowledgePaths(agent.pluginConfig))).length > 0) {
+  for (const agent of searching) {
+    if ((await neverIndexedPaths(grantedKnowledgePaths(agent.pluginConfig), { runs })).length > 0) {
       owed.push(agent.id);
     }
   }
@@ -226,7 +261,10 @@ export async function queueFirstIndex(
  *
  * Only a FIRST index is reported. A later run (the nightly one, Reindex now)
  * leaves the agent answering from the index it already has, and a chat that
- * said "indexing" through every one of them would read as broken.
+ * said "indexing" through every one of them would read as broken. So progress
+ * is shown only for a run that goes through a folder still waiting for its
+ * first index; while some other run holds the instance's one job slot, the
+ * answer is `waiting`.
  */
 export async function getFirstIndexStatus(agent: {
   id: string;
@@ -240,9 +278,14 @@ export async function getFirstIndexStatus(agent: {
   });
   if (pending.length === 0) return { state: "none" };
 
-  const latest = await getLatestIndexJobForAgent(agent.id);
-  if (latest?.status === "running") {
-    return { state: "indexing", processed: latest.processed, total: latest.total };
+  const active = await findActiveIndexJob(DEFAULT_ORG_ID);
+  if (!active) return { state: "queued" };
+  const runsPending =
+    active.agentId === agent.id &&
+    pending.some((path) => active.paths.some((runPath) => isWithin(path, runPath)));
+  if (!runsPending) return { state: "waiting" };
+  if (active.status === "running") {
+    return { state: "indexing", processed: active.processed, total: active.total };
   }
   return { state: "queued" };
 }

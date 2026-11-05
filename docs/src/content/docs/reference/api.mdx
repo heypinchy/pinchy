@@ -598,11 +598,11 @@ Pinchy queues the first index on its own when an agent that has the `knowledge_s
 { "state": "indexing", "processed": 120, "total": 505 }
 ```
 
-| Field       | Description                                                                                                                                                                                                                                                                  |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state`     | `none` once every granted folder has had a run that finished (or for an agent that doesn't search the index), `queued` while the first index waits — for its turn or behind another run — and `indexing` while it runs. Later runs (nightly, **Reindex now**) report `none`. |
-| `processed` | Documents done so far. `indexing` only.                                                                                                                                                                                                                                      |
-| `total`     | Documents found. `null` until discovery has walked every folder. `indexing` only.                                                                                                                                                                                            |
+| Field       | Description                                                                                                                                                                                                                                                                                                                                |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `state`     | `none` once every granted folder has had a run that finished (or for an agent that doesn't search the index), `queued` while the first index is about to start, `waiting` while another run holds the one job slot and the first index starts after it, and `indexing` while it runs. Later runs (nightly, **Reindex now**) report `none`. |
+| `processed` | Documents done so far. `indexing` only.                                                                                                                                                                                                                                                                                                    |
+| `total`     | Documents found. `null` until discovery has walked every folder. `indexing` only.                                                                                                                                                                                                                                                          |
 
 **Errors:**
 

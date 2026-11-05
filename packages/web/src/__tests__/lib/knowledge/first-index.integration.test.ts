@@ -119,6 +119,23 @@ describe("neverIndexedPaths", () => {
     expect(await neverIndexedPaths(["/data/hr"], { finishedOnly: true })).toEqual(["/data/hr"]);
   });
 
+  it("reads a folder spelled with and without its trailing slash as the same folder", async () => {
+    // POST /api/agents stores "/data/hr/", the Permissions tab "/data/hr".
+    const created = await knowledgeAgent(["/data/hr/"]);
+    await finishedJob(created.id, ["/data/hr/"], "succeeded");
+    const other = await knowledgeAgent(["/data/legal"]);
+    await finishedJob(other.id, ["/data/legal"], "succeeded");
+
+    expect(await neverIndexedPaths(["/data/hr", "/data/hr/policies", "/data/legal/"])).toEqual([]);
+    expect(await neverIndexedPaths(["/data/hr-archive/"])).toEqual(["/data/hr-archive/"]);
+  });
+
+  it("judges against runs the caller already read, without reading them again", async () => {
+    const runs = { all: ["/data/hr"], finished: ["/data/hr"] };
+
+    expect(await neverIndexedPaths(["/data/hr", "/data/legal"], { runs })).toEqual(["/data/legal"]);
+  });
+
   it("takes documents already in the index as indexed when no run explains them", async () => {
     // Rows ingested before runs were recorded as jobs: the folder is in the
     // index, and walking it again would be a full re-read for nothing.
@@ -297,7 +314,7 @@ describe("getFirstIndexStatus", () => {
     });
   });
 
-  it("reports an agent waiting behind another agent's run as queued", async () => {
+  it("reports an agent waiting behind another agent's run as waiting", async () => {
     const other = await knowledgeAgent(["/data/legal"]);
     await enqueueIndexJob({
       orgId: DEFAULT_ORG_ID,
@@ -309,6 +326,23 @@ describe("getFirstIndexStatus", () => {
     await claimNextIndexJob();
     const agent = await knowledgeAgent(["/data/hr"]);
 
-    expect(await getFirstIndexStatus(agent)).toEqual({ state: "queued" });
+    expect(await getFirstIndexStatus(agent)).toEqual({ state: "waiting" });
+  });
+
+  it("does not pass off the agent's own later run as its first index", async () => {
+    // The agent's Reindex now over its old folder holds the slot while a
+    // folder granted since waits: that run's count is not the new folder's.
+    const agent = await knowledgeAgent(["/data/hr", "/data/legal"]);
+    await finishedJob(agent.id, ["/data/hr"], "succeeded");
+    await enqueueIndexJob({
+      orgId: DEFAULT_ORG_ID,
+      agentId: agent.id,
+      agentName: "Handbook",
+      requestedBy: "admin-1",
+      paths: ["/data/hr"],
+    });
+    await claimNextIndexJob();
+
+    expect(await getFirstIndexStatus(agent)).toEqual({ state: "waiting" });
   });
 });

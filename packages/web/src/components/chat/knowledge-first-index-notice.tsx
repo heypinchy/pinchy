@@ -11,7 +11,10 @@ export const FIRST_INDEX_POLL_MS = 5_000;
 
 function message(status: Exclude<FirstIndexStatus, { state: "none" }>): string {
   if (status.state === "queued") {
-    return "Indexing hasn't started yet — another run is ahead of it. Until it's done, this agent can't find anything in its documents.";
+    return "Indexing this agent's documents starts in a moment. Until it's done, it can't find anything in them.";
+  }
+  if (status.state === "waiting") {
+    return "This agent's documents are next in line to be indexed, right after the run that's going now. Until then, it can't find anything in them.";
   }
   if (status.total === null) {
     return "Reading this agent's documents for the first time — finding them all…";
@@ -23,6 +26,7 @@ function message(status: Exclude<FirstIndexStatus, { state: "none" }>): string {
 function readStatus(raw: unknown): FirstIndexStatus {
   const value = raw as Partial<{ state: string; processed: unknown; total: unknown }> | null;
   if (value?.state === "queued") return { state: "queued" };
+  if (value?.state === "waiting") return { state: "waiting" };
   if (
     value?.state === "indexing" &&
     typeof value.processed === "number" &&
@@ -69,7 +73,9 @@ export function KnowledgeFirstIndexNotice({ agentId }: { agentId: string }) {
       if (pending) timer = setTimeout(() => void poll(true), FIRST_INDEX_POLL_MS);
     }
 
-    void poll(false);
+    // A first request that fails is asked again, like any other: until an
+    // answer arrives, nothing says there is nothing to report.
+    void poll(true);
     return () => {
       cancelled = true;
       controller.abort();

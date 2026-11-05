@@ -6,7 +6,9 @@
 export type FirstIndexStatus =
   /** Nothing to say: the agent's folders are indexed, or it does not search the index. */
   | { state: "none" }
-  /** The first index is waiting — for its turn, or behind another agent's run. */
+  /** The first index is about to start: queued with nothing ahead of it, or about to be. */
   | { state: "queued" }
+  /** Another run holds the instance's one job slot; the first index starts when it finishes. */
+  | { state: "waiting" }
   /** The first index is running. `total` is null until discovery has walked every folder. */
   | { state: "indexing"; processed: number; total: number | null };

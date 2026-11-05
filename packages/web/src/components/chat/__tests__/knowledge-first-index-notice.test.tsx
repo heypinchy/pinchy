@@ -58,13 +58,37 @@ describe("KnowledgeFirstIndexNotice", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/finding/i);
   });
 
-  it("says the first index is waiting its turn", async () => {
+  it("says the first index is about to start, without inventing a run ahead of it", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ state: "queued" }));
 
     render(<KnowledgeFirstIndexNotice agentId="agent-1" />);
     await settle();
 
-    expect(screen.getByRole("status")).toHaveTextContent(/hasn.t started yet/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/starts in a moment/i);
+    expect(screen.getByRole("status")).not.toHaveTextContent(/run that.s going/i);
+  });
+
+  it("says the first index waits for the run that is going now", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ state: "waiting" }));
+
+    render(<KnowledgeFirstIndexNotice agentId="agent-1" />);
+    await settle();
+
+    expect(screen.getByRole("status")).toHaveTextContent(/right after the run that.s going now/i);
+  });
+
+  it("asks again when the very first request fails", async () => {
+    fetchMock
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValue(jsonResponse({ state: "queued" }));
+
+    render(<KnowledgeFirstIndexNotice agentId="agent-1" />);
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FIRST_INDEX_POLL_MS);
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent(/starts in a moment/i);
   });
 
   it("keeps the count current and goes away when the run is done", async () => {

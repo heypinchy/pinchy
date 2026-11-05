@@ -495,7 +495,10 @@ let _firstIndexFailedAt: number | null = null;
  * between). The folder being unindexed IS the record, so nothing is kept in
  * memory and nothing is lost to a restart. Asked on every tick the slot is
  * free, not hourly like the reconversion: a new agent answers "nothing found"
- * until it has run, and an idle look is three small reads.
+ * until it has run. An idle look is three reads — the active job, the agents,
+ * and the distinct folders the runs went through (a handful of rows however
+ * many nights are recorded) — plus a document probe only for a folder no run
+ * has gone through.
  */
 async function queueOwedFirstIndex(): Promise<void> {
   if (_firstIndexFailedAt !== null && Date.now() - _firstIndexFailedAt < FIRST_INDEX_RETRY_MS) {
