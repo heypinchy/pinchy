@@ -41,7 +41,9 @@ export async function GET(
 
   const body: InviteTokenInfo = {
     type: flow.type,
-    email: flow.invite.email ?? null,
+    // A reset resolves its user by this address; an invite without one is
+    // refused above (#1263). Either way the account signs in with it.
+    email: flow.type === "reset" ? flow.user.email : flow.invite.email,
     invitedBy,
   };
   return NextResponse.json(body, { status: 200 });

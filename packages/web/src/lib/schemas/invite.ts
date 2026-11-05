@@ -25,8 +25,8 @@ export type ClaimInviteInput = z.infer<typeof claimInviteSchema>;
  */
 export type InviteTokenInfo = {
   type: "invite" | "reset";
-  /** The sign-in address. `null` for an invite created without one. */
-  email: string | null;
+  /** The sign-in address. Always set: a token without one gets a 410. */
+  email: string;
   /** Display name of the admin who created the invite; `null` on a reset. */
   invitedBy: string | null;
 };

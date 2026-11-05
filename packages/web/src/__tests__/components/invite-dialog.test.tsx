@@ -137,34 +137,12 @@ describe("InviteDialog", () => {
     );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
-    await user.type(screen.getByLabelText("Email (optional)"), "ada@example.com");
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
     expect(
       await screen.findByText(
         "Pinchy doesn't send emails. Copy the link and send it to ada@example.com yourself."
-      )
-    ).toBeInTheDocument();
-  });
-
-  it("falls back to a generic recipient when the invite has no email", async () => {
-    const user = userEvent.setup();
-    fetchSpy.mockImplementation(
-      mockFetchForInvite(
-        jsonResponse({
-          token: "invite-token-abc",
-          email: null,
-          expiresAt: "2026-11-12T14:30:00.000Z",
-        })
-      )
-    );
-
-    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: "Create Invite" }));
-
-    expect(
-      await screen.findByText(
-        "Pinchy doesn't send emails. Copy the link and send it to the person you're inviting yourself."
       )
     ).toBeInTheDocument();
   });
@@ -177,6 +155,7 @@ describe("InviteDialog", () => {
     );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
     // Rendered in the admin's own time zone: the expiry is a moment, and the

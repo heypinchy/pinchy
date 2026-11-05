@@ -31,6 +31,21 @@ vi.mock("next/image", () => ({
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
+// After a successful claim the page signs the person in through the ordinary
+// sign-in path and enters the app (#1265).
+const signInMock = vi.fn();
+vi.mock("@/lib/auth-client", () => ({
+  authClient: { signIn: { email: (...args: unknown[]) => signInMock(...args) } },
+}));
+const enterAccountMock = vi.fn();
+vi.mock("@/lib/account-switch", () => ({
+  enterAccount: (...args: unknown[]) => enterAccountMock(...args),
+}));
+
+function mockSignInFails() {
+  signInMock.mockResolvedValue({ data: null, error: { status: 429 } });
+}
+
 // The page makes two distinct fetches: a GET to /api/invite/[token] on mount to
 // learn the flow type, and a POST to /api/invite/claim on submit. We route the
 // mock by URL+method rather than by call order so the tests don't break if the
@@ -43,9 +58,12 @@ global.fetch = vi.fn();
 
 function mockTokenType(
   type: "invite" | "reset",
-  extra: { email?: string | null; invitedBy?: string | null } = {}
+  extra: { email?: string; invitedBy?: string | null } = {}
 ) {
-  getResponse = { ok: true, body: { type, email: null, invitedBy: null, ...extra } };
+  getResponse = {
+    ok: true,
+    body: { type, email: "newcomer@example.com", invitedBy: null, ...extra },
+  };
 }
 function mockTokenError(error: string) {
   getResponse = { ok: false, body: { error } };
@@ -60,7 +78,11 @@ function mockSubmit(response: MockResponse) {
 describe("Invite Claim Page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getResponse = { ok: true, body: { type: "invite" } };
+    getResponse = {
+      ok: true,
+      body: { type: "invite", email: "newcomer@example.com", invitedBy: null },
+    };
+    signInMock.mockResolvedValue({ data: { user: { id: "new-user-id" } }, error: null });
     postResponse = { ok: true, body: { success: true } };
     (global.fetch as ReturnType<typeof vi.fn>).mockImplementation(
       (url: string, init?: RequestInit) => {
@@ -109,12 +131,13 @@ describe("Invite Claim Page", () => {
       expect(await screen.findByText("You've been invited to Pinchy")).toBeInTheDocument();
     });
 
-    it("should render Name, Password, and Confirm password input fields", async () => {
+    it("should render Name and Password fields, and no Confirm password field", async () => {
       mockTokenType("invite");
       render(<InviteClaimPage />);
       expect(await screen.findByLabelText(/name/i)).toBeInTheDocument();
       expect(screen.getByLabelText(/^password$/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/confirm password/i)).toBeInTheDocument();
+      // The show/hide toggle catches typos; a second field only adds friction.
+      expect(screen.queryByLabelText(/confirm password/i)).not.toBeInTheDocument();
     });
 
     it("should render a show/hide toggle on the password field", async () => {
@@ -151,7 +174,6 @@ describe("Invite Claim Page", () => {
       render(<InviteClaimPage />);
 
       await user.type(await screen.findByLabelText(/^password$/i), "Br1ghtNova!2");
-      await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
       await user.click(screen.getByRole("button", { name: /create account/i }));
 
       await waitFor(() => {
@@ -172,7 +194,6 @@ describe("Invite Claim Page", () => {
 
       await user.type(await screen.findByLabelText(/name/i), "Test User");
       await user.type(screen.getByLabelText(/^password$/i), "short");
-      await user.type(screen.getByLabelText(/confirm password/i), "short");
       await user.click(screen.getByRole("button", { name: /create account/i }));
 
       await waitFor(() => {
@@ -192,33 +213,12 @@ describe("Invite Claim Page", () => {
 
       await user.type(await screen.findByLabelText(/name/i), "Test User");
       await user.type(screen.getByLabelText(/^password$/i), "passwordpassword");
-      await user.type(screen.getByLabelText(/confirm password/i), "passwordpassword");
       await user.click(screen.getByRole("button", { name: /create account/i }));
 
       await waitFor(() => {
         expect(
           screen.getByText("Password is too common. Please choose a less predictable one.")
         ).toBeInTheDocument();
-      });
-
-      expect(global.fetch).not.toHaveBeenCalledWith(
-        "/api/invite/claim",
-        expect.objectContaining({ method: "POST" })
-      );
-    });
-
-    it("should show validation error when passwords do not match", async () => {
-      const user = userEvent.setup();
-      mockTokenType("invite");
-      render(<InviteClaimPage />);
-
-      await user.type(await screen.findByLabelText(/name/i), "Test User");
-      await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
-      await user.type(screen.getByLabelText(/confirm password/i), "different456");
-      await user.click(screen.getByRole("button", { name: /create account/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText("Passwords do not match")).toBeInTheDocument();
       });
 
       expect(global.fetch).not.toHaveBeenCalledWith(
@@ -236,7 +236,6 @@ describe("Invite Claim Page", () => {
 
       await user.type(await screen.findByLabelText(/name/i), "Test User");
       await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
-      await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
       await user.click(screen.getByRole("button", { name: /create account/i }));
 
       await waitFor(() => {
@@ -253,7 +252,6 @@ describe("Invite Claim Page", () => {
 
       await user.type(await screen.findByLabelText(/name/i), "Test User");
       await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
-      await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
       await user.click(screen.getByRole("button", { name: /create account/i }));
 
       await waitFor(() => {
@@ -269,16 +267,39 @@ describe("Invite Claim Page", () => {
       });
     });
 
-    it("should redirect to /login on success via 'Continue to sign in' button", async () => {
+    it("signs the new user in and enters the app right after the account is created", async () => {
       const user = userEvent.setup();
-      mockTokenType("invite");
+      mockTokenType("invite", { email: "newcomer@example.com" });
       mockSubmit({ ok: true, body: { success: true } });
 
       render(<InviteClaimPage />);
 
       await user.type(await screen.findByLabelText(/name/i), "Test User");
       await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
-      await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
+      await user.click(screen.getByRole("button", { name: /create account/i }));
+
+      await waitFor(() => {
+        expect(enterAccountMock).toHaveBeenCalledWith("new-user-id", "/");
+      });
+      expect(signInMock).toHaveBeenCalledWith({
+        email: "newcomer@example.com",
+        password: "Br1ghtNova!2",
+      });
+      expect(
+        screen.queryByRole("button", { name: /continue to sign in/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("falls back to 'Continue to sign in' when signing in right away fails", async () => {
+      const user = userEvent.setup();
+      mockTokenType("invite");
+      mockSubmit({ ok: true, body: { success: true } });
+      mockSignInFails();
+
+      render(<InviteClaimPage />);
+
+      await user.type(await screen.findByLabelText(/name/i), "Test User");
+      await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
       await user.click(screen.getByRole("button", { name: /create account/i }));
 
       await waitFor(() => {
@@ -294,7 +315,6 @@ describe("Invite Claim Page", () => {
     async function submitValidInvite(user: ReturnType<typeof userEvent.setup>) {
       await user.type(await screen.findByLabelText(/name/i), "Test User");
       await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
-      await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
       await user.click(screen.getByRole("button", { name: /create account/i }));
     }
 
@@ -330,17 +350,10 @@ describe("Invite Claim Page", () => {
       });
     });
 
-    it("shows no email field when the invite carries no email", async () => {
-      mockTokenType("invite", { email: null });
-      render(<InviteClaimPage />);
-
-      await screen.findByLabelText(/^password$/i);
-      expect(screen.queryByLabelText(/^email$/i)).not.toBeInTheDocument();
-    });
-
-    it("repeats the sign-in email on the success screen", async () => {
+    it("repeats the sign-in email on the fallback success screen", async () => {
       const user = userEvent.setup();
       mockTokenType("invite", { email: "newcomer@example.com" });
+      mockSignInFails();
       render(<InviteClaimPage />);
 
       await submitValidInvite(user);
@@ -351,15 +364,15 @@ describe("Invite Claim Page", () => {
       ).toBeInTheDocument();
     });
 
-    it("shows the email on the reset form and its success screen too", async () => {
+    it("shows the email on the reset form and its fallback success screen too", async () => {
       const user = userEvent.setup();
       mockTokenType("reset", { email: "existing@example.com" });
+      mockSignInFails();
       render(<InviteClaimPage />);
 
       expect(await screen.findByLabelText(/^email$/i)).toHaveValue("existing@example.com");
 
       await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
-      await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
       await user.click(screen.getByRole("button", { name: /reset password/i }));
 
       expect(await screen.findByText("Password reset!")).toBeInTheDocument();
@@ -418,12 +431,12 @@ describe("Invite Claim Page", () => {
       expect(screen.queryByLabelText(/name/i)).not.toBeInTheDocument();
     });
 
-    it("should render Password and Confirm password fields", async () => {
+    it("should render a Password field and no Confirm password field", async () => {
       mockTokenType("reset");
       render(<InviteClaimPage />);
 
       expect(await screen.findByLabelText(/^password$/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/confirm password/i)).toBeInTheDocument();
+      expect(screen.queryByLabelText(/confirm password/i)).not.toBeInTheDocument();
     });
 
     it("should render a 'Reset password' submit button", async () => {
@@ -441,7 +454,6 @@ describe("Invite Claim Page", () => {
       render(<InviteClaimPage />);
 
       await user.type(await screen.findByLabelText(/^password$/i), "Br1ghtNova!2");
-      await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
       await user.click(screen.getByRole("button", { name: /reset password/i }));
 
       await waitFor(() => {
@@ -456,15 +468,34 @@ describe("Invite Claim Page", () => {
       });
     });
 
-    it("should show a reset-specific success screen", async () => {
+    it("signs the user in with the new password after a reset", async () => {
       const user = userEvent.setup();
-      mockTokenType("reset");
+      mockTokenType("reset", { email: "existing@example.com" });
       mockSubmit({ ok: true, body: { success: true } });
 
       render(<InviteClaimPage />);
 
       await user.type(await screen.findByLabelText(/^password$/i), "Br1ghtNova!2");
-      await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
+      await user.click(screen.getByRole("button", { name: /reset password/i }));
+
+      await waitFor(() => {
+        expect(enterAccountMock).toHaveBeenCalledWith("new-user-id", "/");
+      });
+      expect(signInMock).toHaveBeenCalledWith({
+        email: "existing@example.com",
+        password: "Br1ghtNova!2",
+      });
+    });
+
+    it("should show a reset-specific success screen when signing in right away fails", async () => {
+      const user = userEvent.setup();
+      mockTokenType("reset");
+      mockSubmit({ ok: true, body: { success: true } });
+      mockSignInFails();
+
+      render(<InviteClaimPage />);
+
+      await user.type(await screen.findByLabelText(/^password$/i), "Br1ghtNova!2");
       await user.click(screen.getByRole("button", { name: /reset password/i }));
 
       expect(await screen.findByText("Password reset!")).toBeInTheDocument();

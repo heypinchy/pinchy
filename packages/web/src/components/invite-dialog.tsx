@@ -45,7 +45,7 @@ const inviteSchema = inviteUserSchema.pick({ role: true }).extend({
 
 type InviteFormValues = z.infer<typeof inviteSchema>;
 
-type CreatedInvite = { url: string; email: string | null; expiresAt: string | null };
+type CreatedInvite = { url: string; email: string; expiresAt: string | null };
 
 // The admin reads the expiry against their own clock, so it is rendered in
 // their time zone. en-US like every other date in the UI (PERSONALITY.md).
@@ -115,17 +115,17 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     setError(null);
     setCreating(true);
     try {
-      const data = await apiPost<
-        { token: string; email?: string | null; expiresAt?: string },
-        InviteUserInput
-      >("/api/users/invite", {
-        email: values.email,
-        role: values.role,
-        ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
-      });
+      const data = await apiPost<{ token: string; expiresAt?: string }, InviteUserInput>(
+        "/api/users/invite",
+        {
+          email: values.email,
+          role: values.role,
+          ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
+        }
+      );
       setCreated({
         url: buildInviteUrl(window.location.origin, data.token),
-        email: data.email || null,
+        email: values.email,
         expiresAt: data.expiresAt ?? null,
       });
     } catch (e) {
@@ -182,12 +182,12 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
           <div className="space-y-4">
             <p className="text-sm font-medium">Invite link created:</p>
             <p className="text-sm break-all bg-muted p-2 rounded">{inviteLink}</p>
-            {/* "Email (optional)" reads as if Pinchy mails the invite. It
+            {/* An email field reads as if Pinchy mails the invite. It
                 doesn't — the admin delivers the link (#1265). */}
             <div className="space-y-1 text-sm text-muted-foreground">
               <p>
-                Pinchy doesn&apos;t send emails. Copy the link and send it to{" "}
-                {created?.email ?? "the person you're inviting"} yourself.
+                Pinchy doesn&apos;t send emails. Copy the link and send it to {created?.email}{" "}
+                yourself.
               </p>
               {created?.expiresAt && (
                 <p>The link works once and expires on {formatExpiry(created.expiresAt)}.</p>
