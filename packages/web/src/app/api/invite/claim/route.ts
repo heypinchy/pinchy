@@ -184,14 +184,14 @@ const AUDIT_NAME_MAX_CHARS = 200;
 
 /**
  * Cap by code point, not UTF-16 unit, so the cut never splits an emoji, and
- * replace any lone surrogate the client sent: Postgres jsonb refuses both, and
- * the audit write would throw.
+ * replace any lone surrogate or NUL the client sent: Postgres jsonb refuses
+ * them, and the audit write would throw.
  */
 function auditSafeName(name: string): string {
   return Array.from(name.trim())
     .slice(0, AUDIT_NAME_MAX_CHARS)
     .join("")
-    .replace(/[\uD800-\uDFFF]/gu, "\uFFFD");
+    .replace(/[\uD800-\uDFFF\u0000]/gu, "\uFFFD");
 }
 
 /**

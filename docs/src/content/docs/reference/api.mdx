@@ -1434,7 +1434,7 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 - `400` — missing fields, or a password that fails the password policy
 - `404` — a reset token whose user no longer exists
 - `410` — the token is unknown, expired or already claimed, or the invite has no email address (invites created before the email became required). The `error` message says when the invite lacks an email address.
-- `500` — the account could not be created, or the password reset failed. The token stays usable, and an `outcome: failure` audit entry is written (`user.created` or `auth.password_reset_completed`).
+- `500` — the account could not be created, or the password reset failed. When sign-up or the reset itself is refused, the token stays usable and an `outcome: failure` audit entry is written (`user.created` or `auth.password_reset_completed`).
 
 ## Telegram Channels
 

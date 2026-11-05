@@ -363,9 +363,10 @@ describe("POST /api/invite/claim (integration)", () => {
   it.each([
     ["an emoji split by the length cap", "x".repeat(199) + "\u{1F600}"],
     ["a lone surrogate in the body", "Broken \uD83D name"],
+    ["a NUL character", "Nul\u0000name"],
   ])("still writes the failure row for a name with %s (#1263)", async (_label, name) => {
-    // Postgres jsonb refuses a lone UTF-16 surrogate. A name that leaves one
-    // behind would make the audit write throw, and the failed claim would
+    // Postgres jsonb refuses a lone UTF-16 surrogate and NUL. A name carrying
+    // either would make the audit write throw, and the failed claim would
     // again leave no trace.
     const adminId = await seedAdmin();
     const invite = await createInvite({ role: "member", type: "invite", createdBy: adminId });
