@@ -71,14 +71,16 @@ function recordAccount(value: string): void {
 
 /**
  * Makes this browser's storage belong to `userId`: wipes it if someone else
- * was recorded (or nobody), then records them. Returns whether it wiped, in
- * which case a tab that already rendered from that storage should reload.
+ * was recorded (or nobody), then records them. Returns whether a tab that
+ * already rendered from that storage should reload: only when it wiped AND the
+ * record stuck. Where storage cannot be read or written, every load would
+ * otherwise look like a switch and reload again, forever.
  */
 export function claimAccount(userId: string): boolean {
   const wiped = previousAccount() !== userId;
   if (wiped) wipePinchyStorage();
   recordAccount(userId);
-  return wiped;
+  return wiped && previousAccount() === userId;
 }
 
 /**

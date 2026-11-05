@@ -35,4 +35,19 @@ describe("AccountGuard (#1286)", () => {
 
     expect(reload).not.toHaveBeenCalled();
   });
+
+  // A browser where the record cannot stick would otherwise wipe and reload on
+  // every load, forever, taking every page down with it.
+  for (const method of ["getItem", "setItem"] as const) {
+    it(`never reloads when storage ${method} throws`, () => {
+      const reload = vi.spyOn(navigation, "reload").mockImplementation(() => {});
+      vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+        throw new Error("SecurityError");
+      });
+
+      render(<AccountGuard userId="user-b" />);
+
+      expect(reload).not.toHaveBeenCalled();
+    });
+  }
 });
