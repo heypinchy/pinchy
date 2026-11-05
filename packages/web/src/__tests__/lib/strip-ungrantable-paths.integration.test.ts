@@ -1,7 +1,7 @@
 // Pre-existing data, new code (AGENTS.md § "Test Migrations Against
 // Pre-Existing Data"), for #1272.
 //
-// Before v0.9.1 the agent PATCH accepted any `pinchy-files.allowed_paths`, from
+// Before v0.9.0 the agent PATCH accepted any `pinchy-files.allowed_paths`, from
 // any member on their own agent. The lockdown confined new writes to /data and
 // left the old rows alone. These tests seed such a row directly — bypassing the
 // schema exactly the way the old route did — and assert that the boot-time
@@ -66,20 +66,39 @@ describe("stripUngrantablePaths", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       actorType: "system",
+      actorId: "allowed-paths-cleanup",
       resource: `agent:${agent.id}`,
       outcome: "success",
     });
-    expect(rows[0].detail).toEqual({
+    // Counts, never the folder paths: a path can embed a username, and an
+    // audit row is immutable (the `pathCount` rule in lib/audit.ts).
+    const detail = rows[0].detail as Record<string, unknown>;
+    expect(detail).toEqual({
       agent: { id: agent.id, name: "Pre-lockdown" },
       reason: "allowed_paths_outside_data_root",
-      removed: ["/root/.openclaw/workspaces"],
-      changes: {
-        allowedPaths: {
-          from: ["/data/kb", "/root/.openclaw/workspaces"],
-          to: ["/data/kb"],
-        },
-      },
+      changes: { allowedPathCount: { from: 2, to: 1 } },
+      sweepId: expect.any(String),
     });
+    expect(JSON.stringify(detail)).not.toContain("/root");
+  });
+
+  it("gives every row of one run the same sweepId", async () => {
+    await insertAgent("A", { "pinchy-files": { allowed_paths: ["/"] } });
+    await insertAgent("B", { "pinchy-files": { allowed_paths: ["/etc"] } });
+
+    expect(await stripUngrantablePaths()).toBe(2);
+
+    const sweepIds = (await auditRows()).map((r) => (r.detail as { sweepId: string }).sweepId);
+    expect(sweepIds).toHaveLength(2);
+    expect(new Set(sweepIds).size).toBe(1);
+  });
+
+  it("leaves a deleted agent alone — nothing reads it, and a row about it would only confuse", async () => {
+    const agent = await insertAgent("Gone", { "pinchy-files": { allowed_paths: ["/"] } });
+    await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
+
+    expect(await stripUngrantablePaths()).toBe(0);
+    expect(await auditRows()).toHaveLength(0);
   });
 
   it("is idempotent: a second boot finds nothing and writes nothing", async () => {
