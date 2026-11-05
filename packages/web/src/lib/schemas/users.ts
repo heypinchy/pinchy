@@ -15,7 +15,7 @@ import { INVITE_ROLES } from "@/db/enums";
 export const inviteUserSchema = z.object({
   // Required: claiming the invite creates the account with this address, so
   // an invite without one is a link that can never work (#1263).
-  email: z.string().trim().email(),
+  email: z.string().trim().pipe(z.email()),
   role: z.enum(INVITE_ROLES),
   groupIds: z.array(z.string()).optional(),
 });

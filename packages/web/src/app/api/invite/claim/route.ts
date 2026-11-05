@@ -175,6 +175,8 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ success: true }, { status: 201 });
 }
 
+const AUDIT_NAME_MAX_CHARS = 200;
+
 /**
  * The failure twin of the `user.created` row a successful claim writes. There
  * is no account to act as, so the actor is the claim flow itself. No email in
@@ -191,7 +193,9 @@ async function auditFailedAccountCreation(
     actorId: "invite-claim",
     eventType: "user.created",
     detail: {
-      ...(name?.trim() ? { name: name.trim() } : {}),
+      // The name is whoever holds the link's to choose; cap it so it can't
+      // push the detail past the size limit and take invite and reason with it.
+      ...(name?.trim() ? { name: name.trim().slice(0, AUDIT_NAME_MAX_CHARS) } : {}),
       role: invite.role,
       via: "invite",
       invite: { id: invite.id },

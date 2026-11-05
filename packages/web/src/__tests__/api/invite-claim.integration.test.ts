@@ -339,6 +339,27 @@ describe("POST /api/invite/claim (integration)", () => {
     });
   });
 
+  it("keeps the failure row whole when the claim carries a very long name (#1263)", async () => {
+    // The name comes from whoever holds the link. Uncapped, it can push the
+    // detail past the audit size limit, which replaces the whole detail with
+    // a summary and drops the invite id and the reason.
+    const adminId = await seedAdmin();
+    const invite = await createInvite({ role: "member", type: "invite", createdBy: adminId });
+
+    const response = await POST(
+      makeRequest({ token: invite.token, name: "x".repeat(5000), password: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(410);
+    await flushAfter();
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].detail).toMatchObject({
+      invite: { id: invite.id },
+      reason: "invite_has_no_email",
+    });
+  });
+
   it("records a failure row when Better Auth refuses the sign-up (#1263)", async () => {
     // An account already holds the invite's email, so signUpEmail rejects.
     // The invite must stay usable and the attempt must be on the record.

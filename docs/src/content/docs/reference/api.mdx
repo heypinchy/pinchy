@@ -1421,7 +1421,7 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 | `name`     | string | Yes      | Display name for the new user (ignored for a password reset)                   |
 | `password` | string | Yes      | Password: at least 12 characters, a letter and a number, not a common password |
 
-**Response:** `201 Created`
+**Response:** `201 Created` for a new account, `200 OK` for a password reset
 
 ```json
 {
