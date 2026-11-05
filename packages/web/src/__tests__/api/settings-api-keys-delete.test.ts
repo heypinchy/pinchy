@@ -54,6 +54,10 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/audit-deferred", () => ({
+  recordAuditFailure: vi.fn(),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     delete: mockDbDelete,
@@ -62,6 +66,7 @@ vi.mock("@/db", () => ({
 
 import { DELETE } from "@/app/api/settings/api-keys/[keyId]/route";
 import { appendAuditLog } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 import { apiKeys } from "@/db/schema";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -138,6 +143,36 @@ describe("DELETE /api/settings/api-keys/[keyId]", () => {
       detail: { name: "CI Deploy" },
       outcome: "success",
     });
+  });
+
+  it("has the audit row written before the response is returned (revocation evidence is visible the moment the admin sees 200)", async () => {
+    mockDeleteChain({ name: "CI Deploy" });
+    let written = false;
+    vi.mocked(appendAuditLog).mockImplementationOnce(async () => {
+      await Promise.resolve();
+      written = true;
+      return { id: 1, rowHmac: "hmac" };
+    });
+
+    const response = await DELETE(deleteRequest(), ctx("key-1"));
+
+    expect(response.status).toBe(200);
+    expect(written).toBe(true);
+  });
+
+  it("still answers 200 when the audit write fails: the key IS revoked, so a 500 would invite a retry that 404s", async () => {
+    mockDeleteChain({ name: "CI Deploy" });
+    const err = new Error("db down");
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(err);
+
+    const response = await DELETE(deleteRequest(), ctx("key-9"));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true });
+    expect(recordAuditFailure).toHaveBeenCalledWith(
+      err,
+      expect.objectContaining({ eventType: "api_key.deleted", resource: "api_key:key-9" })
+    );
   });
 
   it("coalesces a null name to an empty string in the audit detail (name can be null in the DB)", async () => {
