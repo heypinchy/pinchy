@@ -23,7 +23,7 @@ import type { LicenseInfo } from "@/lib/enterprise";
 import { PRICING_URL, PORTAL_URL, conversionLink } from "@/lib/conversion-links";
 import { formatLicenseDate } from "@/lib/format-date";
 import { AdminOnlyAgentsNotice } from "@/components/admin-only-agents-notice";
-import type { AgentRef } from "@/lib/admin-only-agents";
+import type { AgentRef } from "@/lib/schemas/agents";
 
 interface SettingsLicenseProps {
   onEnterpriseActivated?: () => void;
@@ -264,7 +264,7 @@ export function SettingsLicense({
             <p className="text-sm font-medium">License-gated configuration</p>
             <p className="text-sm text-muted-foreground">
               {license?.state === "community"
-                ? "Groups from an earlier license are still here. Without a license they have no effect — every shared agent is visible to everyone. You can remove them to tidy up."
+                ? "Groups from an earlier license are still here. Without a license they have no effect — every shared agent is visible to everyone. Removing them also sets every Restricted agent to All users, so those agents stay visible to everyone if you activate a license again."
                 : "Groups and agent visibility restrictions stay enforced without a license. To return this instance to community semantics, you can remove them."}
             </p>
             <Button variant="outline" size="sm" onClick={() => setConfirmRemoveGated(true)}>

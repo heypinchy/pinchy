@@ -15,8 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { apiPost, errorMessage } from "@/lib/api-client";
-import type { AgentRef } from "@/lib/admin-only-agents";
-import type { OpenAdminOnlyAgentsInput } from "@/lib/schemas/agents";
+import type { AgentRef, OpenAdminOnlyAgentsInput } from "@/lib/schemas/agents";
 
 function agentCount(n: number) {
   return `${n} shared agent${n === 1 ? "" : "s"}`;

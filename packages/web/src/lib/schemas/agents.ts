@@ -62,3 +62,9 @@ export const openAdminOnlyAgentsSchema = z.object({
   agentIds: z.array(z.string().min(1)).min(1).max(200),
 });
 export type OpenAdminOnlyAgentsInput = z.infer<typeof openAdminOnlyAgentsSchema>;
+
+/** An agent identified by id, with its name snapshot. */
+export interface AgentRef {
+  id: string;
+  name: string;
+}

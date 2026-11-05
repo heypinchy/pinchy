@@ -1,11 +1,9 @@
 import { and, asc, eq, inArray, isNull, notExists } from "drizzle-orm";
 import { db } from "@/db";
 import { agents, agentGroups } from "@/db/schema";
+import type { AgentRef } from "@/lib/schemas/agents";
 
-export interface AgentRef {
-  id: string;
-  name: string;
-}
+export type { AgentRef };
 
 /**
  * Shared agents stored as `restricted` with no group attached (#1278).

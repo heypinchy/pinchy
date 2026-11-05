@@ -16,7 +16,7 @@ import { SettingsApiKeys } from "@/components/settings-api-keys";
 import { SettingsIntegrations } from "@/components/settings-integrations";
 
 import { SettingsLicense } from "@/components/settings-license";
-import type { AgentRef } from "@/lib/admin-only-agents";
+import type { AgentRef } from "@/lib/schemas/agents";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
 import { TimezoneSettings } from "@/components/timezone-settings";
