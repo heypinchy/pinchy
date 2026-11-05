@@ -63,7 +63,7 @@ describe("useLicenseStatus", () => {
     fetchSpy = vi.spyOn(global, "fetch");
   });
   afterEach(() => {
-    fetchSpy.mockRestore();
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -329,7 +329,6 @@ describe("useLicenseStatus", () => {
       await vi.advanceTimersByTimeAsync(LICENSE_STATUS_RETRY_DELAYS_MS[0]);
     });
     expect(result.current.license).toEqual(enterpriseStatus);
-    timeoutSpy.mockRestore();
   });
 
   it("raises and releases the toast for refetch() while disabled", async () => {
