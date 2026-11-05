@@ -558,7 +558,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     };
     // A file-write fallback for a shrink would land the target past OpenClaw's
     // guard (see MAX_SHRINK_STEPS) — refuse it instead.
-    const writeFallback = (content: string): boolean => {
+    // `transient`: the apply failed for a reason that passes (rate limit, no
+    // connection). Only then is a follow-up queued: a refusal that would be
+    // repeated (a validation error) leaves the file unconfirmed but is not
+    // retried on a timer.
+    const writeFallback = (content: string, { transient }: { transient: boolean }): boolean => {
       if (shrinkKnown()) {
         dropShrink("could not be delivered over config.apply", { transient: true });
         return false;
@@ -566,9 +570,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       if (namesRemovedKey(content)) return false;
       if (!writeFile(content)) return false;
       noteFileOnlyDelivery();
-      // A disconnect delivers it on the reconnect; a fallback while OpenClaw
-      // stays connected (rate limit) has nothing else coming.
-      scheduleFileOnlyFollowUp(regenerateForFileOnlyDelivery);
+      // A disconnect delivers it on the reconnect too; a fallback while
+      // OpenClaw stays connected (rate limit) has nothing else coming.
+      if (transient) scheduleFileOnlyFollowUp(regenerateForFileOnlyDelivery);
       return true;
     };
     let client;
@@ -870,7 +874,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             message
           );
           const fallback = lastSupplemented ?? supplementPayloadWithFileFields(newContent);
-          if (writeFallback(fallback)) {
+          if (writeFallback(fallback, { transient: true })) {
             targetReached();
             onChangeApplied?.();
           }
@@ -913,7 +917,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           // All retries exhausted — fall back to file write so inotify picks up
           // the change. Same meta-preservation logic as the rate-limit path above.
           const fallback = lastSupplemented ?? supplementPayloadWithFileFields(newContent);
-          if (writeFallback(fallback)) {
+          if (
+            writeFallback(fallback, {
+              transient: message.includes(WS_DISCONNECTED_ERROR_FRAGMENT),
+            })
+          ) {
             targetReached();
             onChangeApplied?.();
           }

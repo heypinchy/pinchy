@@ -422,18 +422,23 @@ function clearFileOnlyFollowUp(s: ConfigPushState): void {
 
 /**
  * How long a file-only delivery waits before its follow-up regenerate: one
- * window of OpenClaw's control-plane write limit (3 per 60 s), so the apply it
- * sends is not refused by the same limit that caused the fallback.
+ * window of OpenClaw's control-plane write limit (3 per 60 s in the pinned
+ * OpenClaw, per e2e/shared/dispatch-probe.ts; write.ts's older notes say
+ * ~45 s for OC 5.3), so the apply it sends is not refused by the same limit
+ * that caused the fallback.
  */
 export const FILE_ONLY_FOLLOW_UP_DELAY_MS = 60_000;
 /** While the newest push is in flight, the follow-up re-checks this often. */
 const FILE_ONLY_FOLLOW_UP_RECHECK_MS = 2_000;
 /**
- * The longest a follow-up waits. Each one that is rate-limited again falls
- * back and schedules the next, one doubling later, up to this. The chain does
- * not stop while a delivery is pending — a cap would strand the next change
- * exactly like the bug it fixes — and costs at most a push's few refused
- * applies per wait. A landed apply resets it (settleFileOnlyDelivery).
+ * The longest a follow-up waits; each one fired doubles the wait up to this.
+ * The chain does not stop while a delivery is pending — a cap would strand the
+ * next change exactly like the bug it fixes. Each fire costs a full regenerate
+ * (database reads, secrets.json and auth-profile writes) and its push's
+ * config.get/config.apply attempts. It starts only on a transient fallback
+ * (write.ts), whose cause passes; should OpenClaw refuse for good afterwards,
+ * that cost recurs every 10 min until an apply lands or Pinchy restarts. A
+ * landed apply resets it (settleFileOnlyDelivery).
  */
 export const FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS = 600_000;
 
@@ -451,24 +456,32 @@ export const FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS = 600_000;
  */
 export function scheduleFileOnlyFollowUp(regenerate: () => void): void {
   const s = state();
-  clearFileOnlyFollowUp(s);
-  const delayMs = Math.min(
-    FILE_ONLY_FOLLOW_UP_DELAY_MS * 2 ** Math.min(s.fileOnlyFollowUps, 16),
-    FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS
-  );
+  const backoffMs = () =>
+    Math.min(
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 2 ** Math.min(s.fileOnlyFollowUps, 16),
+      FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS
+    );
+  const arm = (delayMs: number) => {
+    clearFileOnlyFollowUp(s);
+    s.fileOnlyFollowUp = setTimeout(fire, delayMs);
+    s.fileOnlyFollowUp.unref?.();
+  };
   const fire = () => {
     s.fileOnlyFollowUp = undefined;
     if (!s.fileOnlyDelivery) return;
     if (newestPushInFlight()) {
-      s.fileOnlyFollowUp = setTimeout(fire, FILE_ONLY_FOLLOW_UP_RECHECK_MS);
-      s.fileOnlyFollowUp.unref?.();
+      arm(FILE_ONLY_FOLLOW_UP_RECHECK_MS);
       return;
     }
     s.fileOnlyFollowUps++;
+    // The timer owns the chain: re-armed before the regenerate, so a push that
+    // ends without an apply AND without a fallback (a refused write, a
+    // regenerate that bails out) does not end it. A landed apply clears it, a
+    // fallback's own call replaces it.
+    arm(backoffMs());
     regenerate();
   };
-  s.fileOnlyFollowUp = setTimeout(fire, delayMs);
-  s.fileOnlyFollowUp.unref?.();
+  arm(backoffMs());
 }
 
 /** `value` with every string replaced by "": which SecretRefs it resolves, and nothing else. */

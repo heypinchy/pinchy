@@ -271,8 +271,9 @@ export default async function globalSetup() {
         json: async () => ({}),
       })),
     smithersId,
-    // A rate-limited delivery lands with the follow-up one window (60 s) later,
-    // plus that push's own rate-limit waits.
+    // A rate-limited delivery lands with the follow-up one window (60 s) later.
+    // Rate-limited once more, it would need the next follow-up (120 s on) and
+    // miss this — loudly, which is the point of the wait.
     { deadlineMs: 180_000 }
   );
   console.log(

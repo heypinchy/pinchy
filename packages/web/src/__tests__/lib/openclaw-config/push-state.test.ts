@@ -288,8 +288,23 @@ describe("the follow-up regenerate for a file-only delivery", () => {
     scheduleFileOnlyFollowUp(regenerate);
     settleFileOnlyDelivery();
 
+    expect(vi.getTimerCount(), "the timer itself is cleared").toBe(0);
     vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 2);
     expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it("re-arms itself when a follow-up delivers nothing and schedules nothing", () => {
+    // The follow-up's push can end without an apply and without a fallback
+    // (a refused write, a regenerate that bails out): the chain must not end
+    // there while the delivery is still pending.
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 2);
+    expect(regenerate).toHaveBeenCalledTimes(2);
   });
 
   it("waits while the newest push is still in flight, which settles it itself", () => {

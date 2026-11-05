@@ -5203,13 +5203,8 @@ describe("regenerateOpenClawConfig", () => {
     // one rate-limit window later is what delivers it.
     it("is delivered by a follow-up when the rate limit outlasted the push", async () => {
       mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
-      mockConfigGet.mockImplementation(async () => ({
-        hash: "h-file",
-        config: JSON.parse(writtenOpenClawConfig(mockedWriteFileSync) || "{}") as Record<
-          string,
-          unknown
-        >,
-      }));
+      // OpenClaw is up and connected, its file still without the change.
+      mockConfigGet.mockResolvedValue({ hash: "h-file", config: { gateway: { mode: "local" } } });
       mockConfigApply.mockRejectedValue(
         new Error("rate limit exceeded for config.apply; retry after 1s")
       );
@@ -5230,6 +5225,27 @@ describe("regenerateOpenClawConfig", () => {
 
       expect(mockConfigApply).toHaveBeenCalledTimes(1);
       expect(fileOnlyDeliveryPending()).toBe(false);
+    });
+
+    // A refusal that is not transient (a validation error) would be refused
+    // again: the file stays unconfirmed, but nothing is retried on a timer.
+    it("queues no follow-up when the apply failed for a reason that would not pass", async () => {
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      mockConfigGet.mockResolvedValue({ hash: "h" });
+      mockConfigApply.mockRejectedValue(new Error("invalid config: agents.list.0.model"));
+      vi.useFakeTimers();
+      try {
+        pushConfigInBackground(JSON.stringify({ gateway: { mode: "local" } }));
+        for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(2_000);
+        expect(fileOnlyDeliveryPending(), "precondition: it fell back").toBe(true);
+        const attempts = mockConfigApply.mock.calls.length;
+
+        for (let i = 0; i < 30; i++) await vi.advanceTimersByTimeAsync(60_000);
+
+        expect(mockConfigApply.mock.calls.length).toBe(attempts);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("stays pending when the push that applied was superseded before it answered", async () => {
