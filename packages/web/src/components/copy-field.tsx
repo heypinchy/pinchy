@@ -76,13 +76,14 @@ function CopyFieldForValue({
   const { isCopied, copy } = useCopyToClipboard();
   const [copyFailed, setCopyFailed] = useState(false);
   const valueRef = useRef<HTMLElement>(null);
+  const groupRef = useRef<HTMLDivElement>(null);
   const canShare = useSyncExternalStore(noopSubscribe, hasWebShare, noWebShareOnServer);
   // The hook's isCopied lasts ~2 s; a failed attempt inside that window must
   // win over the earlier success.
   const showCopied = isCopied && !copyFailed;
 
   async function handleCopy() {
-    const ok = await copy(value);
+    const ok = await copy(value, { anchor: groupRef.current });
     setCopyFailed(!ok);
     if (!ok) selectValue();
   }
@@ -114,6 +115,7 @@ function CopyFieldForValue({
 
   return (
     <div
+      ref={groupRef}
       role="group"
       aria-label={labelledBy ? undefined : label}
       aria-labelledby={labelledBy}

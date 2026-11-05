@@ -23,8 +23,18 @@ export function useCopyToClipboard({ copiedDuration = 2000 }: { copiedDuration?:
     };
   }, []);
 
-  async function copy(text: string): Promise<boolean> {
-    const ok = await writeToClipboard(text);
+  /**
+   * `anchor`: an element inside the component doing the copy. The fallback's
+   * hidden textarea goes inside it, so it stays within any focus trap the
+   * component sits in (a Radix dialog or sheet). Without one, the textarea
+   * goes next to the focused element — which is not the clicked button in
+   * Safari and Firefox on macOS, since they don't focus buttons on click.
+   */
+  async function copy(
+    text: string,
+    { anchor }: { anchor?: HTMLElement | null } = {}
+  ): Promise<boolean> {
+    const ok = await writeToClipboard(text, anchor ?? null);
     // The write is async, so the component may be gone by now — in which case the
     // cleanup has already run and would not catch a timer scheduled after it.
     if (ok && mounted.current) {
@@ -38,7 +48,7 @@ export function useCopyToClipboard({ copiedDuration = 2000 }: { copiedDuration?:
   return { isCopied, copy };
 }
 
-async function writeToClipboard(text: string): Promise<boolean> {
+async function writeToClipboard(text: string, anchor: HTMLElement | null): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
@@ -47,23 +57,24 @@ async function writeToClipboard(text: string): Promise<boolean> {
   } catch {
     // Secure-context API present but refused (permissions, no focus); fall back.
   }
-  return copyViaExecCommand(text);
+  return copyViaExecCommand(text, anchor);
 }
 
-function copyViaExecCommand(text: string): boolean {
+function copyViaExecCommand(text: string, anchor: HTMLElement | null): boolean {
   if (typeof document === "undefined" || typeof document.execCommand !== "function") {
     return false;
   }
-  // The textarea goes next to whatever has focus (the Copy button), not onto
-  // <body>: inside a modal dialog a focus trap pulls focus straight back from
-  // anything outside it, and execCommand then copies nothing while still
-  // reporting success.
+  // Not onto <body>: inside a modal dialog a focus trap pulls focus straight
+  // back from anything outside it, and execCommand then copies nothing while
+  // still reporting success. Inside the caller's anchor if it gave one, else
+  // next to whatever has focus.
   const previouslyFocused =
     document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const host =
-    previouslyFocused && previouslyFocused !== document.body
+    anchor ??
+    (previouslyFocused && previouslyFocused !== document.body
       ? (previouslyFocused.parentElement ?? document.body)
-      : document.body;
+      : document.body);
   const textarea = document.createElement("textarea");
   try {
     textarea.value = text;
@@ -72,13 +83,13 @@ function copyViaExecCommand(text: string): boolean {
     textarea.style.position = "fixed";
     textarea.style.left = "-9999px";
     host.appendChild(textarea);
-    textarea.focus();
+    textarea.focus({ preventScroll: true });
     textarea.select();
     return document.execCommand("copy");
   } catch {
     return false;
   } finally {
     textarea.remove();
-    previouslyFocused?.focus();
+    previouslyFocused?.focus({ preventScroll: true });
   }
 }

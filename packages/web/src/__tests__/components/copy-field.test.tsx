@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { CopyField } from "@/components/copy-field";
@@ -169,6 +169,52 @@ describe("CopyField", () => {
       expect(copiedText).toBe(URL_VALUE);
       // Focus goes back to where the person was, not to <body>.
       expect(screen.getByRole("button", { name: "Copied" })).toHaveFocus();
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+    }
+  });
+
+  it("copies through the fallback in a dialog even when the click doesn't focus the button (Safari, Firefox on macOS)", () => {
+    // Safari and Firefox on macOS don't focus a button on mouse click; focus
+    // stays on the dialog container, which Radix portals straight into
+    // <body>. So the textarea can't be placed by where focus is — it goes
+    // inside the field itself.
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    });
+    let copiedText: string | null = null;
+    Object.defineProperty(document, "execCommand", {
+      value: vi.fn(() => {
+        const active = document.activeElement;
+        copiedText = active instanceof HTMLTextAreaElement ? active.value : null;
+        return true;
+      }),
+      writable: true,
+      configurable: true,
+    });
+
+    try {
+      render(
+        <Dialog open>
+          <DialogContent>
+            <DialogTitle>Invite User</DialogTitle>
+            <CopyField value={URL_VALUE} label="Invite link" copyLabel="Copy link" />
+          </DialogContent>
+        </Dialog>
+      );
+
+      const dialog = screen.getByRole("dialog");
+      dialog.focus();
+      expect(dialog).toHaveFocus();
+      // fireEvent.click dispatches the click without moving focus — what a
+      // mouse click on a button does in those browsers.
+      fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+
+      expect(copiedText).toBe(URL_VALUE);
+      expect(dialog).toHaveFocus();
     } finally {
       if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
     }
