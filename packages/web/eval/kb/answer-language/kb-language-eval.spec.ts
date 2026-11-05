@@ -20,6 +20,7 @@
 import { test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readdirSync, statSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -30,6 +31,7 @@ import {
   pinchyGet,
   pinchyPost,
   pinchyPatch,
+  pinchyPut,
 } from "../../../e2e/odoo/helpers";
 import { getAdminEmail, getAdminPassword } from "../../../e2e/email/helpers";
 import {
@@ -45,6 +47,7 @@ import { describeError } from "../../error-detail";
 import { gradeAnswerLanguage } from "../../../src/lib/eval/kb/answer-language";
 import { buildKbSweepAgentPayload, KB_SWEEP_ALLOWED_TOOLS } from "../sweep-agent";
 import {
+  AGENTS_MD_LANGUAGE_SECTION,
   LANGUAGE_SWEEP_LABEL,
   languageCandidatesFromEnv,
   languageConditionFromEnv,
@@ -60,6 +63,14 @@ const RESULTS_FILE = path.join(__dirname, "..", "results", `${LANGUAGE_SWEEP_LAB
 const OPENCLAW_CONTAINER = process.env.KB_LANG_EVAL_OPENCLAW_CONTAINER || "pinchy-eval-openclaw-1";
 const PLUGIN_SOURCE = "/root/.openclaw/extensions/pinchy-knowledge/index.ts";
 const REMINDER_MARKER = "Write your answer in the language of the user's question";
+
+function pdfCount(dir = DOCS_DIR): number {
+  return readdirSync(dir).reduce((n, entry) => {
+    const full = path.join(dir, entry);
+    if (statSync(full).isDirectory()) return n + pdfCount(full);
+    return n + (full.endsWith(".pdf") ? 1 : 0);
+  }, 0);
+}
 
 function docker(args: string[]): string {
   return execFileSync("docker", args, { encoding: "utf8" });
@@ -94,6 +105,21 @@ async function seedAnthropicKey(dbUrl: string): Promise<void> {
     `;
   } finally {
     await sql.end();
+  }
+}
+
+/** Appends the staging workaround's language section to the agent's AGENTS.md. */
+async function appendAgentsMdSection(cookie: string, agentId: string): Promise<void> {
+  const getRes = await pinchyGet(`/api/agents/${agentId}/files/AGENTS.md`, cookie);
+  if (!getRes.ok) throw new Error(`Failed to read AGENTS.md: ${String(getRes.status)}`);
+  const { content } = (await getRes.json()) as { content: string };
+  const putRes = await pinchyPut(
+    `/api/agents/${agentId}/files/AGENTS.md`,
+    { content: `${content.trimEnd()}\n\n${AGENTS_MD_LANGUAGE_SECTION}\n` },
+    cookie
+  );
+  if (!putRes.ok) {
+    throw new Error(`Failed to write AGENTS.md: ${String(putRes.status)} ${await putRes.text()}`);
   }
 }
 
@@ -132,8 +158,21 @@ async function setupAgent(cookie: string): Promise<string> {
   const deadline = Date.now() + 10 * 60_000;
   for (;;) {
     const res = await pinchyGet(`/api/agents/${agentId}/knowledge/reindex`, cookie);
-    const body = (await res.json()) as { job: { status: string } | null };
-    if (body.job?.status === "succeeded") break;
+    const body = (await res.json()) as {
+      job: { status: string; counts: { indexed: number; skipped: number } | null } | null;
+    };
+    if (body.job?.status === "succeeded") {
+      // A run that found nothing still "succeeds", and the sweep would then
+      // grade abstentions over an empty index. The first dry run did exactly
+      // that, with Markdown files the pipeline does not ingest.
+      const searchable = (body.job.counts?.indexed ?? 0) + (body.job.counts?.skipped ?? 0);
+      if (searchable < pdfCount()) {
+        throw new Error(
+          `Indexed ${String(searchable)} of ${String(pdfCount())} documents: ${JSON.stringify(body)}`
+        );
+      }
+      break;
+    }
     if (body.job?.status === "failed") throw new Error(`Indexing failed: ${JSON.stringify(body)}`);
     if (Date.now() > deadline) throw new Error(`Indexing did not finish: ${JSON.stringify(body)}`);
     await new Promise((r) => setTimeout(r, 3000));
@@ -163,6 +202,8 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
     );
 
     const agentId = await setupAgent(cookie);
+    const agentsMdLanguageSection = process.env.KB_LANG_EVAL_AGENTS_MD_SECTION === "1";
+    if (agentsMdLanguageSection) await appendAgentsMdSection(cookie, agentId);
     await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
 
     const existing = await readRows();
@@ -195,6 +236,7 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
         questionId,
         lang: question.lang,
         reminderInToolResult,
+        agentsMdLanguageSection,
         at: new Date().toISOString(),
       };
       try {

@@ -16,6 +16,14 @@ export const DEFAULT_LANGUAGE_CANDIDATES = [
   "anthropic/claude-sonnet-5",
 ];
 
+/**
+ * The AGENTS.md section a staging test used as a per-agent workaround for
+ * #1296, verbatim. `KB_LANG_EVAL_AGENTS_MD_SECTION=1` appends it, so the
+ * sweep can compare it with the tool-result fix on the same questions.
+ */
+export const AGENTS_MD_LANGUAGE_SECTION = `## Language (mandatory)
+Always write your entire answer in the language of the user's latest message, even when every source is in German. If the question is in Polish, answer in Polish; quote source passages in their original language.`;
+
 export interface LanguageRunRow {
   /** Which build the run measured, e.g. `before` / `after` the fix. */
   condition: string;
@@ -30,6 +38,11 @@ export interface LanguageRunRow {
    * condition label, so a mislabelled run shows up in its own rows.
    */
   reminderInToolResult: boolean;
+  /**
+   * Whether the agent's AGENTS.md carried `AGENTS_MD_LANGUAGE_SECTION`: the
+   * per-agent workaround tried on staging, measured next to the plugin fix.
+   */
+  agentsMdLanguageSection: boolean;
   /** Whether the answer contains the expected fact. Not part of `passed`. */
   mentioned: boolean;
   answer: string;

@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -23,6 +23,7 @@ function row(over: Partial<LanguageRunRow>): LanguageRunRow {
     passed: true,
     found: ["pl"],
     reminderInToolResult: true,
+    agentsMdLanguageSection: false,
     mentioned: true,
     answer: "…",
     latencyMs: 1,
@@ -158,13 +159,16 @@ describe("the cross-lingual question set", () => {
       for (const entry of readdirSync(dir)) {
         const full = path.join(dir, entry);
         if (statSync(full).isDirectory()) walk(full);
-        else files.push(full);
+        else if (full.endsWith(".md")) files.push(full);
       }
     };
     walk(docsDir);
     expect(files.length).toBeGreaterThanOrEqual(3);
     for (const file of files) {
       expect(gradeAnswerLanguage(readFileSync(file, "utf8"), "de").passed, file).toBe(true);
+      // The ingest pipeline reads PDFs, not Markdown: a document without its
+      // rendered PDF is never indexed, and its questions would all abstain.
+      expect(existsSync(file.replace(/\.md$/, ".pdf")), `${file} needs build-docs.ts`).toBe(true);
     }
   });
 });
