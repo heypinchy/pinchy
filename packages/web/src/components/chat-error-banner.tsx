@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { apiGet, apiDelete } from "@/lib/api-client";
 import {
   useChatSessionHasInlineError,
@@ -10,6 +10,7 @@ import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat
 import type { TransientReason } from "@/lib/schemas/chat-frames";
 import { Button } from "@/components/ui/button";
 import { GatedRetry } from "@/components/chat/gated-retry";
+import { useRunCompletionEffect } from "@/hooks/use-run-completion-effect";
 
 interface ActiveError {
   id: string;
@@ -83,12 +84,8 @@ export function ChatErrorBanner({
   // server stays the judge: a turn that failed leaves the error (or a newer
   // one) active, and the refetch shows that instead.
   const isRunning = useChatSessionIsRunning(agentId, chatId ?? undefined);
-  const wasRunning = useRef(isRunning);
   const [turnsEnded, setTurnsEnded] = useState(0);
-  useEffect(() => {
-    if (wasRunning.current && !isRunning) setTurnsEnded((n) => n + 1);
-    wasRunning.current = isRunning;
-  }, [isRunning]);
+  useRunCompletionEffect(isRunning, () => setTurnsEnded((n) => n + 1));
 
   useEffect(() => {
     let cancelled = false;

@@ -323,8 +323,9 @@ export class StreamPipe {
         //
         // Everything below then treats it as the clean end of turn it is. The
         // terminal `done` OpenClaw sends after the error still arrives and does
-        // the ordinary work: flush the buffered words, rotate the messageId,
-        // supersede any earlier durable error. So there is nothing to
+        // the ordinary work: flush the buffered words, rotate the messageId.
+        // (It supersedes no earlier durable error: a stopped run has not gone
+        // through — see the supersede after the loop.) So there is nothing to
         // synthesize here — only side effects to NOT produce.
         const userAbort = chunk.type === "error" && activeRuns.get(sessionKey)?.abortedByUser;
         if (chunk.type === "error" && !userAbort) {

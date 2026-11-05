@@ -564,6 +564,23 @@ describe("ClientRouter", () => {
       expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
     });
 
+    it("does NOT supersede when the run throws after it said something", async () => {
+      async function* stream() {
+        yield { type: "text" as const, text: "Working on it", runId: "r1" };
+        throw new Error("FailoverError: upstream exploded");
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-throw",
+      });
+
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+
     it("does NOT supersede on a turn that said nothing", async () => {
       // A silent run is a failure of its own (the silent-stream banner), not a
       // message that went through.

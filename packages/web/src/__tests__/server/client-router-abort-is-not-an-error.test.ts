@@ -225,8 +225,10 @@ describe("ClientRouter — a stop click is not a provider error (#978)", () => {
   });
 
   it("does not count as a turn that went through, so an earlier banner stays", async () => {
-    // A stopped reply ends with a plain `done` (openclaw-node's own, after the
-    // abort), which is the chunk a successful turn supersedes on (#1301).
+    // A stopped reply ends like a finished one — a plain `done` (openclaw-node's
+    // own, after the abort) and then the end of the stream — after it said
+    // something. Only the stop tells it apart from a turn that went through
+    // (#1301).
     const router = makeRouter();
     await runStoppedMidStream(router, createMockWs(), [{ type: "done", text: "" } as ChatChunk]);
 
