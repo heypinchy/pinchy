@@ -1,0 +1,85 @@
+---
+title: Send Invitations by Email
+description: Connect your mail server so Pinchy emails invitations and password reset links itself, with the copy-link path kept as a fallback.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Out of the box, Pinchy doesn't send email. When you invite someone or reset a password, you get a link to copy and hand over yourself. That works anywhere, including air-gapped installs, and it stays the default.
+
+If your Pinchy can reach a mail server, connect it once and Pinchy sends invitations and password reset links for you. The link is still shown every time, so you can always copy it as well.
+
+## Prerequisites
+
+- You're signed in as an admin.
+- An SMTP server Pinchy can reach: your company's mail relay, or the SMTP service of your mail provider (Microsoft 365, Google Workspace, Mailgun, Postmark, Amazon SES and the like).
+- An address Pinchy may send from, such as `pinchy@yourcompany.com`, and the username and password for it if your server requires a login.
+
+## Set it up
+
+1. Go to **Settings → Organization** and find **Email delivery**.
+2. Click **Set up email**.
+3. Enter the **SMTP server** (for example `smtp.office365.com`) and the **Sender address**.
+4. Enter the **Username** and **Password**. The username starts out as the sender address, which is what most providers expect; change it if yours differs. A relay that accepts mail without a login needs neither.
+5. Pinchy assumes port 587 with STARTTLS. If your server uses something else, click **Change** next to "Port 587 · STARTTLS" and adjust the port and encryption. Port 465 switches to TLS on its own. Here you can also set a **Sender name**; it defaults to "Pinchy".
+6. Click **Save**. Pinchy connects to the server, sets up encryption and logs in before it saves anything. If that fails, the form tells you what to fix and nothing is saved.
+7. Click **Send test email**. Pinchy sends a short message to your own address. When it arrives, you're done.
+
+The test matters: a server that accepts your login can still refuse to send as your sender address, and that only shows when an email actually goes out.
+
+| Provider                        | Server                    | Port | Encryption    |
+| ------------------------------- | ------------------------- | ---- | ------------- |
+| Microsoft 365                   | `smtp.office365.com`      | 587  | STARTTLS      |
+| Google Workspace (app password) | `smtp.gmail.com`          | 587  | STARTTLS      |
+| Most providers, implicit TLS    | your provider's SMTP host | 465  | TLS           |
+| Internal relay without login    | your relay's host         | 25   | as configured |
+
+## What gets sent
+
+**Invitations.** With email delivery on, the invite dialog's button reads **Send invitation**. The email names you as the inviter, the address of your Pinchy, when the link expires and that it works once. A recipient who wasn't expecting it is told they can ignore it.
+
+**Password resets.** In a user's detail panel, the button reads **Email reset link**. The user gets a link to choose a new password; their current password keeps working until they do.
+
+Both are plain text with a simple HTML version — no images, no tracking, nothing loaded from elsewhere. See [User Management](/guides/user-management/#sending-the-invitation-by-email) for the dialogs.
+
+The link in the email points at your [locked domain](/guides/domain-lock/) when you've set one. Otherwise it uses the address you're browsing Pinchy on, the same one the copy-link path shows you — so send invitations from the address your users will reach Pinchy on.
+
+## When an email doesn't go out
+
+The invite or reset link is created before Pinchy tries to send it, so a mail server problem never loses it. The dialog shows the link with the reason the email didn't go out — for example "Authentication failed — check the username and password" or "The mail server refused the sender address". Copy the link and send it yourself, then fix the setting.
+
+Common causes:
+
+- **Authentication failed.** Wrong username or password, or your provider wants an app password instead of the account password.
+- **The mail server refused the sender address.** The account you log in with may not send as that address. Use the account's own address, or give it permission to send as the shared one.
+- **Connection timed out.** Many cloud hosts block outgoing port 25 and sometimes 587. Try 465 with TLS.
+- **Could not establish a secure connection.** The encryption setting doesn't match the port, or the server's certificate isn't trusted (see below).
+
+## A mail server on your own network
+
+Pinchy only connects to mail servers at public addresses unless you allow private ones. For an internal relay on `10.x`, `172.16–31.x`, `192.168.x` or another private range, set this on the Pinchy container and restart it:
+
+```bash
+ALLOW_PRIVATE_MAIL_HOSTS=1
+```
+
+It's the same switch that lets agents connect to an on-premise mailbox; see [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network) for what it allows and what stays blocked.
+
+If your relay uses a certificate from your own certificate authority, mount the CA certificate into the Pinchy container and point `NODE_EXTRA_CA_CERTS` at it. Pinchy doesn't offer a switch to skip certificate checks.
+
+## Turn it off
+
+Click **Turn off** in **Settings → Organization → Email delivery**. Pinchy forgets the configuration, including the password, and goes back to showing links for you to copy.
+
+## Security and audit
+
+- The configuration, password included, is stored encrypted in Pinchy's database. The password is never sent back to the browser: when you edit the settings, leave the field empty to keep it.
+- A saved password only ever goes to the server it was entered for. If you change the server, enter the password again.
+- The test email always goes to your own address, so the button can't be used to send mail to anyone else.
+- Every change to the settings is recorded as `settings.updated` (resource `settings:mail`), without the password. Every email Pinchy tries to send is recorded as `mail.sent`, with the recipient stored as a hash and masked preview. See [Audit Trail](/concepts/audit-trail/).
+
+<Aside type="note">
+  Email delivery is for invitations and password resets. Agents that read and
+  send email use their own mailbox connections — see [Connect
+  Email](/guides/connect-email/).
+</Aside>
