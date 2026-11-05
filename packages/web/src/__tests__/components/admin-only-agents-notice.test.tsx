@@ -93,6 +93,52 @@ describe("AdminOnlyAgentsNotice", () => {
     expect(toast.success).toHaveBeenCalledWith("2 agents are now visible to everyone.");
   });
 
+  it("says nothing changed when every agent had already moved on", async () => {
+    const user = userEvent.setup();
+    const onOpened = vi.fn();
+    fetchSpy.mockResolvedValue(jsonResponse({ agents: [] }));
+    render(<AdminOnlyAgentsNotice agents={twoAgents} licenseActive onOpened={onOpened} />);
+
+    await user.click(screen.getByRole("button", { name: "Make visible to everyone" }));
+    await user.click(await screen.findByRole("button", { name: "Make visible" }));
+
+    await waitFor(() => expect(onOpened).toHaveBeenCalledWith([]));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(
+      "Nothing to change — these agents were already updated. The list is refreshed."
+    );
+  });
+
+  it("sends more than 200 agents in batches the API accepts", async () => {
+    const user = userEvent.setup();
+    const many = Array.from({ length: 250 }, (_, i) => ({ id: `a${i}`, name: `Agent ${i}` }));
+    fetchSpy.mockImplementation(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const { agentIds } = JSON.parse((init as RequestInit).body as string);
+      return jsonResponse({ agents: agentIds.map((id: string) => ({ id, name: id })) });
+    });
+    render(<AdminOnlyAgentsNotice agents={many} licenseActive onOpened={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Make visible to everyone" }));
+    await user.click(await screen.findByRole("button", { name: "Make visible" }));
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    const sizes = fetchSpy.mock.calls.map(
+      ([, init]: unknown[]) => JSON.parse((init as RequestInit).body as string).agentIds.length
+    );
+    expect(sizes).toEqual([200, 50]);
+    expect(toast.success).toHaveBeenCalledWith("250 agents are now visible to everyone.");
+  });
+
+  it("uses the singular in the community notice and does not link to a locked tab", () => {
+    render(
+      <AdminOnlyAgentsNotice agents={[twoAgents[0]]} licenseActive={false} onOpened={vi.fn()} />
+    );
+    expect(screen.getByText("1 shared agent has no group yet")).toBeInTheDocument();
+    expect(screen.getByText(/everyone can use it today/i)).toBeInTheDocument();
+    expect(screen.getByText("Sales Bot")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Sales Bot" })).not.toBeInTheDocument();
+  });
+
   it("surfaces a failure and leaves the list in place", async () => {
     const user = userEvent.setup();
     const onOpened = vi.fn();

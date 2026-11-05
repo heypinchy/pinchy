@@ -22,6 +22,10 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/audit-deferred", () => ({
+  recordAuditFailure: vi.fn(),
+}));
+
 vi.mock("@/lib/telegram-allow-store", () => ({
   recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
 }));
@@ -30,6 +34,7 @@ import { getSession } from "@/lib/auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { listAdminOnlyAgents, openAdminOnlyAgentsToAll } from "@/lib/admin-only-agents";
 import { appendAuditLog } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { mockSession } from "@/test-helpers/auth";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
@@ -125,6 +130,30 @@ describe("POST /api/agents/admin-only/open-to-all", () => {
     await POST(postBody({ agentIds: ["a1"] }), routeContext());
 
     expect(order).toEqual(["audit", "telegram"]);
+  });
+
+  it("keeps auditing the rest when one audit write fails — the widening already happened", async () => {
+    // The UPDATE has committed. A retry would find nothing still admin-only and
+    // write nothing, so a dropped row here would be lost for good.
+    vi.mocked(openAdminOnlyAgentsToAll).mockResolvedValue([
+      { id: "a1", name: "Sales Bot" },
+      { id: "a2", name: "HR Bot" },
+      { id: "a3", name: "Ops Bot" },
+    ]);
+    vi.mocked(appendAuditLog)
+      .mockResolvedValueOnce({ id: 1, rowHmac: "h1" })
+      .mockRejectedValueOnce(new Error("lock timeout"))
+      .mockResolvedValueOnce({ id: 3, rowHmac: "h3" });
+
+    const res = await POST(postBody({ agentIds: ["a1", "a2", "a3"] }), routeContext());
+
+    expect(res.status).toBe(200);
+    expect(appendAuditLog).toHaveBeenCalledTimes(3);
+    expect(recordAuditFailure).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ eventType: "agent.updated", resource: "agent:a2" })
+    );
+    expect(recalculateTelegramAllowStores).toHaveBeenCalled();
   });
 
   it("writes nothing when no named agent was still admin-only", async () => {

@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { withAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { openAdminOnlyAgentsToAll } from "@/lib/admin-only-agents";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 import { parseRequestBody } from "@/lib/api-validation";
 import { openAdminOnlyAgentsSchema } from "@/lib/schemas/agents";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
@@ -34,8 +35,12 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
   // Audit right after the write and before the Telegram follow-up: a recalc
   // failure must not leave an access-widening change without a trail.
+  //
+  // The UPDATE has committed and cannot be rolled back, and a retry would find
+  // nothing still admin-only — so one failed row must not stop the others, and
+  // must not turn into a 500 that hides a change that really happened.
   for (const agent of opened) {
-    await appendAuditLog({
+    const entry: AuditLogEntry = {
       actorType: "user",
       actorId: session.user.id!,
       eventType: "agent.updated",
@@ -45,7 +50,12 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         changes: { visibility: { from: "restricted", to: "all" } },
       },
       outcome: "success",
-    });
+    };
+    try {
+      await appendAuditLog(entry);
+    } catch (err) {
+      recordAuditFailure(err, entry);
+    }
   }
 
   await recalculateTelegramAllowStores();

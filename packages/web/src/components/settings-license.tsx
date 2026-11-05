@@ -93,6 +93,7 @@ export function SettingsLicense({
         "/api/enterprise/gated-config"
       );
       setConfirmRemoveGated(false);
+      void fetchAdminOnlyAgents();
       toast(
         `Removed ${result.groupsRemoved} group${result.groupsRemoved !== 1 ? "s" : ""} and reset ${result.agentsReset} agent${result.agentsReset !== 1 ? "s" : ""} to community semantics.`
       );
@@ -262,8 +263,9 @@ export function SettingsLicense({
           <div className="space-y-2 rounded-lg border bg-muted/50 p-4">
             <p className="text-sm font-medium">License-gated configuration</p>
             <p className="text-sm text-muted-foreground">
-              Groups and agent visibility restrictions stay enforced without a license. To return
-              this instance to community semantics, you can remove them.
+              {license?.state === "community"
+                ? "Groups from an earlier license are still here. Without a license they have no effect — every shared agent is visible to everyone. You can remove them to tidy up."
+                : "Groups and agent visibility restrictions stay enforced without a license. To return this instance to community semantics, you can remove them."}
             </p>
             <Button variant="outline" size="sm" onClick={() => setConfirmRemoveGated(true)}>
               Remove all license-gated configuration

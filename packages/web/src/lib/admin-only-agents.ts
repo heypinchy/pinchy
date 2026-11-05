@@ -48,9 +48,12 @@ export async function listAdminOnlyAgents(): Promise<AgentRef[]> {
  * audited admin action that restores what members saw before the license.
  *
  * The admin-only condition is re-checked inside the UPDATE, so an agent that
- * got a group (or went personal, or was deleted) after the list was shown is
- * left alone. Widening a group-scoped agent to everyone is exactly the silent
- * change this action must never make.
+ * got a group (or was deleted) after the list was shown is left alone.
+ * Widening a group-scoped agent to everyone is exactly the silent change this
+ * action must never make. This covers changes that committed before the
+ * UPDATE started; an Access-tab save committing during it can still land on
+ * an agent this just opened. Both writers are admins and both are audited, so
+ * that window is not a member-reachable widening.
  *
  * Returns the rows that actually changed, with names for the audit entry.
  */

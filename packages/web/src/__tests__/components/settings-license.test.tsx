@@ -631,4 +631,34 @@ describe("SettingsLicense", () => {
     );
     expect(screen.getByRole("link", { name: "HR Bot" })).toBeInTheDocument();
   });
+
+  it("re-reads the agent list after removing license-gated configuration", async () => {
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/enterprise/gated-config") {
+        return jsonResponse({ groupsRemoved: 1, agentsReset: 1 });
+      }
+      if (url === "/api/agents/admin-only") return jsonResponse({ agents: [] });
+      return jsonResponse({ ...noLicenseStatus, hasGatedConfig: false });
+    });
+    render(
+      <SettingsLicense
+        initialLicense={{ ...noLicenseStatus, hasGatedConfig: true }}
+        initialAdminOnlyAgents={[{ id: "a1", name: "Sales Bot" }]}
+      />
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Remove all license-gated configuration" })
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Remove configuration" }));
+
+    await waitFor(() => expect(screen.queryByText("Sales Bot")).not.toBeInTheDocument());
+  });
+
+  it("on community, says leftover groups have no effect instead of claiming they're enforced", () => {
+    render(<SettingsLicense initialLicense={{ ...noLicenseStatus, hasGatedConfig: true }} />);
+    expect(screen.queryByText(/stay enforced without a license/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/groups from an earlier license are still here/i)).toBeInTheDocument();
+  });
 });
