@@ -85,7 +85,7 @@ function buildFileUrl(agentId: string, filename: string, source: "uploads" | "ar
  *   the browser's native PDF viewer at full size.
  * - `image/*` → inline `<img>`; click opens a modal with the full image.
  * - anything else → a chip that downloads the file (#1298): a CSV or XLSX
- *   have no viewer here, and taking them away is what they were delivered for.
+ *   has no viewer here, and taking it away is what it was delivered for.
  * - missing agentId / filename → a plain chip, since there is no URL to build.
  */
 export const AttachmentPreview: FC = () => {
