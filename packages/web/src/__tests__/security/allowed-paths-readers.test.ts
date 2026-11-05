@@ -31,15 +31,17 @@ const ALLOWED_RAW_ACCESS: Record<string, string> = {
 };
 
 /**
- * A read of an `allowed_paths` property in any spelling: `x.allowed_paths`
+ * A read of an `allowed_paths` property: `x.allowed_paths`
  * (not an assignment to it), `x["allowed_paths"]`, or destructuring
- * `{ allowed_paths } =`. Matched on the property rather than on the
+ * `{ allowed_paths } =` (renamed or not). Destructuring in a function parameter
+ * is not matched: it cannot be told apart from a call passing an object literal.
+ * Matched on the property rather than on the
  * `["pinchy-files"]` chain, because build.ts read it in two steps
  * (`const cfg = …["pinchy-files"]; cfg?.allowed_paths`) and a chain match
  * missed exactly that reader.
  */
 const RAW_ACCESS =
-  /\.\s*allowed_paths\b(?!\s*=[^=])|\[\s*["'`]allowed_paths["'`]\s*\]|\{[^{}]*\ballowed_paths\b[^{}:]*\}\s*=/;
+  /\.\s*allowed_paths\b(?!\s*=[^=])|\[\s*["'`]allowed_paths["'`]\s*\]|\{[^{}]*\ballowed_paths\b[^{}]*\}\s*=/;
 
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
@@ -75,6 +77,7 @@ describe("RAW_ACCESS", () => {
     ["a non-null assertion", 'cfg["pinchy-files"]!.allowed_paths'],
     ["bracket access", 'cfg["pinchy-files"]?.["allowed_paths"]'],
     ["destructuring", 'const { allowed_paths } = cfg["pinchy-files"];'],
+    ["destructuring with a rename", 'const { allowed_paths: paths } = cfg["pinchy-files"] ?? {};'],
   ])("sees %s", (_label, source) => {
     expect(RAW_ACCESS.test(source)).toBe(true);
   });
