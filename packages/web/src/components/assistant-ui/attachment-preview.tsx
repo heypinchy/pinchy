@@ -84,7 +84,9 @@ function buildFileUrl(agentId: string, filename: string, source: "uploads" | "ar
  * - `application/pdf` → small `<embed>` thumbnail; click opens a modal with
  *   the browser's native PDF viewer at full size.
  * - `image/*` → inline `<img>`; click opens a modal with the full image.
- * - anything else (or missing agentId / filename) → a plain chip.
+ * - anything else → a chip that downloads the file (#1298): CSV, XLSX, DOCX…
+ *   have no viewer here, and taking them away is what they were delivered for.
+ * - missing agentId / filename → a plain chip, since there is no URL to build.
  */
 export const AttachmentPreview: FC = () => {
   const { mimeType, filename } = useMessagePartFile();
@@ -121,7 +123,14 @@ export const AttachmentPreview: FC = () => {
     if (readiness === "probing") return <Probing filename={filename} />;
     return <ImagePreview url={url!} filename={filename} warning={capabilityWarning} />;
   }
-  return <Chip filename={filename} mimeType={mimeType} warning={capabilityWarning} />;
+  return (
+    <Chip
+      filename={filename}
+      mimeType={mimeType}
+      warning={capabilityWarning}
+      href={buildFileUrl(agentId, filename, fileSource)}
+    />
+  );
 };
 
 const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
@@ -359,20 +368,37 @@ const Probing: FC<{ filename: string }> = ({ filename }) => (
   </div>
 );
 
-const Chip: FC<{ filename: string | undefined; mimeType: string; warning?: string | null }> = ({
-  filename,
-  mimeType,
-  warning,
-}) => {
+const Chip: FC<{
+  filename: string | undefined;
+  mimeType: string;
+  warning?: string | null;
+  /** Where the file downloads from; without it the chip only names the file. */
+  href?: string;
+}> = ({ filename, mimeType, warning, href }) => {
   const label = filename ?? (mimeType === "application/pdf" ? "PDF document" : "File");
+  const className = `my-1 flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2${warning ? " border-amber-500/60" : ""}`;
   return (
     <div>
-      <div
-        className={`my-1 flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2${warning ? " border-amber-500/60" : ""}`}
-      >
-        <FileText className="size-5 shrink-0 text-muted-foreground" />
-        <span className="truncate text-sm">{label}</span>
-      </div>
+      {href ? (
+        // `download` because the routes serve `inline`: without it a CSV opens
+        // as text in the tab. Left without a value so the Content-Disposition
+        // filename, which carries umlauts intact, still names the saved file.
+        <a
+          href={href}
+          download
+          aria-label={`Download ${label}`}
+          className={`${className} max-w-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+        >
+          <FileText className="size-5 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm">{label}</span>
+          <Download className="ml-auto size-4 shrink-0 text-muted-foreground" />
+        </a>
+      ) : (
+        <div className={className}>
+          <FileText className="size-5 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm">{label}</span>
+        </div>
+      )}
       {warning && <CapabilityWarning message={warning} />}
     </div>
   );
