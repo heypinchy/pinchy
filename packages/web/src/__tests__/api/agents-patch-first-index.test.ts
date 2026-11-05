@@ -189,7 +189,10 @@ describe("PATCH /api/agents/[agentId] — first index of a newly granted folder 
     expect(mockQueueFirstIndex).not.toHaveBeenCalled();
   });
 
-  it("does not queue a run for a grant the runtime never received", async () => {
+  // The grant is committed before the push fails, so the index worker still
+  // queues its first index on its next look — as kb-index-worker. The route
+  // only leaves it to the worker rather than attributing it to this admin.
+  it("leaves the run to the worker when the runtime push failed", async () => {
     adminSession();
     mockAgent(EXISTING);
     vi.mocked(updateAgent).mockResolvedValueOnce({ ...EXISTING, ...GRANT } as never);
