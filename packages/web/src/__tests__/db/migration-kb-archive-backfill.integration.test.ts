@@ -39,8 +39,8 @@ const DB_NAME = `pinchy_kb_archive_backfill_test_${process.pid}`;
 /**
  * Paths as the pre-#858 ingest persisted them, with the status the archive
  * rule assigns. Covers each decision the rule makes: case-insensitive
- * segment match, segment-exact (no substring), directory-segments-only
- * (never the basename), and year folders staying live.
+ * token match within a segment, whole tokens only (no substring),
+ * directory-segments-only (never the basename), and year folders staying live.
  */
 const FIXTURE_PATHS: Array<{ sourcePath: string; expected: "active" | "archived" }> = [
   { sourcePath: "/data/OLD/certificate-2013.pdf", expected: "archived" },
@@ -48,8 +48,28 @@ const FIXTURE_PATHS: Array<{ sourcePath: string; expected: "active" | "archived"
   { sourcePath: "/data/Archive/2013/report.pdf", expected: "archived" },
   { sourcePath: "/data/archived/report.pdf", expected: "archived" },
   { sourcePath: "/data/Archiv/qualitaet/zertifikat.pdf", expected: "archived" },
-  { sourcePath: "/data/old-versions/report.pdf", expected: "active" },
+  // #1290: an archive word as a token of a longer folder name.
+  { sourcePath: "/data/X_OLD/report.pdf", expected: "archived" },
+  { sourcePath: "/data/xOLD/report.pdf", expected: "archived" },
+  { sourcePath: "/data/OLD - don't use/report.pdf", expected: "archived" },
+  { sourcePath: "/data/older versions/report.pdf", expected: "archived" },
+  { sourcePath: "/data/Old certificates/2013/report.pdf", expected: "archived" },
+  { sourcePath: "/data/OLD INSTRUMENTS__update_files/x.pdf", expected: "archived" },
+  { sourcePath: "/data/OLD2019/report.pdf", expected: "archived" },
+  { sourcePath: "/data/Old–2019/report.pdf", expected: "archived" },
+  { sourcePath: "/data/Expired/report.pdf", expected: "archived" },
+  { sourcePath: "/data/Obsolete/report.pdf", expected: "archived" },
+  { sourcePath: "OLD/report.pdf", expected: "archived" },
   { sourcePath: "/data/Goldakte/report.pdf", expected: "active" },
+  { sourcePath: "/data/AccuScan Gold/report.pdf", expected: "active" },
+  { sourcePath: "/data/AS-Gold - 1.7.11 Firmware/report.pdf", expected: "active" },
+  { sourcePath: "/data/healthcare sector/Folder/report.pdf", expected: "active" },
+  { sourcePath: "/data/Malt Beta-Glucanase/report.pdf", expected: "active" },
+  // A Latin accented letter is part of the word, in every database locale.
+  { sourcePath: "/data/Archivübersicht/report.pdf", expected: "active" },
+  { sourcePath: "/data/ARCHIVÜBERSICHT/report.pdf", expected: "active" },
+  { sourcePath: "/data/Alt/report.pdf", expected: "active" },
+  { sourcePath: "/data/Gold/old.pdf", expected: "active" },
   { sourcePath: "/data/archive.pdf", expected: "active" },
   { sourcePath: "/data/2013/certificate.pdf", expected: "active" },
   { sourcePath: "/data/quality/certificate-2024.pdf", expected: "active" },

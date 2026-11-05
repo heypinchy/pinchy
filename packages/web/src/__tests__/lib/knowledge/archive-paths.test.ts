@@ -14,15 +14,66 @@ describe("isArchivedPath", () => {
     expect(isArchivedPath(path)).toBe(true);
   });
 
+  // #1290: folder names from a real supplier share (~14k documents) that hold
+  // superseded material. Each one is an archive word as a token of the name.
   it.each([
-    // Segment-exact, not substring: real folder names containing the words.
-    "/data/old-versions/report.pdf",
-    "/data/Goldakte/report.pdf",
-    "/data/archives-tools/manual.pdf",
-    "/data/Bold/report.pdf",
+    "X_OLD",
+    "X OLD",
+    "xOLD",
+    "Softwar_OLD",
+    "OLD - don't use",
+    "old inserts",
+    "old sheets",
+    "old files",
+    "old documents",
+    "old - FoodLab - Kits",
+    "older versions",
+    "Old versions",
+    "Old certificates",
+    "Old Test Kit Inserts",
+    "Old MSDS",
+    "Old Configurations",
+    "OLD brochures",
+    "OLD Presentations",
+    "OLD Leaflets",
+    "OLD INSTRUMENTS__update_files",
+    "Expired",
+    "Obsolete",
+    "old-versions",
+    "OLD2019",
+  ])("flags a document under the folder %j", (folder) => {
+    expect(isArchivedPath(`/data/Supplier/${folder}/certificate.pdf`)).toBe(true);
+  });
+
+  // Words that merely contain the letters of an archive word are live folders.
+  it.each([
+    "Gold",
+    "GOLD",
+    "AccuScan Gold",
+    "AS-Gold - 1.7.11 Firmware",
+    "Folder",
+    "healthcare sector",
+    "Malt Beta-Glucanase",
+    "Gold Standard Diagnostics - EUS",
+    "Goldakte",
+    "Bold",
+    "archives-tools",
+    "Archivübersicht",
+    "Holder",
+    "Oldtimer",
+    // `alt` (German for "old") is deliberately not an archive word, see
+    // archive-paths.ts.
+    "Alt",
+    "Logo alt",
+  ])("does not flag a document under the folder %j", (folder) => {
+    expect(isArchivedPath(`/data/Supplier/${folder}/certificate.pdf`)).toBe(false);
+  });
+
+  it.each([
     // The rule targets directories, never the file's own basename.
     "/data/archive.pdf",
     "/data/old.pdf",
+    "/data/Old certificate 2013.pdf",
     // Year/date folders are live structure, never archives.
     "/data/2013/certificate.pdf",
     "/data/Q3/report.pdf",
