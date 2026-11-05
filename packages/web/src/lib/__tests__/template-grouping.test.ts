@@ -273,11 +273,83 @@ describe("groupTemplatesByCategory", () => {
     expect(result.categories[0].templates[1].id).toBe("odoo-sales-analyst");
   });
 
-  it("returns categories in stable order: Sales, Finance, HR, Operations, Marketing, Knowledge", () => {
-    // Provide templates from different categories in reverse order
-    const result = groupTemplatesByCategory([knowledgeBase, resumeScreener, salesTemplate]);
+  it("returns runnable categories in stable thematic order, Knowledge & Compliance first", () => {
+    // Provide templates from different categories in scrambled order.
+    // Knowledge & Compliance leads because its templates need nothing but a
+    // folder, so they run on every instance (#1270).
+    const result = groupTemplatesByCategory([resumeScreener, salesTemplate, knowledgeBase]);
     const labels = result.categories.map((c) => c.label);
-    expect(labels).toEqual(["Sales & Customers", "HR & Recruiting", "Knowledge & Compliance"]);
+    expect(labels).toEqual(["Knowledge & Compliance", "Sales & Customers", "HR & Recruiting"]);
+  });
+
+  it("moves categories with nothing runnable after every category that has something (#1270)", () => {
+    // An instance without Odoo: the whole Sales category is unavailable, so
+    // it must not sit above a category the admin can actually use.
+    const unavailableSales = { ...salesTemplate, available: false };
+    const unavailableCrm = { ...crmTemplate, available: false };
+    const unavailableHrAnalyst = { ...hrAnalyst, available: false };
+    const result = groupTemplatesByCategory([
+      unavailableSales,
+      unavailableCrm,
+      unavailableHrAnalyst,
+      resumeScreener,
+      knowledgeBase,
+    ]);
+    expect(result.categories.map((c) => c.label)).toEqual([
+      "Knowledge & Compliance",
+      "HR & Recruiting",
+      "Sales & Customers",
+    ]);
+  });
+
+  it("keeps thematic order among categories that have nothing runnable", () => {
+    const unavailableSales = { ...salesTemplate, available: false };
+    const unavailableKb = { ...knowledgeBase, available: false };
+    const result = groupTemplatesByCategory([unavailableSales, unavailableKb, resumeScreener]);
+    expect(result.categories.map((c) => c.label)).toEqual([
+      "HR & Recruiting",
+      "Knowledge & Compliance",
+      "Sales & Customers",
+    ]);
+  });
+
+  it("treats a disabled template (no model for its capabilities) as not runnable", () => {
+    // A disabled card renders but cannot be clicked, so a category made only
+    // of disabled cards is no more usable than one made of unavailable ones.
+    const disabledKb = { ...knowledgeBase, disabled: true, disabledReason: "Requires vision" };
+    const result = groupTemplatesByCategory([disabledKb, salesTemplate]);
+    expect(result.categories.map((c) => c.label)).toEqual([
+      "Sales & Customers",
+      "Knowledge & Compliance",
+    ]);
+  });
+
+  it("puts Knowledge Base in the first category on an instance with no integrations (#1270)", () => {
+    // The whole real catalogue, availability as /api/templates computes it
+    // with no Odoo and no email connection. A documents-only organisation
+    // must see Knowledge Base without scrolling past Odoo templates.
+    const items: TemplateItem[] = Object.entries(AGENT_TEMPLATES).map(([id, t]) => ({
+      id,
+      name: t.name,
+      description: t.description,
+      requiresDirectories: t.pluginId === "pinchy-files",
+      requiresOdooConnection: t.requiresOdooConnection ?? false,
+      requiresEmailConnection: t.requiresEmailConnection ?? false,
+      defaultTagline: t.defaultTagline,
+      available: !(t.requiresOdooConnection || t.requiresEmailConnection),
+    }));
+
+    const { categories } = groupTemplatesByCategory(items);
+    expect(categories[0].templates[0].id).toBe("knowledge-base");
+
+    const firstUnrunnable = categories.findIndex((c) =>
+      c.templates.every((t) => t.available === false)
+    );
+    const lastRunnable = categories.reduce(
+      (last, c, i) => (c.templates.some((t) => t.available !== false) ? i : last),
+      -1
+    );
+    expect(firstUnrunnable).toBeGreaterThan(lastRunnable);
   });
 
   it("omits categories with no matching templates in the input", () => {
