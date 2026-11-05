@@ -9,8 +9,11 @@ import { createHash } from "node:crypto";
  * the cached copy never reaches the server's access check (#1286).
  * `Vary: Cookie` makes a different session cookie a cache miss.
  *
- * Use this for every cache lifetime; `browser-cache-session-scope.test.ts`
- * fails on one written by hand.
+ * A lifetime is the exception: within one session the browser reuses its
+ * copy without asking, past a revoked grant. Access-checked content uses
+ * `sessionScopedRevalidateHeaders` instead, and only routes listed in
+ * MAY_SET_A_LIFETIME (`browser-cache-session-scope.test.ts`) may call this.
+ * That test also fails on a lifetime written by hand.
  */
 export function sessionScopedCacheHeaders(maxAgeSeconds: number): {
   "cache-control": string;
