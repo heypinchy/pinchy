@@ -519,8 +519,8 @@ export type AuditLogEntry =
       // People are named, never identified by users.id: `detail` is stored
       // verbatim and crypto-erasure cannot reach an id in it (#824, #1273). On
       // a decision the approver is the row's (pseudonymized) actor; on the
-      // agent- and system-written rows `resource` names the request, whose
-      // operational `tool_approval` row carries the requester.
+      // agent- and system-written rows the name is all there is. `resource`
+      // names the request, but the sweep reaps that row after 30 days.
       detail: {
         request: { id: string };
         agent: { id: string; name: string | null };

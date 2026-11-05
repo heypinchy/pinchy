@@ -126,9 +126,9 @@ function decideReq(body: object) {
     body: JSON.stringify(body),
   });
 }
-function setSession(user: { id: string; role?: string }) {
+function setSession(user: { id: string; role?: string }, name = "U") {
   mockGetSession.mockResolvedValue({
-    user: { id: user.id, role: user.role ?? "member", name: "U" },
+    user: { id: user.id, role: user.role ?? "member", name },
   });
 }
 const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
@@ -1088,7 +1088,9 @@ describe("approval routes (integration, real DB)", () => {
 
     it("on a request, its approval and the consumed grant", async () => {
       const blocked = await (await gateCheck(gateReq(gateBody()))).json();
-      setSession(user);
+      // A session name distinct from the DB name, so the test can tell which
+      // source each snapshot was taken from.
+      setSession(user, "Session U");
       await decide(decideReq({ decision: "approve" }), ctx(blocked.requestId));
       await gateCheck(gateReq(gateBody()));
 
@@ -1100,9 +1102,11 @@ describe("approval routes (integration, real DB)", () => {
       ]);
       expectNoRawUserId(rows);
       const granted = rows.find((r) => r.eventType === "approval.granted")!;
-      expect((granted.detail as { approver?: unknown }).approver).toEqual({ name: "U" });
-      // The approver is still identifiable: as the row's (pseudonymized) actor.
+      expect((granted.detail as { approver?: unknown }).approver).toEqual({ name: "Session U" });
+      // The approver is still identifiable: as the row's actor, pseudonymized
+      // on write — so not the raw id there either.
       expect(granted.actorType).toBe("user");
+      expect(granted.actorId).not.toBe(user.id);
     });
 
     it("on a denial, with an address in its reason scrubbed", async () => {

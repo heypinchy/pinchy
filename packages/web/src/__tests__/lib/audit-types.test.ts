@@ -156,9 +156,8 @@ describe("AuditLogEntry approval.* (#1273)", () => {
   // `detail` is stored verbatim in an immutable, HMAC-chained row, so a raw
   // users.id there is out of reach of GDPR crypto-erasure (#824). The person
   // who asked for the action, and the person who cleared it, are snapshotted
-  // by name only. On a decision the approver IS the row's actor; on the
-  // agent- and system-written rows the request id in `resource` leads back to
-  // the operational `tool_approval` row, which can be erased.
+  // by name only. On a decision the approver IS the row's (pseudonymized)
+  // actor; on the agent- and system-written rows the name is all there is.
   // One union member carries all five lifecycle events, so `Extract` has to
   // name all five — against one of them it yields `never`, which every
   // assertion below would then pass against.
