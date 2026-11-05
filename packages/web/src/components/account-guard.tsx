@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { claimAccount, navigation, recordedAccount, watchAccount } from "@/lib/account-switch";
+import {
+  claimAccount,
+  recordedAccount,
+  reloadForAccountChange,
+  watchAccount,
+} from "@/lib/account-switch";
 
 /**
  * Keeps this tab's client state to the signed-in person (#1286).
@@ -27,7 +32,7 @@ export function AccountGuard({ userId, children }: { userId: string; children: R
     // A restored page re-runs no effect and missed every storage event while
     // it was frozen, so it checks again when shown.
     const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted && recordedAccount() !== userId) navigation.reload();
+      if (event.persisted && recordedAccount() !== userId) reloadForAccountChange();
     };
     window.addEventListener("pageshow", onPageShow);
     const stopWatching = watchAccount(userId);

@@ -36,6 +36,13 @@ const SIGNED_OUT_PREFIX = "signed-out:";
 // sent to the login page by sharing it, survives.
 const RECENT_SHARE_MS = 10 * 60 * 1000;
 
+// The agent settings page sets window.onbeforeunload while it has unsaved
+// edits. On an account switch that "Leave site?" prompt must not get a say:
+// "Stay" would keep the previous person's page alive after their session.
+function dropUnloadPrompt(): void {
+  window.onbeforeunload = null;
+}
+
 /** Indirection so tests can observe the full-page navigation jsdom cannot perform. */
 export const navigation = {
   assign(url: string): void {
@@ -143,6 +150,7 @@ export async function leaveAccount(): Promise<void> {
   // Always a new value, so every other tab gets a storage event.
   recordAccount(`${SIGNED_OUT_PREFIX}${Date.now()}`);
   await forgetShares();
+  dropUnloadPrompt();
   navigation.assign("/login");
 }
 
@@ -154,13 +162,28 @@ export async function enterAccount(userId: string | undefined, target: string): 
     await forgetShares();
   } else if (recordedAccount() === userId) await keepRecentShares();
   else await claimAccount(userId);
+  dropUnloadPrompt();
   navigation.assign(target);
+}
+
+/**
+ * Reloads this tab because the browser now belongs to someone else. Clears the
+ * tab's own sessionStorage first: a reload keeps it, and no other tab can.
+ */
+export function reloadForAccountChange(): void {
+  try {
+    sessionStorage.clear();
+  } catch {
+    // ignore
+  }
+  dropUnloadPrompt();
+  navigation.reload();
 }
 
 /** Reloads this tab when another tab records a different account. Returns the unsubscribe. */
 export function watchAccount(userId: string): () => void {
   const onStorage = (event: StorageEvent) => {
-    if (event.key === ACCOUNT_KEY && event.newValue !== userId) navigation.reload();
+    if (event.key === ACCOUNT_KEY && event.newValue !== userId) reloadForAccountChange();
   };
   window.addEventListener("storage", onStorage);
   return () => window.removeEventListener("storage", onStorage);

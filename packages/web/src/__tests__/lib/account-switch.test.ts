@@ -189,6 +189,21 @@ describe("account switch on a shared browser (#1286)", () => {
     expect(assign).toHaveBeenCalledWith("/login");
   });
 
+  it("drops an unsaved-changes prompt before leaving, so the load is never cancelled", async () => {
+    // The agent settings page sets window.onbeforeunload while it has unsaved
+    // edits. "Stay" would leave the signed-out tab showing this person's page.
+    const prompt = () => true;
+    window.onbeforeunload = prompt;
+    const promptAtAssign: unknown[] = [];
+    assign.mockImplementation(() => promptAtAssign.push(window.onbeforeunload));
+
+    await leaveAccount();
+    window.onbeforeunload = prompt;
+    await enterAccount("user-a", "/");
+
+    expect(promptAtAssign).toEqual([null, null]);
+  });
+
   describe("other open tabs", () => {
     // Cookies are shared across tabs, but a tab's in-memory state is not: a
     // second tab of the previous person keeps their chat list and drafts, and
@@ -204,12 +219,21 @@ describe("account switch on a shared browser (#1286)", () => {
     });
 
     it("reloads a tab when another tab switches to a different account or signs out", () => {
+      window.onbeforeunload = () => true;
+      sessionStorage.setItem("pinchy:instruction-draft:agent-1", "unconsumed handoff");
+      // Nothing may hold the reload back, and the reload keeps this tab's
+      // sessionStorage, which only this tab can clear.
+      const atReload: Array<{ prompt: unknown; session: number }> = [];
+      reload.mockImplementation(() => {
+        atReload.push({ prompt: window.onbeforeunload, session: sessionStorage.length });
+      });
       const stop = watchAccount("user-a");
       try {
         storageEvent("pinchy:account", "user-b");
         expect(reload).toHaveBeenCalledTimes(1);
         storageEvent("pinchy:account", "signed-out:123");
         expect(reload).toHaveBeenCalledTimes(2);
+        expect(atReload[0]).toEqual({ prompt: null, session: 0 });
       } finally {
         stop();
       }
