@@ -70,6 +70,10 @@ interface ConfigPushState {
   fileOnlyDelivery: boolean;
   /** Generations of the push coroutines in flight (see newestPushInFlight). */
   inFlightGenerations: Set<number>;
+  /** Pending follow-up regenerate for a file-only delivery (scheduleFileOnlyFollowUp). */
+  fileOnlyFollowUp: ReturnType<typeof setTimeout> | undefined;
+  /** Follow-ups fired for the pending file-only delivery (MAX_FILE_ONLY_FOLLOW_UPS). */
+  fileOnlyFollowUps: number;
 }
 
 /**
@@ -115,6 +119,8 @@ function state(): ConfigPushState {
       deliveredSeq: 0,
       fileOnlyDelivery: false,
       inFlightGenerations: new Set(),
+      fileOnlyFollowUp: undefined,
+      fileOnlyFollowUps: 0,
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -126,6 +132,7 @@ function state(): ConfigPushState {
   existing.deliveredSeq ??= 0;
   existing.fileOnlyDelivery ??= false;
   existing.inFlightGenerations ??= new Set();
+  existing.fileOnlyFollowUps ??= 0;
   return existing as ConfigPushState;
 }
 
@@ -371,17 +378,20 @@ export function fullRegenerateDeliveredSince(seq: number): boolean {
  * that same file (write.ts) — and a reconnect regenerates
  * (server/openclaw-connect-regenerate.ts).
  *
- * Gaps, stated rather than closed here. The no-client write at boot does not
+ * A fallback with no reconnect coming — the rate-limit retries ran out while
+ * OpenClaw stayed connected, the shape a fresh install's first restarts can
+ * produce — gets a follow-up regenerate one rate-limit window later
+ * (scheduleFileOnlyFollowUp), as does a newest push that ends without an
+ * apply while it waits.
+ *
+ * Gap, stated rather than closed here: the no-client write at boot does not
  * set this, so a Pinchy restart that changes openclaw.json while OpenClaw
  * keeps running relies on OpenClaw reloading the file. Setting it would cost
  * one config.apply (a rate-limit slot) on every boot that changed the file,
  * also where OpenClaw then starts on that file anyway — a trade that needs
- * its own evidence. And a fallback with no reconnect coming (rate-limit
- * retries ran out with OpenClaw still connected), or a push in flight at
- * reconnect that ends without an apply, is delivered by the next regenerate,
- * whatever triggers it.
+ * its own evidence.
  *
- * Process-wide only, not persisted, and that is a third gap: a Pinchy restart
+ * Process-wide only, not persisted, and that is a second gap: a Pinchy restart
  * drops a pending delivery, and the first connect's regenerate then takes an
  * unchanged openclaw.json for the runtime again.
  */
@@ -399,7 +409,60 @@ export function fileOnlyDeliveryPending(): boolean {
  * holds everything the file does.
  */
 export function settleFileOnlyDelivery(): void {
-  state().fileOnlyDelivery = false;
+  const s = state();
+  s.fileOnlyDelivery = false;
+  s.fileOnlyFollowUps = 0;
+  clearFileOnlyFollowUp(s);
+}
+
+function clearFileOnlyFollowUp(s: ConfigPushState): void {
+  if (s.fileOnlyFollowUp !== undefined) clearTimeout(s.fileOnlyFollowUp);
+  s.fileOnlyFollowUp = undefined;
+}
+
+/**
+ * How long a file-only delivery waits before its follow-up regenerate: one
+ * window of OpenClaw's control-plane write limit (3 per 60 s), so the apply it
+ * sends is not refused by the same limit that caused the fallback.
+ */
+export const FILE_ONLY_FOLLOW_UP_DELAY_MS = 60_000;
+/** While the newest push is in flight, the follow-up re-checks this often. */
+const FILE_ONLY_FOLLOW_UP_RECHECK_MS = 2_000;
+/**
+ * Follow-ups per pending delivery. Each one that is rate-limited again falls
+ * back and schedules the next; this ends the chain should OpenClaw keep
+ * refusing. A landed apply resets it (settleFileOnlyDelivery).
+ */
+export const MAX_FILE_ONLY_FOLLOW_UPS = 3;
+
+/**
+ * Queue one follow-up regenerate for a file-only delivery (noteFileOnlyDelivery).
+ * The flag makes that regenerate push past openclaw.json, and its landed apply
+ * settles the delivery.
+ *
+ * Coalesced process-wide: one pending at most, the latest caller's
+ * `regenerate` wins. Cancelled when an apply lands, skipped when none is
+ * pending any more, and deferred while the newest push is in flight — that
+ * one settles the delivery itself, and a regenerate would only supersede it.
+ * At most MAX_FILE_ONLY_FOLLOW_UPS fire per pending delivery.
+ */
+export function scheduleFileOnlyFollowUp(regenerate: () => void): void {
+  const s = state();
+  clearFileOnlyFollowUp(s);
+  if (s.fileOnlyFollowUps >= MAX_FILE_ONLY_FOLLOW_UPS) return;
+  const fire = () => {
+    s.fileOnlyFollowUp = undefined;
+    if (!s.fileOnlyDelivery) return;
+    if (newestPushInFlight()) {
+      s.fileOnlyFollowUp = setTimeout(fire, FILE_ONLY_FOLLOW_UP_RECHECK_MS);
+      s.fileOnlyFollowUp.unref?.();
+      return;
+    }
+    s.fileOnlyFollowUps++;
+    regenerate();
+  };
+  s.fileOnlyFollowUp = setTimeout(fire, FILE_ONLY_FOLLOW_UP_DELAY_MS);
+  s.fileOnlyFollowUp.unref?.();
 }
 
 /** `value` with every string replaced by "": which SecretRefs it resolves, and nothing else. */
@@ -452,6 +515,8 @@ export function _resetConfigPushState(): void {
   s.undeliveredSeq = 0;
   s.deliveredSeq = 0;
   s.fileOnlyDelivery = false;
+  s.fileOnlyFollowUps = 0;
+  clearFileOnlyFollowUp(s);
   s.inFlightGenerations.clear();
   s.unservedCalls = undefined;
   s.writtenSecretsShape = undefined;

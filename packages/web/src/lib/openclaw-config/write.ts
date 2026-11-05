@@ -23,6 +23,7 @@ import {
   noteFullRegenerateDelivered,
   fullRegenerateDeliveredSince,
   noteFileOnlyDelivery,
+  scheduleFileOnlyFollowUp,
   fileOnlyDeliveryPending,
   settleFileOnlyDelivery,
 } from "./push-state";
@@ -382,6 +383,21 @@ export interface PushConfigOptions {
   resumeStrandedShrink?: () => void;
 }
 
+/**
+ * The follow-up regenerate a file-only delivery schedules (push-state.ts).
+ * Imported lazily: build.ts imports this module.
+ */
+function regenerateForFileOnlyDelivery(): void {
+  import("./build")
+    .then((build) => build.regenerateOpenClawConfig())
+    .catch((err: unknown) => {
+      console.error(
+        "[openclaw-config] follow-up regenerate for a file-only delivery failed:",
+        err instanceof Error ? err.message : String(err)
+      );
+    });
+}
+
 export function pushConfigInBackground(newContent: string, options: PushConfigOptions = {}): void {
   const { onChangeApplied, resumeStrandedShrink } = options;
   const generation = nextConfigPushGeneration();
@@ -550,6 +566,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       if (namesRemovedKey(content)) return false;
       if (!writeFile(content)) return false;
       noteFileOnlyDelivery();
+      // A disconnect delivers it on the reconnect; a fallback while OpenClaw
+      // stays connected (rate limit) has nothing else coming.
+      scheduleFileOnlyFollowUp(regenerateForFileOnlyDelivery);
       return true;
     };
     let client;
@@ -687,15 +706,20 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // `current.config` is what config.get reads — openclaw.json, the very
         // file a push just wrote and the running OpenClaw may never have
         // loaded. It names the change already, so the guard would skip the
-        // one apply that can deliver it. config.apply diffs against OpenClaw's
-        // own runtime and hot-reloads what differs (CI run 41906476538's late
-        // apply: `reload applied (agents.list, …)`, no restart). That an apply
-        // equivalent to the runtime never restarts the pinned OpenClaw is not
-        // measured here (#193); the first landed apply settles the delivery,
-        // so the cost is one apply per pending episode either way — provided
-        // the apply answers before any restart it causes (the SIGUSR1 note
-        // above WS_DISCONNECTED_ERROR_FRAGMENT says it does); one that never answered would
-        // not count as landed and would be retried.
+        // one apply that can deliver it.
+        //
+        // What that apply costs, read from the pinned OpenClaw 2026.7.1 dist
+        // (gateway/server-methods/config.ts → config-*.js): the handler takes
+        // `changedPaths = diffConfigPaths(<file snapshot>, payload)` and
+        // decides a restart with resolveConfigRestartRequirement on exactly
+        // those paths. A payload equal to the file has none, so
+        // buildGatewayReloadPlan([]) is a no-op plan and no SIGUSR1 restart is
+        // scheduled. The write then reaches OpenClaw's reload watcher, which
+        // compares against its runtime and applies what the runtime lacks —
+        // the undelivered change itself, under its own reload rules (CI run
+        // 41906476538's late apply: `hot reload applied (hooks, plugins,
+        // models)`, no restart). The handler also responds before it queues
+        // any follow-up, so a landed apply is seen and settles the delivery.
         if (current.config && !fileOnlyDeliveryPending()) {
           const supplementedConfig = JSON.parse(supplemented) as Record<string, unknown>;
           if (

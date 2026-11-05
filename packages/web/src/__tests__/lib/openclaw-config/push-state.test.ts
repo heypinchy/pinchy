@@ -15,7 +15,7 @@
 // the custom server (which also triggers regenerates) can load SEPARATE module
 // instances — same reason as server/openclaw-client.ts.
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   trackConfigPushStarted,
   trackConfigPushSettled,
@@ -31,6 +31,11 @@ import {
   settleUndeliveredConfigChange,
   noteFullRegenerateDelivered,
   fullRegenerateDeliveredSince,
+  noteFileOnlyDelivery,
+  settleFileOnlyDelivery,
+  scheduleFileOnlyFollowUp,
+  FILE_ONLY_FOLLOW_UP_DELAY_MS,
+  MAX_FILE_ONLY_FOLLOW_UPS,
   _resetConfigPushState,
 } from "@/lib/openclaw-config/push-state";
 
@@ -243,5 +248,82 @@ describe("a config change Pinchy could not deliver", () => {
     expect(other.undeliveredConfigChange()).toBe(true);
     other.settleUndeliveredConfigChange(3);
     expect(undeliveredConfigChange()).toBe(false);
+  });
+});
+
+// A file-only delivery with no reconnect coming — the rate-limit fallback while
+// OpenClaw stays connected — has nothing else to deliver it: the follow-up
+// regenerate is what does (noteFileOnlyDelivery in push-state.ts).
+describe("the follow-up regenerate for a file-only delivery", () => {
+  beforeEach(() => {
+    _resetConfigPushState();
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("regenerates one rate-limit window after the fallback", () => {
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS - 1);
+    expect(regenerate).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps at most one pending, however many fallbacks schedule one", () => {
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 2);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("is cancelled once an apply lands", () => {
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+    settleFileOnlyDelivery();
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 2);
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it("waits while the newest push is still in flight, which settles it itself", () => {
+    noteFileOnlyDelivery();
+    const generation = nextConfigPushGeneration();
+    trackConfigPushStarted(generation);
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 3);
+    expect(regenerate).not.toHaveBeenCalled();
+
+    trackConfigPushSettled(generation);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops after a bounded number of follow-ups per pending delivery", () => {
+    // Each follow-up that is rate-limited again falls back and schedules the
+    // next; the chain must end even if OpenClaw never accepts an apply.
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn(() => scheduleFileOnlyFollowUp(regenerate));
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * (MAX_FILE_ONLY_FOLLOW_UPS + 5));
+    expect(regenerate).toHaveBeenCalledTimes(MAX_FILE_ONLY_FOLLOW_UPS);
+
+    // A landed apply ends the episode; the next fallback gets a fresh budget.
+    settleFileOnlyDelivery();
+    noteFileOnlyDelivery();
+    scheduleFileOnlyFollowUp(vi.fn());
+    const next = vi.fn();
+    scheduleFileOnlyFollowUp(next);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS);
+    expect(next).toHaveBeenCalledTimes(1);
   });
 });

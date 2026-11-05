@@ -5199,6 +5199,39 @@ describe("regenerateOpenClawConfig", () => {
       expect(fileOnlyDeliveryPending()).toBe(false);
     });
 
+    // OpenClaw stays connected, so no reconnect regenerates: the follow-up
+    // one rate-limit window later is what delivers it.
+    it("is delivered by a follow-up when the rate limit outlasted the push", async () => {
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      mockConfigGet.mockImplementation(async () => ({
+        hash: "h-file",
+        config: JSON.parse(writtenOpenClawConfig(mockedWriteFileSync) || "{}") as Record<
+          string,
+          unknown
+        >,
+      }));
+      mockConfigApply.mockRejectedValue(
+        new Error("rate limit exceeded for config.apply; retry after 1s")
+      );
+      vi.useFakeTimers();
+      try {
+        const regenerated = regenerateOpenClawConfig();
+        for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(5_000);
+        await regenerated;
+        expect(fileOnlyDeliveryPending(), "precondition: the push fell back").toBe(true);
+        mockedReadFileSync.mockReturnValue(writtenOpenClawConfig(mockedWriteFileSync));
+
+        mockConfigApply.mockReset().mockResolvedValue(undefined);
+        for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(2_000);
+      } finally {
+        vi.useRealTimers();
+      }
+      await drainBackgroundCoroutine();
+
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+      expect(fileOnlyDeliveryPending()).toBe(false);
+    });
+
     it("stays pending when the push that applied was superseded before it answered", async () => {
       noteFileOnlyDelivery();
       mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });

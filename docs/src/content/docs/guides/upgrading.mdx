@@ -565,6 +565,10 @@ Comma-separated addresses or CIDR ranges; loopback is trusted already. Leave it 
 
 Blocked-request entries in the audit trail now carry `clientAddress` beside `remoteAddress`. `remoteAddress` still means what it always did — the machine that opened the connection, i.e. your proxy — and `clientAddressSource` tells you whether the client address came from the forwarded header (`forwarded`) or is just the connection's own peer because nothing forwarded one (`socket`).
 
+#### A change made while OpenClaw restarts now reaches it
+
+If you created an agent or changed a setting while OpenClaw was restarting or rate-limiting config changes, the change could land in `openclaw.json` and still never reach the running OpenClaw. The agent then answered `unknown agent id` until some later, unrelated change happened to push the config again. We now keep pushing until OpenClaw has applied the change. Nothing to configure.
+
 ### Database migrations
 
 The migrations `0056`–`0079` run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
