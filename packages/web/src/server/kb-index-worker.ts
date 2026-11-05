@@ -44,7 +44,12 @@ import {
   queueReconversion,
 } from "@/lib/knowledge/office-format-upgrade";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
-import { agentsOwedFirstIndex, loadRunPaths, queueFirstIndex } from "@/lib/knowledge/first-index";
+import {
+  agentsOwedFirstIndex,
+  anyAgentSearchesTheIndex,
+  loadRunPaths,
+  queueFirstIndex,
+} from "@/lib/knowledge/first-index";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import {
   claimNextIndexJob,
@@ -509,6 +514,9 @@ async function queueOwedFirstIndex(): Promise<void> {
   if (!kbEmbedderAvailable()) return;
   try {
     if (await findActiveIndexJob(DEFAULT_ORG_ID)) return;
+    // No agent searches the index: nothing can be owed, and the run folders
+    // need not be read on every idle tick to find that out.
+    if (!(await anyAgentSearchesTheIndex())) return;
     const runs = await loadRunPaths();
     for (const agentId of await agentsOwedFirstIndex(runs)) {
       const outcome = await queueFirstIndex(

@@ -18,9 +18,11 @@ function message(status: Exclude<FirstIndexStatus, { state: "none" }>): string {
     : "Until it's done, it can't find anything in them.";
   if (status.state === "queued") return `Indexing ${what} starts in a moment. ${until}`;
   if (status.state === "waiting") {
-    return `Indexing ${what} is next in line, right after the run that's going now. ${until}`;
+    return `Indexing ${what} waits for the run that's going now. ${until}`;
   }
-  if (status.total === null) return `Reading ${what} for the first time — finding them all…`;
+  if (status.total === null) {
+    return `Reading ${what} for the first time — finding them all… ${until}`;
+  }
   return `Reading ${what} for the first time — ${status.processed.toLocaleString()} of ${status.total.toLocaleString()} done. ${until}`;
 }
 

@@ -74,7 +74,7 @@ describe("KnowledgeFirstIndexNotice", () => {
     render(<KnowledgeFirstIndexNotice agentId="agent-1" />);
     await settle();
 
-    expect(screen.getByRole("status")).toHaveTextContent(/right after the run that.s going now/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/waits for the run that.s going now/i);
   });
 
   it("says only the new folders are missing when the agent answers from others meanwhile", async () => {

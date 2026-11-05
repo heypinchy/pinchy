@@ -136,6 +136,21 @@ describe("neverIndexedPaths", () => {
     expect(await neverIndexedPaths(["/data/hr", "/data/legal"], { runs })).toEqual(["/data/legal"]);
   });
 
+  it("does not count a run finished before the upgrade that emptied the index", async () => {
+    // 0056 truncated kb_documents and kb_chunks but kept kb_index_jobs: a
+    // v0.9.x run's folder is empty now. Every run that finished since records
+    // the artifact format it ran under; those from before carry none.
+    const old = await knowledgeAgent(["/data/hr"]);
+    const job = await finishedJob(old.id, ["/data/hr"], "succeeded");
+    await db
+      .update(kbIndexJobs)
+      .set({ artifactFormatVersion: null })
+      .where(eq(kbIndexJobs.id, job.id));
+
+    expect(await neverIndexedPaths(["/data/hr"])).toEqual(["/data/hr"]);
+    expect(await neverIndexedPaths(["/data/hr"], { finishedOnly: true })).toEqual(["/data/hr"]);
+  });
+
   it("takes documents already in the index as indexed when no run explains them", async () => {
     // Rows ingested before runs were recorded as jobs: the folder is in the
     // index, and walking it again would be a full re-read for nothing.

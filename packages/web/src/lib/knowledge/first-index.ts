@@ -21,11 +21,11 @@
  * documents would run it again every time the worker looks.
  */
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
-import { sep } from "node:path";
 
 import { db } from "@/db";
-import { agents, kbDocuments, kbIndexJobs } from "@/db/schema";
+import { agents, kbDocuments } from "@/db/schema";
 import { safeProviderError, type AuditLogEntry, type EntityRef } from "@/lib/audit";
+import { directoryKey } from "@/lib/directory-path";
 
 import { DEFAULT_ORG_ID } from "./constants";
 import { enqueueIndexJob, findActiveIndexJob } from "./index-jobs";
@@ -38,22 +38,14 @@ import { reindexAuditEntry } from "./reindex-audit";
 export type { FirstIndexStatus } from "./first-index-status";
 
 /**
- * A grant spelled without its trailing separator. The same folder reaches the
- * agents row both ways — `POST /api/agents` stores `/data/hr/`
- * (`validateAllowedPaths`), the Permissions tab `/data/hr` — and comparing
- * the spellings as strings would call an indexed folder unindexed.
+ * `path` is `root` or lies inside it — the same boundary buildPathFilter
+ * draws. Through directoryKey, because a grant may be stored as "/data/hr/" or
+ * "/data/hr" and a string comparison would call an indexed folder unindexed.
  */
-function normalize(path: string): string {
-  let out = path;
-  while (out.length > 1 && out.endsWith(sep)) out = out.slice(0, -1);
-  return out;
-}
-
-/** `path` is `root` or lies inside it — the same boundary buildPathFilter draws. */
 function isWithin(path: string, root: string): boolean {
-  const p = normalize(path);
-  const r = normalize(root);
-  return p === r || p.startsWith(r === sep ? r : r + sep);
+  const p = directoryKey(path);
+  const r = directoryKey(root);
+  return p === r || p.startsWith(r === "/" ? r : r + "/");
 }
 
 async function hasDocumentsUnder(path: string): Promise<boolean> {
@@ -81,12 +73,19 @@ export interface RunPaths {
  * handful of rows however many nights `kb_index_jobs` has recorded. Read once
  * per question and handed to `neverIndexedPaths`, so asking about every agent
  * is still one read.
+ *
+ * A run that finished without recording the artifact format it ran under
+ * finished before the upgrade that emptied the index (migration 0056 cleared
+ * `kb_documents` and `kb_chunks` but kept the jobs; 0079 added the column, and
+ * every run since records it). Its folders are empty now, so it does not count.
+ * A run still waiting or going has recorded nothing yet, and counts.
  */
 export async function loadRunPaths(): Promise<RunPaths> {
   const rows = await db.execute<{ path: string; finished: boolean }>(sql`
     SELECT DISTINCT p.path, (j.status IN ('succeeded', 'failed')) AS finished
     FROM kb_index_jobs j, jsonb_array_elements_text(j.paths) AS p(path)
     WHERE j.org_id = ${DEFAULT_ORG_ID}
+      AND (j.status IN ('pending', 'running') OR j.artifact_format_version IS NOT NULL)
   `);
   const list = [...rows];
   return {
@@ -146,17 +145,26 @@ const AGENT_COLUMNS = {
   pluginConfig: agents.pluginConfig,
 };
 
-/**
- * The agents that search the index and hold a folder nothing has indexed yet,
- * oldest first — the agents the worker queues a first index for.
- */
-export async function agentsOwedFirstIndex(preloaded?: RunPaths): Promise<string[]> {
+async function searchingAgents() {
   const rows = await db
     .select(AGENT_COLUMNS)
     .from(agents)
     .where(isNull(agents.deletedAt))
     .orderBy(asc(agents.createdAt));
-  const searching = rows.filter(isScheduledIndexAgent);
+  return rows.filter(isScheduledIndexAgent);
+}
+
+/** Whether any agent searches the index — the worker's cheap first question. */
+export async function anyAgentSearchesTheIndex(): Promise<boolean> {
+  return (await searchingAgents()).length > 0;
+}
+
+/**
+ * The agents that search the index and hold a folder nothing has indexed yet,
+ * oldest first — the agents the worker queues a first index for.
+ */
+export async function agentsOwedFirstIndex(preloaded?: RunPaths): Promise<string[]> {
+  const searching = await searchingAgents();
   if (searching.length === 0) return [];
   const runs = preloaded ?? (await loadRunPaths());
   const owed: string[] = [];
