@@ -1,5 +1,6 @@
 import { DEFAULT_MODEL_CAPS, lookupModelCapabilities } from "@/lib/model-catalog";
-import { assertAllowedProviderUrl } from "@/lib/provider-url-guard";
+import { resolveAllowedProviderTarget } from "@/lib/provider-url-guard";
+import { pinnedFetch } from "@/lib/pinned-connection";
 import { canonicalDestinationUrl } from "@/lib/secret-destination";
 import { isMap, processWideCache } from "@/lib/process-wide-cache";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
@@ -112,13 +113,18 @@ async function fetchModels(baseUrl: string, apiKey: string): Promise<Response> {
     // host first, and a resolver that does not answer has to spend this hop's
     // time, not add to it.
     const signal = timeoutSignal(PROVIDER_PROBE_TIMEOUT_MS);
-    await untilAborted(assertAllowedProviderUrl(current), signal);
+    // One lookup per hop, and the request goes to its answer. Checking the URL
+    // and then fetching it by name resolved twice, so a resolver could answer
+    // public for the check and 127.0.0.1 for the connect — or fail the check's
+    // lookup (which the save-time guard treats as "allow") and answer the
+    // second. A name with no answer now fails the hop here.
+    const target = await untilAborted(resolveAllowedProviderTarget(current), signal);
     // Annotated, not inferred: `sendKey` is decided from the hop's URL, which
     // is read off the previous response, which is this call — so letting the
     // header object's type flow into the fetch overload closes a loop tsc
     // cannot resolve (TS7022).
     const headers: Record<string, string> = sendKey ? { Authorization: `Bearer ${apiKey}` } : {};
-    const response = await fetch(current, { headers, redirect: "manual", signal });
+    const response = await pinnedFetch(current, { headers, redirect: "manual", signal }, target);
 
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 

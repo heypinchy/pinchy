@@ -4,6 +4,8 @@ import {
   assertAllowedProviderUrl,
   memoizeResolver,
   ProviderUrlBlockedError,
+  ProviderUrlUnresolvableError,
+  resolveAllowedProviderTarget,
   PROVIDER_DNS_LOOKUP_TIMEOUT_MS,
   resolveHostAddresses,
 } from "@/lib/provider-url-guard";
@@ -325,5 +327,69 @@ describe("memoizeResolver", () => {
     await expect(resolver("down.example")).rejects.toThrow("ENOTFOUND");
 
     expect(base).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("resolveAllowedProviderTarget", () => {
+  // The variant for callers that connect: it hands back the address it
+  // classified, so the connection can be pinned to it, and it does not fail
+  // open — with one resolution there is no later fetch to "fail naturally".
+  const resolveTo = (addrs: string[]) => async () => addrs;
+
+  afterEach(() => {
+    delete process.env.PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS;
+  });
+
+  it("returns the address it classified", async () => {
+    await expect(
+      resolveAllowedProviderTarget("https://api.together.xyz/v1", resolveTo(["93.184.216.34"]))
+    ).resolves.toEqual({ address: "93.184.216.34", family: 4 });
+  });
+
+  it("returns an IPv6 answer with its family", async () => {
+    await expect(
+      resolveAllowedProviderTarget("https://v6.example/v1", resolveTo(["2606:2800:220:1::1"]))
+    ).resolves.toEqual({ address: "2606:2800:220:1::1", family: 6 });
+  });
+
+  it("returns an address literal as itself, asking no resolver", async () => {
+    const resolver = vi.fn(async () => ["93.184.216.34"]);
+
+    await expect(
+      resolveAllowedProviderTarget("http://[fd00::5]:8000/v1", resolver)
+    ).resolves.toEqual({ address: "fd00::5", family: 6 });
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it("refuses a name whose lookup fails, instead of failing open", async () => {
+    const throwingResolver = async () => {
+      throw Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
+    };
+
+    await expect(
+      resolveAllowedProviderTarget("https://maybe-down.example/v1", throwingResolver)
+    ).rejects.toBeInstanceOf(ProviderUrlUnresolvableError);
+  });
+
+  it("refuses a name that resolves to nothing", async () => {
+    await expect(
+      resolveAllowedProviderTarget("https://empty.example/v1", resolveTo([]))
+    ).rejects.toBeInstanceOf(ProviderUrlUnresolvableError);
+  });
+
+  it("still refuses what the assertion refuses", async () => {
+    await expect(
+      resolveAllowedProviderTarget(
+        "https://mixed.example/v1",
+        resolveTo(["93.184.216.34", "127.0.0.1"])
+      )
+    ).rejects.toMatchObject({ reason: "blocked_address" });
+    process.env.PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS = "1";
+    await expect(
+      resolveAllowedProviderTarget("http://vllm.lan:8000/v1", resolveTo(["10.0.0.5"]))
+    ).rejects.toMatchObject({ reason: "private_address" });
+    await expect(
+      resolveAllowedProviderTarget("file:///etc/passwd", resolveTo([]))
+    ).rejects.toMatchObject({ reason: "unsupported_scheme" });
   });
 });
