@@ -10,8 +10,8 @@ import { CACHE_NAME as SHARE_TARGET_CACHE_NAME } from "@/lib/share-target/share-
  * handoff in sessionStorage, and module-level caches (the chat list, in-memory
  * drafts) survive any client-side navigation. A file shared into the
  * installed app and never sent waits in the service worker's `share-target`
- * cache. A `router.push` between two
- * accounts therefore shows the next person what the last one left behind.
+ * cache. A `router.push` between two accounts therefore shows the next person
+ * what the last one left behind.
  *
  * So leaving an account wipes that storage and reloads the page, and entering
  * one does the same when someone else was signed in here last. The second half
@@ -27,6 +27,7 @@ import { CACHE_NAME as SHARE_TARGET_CACHE_NAME } from "@/lib/share-target/share-
 
 const PINCHY_PREFIX = "pinchy:";
 const ACCOUNT_KEY = `${PINCHY_PREFIX}account`;
+const SIGNED_OUT_PREFIX = "signed-out:";
 
 /** Indirection so tests can observe the full-page navigation jsdom cannot perform. */
 export const navigation = {
@@ -96,8 +97,15 @@ function recordAccount(value: string): void {
  * otherwise look like a switch and reload again, forever.
  */
 export async function claimAccount(userId: string): Promise<boolean> {
-  const wiped = recordedAccount() !== userId;
-  if (wiped) await wipeAll();
+  const previous = recordedAccount();
+  const wiped = previous !== userId;
+  if (wiped) {
+    wipePinchyStorage();
+    // After a sign-out the shares were already forgotten, so any share there
+    // now was made while nobody was signed in — by the person signing in, who
+    // was sent here from it with its id in returnTo. Keep it for them.
+    if (!previous?.startsWith(SIGNED_OUT_PREFIX)) await forgetShares();
+  }
   recordAccount(userId);
   return wiped && recordedAccount() === userId;
 }
@@ -111,7 +119,7 @@ export async function leaveAccount(): Promise<void> {
   await authClient.signOut();
   await wipeAll();
   // Always a new value, so every other tab gets a storage event.
-  recordAccount(`signed-out:${Date.now()}`);
+  recordAccount(`${SIGNED_OUT_PREFIX}${Date.now()}`);
   navigation.assign("/login");
 }
 

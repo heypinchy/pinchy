@@ -72,4 +72,24 @@ describe("AccountGuard (#1286)", () => {
     pageshow(true);
     expect(reload).toHaveBeenCalledTimes(1);
   });
+
+  it("does not reload a guard that unmounted while its claim was still running", async () => {
+    const reload = vi.spyOn(navigation, "reload").mockImplementation(() => {});
+    let release: () => void = () => {};
+    vi.stubGlobal("caches", {
+      delete: () => new Promise<boolean>((resolve) => (release = () => resolve(true))),
+    });
+    try {
+      localStorage.setItem("pinchy:account", "user-a");
+      const { unmount } = render(<AccountGuard userId="user-b" />);
+
+      unmount();
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(reload).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

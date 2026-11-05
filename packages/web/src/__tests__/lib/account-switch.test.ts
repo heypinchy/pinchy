@@ -125,13 +125,40 @@ describe("account switch on a shared browser (#1286)", () => {
       expect(cacheDelete).toHaveBeenCalledWith("share-target");
       expect(order).toEqual(["delete", "assign"]);
 
+      // Signing in after a sign-out keeps shares (see the next test); when
+      // someone else's session merely expired here, whatever they shared goes.
       order.length = 0;
+      await enterAccount("user-a", "/");
       await enterAccount("user-b", "/");
-      expect(order).toEqual(["delete", "assign"]);
+      expect(order).toEqual(["assign", "delete", "assign"]);
 
+      // The same person again: nothing to forget.
       order.length = 0;
       await enterAccount("user-b", "/");
       expect(order).toEqual(["assign"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps a file shared while signed out, for the person who signs in to send it", async () => {
+    // Sharing into the installed app while signed out redirects to the login
+    // page with the share's id in returnTo. Sign-out already forgot every
+    // earlier share, so anything there now was shared by whoever is signing in.
+    const cacheDelete = vi.fn(async () => true);
+    vi.stubGlobal("caches", { delete: cacheDelete });
+    try {
+      await enterAccount("user-a", "/");
+      await leaveAccount();
+      cacheDelete.mockClear();
+      seedPreviousUsersState();
+
+      await enterAccount("user-a", "/share?share_id=s1");
+
+      expect(cacheDelete).not.toHaveBeenCalled();
+      // Storage is still wiped: the marker says nobody's state belongs here.
+      expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+      expect(assign).toHaveBeenLastCalledWith("/share?share_id=s1");
     } finally {
       vi.unstubAllGlobals();
     }
