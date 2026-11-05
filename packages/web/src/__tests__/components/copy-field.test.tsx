@@ -23,6 +23,8 @@ function removeShare() {
 describe("CopyField", () => {
   afterEach(() => {
     removeShare();
+    // @ts-expect-error removing the stub the clipboard-refusal test installs
+    delete document.execCommand;
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
@@ -71,6 +73,8 @@ describe("CopyField", () => {
     // Both routes fail: the async Clipboard API rejects (plain-HTTP intranet
     // install, missing permission) and the legacy execCommand returns false.
     vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("denied"));
+    // jsdom has no execCommand of its own; afterEach deletes this one again so
+    // the refusal doesn't leak into later tests.
     Object.defineProperty(document, "execCommand", {
       value: vi.fn().mockReturnValue(false),
       writable: true,
