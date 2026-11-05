@@ -172,6 +172,13 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+const { mockQueueFirstIndex } = vi.hoisted(() => ({
+  mockQueueFirstIndex: vi.fn().mockResolvedValue({ status: "queued", jobId: "job-1" }),
+}));
+vi.mock("@/lib/knowledge/first-index", () => ({
+  queueFirstIndex: mockQueueFirstIndex,
+}));
+
 const mockValidateOdooTemplate = vi.fn();
 vi.mock("@/lib/integrations/odoo-template-validation", () => ({
   validateOdooTemplate: (...args: unknown[]) => mockValidateOdooTemplate(...args),
@@ -302,6 +309,48 @@ describe("POST /api/agents", () => {
     expect(ensureWorkspace).toHaveBeenCalledWith("new-agent-id");
     expect(writeWorkspaceFile).toHaveBeenCalledWith("new-agent-id", "SOUL.md", expect.any(String));
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("starts the first index of the folders it was granted, as the admin who created it (#1280)", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
+      }),
+    });
+
+    const response = await POST(request, routeContext());
+
+    expect(response.status).toBe(201);
+    expect(mockQueueFirstIndex).toHaveBeenCalledWith(
+      "new-agent-id",
+      { actorType: "user", actorId: "1" },
+      expect.any(Function)
+    );
+    // The rows it hands back reach the audit trail.
+    const { appendAuditLog } = await import("@/lib/audit");
+    const audit = mockQueueFirstIndex.mock.calls.at(-1)![2];
+    const entry = { eventType: "knowledge.reindex", outcome: "success" };
+    audit(entry);
+    await vi.waitFor(() => expect(vi.mocked(appendAuditLog)).toHaveBeenCalledWith(entry));
+  });
+
+  it("still creates the agent when its first index cannot be queued", async () => {
+    mockQueueFirstIndex.mockRejectedValueOnce(new Error("connection reset"));
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
+      }),
+    });
+
+    const response = await POST(request, routeContext());
+
+    expect(response.status).toBe(201);
   });
 
   it("accepts the KB Layer-3 sweep's own create payload", async () => {

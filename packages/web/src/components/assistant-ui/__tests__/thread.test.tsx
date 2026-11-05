@@ -450,6 +450,31 @@ describe("ThreadWelcome", () => {
   });
 });
 
+describe("Thread first-index notice (#1280)", () => {
+  it("tells whoever opens the chat that the agent's documents are still being read", async () => {
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockImplementation(async (url: string) =>
+      url.endsWith("/knowledge/first-index")
+        ? { state: "indexing", processed: 120, total: 505 }
+        : {}
+    );
+    const { AgentIdContext } = await import("@/components/chat");
+    const { Thread } = await import("@/components/assistant-ui/thread");
+
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <Thread />
+      </AgentIdContext.Provider>
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent("120 of 505");
+    expect(apiGet).toHaveBeenCalledWith(
+      "/api/agents/agent-1/knowledge/first-index",
+      expect.anything()
+    );
+  });
+});
+
 describe("Thread reconciling state", () => {
   it("unmounts messages while keeping the composer visible during guarded reconcile", async () => {
     const { Thread } = await import("@/components/assistant-ui/thread");
