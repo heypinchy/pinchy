@@ -1433,6 +1433,63 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
         gw.finish(t1.gwRun.runId);
         await t1.handling;
         expect(failedVerdicts(t0.ws)).toEqual([]);
+        // …and nothing behind the tab's back either: no "did not produce a
+        // response" on the trail for a run the user stopped.
+        expect(auditRows("chat.agent_error")).toEqual([]);
+      });
+
+      it("does not end the next message's turn before it reaches the registry", async () => {
+        const r = router();
+        const t0 = await stoppedReply(r);
+
+        // The next message is still in the router's awaits (here: the agent
+        // lookup) when the stopped reply's file delivery returns.
+        let lookedUp!: () => void;
+        const lookup = new Promise<void>((res) => (lookedUp = res));
+        mockFindFirst.mockImplementationOnce(async () => {
+          await lookup;
+          return defaultAgent;
+        });
+        const from = t0.ws.sent.length;
+        const nextTurn = r.handleMessage(t0.ws, {
+          type: "message",
+          content: "Actually, just list them",
+          agentId: "agent-1",
+        });
+        t0.artifacts.release();
+        await t0.handling;
+        const terminal = (f: Record<string, unknown>) =>
+          f.type === "complete" || f.type === "liveness";
+        expect(framesSince(t0.ws, from).filter(terminal)).toEqual([]);
+
+        lookedUp();
+        await vi.waitFor(() => expect(gw.runAt(1)).toBeDefined());
+        gw.accept(gw.runAt(1)!.runId);
+        gw.emitText(gw.runAt(1)!.runId, "Here they are");
+        gw.finish(gw.runAt(1)!.runId);
+        await nextTurn;
+        expect(framesSince(t0.ws, from).filter((f) => f.type === "complete")).toHaveLength(1);
+      });
+
+      it("still tells a second device watching only the stopped reply that it ended", async () => {
+        const r = router();
+        const t0 = await stoppedReply(r);
+        // A second device re-attached to the stopped reply before the next turn.
+        const other = createMockWs();
+        await r.handleMessage(other, { type: "history", agentId: "agent-1" });
+        const t1 = await nextTurnDuringRepull(r, t0.ws);
+        t1.history.release();
+        await t1.repull;
+
+        const fromTab = t0.ws.sent.length;
+        const fromOther = other.sent.length;
+        t0.artifacts.release();
+        await t0.handling;
+
+        expect(framesSince(t0.ws, fromTab).filter((f) => f.type === "complete")).toEqual([]);
+        expect(framesSince(other, fromOther).filter((f) => f.type === "complete")).toHaveLength(1);
+        gw.finish(t1.gwRun.runId);
+        await t1.handling;
       });
     });
 

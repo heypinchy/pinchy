@@ -317,6 +317,18 @@ export class ClientRouter {
       return;
     }
 
+    // A new message moves this tab onto a new turn now, before any await below.
+    // Whatever run still holds the session (a reply just stopped, still winding
+    // down) must stop ending turns in this tab from here on (#1301).
+    if (message.type === "message") {
+      const chat = chatIdSchema.safeParse(message.chatId);
+      const chatId = message.chatId === undefined ? undefined : chat.success ? chat.data : null;
+      if (chatId !== null) {
+        const prior = this.activeRuns.get(this.computeSessionKey(message.agentId, chatId));
+        if (prior) (prior.handedOverTo ??= new Set()).add(clientWs);
+      }
+    }
+
     // Look up agent and check access
     const agent = await db.query.agents.findFirst({
       where: eq(agents.id, message.agentId),
@@ -1282,13 +1294,17 @@ export class ClientRouter {
     // start of `handleHistory`.
     const current = this.activeRuns.get(sessionKey);
     if (!current || current.runId !== runId) return;
+    // The same, a step earlier: a tab has already sent the next message, which
+    // has not reached the registry yet.
+    if (current.handedOverTo?.size) return;
 
     const abandoned = result.livenessState === "abandoned";
     const ended = result.status === "ok" || result.endedAt !== undefined;
     // OpenClaw answers a stopped run like a failed one — `status: "error"` —
     // and only `stopReason` says it was a stop: `rpc` for `chat.abort` and
     // `stop` for a stop command (OpenClaw's `isCancellationStopReason`),
-    // `aborted` for an abort raised inside the run (`isAbortedAgentStopReason`).
+    // `aborted` for any other abort of the run's signal (`isAbortedAgentStopReason`
+    // — not only the user's; none of them is a failure to show).
     // A run the user stopped ended the way they asked; the stop click already
     // showed it as a clean end of turn.
     const stopped = current.abortedByUser || STOP_REASONS.has(result.stopReason ?? "");

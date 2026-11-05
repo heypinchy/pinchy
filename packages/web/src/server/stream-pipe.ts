@@ -198,9 +198,13 @@ export class StreamPipe {
     // verdict, an error — would end or fail that turn in every tab watching
     // it. Those tabs are left alone; a tab still watching only this run (a
     // second device) still hears how it ended.
+    // The same holds a step earlier, from the moment a tab sends the next
+    // message (`handedOverTo`), before that turn reaches the registry.
     const broadcastForRun: StreamPipeDeps["broadcastForRun"] = (key, fallbackWs, data) => {
       const current = activeRuns.get(key);
-      if (!current || current.runId === ownRunId()) {
+      const superseded = current !== undefined && current.runId !== ownRunId();
+      const handedOverTo = ownEntry()?.handedOverTo;
+      if (!superseded && !handedOverTo?.size) {
         this.deps.broadcastForRun(key, fallbackWs, data);
         return;
       }
@@ -208,7 +212,9 @@ export class StreamPipe {
       const watchers = new Set<WebSocket>(ownEntry()?.listeners ?? []);
       watchers.add(fallbackWs);
       for (const ws of watchers) {
-        if (!current.listeners.has(ws) && ws.readyState === WS_OPEN) ws.send(payload);
+        if (superseded && current.listeners.has(ws)) continue;
+        if (handedOverTo?.has(ws)) continue;
+        if (ws.readyState === WS_OPEN) ws.send(payload);
       }
     };
     let sawTerminalError = false;
@@ -807,6 +813,7 @@ export class StreamPipe {
           clientWs,
           agent,
           sessionKey,
+          broadcastForRun,
           messageId,
           providerError: err instanceof Error ? err.message : String(err),
           clientMessageId: triggeringClientMessageId,
@@ -1228,13 +1235,16 @@ export class StreamPipe {
     clientWs: WebSocket;
     agent: { id: string; name: string; model?: string | null };
     sessionKey: string;
+    /** The pipe's own, scoped to its run (#1301) — not the router's. */
+    broadcastForRun: StreamPipeDeps["broadcastForRun"];
     messageId: string;
     providerError: string;
     clientMessageId?: string;
     runId?: string;
     runStartedAt: Date;
   }): Promise<void> {
-    const { userRole, broadcastForRun } = this.deps;
+    const { userRole } = this.deps;
+    const { broadcastForRun } = args;
     const errorClass = classifyAgentError(args.providerError);
     // Server-side, unconditional: log + umbrella audit for EVERY thrown run
     // failure, even the ones we won't show the user below. This is the
