@@ -176,7 +176,7 @@ describe("approval card placement", () => {
       fireEvent.click(screen.getByRole("button", { name: /review the request from Odoo/i }));
       expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
       expect(screen.getByText("X")).toBeInTheDocument();
-      expect(screen.queryByText("Record ID")).toBeNull();
+      expect(screen.queryByText("recordId")).toBeNull();
     });
 
     // A newer confirmation in the open thread must not take over from the card

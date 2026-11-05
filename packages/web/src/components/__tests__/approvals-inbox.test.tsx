@@ -69,11 +69,11 @@ describe("ApprovalsInbox", () => {
     render(<ApprovalsInbox />);
     await screen.findByText(/Smithers needs your confirmation/i);
     expect(screen.getByText(/Update records in Odoo/)).toBeInTheDocument();
-    expect(screen.queryByText("Record ID")).toBeNull();
+    expect(screen.queryByText("recordId")).toBeNull();
     expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
 
     await review();
-    expect(screen.getByText("Record ID")).toBeInTheDocument();
+    expect(screen.getByText("recordId")).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
   });
 
@@ -88,13 +88,13 @@ describe("ApprovalsInbox", () => {
     render(<ApprovalsInbox />);
     await screen.findByText(/needs your confirmation/i);
     fireEvent.click(screen.getByRole("button", { name: /review/i }));
-    expect(screen.getByText("Record ID")).toBeInTheDocument();
+    expect(screen.getByText("recordId")).toBeInTheDocument();
     expect(fetchPendingApprovals).toHaveBeenLastCalledWith([]);
 
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => expect(fetchPendingApprovals).toHaveBeenLastCalledWith(["req-1"]));
     await waitFor(() => expect(fetchPendingApprovals).toHaveBeenCalledTimes(2));
-    expect(screen.getByText("Record ID")).toBeInTheDocument();
+    expect(screen.getByText("recordId")).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
   });
 
@@ -118,7 +118,7 @@ describe("ApprovalsInbox", () => {
     expect(fetchPendingApprovals).toHaveBeenLastCalledWith([]);
     await screen.findByText(/needs your confirmation/i);
     fireEvent.click(screen.getByRole("button", { name: /review/i }));
-    expect(screen.getByText("Record ID")).toBeInTheDocument();
+    expect(screen.getByText("recordId")).toBeInTheDocument();
   });
 
   // Rendered with `argsSummary: null`, a card would be approvable while showing
@@ -139,7 +139,7 @@ describe("ApprovalsInbox", () => {
     expect(fetchPendingApprovals).toHaveBeenLastCalledWith([]);
     await screen.findByText(/needs your confirmation/i);
     fireEvent.click(screen.getByRole("button", { name: /review/i }));
-    expect(screen.getByText("Record ID")).toBeInTheDocument();
+    expect(screen.getByText("recordId")).toBeInTheDocument();
   });
 
   it("approves a request and removes it from the list", async () => {

@@ -386,7 +386,14 @@ export function describeIntent(toolName: string, summary: Record<string, unknown
 }
 
 /** A field name that reads as words once split: `partner_id`, `replyTo`. */
-const WORDY_KEY = /^[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)*$/;
+/**
+ * A field name that reads as words: lower-case words joined by `_` or `-`
+ * (`partner_id`). Written in words it keeps its length — every separator
+ * becomes a space, every spelled-out word is as long as it was — so the card
+ * draws exactly the characters the summary charged for it (DRAW_BUDGET). A
+ * camelCase name (`replyTo`) would gain a space, and stays as it is.
+ */
+const WORDY_KEY = /^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*$/;
 const SPELLED: ReadonlyMap<string, string> = new Map([
   ["id", "ID"],
   ["ids", "IDs"],
@@ -405,10 +412,7 @@ const SPELLED: ReadonlyMap<string, string> = new Map([
 ]);
 
 function humanize(key: string): string {
-  const words = key
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .split(/[_\s-]+/)
-    .map((word) => SPELLED.get(word.toLowerCase()) ?? word.toLowerCase());
+  const words = key.split(/[_-]/).map((word) => SPELLED.get(word) ?? word);
   const [first, ...rest] = words;
   return [first.charAt(0).toUpperCase() + first.slice(1), ...rest].join(" ");
 }

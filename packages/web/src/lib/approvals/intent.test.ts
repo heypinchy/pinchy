@@ -297,7 +297,7 @@ describe("humanLabels", () => {
     ).toEqual({
       partner_id: "Partner ID",
       invoice_line_ids: "Invoice line IDs",
-      replyTo: "Reply to",
+      replyTo: "replyTo",
       website_url: "Website URL",
       name: "Name",
     });
@@ -474,4 +474,16 @@ describe("rowsLayout: how rows fit the card, every value whole", () => {
       repeatLabels: false,
     });
   });
+});
+
+// The summary charges a field name by its length as sent (DRAW_BUDGET); a
+// name written in words must draw no more characters than that.
+describe("a field name in words draws as many characters as the name", () => {
+  it.each(["partner_id", "invoice_line_ids", "replyTo", "sendAt", "uom_id", "is-company", "a"])(
+    "%s",
+    (key) => {
+      const label = humanLabels([key]).get(key)!;
+      expect([...label].length).toBe([...key].length);
+    }
+  );
 });
