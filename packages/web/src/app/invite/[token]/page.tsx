@@ -7,10 +7,12 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -19,16 +21,16 @@ import {
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { PasswordInput } from "@/components/password-input";
-import { passwordSchema } from "@/lib/validate-password";
+import { PASSWORD_RULE_HINT, passwordSchema } from "@/lib/validate-password";
 import { apiPost, errorMessage } from "@/lib/api-client";
-import type { ClaimInviteInput } from "@/lib/schemas/invite";
+import type { ClaimInviteInput, InviteTokenInfo } from "@/lib/schemas/invite";
 
 // The /invite/[token] page serves two flows that share the same token table
 // (#436): a brand-new user claiming an invite, and an existing user resetting
 // their password. They differ in copy and — crucially — the reset flow must
 // NOT collect a display name, because submitting one used to silently
 // overwrite the user's existing name.
-type InviteType = "invite" | "reset";
+type InviteType = InviteTokenInfo["type"];
 
 const passwordRefine = {
   check: (data: { password: string; confirmPassword: string }) =>
@@ -86,9 +88,22 @@ const SUCCESS_COPY: Record<InviteType, { title: string; description: string }> =
   },
 };
 
+// Naming the inviter makes an unexpected link from an admin read less like
+// phishing (#1265). There is no organisation name to show: Pinchy stores none.
+function inviteTitle(invitedBy: string | null) {
+  return invitedBy ? `${invitedBy} invited you to Pinchy` : COPY.invite.title;
+}
+
+// The user lands on /login next and has to type this address, so say it.
+function successDescription(type: InviteType, email: string | null) {
+  return email
+    ? `You can now sign in with ${email} and your new password.`
+    : SUCCESS_COPY[type].description;
+}
+
 export default function InviteClaimPage() {
   const { token } = useParams();
-  const [type, setType] = useState<InviteType | null>(null);
+  const [info, setInfo] = useState<InviteTokenInfo | null>(null);
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
@@ -102,7 +117,11 @@ export default function InviteClaimPage() {
           setLoadError(data.error || "Invalid or expired invite link");
           return;
         }
-        setType(data.type === "reset" ? "reset" : "invite");
+        setInfo({
+          type: data.type === "reset" ? "reset" : "invite",
+          email: typeof data.email === "string" ? data.email : null,
+          invitedBy: typeof data.invitedBy === "string" ? data.invitedBy : null,
+        });
       } catch {
         if (!cancelled) setLoadError("Something went wrong. Please try again.");
       }
@@ -125,12 +144,12 @@ export default function InviteClaimPage() {
               <CardTitle>This link can&apos;t be used</CardTitle>
               <CardDescription className="text-destructive">{loadError}</CardDescription>
             </CardHeader>
-          ) : type === null ? (
+          ) : info === null ? (
             <CardContent className="flex justify-center py-10" role="status" aria-label="Loading">
               <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden="true" />
             </CardContent>
           ) : (
-            <ClaimForm token={String(token)} type={type} />
+            <ClaimForm token={String(token)} info={info} />
           )}
         </Card>
       </div>
@@ -138,7 +157,8 @@ export default function InviteClaimPage() {
   );
 }
 
-function ClaimForm({ token, type }: { token: string; type: InviteType }) {
+function ClaimForm({ token, info }: { token: string; info: InviteTokenInfo }) {
+  const { type, email, invitedBy } = info;
   const router = useRouter();
   const isReset = type === "reset";
   const [loading, setLoading] = useState(false);
@@ -174,7 +194,7 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
   }
 
   if (success) {
-    const copy = isReset ? SUCCESS_COPY.reset : SUCCESS_COPY.invite;
+    const copy = SUCCESS_COPY[type];
     return (
       <>
         <CardHeader className="text-center">
@@ -182,7 +202,7 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
             <CheckCircle2 className="size-12 text-primary" />
           </div>
           <CardTitle>{copy.title}</CardTitle>
-          <CardDescription>{copy.description}</CardDescription>
+          <CardDescription>{successDescription(type, email)}</CardDescription>
         </CardHeader>
         <CardContent>
           <Button onClick={() => router.push("/login")} className="w-full">
@@ -197,12 +217,29 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
   return (
     <>
       <CardHeader>
-        <CardTitle>{copy.title}</CardTitle>
+        <CardTitle>{isReset ? copy.title : inviteTitle(invitedBy)}</CardTitle>
         <CardDescription>{copy.description}</CardDescription>
       </CardHeader>
       <CardContent>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} method="post" className="space-y-6">
+            {email && (
+              // Not a form field: the invite fixes the address, and the claim
+              // never sends it. `autoComplete="username"` lets a password
+              // manager store the new password against it.
+              <div className="grid gap-2">
+                <Label htmlFor="invite-email">Email</Label>
+                <Input
+                  id="invite-email"
+                  type="email"
+                  value={email}
+                  readOnly
+                  autoComplete="username"
+                  className="bg-muted text-muted-foreground"
+                />
+              </div>
+            )}
+
             {!isReset && (
               <FormField
                 control={form.control}
@@ -225,7 +262,8 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Password</FormLabel>
-                  <PasswordInput {...field} />
+                  <PasswordInput autoComplete="new-password" {...field} />
+                  <FormDescription>{PASSWORD_RULE_HINT}</FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -237,7 +275,7 @@ function ClaimForm({ token, type }: { token: string; type: InviteType }) {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Confirm password</FormLabel>
-                  <PasswordInput {...field} />
+                  <PasswordInput autoComplete="new-password" {...field} />
                   <FormMessage />
                 </FormItem>
               )}

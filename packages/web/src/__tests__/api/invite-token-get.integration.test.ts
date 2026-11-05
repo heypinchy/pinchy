@@ -35,7 +35,7 @@ async function seedAdmin() {
 }
 
 describe("GET /api/invite/[token] (integration)", () => {
-  it("returns { type: 'invite' } for a fresh invite token", async () => {
+  it("returns the type, the sign-in email and the inviter's name for a fresh invite", async () => {
     const adminId = await seedAdmin();
     const { token } = await createInvite({
       email: "newcomer@test.local",
@@ -46,10 +46,14 @@ describe("GET /api/invite/[token] (integration)", () => {
 
     const response = await GET(makeRequest(token), makeContext(token));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ type: "invite" });
+    expect(await response.json()).toEqual({
+      type: "invite",
+      email: "newcomer@test.local",
+      invitedBy: "Admin",
+    });
   });
 
-  it("returns { type: 'invite' } for an open invite that has no email", async () => {
+  it("returns a null email for an open invite that has no email", async () => {
     const adminId = await seedAdmin();
     const { token } = await createInvite({
       role: "member",
@@ -59,7 +63,7 @@ describe("GET /api/invite/[token] (integration)", () => {
 
     const response = await GET(makeRequest(token), makeContext(token));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ type: "invite" });
+    expect(await response.json()).toEqual({ type: "invite", email: null, invitedBy: "Admin" });
   });
 
   it("returns { type: 'reset' } for a password-reset token of an existing user", async () => {
@@ -76,7 +80,27 @@ describe("GET /api/invite/[token] (integration)", () => {
 
     const response = await GET(makeRequest(token), makeContext(token));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ type: "reset" });
+    // The reset page shows which account the new password is for. No
+    // inviter: a reset is the admin acting on an existing account, not an
+    // introduction to an organisation.
+    expect(await response.json()).toEqual({
+      type: "reset",
+      email: "existing@test.local",
+      invitedBy: null,
+    });
+  });
+
+  it("never returns the inviter's email address, only their display name", async () => {
+    const adminId = await seedAdmin();
+    const { token } = await createInvite({
+      email: "newcomer@test.local",
+      role: "member",
+      type: "invite",
+      createdBy: adminId,
+    });
+
+    const response = await GET(makeRequest(token), makeContext(token));
+    expect(JSON.stringify(await response.json())).not.toContain("admin@test.local");
   });
 
   it("returns 410 for an unknown token", async () => {

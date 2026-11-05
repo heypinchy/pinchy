@@ -42,13 +42,22 @@ const inviteSchema = z.object({
 
 type InviteFormValues = z.infer<typeof inviteSchema>;
 
+type CreatedInvite = { url: string; email: string | null; expiresAt: string | null };
+
+// The admin reads the expiry against their own clock, so it is rendered in
+// their time zone. en-US like every other date in the UI (PERSONALITY.md).
+function formatExpiry(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+}
+
 interface InviteDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
 export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
-  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [created, setCreated] = useState<CreatedInvite | null>(null);
+  const inviteLink = created?.url ?? null;
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const { isCopied: copied, copy: copyInviteLink } = useCopyToClipboard();
@@ -72,7 +81,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     setPrevOpen(open);
     if (!open) {
       form.reset();
-      setInviteLink(null);
+      setCreated(null);
       setError(null);
       setSelectedGroupIds([]);
     }
@@ -103,12 +112,19 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     setError(null);
     setCreating(true);
     try {
-      const data = await apiPost<{ token: string }, InviteUserInput>("/api/users/invite", {
+      const data = await apiPost<
+        { token: string; email?: string | null; expiresAt?: string },
+        InviteUserInput
+      >("/api/users/invite", {
         email: values.email,
         role: values.role,
         ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
       });
-      setInviteLink(buildInviteUrl(window.location.origin, data.token));
+      setCreated({
+        url: buildInviteUrl(window.location.origin, data.token),
+        email: data.email || null,
+        expiresAt: data.expiresAt ?? null,
+      });
     } catch (e) {
       // Seat-cap 403s carry an actionable message beside the terse headline
       // (quote path, § 5); ApiError.message already joins the two.
@@ -163,6 +179,17 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
           <div className="space-y-4">
             <p className="text-sm font-medium">Invite link created:</p>
             <p className="text-sm break-all bg-muted p-2 rounded">{inviteLink}</p>
+            {/* "Email (optional)" reads as if Pinchy mails the invite. It
+                doesn't — the admin delivers the link (#1265). */}
+            <div className="space-y-1 text-sm text-muted-foreground">
+              <p>
+                Pinchy doesn&apos;t send emails. Copy the link and send it to{" "}
+                {created?.email ?? "the person you're inviting"} yourself.
+              </p>
+              {created?.expiresAt && (
+                <p>The link works once and expires on {formatExpiry(created.expiresAt)}.</p>
+              )}
+            </div>
             {canShare ? (
               <Button onClick={handleShare}>Share</Button>
             ) : (

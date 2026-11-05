@@ -6,6 +6,7 @@ import "@testing-library/jest-dom";
 import { toast } from "sonner";
 import InviteClaimPage from "@/app/invite/[token]/page";
 import { jsonResponse } from "@/test-helpers/fetch";
+import { PASSWORD_MIN_LENGTH } from "@/lib/validate-password";
 
 const pushMock = vi.fn();
 
@@ -40,8 +41,11 @@ let postResponse: MockResponse;
 
 global.fetch = vi.fn();
 
-function mockTokenType(type: "invite" | "reset") {
-  getResponse = { ok: true, body: { type } };
+function mockTokenType(
+  type: "invite" | "reset",
+  extra: { email?: string | null; invitedBy?: string | null } = {}
+) {
+  getResponse = { ok: true, body: { type, email: null, invitedBy: null, ...extra } };
 }
 function mockTokenError(error: string) {
   getResponse = { ok: false, body: { error } };
@@ -283,6 +287,116 @@ describe("Invite Claim Page", () => {
 
       await user.click(screen.getByRole("button", { name: /continue to sign in/i }));
       expect(pushMock).toHaveBeenCalledWith("/login");
+    });
+  });
+
+  describe("what the page tells the invitee (#1265)", () => {
+    async function submitValidInvite(user: ReturnType<typeof userEvent.setup>) {
+      await user.type(await screen.findByLabelText(/name/i), "Test User");
+      await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
+      await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
+      await user.click(screen.getByRole("button", { name: /create account/i }));
+    }
+
+    it("shows the sign-in email read-only on the form", async () => {
+      mockTokenType("invite", { email: "newcomer@example.com" });
+      render(<InviteClaimPage />);
+
+      const email = await screen.findByLabelText(/^email$/i);
+      expect(email).toHaveValue("newcomer@example.com");
+      expect(email).toHaveAttribute("readonly");
+      // Password managers pair the new password with this field.
+      expect(email).toHaveAttribute("autocomplete", "username");
+    });
+
+    it("does not submit the email — the invite decides it, not the form", async () => {
+      const user = userEvent.setup();
+      mockTokenType("invite", { email: "newcomer@example.com" });
+      render(<InviteClaimPage />);
+
+      await submitValidInvite(user);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          "/api/invite/claim",
+          expect.objectContaining({
+            body: JSON.stringify({
+              token: "test-token-123",
+              name: "Test User",
+              password: "Br1ghtNova!2",
+            }),
+          })
+        );
+      });
+    });
+
+    it("shows no email field when the invite carries no email", async () => {
+      mockTokenType("invite", { email: null });
+      render(<InviteClaimPage />);
+
+      await screen.findByLabelText(/^password$/i);
+      expect(screen.queryByLabelText(/^email$/i)).not.toBeInTheDocument();
+    });
+
+    it("repeats the sign-in email on the success screen", async () => {
+      const user = userEvent.setup();
+      mockTokenType("invite", { email: "newcomer@example.com" });
+      render(<InviteClaimPage />);
+
+      await submitValidInvite(user);
+
+      expect(await screen.findByText("Account created!")).toBeInTheDocument();
+      expect(
+        screen.getByText(/sign in with newcomer@example\.com and your new password/i)
+      ).toBeInTheDocument();
+    });
+
+    it("shows the email on the reset form and its success screen too", async () => {
+      const user = userEvent.setup();
+      mockTokenType("reset", { email: "existing@example.com" });
+      render(<InviteClaimPage />);
+
+      expect(await screen.findByLabelText(/^email$/i)).toHaveValue("existing@example.com");
+
+      await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
+      await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
+      await user.click(screen.getByRole("button", { name: /reset password/i }));
+
+      expect(await screen.findByText("Password reset!")).toBeInTheDocument();
+      expect(
+        screen.getByText(/sign in with existing@example\.com and your new password/i)
+      ).toBeInTheDocument();
+    });
+
+    it.each(["invite", "reset"] as const)(
+      "states the password rule up front, derived from PASSWORD_MIN_LENGTH (%s)",
+      async (type) => {
+        mockTokenType(type);
+        render(<InviteClaimPage />);
+
+        const password = await screen.findByLabelText(/^password$/i);
+        const hintId = password.getAttribute("aria-describedby") ?? "";
+        const hint = hintId
+          .split(" ")
+          .map((id) => document.getElementById(id)?.textContent ?? "")
+          .join(" ");
+        expect(hint).toContain(`At least ${PASSWORD_MIN_LENGTH} characters`);
+        expect(hint).toMatch(/a letter and a number/i);
+      }
+    );
+
+    it("names who sent the invite", async () => {
+      mockTokenType("invite", { invitedBy: "Ada Lovelace" });
+      render(<InviteClaimPage />);
+
+      expect(await screen.findByText("Ada Lovelace invited you to Pinchy")).toBeInTheDocument();
+    });
+
+    it("falls back to the generic heading when the inviter is unknown", async () => {
+      mockTokenType("invite", { invitedBy: null });
+      render(<InviteClaimPage />);
+
+      expect(await screen.findByText("You've been invited to Pinchy")).toBeInTheDocument();
     });
   });
 

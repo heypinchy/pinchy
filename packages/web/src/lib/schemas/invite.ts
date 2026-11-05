@@ -14,3 +14,19 @@ export const claimInviteSchema = z.object({
   password: z.string(),
 });
 export type ClaimInviteInput = z.infer<typeof claimInviteSchema>;
+
+/**
+ * `GET /api/invite/[token]` — what the claim page needs before it renders.
+ *
+ * The caller is unauthenticated, so this is everything a holder of a valid
+ * token may learn: the flow, the address the account signs in with (their
+ * own), and the inviter's display name — never the inviter's email. An
+ * unknown, claimed or expired token gets an error and nothing else.
+ */
+export type InviteTokenInfo = {
+  type: "invite" | "reset";
+  /** The sign-in address. `null` for an invite created without one. */
+  email: string | null;
+  /** Display name of the admin who created the invite; `null` on a reset. */
+  invitedBy: string | null;
+};

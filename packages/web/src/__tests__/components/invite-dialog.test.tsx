@@ -124,6 +124,72 @@ describe("InviteDialog", () => {
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
   });
 
+  it("says Pinchy does not send the email and who to send the link to (#1265)", async () => {
+    const user = userEvent.setup();
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        jsonResponse({
+          token: "invite-token-abc",
+          email: "ada@example.com",
+          expiresAt: "2026-11-12T14:30:00.000Z",
+        })
+      )
+    );
+
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+    await user.type(screen.getByLabelText("Email (optional)"), "ada@example.com");
+    await user.click(screen.getByRole("button", { name: "Create Invite" }));
+
+    expect(
+      await screen.findByText(
+        "Pinchy doesn't send emails. Copy the link and send it to ada@example.com yourself."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("falls back to a generic recipient when the invite has no email", async () => {
+    const user = userEvent.setup();
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        jsonResponse({
+          token: "invite-token-abc",
+          email: null,
+          expiresAt: "2026-11-12T14:30:00.000Z",
+        })
+      )
+    );
+
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Create Invite" }));
+
+    expect(
+      await screen.findByText(
+        "Pinchy doesn't send emails. Copy the link and send it to the person you're inviting yourself."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("shows when the link expires", async () => {
+    const user = userEvent.setup();
+    const expiresAt = "2026-11-12T14:30:00.000Z";
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(jsonResponse({ token: "invite-token-abc", email: null, expiresAt }))
+    );
+
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Create Invite" }));
+
+    // Rendered in the admin's own time zone: the expiry is a moment, and the
+    // admin reads it against their own clock.
+    const expected = new Date(expiresAt).toLocaleString("en-US", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    expect(
+      await screen.findByText(`The link works once and expires on ${expected}.`)
+    ).toBeInTheDocument();
+  });
+
   it("should show error message on API failure", async () => {
     const user = userEvent.setup();
 

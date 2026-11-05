@@ -12,6 +12,14 @@ import { isCommonPassword } from "@/lib/common-passwords";
 export const PASSWORD_MIN_LENGTH = 12;
 
 /**
+ * The rule as a form shows it up front, before anyone has failed it (#1265).
+ * Derived from the constant so the hint cannot fall behind a policy bump. The
+ * breach-list check is not in it: it rejects a handful of passwords, and the
+ * inline error names it when it does.
+ */
+export const PASSWORD_RULE_HINT = `At least ${PASSWORD_MIN_LENGTH} characters, with a letter and a number.`;
+
+/**
  * Validates password strength. Returns an error message or null if valid.
  *
  * Single source of truth for the password policy — used by setup,
