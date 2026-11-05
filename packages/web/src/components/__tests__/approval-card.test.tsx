@@ -925,8 +925,10 @@ describe("opening a card", () => {
 
     const deny = screen.getByRole("button", { name: "Deny" });
     const approve = screen.getByRole("button", { name: "Approve" });
-    // The first stop is the card's own "Show technical details"; the next is
-    // Deny — never the next card's Review.
+    // The stops are the card's own: its scrollable details, "Show technical
+    // details", then Deny — never the next card's Review.
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("region"));
     await user.tab();
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: /show technical details/i })
@@ -1174,7 +1176,7 @@ describe("says what will happen, in words", () => {
       "Subject",
       "Message",
     ]);
-    expect(screen.getByText(/sent right away/)).toBeInTheDocument();
+    expect(screen.getByText(/goes out right away/)).toBeInTheDocument();
   });
 
   it("names an Odoo record type in words beside its technical name", () => {
@@ -1183,7 +1185,7 @@ describe("says what will happen, in words", () => {
       "odoo_write"
     );
     expect(drawnText(screen.getByRole("group"))).toContain(
-      "Change 1 record in Contacts (res.partner) in Odoo"
+      "Update 1 record in Contacts (res.partner) in Odoo"
     );
     expect(screen.getByText("Is company")).toBeInTheDocument();
   });
@@ -1243,7 +1245,7 @@ describe("shows every value without opening anything", () => {
     const { format, ...drawn } = summary;
     if (format !== undefined) expect(spoken).toContain("Create a CSV file");
     for (const leaf of leaves(drawn)) expect(spoken, leaf).toContain(leaf);
-    expect(screen.getByText("Bcc")).toBeInTheDocument();
+    expect(screen.getByText("BCC")).toBeInTheDocument();
   });
 
   it("says which values the preview does not cover", () => {
@@ -1319,5 +1321,57 @@ describe("a list inside a list", () => {
     expect(item.className).toContain("list-none");
     expect(item.querySelector(":scope > ul")).not.toBeNull();
     expect(screen.getByText("Server")).toBeInTheDocument();
+  });
+});
+
+describe("review: a ragged list of rows", () => {
+  it("is drawn as lists, one cell per value it holds, not padded into a table", () => {
+    const wide = Array.from({ length: 50 }, () => "1");
+    const { container } = renderCard({ matrix: [["a"], ["b"], wide] });
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(container.querySelectorAll("li").length).toBe(3 + 1 + 1 + 50);
+  });
+
+  // Theoretical — every Pinchy tool refuses an undeclared field — but the
+  // card is drawn first: the extra field keeps its raw name, in the raw style.
+  it("names an extra field apart from a section label that reads the same", () => {
+    renderCard(summarizeArgs({ to: "a@b.at", subject: "Q3", Subject: "Payroll" }), "email_send");
+    const terms = screen.getAllByRole("term");
+    expect(terms.map((term) => term.textContent)).toEqual(["To", "Subject", "Subject"]);
+    expect(terms[1].className).not.toContain("font-mono");
+    expect(terms[2].className).toContain("font-mono");
+    expect(screen.getByText("Also included")).toBeInTheDocument();
+  });
+});
+
+describe("review: wide and long previews", () => {
+  // In the 320px corner, a sideways-scrolling table showed two columns of
+  // five with nothing saying three more were there.
+  it("fits a wide table to the card instead of scrolling it sideways", () => {
+    renderCard(
+      summarizeArgs({
+        filename: "customers",
+        format: "csv",
+        columns: ["Name", "Email", "City", "Country", "Phone"],
+        rows: [["Ada", "ada@example.com", "Wien", "AT", "+43 1"]],
+      }),
+      "pinchy_generate_file"
+    );
+    const table = screen.getByRole("table");
+    expect(table.className).toContain("table-fixed");
+    expect(table.closest(".overflow-x-auto")).toBeNull();
+  });
+
+  it("lets the keyboard reach and scroll the preview", () => {
+    renderCard(summarizeArgs({ to: "a@b.at", subject: "x", body: "y" }), "email_send");
+    const region = screen.getByRole("region", { name: "What will be sent to the tool" });
+    expect(region).toHaveAttribute("tabindex", "0");
+  });
+
+  it("says a warning is a warning to a screen reader", () => {
+    renderCard(summarizeArgs({ path: "/a.md" }), "pinchy_delete");
+    expect(spokenText(screen.getByRole("group"))).toContain(
+      "Warning: A deleted file can't be restored."
+    );
   });
 });

@@ -477,10 +477,13 @@ test.describe("Feature screenshots", () => {
               agentName: "Scout",
               toolName: "pinchy_generate_file",
               argsSummary: {
-                filename: "test",
+                filename: "open-invoices",
                 format: "csv",
-                columns: ["Name", "Wert"],
-                rows: [["A", 1]],
+                columns: ["Customer", "Invoice", "Amount"],
+                rows: [
+                  ["Acme GmbH", "INV-2026-118", 1240],
+                  ["Nordwind AG", "INV-2026-121", 860],
+                ],
               },
               sessionKey: "agent:screenshot-agent:direct:screenshot",
               createdAt: new Date().toISOString(),

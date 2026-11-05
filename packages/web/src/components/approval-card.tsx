@@ -18,8 +18,8 @@ import { Button } from "@/components/ui/button";
 import type { PendingApproval } from "@/lib/approvals/client";
 import {
   describeIntent,
-  humanLabels,
-  isCell,
+  fieldLabels,
+  isTable,
   type Intent,
   type PhrasePart,
   type Section,
@@ -359,9 +359,7 @@ function ArgValue({ value, human = false }: { value: unknown; human?: boolean })
     // A list of rows — `pinchy_generate_file`'s `rows`, say — reads as a
     // table. As nested bullets each row began with two bullets and no
     // boundary between one row and the next.
-    if (value.every((row) => Array.isArray(row) && row.length > 0 && row.every(isCell))) {
-      return <DataTable columns={[]} rows={value as unknown[][]} label="List of rows" />;
-    }
+    if (isTable(value)) return <DataTable columns={[]} rows={value} label="List of rows" />;
     // A list inside a list is drawn as a block set off by a rule, without a
     // bullet of its own: bullet beside bullet read "• • 0" and gave no sign
     // where one inner list ended and the next began.
@@ -393,9 +391,9 @@ function plural(count: number, noun: string): string {
 
 /**
  * Rows drawn as a table, every cell by `ArgValue`, so a cell is drawn exactly
- * as the same value is anywhere else on the card. A row shorter than the
- * widest leaves its missing cells empty, and says so to a screen reader; a
- * cell holding an empty text is drawn `""`, so the two stay apart.
+ * as the same value is anywhere else on the card. Only a rectangular list
+ * reaches here (`isTable`): every cell drawn is a value the summary charged,
+ * and none is padding.
  */
 function DataTable({
   columns,
@@ -406,29 +404,25 @@ function DataTable({
   rows: unknown[][];
   label: string;
 }) {
-  const width = Math.max(columns.length, ...rows.map((row) => row.length));
-  const cell = (row: unknown[], index: number) =>
-    index < row.length ? (
-      <ArgValue value={row[index]} />
-    ) : (
-      <span className="sr-only select-none">no value</span>
-    );
   return (
-    <div className="overflow-x-auto">
-      <table className="border-collapse text-left text-sm">
+    // Fitted to the card, never scrolled sideways: in the 320px corner a
+    // scrolling table showed two columns of five, with nothing saying more
+    // were there. Every column gets a share of the width and cells wrap.
+    <div>
+      <table className="w-full table-fixed border-collapse text-left text-sm">
         <caption className="sr-only">
-          {label}, {plural(width, "column")}, {plural(rows.length, "row")}
+          {label}, {plural(rows[0]?.length ?? 0, "column")}, {plural(rows.length, "row")}
         </caption>
         {columns.length > 0 && (
           <thead>
             <tr>
-              {Array.from({ length: width }, (_, index) => (
+              {columns.map((column, index) => (
                 <th
                   key={index}
                   scope="col"
-                  className="border-b px-2 py-1 align-bottom font-medium first:pl-0"
+                  className="border-b px-2 py-1 align-bottom font-medium [overflow-wrap:anywhere] first:pl-0"
                 >
-                  {cell(columns, index)}
+                  <ArgValue value={column} />
                 </th>
               ))}
             </tr>
@@ -437,9 +431,9 @@ function DataTable({
         <tbody>
           {rows.map((row, rowIndex) => (
             <tr key={rowIndex} className="border-b last:border-b-0">
-              {Array.from({ length: width }, (_, index) => (
-                <td key={index} className="px-2 py-1 align-top first:pl-0">
-                  {cell(row, index)}
+              {row.map((cell, index) => (
+                <td key={index} className="px-2 py-1 align-top [overflow-wrap:anywhere] first:pl-0">
+                  <ArgValue value={cell} />
                 </td>
               ))}
             </tr>
@@ -462,31 +456,44 @@ function DataTable({
 function ArgFields({
   fields,
   human = false,
+  taken,
 }: {
   fields: Record<string, unknown>;
   human?: boolean;
+  /** Labels already on the card, which a field named in words must not read as. */
+  taken?: readonly string[];
 }) {
   const entries = Object.entries(fields).sort(
     ([a], [b]) => Number(FULL_VIEW_KEYS.has(b)) - Number(FULL_VIEW_KEYS.has(a))
   );
   if (entries.length === 0) return <Empty list={false} />;
-  const labels = human ? humanLabels(entries.map(([key]) => key)) : null;
+  const labels = human
+    ? fieldLabels(
+        entries.map(([key]) => key),
+        taken
+      )
+    : null;
   return (
     <dl className="space-y-1">
-      {entries.map(([key, value]) => (
-        <div key={key}>
-          <dt
-            className={
-              human ? "text-xs text-muted-foreground" : "font-mono text-xs text-muted-foreground"
-            }
-          >
-            {labels?.get(key) ?? key}
-          </dt>
-          <dd className="ml-3">
-            <ArgValue value={value} human={human} />
-          </dd>
-        </div>
-      ))}
+      {entries.map(([key, value]) => {
+        const label = labels?.get(key) ?? { text: key, raw: true };
+        return (
+          <div key={key}>
+            <dt
+              className={
+                label.raw
+                  ? "font-mono text-xs text-muted-foreground"
+                  : "text-xs text-muted-foreground"
+              }
+            >
+              {label.text}
+            </dt>
+            <dd className="ml-3">
+              <ArgValue value={value} human={human} />
+            </dd>
+          </div>
+        );
+      })}
     </dl>
   );
 }
@@ -497,8 +504,20 @@ function Chip({ children }: { children: ReactNode }) {
 }
 
 /** An Odoo model: its name in words where the catalogue knows it, and the model itself. */
-function ModelName({ model, value }: { model: string | null; value: unknown }) {
-  if (model === null) return <Chip>{<ArgValue value={value} />}</Chip>;
+function ModelName({
+  model,
+  value,
+  inSection = false,
+}: {
+  model: string | null;
+  value: unknown;
+  inSection?: boolean;
+}) {
+  if (model === null) {
+    // In the preview the value has a row of its own; a chip there, on the
+    // muted box, would all but vanish.
+    return inSection ? <ArgValue value={value} /> : <Chip>{<ArgValue value={value} />}</Chip>;
+  }
   return (
     <>
       <span className="font-medium">{model}</span>{" "}
@@ -538,7 +557,9 @@ function SectionValue({ section }: { section: Section }) {
       <DataTable columns={section.table.columns} rows={section.table.rows} label={section.label} />
     );
   }
-  if ("model" in section) return <ModelName model={section.model} value={section.value} />;
+  if ("model" in section) {
+    return <ModelName model={section.model} value={section.value} inSection />;
+  }
   return <ArgValue value={section.value} human={section.fields} />;
 }
 
@@ -555,7 +576,13 @@ function CallBody({ intent, summary }: { intent: Intent; summary: Record<string,
   const hasRest = Object.keys(rest).length > 0;
   if (intent.sections.length === 0 && !hasRest) return null;
   return (
-    <div className="mt-2 max-h-64 space-y-2 overflow-y-auto rounded-md bg-muted/50 p-2 text-sm">
+    // A scroll box the keyboard can reach: Safari does not focus one by itself.
+    <div
+      role="region"
+      aria-label="What will be sent to the tool"
+      tabIndex={0}
+      className="mt-2 max-h-64 space-y-2 overflow-y-auto rounded-md bg-muted/50 p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+    >
       {intent.sections.length > 0 && (
         <dl className="space-y-1">
           {intent.sections.map((section, index) => (
@@ -571,7 +598,9 @@ function CallBody({ intent, summary }: { intent: Intent; summary: Record<string,
       {hasRest && intent.sections.length > 0 && (
         <p className="text-xs font-medium text-muted-foreground">Also included</p>
       )}
-      {hasRest && <ArgFields fields={rest} human />}
+      {hasRest && (
+        <ArgFields fields={rest} human taken={intent.sections.map((section) => section.label)} />
+      )}
     </div>
   );
 }
@@ -602,7 +631,12 @@ function TechnicalDetails({
       </Button>
       <div id={id} hidden={!open}>
         {open && (
-          <div className="mt-1 max-h-64 overflow-y-auto rounded-md border p-2 text-sm">
+          <div
+            role="region"
+            aria-label="Technical details"
+            tabIndex={0}
+            className="mt-1 max-h-64 overflow-y-auto rounded-md border p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          >
             <p className="text-xs text-muted-foreground">
               Tool <span className="font-mono">{toolName}</span>
               {hasArgs ? ", called with:" : ", called without arguments"}
@@ -630,7 +664,10 @@ function IntentNote({ note }: { note: NonNullable<Intent["note"]> }) {
       }
     >
       <Icon aria-hidden="true" className="mt-px size-3.5 shrink-0" />
-      <span>{note.text}</span>
+      <span>
+        {note.tone === "warning" && <span className="sr-only">Warning: </span>}
+        {note.text}
+      </span>
     </p>
   );
 }

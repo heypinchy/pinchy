@@ -68,7 +68,7 @@ describe("ApprovalsInbox", () => {
     fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
     render(<ApprovalsInbox />);
     await screen.findByText(/Smithers needs your confirmation/i);
-    expect(screen.getByText(/Change records in Odoo/)).toBeInTheDocument();
+    expect(screen.getByText(/Update records in Odoo/)).toBeInTheDocument();
     expect(screen.queryByText("Record ID")).toBeNull();
     expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
 

@@ -61,15 +61,26 @@ export interface Intent {
  */
 export const HEADLINE_VALUE_COST = 121;
 
-/** A value short enough, and on one line, to repeat in the headline. */
+/**
+ * A value short enough, and on one line, to repeat in the headline — counting
+ * every note the headline draws beside it too (a recipient's name).
+ */
 function inline(value: unknown): boolean {
   if (typeof value === "number" || typeof value === "boolean") return true;
   const node = readNode(value);
-  const shown =
-    node && node !== "unreadable" && node["@"] === "noted" ? node.text : readShown(value);
-  if (typeof shown !== "string") return false;
-  const drawn = drawnOf(shown);
-  return !drawn.includes("\n") && drawCost(drawn) <= HEADLINE_VALUE_COST;
+  const noted = node && node !== "unreadable" && node["@"] === "noted" ? node : null;
+  const texts: unknown[] = noted
+    ? [noted.text, ...noted.notes.map((note) => (note.kind === "name" ? note.name : note.host))]
+    : [readShown(value)];
+  let cost = 0;
+  for (const shown of texts) {
+    // A previewed text is too long for the headline by definition.
+    if (typeof shown !== "string") return false;
+    const drawn = drawnOf(shown);
+    if (drawn.includes("\n")) return false;
+    cost += drawCost(drawn);
+  }
+  return cost <= HEADLINE_VALUE_COST;
 }
 
 function plural(count: number, noun: string): string {
@@ -85,7 +96,7 @@ const FORMAT_NAMES: ReadonlyMap<string, string> = new Map([
 
 /**
  * The catalogue's name for each Odoo model. A name two areas share ("Orders"
- * in Sales and in Purchase) is said with its area ("Sales orders").
+ * in Sales and in Purchase) is said with its area ("Sales Orders").
  */
 const MODEL_NAMES: ReadonlyMap<string, string> = (() => {
   const all = MODEL_CATEGORIES.flatMap((category) =>
@@ -94,10 +105,7 @@ const MODEL_NAMES: ReadonlyMap<string, string> = (() => {
   const count = new Map<string, number>();
   for (const { name } of all) count.set(name, (count.get(name) ?? 0) + 1);
   return new Map(
-    all.map(({ model, name, area }) => [
-      model,
-      count.get(name)! > 1 ? `${area} ${name.toLowerCase()}` : name,
-    ])
+    all.map(({ model, name, area }) => [model, count.get(name)! > 1 ? `${area} ${name}` : name])
   );
 })();
 
@@ -124,9 +132,14 @@ class Builder {
     return this;
   }
 
+  /** Whether the value at `key` is short enough for the headline. */
+  canSay(key: string): boolean {
+    return this.has(key) && inline(this.args[key]);
+  }
+
   /** Says `before` and the value at `key` when the value is short enough. */
   sayValue(before: string, key: string): this {
-    if (this.has(key) && inline(this.args[key])) this.say(before, { value: this.args[key] });
+    if (this.canSay(key)) this.say(before, { value: this.args[key] });
     return this;
   }
 
@@ -157,7 +170,7 @@ class Builder {
 }
 
 /** A cell or column name a table can draw: not a list, not a plain object. */
-export function isCell(value: unknown): boolean {
+function isCell(value: unknown): boolean {
   if (Array.isArray(value)) return false;
   if (value !== null && typeof value === "object") {
     const node = readNode(value);
@@ -166,30 +179,43 @@ export function isCell(value: unknown): boolean {
   return true;
 }
 
+/**
+ * Whether `rows` draws as a table cell for cell: at least one row, every row
+ * the same length (`width`, when the columns fix it) and made of cells. A
+ * ragged list is not a table — padded to its widest row it would draw cells
+ * the summary never charged against DRAW_BUDGET (one wide row under hundreds
+ * of narrow ones draws tens of thousands), and `pinchy_generate_file` refuses
+ * it anyway.
+ */
+export function isTable(rows: unknown, width?: number): rows is unknown[][] {
+  if (!Array.isArray(rows) || rows.length === 0) return false;
+  const length = width ?? (Array.isArray(rows[0]) ? rows[0].length : 0);
+  return (
+    length > 0 &&
+    rows.every((row) => Array.isArray(row) && row.length === length && row.every(isCell))
+  );
+}
+
 function generateFile(b: Builder): Intent {
   const { format, columns, rows } = b.args;
   const formatName = typeof format === "string" ? FORMAT_NAMES.get(format) : undefined;
   b.say(formatName ? `Create ${formatName} file` : "Create a file");
   if (formatName) b.said("format");
   b.sayValue(" named ", "filename");
-  const table =
-    Array.isArray(columns) &&
-    columns.every(isCell) &&
-    Array.isArray(rows) &&
-    rows.every((row) => Array.isArray(row) && row.length > 0 && row.every(isCell));
+  const table = Array.isArray(columns) && columns.every(isCell) && isTable(rows, columns.length);
   if (table) {
     b.say(` with ${plural(columns.length, "column")} and ${plural(rows.length, "row")}`);
   }
   b.section("File name", "filename").section("Title", "title");
   if (table) {
-    b.sections.push({ label: "Contents", table: { columns, rows: rows as unknown[][] } });
+    b.sections.push({ label: "Contents", table: { columns, rows } });
     b.said("columns").said("rows");
   }
   return b.build("Create a file");
 }
 
 function email(b: Builder, send: boolean): Intent {
-  b.say(send ? "Send an email" : "Save an email draft");
+  b.say(send ? "Send an email" : "Draft an email");
   const { to } = b.args;
   if (Array.isArray(to) && to.length > 1) b.say(` to ${plural(to.length, "recipient")}`);
   else b.sayValue(" to ", "to");
@@ -197,42 +223,55 @@ function email(b: Builder, send: boolean): Intent {
   b.section("To", "to").section("Subject", "subject").section("Message", "body");
   b.section("In reply to", "replyTo");
   b.note = send
-    ? { tone: "warning", text: "It's sent right away, and a sent email can't be called back." }
+    ? { tone: "warning", text: "It goes out right away and can't be unsent." }
     : { tone: "info", text: "It's saved as a draft. Nothing is sent." };
-  return b.build(send ? "Send an email" : "Save an email draft");
+  return b.build(send ? "Send an email" : "Draft an email");
 }
 
 function writeFile(b: Builder): Intent {
   const { overwrite } = b.args;
   const replace = overwrite === true;
   const known = overwrite === undefined || typeof overwrite === "boolean";
-  b.say(replace ? "Replace the file" : known ? "Create the file" : "Write to the file");
-  b.sayValue(" ", "path");
+  // `overwrite: true` also creates a file that does not exist yet.
+  const verb = replace ? "Create or replace" : known ? "Create" : "Write to";
+  const named = b.canSay("path");
+  b.say(`${verb} ${named ? "the" : "a"} file`).sayValue(" ", "path");
   if (known && b.has("overwrite")) b.said("overwrite");
-  if (replace) b.note = { tone: "warning", text: "What the file holds now is replaced." };
+  if (replace) {
+    b.note = {
+      tone: "warning",
+      text: "If this file already exists, what it holds now is overwritten and can't be recovered.",
+    };
+  }
   b.section("File", "path").section("Content", "content");
   return b.build("Save a file");
 }
 
 function deleteFile(b: Builder): Intent {
-  b.say("Delete the file").sayValue(" ", "path");
+  b.say(b.canSay("path") ? "Delete the file" : "Delete a file").sayValue(" ", "path");
   b.section("File", "path");
   b.note = { tone: "warning", text: "A deleted file can't be restored." };
   return b.build("Delete a file");
 }
 
-/** "2 records" for a list, "records" for anything else. */
+/**
+ * "2 records" for a list, "records" for anything else. A record named twice
+ * is one record — the tools dedupe ids and refs — so it is counted once.
+ */
 function records(value: unknown): string {
-  return Array.isArray(value) ? plural(value.length, "record") : "records";
+  if (!Array.isArray(value)) return "records";
+  return plural(new Set(value.map((item) => JSON.stringify(item))).size, "record");
 }
 
 function odoo(b: Builder, verb: "create" | "write" | "delete"): Intent {
   const { model } = b.args;
   const named = { model: modelName(model), value: model };
   if (verb === "create") b.say("Create a record in ");
-  if (verb === "write") b.say(`Change ${records(b.args.ids)} in `);
+  if (verb === "write") b.say(`Update ${records(b.args.ids)} in `);
   if (verb === "delete") b.say(`Delete ${records(b.args.targets)} from `);
-  if (b.has("model")) b.say(named, " in Odoo");
+  // A model the catalogue does not name is repeated only when it is short;
+  // the Record type section shows it either way.
+  if (b.has("model") && (named.model !== null || inline(model))) b.say(named, " in Odoo");
   else b.say("Odoo");
   if (b.has("model")) {
     b.sections.push({ label: "Record type", ...named });
@@ -243,16 +282,16 @@ function odoo(b: Builder, verb: "create" | "write" | "delete"): Intent {
   if (verb === "delete") b.section("Records", "targets");
   if (verb === "delete") b.note = { tone: "warning", text: "Deleted records can't be restored." };
   const duplicate = b.args.allow_duplicate;
-  if (verb === "create" && typeof duplicate === "boolean") {
+  // The flag only matters for a vendor bill (`account.move`); anywhere else
+  // it stays in the field list rather than in a note about bills.
+  if (verb === "create" && duplicate === true && model === "account.move") {
     b.said("allow_duplicate");
-    if (duplicate) {
-      b.note = {
-        tone: "warning",
-        text: "It's filed even if a bill with the same reference already exists.",
-      };
-    }
+    b.note = {
+      tone: "warning",
+      text: "It's filed even if a bill with the same reference is already on file.",
+    };
   }
-  const action = { create: "Create a record", write: "Change records", delete: "Delete records" };
+  const action = { create: "Create a record", write: "Update records", delete: "Delete records" };
   return b.build(`${action[verb]} in Odoo`);
 }
 
@@ -288,6 +327,17 @@ const SPELLED: ReadonlyMap<string, string> = new Map([
   ["id", "ID"],
   ["ids", "IDs"],
   ["url", "URL"],
+  ["vat", "VAT"],
+  ["uom", "UoM"],
+  ["iban", "IBAN"],
+  ["bic", "BIC"],
+  ["cc", "CC"],
+  ["bcc", "BCC"],
+  ["html", "HTML"],
+  ["pdf", "PDF"],
+  ["csv", "CSV"],
+  ["pos", "POS"],
+  ["api", "API"],
 ]);
 
 function humanize(key: string): string {
@@ -300,14 +350,40 @@ function humanize(key: string): string {
 }
 
 /**
- * The label for each field name, in words where it reads as words. A name
- * that is quoted or unusual stays as the summary wrote it, and so do names
- * that two fields would share once written in words — `send_at` and `send-at`
- * are two fields, and must not be two rows labelled alike.
+ * The label for each field name, in words where it reads as words (`raw:
+ * false`). A name that is quoted or unusual stays as the summary wrote it
+ * (`raw: true`), and so do names that two fields would share once written in
+ * words — `send_at` and `send-at` are two fields, and must not be two rows
+ * labelled alike — or that would read like a label already on the card
+ * (`taken`, the sections'). The card draws a raw name in the raw style, so a
+ * field `Subject` beside the section "Subject" still reads as a field name.
  */
-export function humanLabels(keys: readonly string[]): Map<string, string> {
-  const human = new Map(keys.map((key) => [key, WORDY_KEY.test(key) ? humanize(key) : key]));
-  const uses = new Map<string, number>();
-  for (const label of human.values()) uses.set(label, (uses.get(label) ?? 0) + 1);
-  return new Map(keys.map((key) => [key, uses.get(human.get(key)!)! > 1 ? key : human.get(key)!]));
+export function fieldLabels(
+  keys: readonly string[],
+  taken: readonly string[] = []
+): Map<string, { text: string; raw: boolean }> {
+  const human = new Map(keys.map((key) => [key, WORDY_KEY.test(key) ? humanize(key) : null]));
+  const uses = new Map<string, number>(taken.map((label) => [label, 1]));
+  for (const label of human.values()) {
+    if (label !== null) uses.set(label, (uses.get(label) ?? 0) + 1);
+  }
+  return new Map(
+    keys.map((key) => {
+      const label = human.get(key) ?? null;
+      return [
+        key,
+        label !== null && uses.get(label) === 1
+          ? { text: label, raw: false }
+          : { text: key, raw: true },
+      ];
+    })
+  );
+}
+
+/** `fieldLabels`, as text alone. */
+export function humanLabels(
+  keys: readonly string[],
+  taken: readonly string[] = []
+): Map<string, string> {
+  return new Map([...fieldLabels(keys, taken)].map(([key, { text }]) => [key, text]));
 }

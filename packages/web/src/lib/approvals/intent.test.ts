@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { summarizeArgs } from "@/test-helpers/approvals";
-import { describeIntent, humanLabels, type Intent, type PhrasePart } from "./intent";
+import { describeIntent, humanLabels, isTable, type Intent, type PhrasePart } from "./intent";
 
 /** The headline as plain text, each value written as ‹value›. */
 function headline(intent: Intent): string {
@@ -106,7 +106,10 @@ describe("describeIntent says what a call does, in words", () => {
       "Send an email to ‹ada@example.com› with the subject ‹Q3 numbers›"
     );
     expect(labels(intent)).toEqual(["To", "Subject", "Message"]);
-    expect(intent.note).toEqual({ tone: "warning", text: expect.stringMatching(/right away/) });
+    expect(intent.note).toEqual({
+      tone: "warning",
+      text: expect.stringMatching(/goes out right away/),
+    });
   });
 
   it("says a draft is not sent", () => {
@@ -115,8 +118,8 @@ describe("describeIntent says what a call does, in words", () => {
       subject: "x",
       body: "y",
     });
-    expect(intent.action).toBe("Save an email draft");
-    expect(headline(intent)).toBe("Save an email draft to ‹ada@example.com› with the subject ‹x›");
+    expect(intent.action).toBe("Draft an email");
+    expect(headline(intent)).toBe("Draft an email to ‹ada@example.com› with the subject ‹x›");
     expect(intent.note).toEqual({ tone: "info", text: expect.stringMatching(/nothing is sent/i) });
   });
 
@@ -154,7 +157,7 @@ describe("describeIntent says what a call does, in words", () => {
       content: "x",
       overwrite: true,
     });
-    expect(headline(replace)).toBe("Replace the file ‹/data/a.md›");
+    expect(headline(replace)).toBe("Create or replace the file ‹/data/a.md›");
     expect(replace.note?.tone).toBe("warning");
     expect(replace.shown.has("overwrite")).toBe(true);
   });
@@ -193,8 +196,8 @@ describe("describeIntent says what a call does, in words", () => {
   it("tells two models with the same name apart by their area", () => {
     const sales = describeIntent("odoo_delete", { model: "sale.order", targets: ["r"] });
     const purchase = describeIntent("odoo_delete", { model: "purchase.order", targets: ["r"] });
-    expect(headline(sales)).toBe("Delete 1 record from Sales orders‹sale.order› in Odoo");
-    expect(headline(purchase)).toBe("Delete 1 record from Purchase orders‹purchase.order› in Odoo");
+    expect(headline(sales)).toBe("Delete 1 record from Sales Orders‹sale.order› in Odoo");
+    expect(headline(purchase)).toBe("Delete 1 record from Purchase Orders‹purchase.order› in Odoo");
   });
 
   it("names a model it does not know by its technical name alone", () => {
@@ -211,7 +214,7 @@ describe("describeIntent says what a call does, in words", () => {
       ids: [7, 8],
       values: { name: "x" },
     });
-    expect(headline(write)).toBe("Change 2 records in Contacts‹res.partner› in Odoo");
+    expect(headline(write)).toBe("Update 2 records in Contacts‹res.partner› in Odoo");
     expect(labels(write)).toEqual(["Record type", "Records", "Changes"]);
 
     const remove = describeIntent("odoo_delete", { model: "res.partner", targets: ["r1"] });
@@ -225,7 +228,10 @@ describe("describeIntent says what a call does, in words", () => {
       values: {},
       allow_duplicate: true,
     });
-    expect(intent.note).toEqual({ tone: "warning", text: expect.stringMatching(/already exists/) });
+    expect(intent.note).toEqual({
+      tone: "warning",
+      text: expect.stringMatching(/already on file/),
+    });
     expect(intent.shown.has("allow_duplicate")).toBe(true);
   });
 
@@ -270,7 +276,7 @@ describe("which values the headline repeats", () => {
     ["an emoji-heavy value", "📄".repeat(2)],
   ])("leaves out %s", (_name, path) => {
     const intent = describeIntent("pinchy_delete", { path });
-    expect(headline(intent)).toBe("Delete the file");
+    expect(headline(intent)).toBe("Delete a file");
     expect(labels(intent)).toEqual(["File"]);
   });
 });
@@ -311,6 +317,113 @@ describe("humanLabels", () => {
       '"to "': '"to "',
       to: "To",
       _private: "_private",
+    });
+  });
+});
+
+describe("review: what the card draws stays within what the summary charged", () => {
+  // Padded to the widest row, one row of 200 cells under 199 rows of one
+  // would draw 40,000 cells the summary charged as 400.
+  it.each([
+    ["ragged rows", { columns: ["a"], rows: [["1"], ["1", "2"]] }],
+    ["rows wider than the columns", { columns: ["a"], rows: [["1", "2"]] }],
+    ["rows narrower than the columns", { columns: ["a", "b"], rows: [["1"]] }],
+  ])("draws no table for %s", (_name, args) => {
+    const intent = describeIntent("pinchy_generate_file", {
+      filename: "q",
+      format: "csv",
+      ...args,
+    });
+    expect(intent.sections.some((section) => "table" in section)).toBe(false);
+    expect(intent.shown.has("rows")).toBe(false);
+  });
+
+  it("says a rectangular list of rows is a table, and a ragged one is not", () => {
+    expect(
+      isTable([
+        ["a", "b"],
+        ["c", "d"],
+      ])
+    ).toBe(true);
+    expect(isTable([["a"], ["b", "c"]])).toBe(false);
+    expect(isTable([["a"]], 2)).toBe(false);
+    expect(isTable([])).toBe(false);
+  });
+
+  it("leaves an Odoo model out of the sentence when it is long and unknown", () => {
+    const model = "x".repeat(500);
+    const intent = describeIntent("odoo_create", { model, values: {} });
+    expect(headline(intent)).toBe("Create a record in Odoo");
+    expect(intent.sections[0]).toEqual({ label: "Record type", model: null, value: model });
+  });
+
+  it("leaves a recipient out of the sentence when its name is long or spans lines", () => {
+    for (const name of ["N".repeat(300), "Line one\nLine two"]) {
+      const summary = summarizeArgs({ to: `"${name}" <a@b.at>`, subject: "x" });
+      expect(headline(describeIntent("email_send", summary))).toBe(
+        "Send an email with the subject ‹x›"
+      );
+    }
+  });
+
+  it("counts a record named twice once", () => {
+    const write = describeIntent("odoo_write", { model: "res.partner", ids: [7, 7], values: {} });
+    expect(headline(write)).toBe("Update 1 record in Contacts‹res.partner› in Odoo");
+  });
+
+  it("lists allow_duplicate: false with the other fields, since the sentence does not say it", () => {
+    const intent = describeIntent("odoo_create", {
+      model: "account.move",
+      values: {},
+      allow_duplicate: false,
+    });
+    expect(intent.shown.has("allow_duplicate")).toBe(false);
+    expect(intent.note).toBeNull();
+  });
+
+  it("keeps a field name raw where its words would read like a label already on the card", () => {
+    expect(Object.fromEntries(humanLabels(["Subject", "notify"], ["To", "Subject"]))).toEqual({
+      Subject: "Subject",
+      notify: "Notify",
+    });
+    expect(Object.fromEntries(humanLabels(["subject"], ["Subject"]))).toEqual({
+      subject: "subject",
+    });
+  });
+});
+
+describe("review: wording", () => {
+  it("says 'a file' where it cannot name the file", () => {
+    expect(headline(describeIntent("pinchy_write", { content: "x" }))).toBe("Create a file");
+    expect(headline(describeIntent("pinchy_write", { content: "x", overwrite: true }))).toBe(
+      "Create or replace a file"
+    );
+  });
+
+  it("says a replaced file's old content can't be recovered, without claiming it exists", () => {
+    const intent = describeIntent("pinchy_write", { path: "/a.md", content: "x", overwrite: true });
+    expect(intent.note?.text).toBe(
+      "If this file already exists, what it holds now is overwritten and can't be recovered."
+    );
+  });
+
+  it("does not speak of a bill for a record that is not one", () => {
+    const intent = describeIntent("odoo_create", {
+      model: "res.partner",
+      values: {},
+      allow_duplicate: true,
+    });
+    expect(intent.note).toBeNull();
+    expect(intent.shown.has("allow_duplicate")).toBe(false);
+  });
+
+  it("spells out common abbreviations in field names", () => {
+    expect(Object.fromEntries(humanLabels(["vat", "uom_id", "iban", "bcc", "body_html"]))).toEqual({
+      vat: "VAT",
+      uom_id: "UoM ID",
+      iban: "IBAN",
+      bcc: "BCC",
+      body_html: "Body HTML",
     });
   });
 });
