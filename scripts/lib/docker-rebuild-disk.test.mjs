@@ -217,3 +217,32 @@ test("removing docker-smoke's reclaim step is reported (canary)", () => {
   assert.equal(found.length, 1);
   assert.match(found[0], /ci\.yml:docker-smoke .*Start dev stack/);
 });
+
+test("a pull and a rebuild squeezed into one step are reported", () => {
+  const found = problems([
+    "- run: docker pull ghcr.io/heypinchy/pinchy:x && docker compose -f base.yml -f root-build.yml up --build -d",
+  ]);
+  assert.equal(found.length, 1);
+  assert.match(found[0], /same step/);
+});
+
+test("a conditional reclaim clears nothing", () => {
+  assert.equal(
+    problems([
+      PULL,
+      `- if: needs.build-image.result == 'success'\n  uses: ${RECLAIM_ACTION}`,
+      DEV_BUILD,
+    ]).length,
+    1,
+  );
+});
+
+test("--build-arg alone is not a compose build", () => {
+  assert.deepEqual(
+    problems([
+      PULL,
+      "- run: docker compose -f root-build.yml up -d --build-arg X=1",
+    ]),
+    [],
+  );
+});

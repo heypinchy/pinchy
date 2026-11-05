@@ -37,7 +37,10 @@ import { parse } from "yaml";
 // over-report (a build command inside an `echo`) but not miss a plain one.
 // Builds inside ONE step are not compared with each other: the fork-PR
 // fallbacks build Pinchy and OpenClaw back to back, two different images,
-// which is not the doubled-image shape this guard is about.
+// which is not the doubled-image shape this guard is about. A pull and a
+// build in one step are reported: that is the incident squeezed into a line.
+// Implicit pulls (`docker run`/`compose up` of a missing image) are not
+// counted; nothing in the repo relies on one before a build today.
 
 export const RECLAIM_ACTION = "./.github/actions/reclaim-docker-disk";
 const PULL_CI_IMAGES = "./.github/actions/pull-ci-images";
@@ -73,7 +76,7 @@ function commands(step) {
 
 const DOCKER_BUILD = /\bdocker\s+(?:buildx\s+)?build\b/;
 const COMPOSE = /\bdocker\s+compose\b/;
-const COMPOSE_BUILD = /\s(?:--build\b|build\b)/;
+const COMPOSE_BUILD = /\s(?:--build|build)(?![\w-])/;
 const PULL = /\bdocker\s+pull\b|\bdocker\s+compose\b.*\spull\b/;
 
 /** The `-f`/`--file` arguments of a compose command, as written. */
@@ -124,12 +127,16 @@ export function isBuildStep(step, readFile) {
   );
 }
 
+function pullsInStep(step) {
+  return commands(step).some((cmd) => PULL.test(cmd));
+}
+
 /** True if the step leaves a Pinchy image in the local image store. */
 export function holdsImageAfter(step, readFile) {
   if (localAction(step) === PULL_CI_IMAGES_PATH) return true;
   if (isBuildPushAction(step)) return step.with?.load === true;
   if (isBuildStep(step, readFile)) return true;
-  return commands(step).some((cmd) => PULL.test(cmd));
+  return pullsInStep(step);
 }
 
 /**
@@ -180,7 +187,9 @@ export function rebuildDiskProblems(file, text, readFile) {
     let holders = []; // steps that left an image behind since the last reclaim
     steps.forEach((step, index) => {
       if (localAction(step) === RECLAIM_PATH) {
-        holders = [];
+        // A conditional reclaim may not run, so it clears nothing: put the
+        // condition on the build instead, or run the reclaim unconditionally.
+        if (step.if === undefined) holders = [];
         return;
       }
       if (isBuildStep(step, readFile)) {
@@ -188,6 +197,10 @@ export function rebuildDiskProblems(file, text, readFile) {
         if (live)
           problems.push(
             `${file}:${name} step ${index + 1} (${label(step)}) builds a Pinchy image while step ${live.index + 1} (${label(live.step)}) left one on disk — add \`- uses: ${RECLAIM_ACTION}\` before the build`,
+          );
+        else if (pullsInStep(step))
+          problems.push(
+            `${file}:${name} step ${index + 1} (${label(step)}) pulls an image and builds a Pinchy image in the same step — split them and add \`- uses: ${RECLAIM_ACTION}\` between`,
           );
       }
       if (holdsImageAfter(step, readFile)) holders.push({ step, index });

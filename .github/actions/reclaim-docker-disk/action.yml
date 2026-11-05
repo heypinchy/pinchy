@@ -27,11 +27,12 @@ runs:
         echo "== before =="
         df -h /
         docker system df
-        # Every repository under ghcr.io/heypinchy: the -ci refs a job pulled,
-        # the :latest tags compose reads, and the images a fork-PR fallback
-        # built locally. Third-party images (postgres, caddy, mocks) stay, so
-        # the next `up` does not pull them again.
-        ids=$(docker image ls --filter 'reference=ghcr.io/heypinchy/*' --format '{{.ID}}' | sort -u)
+        # Every repository under ghcr.io/heypinchy — the -ci refs a job pulled,
+        # the :latest tags compose reads, the images a fork-PR fallback built —
+        # and the bare `pinchy*` tags some jobs build (`pinchy:e2e`). Filters on
+        # the same key are ORed. Third-party images (postgres, caddy, mocks)
+        # stay, so the next `up` does not pull them again.
+        ids=$(docker image ls --filter 'reference=ghcr.io/heypinchy/*' --filter 'reference=pinchy*' --format '{{.ID}}' | sort -u)
         if [ -n "$ids" ]; then
           # shellcheck disable=SC2086 # one ID per word
           docker image rm -f $ids

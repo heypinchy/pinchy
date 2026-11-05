@@ -306,7 +306,9 @@ GitHub's default job timeout is **360 minutes**, and until this guard landed no 
 - **A compose `--build` counts only if a `-f` file builds from the repo root.** The mocks build from their own directories and weigh a few MB; counting them flags `screenshots.yml`'s fake-ollama. A `-f` that arrives through a variable (`$COMPOSE_FILES`) cannot be read and counts — unreadable input fails loud.
 - **`build-push-action` holds a local image only with `load: true`.** A pushed image never lands in the local store, so release's two pushes in a row are fine.
 - **Steps whose `if:` pin `needs.build-image.result` to different values never both run** — the pull on a same-repo PR, the local build on a fork PR — so they do not count against each other. An `||` in either condition voids that.
-- **Builds inside one step are not compared.** The fork fallbacks build Pinchy and OpenClaw back to back in one step: two different images, not the doubled-image shape.
+- **Builds inside one step are not compared; a pull and a build in one step are.** The fork fallbacks build Pinchy and OpenClaw back to back in one step — two different images, not the doubled-image shape. A pull followed by a rebuild in one `run:` is the incident on one line, and is reported.
+- **A reclaim with an `if:` clears nothing.** It may not run; put the condition on the build instead.
+- **The action removes what the guard counts.** Both `ghcr.io/heypinchy/*` and bare `pinchy*` tags (`pinchy:e2e`): a reclaim that leaves an image the guard counted would turn the guard green over a full disk.
 
 ## Embeddable Serving Routes Need A next.config Entry
 
