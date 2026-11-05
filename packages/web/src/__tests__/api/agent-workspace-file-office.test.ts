@@ -21,7 +21,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from "node:fs";
+import { weakStoredFileEtag } from "@/lib/session-scoped-cache";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { NextRequest, NextResponse } from "next/server";
@@ -439,11 +440,17 @@ describe("workspace-file — a cached converted PDF is re-checked on every reuse
     // Same length as the first conversion, so the size is not what tells them apart.
     const revisedPdf = Buffer.from("%PDF-1.4\nthe revised conversion, at last!\n%%EOF");
     expect(revisedPdf.length).toBe(ARTIFACT_BYTES.length);
-    await storeArtifactFor(revised, revisedPdf);
+    const secondArtifact = await storeArtifactFor(revised, revisedPdf);
     const res = await callGET(source, {}, { "if-none-match": etag });
 
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("the revised conversion");
+    // Whether the inode was reused is up to the filesystem (APFS never does),
+    // so pin the validator itself: it is derived from the ARTIFACT's store
+    // path, which is what changes with the source's content.
+    expect(res.headers.get("etag")).toBe(
+      weakStoredFileEtag(statSync(secondArtifact), secondArtifact, "converted")
+    );
   });
 
   it("refuses a revoked grant with 403 instead of 304", async () => {

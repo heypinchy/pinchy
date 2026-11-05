@@ -150,7 +150,7 @@ export async function streamWorkspaceFile(
 
   // After the MIME check, so a 304 always vouches for a file this route would
   // serve — a bare `*` included. Reading first costs a local read of a small
-  // file (uploads are capped at upload time, and the artifacts route has
+  // file (uploads are capped at upload time, and the pinned-grant artifacts path has
   // already hashed it in full); what a 304 saves is the transfer.
   if (ifNoneMatchHits(request.headers.get("if-none-match"), etag)) {
     return new NextResponse(null, { status: 304, headers: sessionScopedRevalidateHeaders(etag) });

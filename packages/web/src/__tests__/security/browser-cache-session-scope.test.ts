@@ -111,6 +111,10 @@ describe("browser cache is scoped to the session (#1286)", () => {
     // browser that already holds the response. A served document must be
     // revalidated on every reuse (sessionScopedRevalidateHeaders) instead.
     // Matched by name anywhere in the file, an aliased import included.
+    // This bounds who may set a LIFETIME; it does not prove that a route
+    // without one sends a validator. That is the serving routes' own tests'
+    // job — and harmless if missed, since without Last-Modified there is no
+    // heuristic freshness either.
     const MAY_SET_A_LIFETIME: Array<{ file: string; reason: string }> = [
       {
         file: "app/api/models/capabilities/route.ts",
