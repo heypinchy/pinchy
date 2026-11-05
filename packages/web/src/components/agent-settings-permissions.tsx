@@ -348,12 +348,14 @@ export function AgentSettingsPermissions({
           <div className="space-y-2">
             <h4 className="text-sm font-medium">Allowed Directories</h4>
             <p className="text-sm text-muted-foreground">
-              Agents can read these directories. They can never write to them.
+              Agents can read these directories and every folder inside them. They can never write
+              to them.
             </p>
             <DirectoryPicker
               directories={directories}
               selected={allowedPaths}
               onChange={handlePathsChange}
+              browseSubfolders={isAdmin}
             />
           </div>
         )}

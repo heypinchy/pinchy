@@ -121,11 +121,24 @@ Each mounted directory appears as a separate selectable option in the Permission
 
 ## How directories appear in the UI
 
-When you configure an agent's permissions in the **Permissions tab** of Agent Settings, Pinchy scans `/data/` for subdirectories and displays them as selectable options. Each mounted directory shows up by name — for example, `/data/hr-policies` appears as "hr-policies".
+When you configure an agent's permissions in the **Permissions tab** of Agent Settings, Pinchy scans `/data/` for subdirectories and displays them as selectable options, and you can open each one to grant a folder inside it. Each mounted directory shows up by name — for example, `/data/hr-policies` appears as "hr-policies".
 
 The scan runs when the `openclaw` container starts, so a new mount appears in the picker after `docker compose up -d`, not before.
 
-Only top-level subdirectories of `/data/` are listed. Nested directories within those are accessible to the agent but are not listed separately in the directory picker.
+### Granting a subfolder
+
+You don't need a mount per department. Mount the share once — say at `/data/suppliers` — and give each agent only its own folder inside it: open `suppliers` in the picker with the arrow beside it, then tick `food` for one agent and `vet` for another. Folders open one level at a time, so a large share costs nothing until you look inside it.
+
+Granting a folder grants everything inside it. So when a folder is ticked, the folders inside it show as included and can't be ticked on their own, and ticking a folder replaces any grants you had already made inside it.
+
+A few things worth knowing:
+
+- **Subfolders are read in the `pinchy` container.** A share mounted only on `openclaw` still shows up as a mount, but opens with no subfolders. Mount it on both services, as described [above](#why-both-services).
+- **Symbolic links are not offered**, and a folder reached through one can't be opened. A link inside a share can point anywhere, so the picker only ever shows the folder a grant actually names. See [Links inside a mounted folder](#links-inside-a-mounted-folder).
+- **Hidden folders and operating-system folders** (`.snapshot`, `$RECYCLE.BIN` and the like) are left out. The index skips them anyway.
+- **A folder with more than 500 subfolders** shows the first 500 and says so.
+- **Only admins can open folders.** A member looking at their personal agent sees the mounts and every folder the agent has been granted, but can't browse a share.
+- **A grant the picker can't find any more** — a renamed folder, a share that isn't mounted right now — is listed below the folders, still ticked, so you can take it away.
 
 ## Verifying your mounts
 

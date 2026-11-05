@@ -178,6 +178,34 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByLabelText("Create files")).toBeInTheDocument();
   });
 
+  it("lets an admin open a mount to grant a subfolder, and a member not (#1269)", () => {
+    // The subfolder listing route is admin-only; a member looking at their
+    // personal agent must not get chevrons that could only ever answer 403.
+    const { rerender } = render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.getAllByRole("button", { name: /^Show subfolders of / }).length).toBe(
+      defaultDirectories.length
+    );
+
+    rerender(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={false}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.queryByRole("button", { name: /^Show subfolders of / })).not.toBeInTheDocument();
+  });
+
   it("keeps the memory toggle out of the Knowledge Base section", () => {
     // Memory is not a knowledge-base concern. It appeared under that heading
     // only because this component dumped every non-integration powerful tool
