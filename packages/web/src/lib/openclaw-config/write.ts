@@ -693,8 +693,8 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // equivalent to the runtime never restarts the pinned OpenClaw is not
         // measured here (#193); the first landed apply settles the delivery,
         // so the cost is one apply per pending episode either way — provided
-        // the apply answers before any restart it causes (write.ts's
-        // SIGUSR1 note above says it does); one that never answered would
+        // the apply answers before any restart it causes (the SIGUSR1 note
+        // above WS_DISCONNECTED_ERROR_FRAGMENT says it does); one that never answered would
         // not count as landed and would be retried.
         if (current.config && !fileOnlyDeliveryPending()) {
           const supplementedConfig = JSON.parse(supplemented) as Record<string, unknown>;

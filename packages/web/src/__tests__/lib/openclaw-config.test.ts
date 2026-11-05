@@ -5134,12 +5134,11 @@ describe("regenerateOpenClawConfig", () => {
      * openclaw.json (see server/agent-readiness.ts), so it already names the
      * change its runtime never loaded.
      */
+    let onDiskAfterFallback = "";
     const configGetReadingTheFile = () => ({
       hash: "h-file",
-      config: JSON.parse(writtenOrOnDisk()) as Record<string, unknown>,
+      config: JSON.parse(onDiskAfterFallback) as Record<string, unknown>,
     });
-    let onDiskAfterFallback = "";
-    const writtenOrOnDisk = () => onDiskAfterFallback;
 
     /** Regenerate while OpenClaw is unreachable until the push falls back to the file. */
     async function regenerateIntoFileFallback(): Promise<void> {
