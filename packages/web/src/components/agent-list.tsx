@@ -12,6 +12,8 @@ export interface Agent {
   tagline: string | null;
   starterPrompts: string[];
   avatarSeed: string | null;
+  /** Granted tool ids; `pinchy_memory` means the agent keeps memory. */
+  allowedTools?: string[];
 }
 
 interface AgentListProps {
