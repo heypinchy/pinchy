@@ -42,8 +42,8 @@ export function directSessionUserId(sessionKey: string | undefined): string | un
 /**
  * The chat a direct session key names: the `:{chatId}` suffix of a per-chat
  * session (#508), null for the default chat, undefined for a key that is not a
- * direct session at all. As read back from OpenClaw, which lowercases session
- * keys, the id comes back lowercased.
+ * direct session at all. Chat ids are lowercase by `chatIdSchema`, so the id
+ * compares equal to Pinchy's even though OpenClaw lowercases session keys.
  */
 export function directSessionChatId(sessionKey: string | undefined): string | null | undefined {
   const parts = sessionKey?.split(":") ?? [];

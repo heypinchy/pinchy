@@ -440,8 +440,8 @@ describe("Chat", () => {
       });
 
       it.each([
-        ["another chat with this agent", "agent-1", "Chat-B", undefined],
-        ["the default chat, from a named one", "agent-1", undefined, "Chat-A"],
+        ["another chat with this agent", "agent-1", "chat-b", undefined],
+        ["the default chat, from a named one", "agent-1", undefined, "chat-a"],
       ])(
         "still shows the delay hint when the confirmation waits in %s",
         (_label, approvalAgent, approvalChat, openChat) => {
@@ -464,13 +464,13 @@ describe("Chat", () => {
       it("says it is waiting when the confirmation waits in this named chat", () => {
         delayedResponding();
         mockUsePendingApprovals.mockReturnValue({
-          approvals: [pendingApprovalFor("agent-1", "Chat-A")],
+          approvals: [pendingApprovalFor("agent-1", "chat-a")],
           openId: null,
           open: vi.fn(),
           busy: null,
           decide: vi.fn(),
         });
-        render(<Chat agentId="agent-1" agentName="Smithers" chatId="Chat-A" />);
+        render(<Chat agentId="agent-1" agentName="Smithers" chatId="chat-a" />);
         expect(screen.getByText(/waiting for your confirmation/i)).toBeInTheDocument();
       });
 
