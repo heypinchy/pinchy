@@ -26,7 +26,12 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 interface LicenseCache {
   status: LicenseStatus | null;
   timestamp: number;
-  /** Bumped by every clear, so a read that started before it cannot store its answer. */
+  /**
+   * Bumped by every clear, so a read that started before it cannot store its
+   * answer. Unlike the counters `process-wide-cache.ts` warns about, this one
+   * may be lost when the cache object is replaced: a read compares against
+   * and writes to the object it captured, so a replacement only orphans it.
+   */
   generation: number;
 }
 
