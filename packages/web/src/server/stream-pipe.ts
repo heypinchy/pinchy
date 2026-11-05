@@ -343,19 +343,19 @@ export class StreamPipe {
         // turns that reach a `done` chunk count as completed sessions.
         if (chunk.type === "done") {
           sessionCache.add(sessionKey);
-          // A SUCCESSFUL turn's `done` supersedes the message's durable error.
-          // OpenClaw also emits a terminal `done` AFTER an `error` chunk to close
-          // the stream — superseding on that would immediately clear the error we
-          // just persisted, so the banner would never appear. `sawTerminalError`
-          // (set on any error chunk earlier in this stream) gates it out. Scoped
-          // to the triggering id so an unrelated later message succeeding never
-          // clears an unanswered error. Best-effort.
-          if (!sawTerminalError) {
+          // A SUCCESSFUL turn's `done` supersedes the session's earlier durable
+          // errors — every one, not only the one this message raised: a later
+          // turn that went through is where the conversation stands, and a
+          // banner about an older failure left on top of it outlives every
+          // reload (#1301). OpenClaw also emits a terminal `done` AFTER an
+          // `error` chunk to close the stream — superseding on that would
+          // immediately clear the error we just persisted, so the banner would
+          // never appear. `sawTerminalError` (set on any error chunk earlier in
+          // this stream) gates it out. A turn only counts once it said
+          // something (`sawText`), and a stop is not a success. Best-effort.
+          if (!sawTerminalError && sawText && activeRuns.get(sessionKey)?.abortedByUser !== true) {
             try {
-              await supersedeChatSessionErrors({
-                sessionKey,
-                clientMessageId: triggeringClientMessageId,
-              });
+              await supersedeChatSessionErrors({ sessionKey, before: new Date() });
             } catch (err) {
               console.error("Failed to supersede durable chat error:", err);
             }

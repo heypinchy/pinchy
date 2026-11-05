@@ -8,16 +8,15 @@
  * surface).
  *
  * Resolution is two-state and deliberately separate:
- *   - `supersededAt` — the triggering message's run later SUCCEEDED, so the
- *     error is stale. Scoped to the triggering `clientMessageId` so an
- *     unrelated later message succeeding does NOT clear an unanswered error.
+ *   - `supersededAt` — a later turn of the session SUCCEEDED, so the error is
+ *     stale (`supersedeChatSessionErrors`).
  *   - `dismissedAt` — the user explicitly acknowledged it. Scoped to the owner.
  *
  * `getActiveChatSessionError` filters on the EXACT `sessionKey`
  * (`agent:{agentId}:direct:{userId}`) — never a prefix — so errors can't leak
  * across sessions or users.
  */
-import { and, desc, eq, gte, isNull, like } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, like, lte } from "drizzle-orm";
 
 import { db } from "@/db";
 import { chatSessionErrors, auditLog } from "@/db/schema";
@@ -105,8 +104,17 @@ export async function recordChatSessionError(
 }
 
 /**
+ * How long an unresolved error may stay the session's banner. The banner
+ * answers "did something go wrong while I was away?" — by the next day that
+ * question is stale, and a banner from yesterday covering today's first answer
+ * is noise (#1301). A lasting cause fails the next message again, and that
+ * failure brings its own banner.
+ */
+export const ACTIVE_ERROR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
  * The newest un-superseded, un-dismissed, banner-eligible error for the exact
- * session, or null. `showBanner` is what keeps the classes recorded only for
+ * session, younger than `ACTIVE_ERROR_MAX_AGE_MS`, or null. `showBanner` is what keeps the classes recorded only for
  * the retry gate (#1013) out of a surface they were never shown on.
  */
 export async function getActiveChatSessionError(
@@ -120,7 +128,8 @@ export async function getActiveChatSessionError(
         eq(chatSessionErrors.sessionKey, sessionKey),
         eq(chatSessionErrors.showBanner, true),
         isNull(chatSessionErrors.supersededAt),
-        isNull(chatSessionErrors.dismissedAt)
+        isNull(chatSessionErrors.dismissedAt),
+        gte(chatSessionErrors.createdAt, new Date(Date.now() - ACTIVE_ERROR_MAX_AGE_MS))
       )
     )
     .orderBy(desc(chatSessionErrors.createdAt))
@@ -179,26 +188,30 @@ export async function resolveRetryGate({
 }
 
 /**
- * Mark the session's un-resolved error(s) superseded because the triggering
- * message's run succeeded. Requires `clientMessageId` — superseding on bare
- * session completion would wrongly clear an unanswered error when the user
- * simply moved on to a different question.
+ * Mark the session's un-resolved errors recorded up to `before` superseded,
+ * because a later turn of the session succeeded.
+ *
+ * Every earlier error, not only the one the succeeding message raised. This
+ * used to require the triggering `clientMessageId`, on the theory that a user
+ * who moved on to another question still wants the unanswered one flagged. In
+ * practice the banner then sat above every later answer, reload after reload,
+ * hours after the fact (#1301) — and the docs had promised all along that it
+ * "clears itself automatically as soon as a message goes through again".
  */
 export async function supersedeChatSessionErrors({
   sessionKey,
-  clientMessageId,
+  before,
 }: {
   sessionKey: string;
-  clientMessageId?: string | null;
+  before: Date;
 }): Promise<void> {
-  if (!clientMessageId) return;
   await db
     .update(chatSessionErrors)
     .set({ supersededAt: new Date() })
     .where(
       and(
         eq(chatSessionErrors.sessionKey, sessionKey),
-        eq(chatSessionErrors.clientMessageId, clientMessageId),
+        lte(chatSessionErrors.createdAt, before),
         isNull(chatSessionErrors.supersededAt)
       )
     );
