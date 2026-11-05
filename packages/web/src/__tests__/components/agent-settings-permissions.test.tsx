@@ -540,6 +540,58 @@ describe("AgentSettingsPermissions", () => {
   describe("Web Search section", () => {
     const webSearchConnection = { id: "ws-1", name: "Brave Search", type: "web-search" };
 
+    // #1297: an agent from a web template keeps its web tools on an instance
+    // without a search provider. The section must stay visible (otherwise
+    // the grant is invisible and cannot be revoked) and say what is missing.
+    it("shows the agent's web tools and a setup notice when no search provider exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search", "pinchy_web_fetch"] }}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText("Web Search")).toBeInTheDocument();
+      expect(screen.getByLabelText("Search the web")).toBeChecked();
+      expect(screen.getByLabelText("Fetch web pages")).toBeChecked();
+      expect(screen.getByText("Web search isn't set up")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /set up web search/i })).toHaveAttribute(
+        "href",
+        "/settings?tab=integrations"
+      );
+    });
+
+    it("hides the web section when there is no search provider and no web tool", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText("Web Search")).not.toBeInTheDocument();
+    });
+
+    it("shows no setup notice when a search provider exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search"] }}
+          directories={defaultDirectories}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText("Web search isn't set up")).not.toBeInTheDocument();
+    });
+
     it("should render Web Search heading with checkboxes for web tools", () => {
       render(
         <AgentSettingsPermissions

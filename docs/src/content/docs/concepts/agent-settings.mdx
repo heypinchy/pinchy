@@ -114,7 +114,7 @@ Tools are organised into three sections that are always shown — **Memory**, **
 
 **Knowledge Base** — sandboxed **read** access to admin-curated directories. **Workspace read access is always on** — agents can always list and read files under `uploads/` and `workbench/`. This section contains the **Allowed Directories** picker, which grants the agent read-access to additional directories under `/data/`. Agents can never write to those directories.
 
-**Web Search** — appears only when at least one active Web Search (Brave) connection exists:
+**Web Search** — appears when an active Web Search (Brave) connection exists, or when the agent already has a web tool (agents created from a web template do). Without a connection, the section says web search isn't set up and links to Settings → Integrations: **Fetch web pages** works without one, **Search the web** does not.
 
 | Tool            | Tool ID             | Description                                  |
 | --------------- | ------------------- | -------------------------------------------- |

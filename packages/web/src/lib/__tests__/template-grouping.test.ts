@@ -96,6 +96,29 @@ describe("getAccessBadgeProps", () => {
 });
 
 describe("getPermissionPreviewItems", () => {
+  // #1297: fetch works without a provider; search does not.
+  it("marks web search as not set up when no search provider is configured", () => {
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresWeb: true,
+      webSearchConfigured: false,
+    });
+    expect(result).toEqual([
+      { icon: "warning", text: "Search the public web (not set up yet)" },
+      { icon: "check", text: "Fetch public web pages" },
+      { icon: "cross", text: "Cannot access your private data or internal systems" },
+    ]);
+  });
+
+  it("lists web search as available when a search provider is configured", () => {
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresWeb: true,
+      webSearchConfigured: true,
+    });
+    expect(result[0]).toEqual({ icon: "check", text: "Search the public web" });
+  });
+
   it("returns read-only capabilities for Odoo read-only template", () => {
     const result = getPermissionPreviewItems({
       requiresDirectories: false,
