@@ -436,9 +436,9 @@ describe("UserDetailSheet", () => {
 
       await screen.findByText(/reset-token-xyz/);
 
-      await user.click(screen.getByRole("button", { name: "Copy" }));
+      await user.click(screen.getByRole("button", { name: "Copy link" }));
 
-      await screen.findByRole("button", { name: "Copied!" });
+      await screen.findByRole("button", { name: "Copied" });
       // The spy is what makes the success path deterministic, so assert the
       // reset link really reached the clipboard — otherwise the spy is
       // decoration and only the button label is under test.

@@ -121,7 +121,7 @@ describe("InviteDialog", () => {
       expect(screen.getByText("http://localhost:7777/invite/invite-token-abc")).toBeInTheDocument();
     });
 
-    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
   });
 
   it("should show error message on API failure", async () => {
@@ -228,7 +228,7 @@ describe("InviteDialog", () => {
     expect(global.fetch).not.toHaveBeenCalledWith("/api/users/invite", expect.anything());
   });
 
-  it("should show Share button when Web Share API is available", async () => {
+  it("offers Share beside Copy link when the Web Share API is available", async () => {
     const user = userEvent.setup();
 
     // Mock navigator.share as available
@@ -255,6 +255,9 @@ describe("InviteDialog", () => {
       expect(screen.getByText("http://localhost:7777/invite/share-token")).toBeInTheDocument();
     });
 
+    // Share is a secondary action beside Copy, never a replacement for it:
+    // on desktop Safari it opens the OS share sheet, where copying is buried.
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Share" }));
@@ -271,7 +274,7 @@ describe("InviteDialog", () => {
     delete navigator.canShare;
   });
 
-  it("should show Copy button when Web Share API is not available", async () => {
+  it("offers only Copy link when the Web Share API is not available", async () => {
     const user = userEvent.setup();
 
     // Ensure navigator.share is NOT available
@@ -290,7 +293,7 @@ describe("InviteDialog", () => {
       expect(screen.getByText("http://localhost:7777/invite/copy-token")).toBeInTheDocument();
     });
 
-    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Share" })).not.toBeInTheDocument();
 
     // Restore

@@ -34,8 +34,8 @@ import { toast } from "sonner";
 import { PasswordInput } from "@/components/password-input";
 import { parseOdooSubdomainHint, generateConnectionName } from "@/lib/integrations/odoo-url";
 import { normalizeUrl } from "@/lib/url";
-import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
+import { CopyField } from "@/components/copy-field";
 import { OdooIcon, GoogleIcon, BraveIcon, MicrosoftIcon } from "./integration-icons";
 import { ImapIcon } from "./imap-icon";
 import { ImapConnectStep } from "./imap-connect-step";
@@ -269,7 +269,6 @@ function ProviderConnectStep({
   const [tenantId, setTenantId] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const { isCopied, copy } = useCopyToClipboard();
 
   const blockedByInsecure = copy_.requiresSecure && !isSecure;
 
@@ -388,27 +387,7 @@ function ProviderConnectStep({
         {/* Section 1: Copy redirect URI TO the provider console */}
         <div className="space-y-2">
           <p className="text-sm font-medium">1. Copy this redirect URI to {copy_.redirectTarget}</p>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 rounded bg-muted px-3 py-2 text-xs break-all">
-              {redirectUrl}
-            </code>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              className="shrink-0"
-              onClick={() => {
-                copy(redirectUrl);
-                toast.success("Copied to clipboard");
-              }}
-            >
-              {isCopied ? (
-                <Check className="h-4 w-4 text-green-600" />
-              ) : (
-                <Copy className="h-4 w-4" />
-              )}
-            </Button>
-          </div>
+          <CopyField value={redirectUrl} label="Redirect URI" monospace />
           <p className="text-xs text-muted-foreground">
             Open{" "}
             <a

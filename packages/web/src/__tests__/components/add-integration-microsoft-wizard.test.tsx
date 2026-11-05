@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
@@ -83,6 +83,10 @@ describe("Add Integration Dialog — Microsoft flow", () => {
       const codeElement = screen.getByText(/\/api\/integrations\/oauth\/callback/);
       const copyButton = codeElement.parentElement?.querySelector("button");
       expect(copyButton).toBeInTheDocument();
+      // It used to be an icon-only button with no accessible name, so a screen
+      // reader announced just "button". It now says what it does.
+      const group = screen.getByRole("group", { name: "Redirect URI" });
+      expect(within(group).getByRole("button", { name: "Copy" })).toBeInTheDocument();
     });
 
     it("shows a link to Azure Portal or setup instructions", async () => {
