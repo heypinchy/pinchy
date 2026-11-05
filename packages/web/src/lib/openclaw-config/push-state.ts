@@ -72,7 +72,7 @@ interface ConfigPushState {
   inFlightGenerations: Set<number>;
   /** Pending follow-up regenerate for a file-only delivery (scheduleFileOnlyFollowUp). */
   fileOnlyFollowUp: ReturnType<typeof setTimeout> | undefined;
-  /** Follow-ups fired for the pending file-only delivery (MAX_FILE_ONLY_FOLLOW_UPS). */
+  /** Follow-ups fired for the pending file-only delivery (sets the backoff). */
   fileOnlyFollowUps: number;
 }
 
@@ -429,11 +429,13 @@ export const FILE_ONLY_FOLLOW_UP_DELAY_MS = 60_000;
 /** While the newest push is in flight, the follow-up re-checks this often. */
 const FILE_ONLY_FOLLOW_UP_RECHECK_MS = 2_000;
 /**
- * Follow-ups per pending delivery. Each one that is rate-limited again falls
- * back and schedules the next; this ends the chain should OpenClaw keep
- * refusing. A landed apply resets it (settleFileOnlyDelivery).
+ * The longest a follow-up waits. Each one that is rate-limited again falls
+ * back and schedules the next, one doubling later, up to this. The chain does
+ * not stop while a delivery is pending — a cap would strand the next change
+ * exactly like the bug it fixes — and costs at most a push's few refused
+ * applies per wait. A landed apply resets it (settleFileOnlyDelivery).
  */
-export const MAX_FILE_ONLY_FOLLOW_UPS = 3;
+export const FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS = 600_000;
 
 /**
  * Queue one follow-up regenerate for a file-only delivery (noteFileOnlyDelivery).
@@ -441,15 +443,19 @@ export const MAX_FILE_ONLY_FOLLOW_UPS = 3;
  * settles the delivery.
  *
  * Coalesced process-wide: one pending at most, the latest caller's
- * `regenerate` wins. Cancelled when an apply lands, skipped when none is
- * pending any more, and deferred while the newest push is in flight — that
- * one settles the delivery itself, and a regenerate would only supersede it.
- * At most MAX_FILE_ONLY_FOLLOW_UPS fire per pending delivery.
+ * `regenerate` wins, and a new fallback restarts the wait. Cancelled when an
+ * apply lands, skipped when none is pending any more, and deferred while the
+ * newest push is in flight — that one settles the delivery itself, and a
+ * regenerate would only supersede it. Backs off per follow-up fired
+ * (FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS).
  */
 export function scheduleFileOnlyFollowUp(regenerate: () => void): void {
   const s = state();
   clearFileOnlyFollowUp(s);
-  if (s.fileOnlyFollowUps >= MAX_FILE_ONLY_FOLLOW_UPS) return;
+  const delayMs = Math.min(
+    FILE_ONLY_FOLLOW_UP_DELAY_MS * 2 ** Math.min(s.fileOnlyFollowUps, 16),
+    FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS
+  );
   const fire = () => {
     s.fileOnlyFollowUp = undefined;
     if (!s.fileOnlyDelivery) return;
@@ -461,7 +467,7 @@ export function scheduleFileOnlyFollowUp(regenerate: () => void): void {
     s.fileOnlyFollowUps++;
     regenerate();
   };
-  s.fileOnlyFollowUp = setTimeout(fire, FILE_ONLY_FOLLOW_UP_DELAY_MS);
+  s.fileOnlyFollowUp = setTimeout(fire, delayMs);
   s.fileOnlyFollowUp.unref?.();
 }
 

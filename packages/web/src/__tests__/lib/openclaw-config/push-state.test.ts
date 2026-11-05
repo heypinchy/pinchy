@@ -35,7 +35,7 @@ import {
   settleFileOnlyDelivery,
   scheduleFileOnlyFollowUp,
   FILE_ONLY_FOLLOW_UP_DELAY_MS,
-  MAX_FILE_ONLY_FOLLOW_UPS,
+  FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS,
   _resetConfigPushState,
 } from "@/lib/openclaw-config/push-state";
 
@@ -307,20 +307,33 @@ describe("the follow-up regenerate for a file-only delivery", () => {
     expect(regenerate).toHaveBeenCalledTimes(1);
   });
 
-  it("stops after a bounded number of follow-ups per pending delivery", () => {
+  it("backs off between follow-ups but never stops while a delivery is pending", () => {
     // Each follow-up that is rate-limited again falls back and schedules the
-    // next; the chain must end even if OpenClaw never accepts an apply.
+    // next. A cap would strand the next, unrelated change exactly as before;
+    // a backoff keeps the cost to a few refused applies per window.
     noteFileOnlyDelivery();
-    const regenerate = vi.fn(() => scheduleFileOnlyFollowUp(regenerate));
+    const fired: number[] = [];
+    const regenerate = vi.fn(() => {
+      fired.push(Date.now());
+      scheduleFileOnlyFollowUp(regenerate);
+    });
+    const start = Date.now();
     scheduleFileOnlyFollowUp(regenerate);
 
-    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * (MAX_FILE_ONLY_FOLLOW_UPS + 5));
-    expect(regenerate).toHaveBeenCalledTimes(MAX_FILE_ONLY_FOLLOW_UPS);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS * 4);
+    const gaps = fired.map((t, i) => t - (i === 0 ? start : fired[i - 1]));
+    expect(gaps.slice(0, 4)).toEqual([
+      FILE_ONLY_FOLLOW_UP_DELAY_MS,
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 2,
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 4,
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 8,
+    ]);
+    expect(Math.max(...gaps)).toBe(FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS);
+    expect(gaps.at(-1)).toBe(FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS);
 
-    // A landed apply ends the episode; the next fallback gets a fresh budget.
+    // A landed apply ends the episode; the next fallback starts at one window.
     settleFileOnlyDelivery();
     noteFileOnlyDelivery();
-    scheduleFileOnlyFollowUp(vi.fn());
     const next = vi.fn();
     scheduleFileOnlyFollowUp(next);
     vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS);

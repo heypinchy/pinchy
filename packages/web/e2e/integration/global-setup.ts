@@ -271,7 +271,9 @@ export default async function globalSetup() {
         json: async () => ({}),
       })),
     smithersId,
-    { deadlineMs: 120_000 }
+    // A rate-limited delivery lands with the follow-up one window (60 s) later,
+    // plus that push's own rate-limit waits.
+    { deadlineMs: 180_000 }
   );
   console.log(
     `[integration-setup] OpenClaw's runtime accepts Smithers (${smithersId}) — integration stack ready`

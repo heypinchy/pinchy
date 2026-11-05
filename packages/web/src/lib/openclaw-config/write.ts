@@ -714,7 +714,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // decides a restart with resolveConfigRestartRequirement on exactly
         // those paths. A payload equal to the file has none, so
         // buildGatewayReloadPlan([]) is a no-op plan and no SIGUSR1 restart is
-        // scheduled. The write then reaches OpenClaw's reload watcher, which
+        // scheduled. (What is sent is the supplemented payload: a field the
+        // supplementing adds or changes is a changed path, judged by OpenClaw's
+        // restart rules like any other.) The write then reaches OpenClaw's reload watcher, which
         // compares against its runtime and applies what the runtime lacks —
         // the undelivered change itself, under its own reload rules (CI run
         // 41906476538's late apply: `hot reload applied (hooks, plugins,
