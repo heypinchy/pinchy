@@ -296,7 +296,7 @@ describe("getFirstIndexStatus", () => {
   it("reports the agent's own first run as it goes", async () => {
     const agent = await knowledgeAgent(["/data/hr"]);
     await queueFirstIndex(agent.id, ADMIN, recorder().audit);
-    expect(await getFirstIndexStatus(agent)).toEqual({ state: "queued" });
+    expect(await getFirstIndexStatus(agent)).toEqual({ state: "queued", partial: false });
 
     const job = await claimNextIndexJob();
     await recordIndexJobProgress(job!.id, {
@@ -311,6 +311,7 @@ describe("getFirstIndexStatus", () => {
       state: "indexing",
       processed: 120,
       total: 505,
+      partial: false,
     });
   });
 
@@ -326,7 +327,7 @@ describe("getFirstIndexStatus", () => {
     await claimNextIndexJob();
     const agent = await knowledgeAgent(["/data/hr"]);
 
-    expect(await getFirstIndexStatus(agent)).toEqual({ state: "waiting" });
+    expect(await getFirstIndexStatus(agent)).toEqual({ state: "waiting", partial: false });
   });
 
   it("does not pass off the agent's own later run as its first index", async () => {
@@ -343,6 +344,45 @@ describe("getFirstIndexStatus", () => {
     });
     await claimNextIndexJob();
 
-    expect(await getFirstIndexStatus(agent)).toEqual({ state: "waiting" });
+    expect(await getFirstIndexStatus(agent)).toEqual({ state: "waiting", partial: true });
+  });
+
+  it("says an agent with indexed folders is only waiting for the new one", async () => {
+    // It answers from /data/hr throughout; the chat must not claim otherwise.
+    const agent = await knowledgeAgent(["/data/hr", "/data/legal"]);
+    await finishedJob(agent.id, ["/data/hr"], "succeeded");
+
+    expect(await getFirstIndexStatus(agent)).toEqual({ state: "queued", partial: true });
+  });
+
+  it("reports another agent's run over the same folder as this agent's first index", async () => {
+    // Agent B is created over a folder agent A's first index is reading: B
+    // gets no run of its own, and its documents arrive with A's.
+    const a = await knowledgeAgent(["/data/hr"]);
+    await queueFirstIndex(a.id, ADMIN, recorder().audit);
+    const job = await claimNextIndexJob();
+    await recordIndexJobProgress(job!.id, {
+      processed: 3,
+      total: 9,
+      processedBytes: 1,
+      totalBytes: 2,
+      counts: { indexed: 3, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 },
+    });
+    const b = await knowledgeAgent(["/data/hr/"]);
+
+    expect((await queueFirstIndex(b.id, ADMIN, recorder().audit)).status).toBe("skipped");
+    expect(await getFirstIndexStatus(b)).toEqual({
+      state: "indexing",
+      processed: 3,
+      total: 9,
+      partial: false,
+    });
+  });
+
+  it("says nothing while the embedding model is missing, since no run can start", async () => {
+    mockKbEmbedderAvailable.mockReturnValue(false);
+    const agent = await knowledgeAgent(["/data/hr"]);
+
+    expect(await getFirstIndexStatus(agent)).toEqual({ state: "none" });
   });
 });

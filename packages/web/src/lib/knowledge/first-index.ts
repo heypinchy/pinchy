@@ -150,7 +150,7 @@ const AGENT_COLUMNS = {
  * The agents that search the index and hold a folder nothing has indexed yet,
  * oldest first — the agents the worker queues a first index for.
  */
-export async function agentsOwedFirstIndex(): Promise<string[]> {
+export async function agentsOwedFirstIndex(preloaded?: RunPaths): Promise<string[]> {
   const rows = await db
     .select(AGENT_COLUMNS)
     .from(agents)
@@ -158,7 +158,7 @@ export async function agentsOwedFirstIndex(): Promise<string[]> {
     .orderBy(asc(agents.createdAt));
   const searching = rows.filter(isScheduledIndexAgent);
   if (searching.length === 0) return [];
-  const runs = await loadRunPaths();
+  const runs = preloaded ?? (await loadRunPaths());
   const owed: string[] = [];
   for (const agent of searching) {
     if ((await neverIndexedPaths(grantedKnowledgePaths(agent.pluginConfig), { runs })).length > 0) {
@@ -200,12 +200,14 @@ export type FirstIndexOutcome =
 export async function queueFirstIndex(
   agentId: string,
   requester: FirstIndexRequester,
-  audit: (entry: AuditLogEntry) => void | Promise<void>
+  audit: (entry: AuditLogEntry) => void | Promise<void>,
+  /** The runs already read for this look (`loadRunPaths`), so the worker reads them once, not once per agent. */
+  runs?: RunPaths
 ): Promise<FirstIndexOutcome> {
   const [agent] = await db.select(AGENT_COLUMNS).from(agents).where(eq(agents.id, agentId));
   if (!agent || !isScheduledIndexAgent(agent)) return { status: "skipped" };
 
-  const paths = await neverIndexedPaths(grantedKnowledgePaths(agent.pluginConfig));
+  const paths = await neverIndexedPaths(grantedKnowledgePaths(agent.pluginConfig), { runs });
   if (paths.length === 0) return { status: "skipped" };
 
   const agentRef: EntityRef = { id: agent.id, name: agent.name };
@@ -263,8 +265,8 @@ export async function queueFirstIndex(
  * leaves the agent answering from the index it already has, and a chat that
  * said "indexing" through every one of them would read as broken. So progress
  * is shown only for a run that goes through a folder still waiting for its
- * first index; while some other run holds the instance's one job slot, the
- * answer is `waiting`.
+ * first index — whichever agent asked for it; while some other run holds the
+ * instance's one job slot, the answer is `waiting`.
  */
 export async function getFirstIndexStatus(agent: {
   id: string;
@@ -273,19 +275,28 @@ export async function getFirstIndexStatus(agent: {
   pluginConfig: Parameters<typeof grantedKnowledgePaths>[0];
 }): Promise<FirstIndexStatus> {
   if (!isScheduledIndexAgent(agent)) return { state: "none" };
-  const pending = await neverIndexedPaths(grantedKnowledgePaths(agent.pluginConfig), {
-    finishedOnly: true,
-  });
+  // Without the bundled embedding model no run can start, and a notice that
+  // promised one would never come true. The admin is told where runs are
+  // looked at; the chat stays quiet.
+  if (!kbEmbedderAvailable()) return { state: "none" };
+  const granted = grantedKnowledgePaths(agent.pluginConfig);
+  const pending = await neverIndexedPaths(granted, { finishedOnly: true });
   if (pending.length === 0) return { state: "none" };
+  // Some folders are indexed already: the agent answers from them meanwhile,
+  // and the chat says only the new ones are on their way.
+  const partial = pending.length < granted.length;
 
   const active = await findActiveIndexJob(DEFAULT_ORG_ID);
-  if (!active) return { state: "queued" };
-  const runsPending =
-    active.agentId === agent.id &&
-    pending.some((path) => active.paths.some((runPath) => isWithin(path, runPath)));
-  if (!runsPending) return { state: "waiting" };
+  if (!active) return { state: "queued", partial };
+  // Any agent's run counts: an agent created over a folder another agent's
+  // first index is reading gets no run of its own — its documents arrive
+  // with that one.
+  const runsPending = pending.some((path) =>
+    active.paths.some((runPath) => isWithin(path, runPath))
+  );
+  if (!runsPending) return { state: "waiting", partial };
   if (active.status === "running") {
-    return { state: "indexing", processed: active.processed, total: active.total };
+    return { state: "indexing", processed: active.processed, total: active.total, partial };
   }
-  return { state: "queued" };
+  return { state: "queued", partial };
 }

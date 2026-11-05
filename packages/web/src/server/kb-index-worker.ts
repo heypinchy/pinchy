@@ -44,7 +44,7 @@ import {
   queueReconversion,
 } from "@/lib/knowledge/office-format-upgrade";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
-import { agentsOwedFirstIndex, queueFirstIndex } from "@/lib/knowledge/first-index";
+import { agentsOwedFirstIndex, loadRunPaths, queueFirstIndex } from "@/lib/knowledge/first-index";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import {
   claimNextIndexJob,
@@ -504,13 +504,18 @@ async function queueOwedFirstIndex(): Promise<void> {
   if (_firstIndexFailedAt !== null && Date.now() - _firstIndexFailedAt < FIRST_INDEX_RETRY_MS) {
     return;
   }
+  // Without the bundled embedding model every run could only fail, so there
+  // is nothing to queue and nothing worth reading every tick to find out.
+  if (!kbEmbedderAvailable()) return;
   try {
     if (await findActiveIndexJob(DEFAULT_ORG_ID)) return;
-    for (const agentId of await agentsOwedFirstIndex()) {
+    const runs = await loadRunPaths();
+    for (const agentId of await agentsOwedFirstIndex(runs)) {
       const outcome = await queueFirstIndex(
         agentId,
         { actorType: "system", actorId: KB_INDEX_WORKER_ACTOR },
-        recordAudit
+        recordAudit,
+        runs
       );
       if (outcome.status !== "skipped") return;
     }

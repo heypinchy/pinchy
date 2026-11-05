@@ -77,6 +77,32 @@ describe("KnowledgeFirstIndexNotice", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/right after the run that.s going now/i);
   });
 
+  it("says only the new folders are missing when the agent answers from others meanwhile", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ state: "indexing", processed: 2, total: 9, partial: true })
+    );
+
+    render(<KnowledgeFirstIndexNotice agentId="agent-1" />);
+    await settle();
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/newly added folders/i);
+    expect(status).toHaveTextContent("2 of 9");
+    expect(status).not.toHaveTextContent(/can.t find anything/i);
+  });
+
+  it("stops asking once the route refuses", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: "Agent not found" }, { status: 404 }));
+
+    render(<KnowledgeFirstIndexNotice agentId="agent-1" />);
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FIRST_INDEX_POLL_MS * 3);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("asks again when the very first request fails", async () => {
     fetchMock
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))

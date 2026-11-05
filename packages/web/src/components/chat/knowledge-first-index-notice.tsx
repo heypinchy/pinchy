@@ -3,36 +3,44 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 
-import { apiGet } from "@/lib/api-client";
+import { ApiError, apiGet } from "@/lib/api-client";
 import type { FirstIndexStatus } from "@/lib/knowledge/first-index-status";
 
 /** How often a chat asks again while the first index is still to come. */
 export const FIRST_INDEX_POLL_MS = 5_000;
 
 function message(status: Exclude<FirstIndexStatus, { state: "none" }>): string {
-  if (status.state === "queued") {
-    return "Indexing this agent's documents starts in a moment. Until it's done, it can't find anything in them.";
-  }
+  // `partial`: the agent answers from its other folders meanwhile, so only
+  // the new documents are missing — never "it can't find anything".
+  const what = status.partial ? "the newly added folders" : "this agent's documents";
+  const until = status.partial
+    ? "Until it's done, answers won't include them."
+    : "Until it's done, it can't find anything in them.";
+  if (status.state === "queued") return `Indexing ${what} starts in a moment. ${until}`;
   if (status.state === "waiting") {
-    return "This agent's documents are next in line to be indexed, right after the run that's going now. Until then, it can't find anything in them.";
+    return `Indexing ${what} is next in line, right after the run that's going now. ${until}`;
   }
-  if (status.total === null) {
-    return "Reading this agent's documents for the first time — finding them all…";
-  }
-  return `Reading this agent's documents for the first time — ${status.processed.toLocaleString()} of ${status.total.toLocaleString()} done. Until it's finished, answers may miss documents.`;
+  if (status.total === null) return `Reading ${what} for the first time — finding them all…`;
+  return `Reading ${what} for the first time — ${status.processed.toLocaleString()} of ${status.total.toLocaleString()} done. ${until}`;
 }
 
 /** Anything this component does not recognise reads as "nothing to report", never as a notice with blanks in it. */
 function readStatus(raw: unknown): FirstIndexStatus {
-  const value = raw as Partial<{ state: string; processed: unknown; total: unknown }> | null;
-  if (value?.state === "queued") return { state: "queued" };
-  if (value?.state === "waiting") return { state: "waiting" };
+  const value = raw as Partial<{
+    state: string;
+    processed: unknown;
+    total: unknown;
+    partial: unknown;
+  }> | null;
+  const partial = value?.partial === true;
+  if (value?.state === "queued") return { state: "queued", partial };
+  if (value?.state === "waiting") return { state: "waiting", partial };
   if (
     value?.state === "indexing" &&
     typeof value.processed === "number" &&
     (typeof value.total === "number" || value.total === null)
   ) {
-    return { state: "indexing", processed: value.processed, total: value.total };
+    return { state: "indexing", processed: value.processed, total: value.total, partial };
   }
   return { state: "none" };
 }
@@ -64,8 +72,10 @@ export function KnowledgeFirstIndexNotice({ agentId }: { agentId: string }) {
             signal: controller.signal,
           })
         );
-      } catch {
-        // Retried on the next round, if there is one.
+      } catch (err) {
+        // A refusal (the agent is gone, or not ours to see) will not change
+        // by asking again; anything else — a dropped connection — might.
+        if (err instanceof ApiError && err.status >= 400 && err.status < 500) return;
       }
       if (cancelled) return;
       if (next) setStatus(next);
