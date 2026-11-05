@@ -297,6 +297,65 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
   });
 
+  it("shows a grant stored with a trailing slash as checked and revokes it cleanly", async () => {
+    // The stored grant is "/data/docs/"; the directory list says "/data/docs".
+    // The admin must see the grant and be able to untick it (#1264).
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={onChange}
+      />
+    );
+
+    const docs = screen.getByRole("checkbox", { name: "docs" });
+    expect(docs).toBeChecked();
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ allowedPaths: ["/data/docs/"] }),
+      false
+    );
+
+    await user.click(docs);
+
+    expect(docs).not.toBeChecked();
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ allowedPaths: [] }), true);
+  });
+
+  it("does not report a re-ticked trailing-slash grant as an unsaved change", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={onChange}
+      />
+    );
+
+    const docs = screen.getByRole("checkbox", { name: "docs" });
+    await user.click(docs);
+    await user.click(docs);
+
+    expect(docs).toBeChecked();
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ allowedPaths: ["/data/docs"] }),
+      false
+    );
+    expect(capturedReindexProps).toMatchObject({ hasUnsavedPathChanges: false });
+  });
+
   it("gates the reindex section on SAVED grants, not the unsaved picker selection", async () => {
     const user = userEvent.setup();
     render(

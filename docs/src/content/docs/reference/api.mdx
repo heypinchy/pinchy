@@ -1332,11 +1332,11 @@ Create an invite for a new user. Returns the full invite object including a plai
 
 **Request body:**
 
-| Field      | Type     | Required | Description                                                 |
-| ---------- | -------- | -------- | ----------------------------------------------------------- |
-| `role`     | string   | Yes      | Role for the invited user (`admin` or `member`)             |
-| `email`    | string   | No       | Email address of the invited user (optional, for reference) |
-| `groupIds` | string[] | No       | Group IDs to assign the user to on account creation         |
+| Field      | Type     | Required | Description                                                          |
+| ---------- | -------- | -------- | -------------------------------------------------------------------- |
+| `email`    | string   | Yes      | Email address of the invited user. Their account is created with it. |
+| `role`     | string   | Yes      | Role for the invited user (`admin` or `member`)                      |
+| `groupIds` | string[] | No       | Group IDs to assign the user to on account creation                  |
 
 **Response:** `201 Created`
 
@@ -1357,7 +1357,7 @@ The admin constructs the invite URL from the returned token: `{origin}/invite/{t
 
 **Errors:**
 
-- `400` — missing or invalid role
+- `400` — missing or invalid email or role
 - `401` — not authenticated
 - `403` — not an admin, or seat cap reached (enterprise license `maxUsers` limit exceeded — see `GET /api/enterprise/status`)
 
@@ -1407,7 +1407,7 @@ What kind of flow this token opens, so the page can render the right form. **No 
 
 **Response:** `{ "type": "invite" }` for a new-user claim, `{ "type": "reset" }` for a password reset on an existing account. The distinction matters: the reset form deliberately has no name field, so resetting a password can't overwrite the user's display name.
 
-**Errors:** `404` / `410` with an `error` message when the token is unknown, already claimed, or expired.
+**Errors:** an `error` message with `410` when the token is unknown, already claimed or expired, or the invite has no email address; `404` when a reset token's user no longer exists.
 
 ### `POST /api/invite/claim`
 
@@ -1415,13 +1415,13 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 
 **Request body:**
 
-| Field      | Type   | Required | Description                         |
-| ---------- | ------ | -------- | ----------------------------------- |
-| `token`    | string | Yes      | The invite/reset token from the URL |
-| `name`     | string | Yes      | Display name for the new user       |
-| `password` | string | Yes      | Password (min 8 characters)         |
+| Field      | Type   | Required          | Description                                                                    |
+| ---------- | ------ | ----------------- | ------------------------------------------------------------------------------ |
+| `token`    | string | Yes               | The invite/reset token from the URL                                            |
+| `name`     | string | For a new account | Display name for the new user (ignored for a password reset)                   |
+| `password` | string | Yes               | Password: at least 12 characters, a letter and a number, not a common password |
 
-**Response:** `201 Created`
+**Response:** `201 Created` for a new account, `200 OK` for a password reset
 
 ```json
 {
@@ -1431,7 +1431,10 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 
 **Errors:**
 
-- `400` — missing fields, invalid token, or token expired
+- `400` — missing fields, or a password that fails the password policy
+- `404` — a reset token whose user no longer exists
+- `410` — the token is unknown, expired or already claimed, or the invite has no email address (invites created before the email became required). The `error` message says when the invite lacks an email address.
+- `500` — the account could not be created, or the password reset failed. When sign-up or the reset itself is refused, the token stays usable and an `outcome: failure` audit entry is written (`user.created` or `auth.password_reset_completed`).
 
 ## Telegram Channels
 

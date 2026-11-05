@@ -457,7 +457,7 @@ When an agent opens a `.docx` directly, the text is now extracted in a separate 
 
 #### Documents in archive folders drop out of everyday answers
 
-A knowledge-base document now counts as archived if any **folder** on its path is called `old`, `archive`, `archived` or `archiv` — matched whole and case-insensitively, so `OLD/` counts and `Goldakte/` does not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it to one of those four to get the same treatment.
+A knowledge-base document now counts as archived if the name of any **folder** on its path contains `old`, `older`, `archive`, `archives`, `archived`, `expired`, `obsolete`, `Archiv`, `archiviert`, `alte`, `ältere` or `veraltet` as a word of its own, case-insensitively — so `OLD/`, `X_OLD/`, `xOLD/`, `Old certificates/` and `older versions/` count, and `Gold/` and `Goldakte/` do not. The rule reads directories only: a file named `archive.pdf` is not archived. Archived documents are still fully indexed, and the agent can still reach them when a question asks it to; they are simply left out of an ordinary answer. Year and quarter folders (`2013/`, `Q3/`) are never archives, and neither is a folder called `Alt/`. See [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first). If you keep superseded files in a folder named something else, rename it — `Archive/` will do — to get the same treatment. The first reindex after the upgrade, which every knowledge base needs anyway, applies the rule to everything already indexed.
 
 #### Indexing never reads through a link
 
@@ -564,6 +564,12 @@ PINCHY_TRUSTED_PROXIES=10.0.0.0/8,173.245.48.0/20
 Comma-separated addresses or CIDR ranges; loopback is trusted already. Leave it unset and sign-ins from behind that extra hop share one throttle bucket, keyed to the hop's own address — annoying rather than dangerous, but worth avoiding. See [Environment variables](/reference/environment-variables/#pinchy_trusted_proxies).
 
 Blocked-request entries in the audit trail now carry `clientAddress` beside `remoteAddress`. `remoteAddress` still means what it always did — the machine that opened the connection, i.e. your proxy — and `clientAddressSource` tells you whether the client address came from the forwarded header (`forwarded`) or is just the connection's own peer because nothing forwarded one (`socket`).
+
+#### An invite now needs an email address
+
+The **Invite User** dialog used to call the email optional, but an invite without one could never be claimed: the account it creates needs an address, so the invitee only ever saw "Failed to create account". The email is now required, in the dialog and in `POST /api/users/invite`.
+
+An invite created without an email still can't be used, and its link now says so up front. Revoke it in **Settings → Users** and invite the person again with their email. An expired one shows **Revoke** instead of **Resend**, because a fresh invite needs an email.
 
 ### Database migrations
 
