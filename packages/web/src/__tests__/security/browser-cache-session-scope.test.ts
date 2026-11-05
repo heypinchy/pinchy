@@ -25,9 +25,10 @@ const webSrcDir = path.resolve(__dirname, "../..");
 const HELPER = path.join(webSrcDir, "lib", "session-scoped-cache.ts");
 const EXCLUDED_DIR_NAMES = new Set(["__tests__", "node_modules", "test-helpers"]);
 // Any non-zero max-age or s-maxage, in any position and whether written out or
-// templated (`max-age=${n}`), plus an `expires` header key. max-age=0 keeps
+// templated (`max-age=${n}`), plus an `expires` header, whether written as an
+// object key or passed to `headers.set("Expires", …)`. max-age=0 keeps
 // nothing, so it is not a lifetime.
-const CACHE_LIFETIME_RES = [/\b(?:s-)?max-?age\s*=\s*(?!0\b)/i, /["']expires["']\s*:/i];
+const CACHE_LIFETIME_RES = [/\b(?:s-)?max-?age\s*=\s*(?!0\b)/i, /["']expires["']\s*[:,]/i];
 
 // Lines that match the pattern but are not an HTTP cache, each with the
 // reason. An entry that no longer matches its file fails, so it cannot
