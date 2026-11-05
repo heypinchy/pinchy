@@ -56,10 +56,6 @@ interface ListOptions {
   root?: string;
 }
 
-function withoutTrailingSlash(path: string): string {
-  return path.length > 1 ? path.replace(/\/+$/, "") : path;
-}
-
 export async function listDataSubdirectories(
   parent: string,
   { root = DATA_ROOT }: ListOptions = {}
@@ -68,8 +64,8 @@ export async function listDataSubdirectories(
     return { ok: false, reason: "invalid_path" };
   }
 
-  const lexicalRoot = withoutTrailingSlash(resolve(root));
-  const lexical = withoutTrailingSlash(resolve(normalize(parent)));
+  const lexicalRoot = resolve(root);
+  const lexical = resolve(normalize(parent));
   if (!lexical.startsWith(lexicalRoot + "/")) {
     return { ok: false, reason: "invalid_path" };
   }

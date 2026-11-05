@@ -178,9 +178,10 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByLabelText("Create files")).toBeInTheDocument();
   });
 
-  it("lets an admin open a mount to grant a subfolder, and a member not (#1269)", () => {
-    // The subfolder listing route is admin-only; a member looking at their
-    // personal agent must not get chevrons that could only ever answer 403.
+  it("offers subfolder browsing only with the admin flag (#1269)", () => {
+    // The subfolder listing route is admin-only. The settings page renders
+    // this tab for admins only today; the flag keeps the chevrons off should
+    // that ever change, since without it they could only ever answer 403.
     const { rerender } = render(
       <AgentSettingsPermissions
         agent={defaultAgent}

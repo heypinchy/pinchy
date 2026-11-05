@@ -24,8 +24,10 @@ interface DirectoryPickerProps {
   onChange: (selected: string[]) => void;
   /**
    * Whether folders can be opened to grant a subfolder. The listing route is
-   * admin-only, so a member looking at their personal agent sees the mounts
-   * and their grants, without chevrons that could only ever fail.
+   * admin-only. Every surface that renders the picker today is admin-only too
+   * (the new-agent form, and the Permissions tab of a shared agent), so this
+   * is defence in depth: a future non-admin surface gets the mounts and its
+   * grants, not chevrons that could only ever answer 403.
    */
   browseSubfolders?: boolean;
   /** One level of subfolders. Defaults to `GET /api/data-directories/children`; tests inject it. */

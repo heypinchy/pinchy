@@ -61,7 +61,8 @@ itself is no longer read-only from the web container. Nothing in Pinchy writes
 to it — the agent runtime already mounts it writable, and user uploads go to a
 different store — but a compromised web tier could. If that trade isn't one
 you want to make, mount your directories on `openclaw` only; agents can still
-read them, you just can't index them into a knowledge base.
+read them, you just can't index them into a knowledge base or open them in the
+picker to grant a subfolder.
 
 </Aside>
 
@@ -72,9 +73,9 @@ Two containers read `/data`, for different jobs:
 | Service    | Reads `/data` for                                                         | Needed when                                     |
 | ---------- | ------------------------------------------------------------------------- | ----------------------------------------------- |
 | `openclaw` | Agent file access, and the directory list shown in the permissions picker | Always                                          |
-| `pinchy`   | Knowledge Base indexing                                                   | You index those documents into a knowledge base |
+| `pinchy`   | Knowledge Base indexing, and the subfolders the permissions picker lists  | You index those documents, or grant a subfolder |
 
-Mounting in both is the simple path, and it's what we recommend: the paths stay identical, and a directory you later point a [Knowledge Base agent](/guides/create-knowledge-base-agent/) at is already there. A directory mounted only on `openclaw` shows up in the picker and agents can read it, but indexing it finds nothing.
+Mounting in both is the simple path, and it's what we recommend: the paths stay identical, and a directory you later point a [Knowledge Base agent](/guides/create-knowledge-base-agent/) at is already there. A directory mounted only on `openclaw` shows up in the picker and agents can read it, but indexing it finds nothing, and it opens with no subfolders.
 
 ## Examples
 
@@ -137,8 +138,8 @@ A few things worth knowing:
 - **Symbolic links are not offered**, and a folder reached through one can't be opened. A link inside a share can point anywhere, so the picker only ever shows the folder a grant actually names. See [Links inside a mounted folder](#links-inside-a-mounted-folder).
 - **Hidden folders and operating-system folders** (`.snapshot`, `$RECYCLE.BIN` and the like) are left out. The index skips them anyway.
 - **A folder with more than 500 subfolders** shows the first 500 and says so.
-- **Only admins can open folders.** A member looking at their personal agent sees the mounts and every folder the agent has been granted, but can't browse a share.
-- **A grant the picker can't find any more** — a renamed folder, a share that isn't mounted right now — is listed below the folders, still ticked, so you can take it away.
+- **A grant the picker can't show** — a folder that was renamed or moved, or one beyond the first 500 — is listed below the folders, still ticked, so you can take it away.
+- **A folder named like an archive** — `OLD`, `Archive`, `Archived` or `Archiv` — counts as archived when you grant it, and so does everything in it. Search leaves archived documents out by default (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)), so grant the department folder above it rather than the archive itself.
 
 ## Verifying your mounts
 

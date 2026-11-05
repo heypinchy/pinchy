@@ -870,7 +870,7 @@ The folder is read in the `pinchy` container, so a share mounted only on `opencl
 - `400` — `path` is missing, isn't under `/data/`, or is `/data/` itself (the mounts come from [`GET /api/data-directories`](#get-apidata-directories))
 - `401` — not authenticated
 - `403` — not an admin
-- `404` — the folder doesn't exist, isn't a folder, or is reached through a symbolic link
+- `404` — the folder doesn't exist, isn't a folder, can't be read, or is reached through a symbolic link
 
 ## Settings
 
