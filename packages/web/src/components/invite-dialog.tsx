@@ -149,7 +149,8 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
               value={inviteLink}
               label="Invite link"
               copyLabel="Copy link"
-              share={{ title: "Pinchy Invite" }}
+              share={{ title: "Pinchy invite" }}
+              autoFocus
             />
           </div>
         ) : (

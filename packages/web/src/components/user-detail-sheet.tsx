@@ -282,12 +282,16 @@ export function UserDetailSheet({
 
             {resetLink && (
               <div className="space-y-1 rounded border p-3">
-                <p className="text-sm font-medium">Reset link:</p>
+                <p id="reset-link-label" className="text-sm font-medium">
+                  Reset link:
+                </p>
                 <CopyField
                   value={resetLink}
                   label="Reset link"
+                  labelledBy="reset-link-label"
                   copyLabel="Copy link"
                   share={{ title: "Pinchy password reset" }}
+                  autoFocus
                 />
               </div>
             )}

@@ -357,12 +357,16 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         <CardContent>
           {resetLink && (
             <div className="mb-4 space-y-1 rounded border p-3">
-              <p className="text-sm font-medium">Invite link:</p>
+              <p id="resent-invite-link-label" className="text-sm font-medium">
+                Invite link:
+              </p>
               <CopyField
                 value={resetLink}
                 label="Invite link"
+                labelledBy="resent-invite-link-label"
                 copyLabel="Copy link"
-                share={{ title: "Pinchy Invite" }}
+                share={{ title: "Pinchy invite" }}
+                autoFocus
               />
             </div>
           )}

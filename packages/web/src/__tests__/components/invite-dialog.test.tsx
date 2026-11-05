@@ -121,7 +121,9 @@ describe("InviteDialog", () => {
       expect(screen.getByText("http://localhost:7777/invite/invite-token-abc")).toBeInTheDocument();
     });
 
-    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
+    // The form that had focus is gone; focus lands on the new link's Copy
+    // button so a screen-reader user hears that the link is there.
+    expect(screen.getByRole("button", { name: "Copy link" })).toHaveFocus();
   });
 
   it("should show error message on API failure", async () => {
@@ -263,7 +265,7 @@ describe("InviteDialog", () => {
     await user.click(screen.getByRole("button", { name: "Share" }));
 
     expect(shareMock).toHaveBeenCalledWith({
-      title: "Pinchy Invite",
+      title: "Pinchy invite",
       url: "http://localhost:7777/invite/share-token",
     });
 

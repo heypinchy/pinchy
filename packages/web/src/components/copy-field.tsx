@@ -11,12 +11,24 @@ interface CopyFieldProps {
   value: string;
   /** What the value is ("Invite link", "API key"). Names the group and the announcement. */
   label: string;
+  /**
+   * Id of a visible label for the value. The group then takes its name from
+   * it instead of from `label`, so screen readers don't read the name twice.
+   */
+  labelledBy?: string;
+  /**
+   * Focus the Copy button when the field appears. For a value that replaces
+   * the control that produced it (Create Invite, Reset Password): the person
+   * lands on the next thing to do, and a screen reader hears that it's there.
+   */
+  autoFocus?: boolean;
   /** Label of the copy button. Defaults to "Copy". */
   copyLabel?: string;
   /**
    * Offer the Web Share API as a secondary action. Only for links meant to be
-   * passed to a person — never for secrets — and only shown where the browser
-   * has `navigator.share` (phones, tablets, some desktop browsers).
+   * passed to a person — never for API keys or other secrets an admin keeps —
+   * and only shown where the browser has `navigator.share` (phones, tablets,
+   * some desktop browsers).
    */
   share?: { title: string };
   /** Render the value in a monospace font (keys, tokens). */
@@ -53,6 +65,8 @@ export function CopyField(props: CopyFieldProps) {
 function CopyFieldForValue({
   value,
   label,
+  labelledBy,
+  autoFocus = false,
   copyLabel = "Copy",
   share,
   monospace = false,
@@ -99,8 +113,15 @@ function CopyFieldForValue({
     announcement = "Couldn't copy automatically. It's selected — press Ctrl+C (⌘C on a Mac).";
 
   return (
-    <div role="group" aria-label={label} className={cn("space-y-2", className)}>
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+    <div
+      role="group"
+      aria-label={labelledBy ? undefined : label}
+      aria-labelledby={labelledBy}
+      // Stacks by its own width, not the viewport's: in a narrow sheet on a
+      // wide screen the buttons go below the value instead of squeezing it.
+      className={cn("@container space-y-2", className)}
+    >
+      <div className="flex flex-col gap-2 @md:flex-row @md:items-start">
         <code
           ref={valueRef}
           className={cn(
@@ -111,7 +132,7 @@ function CopyFieldForValue({
           {value}
         </code>
         <div className="flex shrink-0 gap-2">
-          <Button type="button" variant={copyVariant} onClick={handleCopy}>
+          <Button type="button" variant={copyVariant} onClick={handleCopy} autoFocus={autoFocus}>
             {showCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
             {showCopied ? "Copied" : copyLabel}
           </Button>

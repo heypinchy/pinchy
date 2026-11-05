@@ -40,6 +40,39 @@ describe("CopyField", () => {
     expect(copy).toHaveAttribute("data-variant", "default");
   });
 
+  it("takes its name from a visible label when one is given, so it isn't read twice", () => {
+    render(
+      <>
+        <p id="reset-link-label">Reset link:</p>
+        <CopyField
+          value={URL_VALUE}
+          label="Reset link"
+          labelledBy="reset-link-label"
+          copyLabel="Copy link"
+        />
+      </>
+    );
+
+    const group = screen.getByRole("group", { name: "Reset link:" });
+    expect(group).not.toHaveAttribute("aria-label");
+  });
+
+  it("puts focus on Copy when asked, so a screen reader hears the new link arrive", () => {
+    render(<CopyField value={URL_VALUE} label="Invite link" copyLabel="Copy link" autoFocus />);
+
+    expect(screen.getByRole("button", { name: "Copy link" })).toHaveFocus();
+  });
+
+  it("stacks by its own width, not the viewport's, so a narrow sheet keeps the value readable", () => {
+    render(<CopyField value={URL_VALUE} label="Invite link" copyLabel="Copy link" />);
+
+    const group = screen.getByRole("group", { name: "Invite link" });
+    // A container query: inside a 384px sheet on a wide screen, the buttons
+    // go below the value instead of squeezing it into a sliver beside them.
+    expect(group.className).toContain("@container");
+    expect(group.innerHTML).not.toMatch(/\bsm:flex-row\b/);
+  });
+
   it("copies the value, confirms on the button and announces it to screen readers", async () => {
     const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);

@@ -435,6 +435,10 @@ describe("UserDetailSheet", () => {
       await user.click(screen.getByRole("button", { name: /reset password/i }));
 
       await screen.findByText(/reset-token-xyz/);
+      // Focus moves from Reset Password to the new link's Copy button, so a
+      // screen-reader user hears that the link appeared.
+      expect(screen.getByRole("button", { name: "Copy link" })).toHaveFocus();
+      expect(screen.getByRole("group", { name: "Reset link:" })).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Copy link" }));
 
