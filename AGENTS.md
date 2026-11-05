@@ -295,6 +295,19 @@ GitHub's default job timeout is **360 minutes**, and until this guard landed no 
 
 `actionlint` reports the reusable-workflow mistake in about a second with the exact allowed-keys list. It is not wired into CI, so run it locally after editing a workflow — the regex guard here encodes one known trap, not GitHub's whole schema.
 
+## A Job That Rebuilds An Image It Already Holds Reclaims The Disk First
+
+`docker-smoke` pulls the pre-built Pinchy and OpenClaw images, tests them, runs `docker compose down -v` — which removes containers and volumes, **never images** — and then starts the dev stack with `up --build`, which builds `Dockerfile.pinchy.dev` and `Dockerfile.openclaw` from scratch. Both copies on one runner disk ran the OpenClaw build out of space at `COPY --from=builder /opt/llama-cpp-deps` (`ResourceExhausted: … no space left on device`, CI run 42014766282; #1256, #1279 and #1285 lost runs the same way). Each step is fine alone; the failure is the sum, so nothing in the workflow looked wrong.
+
+`.github/actions/reclaim-docker-disk` removes every `ghcr.io/heypinchy/*` image and all BuildKit cache, and prints `df` and `docker system df` before and after. The pulled images are not inputs to the rebuild — a plain `docker build` does not use a pulled image as cache — so removing them costs nothing but the space.
+
+`scripts/lib/docker-rebuild-disk.mjs` (+ its test, `pnpm test:scripts`) is the tripwire across every workflow: once a job holds a Pinchy image (pulled the CI images, `docker pull`ed one, or built one into the local store), a later step that builds one must come after the reclaim action. Four details worth knowing before editing it:
+
+- **A compose `--build` counts only if a `-f` file builds from the repo root.** The mocks build from their own directories and weigh a few MB; counting them flags `screenshots.yml`'s fake-ollama. A `-f` that arrives through a variable (`$COMPOSE_FILES`) cannot be read and counts — unreadable input fails loud.
+- **`build-push-action` holds a local image only with `load: true`.** A pushed image never lands in the local store, so release's two pushes in a row are fine.
+- **Steps whose `if:` pin `needs.build-image.result` to different values never both run** — the pull on a same-repo PR, the local build on a fork PR — so they do not count against each other. An `||` in either condition voids that.
+- **Builds inside one step are not compared.** The fork fallbacks build Pinchy and OpenClaw back to back in one step: two different images, not the doubled-image shape.
+
 ## Embeddable Serving Routes Need A next.config Entry
 
 A header set by a route handler **loses** to `next.config.ts`'s `headers()`. The global `/(.*)` rule sets `X-Frame-Options: DENY`, so a file-serving route that sets `x-frame-options: SAMEORIGIN` in its own response still gets DENY on the wire: a valid `200 application/pdf` that the browser refuses to render, `net::ERR_BLOCKED_BY_RESPONSE`, blank viewer pane. It shipped twice this way — the KB citation viewer and agent-delivered artifacts (#703 / #788) — and every test was green both times, because route tests assert the header the **handler** declares.
