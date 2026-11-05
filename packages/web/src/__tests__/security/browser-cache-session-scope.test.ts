@@ -29,11 +29,19 @@ const webSrcDir = path.resolve(__dirname, "../..");
 const HELPER = path.join(webSrcDir, "lib", "session-scoped-cache.ts");
 const EXCLUDED_DIR_NAMES = new Set(["__tests__", "node_modules", "test-helpers"]);
 // Any non-zero max-age or s-maxage, in any position and whether written out or
-// templated (`max-age=${n}`). The hyphen is required so a `maxAge = …`
-// variable is not mistaken for a header. max-age=0 keeps nothing, so it is not
+// templated (`max-age=${n}`), and the stale-* extensions, which let the
+// browser serve a stored copy on their own. The hyphen is required so a
+// `maxAge = …` variable is not mistaken for a header. max-age=0 keeps nothing, so it is not
 // a lifetime. Plus an `expires` header: a quoted object key, or the name
 // passed to `headers.set("Expires", …)`.
-const CACHE_LIFETIME_RES = [/\b(?:s-maxage|max-age)\s*=\s*(?!0\b)/i, /["']expires["']\s*[:,]/i];
+const CACHE_LIFETIME_RES = [
+  /\b(?:s-maxage|max-age|stale-while-revalidate|stale-if-error)\s*=(?!\s*0\b)/i,
+  /["']expires["']\s*[:,]/i,
+  // Route segment config: Next.js then writes s-maxage itself, so no header
+  // literal appears in the source at all.
+  /\bexport\s+const\s+revalidate\s*=(?!\s*(?:0|false)\b)/,
+  /\bexport\s+const\s+dynamic\s*=\s*["']force-static["']/,
+];
 // An unquoted `Expires:` key is a valid Headers init too. In a .tsx file the
 // same text is ordinary JSX copy (the license page shows "Expires: <date>"),
 // so there it only counts right after `{` or `,`, where only an object key
@@ -97,6 +105,12 @@ describe("browser cache is scoped to the session (#1286)", () => {
       `  Expires: d.toUTCString(),`,
       `"expires": d.toUTCString()`,
       `res.headers.set("Expires", d.toUTCString())`,
+      `headers: { "Cache-Control": "private, stale-while-revalidate=60" }`,
+      `value: "stale-if-error=300"`,
+      // Route segment config: Next.js then emits s-maxage itself, so no
+      // header literal appears anywhere in the source.
+      `export const revalidate = 60;`,
+      `export const dynamic = "force-static";`,
     ]) {
       expect(setsCacheLifetime(route, line), line).toBe(true);
     }
@@ -105,6 +119,12 @@ describe("browser cache is scoped to the session (#1286)", () => {
       `const maxAge = 3600;`,
       `value: "no-cache, max-age=0, must-revalidate"`,
       `session.expires: 1`,
+      `value: "stale-while-revalidate=0"`,
+      `value: "private, max-age = 0"`,
+      `export const revalidate = 0;`,
+      `export const revalidate = false;`,
+      `export const dynamic = "force-dynamic";`,
+      `revalidatePath("/chat");`,
     ]) {
       expect(setsCacheLifetime(route, line), line).toBe(false);
     }
