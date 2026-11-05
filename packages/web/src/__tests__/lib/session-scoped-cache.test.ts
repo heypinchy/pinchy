@@ -4,9 +4,15 @@ import {
   rangeAllowedByIfRange,
   sessionScopedRevalidateHeaders,
   weakFileEtag,
+  weakStoredFileEtag,
 } from "@/lib/session-scoped-cache";
 
-const STAT = { size: 1234, mtimeMs: 1_700_000_000_123.456, ino: 42 };
+const STAT = {
+  size: 1234,
+  mtimeMs: 1_700_000_000_123.456,
+  ctimeMs: 1_700_000_500_456.789,
+  ino: 42,
+};
 
 describe("sessionScopedRevalidateHeaders", () => {
   it("keeps the copy but requires revalidation, per session", () => {
@@ -21,6 +27,14 @@ describe("sessionScopedRevalidateHeaders", () => {
 describe("weakFileEtag", () => {
   it("is a weak, quoted validator", () => {
     expect(weakFileEtag(STAT, "original")).toMatch(/^W\/"[a-z0-9-]+"$/);
+  });
+
+  it("changes with ctime, which a copy tool carrying mtime over cannot preserve", () => {
+    // `rsync -a --inplace` keeps size, mtime and inode of a corrected
+    // same-length document; only ctime moves. Without it the browser would be
+    // told 304 and keep the old edition.
+    const base = weakFileEtag(STAT, "original");
+    expect(weakFileEtag({ ...STAT, ctimeMs: STAT.ctimeMs + 1 }, "original")).not.toBe(base);
   });
 
   it("changes with size, mtime, inode and representation", () => {
@@ -59,5 +73,32 @@ describe("rangeAllowedByIfRange", () => {
     expect(rangeAllowedByIfRange(null)).toBe(true);
     expect(rangeAllowedByIfRange('W/"x"')).toBe(false);
     expect(rangeAllowedByIfRange("Wed, 21 Oct 2026 07:28:00 GMT")).toBe(false);
+  });
+});
+
+describe("weakStoredFileEtag", () => {
+  it("ignores timestamps, which the store moves on every read", () => {
+    // The signature takes none; this pins that a touched artifact keeps its tag.
+    const touched = { ...STAT, mtimeMs: STAT.mtimeMs + 1000, ctimeMs: STAT.ctimeMs + 1000 };
+    expect(weakStoredFileEtag(touched, "/store/v1/ab/abc.pdf", "converted")).toBe(
+      weakStoredFileEtag(STAT, "/store/v1/ab/abc.pdf", "converted")
+    );
+  });
+
+  it("changes with the stored content's path, size and inode", () => {
+    const base = weakStoredFileEtag(STAT, "/store/v1/ab/abc.pdf", "converted");
+    expect(weakStoredFileEtag(STAT, "/store/v1/cd/cde.pdf", "converted")).not.toBe(base);
+    expect(weakStoredFileEtag({ ...STAT, size: 1 }, "/store/v1/ab/abc.pdf", "converted")).not.toBe(
+      base
+    );
+    expect(weakStoredFileEtag({ ...STAT, ino: 7 }, "/store/v1/ab/abc.pdf", "converted")).not.toBe(
+      base
+    );
+  });
+
+  it("never matches a file validator", () => {
+    expect(weakStoredFileEtag(STAT, "/store/v1/ab/abc.pdf", "converted")).not.toBe(
+      weakFileEtag(STAT, "converted")
+    );
   });
 });

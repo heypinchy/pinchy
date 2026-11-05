@@ -88,12 +88,16 @@ afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-async function callGET(requestedPath: string, extraParams: Record<string, string> = {}) {
+async function callGET(
+  requestedPath: string,
+  extraParams: Record<string, string> = {},
+  headers?: HeadersInit
+) {
   const { GET } = await import("@/app/api/agents/[agentId]/workspace-file/route");
   const url = new URL("http://localhost/api/agents/agent-1/workspace-file");
   url.searchParams.set("path", requestedPath);
   for (const [key, value] of Object.entries(extraParams)) url.searchParams.set(key, value);
-  return GET(new NextRequest(url), {
+  return GET(new NextRequest(url, headers ? { headers } : undefined), {
     params: Promise.resolve({ agentId: "agent-1" }),
   } as unknown as Parameters<typeof GET>[1]);
 }
@@ -395,5 +399,58 @@ describe("workspace-file — the artifact volume is not a failure of the documen
 
     expect(res.status).toBe(404);
     expect(res).toBeInstanceOf(NextResponse);
+  });
+});
+
+describe("workspace-file — a cached converted PDF is re-checked on every reuse", () => {
+  it("answers an unchanged converted PDF with 304 and no body", async () => {
+    const source = writeSource("angebot.docx");
+    await storeArtifactFor(DOCX_BYTES);
+    const etag = (await callGET(source)).headers.get("etag")!;
+
+    const res = await callGET(source, {}, { "if-none-match": etag });
+
+    expect(res.status).toBe(304);
+    expect(res.body).toBeNull();
+  });
+
+  it("gives the original and its converted PDF different validators", async () => {
+    const source = writeSource("angebot.docx");
+    await storeArtifactFor(DOCX_BYTES);
+    const converted = (await callGET(source)).headers.get("etag")!;
+
+    const res = await callGET(source, { variant: "original" }, { "if-none-match": converted });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("etag")).not.toBe(converted);
+  });
+
+  it("sends the new conversion when the source changed since it was cached", async () => {
+    const source = writeSource("angebot.docx");
+    await storeArtifactFor(DOCX_BYTES);
+    const etag = (await callGET(source)).headers.get("etag")!;
+
+    const revised = Buffer.from("PK pretend this is the revised .docx\n");
+    writeSource("angebot.docx", revised);
+    await storeArtifactFor(revised, Buffer.from("%PDF-1.4\nthe revised conversion\n%%EOF"));
+    const res = await callGET(source, {}, { "if-none-match": etag });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("the revised conversion");
+  });
+
+  it("refuses a revoked grant with 403 instead of 304", async () => {
+    const source = writeSource("angebot.docx");
+    await storeArtifactFor(DOCX_BYTES);
+    const etag = (await callGET(source)).headers.get("etag")!;
+    mockGetAgentWithAccess.mockResolvedValue({
+      id: "agent-1",
+      name: "Smithers",
+      pluginConfig: { "pinchy-files": { allowed_paths: [outsideDir] } },
+    });
+
+    const res = await callGET(source, {}, { "if-none-match": etag });
+
+    expect(res.status).toBe(403);
   });
 });

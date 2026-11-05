@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Headers for a response the browser may keep for `maxAgeSeconds`.
  *
@@ -44,19 +46,43 @@ export function sessionScopedRevalidateHeaders(etag: string): {
 /**
  * A weak validator for one representation of a file on disk.
  *
- * Weak because size + mtime + inode only make byte-identity likely, not
- * certain (two writes within one mtime tick, same size). That is enough to
- * answer "has this changed?" with a 304, and it is exactly why a range is
- * never stitched onto a cached copy on the strength of it — see
- * `rangeAllowedByIfRange`. `variant` separates two representations of one
- * document (an Office original and its converted PDF).
+ * Weak because these fields only make byte-identity likely, not certain (two
+ * writes within one timestamp tick, same size). That is enough to answer "has
+ * this changed?" with a 304, and it is exactly why a range is never stitched
+ * onto a cached copy on the strength of it — see `rangeAllowedByIfRange`.
+ *
+ * ctime is in it because mtime alone can be carried over: `rsync -a
+ * --inplace` or `cp -p` replaces a document with a same-length correction
+ * and keeps size, mtime and inode, which would answer 304 for the old
+ * edition. No tool can set ctime. `variant` separates two representations of
+ * one document (an Office original and its converted PDF).
  */
 export function weakFileEtag(
-  stat: { size: number; mtimeMs: number; ino: number },
+  stat: { size: number; mtimeMs: number; ctimeMs: number; ino: number },
   variant: string
 ): string {
-  const parts = [stat.size, Math.trunc(stat.mtimeMs), stat.ino].map((n) => n.toString(36));
-  return `W/"${parts.join("-")}-${variant.replace(/[^a-z0-9]/gi, "")}"`;
+  return weakEtag([stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino], variant);
+}
+
+/**
+ * A weak validator for a file in a content-addressed store, which this
+ * process touches on every read (the Office artifact store refreshes mtime
+ * for its LRU sweep, and that moves ctime too). Timestamps would therefore
+ * change on every request and no reuse would ever get a 304. The store path
+ * already names the content it holds, so path, size and inode identify it.
+ */
+export function weakStoredFileEtag(
+  stat: { size: number; ino: number },
+  storePath: string,
+  variant: string
+): string {
+  const pathKey = createHash("sha256").update(storePath).digest("hex").slice(0, 16);
+  return weakEtag([stat.size, stat.ino], `${pathKey}${variant}`);
+}
+
+function weakEtag(numbers: number[], tag: string): string {
+  const parts = numbers.map((n) => Math.trunc(n).toString(36));
+  return `W/"${parts.join("-")}-${tag.replace(/[^a-z0-9]/gi, "")}"`;
 }
 
 /**

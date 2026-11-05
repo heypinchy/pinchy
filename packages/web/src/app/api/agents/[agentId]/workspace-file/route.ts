@@ -48,6 +48,7 @@ import {
   rangeAllowedByIfRange,
   sessionScopedRevalidateHeaders,
   weakFileEtag,
+  weakStoredFileEtag,
 } from "@/lib/session-scoped-cache";
 
 type Params = { params: Promise<{ agentId: string }> };
@@ -186,6 +187,7 @@ function sourceAccessAuditEntry(args: {
   outcome: "success" | "failure";
   reason?: string;
   partial?: boolean;
+  revalidated?: boolean;
   representation?: Variant;
 }): AuditLogEntry {
   return {
@@ -213,6 +215,10 @@ function sourceAccessAuditEntry(args: {
       // reading a file in chunks must not be a way to read it unobserved — and
       // this flag is what lets an analyst count views rather than chunks.
       ...(args.partial !== undefined ? { partial: args.partial } : {}),
+      // A 304: the reader looked at the copy their browser already held, after
+      // the access check allowed it. No bytes left, so it is neither a whole
+      // nor a partial read.
+      ...(args.revalidated ? { revalidated: true } : {}),
     },
   };
 }
@@ -570,7 +576,11 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // 403 here, never 304. Only an unchanged document the reader may still see
   // is answered 304, without its bytes. A 304 is the reader looking at the
   // document again, so it is audited as a view like any other.
-  const etag = weakFileEtag(info, representation);
+  // The artifact store touches each artifact on read, so its timestamps move
+  // every request; its content-addressed path identifies it instead.
+  const etag = artifactPath
+    ? weakStoredFileEtag(info, artifactPath, representation)
+    : weakFileEtag(info, representation);
   if (ifNoneMatchHits(req.headers.get("if-none-match"), etag)) {
     await fh.close();
     deferAuditLog(
@@ -581,7 +591,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
         agentName: agent.name,
         documentName,
         outcome: "success",
-        partial: false,
+        revalidated: true,
         representation,
       })
     );

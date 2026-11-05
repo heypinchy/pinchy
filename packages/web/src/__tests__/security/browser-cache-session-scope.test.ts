@@ -100,28 +100,32 @@ describe("browser cache is scoped to the session (#1286)", () => {
     ).toEqual([]);
   });
 
-  it("never gives a served document a lifetime, so every reuse passes the access check again", () => {
+  it("lets only the listed routes give a response a lifetime", () => {
     // A lifetime lets the browser reuse its copy without asking, so revoking
     // an agent's grant, or a reader's access to the agent, does not stop a
-    // browser that already holds the document. A response that names a file
-    // (content-disposition) is a document; it must be revalidated on every
-    // reuse via sessionScopedRevalidateHeaders instead.
-    const files = productionSources(webSrcDir);
-    const documentServers = files.filter((file) =>
-      /content-disposition/i.test(readFileSync(file, "utf8"))
-    );
-    // The three serving routes reach this through two files; fewer means the
-    // scan stopped seeing them.
-    expect(documentServers.map((f) => path.relative(webSrcDir, f))).toEqual(
-      expect.arrayContaining([
-        "lib/serve-workspace-file.ts",
-        "app/api/agents/[agentId]/workspace-file/route.ts",
-      ])
-    );
-
-    const offenders = documentServers
-      .filter((file) => /sessionScopedCacheHeaders\s*\(/.test(readFileSync(file, "utf8")))
+    // browser that already holds the response. A served document must be
+    // revalidated on every reuse (sessionScopedRevalidateHeaders) instead.
+    // Matched by name anywhere in the file, an aliased import included.
+    const MAY_SET_A_LIFETIME: Array<{ file: string; reason: string }> = [
+      {
+        file: "app/api/models/capabilities/route.ts",
+        reason:
+          "the model catalog, identical for every member; a revoked user loses nothing by seeing it a minute longer",
+      },
+    ];
+    const files = productionSources(webSrcDir).filter((f) => f !== HELPER);
+    const users = files
+      .filter((file) => /\bsessionScopedCacheHeaders\b/.test(readFileSync(file, "utf8")))
       .map((file) => path.relative(webSrcDir, file));
-    expect(offenders, "Use sessionScopedRevalidateHeaders(etag) for a served document").toEqual([]);
+    const allowed = MAY_SET_A_LIFETIME.map((e) => e.file);
+
+    expect(
+      users.filter((f) => !allowed.includes(f)),
+      "Use sessionScopedRevalidateHeaders(etag), or add the route to MAY_SET_A_LIFETIME with a reason"
+    ).toEqual([]);
+    expect(
+      allowed.filter((f) => !users.includes(f)),
+      "stale entry: the file no longer sets a lifetime"
+    ).toEqual([]);
   });
 });

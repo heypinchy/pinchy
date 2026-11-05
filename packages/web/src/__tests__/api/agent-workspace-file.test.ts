@@ -644,9 +644,22 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
       expect.objectContaining({
         eventType: "knowledge.source_viewed",
         outcome: "success",
-        detail: expect.objectContaining({ partial: false, representation: "original" }),
+        detail: expect.objectContaining({ revalidated: true, representation: "original" }),
       })
     );
+    // No bytes left, so it is neither a whole-file read nor a partial one.
+    const detail = mockDeferAuditLog.mock.calls[0][0].detail as Record<string, unknown>;
+    expect(detail).not.toHaveProperty("partial");
+  });
+
+  it("leaves a read that sent bytes without the revalidated flag", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    await callGET("agent-1", pdfPath);
+
+    const detail = mockDeferAuditLog.mock.calls[0][0].detail as Record<string, unknown>;
+    expect(detail).not.toHaveProperty("revalidated");
   });
 
   it("answers a range request for an unchanged document with 304, not a fresh range", async () => {
