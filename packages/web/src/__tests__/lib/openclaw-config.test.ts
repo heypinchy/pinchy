@@ -5905,12 +5905,27 @@ describe("seedRestartClassOverridesIfMissing", () => {
           >;
 
           const planner = await loadOpenClawReloadPlanner();
-          const changedPaths = planner.diffConfigPaths(baseline, next);
+          const changedPaths = planner.diffGatewayReloadPaths(
+            baseline,
+            next,
+            planner.listConfigReloadRefinementPrefixes()
+          );
 
           // The scenario must be real: a regenerate that rebuilt the baseline
           // unchanged would make the restart assertions pass on an empty diff.
-          expect(changedPaths).toEqual(expect.arrayContaining(["agents", "models"]));
-          expect(planner.buildGatewayReloadPlan(changedPaths).restartReasons).toEqual([]);
+          // 2026.9.2's watcher diffs with every reload-policy prefix as a
+          // refinement boundary, so `agents` arrives as leaf paths while
+          // `models` (not a policy prefix) stays whole.
+          expect(changedPaths.some((path) => path === "agents" || path.startsWith("agents."))).toBe(
+            true
+          );
+          expect(changedPaths).toEqual(expect.arrayContaining(["models"]));
+          expect(
+            planner.buildGatewayReloadPlan(changedPaths, {
+              previousConfig: baseline,
+              candidateConfig: next,
+            }).restartReasons
+          ).toEqual([]);
           expect(changedPaths.filter(planner.restartsViaPluginRule)).toEqual([]);
         });
       }
@@ -5939,24 +5954,28 @@ async function readEntrypointSeed(): Promise<Record<string, unknown>> {
 
 /**
  * Load OpenClaw's REAL config-reload planner from the installed `openclaw`
- * package: `diffConfigPaths` + `buildGatewayReloadPlan`, the two functions its
- * config watcher runs to decide hot reload vs gateway restart. They are not part
- * of the public exports, so this finds the bundled chunk and reads the export
- * aliases from its `export { … }` line. If a bump renames or restructures them,
- * this throws — the signal to re-verify the contract, never a silent pass.
+ * package: `diffGatewayReloadPaths` + `listConfigReloadRefinementPrefixes` +
+ * `buildGatewayReloadPlan`, the functions its config watcher runs to decide hot
+ * reload vs gateway restart. They are not part of the public exports, so this
+ * finds the bundled chunks and reads the export aliases from their
+ * `export { … }` lines. As of 2026.9.2 the path diff lives in `config-diff-*`
+ * and the plan in `config-reload-plan-*`. If a bump renames or restructures
+ * them, this throws — the signal to re-verify the contract, never a silent
+ * pass.
  *
  * The chunk's planner sees no plugin registry, but a running gateway merges the
  * `reload` rules of the plugins it loads, sorted with the base rules by prefix
- * length — so canvas's `plugins.allow` restart rule beats the hot `plugins` one.
- * `restartsViaPluginRule` covers that: it imports every bundled plugin OpenClaw
- * enables by default (`enabledByDefault: true`) and reports a path whose
- * longest-matching plugin rule is a restart. As of 2026.7.1 that is canvas
- * (`plugins.enabled/allow/deny`, `plugins.entries.canvas`) and browser
- * (`browser`, whose rules live in a sibling chunk — hence importing the entry
- * rather than reading its source). The loader throws if either stops declaring
- * static rules, so a rename or a move to runtime `registerReload()` is a red
- * test rather than a quietly smaller check. Third-party plugins Pinchy loads
- * declare no reload rules.
+ * length. `restartsViaPluginRule` covers that: it imports every bundled plugin
+ * OpenClaw enables by default (`enabledByDefault: true`) and reports a path
+ * whose longest-matching plugin rule is a restart. As of 2026.9.2 that is
+ * browser only (`browser`, whose rules live in a sibling chunk — hence importing
+ * the entry rather than reading its source); canvas declared
+ * `plugins.enabled/allow/deny` restart rules through 2026.7.1 and declares none
+ * in 2026.9.2, where the base catalog's `plugins` hot rule governs them. The
+ * loader throws if a plugin that should declare static rules stops doing so, so
+ * a rename or a move to runtime `registerReload()` is a red test rather than a
+ * quietly smaller check. Third-party plugins Pinchy loads declare no reload
+ * rules.
  *
  * This is a deliberate over-approximation: it assumes every default-enabled
  * plugin is loaded, while Pinchy's own `plugins.allow` keeps canvas out of a
@@ -5968,8 +5987,12 @@ async function readEntrypointSeed(): Promise<Record<string, unknown>> {
  * gateway", not necessarily a proven restart.
  */
 async function loadOpenClawReloadPlanner(): Promise<{
-  diffConfigPaths: (prev: unknown, next: unknown) => string[];
-  buildGatewayReloadPlan: (paths: string[]) => { restartReasons: string[] };
+  diffGatewayReloadPaths: (prev: unknown, next: unknown, refinementPrefixes: string[]) => string[];
+  listConfigReloadRefinementPrefixes: () => string[];
+  buildGatewayReloadPlan: (
+    paths: string[],
+    options?: { previousConfig?: unknown; candidateConfig?: unknown }
+  ) => { restartReasons: string[] };
   restartsViaPluginRule: (path: string) => boolean;
 }> {
   const { createRequire } = await import("module");
@@ -5978,27 +6001,44 @@ async function loadOpenClawReloadPlanner(): Promise<{
   const fsActual = await vi.importActual<typeof import("fs")>("fs");
   const require = createRequire(import.meta.url);
   const dist = pathMod.dirname(require.resolve("openclaw"));
-  const chunks = fsActual.readdirSync(dist).filter((n) => /^config-reload-plan-.*\.js$/.test(n));
-  if (chunks.length !== 1) {
-    throw new Error(
-      `Expected one config-reload-plan chunk in ${dist}, found ${String(chunks.length)} — re-verify the reload contract against the installed openclaw version.`
-    );
-  }
-  const file = pathMod.join(dist, chunks[0]);
-  const source = fsActual.readFileSync(file, "utf-8");
-  const alias = (name: string): string => {
+  // The watcher's two halves live in different chunks as of 2026.9.2: the path
+  // diff in config-diff, the plan (and its refinement prefixes) in
+  // config-reload-plan. Each loader below refuses an ambiguous or renamed
+  // export rather than silently checking less.
+  const loadChunkExport = async (chunkPattern: RegExp, name: string): Promise<unknown> => {
+    const chunks = fsActual.readdirSync(dist).filter((n) => chunkPattern.test(n));
+    if (chunks.length !== 1) {
+      throw new Error(
+        `Expected one ${chunkPattern.source} chunk in ${dist}, found ${String(chunks.length)} — re-verify the reload contract against the installed openclaw version.`
+      );
+    }
+    const file = pathMod.join(dist, chunks[0]);
+    const source = fsActual.readFileSync(file, "utf-8");
     const match = new RegExp(`\\b${name} as (\\w+)`).exec(source);
     if (!match) {
       throw new Error(`${chunks[0]} no longer exports ${name} — re-verify the reload contract.`);
     }
-    return match[1];
+    const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+    const fn = mod[match[1]];
+    if (typeof fn !== "function") {
+      throw new Error(
+        `${chunks[0]} exports ${name} as a non-function — re-verify the reload contract.`
+      );
+    }
+    return fn;
   };
-  const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
-  const diffConfigPaths = mod[alias("diffConfigPaths")];
-  const buildGatewayReloadPlan = mod[alias("buildGatewayReloadPlan")];
-  if (typeof diffConfigPaths !== "function" || typeof buildGatewayReloadPlan !== "function") {
-    throw new Error(`${chunks[0]} exports are not functions — re-verify the reload contract.`);
-  }
+  const diffGatewayReloadPaths = await loadChunkExport(
+    /^config-diff-.*\.js$/,
+    "diffGatewayReloadPaths"
+  );
+  const listConfigReloadRefinementPrefixes = await loadChunkExport(
+    /^config-reload-plan-.*\.js$/,
+    "listConfigReloadRefinementPrefixes"
+  );
+  const buildGatewayReloadPlan = await loadChunkExport(
+    /^config-reload-plan-.*\.js$/,
+    "buildGatewayReloadPlan"
+  );
 
   type PluginRule = { prefix: string; restart: boolean };
   const pluginRules: PluginRule[] = [];
@@ -6032,10 +6072,12 @@ async function loadOpenClawReloadPlanner(): Promise<{
       if ((prefixes as string[]).length > 0) pluginsWithRules.add(dir);
     }
   }
-  // The plugins known to declare static reload rules in 2026.7.1. One of them
+  // The plugins known to declare static reload rules in 2026.9.2. One of them
   // renaming its entry, dropping `reload`, or moving its rules into a runtime
   // `registerReload()` would otherwise shrink this check without failing it.
-  for (const expected of ["browser", "canvas"]) {
+  // canvas declared plugins.* restart rules through 2026.7.1 and declares none
+  // as of 2026.9.2; the base catalog's `plugins` hot rule now governs those.
+  for (const expected of ["browser"]) {
     if (!pluginsWithRules.has(expected)) {
       throw new Error(
         `extensions/${expected} no longer declares static reload rules — re-verify the reload contract.`
@@ -6060,10 +6102,16 @@ async function loadOpenClawReloadPlanner(): Promise<{
   }
 
   return {
-    diffConfigPaths: diffConfigPaths as (prev: unknown, next: unknown) => string[],
-    buildGatewayReloadPlan: buildGatewayReloadPlan as (paths: string[]) => {
-      restartReasons: string[];
-    },
+    diffGatewayReloadPaths: diffGatewayReloadPaths as (
+      prev: unknown,
+      next: unknown,
+      refinementPrefixes: string[]
+    ) => string[],
+    listConfigReloadRefinementPrefixes: listConfigReloadRefinementPrefixes as () => string[],
+    buildGatewayReloadPlan: buildGatewayReloadPlan as (
+      paths: string[],
+      options?: { previousConfig?: unknown; candidateConfig?: unknown }
+    ) => { restartReasons: string[] },
     restartsViaPluginRule,
   };
 }

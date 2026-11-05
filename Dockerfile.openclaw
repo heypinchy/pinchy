@@ -170,6 +170,8 @@ RUN cd /tmp/pinchy-email && npm pkg delete devDependencies && npm install --omit
 # on either list into a failed build. So an OpenClaw bump that brings a new
 # install script (a native binary without a prebuild, say) stops here instead
 # of shipping without it. Reviewed so far: @google/genai (no-op preinstall),
+# koffi (native prebuilds ship in its @koromix/koffi-* optional packages, which
+# its loader checks first; the install script only compiles when none matches),
 # protobufjs (a version-scheme warning), tree-sitter-bash (prebuilds for
 # linux-x64/arm64) — and openclaw itself, below.
 #
@@ -221,7 +223,7 @@ WORKDIR /
 # reproducible and is checked by openclaw-version-pin-drift.test.ts. An upgraded
 # config volume picks up a changed pin too: stage-llama-cpp-provider.sh
 # re-stages when the bundled release differs from the staged one.
-RUN openclaw plugins install @openclaw/llama-cpp-provider@2026.7.1 \
+RUN openclaw plugins install @openclaw/llama-cpp-provider@2026.9.2 \
     && mkdir -p /opt/llama-cpp-deps \
     && cp -r /root/.openclaw/npm /opt/llama-cpp-deps/npm
 
