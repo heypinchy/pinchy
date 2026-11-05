@@ -112,6 +112,7 @@ export async function POST(request: NextRequest) {
   }
 
   let result: Awaited<ReturnType<typeof auth.api.signUpEmail>> | null = null;
+  // Kept when signUpEmail resolves without a user rather than throwing.
   let signUpError = "Sign-up returned no user";
   try {
     result = await auth.api.signUpEmail({
