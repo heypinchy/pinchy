@@ -382,7 +382,7 @@ describe("ClientRouter reconnect liveness verdict via agentWait (Part 2)", () =>
     expect(verdict[0].reason).toBe(RUN_ENDED_WITHOUT_RESPONSE);
   });
 
-  it.each(["rpc", "stop"])(
+  it.each(["rpc", "stop", "aborted"])(
     "emits liveness:completed, not failed, for a run OpenClaw reports stopped (stopReason %s)",
     async (stopReason) => {
       // OpenClaw normalises a stopped run's snapshot to `status: "error"`;

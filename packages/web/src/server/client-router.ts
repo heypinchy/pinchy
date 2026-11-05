@@ -82,6 +82,10 @@ const RECONNECT_LIVENESS_TIMEOUT_MS = 5_000;
 // for a user — its `stopReason` is a code — so the verdict carries this.
 export const RUN_ENDED_WITHOUT_RESPONSE = "The agent run ended without a response.";
 
+// The `agentWait` stop reasons that mean "stopped", not "failed". `restart`
+// (the gateway restarted under the run) is deliberately not one of them.
+const STOP_REASONS: ReadonlySet<string> = new Set(["rpc", "stop", "aborted"]);
+
 type RetryReason = "orphan" | "partial_stream_failure" | "send_failure";
 const ALLOWED_RETRY_REASONS: ReadonlySet<string> = new Set([
   "orphan",
@@ -1239,7 +1243,11 @@ export class ClientRouter {
    *     paused / blocked) → `responding` (keep the UI on "responding"; NEVER
    *     fail a run that is still going).
    *   - `livenessState: "abandoned"`, or `status: "error"` → `failed` with a
-   *     reason from `stopReason` (or a generic fallback).
+   *     readable reason — never `stopReason`, which is a code.
+   *   - a stop (the user's, or a cancellation `stopReason`) → `completed`:
+   *     OpenClaw reports a stopped run as `status: "error"` too.
+   *   - the session moved on to another run (or the run's pipe finished)
+   *     while `agentWait` was in flight → no verdict at all (#1301).
    *
    * Infra hiccups (a thrown `agentWait`) are deliberately NOT turned into a
    * `failed` verdict — we log and skip, letting the existing flow continue.
@@ -1278,12 +1286,12 @@ export class ClientRouter {
     const abandoned = result.livenessState === "abandoned";
     const ended = result.status === "ok" || result.endedAt !== undefined;
     // OpenClaw answers a stopped run like a failed one — `status: "error"` —
-    // and only `stopReason` says it was a stop (`rpc` for `chat.abort`, `stop`
-    // for a stop command; OpenClaw's `isCancellationStopReason`). A run the
-    // user stopped ended the way they asked; the stop click already showed it
-    // as a clean end of turn.
-    const stopped =
-      current.abortedByUser || result.stopReason === "rpc" || result.stopReason === "stop";
+    // and only `stopReason` says it was a stop: `rpc` for `chat.abort` and
+    // `stop` for a stop command (OpenClaw's `isCancellationStopReason`),
+    // `aborted` for an abort raised inside the run (`isAbortedAgentStopReason`).
+    // A run the user stopped ended the way they asked; the stop click already
+    // showed it as a clean end of turn.
+    const stopped = current.abortedByUser || STOP_REASONS.has(result.stopReason ?? "");
 
     if (!stopped && (result.status === "error" || abandoned)) {
       this.broadcastForRun(sessionKey, clientWs, {

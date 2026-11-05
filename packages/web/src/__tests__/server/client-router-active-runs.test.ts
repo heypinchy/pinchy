@@ -1343,38 +1343,96 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
         expect(t0.ws.sent.some((f) => f.includes('"rpc"'))).toBe(false);
       });
 
-      it("does not fail the next turn, which is still running", async () => {
-        const r = router();
-        const t0 = await stoppedReply(r);
+      /** Every frame `ws` received from index `from` on. */
+      function framesSince(ws: MockWs, from: number) {
+        return ws.sent.slice(from).map((f) => JSON.parse(f) as Record<string, unknown>);
+      }
 
-        // The re-pull is under way when the user sends the next message.
+      /**
+       * The user sends the next message while a history re-pull is under way;
+       * resolves once that turn is streaming.
+       */
+      async function nextTurnDuringRepull(r: ClientRouter, ws: MockWs) {
         const history = holdRequest("chat.history");
-        const repull = r.handleMessage(t0.ws, { type: "history", agentId: "agent-1" });
+        const repull = r.handleMessage(ws, { type: "history", agentId: "agent-1" });
         await vi.waitFor(() => expect(history.reached()).toBe(true));
-        const nextTurn = r.handleMessage(t0.ws, {
+        const handling = r.handleMessage(ws, {
           type: "message",
           content: "Actually, just list them",
           agentId: "agent-1",
         });
         await vi.waitFor(() => expect(gw.runAt(1)).toBeDefined());
-        const t1 = gw.runAt(1)!;
-        gw.accept(t1.runId);
-        gw.emitText(t1.runId, "Here they are");
-        await vi.waitFor(() =>
-          expect(t0.ws.sent.some((f) => f.includes("Here they are"))).toBe(true)
-        );
+        const gwRun = gw.runAt(1)!;
+        gw.accept(gwRun.runId);
+        gw.emitText(gwRun.runId, "Here they are");
+        await vi.waitFor(() => expect(ws.sent.some((f) => f.includes("Here they are"))).toBe(true));
+        return { history, repull, handling, gwRun };
+      }
+
+      it("sends the next turn no verdict about the stopped reply", async () => {
+        const r = router();
+        const t0 = await stoppedReply(r);
+        const t1 = await nextTurnDuringRepull(r, t0.ws);
 
         // The re-pull now asks about the stopped reply, while the next one runs.
-        history.release();
-        await repull;
-        expect(failedVerdicts(t0.ws)).toEqual([]);
+        const from = t0.ws.sent.length;
+        t1.history.release();
+        await t1.repull;
+        // Not even `completed`: it would end the turn that is still running.
+        expect(framesSince(t0.ws, from).filter((f) => f.type === "liveness")).toEqual([]);
 
         t0.artifacts.release();
         await t0.handling;
-        gw.finish(t1.runId);
-        await nextTurn;
+        gw.finish(t1.gwRun.runId);
+        await t1.handling;
         expect(failedVerdicts(t0.ws)).toEqual([]);
         expect(t0.ws.sent.some((f) => f.includes('"rpc"'))).toBe(false);
+      });
+
+      it("does not end the next turn when the stopped reply's pipe winds down", async () => {
+        const r = router();
+        const t0 = await stoppedReply(r);
+        const t1 = await nextTurnDuringRepull(r, t0.ws);
+        t1.history.release();
+        await t1.repull;
+
+        // The stopped reply's file delivery returns while the next turn runs.
+        const from = t0.ws.sent.length;
+        t0.artifacts.release();
+        await t0.handling;
+        const terminal = (f: Record<string, unknown>) =>
+          f.type === "complete" || f.type === "liveness" || f.type === "error";
+        expect(framesSince(t0.ws, from).filter(terminal)).toEqual([]);
+
+        // The next turn still ends on its own `complete`.
+        gw.finish(t1.gwRun.runId);
+        await t1.handling;
+        expect(framesSince(t0.ws, from).filter((f) => f.type === "complete")).toHaveLength(1);
+      });
+
+      it("does not fail the next turn when the reply was stopped before its first word", async () => {
+        const artifacts = holdArtifacts();
+        const r = router();
+        const t0 = await send(r, 0);
+        gw.accept(t0.gwRun.runId, { silent: true });
+        await r.handleMessage(t0.ws, { type: "abort", agentId: "agent-1" } as never);
+        await vi.waitFor(() => expect(artifacts.polling()).toBe(true));
+
+        const t1 = await nextTurnDuringRepull(r, t0.ws);
+        t1.history.release();
+        await t1.repull;
+        const from = t0.ws.sent.length;
+        artifacts.release();
+        await t0.handling;
+
+        // A stop with no words is still a stop, not "the model did not produce
+        // a response" — even once the next turn holds the session.
+        expect(
+          framesSince(t0.ws, from).filter((f) => f.type === "error" || f.type === "liveness")
+        ).toEqual([]);
+        gw.finish(t1.gwRun.runId);
+        await t1.handling;
+        expect(failedVerdicts(t0.ws)).toEqual([]);
       });
     });
 

@@ -8,7 +8,7 @@ import {
   shouldEmitSilentStreamAudit,
 } from "@/server/model-unavailable-throttle";
 import type { SessionCache } from "@/server/session-cache";
-import type { ActiveRuns } from "@/server/active-runs";
+import type { ActiveRun, ActiveRuns } from "@/server/active-runs";
 import { followUpDepsFor, reAbortStartedRun } from "@/server/abort-runs";
 import { getErrorHint, presentProviderError, cannedProviderMessage } from "@/server/error-hints";
 import { classifyModelError } from "@/server/model-error-classifier";
@@ -51,6 +51,8 @@ const THINKING_HEARTBEAT_MS = 15_000;
 // Single source of truth so `sanitizeError` (client-router.ts) and this
 // thrown-failure sink agree.
 export const GENERIC_RUN_FAILURE_MESSAGE = "Something went wrong. Please try again.";
+
+const WS_OPEN = 1;
 
 export interface StreamPipeDeps {
   openclawClient: OpenClawClient;
@@ -114,8 +116,6 @@ export class StreamPipe {
   ): Promise<void> {
     const { openclawClient, userId, userRole, sessionCache, activeRuns, disconnectSignal } =
       this.deps;
-    const broadcastForRun = this.deps.broadcastForRun;
-
     let messageId = initialMessageId;
     // The id the most recent turn actually streamed into. `messageId` rotates to
     // a fresh id on each `done` (for the NEXT turn), so after the loop it no
@@ -174,6 +174,43 @@ export class StreamPipe {
     // "stream errored and no one was watching" (= just clean up).
     let activeRunRegistered = false;
     let activeRunId: string | undefined;
+    // #1301: the session's registry entry can stop being this pipe's while the
+    // pipe still has work to do. The user stops this reply and sends the next
+    // message; the stopped stream ends at once, but the pipe goes on to its
+    // file delivery, and by the time it is back the next turn holds the entry —
+    // with the same tab among its listeners. Everything below that reads "the
+    // run" or broadcasts to its listeners must therefore mean THIS run.
+    const ownRunId = () => activeRunId ?? initialMessageId;
+    // The entry object itself, kept once seen: `markFirstChunk`/`switchRunId`
+    // mutate it in place, and it still answers for this run (`abortedByUser`,
+    // its listeners) after a newer turn replaced it.
+    let ownRun: ActiveRun | undefined =
+      activeRuns.get(sessionKey)?.runId === initialMessageId
+        ? activeRuns.get(sessionKey)
+        : undefined;
+    const ownEntry = (): ActiveRun | undefined => {
+      const current = activeRuns.get(sessionKey);
+      if (current && current.runId === ownRunId()) ownRun = current;
+      return ownRun;
+    };
+    // `broadcastForRun` reaches whichever run holds the session NOW. Once a
+    // newer turn does, a frame of this run's — a `complete`, a `liveness`
+    // verdict, an error — would end or fail that turn in every tab watching
+    // it. Those tabs are left alone; a tab still watching only this run (a
+    // second device) still hears how it ended.
+    const broadcastForRun: StreamPipeDeps["broadcastForRun"] = (key, fallbackWs, data) => {
+      const current = activeRuns.get(key);
+      if (!current || current.runId === ownRunId()) {
+        this.deps.broadcastForRun(key, fallbackWs, data);
+        return;
+      }
+      const payload = JSON.stringify(data);
+      const watchers = new Set<WebSocket>(ownEntry()?.listeners ?? []);
+      watchers.add(fallbackWs);
+      for (const ws of watchers) {
+        if (!current.listeners.has(ws) && ws.readyState === WS_OPEN) ws.send(payload);
+      }
+    };
     let sawTerminalError = false;
     // Tier 2b resume buffer: the assistant text emitted to clients for the
     // current `messageId` so far. Mirrored into the ActiveRun registry on every
@@ -250,6 +287,7 @@ export class StreamPipe {
           }
           activeRunRegistered = true;
           activeRunId = chunk.runId;
+          ownRun = activeRuns.get(sessionKey);
           // Stopped while still pending — by the stop button or by
           // deactivation. That abort named the session only, and if OpenClaw
           // had not accepted this run yet it stopped nothing; OpenClaw may
@@ -322,7 +360,7 @@ export class StreamPipe {
         // the ordinary work: flush the buffered words, rotate the messageId,
         // supersede any earlier durable error. So there is nothing to
         // synthesize here — only side effects to NOT produce.
-        const userAbort = chunk.type === "error" && activeRuns.get(sessionKey)?.abortedByUser;
+        const userAbort = chunk.type === "error" && ownEntry()?.abortedByUser;
         if (chunk.type === "error" && !userAbort) {
           sawTerminalError = true;
         }
@@ -590,11 +628,7 @@ export class StreamPipe {
       // with a `done` of its own the moment the abort goes out, whether or not
       // OpenClaw stopped anything — nor when OpenClaw dropped the socket or the
       // watchdog tore the run down: neither says the run is over.
-      if (
-        !openclawDisconnected &&
-        !tornDownByWatchdog &&
-        activeRuns.get(sessionKey)?.abortedByUser !== true
-      ) {
+      if (!openclawDisconnected && !tornDownByWatchdog && ownEntry()?.abortedByUser !== true) {
         activeRuns.markStreamEnded(sessionKey, activeRunId ?? initialMessageId);
       }
 
@@ -642,7 +676,7 @@ export class StreamPipe {
       // nothing — except to the registry, which `handleAbort` marked when the
       // click came in. Both readings are kept: the local one still answers for a
       // run whose registry entry a rapid follow-up turn has already replaced.
-      const stoppedByUser = sawUserAbort || activeRuns.get(sessionKey)?.abortedByUser === true;
+      const stoppedByUser = sawUserAbort || ownEntry()?.abortedByUser === true;
       if (!sawText && !sawError && !stoppedByUser) {
         const providerError = "The model did not produce a response. It may have timed out.";
         // Durable banner: a silent timeout is also a "no response" the user
@@ -766,7 +800,7 @@ export class StreamPipe {
       // click would put the whole failure treatment back through the other
       // door. Read the registry rather than matching the message text: "was
       // aborted" is a string a provider is free to use for its own failures.
-      const abortedHere = activeRuns.get(sessionKey)?.abortedByUser === true;
+      const abortedHere = ownEntry()?.abortedByUser === true;
       if (!openclawDisconnected && !abortedHere) {
         sawTerminalError = true;
         await this.surfaceRunFailure({
@@ -807,7 +841,7 @@ export class StreamPipe {
       // removes the entry if it is still ours. Idempotent if the watchdog
       // already tore the run down. The snapshot keeps what the audit below
       // reads.
-      const run = activeRunRegistered ? activeRuns.get(sessionKey) : undefined;
+      const run = activeRunRegistered ? ownEntry() : undefined;
       activeRuns.deleteIfRunId(sessionKey, activeRunId ?? initialMessageId);
       if (heartbeatInterval !== null) {
         clearInterval(heartbeatInterval);
