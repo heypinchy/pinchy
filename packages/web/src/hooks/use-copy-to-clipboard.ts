@@ -54,18 +54,31 @@ function copyViaExecCommand(text: string): boolean {
   if (typeof document === "undefined" || typeof document.execCommand !== "function") {
     return false;
   }
+  // The textarea goes next to whatever has focus (the Copy button), not onto
+  // <body>: inside a modal dialog a focus trap pulls focus straight back from
+  // anything outside it, and execCommand then copies nothing while still
+  // reporting success.
+  const previouslyFocused =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const host =
+    previouslyFocused && previouslyFocused !== document.body
+      ? (previouslyFocused.parentElement ?? document.body)
+      : document.body;
+  const textarea = document.createElement("textarea");
   try {
-    const textarea = document.createElement("textarea");
     textarea.value = text;
     textarea.setAttribute("readonly", "");
+    textarea.tabIndex = -1;
     textarea.style.position = "fixed";
     textarea.style.left = "-9999px";
-    document.body.appendChild(textarea);
+    host.appendChild(textarea);
+    textarea.focus();
     textarea.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return ok;
+    return document.execCommand("copy");
   } catch {
     return false;
+  } finally {
+    textarea.remove();
+    previouslyFocused?.focus();
   }
 }

@@ -4,6 +4,7 @@ import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { CopyField } from "@/components/copy-field";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 const URL_VALUE = "https://pinchy.example.com/invite/abc123";
 
@@ -94,6 +95,52 @@ describe("CopyField", () => {
     expect(screen.queryByRole("button", { name: "Copied" })).not.toBeInTheDocument();
   });
 
+  it("copies through the fallback from inside a dialog, whose focus trap would otherwise undo it", async () => {
+    // Plain-HTTP intranet install: no async Clipboard API, so the hook copies
+    // from a hidden textarea via execCommand. That only works while the
+    // textarea holds focus. Four of the five places using CopyField sit in a
+    // Radix dialog, whose focus trap pulls focus back the moment it lands
+    // outside the dialog — so a textarea appended to <body> loses it before
+    // the copy runs, execCommand copies nothing, and the button still says
+    // "Copied".
+    const user = userEvent.setup();
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    });
+    let copiedText: string | null = null;
+    Object.defineProperty(document, "execCommand", {
+      value: vi.fn(() => {
+        const active = document.activeElement;
+        copiedText = active instanceof HTMLTextAreaElement ? active.value : null;
+        return true;
+      }),
+      writable: true,
+      configurable: true,
+    });
+
+    try {
+      render(
+        <Dialog open>
+          <DialogContent>
+            <DialogTitle>Invite User</DialogTitle>
+            <CopyField value={URL_VALUE} label="Invite link" copyLabel="Copy link" />
+          </DialogContent>
+        </Dialog>
+      );
+
+      await user.click(screen.getByRole("button", { name: "Copy link" }));
+
+      expect(copiedText).toBe(URL_VALUE);
+      // Focus goes back to where the person was, not to <body>.
+      expect(screen.getByRole("button", { name: "Copied" })).toHaveFocus();
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+    }
+  });
+
   it("offers Share as a secondary action where the Web Share API exists", async () => {
     const user = userEvent.setup();
     const share = vi.fn().mockResolvedValue(undefined);
@@ -143,7 +190,8 @@ describe("CopyField", () => {
 
   it("stays quiet when the person cancels the share sheet", async () => {
     const user = userEvent.setup();
-    setShare(vi.fn().mockRejectedValue(new DOMException("cancelled", "AbortError")));
+    const share = vi.fn().mockRejectedValue(new DOMException("cancelled", "AbortError"));
+    setShare(share);
 
     render(
       <CopyField
@@ -156,6 +204,55 @@ describe("CopyField", () => {
 
     await user.click(await screen.findByRole("button", { name: "Share" }));
 
+    expect(share).toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("");
+  });
+
+  it("starts fresh when it is handed a new value", async () => {
+    // Resend and Reset Password replace the link in the same panel. A failed
+    // copy of the old link must not leave "It's selected — press Ctrl+C"
+    // standing under the new one, which nothing has selected.
+    const user = userEvent.setup();
+    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("denied"));
+    Object.defineProperty(document, "execCommand", {
+      value: vi.fn().mockReturnValue(false),
+      writable: true,
+      configurable: true,
+    });
+
+    const { rerender } = render(
+      <CopyField value={URL_VALUE} label="Invite link" copyLabel="Copy link" />
+    );
+    await user.click(screen.getByRole("button", { name: "Copy link" }));
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("Couldn't copy automatically.");
+    });
+
+    rerender(<CopyField value={`${URL_VALUE}-new`} label="Invite link" copyLabel="Copy link" />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("");
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
+  });
+
+  it("never claims Copied for a copy that just failed, even right after one that worked", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    Object.defineProperty(document, "execCommand", {
+      value: vi.fn().mockReturnValue(false),
+      writable: true,
+      configurable: true,
+    });
+
+    render(<CopyField value={URL_VALUE} label="Invite link" copyLabel="Copy link" />);
+    await user.click(screen.getByRole("button", { name: "Copy link" }));
+    await screen.findByRole("button", { name: "Copied" });
+
+    writeText.mockRejectedValue(new Error("denied"));
+    await user.click(screen.getByRole("button", { name: "Copied" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("Couldn't copy automatically.");
+    });
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
   });
 });
