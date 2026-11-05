@@ -427,8 +427,12 @@ describe("workspace-file — a cached converted PDF is re-checked on every reuse
 
   it("sends the new conversion when the source changed since it was cached", async () => {
     const source = writeSource("angebot.docx");
-    await storeArtifactFor(DOCX_BYTES);
+    const firstArtifact = await storeArtifactFor(DOCX_BYTES);
     const etag = (await callGET(source)).headers.get("etag")!;
+    // Gone before the next conversion lands, as after an LRU sweep: the
+    // filesystem may hand its inode to the new artifact, so only the store
+    // path is left to tell the two apart.
+    rmSync(firstArtifact);
 
     const revised = Buffer.from("PK pretend this is the revised .docx\n");
     writeSource("angebot.docx", revised);

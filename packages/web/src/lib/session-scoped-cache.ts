@@ -47,7 +47,7 @@ export function sessionScopedRevalidateHeaders(etag: string): {
  * A weak validator for one representation of a file on disk.
  *
  * Weak because these fields only make byte-identity likely, not certain (two
- * writes within one timestamp tick, same size). That is enough to answer "has
+ * writes within the same millisecond, same size). That is enough to answer "has
  * this changed?" with a 304, and it is exactly why a range is never stitched
  * onto a cached copy on the strength of it — see `rangeAllowedByIfRange`.
  *

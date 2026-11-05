@@ -65,12 +65,18 @@ export type DeleteDetail = { name: string; [key: string]: unknown };
  * stays logged — reading a file in chunks must not be a way to read it
  * unobserved — and this flag is what lets an analyst count documents rather
  * than chunks.
+ *
+ * `revalidated` marks a 304: the browser reused the copy it held, after the
+ * access check allowed it. No bytes left, so such a row has no `partial`.
+ * `representation` says which form of the document was served.
  */
 export type SourceAccessDetail = {
   agent: EntityRef;
   document: { name: string };
   reason?: string;
   partial?: boolean;
+  revalidated?: true;
+  representation?: "original" | "converted" | "rows";
 };
 
 export type MembershipDetail = {
