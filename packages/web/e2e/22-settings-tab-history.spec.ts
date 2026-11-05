@@ -75,34 +75,43 @@ test.describe("Settings tab history", () => {
 });
 
 /**
- * Switching tabs must not reload Settings (#1271).
+ * Switching tabs must not wait on the server (#1271).
  *
- * The tab lives in `?tab=`, and the App Router keys the page segment by its
- * search params — so a `router.push` to a new tab value threw the whole page
- * away, re-ran the server component, and remounted every tab. Each switch
- * showed "Loading..." for as long as that round trip and the refetches took.
+ * The tab lives in `?tab=`. Written with `router.push`, every switch was an
+ * App Router navigation: a round trip that re-rendered the settings page on
+ * the server, and the click did nothing until it came back. Locally that is
+ * a few milliseconds; on staging it was about three seconds per switch.
  *
- * The probe is element identity: a node rendered by the page before the
- * switch must still be the same node after it. A remount replaces it, and
- * that replacement has already happened by the time the URL has moved.
+ * So the server is made slow here on purpose — every RSC request is held for
+ * longer than the assertion waits — and the switch must still land at once,
+ * without a round trip, a remount, or a refetch of the tab it returns to.
  */
 test.describe("Settings tab switching", () => {
-  test("keeps the page mounted and its loaded data across tab switches", async ({ page }) => {
+  test("switches tabs without a server round trip, keeping loaded data", async ({ page }) => {
     await seedProviderConfig();
     await loginAsAdmin(page);
 
+    // Count from after the page's own first load of the Users tab, so that
+    // load is not mistaken for a refetch.
+    const firstUsersLoad = page.waitForResponse(
+      (res) => res.request().method() === "GET" && new URL(res.url()).pathname === "/api/users"
+    );
+    await page.goto("/settings?tab=users");
+    await firstUsersLoad;
+    await expect(page.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByText("Loading...").filter({ visible: true })).toHaveCount(0);
+
+    const rscRequests: string[] = [];
     const usersFetches: string[] = [];
     page.on("request", (req) => {
-      if (req.method() === "GET" && new URL(req.url()).pathname === "/api/users") {
-        usersFetches.push(req.url());
-      }
+      const url = new URL(req.url());
+      if (url.searchParams.has("_rsc")) rscRequests.push(req.url());
+      if (req.method() === "GET" && url.pathname === "/api/users") usersFetches.push(req.url());
     });
-
-    await page.goto("/settings?tab=users");
-    await expect(page.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true");
-    await expect.poll(() => usersFetches.length).toBeGreaterThan(0);
-    await expect(page.getByText("Loading...").filter({ visible: true })).toHaveCount(0);
-    const fetchesBefore = usersFetches.length;
+    await page.route(/[?&]_rsc=/, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+      await route.continue().catch(() => {});
+    });
 
     // The page's own heading, not anything in the app shell around it — the
     // shell survives a remount, so it would prove nothing.
@@ -111,14 +120,24 @@ test.describe("Settings tab switching", () => {
     await page.evaluate(`window.__settingsHeading = (${settingsHeading.toString()})()`);
     expect(await page.evaluate("window.__settingsHeading !== null")).toBe(true);
 
-    await selectTab(page, "Groups", /\?tab=groups$/);
-    await selectTab(page, "Users", /\?tab=users$/);
+    // No selectTab retry here: the page is long hydrated, and a retried click
+    // would hide exactly the delay this test is about. The default 5s expect
+    // timeout is half the server delay above.
+    for (const [name, url] of [
+      ["Groups", /\?tab=groups$/],
+      ["Users", /\?tab=users$/],
+    ] as const) {
+      await page.getByRole("tab", { name }).click();
+      await expect(page.getByRole("tab", { name })).toHaveAttribute("aria-selected", "true");
+      await expect(page).toHaveURL(url);
+    }
 
+    expect(rscRequests, "a tab switch went to the server").toEqual([]);
     const sameHeading = await page.evaluate(
       `(${settingsHeading.toString()})() === window.__settingsHeading`
     );
     expect(sameHeading, "the settings page was remounted by a tab switch").toBe(true);
     await expect(page.getByText("Loading...").filter({ visible: true })).toHaveCount(0);
-    expect(usersFetches.length).toBe(fetchesBefore);
+    expect(usersFetches, "the Users tab refetched on its way back").toEqual([]);
   });
 });
