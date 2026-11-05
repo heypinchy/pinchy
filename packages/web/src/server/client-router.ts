@@ -319,16 +319,30 @@ export class ClientRouter {
 
     // A new message moves this tab onto a new turn now, before any await below.
     // Whatever run still holds the session (a reply just stopped, still winding
-    // down) must stop ending turns in this tab from here on (#1301).
+    // down) must stop reaching this tab from here on — its `complete` would end
+    // the new turn instead (#1301). Marked before the agent and access checks
+    // on purpose: the key embeds this user's own id, so the only entry it can
+    // touch is one of their own runs.
+    let prior: ActiveRun | undefined;
     if (message.type === "message") {
       const chat = chatIdSchema.safeParse(message.chatId);
       const chatId = message.chatId === undefined ? undefined : chat.success ? chat.data : null;
       if (chatId !== null) {
-        const prior = this.activeRuns.get(this.computeSessionKey(message.agentId, chatId));
+        prior = this.activeRuns.get(this.computeSessionKey(message.agentId, chatId));
         if (prior) (prior.handedOverTo ??= new Set()).add(clientWs);
       }
     }
+    try {
+      await this.routeMessage(clientWs, message);
+    } finally {
+      // The new turn is over: refused before it started (budget, a paused
+      // agent, no gateway…) or run to its end. Either way this tab is no
+      // longer on it, and must hear the earlier run again if it still goes.
+      prior?.handedOverTo?.delete(clientWs);
+    }
+  }
 
+  private async routeMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
     // Look up agent and check access
     const agent = await db.query.agents.findFirst({
       where: eq(agents.id, message.agentId),
@@ -887,6 +901,8 @@ export class ClientRouter {
     const activeRun = this.activeRuns.get(sessionKey);
     if (activeRun) {
       this.activeRuns.addListener(sessionKey, clientWs);
+      // Re-attaching to the run is asking for its frames again (#1301).
+      activeRun.handedOverTo?.delete(clientWs);
     }
 
     // Multi-device live-sync (Lane B): this socket now EXCLUSIVELY views this
@@ -1294,9 +1310,6 @@ export class ClientRouter {
     // start of `handleHistory`.
     const current = this.activeRuns.get(sessionKey);
     if (!current || current.runId !== runId) return;
-    // The same, a step earlier: a tab has already sent the next message, which
-    // has not reached the registry yet.
-    if (current.handedOverTo?.size) return;
 
     const abandoned = result.livenessState === "abandoned";
     const ended = result.status === "ok" || result.endedAt !== undefined;
@@ -1310,7 +1323,7 @@ export class ClientRouter {
     const stopped = current.abortedByUser || STOP_REASONS.has(result.stopReason ?? "");
 
     if (!stopped && (result.status === "error" || abandoned)) {
-      this.broadcastForRun(sessionKey, clientWs, {
+      this.broadcastVerdict(current, sessionKey, clientWs, {
         type: "liveness",
         state: "failed",
         // Never `stopReason`: it is a machine code ("rpc", "timeout"), not
@@ -1321,7 +1334,7 @@ export class ClientRouter {
     }
 
     if (ended) {
-      this.broadcastForRun(sessionKey, clientWs, {
+      this.broadcastVerdict(current, sessionKey, clientWs, {
         type: "liveness",
         state: "completed",
       });
@@ -1331,10 +1344,33 @@ export class ClientRouter {
     // Still alive (pending/timeout with a non-terminal livenessState, or no
     // terminal signal at all). Keep the UI on "responding" — never fail a run
     // that is still going.
-    this.broadcastForRun(sessionKey, clientWs, {
+    this.broadcastVerdict(current, sessionKey, clientWs, {
       type: "liveness",
       state: "responding",
     });
+  }
+
+  /**
+   * `broadcastForRun`, minus the sockets that already sent the next message
+   * (`handedOverTo`): the verdict is about this run, and those tabs are on a
+   * turn that has not reached the registry yet (#1301). Everyone else still
+   * watching the run — a second device — hears it.
+   */
+  private broadcastVerdict(
+    run: ActiveRun,
+    sessionKey: string,
+    clientWs: WebSocket,
+    data: Record<string, unknown>
+  ): void {
+    const skip = run.handedOverTo;
+    if (!skip?.size) {
+      this.broadcastForRun(sessionKey, clientWs, data);
+      return;
+    }
+    const payload = JSON.stringify(data);
+    for (const ws of new Set([...run.listeners, clientWs])) {
+      if (!skip.has(ws) && ws.readyState === WS_OPEN) ws.send(payload);
+    }
   }
 
   // Delegates to StreamPipe (pinchy#1073 step 1 of the ClientRouter

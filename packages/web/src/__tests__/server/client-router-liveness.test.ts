@@ -458,6 +458,50 @@ describe("ClientRouter reconnect liveness verdict via agentWait (Part 2)", () =>
     expect(liveness(ws)).toEqual([]);
   });
 
+  it("skips the tab that already sent the next message, and still tells a second device", async () => {
+    seedInflightRun();
+    const other = createMockWs();
+    activeRuns.addListener(sessionKey, other);
+    const tab = createMockWs();
+    activeRuns.addListener(sessionKey, tab);
+    // The tab's next message is on its way, not yet in the registry.
+    activeRuns.get(sessionKey)!.handedOverTo = new Set([tab as unknown as WebSocket]);
+    const result: AgentWaitResult = { status: "error", endedAt: 1234 };
+    mockAgentWait.mockResolvedValue(result);
+
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    // The second device re-pulls history; the verdict goes to every listener.
+    await router.handleMessage(other, { type: "history", agentId: "agent-1" });
+
+    expect(liveness(tab)).toEqual([]);
+    expect(liveness(other).map((f) => f.state)).toEqual(["failed"]);
+  });
+
+  it("hands the tab back to the run when its next message is refused", async () => {
+    seedInflightRun();
+    const tab = createMockWs();
+    activeRuns.addListener(sessionKey, tab);
+    const router = new ClientRouter(
+      buildClient() as never,
+      "user-1",
+      "member",
+      sessionCache,
+      activeRuns
+    );
+    // Refused before it starts: the agent lookup finds nothing.
+    mockFindFirst.mockResolvedValueOnce(null);
+    await router.handleMessage(tab, { type: "message", content: "next", agentId: "agent-1" });
+
+    expect(activeRuns.get(sessionKey)?.runId).toBe("run-active");
+    expect(activeRuns.get(sessionKey)?.handedOverTo?.has(tab as unknown as WebSocket)).toBe(false);
+  });
+
   it("emits no verdict when the run's pipe finished while agentWait was in flight", async () => {
     seedInflightRun();
     let answer!: (r: AgentWaitResult) => void;
