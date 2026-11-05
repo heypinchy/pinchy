@@ -1,6 +1,10 @@
 import { isIP } from "node:net";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { assertMailHostAllowed, MailHostBlockedError } from "../mail-host-guard";
+import {
+  assertMailHostAllowed,
+  MailHostBlockedError,
+  resolveAllowedMailHost,
+} from "../mail-host-guard";
 
 // Every test injects its own resolver, so no test in this file ever touches
 // real DNS — the guard's decision table is what's under test, not getaddrinfo.
@@ -273,5 +277,65 @@ describe("assertMailHostAllowed", () => {
         await expect(assertMailHostAllowed(example, resolver), example).resolves.toBeUndefined();
       }
     });
+  });
+});
+
+describe("resolveAllowedMailHost", () => {
+  // The variant the probes use: it returns the address it classified so the
+  // socket can be opened to exactly that address, and a lookup that fails is
+  // the probe's failure — not a pass that lets the mail library look again.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns the address it classified", async () => {
+    await expect(
+      resolveAllowedMailHost("imap.example.com", resolvesTo("93.184.216.34"))
+    ).resolves.toEqual({ address: "93.184.216.34", family: 4 });
+  });
+
+  it("returns an IPv6 answer with its family", async () => {
+    await expect(
+      resolveAllowedMailHost("imap.example.com", resolvesTo("2606:2800:220:1::1"))
+    ).resolves.toEqual({ address: "2606:2800:220:1::1", family: 6 });
+  });
+
+  it("still refuses what the assertion refuses", async () => {
+    await expect(
+      resolveAllowedMailHost("imap.example.com", resolvesTo("93.184.216.34", "127.0.0.1"))
+    ).rejects.toThrow(MailHostBlockedError);
+    await expect(
+      resolveAllowedMailHost("imap.example.com", resolvesTo("10.0.0.5"))
+    ).rejects.toThrow(MailHostBlockedError);
+    await expect(
+      resolveAllowedMailHost("[imap.example.com", resolvesTo("93.184.216.34"))
+    ).rejects.toThrow(MailHostBlockedError);
+  });
+
+  it("allows a private address with ALLOW_PRIVATE_MAIL_HOSTS=1", async () => {
+    vi.stubEnv("ALLOW_PRIVATE_MAIL_HOSTS", "1");
+
+    await expect(
+      resolveAllowedMailHost("mail.corp.internal", resolvesTo("10.0.0.5"))
+    ).resolves.toEqual({ address: "10.0.0.5", family: 4 });
+  });
+
+  it("passes a lookup failure through as the probe's own failure", async () => {
+    // Rethrown unchanged, so the probe still reports "could not resolve the
+    // host" — the typo case — rather than a security error.
+    const failure = Object.assign(new Error("getaddrinfo ENOTFOUND imap.example.com"), {
+      code: "ENOTFOUND",
+    });
+    const failing = async () => {
+      throw failure;
+    };
+
+    await expect(resolveAllowedMailHost("imap.example.com", failing)).rejects.toBe(failure);
+  });
+
+  it("treats an empty answer as a host that does not resolve", async () => {
+    await expect(resolveAllowedMailHost("imap.example.com", resolvesTo())).rejects.toThrow(
+      /ENOTFOUND/
+    );
   });
 });
