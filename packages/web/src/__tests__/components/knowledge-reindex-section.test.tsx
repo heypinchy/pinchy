@@ -694,7 +694,7 @@ describe("KnowledgeReindexSection", () => {
     });
 
     // "today" and "tomorrow" are the viewer's too: 02:00 UTC is still today
-    // for someone in New York at 20:00 the evening before.
+    // for someone in New York at 19:00 the evening before.
     it("says today or tomorrow by the viewer's calendar, not the organization's", async () => {
       // 19:00 on the 16th in New York, 23:00 on the 16th in UTC: the run at
       // 02:00 UTC is tomorrow for the organization and still today here.
