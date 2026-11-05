@@ -25,6 +25,26 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const UNAVAILABLE_MESSAGE = "Couldn't load your license status. We'll keep trying.";
 
 /**
+ * Every mounted instance that currently has the shared toast up. The settings
+ * page mounts several callers at once, and one of them recovering or
+ * unmounting must not take down the toast the others still stand behind.
+ */
+const failingNotifiers = new Set<object>();
+
+function raiseToast(owner: object) {
+  failingNotifiers.add(owner);
+  // Stays up until the status arrives (or the caller goes away): the
+  // component sits in its loading state the whole time, and a toast that
+  // faded after 4 s would leave that unexplained.
+  toast.error(UNAVAILABLE_MESSAGE, { id: LICENSE_STATUS_TOAST_ID, duration: Infinity });
+}
+
+function releaseToast(owner: object) {
+  if (!failingNotifiers.delete(owner)) return;
+  if (failingNotifiers.size === 0) toast.dismiss(LICENSE_STATUS_TOAST_ID);
+}
+
+/**
  * `GET /api/enterprise/status`, through the typed client.
  *
  * Rejects on anything that is not a status: a network failure, a non-2xx (a
@@ -84,20 +104,26 @@ export function useLicenseStatus({
   const generation = useRef(0);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const failures = useRef(0);
-  const notified = useRef(false);
+  // This instance's identity in `failingNotifiers`.
+  const owner = useRef({}).current;
   const skipInitialFetch = useRef(initial !== null);
 
-  // Stops the current attempt and its retries. A toast promising "we'll keep
-  // trying" goes with them, and the next attempt starts a fresh streak.
-  const cancel = useCallback(() => {
+  // Drops the attempt in flight and its scheduled retry. The failure streak
+  // and the toast carry over: a refreshKey change during an outage starts the
+  // next attempt at once, and must not dismiss and re-show the toast (sonner
+  // swallows a toast re-created that soon after dismissing its id).
+  const stopAttempt = useCallback(() => {
     generation.current++;
     clearTimeout(retryTimer.current);
-    failures.current = 0;
-    if (notified.current) {
-      notified.current = false;
-      toast.dismiss(LICENSE_STATUS_TOAST_ID);
-    }
   }, []);
+
+  // Nothing retries any more, so a toast promising "we'll keep trying" goes,
+  // and the next attempt starts a fresh streak.
+  const stopRetrying = useCallback(() => {
+    stopAttempt();
+    failures.current = 0;
+    releaseToast(owner);
+  }, [stopAttempt, owner]);
 
   const load = useCallback(async (): Promise<void> => {
     const gen = ++generation.current;
@@ -107,30 +133,24 @@ export function useLicenseStatus({
       if (gen !== generation.current) return;
       failures.current = 0;
       setLicense(next);
-      if (notified.current) {
-        notified.current = false;
-        toast.dismiss(LICENSE_STATUS_TOAST_ID);
-      }
+      releaseToast(owner);
     } catch {
       if (gen !== generation.current) return;
       const attempt = failures.current++;
-      if (attempt === 0 && notifyOnFailure) {
-        notified.current = true;
-        // Stays up until the status arrives (or the caller unmounts): the
-        // component sits in its loading state the whole time, and a toast
-        // that faded after 4 s would leave that unexplained.
-        toast.error(UNAVAILABLE_MESSAGE, { id: LICENSE_STATUS_TOAST_ID, duration: Infinity });
-      }
+      if (attempt === 0 && notifyOnFailure) raiseToast(owner);
       const delays = LICENSE_STATUS_RETRY_DELAYS_MS;
       retryTimer.current = setTimeout(
         () => void load(),
         delays[Math.min(attempt, delays.length - 1)]
       );
     }
-  }, [notifyOnFailure]);
+  }, [notifyOnFailure, owner]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      stopRetrying();
+      return;
+    }
     // Under React StrictMode the simulated remount fetches anyway — one extra
     // GET in development, harmless.
     if (skipInitialFetch.current) {
@@ -138,12 +158,12 @@ export function useLicenseStatus({
     } else {
       void load();
     }
-    return cancel;
-  }, [enabled, refreshKey, load, cancel]);
+    return stopAttempt;
+  }, [enabled, refreshKey, load, stopAttempt, stopRetrying]);
 
   // Unmount ends everything, including attempts started by `refetch()` while
-  // disabled, and takes the toast with it.
-  useEffect(() => cancel, [cancel]);
+  // disabled, and releases the toast.
+  useEffect(() => stopRetrying, [stopRetrying]);
 
   return { license, refetch: load };
 }

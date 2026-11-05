@@ -251,4 +251,53 @@ describe("useLicenseStatus", () => {
     rerender({ on: false });
     expect(toast.dismiss).toHaveBeenCalledWith(LICENSE_STATUS_TOAST_ID);
   });
+
+  it("keeps the toast up, unflickered, across a refreshKey change during an outage", async () => {
+    // sonner swallows a toast re-created within ~200 ms of dismissing the same
+    // id, so a dismiss-then-reshow here could leave no toast at all.
+    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
+    const { rerender } = renderHook(
+      ({ k }) => useLicenseStatus({ refreshKey: k, notifyOnFailure: true }),
+      { initialProps: { k: 0 } }
+    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+
+    rerender({ k: 1 });
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    await act(async () => {});
+
+    expect(toast.dismiss).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a fresh streak after being disabled and re-enabled", async () => {
+    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
+    const { rerender } = renderHook(
+      ({ on }) => useLicenseStatus({ enabled: on, notifyOnFailure: true }),
+      { initialProps: { on: true } }
+    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+    rerender({ on: false });
+    rerender({ on: true });
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(2));
+  });
+
+  it("leaves the shared toast up while another instance is still failing", async () => {
+    vi.useFakeTimers();
+    fetchSpy.mockRejectedValue(new TypeError("Failed to fetch"));
+    const a = renderHook(() => useLicenseStatus({ notifyOnFailure: true }));
+    const b = renderHook(() => useLicenseStatus({ notifyOnFailure: true }));
+    await act(async () => {});
+    expect(toast.error).toHaveBeenCalled();
+
+    a.unmount();
+    expect(toast.dismiss).not.toHaveBeenCalled();
+
+    fetchSpy.mockResolvedValue(jsonResponse(enterpriseStatus));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LICENSE_STATUS_RETRY_DELAYS_MS[0]);
+    });
+    expect(b.result.current.license).toEqual(enterpriseStatus);
+    expect(toast.dismiss).toHaveBeenCalledWith(LICENSE_STATUS_TOAST_ID);
+  });
 });
