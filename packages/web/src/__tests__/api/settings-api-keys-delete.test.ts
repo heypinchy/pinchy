@@ -148,8 +148,11 @@ describe("DELETE /api/settings/api-keys/[keyId]", () => {
   it("has the audit row written before the response is returned (revocation evidence is visible the moment the admin sees 200)", async () => {
     mockDeleteChain({ name: "CI Deploy" });
     let written = false;
+    // Finishes on a later macrotask, not a microtask: the test-setup `after`
+    // mock runs its callback synchronously, so a write that resolved after one
+    // microtask would also land before an un-awaited handler's response.
     vi.mocked(appendAuditLog).mockImplementationOnce(async () => {
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
       written = true;
       return { id: 1, rowHmac: "hmac" };
     });
