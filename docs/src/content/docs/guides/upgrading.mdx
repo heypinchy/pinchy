@@ -569,7 +569,7 @@ Blocked-request entries in the audit trail now carry `clientAddress` beside `rem
 
 The **Invite User** dialog used to call the email optional, but an invite without one could never be claimed: the account it creates needs an address, so the invitee only ever saw "Failed to create account". The email is now required, in the dialog and in `POST /api/users/invite`.
 
-A pending invite created without an email still can't be used. Its link now says so up front. **Resend** refuses it rather than revoking it. Revoke it in **Settings → Users** and invite the person again with their email.
+An invite created without an email still can't be used, and its link now says so up front. Revoke it in **Settings → Users** and invite the person again with their email. An expired one shows **Revoke** instead of **Resend**, because a fresh invite needs an email.
 
 #### A change made while OpenClaw restarts now reaches it
 

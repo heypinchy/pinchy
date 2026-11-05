@@ -278,15 +278,10 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     // the two steps failed so the admin knows whether the old invite is still
     // live (revoke failed) or simply no replacement was issued (create failed).
     //
-    // An invite created before the email became required has none, and a new
-    // invite needs one (#1263). Stop before revoking anything.
+    // Only offered for invites that have an email: one created before the
+    // email became required gets Revoke instead (#1263).
     const email = item.email;
-    if (!email) {
-      toast.error(
-        "This invite has no email address, so it can't be resent. Use Invite User to invite the person with their email."
-      );
-      return;
-    }
+    if (!email) return;
     try {
       await apiDelete(`/api/users/invites/${item.id}`);
     } catch (e) {
@@ -430,12 +425,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
                   {item.kind === "user" ? item.email : item.email || "\u2014"}
                 </div>
                 <div className="flex gap-2">
-                  {item.kind === "invite" && item.status === "pending" && (
+                  {item.kind === "invite" && (item.status === "pending" || !item.email) && (
                     <Button variant="outline" size="sm" onClick={() => handleRevoke(item.id)}>
                       Revoke
                     </Button>
                   )}
-                  {item.kind === "invite" && item.status === "expired" && (
+                  {item.kind === "invite" && item.status === "expired" && item.email && (
                     <Button variant="outline" size="sm" onClick={() => handleResend(item)}>
                       Resend
                     </Button>
@@ -487,12 +482,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
                       <StatusBadge status={item.status} />
                     </TableCell>
                     <TableCell className="space-x-2">
-                      {item.kind === "invite" && item.status === "pending" && (
+                      {item.kind === "invite" && (item.status === "pending" || !item.email) && (
                         <Button variant="outline" size="sm" onClick={() => handleRevoke(item.id)}>
                           Revoke
                         </Button>
                       )}
-                      {item.kind === "invite" && item.status === "expired" && (
+                      {item.kind === "invite" && item.status === "expired" && item.email && (
                         <Button variant="outline" size="sm" onClick={() => handleResend(item)}>
                           Resend
                         </Button>

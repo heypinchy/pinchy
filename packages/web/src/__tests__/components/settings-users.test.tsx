@@ -767,10 +767,10 @@ describe("SettingsUsers", () => {
       });
     });
 
-    it("does not revoke an expired invite that has no email, and says why (#1263)", async () => {
-      // Invites made before the email became required have none. A fresh
-      // invite needs one, so revoking first would only destroy the old row
-      // and then fail to create its replacement.
+    it("offers Revoke, not Resend, for an expired invite that has no email (#1263)", async () => {
+      // Invites made before the email became required have none, and a new
+      // invite needs one, so Resend cannot work. Revoke is the one action left;
+      // without it the row would sit in the list for good.
       const user = userEvent.setup();
       const noEmailExpired = { ...expiredInvite, email: null };
       mockFetchForUsers(mockUsers, [noEmailExpired]);
@@ -781,13 +781,14 @@ describe("SettingsUsers", () => {
       });
 
       const table = screen.getByRole("table");
-      const inviteRow = within(table).getByRole("button", { name: "Resend" }).closest("tr")!;
-      await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
+      expect(within(table).queryByRole("button", { name: "Resend" })).not.toBeInTheDocument();
+      await user.click(within(table).getByRole("button", { name: "Revoke" }));
 
       await waitFor(() => {
-        expect(mockToast.error).toHaveBeenCalledWith(expect.stringMatching(/no email/i));
+        expect(global.fetch).toHaveBeenCalledWith("/api/users/invites/inv-2", {
+          method: "DELETE",
+        });
       });
-      expect(global.fetch).not.toHaveBeenCalledWith("/api/users/invites/inv-2", expect.anything());
       expect(global.fetch).not.toHaveBeenCalledWith("/api/users/invite", expect.anything());
     });
 
