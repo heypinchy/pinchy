@@ -14,7 +14,16 @@ import {
 export const SYSTEM_MAIL_SETTING_KEY = "system_mail";
 
 export async function getSystemMailConfig(): Promise<SystemMailConfig | null> {
-  const raw = await getSetting(SYSTEM_MAIL_SETTING_KEY);
+  let raw: string | null;
+  try {
+    raw = await getSetting(SYSTEM_MAIL_SETTING_KEY);
+  } catch {
+    // Encrypted under a key this install no longer has (secrets volume
+    // recreated, ENCRYPTION_KEY changed). Off, so the admin can set it up
+    // again instead of every mail route answering 500 for good.
+    console.error("[system-mail] stored config can't be decrypted; treating the mailer as off");
+    return null;
+  }
   if (!raw) return null;
   let parsed: unknown;
   try {
@@ -63,6 +72,9 @@ export function mergeWithStoredPassword(
 ): SystemMailConfig {
   if (!update.username) return { ...update, password: undefined };
   if (update.password) return update;
-  if (stored && stored.host === update.host) return { ...update, password: stored.password };
+  // Host names are case-insensitive; a re-typed "SMTP.example.com" is the same server.
+  if (stored && stored.host.toLowerCase() === update.host.toLowerCase()) {
+    return { ...update, password: stored.password };
+  }
   return update;
 }

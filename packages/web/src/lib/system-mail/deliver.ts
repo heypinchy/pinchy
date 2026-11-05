@@ -1,7 +1,7 @@
 import { redactEmail } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { buildInviteUrl } from "@/lib/invite-url";
-import { classifyProbeError } from "@/lib/integrations/imap-probe";
+import { classifyMailError } from "@/lib/system-mail/errors";
 import { getOrgTimezone } from "@/lib/settings-timezone";
 import type { EmailDelivery, SystemMailConfig } from "@/lib/schemas/system-mail";
 import { getSystemMailConfig } from "@/lib/system-mail/config";
@@ -22,24 +22,6 @@ import { sendSystemMail } from "@/lib/system-mail/transport";
  */
 
 type MailPurpose = "invite" | "password_reset" | "test";
-
-/**
- * nodemailer tags an SMTP rejection with the command that drew it. A refused
- * sender is the most common real-world failure after a login that worked —
- * relays let you authenticate and then refuse to send as an address the
- * account doesn't own — so it gets its own message rather than "check your
- * settings".
- */
-export function classifySendError(error: unknown, config: SystemMailConfig): string {
-  const command = (error as { command?: unknown } | null)?.command;
-  if (command === "MAIL FROM") {
-    return `The mail server refused the sender address ${config.fromAddress} — check that this account may send as it.`;
-  }
-  if (command === "RCPT TO") {
-    return "The mail server refused the recipient address.";
-  }
-  return classifyProbeError(error).message;
-}
 
 async function sendAndAudit(args: {
   config: SystemMailConfig;
@@ -65,7 +47,7 @@ async function sendAndAudit(args: {
     });
     return { sent: true };
   } catch (error) {
-    const message = classifySendError(error, args.config);
+    const message = classifyMailError(error);
     console.error("[system-mail] send failed:", error instanceof Error ? error.message : error);
     deferAuditLog({
       actorType: "user",
@@ -91,7 +73,7 @@ export async function deliverLinkEmail(input: {
   const config = await getSystemMailConfig();
   if (!config) return { sent: false, error: "Email delivery isn't set up." };
 
-  const origin = resolveLinkOrigin(input.request);
+  const origin = await resolveLinkOrigin(input.request);
   const content = buildLinkEmail({
     kind: input.kind,
     inviter: { name: input.actor.name, email: input.actor.email },
@@ -117,7 +99,7 @@ export async function deliverTestEmail(input: {
   to: string;
   actorId: string;
 }): Promise<EmailDelivery> {
-  const origin = resolveLinkOrigin(input.request);
+  const origin = await resolveLinkOrigin(input.request);
   return sendAndAudit({
     config: input.config,
     to: input.to,

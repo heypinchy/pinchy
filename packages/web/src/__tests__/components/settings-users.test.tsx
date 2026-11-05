@@ -767,6 +767,57 @@ describe("SettingsUsers", () => {
       });
     });
 
+    it("emails the fresh invite on Resend when email delivery is on (#1309)", async () => {
+      const user = userEvent.setup();
+      mockFetchForUsers(mockUsers, [expiredInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+      await waitFor(() => {
+        expect(screen.getAllByText("expired@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/settings/mail") {
+          return jsonResponse({
+            configured: true,
+            config: {
+              host: "smtp.example.com",
+              port: 587,
+              security: "starttls",
+              fromAddress: "pinchy@example.com",
+              hasPassword: true,
+            },
+          });
+        }
+        if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
+          return jsonResponse({ success: true });
+        }
+        if (String(url) === "/api/users/invite" && init?.method === "POST") {
+          return jsonResponse({ token: "resend-token-xyz", emailDelivery: { sent: true } });
+        }
+        if (String(url) === "/api/users") return jsonResponse({ users: mockUsers });
+        if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (String(url) === "/api/groups") return jsonResponse([]);
+        if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: false });
+        return jsonResponse(undefined, { status: 400 });
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("expired@example.com")[0].closest("tr")!;
+      await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "expired@example.com", role: "member", sendEmail: true }),
+        });
+      });
+      expect(await screen.findByRole("status")).toHaveTextContent(
+        "Invitation sent to expired@example.com."
+      );
+      expect(screen.getByText("http://localhost:7777/invite/resend-token-xyz")).toBeInTheDocument();
+    });
+
     it("offers Revoke, not Resend, for an expired invite that has no email (#1263)", async () => {
       // Invites made before the email became required have none, and a new
       // invite needs one, so Resend cannot work. Revoke is the one action left;

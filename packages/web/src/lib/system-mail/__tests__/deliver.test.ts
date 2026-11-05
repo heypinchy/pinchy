@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/system-mail/config", () => ({ getSystemMailConfig: vi.fn() }));
 vi.mock("@/lib/system-mail/transport", () => ({ sendSystemMail: vi.fn() }));
-vi.mock("@/lib/domain-cache", () => ({ getCachedDomain: vi.fn(() => null) }));
+vi.mock("@/lib/domain", () => ({ getDomain: vi.fn(async () => null) }));
 vi.mock("@/lib/settings-timezone", () => ({ getOrgTimezone: vi.fn(async () => "UTC") }));
 vi.mock("@/lib/audit-deferred", () => ({ deferAuditLog: vi.fn() }));
 vi.mock("@/lib/audit", async (importOriginal) => {
@@ -16,7 +16,8 @@ vi.mock("@/lib/audit", async (importOriginal) => {
 import { getSystemMailConfig } from "@/lib/system-mail/config";
 import { sendSystemMail } from "@/lib/system-mail/transport";
 import { deferAuditLog } from "@/lib/audit-deferred";
-import { deliverLinkEmail, deliverTestEmail, classifySendError } from "@/lib/system-mail/deliver";
+import { deliverLinkEmail, deliverTestEmail } from "@/lib/system-mail/deliver";
+import { classifyMailError } from "@/lib/system-mail/errors";
 
 const config = {
   host: "smtp.example.com",
@@ -133,14 +134,26 @@ describe("deliverTestEmail", () => {
   });
 });
 
-describe("classifySendError", () => {
-  it("names a refused sender address — relays reject that more often than a login", () => {
+describe("classifyMailError", () => {
+  it("names a refused sender address without repeating it — the message lands in the audit row", () => {
     const err = Object.assign(new Error("553 5.7.1 Sender address rejected"), {
       command: "MAIL FROM",
       responseCode: 553,
     });
-    expect(classifySendError(err, config)).toBe(
-      "The mail server refused the sender address pinchy@example.com — check that this account may send as it."
+    const message = classifyMailError(err);
+    expect(message).toBe(
+      "The mail server refused the sender address — check that this account may send as it."
+    );
+    expect(message).not.toContain("@");
+  });
+
+  it("tells an admin who left out the login that the server wants one", () => {
+    const err = Object.assign(new Error("530 5.7.57 Client not authenticated"), {
+      command: "MAIL FROM",
+      responseCode: 530,
+    });
+    expect(classifyMailError(err)).toBe(
+      "The mail server wants a login before it sends — add a username and password."
     );
   });
 
@@ -149,11 +162,20 @@ describe("classifySendError", () => {
       command: "RCPT TO",
       responseCode: 550,
     });
-    expect(classifySendError(err, config)).toBe("The mail server refused the recipient address.");
+    expect(classifyMailError(err)).toBe("The mail server refused the recipient address.");
+  });
+
+  it("names a server that doesn't offer the required STARTTLS", () => {
+    const err = Object.assign(new Error("Error upgrading connection with STARTTLS"), {
+      code: "ETLS",
+    });
+    expect(classifyMailError(err)).toBe(
+      "Could not establish a secure connection — check the encryption setting"
+    );
   });
 
   it("falls back to the shared connection diagnosis", () => {
-    expect(classifySendError(new Error("connect ECONNREFUSED"), config)).toBe(
+    expect(classifyMailError(new Error("connect ECONNREFUSED"))).toBe(
       "Connection refused — check the host and port"
     );
   });

@@ -89,6 +89,7 @@ export function UserDetailSheet({
   // link is still shown either way.
   const [mailConfigured, setMailConfigured] = useState(false);
   const [resetDelivery, setResetDelivery] = useState<EmailDelivery | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -211,6 +212,9 @@ export function UserDetailSheet({
   }
 
   async function handleResetPassword() {
+    // With a mailer the request waits on SMTP; a second click would create
+    // a second token and send a second email.
+    setResetting(true);
     try {
       const data = await apiPost<
         { token: string; emailDelivery?: EmailDelivery },
@@ -220,6 +224,8 @@ export function UserDetailSheet({
       setResetDelivery(data.emailDelivery ?? null);
     } catch (e) {
       toast.error(errorMessage(e, "Failed to reset password"));
+    } finally {
+      setResetting(false);
     }
   }
 
@@ -314,12 +320,24 @@ export function UserDetailSheet({
 
           {/* Actions */}
           <div className="space-y-2">
-            <Button variant="outline" size="sm" className="w-full" onClick={handleResetPassword}>
-              {mailConfigured ? "Email reset link" : "Reset Password"}
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={handleResetPassword}
+              disabled={resetting}
+            >
+              {resetting && mailConfigured
+                ? "Sending..."
+                : mailConfigured
+                  ? "Email reset link"
+                  : "Reset Password"}
             </Button>
 
             {resetDelivery?.sent === true && (
-              <p className="text-sm">Reset link sent to {user.email}.</p>
+              <p role="status" className="text-sm">
+                Reset link sent to {user.email}.
+              </p>
             )}
             {resetDelivery?.sent === false && (
               <p role="alert" className="text-sm text-destructive">

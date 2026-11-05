@@ -187,7 +187,9 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
         {inviteLink ? (
           <div className="space-y-4">
             {emailDelivery?.sent === true && (
-              <p className="text-sm">Invitation sent to {invitedEmail}.</p>
+              <p role="status" className="text-sm">
+                Invitation sent to {invitedEmail}.
+              </p>
             )}
             {emailDelivery?.sent === false && (
               <p role="alert" className="text-sm text-destructive">

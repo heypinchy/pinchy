@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
-import { systemMailTestSchema } from "@/lib/schemas/system-mail";
+import { systemMailTestSchema, type EmailDelivery } from "@/lib/schemas/system-mail";
 import { getSystemMailConfig } from "@/lib/system-mail/config";
 import { deliverTestEmail } from "@/lib/system-mail/deliver";
 
@@ -27,7 +27,12 @@ export async function POST(request: NextRequest) {
   }
 
   const to = session.user.email;
-  const result = await deliverTestEmail({ config, request, to, actorId: session.user.id });
+  const result = await deliverTestEmail({ config, request, to, actorId: session.user.id }).catch(
+    (err: unknown): EmailDelivery => {
+      console.error("[mail-test] email delivery crashed:", err);
+      return { sent: false, error: "Something went wrong sending the email." };
+    }
+  );
   if (!result.sent) {
     return NextResponse.json({ error: result.error }, { status: 502 });
   }

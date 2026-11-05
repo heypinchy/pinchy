@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, redactEmail } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
-import { classifyProbeError } from "@/lib/integrations/imap-probe";
 import {
   systemMailConfigSchema,
   type SystemMailConfig,
@@ -16,6 +15,7 @@ import {
   toPublicConfig,
 } from "@/lib/system-mail/config";
 import { verifySystemMail } from "@/lib/system-mail/transport";
+import { classifyMailError } from "@/lib/system-mail/errors";
 
 /**
  * System mailer settings (Settings → Organization → Email delivery, #1309).
@@ -32,13 +32,26 @@ const AUDITED_FIELDS = [
   "fromName",
 ] as const satisfies ReadonlyArray<keyof SystemMailConfig>;
 
+const EMAIL_LIKE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * How a field's value appears in the audit row. The sender address and an
+ * email-shaped username are personal data in an immutable, HMAC-chained row,
+ * so they go in as `redactEmail()` (hash + masked preview), never verbatim —
+ * the same rule the IMAP connection routes follow.
+ */
+function auditValue(value: unknown): unknown {
+  if (typeof value === "string" && EMAIL_LIKE.test(value)) return redactEmail(value);
+  return value ?? null;
+}
+
 /** Non-secret fields that differ, as `{ from, to }`. The password never appears. */
 function diff(before: SystemMailConfig | null, after: SystemMailConfig | null) {
   const changes: Record<string, { from: unknown; to: unknown }> = {};
   for (const field of AUDITED_FIELDS) {
     const from = before?.[field] ?? null;
     const to = after?.[field] ?? null;
-    if (from !== to) changes[field] = { from, to };
+    if (from !== to) changes[field] = { from: auditValue(from), to: auditValue(to) };
   }
   return changes;
 }
@@ -72,7 +85,7 @@ export async function PUT(request: NextRequest) {
   try {
     await verifySystemMail(next);
   } catch (error) {
-    const message = classifyProbeError(error).message;
+    const message = classifyMailError(error);
     await appendAuditLog({
       actorType: "user",
       actorId: session.user.id,
@@ -105,6 +118,9 @@ export async function DELETE() {
 
   const stored = await getSystemMailConfig();
   if (!stored) {
+    // A row that can't be read counts as off; remove it anyway so "Turn off"
+    // always leaves nothing behind.
+    await deleteSystemMailConfig();
     return NextResponse.json({ error: "Email delivery isn't set up." }, { status: 404 });
   }
 

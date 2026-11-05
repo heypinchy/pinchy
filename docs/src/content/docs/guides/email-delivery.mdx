@@ -51,6 +51,7 @@ The invite or reset link is created before Pinchy tries to send it, so a mail se
 Common causes:
 
 - **Authentication failed.** Wrong username or password, or your provider wants an app password instead of the account password.
+- **The mail server wants a login before it sends.** Saving can succeed without a username, because nothing is checked until an email goes out. Add the username and password.
 - **The mail server refused the sender address.** The account you log in with may not send as that address. Use the account's own address, or give it permission to send as the shared one.
 - **Connection timed out.** Many cloud hosts block outgoing port 25 and sometimes 587. Try 465 with TLS.
 - **Could not establish a secure connection.** The encryption setting doesn't match the port, or the server's certificate isn't trusted (see below).

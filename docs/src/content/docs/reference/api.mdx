@@ -1240,6 +1240,7 @@ Send a test email with the saved configuration to the signed-in admin's own addr
 
 **Errors:**
 
+- `400` — the body is not `{}`
 - `401` — not authenticated
 - `403` — not an admin
 - `409` — no mailer is configured
@@ -1409,7 +1410,7 @@ Generate a password reset token for a user. The admin constructs the reset URL f
 }
 ```
 
-`emailDelivery` is present only when `sendEmail` was `true`. It is `{ "sent": true }` or `{ "sent": false, "error": "<what went wrong>" }`. A failed send never fails the request: the token is created first and always returned, so the link can still be copied. Every attempt writes a `mail.sent` audit row.
+`emailDelivery` is present only when `sendEmail` was `true` and the user has an email address. It is `{ "sent": true }` or `{ "sent": false, "error": "<what went wrong>" }` — including `"Email delivery isn't set up."` when no mailer is configured. A failed send never fails the request: the token is created first and always returned, so the link can still be copied. Every attempt writes a `mail.sent` audit row.
 
 **Errors:**
 
@@ -1450,7 +1451,7 @@ Create an invite for a new user. Returns the full invite object including a plai
 
 The admin constructs the invite URL from the returned token: `{origin}/invite/{token}`.
 
-With `sendEmail: true` the response also carries `emailDelivery`: `{ "sent": true }`, or `{ "sent": false, "error": "<what went wrong>" }` when the mail server refused or couldn't be reached. The status stays `201` and the token is returned in both cases, because the invite already exists — a failed send never loses it. The link in the email uses the locked domain when one is set (`https://<domain>`), otherwise the host the request arrived on.
+With `sendEmail: true` the response also carries `emailDelivery`: `{ "sent": true }`, or `{ "sent": false, "error": "<what went wrong>" }` when the mail server refused or couldn't be reached, or no mailer is configured (`"Email delivery isn't set up."`). The status stays `201` and the token is returned in both cases, because the invite already exists — a failed send never loses it. The link in the email uses the locked domain when one is set (`https://<domain>`), otherwise the host the request arrived on.
 
 **Errors:**
 

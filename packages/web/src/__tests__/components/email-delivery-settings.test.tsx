@@ -188,4 +188,56 @@ describe("EmailDeliverySettings", () => {
     expect(await screen.findByText(/Pinchy doesn't send email/)).toBeInTheDocument();
     expect(lastCall("/api/settings/mail")?.init.method).toBe("DELETE");
   });
+
+  it("names the field a validation error is about, under that field", async () => {
+    vi.mocked(global.fetch)
+      .mockResolvedValueOnce(jsonResponse({ configured: false }))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: "Validation failed",
+            details: { fieldErrors: { fromAddress: ["Enter a valid sender address"] } },
+          },
+          { status: 400 }
+        )
+      );
+    const user = userEvent.setup();
+    render(<EmailDeliverySettings />);
+    await user.click(await screen.findByRole("button", { name: "Set up email" }));
+    await user.type(screen.getByLabelText("SMTP server"), "smtp.example.com");
+    await user.type(screen.getByLabelText("Sender address"), "it@acme");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Enter a valid sender address")).toBeInTheDocument();
+    expect(screen.queryByText("Validation failed")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Sender address")).toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("stops promising to keep the password once the server changes", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(configured));
+    const user = userEvent.setup();
+    render(<EmailDeliverySettings />);
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    const host = screen.getByLabelText("SMTP server");
+    await user.clear(host);
+    await user.type(host, "smtp.other.com");
+    expect(screen.getByLabelText(/Password/)).toHaveAttribute(
+      "placeholder",
+      "Enter the password for this server"
+    );
+  });
+
+  it("does not let a double click turn off twice", async () => {
+    let resolveDelete: (r: Response) => void = () => {};
+    vi.mocked(global.fetch)
+      .mockResolvedValueOnce(jsonResponse(configured))
+      .mockImplementationOnce(() => new Promise<Response>((r) => (resolveDelete = r)));
+    const user = userEvent.setup();
+    render(<EmailDeliverySettings />);
+    const button = await screen.findByRole("button", { name: "Turn off" });
+    await user.click(button);
+    expect(button).toBeDisabled();
+    resolveDelete(jsonResponse({ configured: false }));
+    expect(await screen.findByText(/Pinchy doesn't send email/)).toBeInTheDocument();
+  });
 });

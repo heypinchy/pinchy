@@ -39,19 +39,32 @@ const RELAY = {
   fromName: "Pinchy E2E",
 };
 
-async function waitForMessage(address: string, timeoutMs = 30_000): Promise<string> {
-  let source: string | null = null;
+/**
+ * Waits until the mailbox holds more than `seenBefore` messages containing
+ * `marker`, and returns the newest — the same condition the test asserts, so
+ * a message left over in a re-used mailbox can't end the wait early.
+ */
+async function waitForNewMessage(
+  address: string,
+  marker: string,
+  seenBefore: number,
+  timeoutMs = 30_000
+): Promise<string> {
+  let matching: string[] = [];
   await expect
     .poll(
       async () => {
-        const messages = await getGreenmailMailboxSource(address);
-        source = messages.at(-1) ?? null;
-        return source !== null;
+        matching = (await getGreenmailMailboxSource(address)).filter((m) => m.includes(marker));
+        return matching.length;
       },
-      { timeout: timeoutMs, message: `no email arrived for ${address}` }
+      { timeout: timeoutMs, message: `no new email containing "${marker}" for ${address}` }
     )
-    .toBe(true);
-  return source!;
+    .toBeGreaterThan(seenBefore);
+  return matching[matching.length - 1];
+}
+
+async function countMessages(address: string, marker: string): Promise<number> {
+  return (await getGreenmailMailboxSource(address)).filter((m) => m.includes(marker)).length;
 }
 
 /** The invite link, unwrapped from quoted-printable soft line breaks. */
@@ -83,15 +96,24 @@ test.describe("System mailer — invitations arrive by email", () => {
     const status = await save.json();
     expect(status).toMatchObject({ configured: true, config: { host: "greenmail" } });
 
+    // The admin's mailbox survives between local runs: count first.
+    const marker = "Pinchy can send email";
+    const seenBefore = await countMessages(getAdminEmail(), marker);
+
     const testSend = await pinchyPost("/api/settings/mail/test", {}, cookie);
     expect(testSend.status, await testSend.clone().text()).toBe(200);
 
-    const source = await waitForMessage(getAdminEmail());
-    expect(source).toContain("Pinchy can send email");
+    await waitForNewMessage(getAdminEmail(), marker, seenBefore);
 
-    const audit = await pinchyGet("/api/audit?eventType=mail.sent&limit=10", cookie);
-    const rows = (await audit.json()).entries as Array<{ outcome: string; detail: unknown }>;
-    expect(rows.some((r) => r.outcome === "success")).toBe(true);
+    // mail.sent is written after the response (deferAuditLog), so poll for it.
+    let rows: Array<{ outcome: string; detail: { purpose?: string } }> = [];
+    await expect
+      .poll(async () => {
+        const audit = await pinchyGet("/api/audit?eventType=mail.sent&limit=10", cookie);
+        rows = (await audit.json()).entries;
+        return rows.some((r) => r.outcome === "success" && r.detail?.purpose === "test");
+      })
+      .toBe(true);
     // The recipient is never in the audit trail in plain text.
     expect(JSON.stringify(rows)).not.toContain(getAdminEmail());
   });
@@ -112,8 +134,8 @@ test.describe("System mailer — invitations arrive by email", () => {
     // The link stays on screen: copying it is always possible.
     await expect(page.getByText(/\/invite\/[0-9a-f]{64}/)).toBeVisible();
 
-    const source = await waitForMessage(invitee);
-    expect(source).toMatch(/invited you to Pinchy/);
+    // A fresh address per run, so nothing was there before.
+    const source = await waitForNewMessage(invitee, "invited you to Pinchy", 0);
     const link = extractInviteLink(source);
 
     // A fresh browser context: the invitee is not the signed-in admin.

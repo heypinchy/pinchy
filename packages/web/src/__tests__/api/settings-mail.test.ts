@@ -12,6 +12,7 @@ vi.mock("@/lib/api-auth", () => ({
 const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
+  redactEmail: (email: string) => ({ emailHash: `hash-${email.length}`, emailPreview: "p…y@x" }),
 }));
 
 let stored: Record<string, unknown> | null = null;
@@ -151,12 +152,38 @@ describe("PUT /api/settings/mail", () => {
         changes: {
           host: { from: null, to: "smtp.example.com" },
           port: { from: null, to: 587 },
-          fromAddress: { from: null, to: "pinchy@example.com" },
+          fromAddress: { from: null, to: { emailHash: "hash-18", emailPreview: "p…y@x" } },
+          username: { from: null, to: { emailHash: "hash-18", emailPreview: "p…y@x" } },
         },
         passwordChanged: true,
       },
     });
     expect(JSON.stringify(entry)).not.toContain("s3cret");
+  });
+
+  it("never writes an email address into the audit row in plain text", async () => {
+    stored = { ...body, username: "jane.doe@gmail.com", fromAddress: "jane.doe@gmail.com" };
+    await PUT(put({ ...body, username: "it@acme.io", fromAddress: "it@acme.io" }));
+    await DELETE();
+    mockVerify.mockRejectedValueOnce(new Error("Invalid login: 535"));
+    await PUT(put({ ...body, username: "bob@acme.io", fromAddress: "bob@acme.io" }));
+    const all = JSON.stringify(mockAppendAuditLog.mock.calls);
+    for (const address of [
+      "jane.doe@gmail.com",
+      "it@acme.io",
+      "bob@acme.io",
+      "pinchy@example.com",
+    ]) {
+      expect(all).not.toContain(address);
+    }
+  });
+
+  it("keeps a username that isn't an address, like an API-key user", async () => {
+    await PUT(put({ ...body, username: "apikey" }));
+    expect(mockAppendAuditLog.mock.calls[0][0].detail.changes.username).toEqual({
+      from: null,
+      to: "apikey",
+    });
   });
 
   it("keeps the stored password when the form sends none", async () => {
@@ -219,6 +246,14 @@ describe("POST /api/settings/mail/test", () => {
     const res = await TEST_POST(testRequest());
     expect(res.status).toBe(502);
     expect((await res.json()).error).toBe("Connection refused");
+  });
+
+  it("answers with an error, not a 500, if sending itself crashes", async () => {
+    stored = { ...body };
+    mockDeliverTest.mockRejectedValue(new Error("boom"));
+    const res = await TEST_POST(testRequest());
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toBe("Something went wrong sending the email.");
   });
 
   it("refuses when no mailer is configured", async () => {

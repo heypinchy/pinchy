@@ -2,8 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const store = new Map<string, { value: string; encrypted: boolean }>();
 
+let decryptFails = false;
 vi.mock("@/lib/settings", () => ({
-  getSetting: vi.fn(async (key: string) => store.get(key)?.value ?? null),
+  getSetting: vi.fn(async (key: string) => {
+    if (decryptFails) throw new Error("Unsupported state or unable to authenticate data");
+    return store.get(key)?.value ?? null;
+  }),
   setSetting: vi.fn(async (key: string, value: string, encrypted = false) => {
     store.set(key, { value, encrypted });
   }),
@@ -31,7 +35,16 @@ const config = {
 };
 
 describe("system mail config storage", () => {
-  beforeEach(() => store.clear());
+  beforeEach(() => {
+    store.clear();
+    decryptFails = false;
+  });
+
+  it("treats a row it can no longer decrypt as off, so the admin can set it up again", async () => {
+    store.set(SYSTEM_MAIL_SETTING_KEY, { value: "x", encrypted: true });
+    decryptFails = true;
+    expect(await getSystemMailConfig()).toBeNull();
+  });
 
   it("is off when nothing is stored", async () => {
     expect(await getSystemMailConfig()).toBeNull();
@@ -104,6 +117,14 @@ describe("mergeWithStoredPassword", () => {
       config
     );
     expect(merged.password).toBeUndefined();
+  });
+
+  it("treats the host case-insensitively — DNS does", () => {
+    const merged = mergeWithStoredPassword(
+      { ...config, host: "SMTP.Example.com", password: undefined },
+      config
+    );
+    expect(merged.password).toBe("s3cret");
   });
 
   it("works without anything stored", () => {

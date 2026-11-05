@@ -13,7 +13,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { apiDelete, apiGet, apiPost, apiPut, errorMessage } from "@/lib/api-client";
+import {
+  apiDelete,
+  apiGet,
+  apiPost,
+  apiPut,
+  errorMessage,
+  extractFieldErrors,
+} from "@/lib/api-client";
 import {
   DEFAULT_SMTP_PORT,
   SYSTEM_MAIL_SECURITY,
@@ -72,6 +79,8 @@ export function EmailDeliverySettings() {
   const [showServerDetails, setShowServerDetails] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [turningOff, setTurningOff] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
 
@@ -90,9 +99,12 @@ export function EmailDeliverySettings() {
     // An existing username is the admin's choice; don't let the sender
     // address overwrite it.
     setUsernameTouched(Boolean(config));
-    setSecurityTouched(Boolean(config));
+    // Encryption counts as the admin's choice only when it isn't what the
+    // port implies anyway; otherwise picking 465 should still switch to TLS.
+    setSecurityTouched(Boolean(config && config.security !== securityForPort(config.port)));
     setShowServerDetails(false);
     setFormError(null);
+    setFieldErrors({});
     setTestError(null);
     setEditing(true);
   }
@@ -122,6 +134,7 @@ export function EmailDeliverySettings() {
     event.preventDefault();
     setSaving(true);
     setFormError(null);
+    setFieldErrors({});
     const body: SystemMailConfigInput = {
       host: form.host,
       port: Number(form.port),
@@ -140,8 +153,15 @@ export function EmailDeliverySettings() {
       setEditing(false);
       toast.success("Email delivery is on. Invitations and reset links will go out by email.");
     } catch (e) {
-      // Verification failed or a field is invalid: the admin fixes it here.
-      setFormError(errorMessage(e, "Couldn't save the email settings"));
+      // A field the schema refused goes under that field; a failed
+      // connection check (host, login, sender) is a form-level message.
+      const fields = extractFieldErrors(e);
+      if (fields) {
+        setFieldErrors(fields);
+        if (fields.port || fields.security || fields.fromName) setShowServerDetails(true);
+      } else {
+        setFormError(errorMessage(e, "Couldn't save the email settings"));
+      }
     } finally {
       setSaving(false);
     }
@@ -164,13 +184,46 @@ export function EmailDeliverySettings() {
   }
 
   async function handleTurnOff() {
+    setTurningOff(true);
     try {
       setStatus(await apiDelete<SystemMailStatus>("/api/settings/mail"));
       setTestError(null);
       toast.success("Email delivery is off. Links are shown for you to copy.");
     } catch (e) {
       toast.error(errorMessage(e, "Couldn't turn email delivery off"));
+    } finally {
+      setTurningOff(false);
     }
+  }
+
+  // The stored password only follows the server it was typed for, and only
+  // while there is a username to log in with (mergeWithStoredPassword).
+  const keepsSavedPassword =
+    Boolean(config?.hasPassword) &&
+    form.host.trim().toLowerCase() === config?.host.toLowerCase() &&
+    form.username.trim() !== "";
+  const passwordPlaceholder = keepsSavedPassword
+    ? "Leave empty to keep the saved password"
+    : config?.hasPassword
+      ? "Enter the password for this server"
+      : undefined;
+
+  function fieldProps(name: string) {
+    const message = fieldErrors[name];
+    return {
+      "aria-invalid": message ? true : undefined,
+      "aria-describedby": message ? `mail-${name}-error` : undefined,
+    };
+  }
+
+  function fieldError(name: string) {
+    const message = fieldErrors[name];
+    if (!message) return null;
+    return (
+      <p id={`mail-${name}-error`} className="text-sm text-destructive">
+        {message}
+      </p>
+    );
   }
 
   return (
@@ -189,7 +242,9 @@ export function EmailDeliverySettings() {
                 value={form.host}
                 onChange={(e) => setField("host", e.target.value)}
                 autoComplete="off"
+                {...fieldProps("host")}
               />
+              {fieldError("host")}
             </div>
             <div className="space-y-2">
               <Label htmlFor="mail-from">Sender address</Label>
@@ -199,7 +254,9 @@ export function EmailDeliverySettings() {
                 placeholder="pinchy@example.com"
                 value={form.fromAddress}
                 onChange={(e) => onFromAddressChange(e.target.value)}
+                {...fieldProps("fromAddress")}
               />
+              {fieldError("fromAddress")}
             </div>
             <div className="space-y-2">
               <Label htmlFor="mail-username">Username (optional)</Label>
@@ -210,8 +267,12 @@ export function EmailDeliverySettings() {
                   setUsernameTouched(true);
                   setField("username", e.target.value);
                 }}
-                autoComplete="username"
+                // Not "username": this is the mail server's login, and a
+                // password manager would offer to save it as the Pinchy one.
+                autoComplete="off"
+                {...fieldProps("username")}
               />
+              {fieldError("username")}
             </div>
             <div className="space-y-2">
               <Label htmlFor="mail-password">Password (optional)</Label>
@@ -219,12 +280,12 @@ export function EmailDeliverySettings() {
                 id="mail-password"
                 type="password"
                 value={form.password}
-                placeholder={
-                  config?.hasPassword ? "Leave empty to keep the saved password" : undefined
-                }
+                placeholder={passwordPlaceholder}
                 onChange={(e) => setField("password", e.target.value)}
                 autoComplete="new-password"
+                {...fieldProps("password")}
               />
+              {fieldError("password")}
             </div>
 
             {showServerDetails ? (
@@ -236,7 +297,9 @@ export function EmailDeliverySettings() {
                     inputMode="numeric"
                     value={form.port}
                     onChange={(e) => onPortChange(e.target.value)}
+                    {...fieldProps("port")}
                   />
+                  {fieldError("port")}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="mail-security">Encryption</Label>
@@ -266,7 +329,9 @@ export function EmailDeliverySettings() {
                     placeholder="Pinchy"
                     value={form.fromName}
                     onChange={(e) => setField("fromName", e.target.value)}
+                    {...fieldProps("fromName")}
                   />
+                  {fieldError("fromName")}
                 </div>
               </div>
             ) : (
@@ -322,7 +387,7 @@ export function EmailDeliverySettings() {
               <Button variant="outline" onClick={startEditing}>
                 Edit
               </Button>
-              <Button variant="outline" onClick={handleTurnOff}>
+              <Button variant="outline" onClick={handleTurnOff} disabled={turningOff}>
                 Turn off
               </Button>
             </div>

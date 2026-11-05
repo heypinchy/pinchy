@@ -526,4 +526,39 @@ describe("UserDetailSheet — reset with email delivery (#1309)", () => {
       spy.mockRestore();
     }
   });
+
+  it("can't send twice while the email is on its way", async () => {
+    let resolveReset: (r: Response) => void = () => {};
+    const spy = vi.spyOn(global, "fetch");
+    spy.mockClear();
+    spy.mockImplementation((url) =>
+      String(url) === "/api/settings/mail"
+        ? Promise.resolve(
+            jsonResponse({
+              configured: true,
+              config: {
+                host: "h",
+                port: 587,
+                security: "starttls",
+                fromAddress: "p@x.io",
+                hasPassword: false,
+              },
+            })
+          )
+        : new Promise<Response>((r) => (resolveReset = r))
+    );
+    try {
+      const user = userEvent.setup();
+      renderSheet();
+      const button = await screen.findByRole("button", { name: "Email reset link" });
+      await user.click(button);
+      expect(screen.getByRole("button", { name: "Sending..." })).toBeDisabled();
+      resolveReset(jsonResponse({ token: "rt", emailDelivery: { sent: true } }));
+      expect(await screen.findByRole("status")).toHaveTextContent(
+        "Reset link sent to max@example.com."
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
