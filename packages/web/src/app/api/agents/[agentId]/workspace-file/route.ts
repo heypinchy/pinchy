@@ -216,8 +216,8 @@ function sourceAccessAuditEntry(args: {
       // this flag is what lets an analyst count views rather than chunks.
       ...(args.partial !== undefined ? { partial: args.partial } : {}),
       // A 304: the reader looked at the copy their browser already held, after
-      // the access check allowed it. `partial` still says whether a chunk was
-      // asked for, so a viewer re-reading in ranges counts as one view.
+      // the access check allowed it. `partial` says whether a range would have
+      // been served, so a viewer re-reading in ranges counts as one view.
       ...(args.revalidated ? { revalidated: true } : {}),
     },
   };

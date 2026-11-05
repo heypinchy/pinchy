@@ -67,9 +67,11 @@ export type DeleteDetail = { name: string; [key: string]: unknown };
  * than chunks.
  *
  * `revalidated` marks a 304: the browser reused the copy it held, after the
- * access check allowed it. No bytes left; `partial` still says whether it
- * was a range request, so a chunked re-read counts as one view.
- * `representation` says which form of the document was served.
+ * access check allowed it. No bytes left; `partial` says whether a range of
+ * the document would have been served (a Range under If-Range, or one past
+ * the end, would not), so a chunked re-read counts as one view.
+ * `representation` says which form of the document was asked for and
+ * checked — on a 304, nothing was sent.
  */
 export type SourceAccessDetail = {
   agent: EntityRef;

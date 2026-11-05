@@ -638,8 +638,12 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
     expect(corrected.length).toBe(PDF_BYTES.length);
     // Let ctime's clock tick so the rewrite is observably later.
     await new Promise((r) => setTimeout(r, 20));
+    const ctimeBefore = statSync(pdfPath).ctimeMs;
     writeFileSync(pdfPath, corrected);
     utimesSync(pdfPath, mtime, mtime);
+    // Precondition, not the claim: on a filesystem whose ctime is coarser than
+    // the wait above this fails here, plainly, instead of as a 304.
+    expect(statSync(pdfPath).ctimeMs).not.toBe(ctimeBefore);
     const res = await callGET("agent-1", pdfPath, { "if-none-match": etag });
 
     expect(res.status).toBe(200);
