@@ -1,10 +1,14 @@
-// audit-exempt: password reset generates a token but does not change credentials directly
+// audit-exempt: creating a reset token changes no credentials; emailing it is audited as mail.sent by deliverLinkEmail
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { createInvite } from "@/lib/invites";
+import { parseOptionalRequestBody } from "@/lib/api-validation";
+import { resetPasswordSchema } from "@/lib/schemas/users";
+import type { EmailDelivery } from "@/lib/schemas/system-mail";
+import { deliverLinkEmail } from "@/lib/system-mail/deliver";
 
 export async function POST(
   request: NextRequest,
@@ -13,6 +17,11 @@ export async function POST(
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
   const session = sessionOrError;
+
+  // Optional body: the route predates `sendEmail` (#1309), and a client that
+  // sends nothing still gets just the link.
+  const parsed = await parseOptionalRequestBody(resetPasswordSchema, request);
+  if ("error" in parsed) return parsed.error;
 
   const { userId } = await params;
 
@@ -31,5 +40,25 @@ export async function POST(
     createdBy: session.user.id,
   });
 
-  return NextResponse.json({ token: invite.token }, { status: 201 });
+  // The token exists from here on; a failed send still returns it.
+  let emailDelivery: EmailDelivery | undefined;
+  if (parsed.data.sendEmail && user.email) {
+    emailDelivery = await deliverLinkEmail({
+      request,
+      kind: "reset",
+      to: user.email,
+      token: invite.token,
+      expiresAt: invite.expiresAt,
+      inviteId: invite.id,
+      actor: { id: session.user.id, name: session.user.name, email: session.user.email },
+    }).catch((err: unknown): EmailDelivery => {
+      console.error("[reset] email delivery crashed:", err);
+      return { sent: false, error: "Something went wrong sending the email." };
+    });
+  }
+
+  return NextResponse.json(
+    emailDelivery ? { token: invite.token, emailDelivery } : { token: invite.token },
+    { status: 201 }
+  );
 }

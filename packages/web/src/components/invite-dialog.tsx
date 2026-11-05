@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { buildInviteUrl } from "@/lib/invite-url";
-import { apiPost, errorMessage } from "@/lib/api-client";
+import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
+import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
 import { inviteUserSchema, type InviteUserInput } from "@/lib/schemas/users";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -59,6 +60,11 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
   const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  // With a system mailer (#1309) the dialog emails the invitation; the link
+  // is still shown either way, so copying it always works.
+  const [mailConfigured, setMailConfigured] = useState(false);
+  const [emailDelivery, setEmailDelivery] = useState<EmailDelivery | null>(null);
+  const [invitedEmail, setInvitedEmail] = useState<string | null>(null);
 
   const form = useForm<InviteFormValues>({
     resolver: zodResolver(inviteSchema),
@@ -77,6 +83,8 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
       form.reset();
       setInviteLink(null);
       setError(null);
+      setEmailDelivery(null);
+      setInvitedEmail(null);
       setSelectedGroupIds([]);
     }
   }
@@ -95,6 +103,14 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
   }, [open]);
 
   useEffect(() => {
+    if (!open) return;
+    apiGet<SystemMailStatus>("/api/settings/mail")
+      .then((s) => setMailConfigured(s.configured === true))
+      // Unknown means "don't promise an email": the link path always works.
+      .catch(() => setMailConfigured(false));
+  }, [open]);
+
+  useEffect(() => {
     if (!open || !isEnterprise) return;
     fetch("/api/groups")
       .then((r) => r.json())
@@ -106,12 +122,18 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     setError(null);
     setCreating(true);
     try {
-      const data = await apiPost<{ token: string }, InviteUserInput>("/api/users/invite", {
-        email: values.email,
-        role: values.role,
-        ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
-      });
+      const data = await apiPost<{ token: string; emailDelivery?: EmailDelivery }, InviteUserInput>(
+        "/api/users/invite",
+        {
+          email: values.email,
+          role: values.role,
+          ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
+          ...(mailConfigured ? { sendEmail: true } : {}),
+        }
+      );
       setInviteLink(buildInviteUrl(window.location.origin, data.token));
+      setEmailDelivery(data.emailDelivery ?? null);
+      setInvitedEmail(values.email);
     } catch (e) {
       // Seat-cap 403s carry an actionable message beside the terse headline
       // (quote path, § 5); ApiError.message already joins the two.
@@ -164,6 +186,15 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
 
         {inviteLink ? (
           <div className="space-y-4">
+            {emailDelivery?.sent === true && (
+              <p className="text-sm">Invitation sent to {invitedEmail}.</p>
+            )}
+            {emailDelivery?.sent === false && (
+              <p role="alert" className="text-sm text-destructive">
+                We couldn&apos;t send the email ({emailDelivery.error}). Copy the link below and
+                send it yourself.
+              </p>
+            )}
             <p className="text-sm font-medium">Invite link created:</p>
             <p className="text-sm break-all bg-muted p-2 rounded">{inviteLink}</p>
             {canShare ? (
@@ -239,7 +270,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
               )}
               {error && <p className="text-destructive text-sm">{error}</p>}
               <Button type="submit" disabled={creating}>
-                Create Invite
+                {mailConfigured ? "Send invitation" : "Create Invite"}
               </Button>
             </form>
           </Form>

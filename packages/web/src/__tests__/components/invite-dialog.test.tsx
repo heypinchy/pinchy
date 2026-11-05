@@ -23,6 +23,7 @@ function mockFetchForInvite(
     groups?: { id: string; name: string }[];
     maxUsers?: number;
     seatsUsed?: number;
+    mailConfigured?: boolean;
   }
 ) {
   const enterprise = options?.enterprise ?? false;
@@ -36,6 +37,24 @@ function mockFetchForInvite(
     }
     if (urlStr.includes("/api/groups")) {
       return Promise.resolve(jsonResponse(groups));
+    }
+    if (urlStr.includes("/api/settings/mail")) {
+      return Promise.resolve(
+        jsonResponse(
+          options?.mailConfigured
+            ? {
+                configured: true,
+                config: {
+                  host: "smtp.example.com",
+                  port: 587,
+                  security: "starttls",
+                  fromAddress: "pinchy@example.com",
+                  hasPassword: true,
+                },
+              }
+            : { configured: false }
+        )
+      );
     }
     return Promise.resolve(inviteResponse);
   };
@@ -482,5 +501,66 @@ describe("InviteDialog", () => {
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toHaveValue("");
     expect(screen.getByRole("button", { name: "Create Invite" })).toBeInTheDocument();
+  });
+});
+
+describe("InviteDialog — with email delivery (#1309)", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  afterEach(() => fetchSpy.mockRestore());
+
+  function setup(inviteResponse: Response) {
+    fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockImplementation(mockFetchForInvite(inviteResponse, { mailConfigured: true }));
+  }
+
+  it("makes Send invitation the action and asks the server to email it", async () => {
+    setup(jsonResponse({ token: "tok", emailDelivery: { sent: true } }));
+    const user = userEvent.setup();
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Email"), "anna@example.com");
+    await user.click(await screen.findByRole("button", { name: "Send invitation" }));
+
+    await waitFor(() =>
+      expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "anna@example.com", role: "member", sendEmail: true }),
+      })
+    );
+  });
+
+  it("confirms the email and still shows the link to copy", async () => {
+    setup(jsonResponse({ token: "tok", emailDelivery: { sent: true } }));
+    const user = userEvent.setup();
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Email"), "anna@example.com");
+    await user.click(await screen.findByRole("button", { name: "Send invitation" }));
+
+    expect(await screen.findByText("Invitation sent to anna@example.com.")).toBeInTheDocument();
+    expect(screen.getByText("http://localhost:7777/invite/tok")).toBeInTheDocument();
+  });
+
+  it("shows the link with an inline error when the send failed — the invite is not lost", async () => {
+    setup(
+      jsonResponse({
+        token: "tok",
+        emailDelivery: { sent: false, error: "Connection refused — check the host and port" },
+      })
+    );
+    const user = userEvent.setup();
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Email"), "anna@example.com");
+    await user.click(await screen.findByRole("button", { name: "Send invitation" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("We couldn't send the email");
+    expect(alert).toHaveTextContent("Connection refused — check the host and port");
+    expect(alert).toHaveTextContent("Copy the link below");
+    expect(screen.getByText("http://localhost:7777/invite/tok")).toBeInTheDocument();
   });
 });

@@ -418,7 +418,13 @@ describe("UserDetailSheet", () => {
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
     try {
-      vi.spyOn(global, "fetch").mockResolvedValueOnce(jsonResponse({ token: "reset-token-xyz" }));
+      // URL-routed rather than a single queued answer: the sheet also asks
+      // whether email delivery is on when it opens (#1309).
+      vi.spyOn(global, "fetch").mockImplementation(async (url) =>
+        String(url) === "/api/settings/mail"
+          ? jsonResponse({ configured: false })
+          : jsonResponse({ token: "reset-token-xyz" })
+      );
 
       render(
         <UserDetailSheet
@@ -447,6 +453,77 @@ describe("UserDetailSheet", () => {
       // In a `finally` so a failing assertion above still restores the spy —
       // otherwise one red test leaves it in place for the rest of the file.
       writeText.mockRestore();
+    }
+  });
+});
+
+describe("UserDetailSheet — reset with email delivery (#1309)", () => {
+  function mockFetch(resetResponse: Response) {
+    // mockClear: an earlier test in this file spies on fetch without restoring
+    // it, so the same spy would otherwise still carry that test's calls.
+    const spy = vi.spyOn(global, "fetch");
+    spy.mockClear();
+    return spy.mockImplementation(async (url) =>
+      String(url) === "/api/settings/mail"
+        ? jsonResponse({
+            configured: true,
+            config: {
+              host: "smtp.example.com",
+              port: 587,
+              security: "starttls",
+              fromAddress: "pinchy@example.com",
+              hasPassword: true,
+            },
+          })
+        : resetResponse
+    );
+  }
+
+  function renderSheet() {
+    if (mockUser.kind !== "user") throw new Error("fixture must be a user");
+    render(
+      <UserDetailSheet
+        user={mockUser}
+        allGroups={allGroups}
+        isEnterprise={true}
+        currentUserId="admin-1"
+        open={true}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+      />
+    );
+  }
+
+  it("emails the reset link and still shows it", async () => {
+    const spy = mockFetch(jsonResponse({ token: "rt", emailDelivery: { sent: true } }));
+    try {
+      const user = userEvent.setup();
+      renderSheet();
+      await user.click(await screen.findByRole("button", { name: "Email reset link" }));
+
+      expect(await screen.findByText("Reset link sent to max@example.com.")).toBeInTheDocument();
+      expect(screen.getByText(/\/invite\/rt/)).toBeInTheDocument();
+      const call = spy.mock.calls.find(([u]) => String(u) === "/api/users/u1/reset");
+      expect(JSON.parse(String((call?.[1] as RequestInit).body))).toEqual({ sendEmail: true });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("shows the link with an inline error when the send failed", async () => {
+    const spy = mockFetch(
+      jsonResponse({ token: "rt", emailDelivery: { sent: false, error: "Connection refused" } })
+    );
+    try {
+      const user = userEvent.setup();
+      renderSheet();
+      await user.click(await screen.findByRole("button", { name: "Email reset link" }));
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("We couldn't send the email (Connection refused)");
+      expect(screen.getByText(/\/invite\/rt/)).toBeInTheDocument();
+    } finally {
+      spy.mockRestore();
     }
   });
 });

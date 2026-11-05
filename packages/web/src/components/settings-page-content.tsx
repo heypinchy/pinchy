@@ -21,6 +21,7 @@ import { SettingsSecurity } from "@/components/settings-security";
 import { TimezoneSettings } from "@/components/timezone-settings";
 import { KnowledgeIndexScheduleSettings } from "@/components/knowledge-index-schedule-settings";
 import { MemberAccessSettings } from "@/components/member-access-settings";
+import { EmailDeliverySettings } from "@/components/email-delivery-settings";
 import { SecretsProvenanceCard } from "@/components/secrets-provenance-card";
 import { SettingsSupport } from "@/components/settings-support";
 import { useIntegrationHealth } from "@/hooks/use-integration-health";
@@ -352,6 +353,7 @@ export function SettingsPageContent({
                   <TimezoneSettings onSaved={() => setTimezoneVersion((v) => v + 1)} />
                   <KnowledgeIndexScheduleSettings refreshKey={timezoneVersion} />
                   <MemberAccessSettings />
+                  <EmailDeliverySettings />
                 </div>
               </TabsContent>
             )}

@@ -236,7 +236,11 @@ export type AuditEventType =
   | "budget.updated"
   | "budget.deleted"
   | "budget.threshold_reached"
-  | "budget.exceeded";
+  | "budget.exceeded"
+  // The system mailer (#1309) tried to send an email on an admin's behalf: an
+  // invitation, a password-reset link, or a test. One row per attempt,
+  // outcome success/failure; the recipient only ever as redactEmail().
+  | "mail.sent";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -1022,6 +1026,14 @@ export type AuditLogEntry =
         // Files refused because their path no longer led to a regular file in the folder (a swapped link); also in `failed`.
         refusedFiles?: number;
         reason?: string;
+      };
+    })
+  | (AuditLogBase & {
+      eventType: "mail.sent";
+      detail: RedactedEmail & {
+        purpose: "invite" | "password_reset" | "test";
+        /** The invite (or reset token) the email carried a link to. */
+        invite?: { id: string };
       };
     })
   | (AuditLogBase & {

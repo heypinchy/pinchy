@@ -95,6 +95,10 @@ vi.mock("@/components/knowledge-index-schedule-settings", () => ({
   ),
 }));
 
+vi.mock("@/components/email-delivery-settings", () => ({
+  EmailDeliverySettings: () => <div data-testid="mock-email-delivery-settings">Email delivery</div>,
+}));
+
 vi.mock("@/components/member-access-settings", () => ({
   MemberAccessSettings: () => <div data-testid="mock-member-access-settings">Member access</div>,
 }));
@@ -264,6 +268,15 @@ describe("Settings Page", () => {
 
       expect(screen.getByTestId("mock-member-access-settings")).toBeInTheDocument();
       expect(screen.getByTestId("mock-timezone-settings")).toBeInTheDocument();
+    });
+
+    it("puts Email delivery in the Organization tab (#1309)", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
+      await userEvent.click(await screen.findByRole("tab", { name: "Organization" }));
+
+      expect(screen.getByTestId("mock-email-delivery-settings")).toBeInTheDocument();
     });
 
     it("should render AI Provider, Users, Context, and Profile tabs", async () => {
@@ -578,6 +591,7 @@ describe("Settings Page", () => {
       render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       expect(screen.queryByTestId("mock-member-access-settings")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("mock-email-delivery-settings")).not.toBeInTheDocument();
     });
 
     it("should show Context and Profile tabs but not Provider or Users", () => {
