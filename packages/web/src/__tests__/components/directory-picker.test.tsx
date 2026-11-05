@@ -70,6 +70,29 @@ describe("DirectoryPicker", () => {
     expect(onChange).toHaveBeenCalledWith(["/data/support/"]);
   });
 
+  // The name is what an admin recognises; the mount path is what tells two
+  // same-named shares apart. Name as the label, path as the description, so a
+  // screen reader hears both without the path drowning the name (#1305).
+  it("names each checkbox after the folder and describes it with its path", () => {
+    render(<DirectoryPicker directories={directories} selected={[]} onChange={vi.fn()} />);
+    const checkbox = screen.getByRole("checkbox", { name: "hr-docs" });
+    expect(checkbox).toHaveAccessibleDescription("/data/hr-docs");
+  });
+
+  it("groups the folders under an accessible name and says how many are selected", () => {
+    render(
+      <DirectoryPicker
+        directories={directories}
+        selected={["/data/hr-docs/"]}
+        onChange={vi.fn()}
+        label="Allowed Directories"
+      />
+    );
+    expect(screen.getByRole("group", { name: "Allowed Directories" })).toBeInTheDocument();
+    // Counted by directory, not by stored spelling: a trailing-slash grant is one.
+    expect(screen.getByText("1 of 3 selected")).toBeInTheDocument();
+  });
+
   it("should show empty state message when no directories available", () => {
     render(<DirectoryPicker directories={[]} selected={[]} onChange={vi.fn()} />);
     expect(screen.getByText(/mount directories/i)).toBeInTheDocument();

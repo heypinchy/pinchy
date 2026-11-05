@@ -5,7 +5,11 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
 import { flushPendingRenders } from "@/test-helpers/react";
-import { KnowledgeReindexSection, formatElapsed } from "@/components/knowledge-reindex-section";
+import {
+  KnowledgeReindexSection,
+  formatElapsed,
+  formatWhen,
+} from "@/components/knowledge-reindex-section";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
 
@@ -323,11 +327,79 @@ describe("KnowledgeReindexSection", () => {
     });
   });
 
-  it("warns that a reindex uses the saved grants while directory changes are unsaved", async () => {
-    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} hasUnsavedPathChanges />);
+  // The badge answers "is this healthy?" before anyone reads a number (#1305).
+  // It sits in a polite live region so a screen reader hears it change — and
+  // only the badge and its one sentence do: the per-poll progress numbers
+  // would make the region talk every three seconds.
+  describe("status at a glance", () => {
+    const statusText = async () => (await screen.findByRole("status")).textContent ?? "";
 
-    await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled());
-    expect(screen.getByText(/saved grants/i)).toBeInTheDocument();
+    it("reads 'No directories' when none is granted", async () => {
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={0} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/no directories/i));
+    });
+
+    it("reads 'Not indexed' before any run", async () => {
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/not indexed/i));
+    });
+
+    it("reads 'Indexing' while a run is in flight, without the moving numbers", async () => {
+      mockGet.mockResolvedValue({ job: job({ status: "running", processed: 3, total: 10 }) });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/^indexing/i));
+      expect(await statusText()).not.toMatch(/3 of 10/);
+    });
+
+    it("reads 'Indexed' after a run that left nothing to look at", async () => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/^indexed/i));
+      expect(await statusText()).toMatch(/last indexed/i);
+    });
+
+    it.each([
+      ["a document failed", { unsearchable: 0, failed: 1 }, 0],
+      ["a document has no searchable text", { unsearchable: 3, failed: 0 }, 0],
+      ["a folder couldn't be read", { unsearchable: 0, failed: 0 }, 1],
+    ])("reads 'Needs attention' when %s", async (_label, problems, unavailableFolders) => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          unavailableFolders,
+          counts: { indexed: 2, skipped: 11, removed: 0, ...problems },
+        }),
+      });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/needs attention/i));
+    });
+
+    it("reads 'Failed' after a failed run", async () => {
+      mockGet.mockResolvedValue({
+        job: job({ status: "failed", error: "Embedding model crashed" }),
+      });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/^failed/i));
+    });
+  });
+
+  it("gives the progress bar an accessible name", async () => {
+    mockGet.mockResolvedValue({ job: job({ status: "running", processed: 3, total: 10 }) });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    expect(await screen.findByRole("progressbar", { name: /indexing progress/i })).toBeVisible();
+  });
+
+  it("marks the trigger busy while a run is in flight", async () => {
+    mockGet.mockResolvedValue({ job: job({ status: "running", processed: 3, total: 10 }) });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /reindex/i })).toHaveAttribute("aria-busy", "true")
+    );
   });
 
   it("ignores a slow status read that resolves after a reindex was triggered", async () => {
@@ -884,6 +956,35 @@ describe("KnowledgeReindexSection", () => {
 
       await waitFor(() => expect(screen.getByText(/^Last indexed /)).toBeInTheDocument());
       expect(screen.queryByText(/automatically/)).not.toBeInTheDocument();
+    });
+  });
+
+  // "Last indexed 5.11.2026, 18:15:10" asked the admin to work out that this
+  // was an hour ago. Today and yesterday are said as words; seconds are noise.
+  describe("formatWhen", () => {
+    const now = new Date(2026, 10, 5, 20, 0); // local time, 5 Nov 2026, 20:00
+    const clock = (d: Date) =>
+      d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+    it("says today, with the time to the minute", () => {
+      const at = new Date(2026, 10, 5, 18, 15, 10);
+      expect(formatWhen(at.toISOString(), now)).toBe(`today at ${clock(at)}`);
+    });
+
+    it("says yesterday across midnight", () => {
+      const at = new Date(2026, 10, 4, 23, 50);
+      expect(formatWhen(at.toISOString(), now)).toBe(`yesterday at ${clock(at)}`);
+    });
+
+    it("names the date for anything older", () => {
+      const at = new Date(2026, 9, 28, 9, 5);
+      const date = at.toLocaleDateString(undefined, { dateStyle: "medium" });
+      expect(formatWhen(at.toISOString(), now)).toBe(`on ${date} at ${clock(at)}`);
+    });
+
+    it("falls back to 'just now' for a missing or unreadable timestamp", () => {
+      expect(formatWhen(null, now)).toBe("just now");
+      expect(formatWhen("not a date", now)).toBe("just now");
     });
   });
 

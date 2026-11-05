@@ -4,6 +4,8 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { DirectoryPicker } from "@/components/directory-picker";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { CircleAlert } from "lucide-react";
 import { sameDirectorySet } from "@/lib/directory-path";
 import {
   getToolsByCategory,
@@ -338,34 +340,44 @@ export function AgentSettingsPermissions({
         </section>
       )}
 
-      {/* Knowledge Base section */}
-      <section className="space-y-4">
+      {/* Knowledge Base section: what the agent may read, then how healthy
+          the index over it is (#1305). */}
+      <section className="space-y-6">
         <h3 className="text-lg font-semibold">Knowledge Base</h3>
 
-        {/* Directory picker — always shown when directories are available */}
-        {directories.length > 0 && (
-          <div className="space-y-2">
+        <div className="space-y-3">
+          <div className="space-y-1">
             <h4 className="text-sm font-medium">Allowed Directories</h4>
             <p className="text-sm text-muted-foreground">
               Agents can read these directories. They can never write to them.
             </p>
-            <DirectoryPicker
-              directories={directories}
-              selected={allowedPaths}
-              onChange={handlePathsChange}
-            />
           </div>
-        )}
+          <DirectoryPicker
+            directories={directories}
+            selected={allowedPaths}
+            onChange={handlePathsChange}
+            label="Allowed Directories"
+          />
+          {/* Beside the checkboxes that made the change, not in the index
+              block below: it is a fact about this form, and only an admin has
+              a Reindex button for it to apply to. */}
+          {hasUnsavedPathChanges && (
+            <Alert className="border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+              <CircleAlert aria-hidden="true" />
+              <AlertDescription className="text-current">
+                {isAdmin
+                  ? "These changes aren't saved yet. Until you save, the agent and Reindex now keep using the saved directories."
+                  : "These changes aren't saved yet. Until you save, the agent keeps using the saved directories."}
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
 
         {/* Admin-only reindex trigger + progress. The async worker/queue is
             server-side (#714); this is the surface to start a run and watch it.
             Gated on isAdmin because the route is admin-only (withAdmin). */}
         {isAdmin && (
-          <KnowledgeReindexSection
-            agentId={agent.id}
-            allowedPathCount={savedAllowedPaths.length}
-            hasUnsavedPathChanges={hasUnsavedPathChanges}
-          />
+          <KnowledgeReindexSection agentId={agent.id} allowedPathCount={savedAllowedPaths.length} />
         )}
 
         {/* Explicit KB tool toggles (safe, non-integration) — empty after pinchy_ls/pinchy_read became implicit */}

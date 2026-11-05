@@ -3,9 +3,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import {
+  CalendarClock,
+  Circle,
+  CircleCheck,
+  CircleX,
+  LoaderCircle,
+  RefreshCw,
+  TriangleAlert,
+} from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { KnowledgeUnsearchableList } from "@/components/knowledge-unsearchable-list";
 import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import {
@@ -70,12 +81,6 @@ export interface KnowledgeReindexSectionProps {
    * instead of letting the admin click into an honest-but-confusing no-op.
    */
   allowedPathCount: number;
-  /**
-   * True while the directory picker holds selections that differ from the
-   * saved grants. A reindex only ever sees the SAVED grants, so the section
-   * says so instead of letting the admin believe unsaved checkmarks count.
-   */
-  hasUnsavedPathChanges?: boolean;
   /** Poll cadence while a run is in flight. Injectable so tests need not wait seconds. */
   pollIntervalMs?: number;
 }
@@ -87,12 +92,18 @@ export interface KnowledgeReindexSectionProps {
  * reading logs.
  *
  * Belongs under the "Allowed Directories" picker because a reindex operates on
- * exactly the folders granted there.
+ * exactly the folders granted there. The picker owns the "unsaved changes"
+ * notice: a reindex reads the SAVED grants, and the notice belongs beside the
+ * checkboxes that made the change (#1305).
+ *
+ * Layout (#1305): a status line an admin can read at a glance — a badge that
+ * says healthy / needs attention / failed / indexing, and one sentence — with
+ * the trigger beside it; the run's detail below; the nightly schedule as a
+ * footer, because it is about the future rather than the last run.
  */
 export function KnowledgeReindexSection({
   agentId,
   allowedPathCount,
-  hasUnsavedPathChanges = false,
   pollIntervalMs = 3000,
 }: KnowledgeReindexSectionProps) {
   const [job, setJob] = useState<ReindexJob | null>(null);
@@ -204,58 +215,175 @@ export function KnowledgeReindexSection({
 
   const triggerDisabled = allowedPathCount === 0 || active || submitting;
 
+  const status = describeStatus(allowedPathCount, job, active);
+
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-4">
-        <h4 className="text-sm font-medium">Index</h4>
-        <Button size="sm" variant="outline" onClick={handleReindex} disabled={triggerDisabled}>
-          {active ? "Reindexing…" : "Reindex now"}
-        </Button>
+      <h4 className="text-sm font-medium">Index</h4>
+      <div className="rounded-lg border">
+        <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+          {/* Badge + one sentence, and nothing that changes per poll: a live
+              region that re-reads "Indexing 41 of 300" every three seconds is
+              noise. The moving numbers live below, outside it. */}
+          <div
+            role="status"
+            className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+          >
+            <IndexStatusBadge tone={status.tone} label={status.label} />
+            <span>{status.headline}</span>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleReindex}
+            disabled={triggerDisabled}
+            aria-busy={active || submitting}
+            className="w-full shrink-0 sm:w-auto"
+          >
+            <RefreshCw
+              className={active ? "animate-spin motion-reduce:animate-none" : undefined}
+              aria-hidden="true"
+            />
+            {active ? "Reindexing…" : "Reindex now"}
+          </Button>
+        </div>
+
+        {allowedPathCount > 0 && (
+          <div className="space-y-3 px-4 pb-4 empty:hidden">
+            {active && job ? (
+              <RunningState job={job} now={now} samples={samples} />
+            ) : job?.status === "succeeded" ? (
+              <SucceededState job={job} />
+            ) : job?.status === "failed" ? (
+              <FailedState job={job} />
+            ) : null}
+
+            {/* Which documents the counts above mean by "unsearchable" (#935).
+                Hidden while a run is in flight — the list is about to change —
+                and hidden without a grant, where there is nothing to report on.
+                Documents that exist are listed in every other state, since the
+                index is corpus-wide and another agent's run can have filled
+                this scope.
+
+                A zero, though, is only announced after a SUCCEEDED run. Before
+                any run, "every document came back with searchable text" is
+                trivially true of an empty index and would sit under "Not
+                indexed"; after a FAILED one it would sit under "Last reindex
+                failed" and read as an all-clear about a run that stopped early.
+                Both are reassurances the evidence doesn't support. */}
+            {!active && (
+              <KnowledgeUnsearchableList
+                agentId={agentId}
+                announceNone={job?.status === "succeeded"}
+                reloadKey={`${allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
+              />
+            )}
+          </div>
+        )}
+
+        {allowedPathCount > 0 && schedule && (
+          <div className="flex items-start gap-2 border-t bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+            <CalendarClock className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <ScheduleNote schedule={schedule} />
+          </div>
+        )}
       </div>
-
-      {hasUnsavedPathChanges && (
-        <p className="text-sm text-muted-foreground">
-          You have unsaved directory changes — a reindex uses the saved grants. Save to include
-          them.
-        </p>
-      )}
-
-      {allowedPathCount === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          Grant at least one directory to enable indexing.
-        </p>
-      ) : active && job ? (
-        <RunningState job={job} now={now} samples={samples} />
-      ) : job?.status === "succeeded" ? (
-        <SucceededState job={job} />
-      ) : job?.status === "failed" ? (
-        <FailedState job={job} />
-      ) : (
-        <p className="text-sm text-muted-foreground">Not yet indexed.</p>
-      )}
-
-      {allowedPathCount > 0 && schedule && <ScheduleNote schedule={schedule} />}
-
-      {/* Which documents the counts above mean by "unsearchable" (#935). Hidden
-          while a run is in flight — the list is about to change — and hidden
-          without a grant, where there is nothing to report on. Documents that
-          exist are listed in every other state, since the index is corpus-wide
-          and another agent's run can have filled this scope.
-
-          A zero, though, is only announced after a SUCCEEDED run. Before any
-          run, "every document came back with searchable text" is trivially true
-          of an empty index and would sit under "Not yet indexed"; after a
-          FAILED one it would sit under "Last reindex failed" and read as an
-          all-clear about a run that stopped early. Both are reassurances the
-          evidence doesn't support. */}
-      {allowedPathCount > 0 && !active && (
-        <KnowledgeUnsearchableList
-          agentId={agentId}
-          announceNone={job?.status === "succeeded"}
-          reloadKey={`${allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
-        />
-      )}
     </div>
+  );
+}
+
+type StatusTone = "neutral" | "busy" | "good" | "attention" | "bad";
+
+interface IndexStatus {
+  tone: StatusTone;
+  /** One or two words for the badge. */
+  label: string;
+  /** The sentence beside it. Stable while a run is in flight — see the live region. */
+  headline: string;
+}
+
+/**
+ * The section's answer to "is this index healthy?", before any number is read.
+ *
+ * "Needs attention" is a run that finished but left something an agent can't
+ * answer from: a document that failed or holds no searchable text, or a
+ * folder it couldn't read. Those are exactly the counters the summary below
+ * colours, so the badge and the detail never disagree.
+ */
+function describeStatus(
+  allowedPathCount: number,
+  job: ReindexJob | null,
+  active: boolean
+): IndexStatus {
+  if (allowedPathCount === 0) {
+    return {
+      tone: "neutral",
+      label: "No directories",
+      headline: "Grant at least one directory above and save to build this agent's index.",
+    };
+  }
+  if (active) {
+    return {
+      tone: "busy",
+      label: "Indexing",
+      headline: "Reading the directories. The run continues if you leave this page.",
+    };
+  }
+  if (job?.status === "failed") {
+    return {
+      tone: "bad",
+      label: "Failed",
+      headline: `Last reindex failed ${formatWhen(job.finishedAt)}.`,
+    };
+  }
+  if (job?.status === "succeeded") {
+    // Anything an admin did not start, Pinchy did: the nightly run, or the one
+    // it starts itself after an update changed how documents are converted.
+    const how = job.trigger !== undefined && job.trigger !== "manual" ? "automatically " : "";
+    const headline = `Last indexed ${how}${formatWhen(job.finishedAt)}.`;
+    const needsAttention =
+      (job.counts?.failed ?? 0) > 0 ||
+      (job.counts?.unsearchable ?? 0) > 0 ||
+      (job.unavailableFolders ?? 0) > 0;
+    return needsAttention
+      ? { tone: "attention", label: "Needs attention", headline }
+      : { tone: "good", label: "Indexed", headline };
+  }
+  return {
+    tone: "neutral",
+    label: "Not indexed",
+    headline: "Nothing is searchable yet. Reindex now builds the index.",
+  };
+}
+
+// Same palette as StatusBadge (status-badge.tsx), so "healthy" looks the same
+// here as on the Users and Groups pages. Each pair clears 4.5:1.
+const TONE_CLASSES: Record<StatusTone, string> = {
+  neutral: "bg-muted text-muted-foreground",
+  busy: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+  good: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+  attention: "bg-amber-100 text-amber-900 dark:bg-amber-900 dark:text-amber-100",
+  bad: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+};
+
+const TONE_ICONS: Record<StatusTone, typeof Circle> = {
+  neutral: Circle,
+  busy: LoaderCircle,
+  good: CircleCheck,
+  attention: TriangleAlert,
+  bad: CircleX,
+};
+
+function IndexStatusBadge({ tone, label }: { tone: StatusTone; label: string }) {
+  const Icon = TONE_ICONS[tone];
+  return (
+    <Badge variant="outline" className={`border-transparent ${TONE_CLASSES[tone]}`}>
+      <Icon
+        className={tone === "busy" ? "animate-spin motion-reduce:animate-none" : undefined}
+        aria-hidden="true"
+      />
+      {label}
+    </Badge>
   );
 }
 
@@ -290,7 +418,7 @@ function RunningState({
   if (job.total === null) {
     return (
       <div className="space-y-2">
-        <Progress value={0} />
+        <Progress value={0} aria-label="Indexing progress" />
         <p className="text-sm text-muted-foreground">
           Discovering documents…{elapsedSuffix}
           {etaSuffix}
@@ -300,7 +428,7 @@ function RunningState({
   }
   return (
     <div className="space-y-2">
-      <Progress value={progressPct(job)} />
+      <Progress value={progressPct(job)} aria-label="Indexing progress" />
       <p className="text-sm text-muted-foreground">
         Indexing {job.processed} of {job.total} documents…{elapsedSuffix}
         {etaSuffix}
@@ -369,7 +497,7 @@ function ScheduleNote({ schedule }: { schedule: ReindexSchedule }) {
   } else {
     text = `New and changed documents are picked up every night at ${nightlyTimeText(schedule)}.${nextRunText(schedule.nextRun)}`;
   }
-  return <p className="text-sm text-muted-foreground">{text}</p>;
+  return <p>{text}</p>;
 }
 
 const CLOCK: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
@@ -452,36 +580,38 @@ function UnavailableFoldersNote({ count }: { count: number }) {
     count === 1
       ? "One folder couldn't be read, so its documents were left as they were. If it lives on a network share, check that it is mounted."
       : `${count} folders couldn't be read, so their documents were left as they were. If they live on a network share, check that it is mounted.`;
-  return <p className="text-sm text-amber-600 dark:text-amber-500">{text}</p>;
+  return (
+    <p className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <span>{text}</span>
+    </p>
+  );
 }
 
 function SucceededState({ job }: { job: ReindexJob }) {
-  // Anything an admin did not start, Pinchy did: the nightly run, or the one
-  // it starts itself after an update changed how documents are converted.
-  const how = job.trigger !== undefined && job.trigger !== "manual" ? "automatically " : "";
+  if (!job.counts && !(job.unavailableFolders ?? 0)) return null;
   return (
-    <div className="space-y-2">
-      <p className="text-sm text-muted-foreground">
-        Last indexed {how}
-        {formatWhen(job.finishedAt)}.
-      </p>
+    <>
       {job.counts && <CountsSummary counts={job.counts} />}
       {(job.unavailableFolders ?? 0) > 0 && (
         <UnavailableFoldersNote count={job.unavailableFolders!} />
       )}
-    </div>
+    </>
   );
 }
 
 function FailedState({ job }: { job: ReindexJob }) {
+  // The status line already says it failed and when; this says why.
   return (
-    <Alert variant="destructive">
-      <AlertTitle>Last reindex failed</AlertTitle>
-      <AlertDescription className="space-y-2">
-        {job.error && <span>{job.error}</span>}
-        {job.counts && <CountsSummary counts={job.counts} />}
-      </AlertDescription>
-    </Alert>
+    <>
+      {job.error && (
+        <Alert variant="destructive">
+          <CircleX aria-hidden="true" />
+          <AlertDescription>{job.error}</AlertDescription>
+        </Alert>
+      )}
+      {job.counts && <CountsSummary counts={job.counts} />}
+    </>
   );
 }
 
@@ -492,30 +622,41 @@ function FailedState({ job }: { job: ReindexJob }) {
  */
 function CountsSummary({ counts }: { counts: IngestResult }) {
   return (
-    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-      <span className="text-muted-foreground">{counts.indexed} indexed</span>
+    <ul aria-label="Last run" className="flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
+      <li className="text-muted-foreground">{counts.indexed} indexed</li>
       {/* The ingest counter is `skipped`, but every path into it is a file
           whose content hash matched: nothing to do, not something left out. */}
-      <span className="text-muted-foreground">{counts.skipped} unchanged</span>
-      {counts.removed > 0 && (
-        <span className="text-muted-foreground">{counts.removed} removed</span>
-      )}
-      <span
+      <li className="text-muted-foreground">{counts.skipped} unchanged</li>
+      {counts.removed > 0 && <li className="text-muted-foreground">{counts.removed} removed</li>}
+      <li
         className={
-          counts.unsearchable > 0 ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground"
+          counts.unsearchable > 0
+            ? "font-medium text-amber-700 dark:text-amber-400"
+            : "text-muted-foreground"
         }
       >
         {counts.unsearchable} unsearchable
-      </span>
-      <span className={counts.failed > 0 ? "text-destructive" : "text-muted-foreground"}>
+      </li>
+      <li className={counts.failed > 0 ? "font-medium text-destructive" : "text-muted-foreground"}>
         {counts.failed} failed
-      </span>
-    </div>
+      </li>
+    </ul>
   );
 }
 
-function formatWhen(iso: string | null): string {
+/**
+ * When a run finished, as the rest of a sentence: "today at 18:15",
+ * "yesterday at 23:50", "on 28 Oct 2026 at 09:05". Local time, to the minute —
+ * an admin checking the index wants "an hour ago", not "18:15:10" to work it
+ * out from (#1305). `now` is injectable for tests.
+ */
+export function formatWhen(iso: string | null, now: Date = new Date()): string {
   if (!iso) return "just now";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "just now" : d.toLocaleString();
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "just now";
+  const time = at.toLocaleTimeString(undefined, CLOCK);
+  const days = localDaysBetween(at, now);
+  if (days === 0) return `today at ${time}`;
+  if (days === 1) return `yesterday at ${time}`;
+  return `on ${at.toLocaleDateString(undefined, { dateStyle: "medium" })} at ${time}`;
 }
