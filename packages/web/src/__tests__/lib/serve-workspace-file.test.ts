@@ -80,3 +80,19 @@ describe("streamWorkspaceFile refuses to follow a symlink", () => {
     expect((await streamWorkspaceFile(link, "link.pdf")).status).toBe(404);
   });
 });
+
+describe("streamWorkspaceFile caching (#1286)", () => {
+  it("keys its browser cache to the session, so a file cached for one user is not served to the next", async () => {
+    // Artifacts and uploads are per-agent, access-checked files. The browser
+    // keys its cache by URL; Vary: Cookie makes a different session a miss,
+    // so the request reaches the access check again.
+    const path = join(tmpRoot, "notes.txt");
+    writeFileSync(path, "hello");
+
+    const res = await streamWorkspaceFile(path, "notes.txt");
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(res.headers.get("vary")).toBe("Cookie");
+  });
+});

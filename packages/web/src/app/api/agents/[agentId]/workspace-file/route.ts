@@ -43,6 +43,7 @@ import {
   type VerifiedSource,
 } from "@/lib/knowledge/verified-source";
 import type { AgentPluginConfig } from "@/db/schema";
+import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
 
 type Params = { params: Promise<{ agentId: string }> };
 
@@ -626,7 +627,9 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       // document before rendering anything.
       "accept-ranges": "bytes",
       ...(isPartial ? { "content-range": `bytes ${start}-${end}/${info.size}` } : {}),
-      "cache-control": "private, max-age=3600",
+      // Keyed to the session: a cached document must not reach the next user
+      // on the same browser past the access check above (#1286).
+      ...sessionScopedCacheHeaders(3600),
       // nosniff so the browser can never override our extension-derived
       // Content-Type via its own MIME sniffing — the anti-XSS control that
       // makes the inline/attachment split above meaningful.
