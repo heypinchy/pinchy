@@ -29,25 +29,35 @@ import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
 const webSrcDir = path.resolve(__dirname, "../..");
 const HELPER = path.join(webSrcDir, "lib", "session-scoped-cache.ts");
 const EXCLUDED_DIR_NAMES = new Set(["__tests__", "node_modules", "test-helpers"]);
-// Any non-zero max-age, s-maxage or stale-* extension, in any position and
-// whether written out or templated (`max-age=${n}`), plus an `expires` header,
-// whether written as a quoted or bare object key or passed to
-// `headers.set("Expires", …)`, and a Last-Modified, which grants a heuristic
-// lifetime. max-age=0 keeps nothing, so it is not a
-// lifetime.
+// Any non-zero max-age or s-maxage, in any position and whether written out or
+// templated (`max-age=${n}`), and the stale-* extensions, which let the
+// browser serve a stored copy on their own. The hyphen is required so a
+// `maxAge = …` variable is not mistaken for a header. max-age=0 keeps nothing, so it is not
+// a lifetime. Plus an `expires` header: a quoted object key, or the name
+// passed to `headers.set("Expires", …)`. And a Last-Modified, which grants
+// a heuristic lifetime.
 const CACHE_LIFETIME_RES = [
-  /\b(?:s-)?max-?age\s*=\s*(?!0\b)/i,
-  // Serves the stored copy at once and asks only afterwards, so a revoked
-  // reader still gets it on that reuse.
-  /\bstale-(?:while-revalidate|if-error)\s*=\s*(?!0\b)/i,
+  /\b(?:s-maxage|max-age|stale-while-revalidate|stale-if-error)\s*=(?!\s*0\b)/i,
   /["']expires["']\s*[:,]/i,
-  // `Expires` needs no quotes as an object key. Capitalised only: prose says
-  // "the copy expires:" in lowercase.
-  /(?:^|[\s{,])Expires\s*:/,
+  // Route segment config: Next.js then writes s-maxage itself, so no header
+  // literal appears in the source at all.
+  /\bexport\s+const\s+revalidate\s*(?::\s*[\w|\s]+?)?=(?!\s*(?:0|false)\b)/,
+  /\bexport\s+const\s+dynamic\s*=\s*["']force-static["']/,
   // Without Cache-Control, Last-Modified alone lets a browser reuse a
   // response for a fraction of its age without asking (RFC 9111 §4.2.2).
   /["']last-modified["']\s*[:,]/i,
 ];
+// An unquoted `Expires:` key is a valid Headers init too. In a .tsx file the
+// same text is ordinary JSX copy (the license page shows "Expires: <date>"),
+// so there it only counts right after `{` or `,`, where only an object key
+// can stand. Route handlers are .ts, where it counts anywhere.
+const UNQUOTED_EXPIRES_TS = /(?:^|[^\w$.])expires\s*:/i;
+const UNQUOTED_EXPIRES_TSX = /[{,]\s*expires\s*:/i;
+
+function setsCacheLifetime(file: string, line: string): boolean {
+  if (CACHE_LIFETIME_RES.some((re) => re.test(line))) return true;
+  return (file.endsWith(".tsx") ? UNQUOTED_EXPIRES_TSX : UNQUOTED_EXPIRES_TS).test(line);
+}
 
 // Lines that match the pattern but are not an HTTP cache, each with the
 // reason. An entry that no longer matches its file fails, so it cannot
@@ -57,11 +67,6 @@ const NOT_AN_HTTP_CACHE: Array<{ file: string; includes: string; reason: string 
     file: "components/ui/sidebar.tsx",
     includes: "document.cookie",
     reason: "a cookie's own lifetime attribute, not a response the browser caches",
-  },
-  {
-    file: "components/settings-license.tsx",
-    includes: "formatLicenseDate(license.expiresAt)",
-    reason: "the license's expiry date as visible text, not a header",
   },
 ];
 
@@ -79,39 +84,60 @@ function productionSources(dir: string): string[] {
 }
 
 describe("browser cache is scoped to the session (#1286)", () => {
-  it("recognises every way of writing a lifetime, and not what merely looks like one", () => {
-    // A narrowed pattern passes the scan below in silence, so its reach is
-    // pinned here line by line.
-    const lifetimes = [
-      `"cache-control": "private, max-age=3600"`,
-      "`private, max-age=${n}`",
-      `"cache-control": "public, s-maxage=60"`,
-      `"cache-control": "private, max-age=0, stale-while-revalidate=3600"`,
-      `"cache-control": "private, no-cache, stale-if-error=86400"`,
-      `"expires": new Date().toUTCString(),`,
-      `headers.set("Expires", when);`,
-      `headers: { Expires: new Date().toUTCString() },`,
-      `    Expires: later,`,
-      `"last-modified": stat.mtime.toUTCString(),`,
-      `headers.set("Last-Modified", when);`,
-    ];
-    const notLifetimes = [
-      `"cache-control": "private, max-age=0"`,
-      `"cache-control": "private, no-cache"`,
-      `"cache-control": "private, max-age=0, stale-while-revalidate=0"`,
-      "document.cookie = `sidebar=1; path=/; expires=${d}`;",
-      ` * reading the document until the copy expires: the grant was removed`,
-    ];
-    const hits = (line: string) => CACHE_LIFETIME_RES.some((re) => re.test(line));
-    expect(lifetimes.filter((l) => !hits(l))).toEqual([]);
-    expect(notLifetimes.filter(hits)).toEqual([]);
-  });
-
   it("pairs every cache lifetime with Vary: Cookie", () => {
     expect(sessionScopedCacheHeaders(60)).toEqual({
       "cache-control": "private, max-age=60",
       vary: "Cookie",
     });
+  });
+
+  it("refuses a lifetime that is not a positive whole number of seconds", () => {
+    // NaN, a fraction or a negative is not a valid max-age; 0 is valid but
+    // keeps nothing, which `no-store` says plainly. Either way a mistake.
+    for (const bad of [Number.NaN, -1, 0, 1.5, Number.POSITIVE_INFINITY]) {
+      expect(() => sessionScopedCacheHeaders(bad)).toThrow(/positive whole number/);
+    }
+  });
+
+  it("recognises each spelling of a lifetime, and not lookalikes", () => {
+    const route = "app/api/x/route.ts";
+    const page = "components/x.tsx";
+    for (const line of [
+      `headers: { "Cache-Control": "max-age=60, private" }`,
+      "value: `private, max-age=${n}`",
+      `value: "s-maxage=30"`,
+      `headers: { Expires: d.toUTCString() }`,
+      `  Expires: d.toUTCString(),`,
+      `"expires": d.toUTCString()`,
+      `res.headers.set("Expires", d.toUTCString())`,
+      `headers: { "Cache-Control": "private, stale-while-revalidate=60" }`,
+      `value: "stale-if-error=300"`,
+      // Route segment config: Next.js then emits s-maxage itself, so no
+      // header literal appears anywhere in the source.
+      `export const revalidate = 60;`,
+      `export const revalidate: number = 60;`,
+      `export const dynamic = "force-static";`,
+      // A heuristic lifetime (RFC 9111 §4.2.2) when no Cache-Control says otherwise.
+      `"last-modified": stat.mtime.toUTCString(),`,
+      `res.headers.set("Last-Modified", d.toUTCString())`,
+    ]) {
+      expect(setsCacheLifetime(route, line), line).toBe(true);
+    }
+    expect(setsCacheLifetime(page, `<Foo headers={{ Expires: d }} />`)).toBe(true);
+    for (const line of [
+      `const maxAge = 3600;`,
+      `value: "no-cache, max-age=0, must-revalidate"`,
+      `session.expires: 1`,
+      `value: "stale-while-revalidate=0"`,
+      `value: "private, max-age = 0"`,
+      `export const revalidate = 0;`,
+      `export const revalidate = false;`,
+      `export const dynamic = "force-dynamic";`,
+      `revalidatePath("/chat");`,
+    ]) {
+      expect(setsCacheLifetime(route, line), line).toBe(false);
+    }
+    expect(setsCacheLifetime(page, `  Expires: {formatLicenseDate(d)}`)).toBe(false);
   });
 
   it("finds no cache lifetime written outside the helper", () => {
@@ -125,18 +151,18 @@ describe("browser cache is scoped to the session (#1286)", () => {
     const roots = ["../server.ts", "../next.config.ts"].map((f) => path.resolve(webSrcDir, f));
 
     const offenders: string[] = [];
-    const usedExemptions = new Set<string>();
+    const usedExemptions = new Set<(typeof NOT_AN_HTTP_CACHE)[number]>();
     for (const file of [...files, ...roots]) {
       if (file === HELPER) continue;
       const rel = path.relative(webSrcDir, file);
       const lines = readFileSync(file, "utf8").split("\n");
       lines.forEach((line, i) => {
-        if (!CACHE_LIFETIME_RES.some((re) => re.test(line))) return;
+        if (!setsCacheLifetime(file, line)) return;
         const exemption = NOT_AN_HTTP_CACHE.find(
           (e) => e.file === rel && line.includes(e.includes)
         );
         if (exemption) {
-          usedExemptions.add(exemption.file);
+          usedExemptions.add(exemption);
           return;
         }
         offenders.push(`${rel}:${i + 1}: ${line.trim()}`);
@@ -147,7 +173,9 @@ describe("browser cache is scoped to the session (#1286)", () => {
       "Use sessionScopedRevalidateHeaders(etag) from @/lib/session-scoped-cache for access-checked content, or sessionScopedCacheHeaders() if the route is in MAY_SET_A_LIFETIME"
     ).toEqual([]);
     expect(
-      NOT_AN_HTTP_CACHE.map((e) => e.file).filter((f) => !usedExemptions.has(f)),
+      NOT_AN_HTTP_CACHE.filter((e) => !usedExemptions.has(e)).map(
+        (e) => `${e.file}: ${e.includes}`
+      ),
       "stale exemption: it no longer matches a line in its file"
     ).toEqual([]);
   });
