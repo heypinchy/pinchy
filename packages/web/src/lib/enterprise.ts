@@ -2,6 +2,7 @@ import { getSetting } from "@/lib/settings";
 import { validateLicense, type LicenseStatus } from "@/lib/license";
 import { deriveLicenseState, type LicenseState } from "@/lib/license-state";
 import { DEVELOPMENT_PUBLIC_KEY, PRODUCTION_PUBLIC_KEY } from "@/lib/license-keys";
+import { hasFields, processWideCache } from "@/lib/process-wide-cache";
 
 export type { LicenseStatus, LicenseType } from "@/lib/license";
 export type { LicenseState } from "@/lib/license-state";
@@ -22,8 +23,31 @@ export interface LicenseInfo {
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-let cachedStatus: LicenseStatus | null = null;
-let cacheTimestamp = 0;
+interface LicenseCache {
+  status: LicenseStatus | null;
+  timestamp: number;
+  /** Bumped by every clear, so a read that started before it cannot store its answer. */
+  generation: number;
+}
+
+/**
+ * The cached license status, shared by every module instance in the process.
+ *
+ * It must not be module-level. The custom server (`server.ts` → ClientRouter,
+ * the WS chat path) and Next's route bundles load this module separately, and
+ * `PUT /api/enterprise/key` clears the cache through the route's copy. With a
+ * private cache per instance that clear never reached the chat server, which
+ * kept answering "community" — and so treated every "restricted" agent as
+ * "all" — for up to the TTL after an admin entered their first license
+ * (#1277). See `process-wide-cache.ts`.
+ */
+function licenseCache(): LicenseCache {
+  return processWideCache<LicenseCache>(
+    "__pinchyLicenseStatusCache",
+    () => ({ status: null, timestamp: 0, generation: 0 }),
+    hasFields("status", "timestamp", "generation")
+  );
+}
 
 /**
  * Load the license token. Env var always wins (immutable config).
@@ -114,23 +138,33 @@ export async function validateLicenseToken(
 export async function getLicenseStatus(
   publicKeyPem: string = PRODUCTION_PUBLIC_KEY
 ): Promise<LicenseStatus> {
+  const cache = licenseCache();
   const now = Date.now();
-  if (cachedStatus && now - cacheTimestamp < CACHE_TTL_MS) {
-    return cachedStatus;
+  if (cache.status && now - cache.timestamp < CACHE_TTL_MS) {
+    return cache.status;
   }
 
+  // A key saved while this read is in flight clears the cache; the answer
+  // computed here may be from the old key and must not be stored for an hour.
+  const generation = cache.generation;
   const token = await loadToken();
-  cachedStatus = await validateLicenseToken(token, publicKeyPem);
-  cacheTimestamp = now;
-  return cachedStatus;
+  const status = await validateLicenseToken(token, publicKeyPem);
+  if (cache.generation === generation) {
+    cache.status = status;
+    cache.timestamp = now;
+  }
+  return status;
 }
 
 /**
  * Clear the cached license status. Call after key changes (e.g. via Settings UI).
+ * Reaches every module instance in the process, the WS chat server included.
  */
 export function clearLicenseCache(): void {
-  cachedStatus = null;
-  cacheTimestamp = 0;
+  const cache = licenseCache();
+  cache.status = null;
+  cache.timestamp = 0;
+  cache.generation += 1;
 }
 
 /**
