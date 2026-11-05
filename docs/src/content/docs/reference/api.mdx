@@ -815,6 +815,8 @@ List available agent templates.
 
 The full registry includes one Knowledge Base template, one Custom template, five document-analysis templates, three email templates, and 20+ Odoo templates. The response above is truncated — call the endpoint for the live list. Template IDs are stable across releases for templates that ship in stock builds.
 
+Each template also carries availability fields the create form reads. `available` and `unavailableReason` say whether a required connection is missing (Odoo, email). `requiresWeb` marks web templates, and `webSearchConfigured` says whether a web-search provider exists. A web template stays `available` without one, because page fetching needs no key; only search does.
+
 ## Data Directories
 
 ### `GET /api/data-directories`
