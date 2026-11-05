@@ -31,6 +31,9 @@ import {
  *
  * Each page waits for content it only renders once its data is in, so axe
  * scans the finished page, not a loading skeleton that would pass vacuously.
+ * Where that content is a control, it is found by its accessible name (the
+ * "Model" combobox, the context textboxes) — so a control that loses its name
+ * fails here, naming the locator, before axe runs.
  */
 
 const TEST_DB_URL = "postgresql://pinchy:pinchy_dev@localhost:5433/pinchy_test";
