@@ -37,7 +37,7 @@ interface AdminOnlyAgentsNoticeProps {
   agents: AgentRef[];
   /** With a license these agents are admin-only now; without one, they will be. */
   licenseActive: boolean;
-  /** Called with the agents that were made visible to everyone. */
+  /** Called after an attempt with the agents confirmed as opened (maybe none); the parent re-reads the list. */
   onOpened: (opened: AgentRef[]) => void;
 }
 
@@ -82,8 +82,10 @@ export function AdminOnlyAgentsNotice({
       onOpened(opened);
     } catch (e) {
       toast.error(errorMessage(e, "Couldn't change who can see these agents"));
-      // An earlier batch may already have gone through; keep the list honest.
-      if (opened.length > 0) onOpened(opened);
+      // An earlier batch — or this one, if only a follow-up step failed — may
+      // already have gone through. Report what we know and let the parent
+      // re-read the list, so it never shows agents members can already see.
+      onOpened(opened);
     } finally {
       setOpening(false);
     }

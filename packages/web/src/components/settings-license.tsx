@@ -251,7 +251,7 @@ export function SettingsLicense({
           </div>
         )}
 
-        {(!license || license.state === "community") && (
+        {license?.state === "community" && (
           <AdminOnlyAgentsNotice
             agents={adminOnlyAgents}
             licenseActive={false}

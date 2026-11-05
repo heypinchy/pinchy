@@ -661,4 +661,11 @@ describe("SettingsLicense", () => {
     expect(screen.queryByText(/stay enforced without a license/i)).not.toBeInTheDocument();
     expect(screen.getByText(/groups from an earlier license are still here/i)).toBeInTheDocument();
   });
+
+  it("shows no pre-activation notice while the license status is unknown", async () => {
+    fetchSpy.mockResolvedValue(jsonResponse({ error: "boom" }, { status: 500 }));
+    render(<SettingsLicense initialAdminOnlyAgents={[{ id: "a1", name: "Sales Bot" }]} />);
+    await waitFor(() => expect(screen.queryByText(/loading/i)).not.toBeInTheDocument());
+    expect(screen.queryByText("Sales Bot")).not.toBeInTheDocument();
+  });
 });

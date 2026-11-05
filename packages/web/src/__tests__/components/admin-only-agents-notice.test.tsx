@@ -139,7 +139,7 @@ describe("AdminOnlyAgentsNotice", () => {
     expect(screen.queryByRole("link", { name: "Sales Bot" })).not.toBeInTheDocument();
   });
 
-  it("surfaces a failure and leaves the list in place", async () => {
+  it("surfaces a failure and asks for a fresh list — the server may have changed some anyway", async () => {
     const user = userEvent.setup();
     const onOpened = vi.fn();
     fetchSpy.mockResolvedValue(jsonResponse({ error: "Enterprise feature" }, { status: 403 }));
@@ -149,6 +149,8 @@ describe("AdminOnlyAgentsNotice", () => {
     await user.click(await screen.findByRole("button", { name: "Make visible" }));
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Enterprise feature"));
-    expect(onOpened).not.toHaveBeenCalled();
+    // Nothing confirmed as opened, but the parent re-reads the list: a 500
+    // after a committed UPDATE must not leave already-visible agents listed.
+    expect(onOpened).toHaveBeenCalledWith([]);
   });
 });
