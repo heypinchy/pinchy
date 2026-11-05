@@ -48,6 +48,23 @@ describe("relativeReExports", () => {
     expect(relativeReExports(join(root, "route.ts"), "export async function GET() {}")).toEqual([]);
   });
 
+  it("reads a list carrying comments, and skips type-only names", () => {
+    const file = join(root, "child", "route.ts");
+    const source =
+      'export {\n  // the viewer (#1268)\n  GET /* why */,\n  type Foo,\n} from "../route";';
+
+    expect(relativeReExports(file, source)[0].names).toEqual([{ local: "GET", exported: "GET" }]);
+  });
+
+  it("ignores a re-export that only appears in a comment", () => {
+    // Treating prose as code would let a route with no auth of its own borrow
+    // its sibling's — the "presence of a string" failure.
+    const file = join(root, "child", "route.ts");
+    const source = '// see `export { GET } from "../route"`\nexport async function GET() {}';
+
+    expect(relativeReExports(file, source)).toEqual([]);
+  });
+
   it("throws on a re-export it cannot follow, rather than reading the file as empty", () => {
     // A guard that silently skipped `export * from` or an aliased specifier would
     // report the route as compliant on the strength of having read nothing.

@@ -16,16 +16,14 @@
  */
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import ts from "typescript";
 
 export interface RouteReExport {
   /** Absolute path of the module re-exported from. */
   target: string;
-  /** `export { HEAD as GET }` → `{ local: "HEAD", exported: "GET" }`. */
+  /** `export { HEAD as GET }` → `{ local: "HEAD", exported: "GET" }`. Type-only names are left out. */
   names: Array<{ local: string; exported: string }>;
 }
-
-const NAMED_RE_EXPORT = /export\s*(?:type\s*)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g;
-const STAR_RE_EXPORT = /export\s*\*\s*(?:as\s+\w+\s*)?from\s*["']([^"']+)["']/;
 
 function resolveModule(file: string, specifier: string): string | null {
   if (!specifier.startsWith("./") && !specifier.startsWith("../")) return null;
@@ -35,28 +33,37 @@ function resolveModule(file: string, specifier: string): string | null {
   return candidates.find((candidate) => /\.tsx?$/.test(candidate) && existsSync(candidate)) ?? null;
 }
 
+/**
+ * Parsed, not pattern-matched: a regex reads a re-export quoted in a comment as
+ * code, and a comment inside the braces as part of a name — the first lets a
+ * route borrow its sibling's auth, the second makes a GET invisible.
+ */
 export function relativeReExports(file: string, content: string): RouteReExport[] {
-  const star = STAR_RE_EXPORT.exec(content);
-  if (star) {
-    throw new Error(`${file}: cannot follow \`export * from "${star[1]}"\` — name the exports.`);
-  }
-
+  const source = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
   const found: RouteReExport[] = [];
-  for (const [, list, specifier] of content.matchAll(NAMED_RE_EXPORT)) {
+
+  for (const statement of source.statements) {
+    if (!ts.isExportDeclaration(statement) || !statement.moduleSpecifier) continue;
+    if (statement.isTypeOnly) continue;
+    const specifier = (statement.moduleSpecifier as ts.StringLiteral).text;
+
+    if (!statement.exportClause || !ts.isNamedExports(statement.exportClause)) {
+      throw new Error(
+        `${file}: cannot follow \`export * from "${specifier}"\` — name the exports.`
+      );
+    }
     const target = resolveModule(file, specifier);
     if (target === null) {
       throw new Error(
         `${file}: cannot follow the re-export from "${specifier}" — use a relative path to an existing module.`
       );
     }
-    const names = list
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean)
-      .map((entry) => {
-        const [local, exported] = entry.split(/\s+as\s+/).map((part) => part.trim());
-        return { local, exported: exported ?? local };
-      });
+    const names = statement.exportClause.elements
+      .filter((element) => !element.isTypeOnly)
+      .map((element) => ({
+        local: (element.propertyName ?? element.name).text,
+        exported: element.name.text,
+      }));
     found.push({ target, names });
   }
   return found;

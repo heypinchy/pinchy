@@ -440,7 +440,7 @@ A `Range` request is honoured on its own. Sent with `If-Range`, it is answered w
 
 ### `GET /api/agents/:agentId/workspace-file/:name?path=<path>`
 
-The same file, under a URL whose last segment is its name — the URL the citation viewer opens, so the browser's PDF viewer shows the document's name instead of `workspace-file`. Takes the same query parameters as the route above and behaves exactly like it: `path` alone decides which file is read, against the same grant, with the same audit rows. `:name` must be the name of the file actually served — for a Word or PowerPoint source that's its converted PDF (`Angebot.pdf` for `Angebot.docx`), unless `variant=original` asks for the original. When the granted path is a link to a single file, the link's name counts as well as the target's. Any other name answers `404`, and the audit row records `name_mismatch`. `variant=rows` answers JSON rather than a file, so it doesn't check the name.
+The same file, under a URL whose last segment is its name — the URL the citation viewer opens, so the browser's PDF viewer shows the document's name instead of `workspace-file`. Takes the same query parameters as the route above and behaves exactly like it: `path` alone decides which file is read, against the same grant, with the same audit rows. `:name` must be the name of the file actually served — for a Word or PowerPoint source that's its converted PDF (`Angebot.pdf` for `Angebot.docx`), unless `variant=original` asks for the original. When the requested path is a link, the link's name counts as well as the target's. Any other name answers `404`, and the audit row records `name_mismatch`. `variant=rows` answers JSON rather than a file, so it doesn't check the name.
 
 ### `GET /api/agents/:agentId/telegram-chat`
 

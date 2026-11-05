@@ -61,14 +61,27 @@ import {
 type Params = { params: Promise<{ agentId: string; name?: string }> };
 
 /**
- * The names a viewer url may carry for these bytes. Compared exactly: Next.js
- * hands the handler the segment already decoded, and decoding it again would
- * let `a%2520b.pdf` stand for `a b.pdf` — a name the viewer would title as
- * something the document is not called.
+ * The name a viewer url carries: its last path segment, decoded exactly once —
+ * which is also how the browser's viewer reads it to title the document. Read
+ * from the url rather than from `params.name`, so the check does not hinge on
+ * whether the framework hands a dynamic param over decoded: if it did not,
+ * every name with a space or an umlaut would 404. Decoding once more would let
+ * `a%2520b.pdf` stand for `a b.pdf`. Null for an undecodable segment.
+ */
+function viewerNameFromUrl(pathname: string): string | null {
+  try {
+    return decodeURIComponent(pathname.slice(pathname.lastIndexOf("/") + 1));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The names a viewer url may carry for these bytes, compared exactly.
  *
- * Two, because a grant may point at a single file through a link: the citation
- * (and so the viewer url) carries the LINK's name, the resolved path the
- * target's. Both name this document. For an Office source each is swapped to
+ * Two, because the requested path may end in a link (a grant pointing at a
+ * single file on a mounted share, say): the citation — and so the viewer url —
+ * carries the LINK's name, the resolved path the target's. Both name this document. For an Office source each is swapped to
  * its converted name when the converted PDF is what is served.
  */
 function acceptedViewerNames(
@@ -562,7 +575,9 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // a probe nothing about a path it may not read.
   if (
     name !== undefined &&
-    !acceptedViewerNames(requestedPath, realPath, artifactPath !== null).includes(name)
+    !acceptedViewerNames(requestedPath, realPath, artifactPath !== null).includes(
+      viewerNameFromUrl(req.nextUrl.pathname) ?? ""
+    )
   ) {
     await source.handle.close();
     auditFailure("name_mismatch");

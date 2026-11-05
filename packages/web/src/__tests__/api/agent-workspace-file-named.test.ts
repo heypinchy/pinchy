@@ -91,8 +91,8 @@ async function callNamedGET(
   url.searchParams.set("path", requestedPath);
   for (const [key, value] of Object.entries(extraParams)) url.searchParams.set(key, value);
   return GET(new NextRequest(url), {
-    // Next.js hands a dynamic segment to the handler already percent-DECODED
-    // (`decode(match)` in next/dist/shared/lib/router/utils/route-matcher.js).
+    // Next.js 16 hands a dynamic segment over decoded; the handler reads the
+    // name from the url anyway (see the "reading the name" describe).
     params: Promise.resolve({ agentId: "agent-1", name }),
   } as unknown as Parameters<typeof GET>[1]);
 }
@@ -154,6 +154,29 @@ describe("workspace-file/[name] — the url a viewer titles the document by", ()
   });
 });
 
+describe("workspace-file/[name] — reading the name", () => {
+  it("reads it from the url, whatever shape the framework hands the param in", async () => {
+    // The comparison must not hinge on whether a dynamic param arrives decoded:
+    // if it did not, every name with a space or an umlaut would 404 and blank
+    // the viewer. The url's own last segment, decoded once, is the name.
+    const doc = writeFile(allowedRoot, "Angebot Müller.pdf", PDF_BYTES);
+    const { GET } = await import("@/app/api/agents/[agentId]/workspace-file/[name]/route");
+    const url = new URL(
+      `http://localhost/api/agents/agent-1/workspace-file/${encodeURIComponent("Angebot Müller.pdf")}`
+    );
+    url.searchParams.set("path", doc);
+
+    const res = await GET(new NextRequest(url), {
+      params: Promise.resolve({
+        agentId: "agent-1",
+        name: encodeURIComponent("Angebot Müller.pdf"),
+      }),
+    } as unknown as Parameters<typeof GET>[1]);
+
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("workspace-file/[name] — a grant that is a link to a single file", () => {
   it("accepts the name the citation knows, not only the name the link resolves to", () => {
     // A grant may point at one file through a link ("a share mounted elsewhere
@@ -183,6 +206,7 @@ describe("workspace-file/[name] — a name that does not name the served bytes",
     // `a%20b.pdf`, i.e. not the document's name.
     const doc = writeFile(allowedRoot, "a b.pdf", PDF_BYTES);
 
+    // The url segment is `a%2520b.pdf`; decoded once that is `a%20b.pdf`.
     const res = await callNamedGET("a%20b.pdf", doc);
 
     expect(res.status).toBe(404);
