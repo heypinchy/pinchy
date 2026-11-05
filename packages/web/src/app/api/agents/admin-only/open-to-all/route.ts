@@ -2,8 +2,7 @@ import { NextResponse } from "next/server";
 import { withAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { openAdminOnlyAgentsToAll } from "@/lib/admin-only-agents";
-import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
-import { recordAuditFailure } from "@/lib/audit-deferred";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { parseRequestBody } from "@/lib/api-validation";
 import { openAdminOnlyAgentsSchema } from "@/lib/schemas/agents";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
@@ -33,14 +32,12 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   const opened = await openAdminOnlyAgentsToAll(parsed.data.agentIds);
   if (opened.length === 0) return NextResponse.json({ agents: [] });
 
-  // Audit right after the write and before the Telegram follow-up: a recalc
-  // failure must not leave an access-widening change without a trail.
-  //
   // The UPDATE has committed and cannot be rolled back, and a retry would find
-  // nothing still admin-only — so one failed row must not stop the others, and
-  // must not turn into a 500 that hides a change that really happened.
+  // nothing still admin-only — so every row is registered now, before the
+  // Telegram follow-up can throw, and written after the response by
+  // deferAuditLog, which records a failed write instead of losing it.
   for (const agent of opened) {
-    const entry: AuditLogEntry = {
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "agent.updated",
@@ -50,12 +47,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         changes: { visibility: { from: "restricted", to: "all" } },
       },
       outcome: "success",
-    };
-    try {
-      await appendAuditLog(entry);
-    } catch (err) {
-      recordAuditFailure(err, entry);
-    }
+    });
   }
 
   await recalculateTelegramAllowStores();

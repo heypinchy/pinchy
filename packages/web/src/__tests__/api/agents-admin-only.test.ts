@@ -18,12 +18,8 @@ vi.mock("@/lib/admin-only-agents", () => ({
   openAdminOnlyAgentsToAll: vi.fn(),
 }));
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock("@/lib/audit-deferred", () => ({
-  recordAuditFailure: vi.fn(),
+  deferAuditLog: vi.fn(),
 }));
 
 vi.mock("@/lib/telegram-allow-store", () => ({
@@ -33,8 +29,7 @@ vi.mock("@/lib/telegram-allow-store", () => ({
 import { getSession } from "@/lib/auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { listAdminOnlyAgents, openAdminOnlyAgentsToAll } from "@/lib/admin-only-agents";
-import { appendAuditLog } from "@/lib/audit";
-import { recordAuditFailure } from "@/lib/audit-deferred";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { mockSession } from "@/test-helpers/auth";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
@@ -101,8 +96,8 @@ describe("POST /api/agents/admin-only/open-to-all", () => {
       ],
     });
     expect(openAdminOnlyAgentsToAll).toHaveBeenCalledWith(["a1", "a2"]);
-    expect(appendAuditLog).toHaveBeenCalledTimes(2);
-    expect(appendAuditLog).toHaveBeenCalledWith({
+    expect(deferAuditLog).toHaveBeenCalledTimes(2);
+    expect(deferAuditLog).toHaveBeenCalledWith({
       actorType: "user",
       actorId: "user-1",
       eventType: "agent.updated",
@@ -116,12 +111,11 @@ describe("POST /api/agents/admin-only/open-to-all", () => {
     expect(recalculateTelegramAllowStores).toHaveBeenCalled();
   });
 
-  it("audits before recalculating Telegram stores — a recalc failure must not lose the trail", async () => {
+  it("registers the audit rows before recalculating Telegram stores", async () => {
     vi.mocked(openAdminOnlyAgentsToAll).mockResolvedValue([{ id: "a1", name: "Sales Bot" }]);
     const order: string[] = [];
-    vi.mocked(appendAuditLog).mockImplementation(async () => {
+    vi.mocked(deferAuditLog).mockImplementation(() => {
       order.push("audit");
-      return { id: 1, rowHmac: "hmac" };
     });
     vi.mocked(recalculateTelegramAllowStores).mockImplementation(async () => {
       order.push("telegram");
@@ -132,28 +126,24 @@ describe("POST /api/agents/admin-only/open-to-all", () => {
     expect(order).toEqual(["audit", "telegram"]);
   });
 
-  it("keeps auditing the rest when one audit write fails — the widening already happened", async () => {
-    // The UPDATE has committed. A retry would find nothing still admin-only and
-    // write nothing, so a dropped row here would be lost for good.
+  it("keeps every audit row when the Telegram recalc fails — the widening already happened", async () => {
+    // The UPDATE has committed, and a retry would find nothing still
+    // admin-only, so a row lost here would be lost for good.
     vi.mocked(openAdminOnlyAgentsToAll).mockResolvedValue([
       { id: "a1", name: "Sales Bot" },
       { id: "a2", name: "HR Bot" },
       { id: "a3", name: "Ops Bot" },
     ]);
-    vi.mocked(appendAuditLog)
-      .mockResolvedValueOnce({ id: 1, rowHmac: "h1" })
-      .mockRejectedValueOnce(new Error("lock timeout"))
-      .mockResolvedValueOnce({ id: 3, rowHmac: "h3" });
+    vi.mocked(recalculateTelegramAllowStores).mockRejectedValue(new Error("EACCES"));
 
-    const res = await POST(postBody({ agentIds: ["a1", "a2", "a3"] }), routeContext());
-
-    expect(res.status).toBe(200);
-    expect(appendAuditLog).toHaveBeenCalledTimes(3);
-    expect(recordAuditFailure).toHaveBeenCalledWith(
-      expect.any(Error),
-      expect.objectContaining({ eventType: "agent.updated", resource: "agent:a2" })
+    await expect(POST(postBody({ agentIds: ["a1", "a2", "a3"] }), routeContext())).rejects.toThrow(
+      "EACCES"
     );
-    expect(recalculateTelegramAllowStores).toHaveBeenCalled();
+
+    expect(deferAuditLog).toHaveBeenCalledTimes(3);
+    expect(deferAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "agent.updated", resource: "agent:a3" })
+    );
   });
 
   it("writes nothing when no named agent was still admin-only", async () => {
@@ -163,7 +153,7 @@ describe("POST /api/agents/admin-only/open-to-all", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ agents: [] });
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
     expect(recalculateTelegramAllowStores).not.toHaveBeenCalled();
   });
 
