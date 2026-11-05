@@ -2283,6 +2283,8 @@ Retrieve a paginated, filterable audit log. **Admin only.**
 }
 ```
 
+`actorName` is resolved when the log is read, never stored: a user's current name, an agent's name for `actorType: "agent"` rows, the key's name for `api_key` rows, and a readable label for `system` rows (for example `"Scheduled reindex"` for `kb-index-scheduler`). It is `null` when nothing resolves — an erased user, or an agent that no longer exists. `actorDeleted` is `true` for a deactivated user or a deleted agent. `actorId` is always the raw value the row was written with.
+
 `outcome` is one of `"success"` or `"failure"`. `error` is `null` for successes and a short error message for failures (e.g. `"seat_cap"` on a blocked invite). Both fields are part of the HMAC-signed v2 row shape.
 
 `total` is only present in the response for `page=1`. A request for `page > 1` omits the field entirely rather than recomputing it — the audit log is append-only and can grow unbounded, so counting it on every page view is wasteful once a client already has the number from its page-1 fetch. Callers that page through results should keep the `total` from their first response and not expect it on later pages.
