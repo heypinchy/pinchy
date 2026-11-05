@@ -46,13 +46,24 @@ Open the agent's settings by clicking the gear icon, then select the **Permissio
 
 ![Permissions tab with safe tools and directory picker](/screenshots/agent-settings-permissions.png)
 
-Under **Knowledge Base**, the **Allowed Directories** picker shows all directories found under `/data/`. Select the directories that contain the documents this agent should be able to search. This is the same folder scope that governs everything the agent can retrieve and cite — an agent can never search or cite a document outside its granted directories.
+Under **Knowledge Base**, the **Allowed Directories** picker shows all directories found under `/data/`, each with its name and the path it's mounted at. Select the directories that contain the documents this agent should be able to search. This is the same folder scope that governs everything the agent can retrieve and cite — an agent can never search or cite a document outside its granted directories. If no directory is listed, nothing is mounted under `/data/` yet; [Mount Data Directories](/guides/mount-data-directories/) shows how.
 
-Click **Save** to apply the permissions.
+Click **Save** to apply the permissions. Until you do, a note under the picker reminds you that the agent — and **Reindex now** — still use the saved directories.
 
 ## 6. Index the documents
 
-Granting a directory doesn't index it on the spot — the first index takes long enough that you'll want to start it yourself rather than wait for the [nightly reindex](#keeping-the-index-current) to get to it. The simplest way is right where you granted the directories: in the agent's **Permissions** tab, the **Knowledge Base** section has an **Index** control. Click **Reindex now** and the section shows the run inline — discovery, a live progress bar, how long the run has been going, an estimate of how much longer, and the last run's outcome — so you never have to leave the page or read a log. The estimate is deliberately shy: it appears only once the run has produced enough readings to support one, and it disappears again if progress stalls. On a real corpus a single large document can dominate the work, so a countdown that always shows a number would mislead more than it helps.
+Granting a directory doesn't index it on the spot — the first index takes long enough that you'll want to start it yourself rather than wait for the [nightly reindex](#keeping-the-index-current) to get to it. The simplest way is right where you granted the directories: in the agent's **Permissions** tab, the **Knowledge Base** section has an **Index** block. Its first line tells you where the index stands at a glance:
+
+| Status              | What it means                                                                                                                         |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **No directories**  | The agent has no saved directory to index yet.                                                                                        |
+| **Not indexed**     | Directories are granted, but this agent hasn't been indexed yet.                                                                      |
+| **Indexing**        | A run is in progress. It keeps going if you leave the page.                                                                           |
+| **Indexed**         | The last run finished, and every document it read is searchable.                                                                      |
+| **Needs attention** | The last run finished, but some documents failed or hold no searchable text, or a folder couldn't be read. The lines below say which. |
+| **Failed**          | The last run stopped early. The reason is shown below it.                                                                             |
+
+Beside it, the status says when the last run finished, in your own time. Click **Reindex now** and the block shows the run inline — discovery, a live progress bar, how long the run has been going, an estimate of how much longer, and the last run's outcome — so you never have to leave the page or read a log. The estimate is deliberately shy: it appears only once the run has produced enough readings to support one, and it disappears again if progress stalls. On a real corpus a single large document can dominate the work, so a countdown that always shows a number would mislead more than it helps.
 
 The same action is available over the API:
 
