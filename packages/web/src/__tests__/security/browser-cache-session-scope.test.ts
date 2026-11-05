@@ -31,9 +31,16 @@ const HELPER = path.join(webSrcDir, "lib", "session-scoped-cache.ts");
 const EXCLUDED_DIR_NAMES = new Set(["__tests__", "node_modules", "test-helpers"]);
 // Any non-zero max-age or s-maxage, in any position and whether written out or
 // templated (`max-age=${n}`), plus an `expires` header, whether written as an
-// object key or passed to `headers.set("Expires", …)`. max-age=0 keeps
-// nothing, so it is not a lifetime.
-const CACHE_LIFETIME_RES = [/\b(?:s-)?max-?age\s*=\s*(?!0\b)/i, /["']expires["']\s*[:,]/i];
+// object key or passed to `headers.set("Expires", …)`, and a Last-Modified,
+// which grants a heuristic lifetime. max-age=0 keeps nothing, so it is not a
+// lifetime.
+const CACHE_LIFETIME_RES = [
+  /\b(?:s-)?max-?age\s*=\s*(?!0\b)/i,
+  /["']expires["']\s*[:,]/i,
+  // Without Cache-Control, Last-Modified alone lets a browser reuse a
+  // response for a fraction of its age without asking (RFC 9111 §4.2.2).
+  /["']last-modified["']\s*[:,]/i,
+];
 
 // Lines that match the pattern but are not an HTTP cache, each with the
 // reason. An entry that no longer matches its file fails, so it cannot
@@ -114,7 +121,8 @@ describe("browser cache is scoped to the session (#1286)", () => {
     // This bounds who may set a LIFETIME; it does not prove that a route
     // without one sends a validator. That is the serving routes' own tests'
     // job — and harmless if missed, since without Last-Modified there is no
-    // heuristic freshness either.
+    // heuristic freshness either (the scan above treats that header as a
+    // lifetime too).
     const MAY_SET_A_LIFETIME: Array<{ file: string; reason: string }> = [
       {
         file: "app/api/models/capabilities/route.ts",

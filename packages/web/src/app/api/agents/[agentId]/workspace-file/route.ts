@@ -216,8 +216,8 @@ function sourceAccessAuditEntry(args: {
       // this flag is what lets an analyst count views rather than chunks.
       ...(args.partial !== undefined ? { partial: args.partial } : {}),
       // A 304: the reader looked at the copy their browser already held, after
-      // the access check allowed it. No bytes left, so it is neither a whole
-      // nor a partial read.
+      // the access check allowed it. `partial` still says whether a chunk was
+      // asked for, so a viewer re-reading in ranges counts as one view.
       ...(args.revalidated ? { revalidated: true } : {}),
     },
   };
@@ -596,6 +596,9 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
         documentName,
         outcome: "success",
         revalidated: true,
+        // Whether the reuse was a chunk request, so a viewer reading a cached
+        // document in ranges is not counted as many reopens.
+        partial: parseRangeHeader(req.headers.get("range"), info.size).kind === "partial",
         representation,
       })
     );

@@ -654,9 +654,23 @@ describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached c
         detail: expect.objectContaining({ revalidated: true, representation: "original" }),
       })
     );
-    // No bytes left, so it is neither a whole-file read nor a partial one.
-    const detail = mockDeferAuditLog.mock.calls[0][0].detail as Record<string, unknown>;
-    expect(detail).not.toHaveProperty("partial");
+    // A reopen of the whole document: counted like a whole-file view.
+    expect(mockDeferAuditLog.mock.calls[0][0].detail).toMatchObject({ partial: false });
+  });
+
+  it("marks a revalidated range request as partial, so a viewer reading in chunks still counts as one view", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+    mockDeferAuditLog.mockClear();
+
+    const res = await callGET("agent-1", pdfPath, { "if-none-match": etag, range: "bytes=0-3" });
+
+    expect(res.status).toBe(304);
+    expect(mockDeferAuditLog.mock.calls[0][0].detail).toMatchObject({
+      revalidated: true,
+      partial: true,
+    });
   });
 
   it("leaves a read that sent bytes without the revalidated flag", async () => {
