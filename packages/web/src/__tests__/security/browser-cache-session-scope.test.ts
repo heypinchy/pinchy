@@ -29,10 +29,22 @@ const webSrcDir = path.resolve(__dirname, "../..");
 const HELPER = path.join(webSrcDir, "lib", "session-scoped-cache.ts");
 const EXCLUDED_DIR_NAMES = new Set(["__tests__", "node_modules", "test-helpers"]);
 // Any non-zero max-age or s-maxage, in any position and whether written out or
-// templated (`max-age=${n}`), plus an `expires` header, whether written as an
-// object key or passed to `headers.set("Expires", …)`. max-age=0 keeps
-// nothing, so it is not a lifetime.
-const CACHE_LIFETIME_RES = [/\b(?:s-)?max-?age\s*=\s*(?!0\b)/i, /["']expires["']\s*[:,]/i];
+// templated (`max-age=${n}`). The hyphen is required so a `maxAge = …`
+// variable is not mistaken for a header. max-age=0 keeps nothing, so it is not
+// a lifetime. Plus an `expires` header: a quoted object key, or the name
+// passed to `headers.set("Expires", …)`.
+const CACHE_LIFETIME_RES = [/\b(?:s-maxage|max-age)\s*=\s*(?!0\b)/i, /["']expires["']\s*[:,]/i];
+// An unquoted `Expires:` key is a valid Headers init too. In a .tsx file the
+// same text is ordinary JSX copy (the license page shows "Expires: <date>"),
+// so there it only counts right after `{` or `,`, where only an object key
+// can stand. Route handlers are .ts, where it counts anywhere.
+const UNQUOTED_EXPIRES_TS = /(?:^|[^\w$.])expires\s*:/i;
+const UNQUOTED_EXPIRES_TSX = /[{,]\s*expires\s*:/i;
+
+function setsCacheLifetime(file: string, line: string): boolean {
+  if (CACHE_LIFETIME_RES.some((re) => re.test(line))) return true;
+  return (file.endsWith(".tsx") ? UNQUOTED_EXPIRES_TSX : UNQUOTED_EXPIRES_TS).test(line);
+}
 
 // Lines that match the pattern but are not an HTTP cache, each with the
 // reason. An entry that no longer matches its file fails, so it cannot
@@ -66,6 +78,39 @@ describe("browser cache is scoped to the session (#1286)", () => {
     });
   });
 
+  it("refuses a lifetime that is not a positive whole number of seconds", () => {
+    // Browsers ignore an invalid max-age (NaN, negative, fractional) and fall
+    // back to their own heuristics, so a bad value must fail loudly here.
+    for (const bad of [Number.NaN, -1, 0, 1.5, Number.POSITIVE_INFINITY]) {
+      expect(() => sessionScopedCacheHeaders(bad)).toThrow(/positive whole number/);
+    }
+  });
+
+  it("recognises each spelling of a lifetime, and not lookalikes", () => {
+    const route = "app/api/x/route.ts";
+    const page = "components/x.tsx";
+    for (const line of [
+      `headers: { "Cache-Control": "max-age=60, private" }`,
+      "value: `private, max-age=${n}`",
+      `value: "s-maxage=30"`,
+      `headers: { Expires: d.toUTCString() }`,
+      `  Expires: d.toUTCString(),`,
+      `"expires": d.toUTCString()`,
+      `res.headers.set("Expires", d.toUTCString())`,
+    ]) {
+      expect(setsCacheLifetime(route, line), line).toBe(true);
+    }
+    expect(setsCacheLifetime(page, `<Foo headers={{ Expires: d }} />`)).toBe(true);
+    for (const line of [
+      `const maxAge = 3600;`,
+      `value: "no-cache, max-age=0, must-revalidate"`,
+      `session.expires: 1`,
+    ]) {
+      expect(setsCacheLifetime(route, line), line).toBe(false);
+    }
+    expect(setsCacheLifetime(page, `  Expires: {formatLicenseDate(d)}`)).toBe(false);
+  });
+
   it("finds no cache lifetime written outside the helper", () => {
     const files = productionSources(webSrcDir);
     // A walker that finds nothing would pass in silence.
@@ -77,18 +122,18 @@ describe("browser cache is scoped to the session (#1286)", () => {
     const roots = ["../server.ts", "../next.config.ts"].map((f) => path.resolve(webSrcDir, f));
 
     const offenders: string[] = [];
-    const usedExemptions = new Set<string>();
+    const usedExemptions = new Set<(typeof NOT_AN_HTTP_CACHE)[number]>();
     for (const file of [...files, ...roots]) {
       if (file === HELPER) continue;
       const rel = path.relative(webSrcDir, file);
       const lines = readFileSync(file, "utf8").split("\n");
       lines.forEach((line, i) => {
-        if (!CACHE_LIFETIME_RES.some((re) => re.test(line))) return;
+        if (!setsCacheLifetime(file, line)) return;
         const exemption = NOT_AN_HTTP_CACHE.find(
           (e) => e.file === rel && line.includes(e.includes)
         );
         if (exemption) {
-          usedExemptions.add(exemption.file);
+          usedExemptions.add(exemption);
           return;
         }
         offenders.push(`${rel}:${i + 1}: ${line.trim()}`);
@@ -99,7 +144,9 @@ describe("browser cache is scoped to the session (#1286)", () => {
       "Use sessionScopedCacheHeaders() from @/lib/session-scoped-cache instead"
     ).toEqual([]);
     expect(
-      NOT_AN_HTTP_CACHE.map((e) => e.file).filter((f) => !usedExemptions.has(f)),
+      NOT_AN_HTTP_CACHE.filter((e) => !usedExemptions.has(e)).map(
+        (e) => `${e.file}: ${e.includes}`
+      ),
       "stale exemption: it no longer matches a line in its file"
     ).toEqual([]);
   });
