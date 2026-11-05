@@ -561,6 +561,13 @@
       "when": 1793682372444,
       "tag": "0079_kb_index_job_artifact_format_version",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1793871461328,
+      "tag": "0080_kb_unsupported_files",
+      "breakpoints": true
     }
   ]
 }
