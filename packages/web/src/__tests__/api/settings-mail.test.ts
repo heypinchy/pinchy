@@ -42,7 +42,7 @@ vi.mock("@/lib/system-mail/deliver", () => ({
 
 import { GET, PUT, DELETE } from "@/app/api/settings/mail/route";
 import { POST as TEST_POST } from "@/app/api/settings/mail/test/route";
-import { saveSystemMailConfig } from "@/lib/system-mail/config";
+import { saveSystemMailConfig, deleteSystemMailConfig } from "@/lib/system-mail/config";
 
 const adminSession = { user: { id: "admin-1", email: "admin@example.com", role: "admin" } };
 
@@ -216,8 +216,10 @@ describe("DELETE /api/settings/mail", () => {
     );
   });
 
-  it("answers 404 when there is nothing to turn off", async () => {
+  it("answers 404 when there is nothing to turn off, and deletes nothing unaudited", async () => {
     expect((await DELETE()).status).toBe(404);
+    expect(deleteSystemMailConfig).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
   });
 });
 

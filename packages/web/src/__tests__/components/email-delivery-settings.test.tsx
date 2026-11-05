@@ -240,4 +240,16 @@ describe("EmailDeliverySettings", () => {
     resolveDelete(jsonResponse({ configured: false }));
     expect(await screen.findByText(/Pinchy doesn't send email/)).toBeInTheDocument();
   });
+
+  it("says the password isn't used while there is no username", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(configured));
+    const user = userEvent.setup();
+    render(<EmailDeliverySettings />);
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    await user.clear(screen.getByLabelText(/Username/));
+    expect(screen.getByLabelText(/Password/)).toHaveAttribute(
+      "placeholder",
+      "Not used without a username"
+    );
+  });
 });

@@ -202,11 +202,13 @@ export function EmailDeliverySettings() {
     Boolean(config?.hasPassword) &&
     form.host.trim().toLowerCase() === config?.host.toLowerCase() &&
     form.username.trim() !== "";
-  const passwordPlaceholder = keepsSavedPassword
-    ? "Leave empty to keep the saved password"
-    : config?.hasPassword
-      ? "Enter the password for this server"
-      : undefined;
+  const passwordPlaceholder = !form.username.trim()
+    ? "Not used without a username"
+    : keepsSavedPassword
+      ? "Leave empty to keep the saved password"
+      : config?.hasPassword
+        ? "Enter the password for this server"
+        : undefined;
 
   function fieldProps(name: string) {
     const message = fieldErrors[name];

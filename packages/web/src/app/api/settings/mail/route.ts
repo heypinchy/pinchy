@@ -118,9 +118,8 @@ export async function DELETE() {
 
   const stored = await getSystemMailConfig();
   if (!stored) {
-    // A row that can't be read counts as off; remove it anyway so "Turn off"
-    // always leaves nothing behind.
-    await deleteSystemMailConfig();
+    // Nothing usable is stored. A row that can no longer be decrypted counts
+    // as off too; saving a new config overwrites it, so it needs no delete.
     return NextResponse.json({ error: "Email delivery isn't set up." }, { status: 404 });
   }
 
