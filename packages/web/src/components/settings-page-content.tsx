@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import { useTabParam, SETTINGS_TABS, type SettingsTab } from "@/hooks/use-tab-param";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -80,7 +80,6 @@ export function SettingsPageContent({
 }) {
   const { data: session } = authClient.useSession();
   const pathname = usePathname();
-  const router = useRouter();
   const searchParams = useSearchParams();
   const visibleTabs: SettingsTab[] = isAdmin
     ? [...SETTINGS_TABS]
@@ -105,9 +104,13 @@ export function SettingsPageContent({
     // so the back control doesn't silently discard page state.
     const params = new URLSearchParams(searchParams.toString());
     params.delete("tab");
+    //
+    // Native replaceState rather than router.replace, for the same reason
+    // useTabParam pushes natively: a router navigation to a new ?tab= remounts
+    // the whole settings page and every tab refetches (#1271).
     const query = params.toString();
-    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
-  }, [pathname, router, searchParams]);
+    window.history.replaceState(null, "", query ? `${pathname}?${query}` : pathname);
+  }, [pathname, searchParams]);
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loading, setLoading] = useState(true);

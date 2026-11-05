@@ -652,6 +652,7 @@ describe("Settings Page", () => {
     });
 
     it("clears the tab param when the back control is clicked", async () => {
+      const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
       vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile"));
       setupAdminFetchMocks();
 
@@ -660,11 +661,15 @@ describe("Settings Page", () => {
       const backButton = await screen.findByRole("button", { name: /back to settings/i });
       await userEvent.click(backButton);
 
-      const router = useRouter();
-      expect(router.replace).toHaveBeenCalledWith("/settings", { scroll: false });
+      // Native replaceState, not router.replace: a router navigation to a new
+      // ?tab= remounts the whole settings page (#1271).
+      expect(replaceState).toHaveBeenCalledWith(null, "", "/settings");
+      expect(useRouter().replace).not.toHaveBeenCalled();
+      replaceState.mockRestore();
     });
 
     it("preserves unrelated query params when the back control is clicked", async () => {
+      const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
       vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=profile&foo=bar"));
       setupAdminFetchMocks();
 
@@ -673,8 +678,11 @@ describe("Settings Page", () => {
       const backButton = await screen.findByRole("button", { name: /back to settings/i });
       await userEvent.click(backButton);
 
-      const router = useRouter();
-      expect(router.replace).toHaveBeenCalledWith("/settings?foo=bar", { scroll: false });
+      // Native replaceState, not router.replace: a router navigation to a new
+      // ?tab= remounts the whole settings page (#1271).
+      expect(replaceState).toHaveBeenCalledWith(null, "", "/settings?foo=bar");
+      expect(useRouter().replace).not.toHaveBeenCalled();
+      replaceState.mockRestore();
     });
 
     it("keeps the active tab indicator on the sidebar variant", async () => {

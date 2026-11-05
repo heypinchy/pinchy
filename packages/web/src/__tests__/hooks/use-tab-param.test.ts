@@ -15,11 +15,17 @@ vi.mock("next/navigation", () => ({
 
 import { useTabParam, SETTINGS_TABS, AGENT_SETTINGS_TABS } from "@/hooks/use-tab-param";
 
+// The hook writes history directly (#1271); Next.js syncs native pushState
+// into useSearchParams without a server round trip.
+const pushState = vi.spyOn(window.history, "pushState").mockImplementation(() => {});
+const pushedUrls = () => pushState.mock.calls.map(([, , url]) => url);
+
 describe("useTabParam", () => {
   beforeEach(() => {
     mockSearchParams.delete("tab");
     mockReplace.mockClear();
     mockPush.mockClear();
+    pushState.mockClear();
   });
 
   it("returns the default tab when no URL param is present", () => {
@@ -43,11 +49,9 @@ describe("useTabParam", () => {
       result.current[1]("license");
     });
 
-    expect(mockPush).toHaveBeenCalledWith("/settings?tab=license", {
-      scroll: false,
-    });
+    expect(pushedUrls()).toEqual(["/settings?tab=license"]);
 
-    // Simulate the URL update that router.push triggers
+    // Simulate the URL update that pushState triggers
     mockSearchParams.set("tab", "license");
     const { result: updated } = renderHook(() => useTabParam("context", SETTINGS_TABS));
     expect(updated.current[0]).toBe("license");
@@ -62,7 +66,7 @@ describe("useTabParam", () => {
       result.current[1]("context");
     });
 
-    expect(mockPush).toHaveBeenCalledWith("/settings", { scroll: false });
+    expect(pushedUrls()).toEqual(["/settings"]);
 
     // Simulate the URL update
     mockSearchParams.delete("tab");
@@ -131,9 +135,7 @@ describe("useTabParam", () => {
       result.current[1]("context");
     });
 
-    expect(mockPush).toHaveBeenCalledWith("/settings?tab=context", {
-      scroll: false,
-    });
+    expect(pushedUrls()).toEqual(["/settings?tab=context"]);
   });
 
   it("still removes the tab param on the default tab when keepParamForDefault is not set", () => {
@@ -145,7 +147,7 @@ describe("useTabParam", () => {
       result.current[1]("context");
     });
 
-    expect(mockPush).toHaveBeenCalledWith("/settings", { scroll: false });
+    expect(pushedUrls()).toEqual(["/settings"]);
   });
 
   it("pushes a history entry when entering a tab from the menu (not yet explicit)", () => {
@@ -156,7 +158,7 @@ describe("useTabParam", () => {
       result.current[1]("license");
     });
 
-    expect(mockPush).toHaveBeenCalledWith("/settings?tab=license", { scroll: false });
+    expect(pushedUrls()).toEqual(["/settings?tab=license"]);
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
@@ -169,7 +171,7 @@ describe("useTabParam", () => {
       result.current[1]("license");
     });
 
-    expect(mockPush).toHaveBeenCalledWith("/settings?tab=license", { scroll: false });
+    expect(pushedUrls()).toEqual(["/settings?tab=license"]);
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
@@ -190,11 +192,66 @@ describe("useTabParam", () => {
       });
     }
 
-    expect(mockPush.mock.calls.map(([url]) => url)).toEqual([
+    expect(pushedUrls()).toEqual([
       "/settings?tab=profile",
       "/settings?tab=telegram",
       "/settings?tab=support",
     ]);
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it("does not push a second entry for the URL the browser is already on", () => {
+    // Radix Tabs fires onValueChange on mousedown and again on the focus that
+    // follows, so one click can ask for the same tab twice. router.push
+    // swallowed the duplicate; a native pushState would add an entry, and
+    // Back would then appear to do nothing (#951's symptom, from the other side).
+    window.history.replaceState(null, "", "/settings?tab=license");
+    const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS));
+
+    act(() => {
+      result.current[1]("license");
+    });
+
+    expect(pushedUrls()).toEqual([]);
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("honours initialTab while the URL is still the one the page was rendered for", () => {
+    const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS, "license"));
+
+    expect(result.current[0]).toBe("license");
+    expect(result.current[2]).toBe(true);
+  });
+
+  it("stops honouring initialTab once the URL has moved on (#1271)", () => {
+    // initialTab comes from the server render. Tab switches no longer re-run
+    // that render, so the prop keeps its first value: once the URL loses the
+    // tab param (default tab, or the mobile back-to-menu control), falling
+    // back to it would pin the page to the tab it was first opened on.
+    mockSearchParams.set("tab", "license");
+    const { result, rerender } = renderHook(() => useTabParam("context", SETTINGS_TABS, "license"));
+    expect(result.current[0]).toBe("license");
+
+    mockSearchParams.delete("tab");
+    rerender();
+
+    expect(result.current[0]).toBe("context");
+    expect(result.current[2]).toBe(false);
+  });
+
+  it("switches tabs without a router navigation, so the page is not remounted (#1271)", () => {
+    // The App Router keys the page segment by its search params: router.push
+    // to a new ?tab= re-renders the server page and remounts every tab, which
+    // refetches everything and shows "Loading..." on each switch.
+    mockSearchParams.set("tab", "users");
+    const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS));
+
+    act(() => {
+      result.current[1]("groups");
+    });
+
+    expect(pushedUrls()).toEqual(["/settings?tab=groups"]);
+    expect(mockPush).not.toHaveBeenCalled();
     expect(mockReplace).not.toHaveBeenCalled();
   });
 });
