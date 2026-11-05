@@ -78,6 +78,10 @@ const CONNECTION_TIMEOUT_MS = 10_000;
 // infra hiccup, which we deliberately do NOT turn into a `failed` verdict.
 const RECONNECT_LIVENESS_TIMEOUT_MS = 5_000;
 
+// What a reconnect `failed` verdict says. `agentWait` carries no text meant
+// for a user — its `stopReason` is a code — so the verdict carries this.
+export const RUN_ENDED_WITHOUT_RESPONSE = "The agent run ended without a response.";
+
 type RetryReason = "orphan" | "partial_stream_failure" | "send_failure";
 const ALLOWED_RETRY_REASONS: ReadonlySet<string> = new Set([
   "orphan",
@@ -1260,14 +1264,34 @@ export class ClientRouter {
       return;
     }
 
+    // The verdict is about `runId`, and `broadcastForRun` reaches whichever run
+    // holds the session NOW. The `agentWait` above (and the history fetch
+    // before it) gave the session time to move on: the user stopped this run
+    // and sent the next message, so the listeners are that newer turn's. A
+    // verdict about the stopped run would end the turn that is still running
+    // (#1301). And once the run's pipe has finished, its own terminal frames
+    // already reached this socket, which joined the run's listeners at the
+    // start of `handleHistory`.
+    const current = this.activeRuns.get(sessionKey);
+    if (!current || current.runId !== runId) return;
+
     const abandoned = result.livenessState === "abandoned";
     const ended = result.status === "ok" || result.endedAt !== undefined;
+    // OpenClaw answers a stopped run like a failed one — `status: "error"` —
+    // and only `stopReason` says it was a stop (`rpc` for `chat.abort`, `stop`
+    // for a stop command; OpenClaw's `isCancellationStopReason`). A run the
+    // user stopped ended the way they asked; the stop click already showed it
+    // as a clean end of turn.
+    const stopped =
+      current.abortedByUser || result.stopReason === "rpc" || result.stopReason === "stop";
 
-    if (result.status === "error" || abandoned) {
+    if (!stopped && (result.status === "error" || abandoned)) {
       this.broadcastForRun(sessionKey, clientWs, {
         type: "liveness",
         state: "failed",
-        reason: result.stopReason ?? "the agent run ended without a response",
+        // Never `stopReason`: it is a machine code ("rpc", "timeout"), not
+        // something to show a user.
+        reason: RUN_ENDED_WITHOUT_RESPONSE,
       });
       return;
     }
