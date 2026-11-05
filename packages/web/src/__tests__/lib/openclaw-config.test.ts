@@ -281,6 +281,8 @@ import {
   nextRegenerateSequence,
   noteUndeliveredConfigChange,
   undeliveredConfigChange,
+  noteFileOnlyDelivery,
+  fileOnlyDeliveryPending,
   trackConfigPushStarted,
   trackConfigPushSettled,
   scheduleShrinkResume,
@@ -5121,7 +5123,17 @@ describe("regenerateOpenClawConfig", () => {
   // found openclaw.json already equal to its target and pushed nothing — the
   // file says nothing about a running OpenClaw that never read it.
   describe("a config that reached openclaw.json only through a push's file fallback", () => {
-    const ocRuntimeWithoutTheChange = { hash: "h-runtime", config: { gateway: { mode: "local" } } };
+    /**
+     * What OpenClaw's config.get answers once Pinchy wrote the file: it reads
+     * openclaw.json (see server/agent-readiness.ts), so it already names the
+     * change its runtime never loaded.
+     */
+    const configGetReadingTheFile = () => ({
+      hash: "h-file",
+      config: JSON.parse(writtenOrOnDisk()) as Record<string, unknown>,
+    });
+    let onDiskAfterFallback = "";
+    const writtenOrOnDisk = () => onDiskAfterFallback;
 
     /** Regenerate while OpenClaw is unreachable until the push falls back to the file. */
     async function regenerateIntoFileFallback(): Promise<void> {
@@ -5139,6 +5151,7 @@ describe("regenerateOpenClawConfig", () => {
         vi.useRealTimers();
       }
       const onDisk = writtenOpenClawConfig(mockedWriteFileSync);
+      onDiskAfterFallback = onDisk;
       mockedWriteFileSync.mockClear();
       mockedReadFileSync.mockReturnValue(onDisk);
       expect(mockConfigApply, "precondition: nothing reached config.apply").not.toHaveBeenCalled();
@@ -5146,7 +5159,7 @@ describe("regenerateOpenClawConfig", () => {
 
     it("is pushed by the next regenerate although openclaw.json already holds it", async () => {
       await regenerateIntoFileFallback();
-      mockConfigGet.mockReset().mockResolvedValue(ocRuntimeWithoutTheChange);
+      mockConfigGet.mockReset().mockImplementation(async () => configGetReadingTheFile());
       mockConfigApply.mockReset().mockResolvedValue(undefined);
 
       await regenerateOpenClawConfig();
@@ -5155,9 +5168,34 @@ describe("regenerateOpenClawConfig", () => {
       expect(mockConfigApply).toHaveBeenCalledTimes(1);
     });
 
+    it("stays pending when the push that applied was superseded before it answered", async () => {
+      noteFileOnlyDelivery();
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      mockConfigGet.mockResolvedValue({ hash: "h" });
+      let answerOlder: () => void = () => {};
+      let answerNewer: () => void = () => {};
+      mockConfigApply
+        .mockImplementationOnce(() => new Promise<void>((r) => (answerOlder = r)))
+        .mockImplementationOnce(() => new Promise<void>((r) => (answerNewer = r)));
+
+      pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+      await drainBackgroundCoroutine();
+      pushConfigInBackground(JSON.stringify({ env: { X: "2" } }));
+      await drainBackgroundCoroutine();
+      expect(mockConfigApply, "precondition: both pushes are applying").toHaveBeenCalledTimes(2);
+
+      answerOlder();
+      await drainBackgroundCoroutine();
+      expect(fileOnlyDeliveryPending(), "the older push no longer speaks for the file").toBe(true);
+
+      answerNewer();
+      await drainBackgroundCoroutine();
+      expect(fileOnlyDeliveryPending()).toBe(false);
+    });
+
     it("is trusted to openclaw.json again once a push reached OpenClaw's runtime", async () => {
       await regenerateIntoFileFallback();
-      mockConfigGet.mockReset().mockResolvedValue(ocRuntimeWithoutTheChange);
+      mockConfigGet.mockReset().mockImplementation(async () => configGetReadingTheFile());
       mockConfigApply.mockReset().mockResolvedValue(undefined);
       await regenerateOpenClawConfig();
       await drainBackgroundCoroutine();

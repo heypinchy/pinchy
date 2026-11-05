@@ -1,4 +1,8 @@
-import { fileOnlyDeliveryPending, undeliveredConfigChange } from "@/lib/openclaw-config/push-state";
+import {
+  fileOnlyDeliveryPending,
+  getPendingConfigPushCount,
+  undeliveredConfigChange,
+} from "@/lib/openclaw-config/push-state";
 
 /**
  * The regenerate a connection to OpenClaw owes, run from server.ts's
@@ -23,7 +27,9 @@ import { fileOnlyDeliveryPending, undeliveredConfigChange } from "@/lib/openclaw
  * openclaw.json (noteFileOnlyDelivery): OpenClaw may have been running but not
  * yet connected, and a running OpenClaw does not reliably reload that file. The
  * regenerate pushes it, because build.ts does not take the file for the
- * runtime until a push has reached the runtime.
+ * runtime until a config.apply has landed. Not while a push is still in
+ * flight: that one retries over the new connection and settles it itself,
+ * and a second apply could restart OpenClaw into another reconnect.
  *
  * Every other reconnect runs none, to prevent a cascade: if a push triggers an
  * OC restart (large diff on fresh install), the reconnect after it must not
@@ -39,7 +45,7 @@ export function regenerateOnConnect(
       console.log(
         "[server] OpenClaw reconnected with a config change Pinchy could not deliver while it was unreachable; regenerating"
       );
-    } else if (fileOnlyDeliveryPending()) {
+    } else if (fileOnlyDeliveryPending() && getPendingConfigPushCount() === 0) {
       console.log(
         "[server] OpenClaw reconnected after a config change reached only openclaw.json; regenerating to push it to the runtime"
       );

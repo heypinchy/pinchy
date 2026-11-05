@@ -1865,8 +1865,8 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // The file stands for OpenClaw's runtime only while every push reached that
   // runtime. After a push fell back to writing the file (noteFileOnlyDelivery),
   // a running OpenClaw may never have loaded it, so the target goes to
-  // pushConfigInBackground, whose own no-op guard compares against the
-  // runtime and spends no config.apply when OpenClaw already runs it.
+  // pushConfigInBackground, which delivers it over config.apply (its no-op
+  // guard stands down too: config.get reads the same file).
   const unchanged =
     onDiskContent !== undefined &&
     !fileOnlyDeliveryPending() &&

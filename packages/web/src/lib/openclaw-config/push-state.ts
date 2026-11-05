@@ -345,11 +345,17 @@ export function fullRegenerateDeliveredSince(seq: number): boolean {
  * OpenClaw's restart, wrote the file 0.3 s before Pinchy reconnected, and
  * Smithers stayed out of the runtime.
  *
- * Until a push reaches the runtime (settleFileOnlyDelivery), openclaw.json is
- * no proof of what OpenClaw runs: a regenerate that finds its target there
- * still pushes it (build.ts), and a reconnect regenerates
- * (server/openclaw-connect-regenerate.ts). Not for the no-client write at boot:
- * that one precedes the first connect, which regenerates anyway.
+ * Until a config.apply lands (settleFileOnlyDelivery), openclaw.json is no
+ * proof of what OpenClaw runs: a regenerate that finds its target there still
+ * pushes it (build.ts), the push's no-op guard stands down — config.get reads
+ * that same file (write.ts) — and a reconnect regenerates
+ * (server/openclaw-connect-regenerate.ts).
+ *
+ * Two gaps, stated rather than closed here. The no-client write at boot does
+ * not set this: making it do so would send a config.apply on every Pinchy
+ * boot, which needs its own evidence. And a fallback written after the
+ * rate-limit retries ran out, with OpenClaw still connected, has no reconnect
+ * coming: it is delivered by the next regenerate, whatever triggers it.
  *
  * Process-wide only, not persisted: after a Pinchy restart the first connect
  * regenerates anyway.
@@ -364,8 +370,8 @@ export function fileOnlyDeliveryPending(): boolean {
 }
 
 /**
- * The newest push reached OpenClaw's runtime — applied over config.apply, or
- * found equal to it — so the runtime now holds everything the file does.
+ * The newest push was applied over config.apply, so OpenClaw's runtime now
+ * holds everything the file does.
  */
 export function settleFileOnlyDelivery(): void {
   state().fileOnlyDelivery = false;

@@ -12,6 +12,7 @@ import {
   _resetConfigPushState,
   noteFileOnlyDelivery,
   noteUndeliveredConfigChange,
+  trackConfigPushStarted,
 } from "@/lib/openclaw-config/push-state";
 
 describe("regenerateOnConnect", () => {
@@ -47,6 +48,18 @@ describe("regenerateOnConnect", () => {
     const regenerate = vi.fn(async () => {});
     regenerateOnConnect({ firstConnect: false }, regenerate);
     expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a file-only delivery to a push still in flight", () => {
+    // That push retries over the new connection and settles it itself. A
+    // second regenerate would only add an apply — and if an apply restarts
+    // OpenClaw before it answers, a reconnect that regenerates again would
+    // repeat that for as long as it happens.
+    noteFileOnlyDelivery();
+    trackConfigPushStarted();
+    const regenerate = vi.fn(async () => {});
+    regenerateOnConnect({ firstConnect: false }, regenerate);
+    expect(regenerate).not.toHaveBeenCalled();
   });
 
   it("logs a failed regenerate instead of rejecting", async () => {

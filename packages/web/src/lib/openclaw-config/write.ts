@@ -23,6 +23,7 @@ import {
   noteFullRegenerateDelivered,
   fullRegenerateDeliveredSince,
   noteFileOnlyDelivery,
+  fileOnlyDeliveryPending,
   settleFileOnlyDelivery,
 } from "./push-state";
 
@@ -486,10 +487,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       if (!options.fullRegenerate) return;
       noteFullRegenerateDelivered(regenerateSeq);
     };
-    // The target reached OpenClaw's RUNTIME (applied over config.apply, or
-    // found equal to it), not just openclaw.json. As the newest push, that
-    // settles a file-only delivery of an older one (noteFileOnlyDelivery):
-    // this push started after it, so its payload carries the same change.
+    // config.apply landed the target in OpenClaw's RUNTIME, not just in
+    // openclaw.json. As the newest push, that settles a file-only delivery
+    // (noteFileOnlyDelivery): an older push's fallback is superseded by this
+    // one, which carries the same change. Only an apply: the no-op guard
+    // below compares against config.get, which reads the file.
     const runtimeReached = () => {
       if (generation === getCurrentConfigPushGeneration()) settleFileOnlyDelivery();
       targetReached();
@@ -680,7 +682,14 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // which is what config.apply actually sends, and which might be
         // identical to OC's runtime even when raw newContent isn't. Compare
         // here to skip the wasted slot.
-        if (current.config) {
+        //
+        // Not while a file-only delivery is pending (noteFileOnlyDelivery):
+        // `current.config` is what config.get reads — openclaw.json, the very
+        // file a push just wrote and the running OpenClaw may never have
+        // loaded. It names the change already, so the guard would skip the
+        // one apply that can deliver it. config.apply diffs against OpenClaw's
+        // own runtime and hot-reloads what differs.
+        if (current.config && !fileOnlyDeliveryPending()) {
           const supplementedConfig = JSON.parse(supplemented) as Record<string, unknown>;
           if (
             configsAreEquivalentUpToOpenClawMetadata(
@@ -691,7 +700,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             console.log(
               `[openclaw-config] push gen=${String(generation)}: no-op skip (supplemented payload ≡ OC runtime)`
             );
-            runtimeReached();
+            targetReached();
             return;
           }
         }

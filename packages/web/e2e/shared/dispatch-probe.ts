@@ -217,7 +217,7 @@ export async function waitForAgentDispatchable(
     await new Promise((r) => setTimeout(r, interval));
   }
   throw new Error(
-    `OpenClaw runtime did not see agent ${agentId} as dispatchable within deadline — config.apply likely stuck in file-watcher debounce`
+    `OpenClaw runtime did not see agent ${agentId} as dispatchable within deadline — its agents.list never named it (config.apply never landed, or a file write it never reloaded)`
   );
 }
 

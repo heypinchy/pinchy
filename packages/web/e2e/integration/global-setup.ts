@@ -262,7 +262,12 @@ export default async function globalSetup() {
   //    gate, so this exits on exactly the condition the dispatch needs.
   const smithersId = await adminSmithersId();
   await waitForAgentDispatchable(
-    (agentId) => fetch(`${PINCHY_URL}/api/health/openclaw?agentId=${agentId}`),
+    // A reset while the connect's push lands is a "not yet", like step 7's.
+    (agentId) =>
+      fetch(`${PINCHY_URL}/api/health/openclaw?agentId=${agentId}`).catch(() => ({
+        ok: false,
+        json: async () => ({}),
+      })),
     smithersId,
     { deadlineMs: 120_000 }
   );
