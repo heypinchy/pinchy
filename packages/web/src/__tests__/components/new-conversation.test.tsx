@@ -154,6 +154,20 @@ describe("NewConversationPrompts — shared memory notice", () => {
     expect(screen.queryByText(noticeText)).not.toBeInTheDocument();
   });
 
+  it("stays while the user types — that is when it matters", async () => {
+    mockAgent = sharedKbAgent;
+    let runtime: AssistantRuntime | undefined;
+    render(<Harness messages={[greeting]} onRuntime={(r) => (runtime = r)} />);
+
+    await act(async () => runtime!.thread.composer.setText("Our client Müller asked"));
+    // The chips step aside (a click would clear the draft)...
+    await waitFor(() =>
+      expect(screen.queryByText("Summarize the onboarding guide")).not.toBeInTheDocument()
+    );
+    // ...but the note about what the agent remembers does not.
+    expect(screen.getByText(noticeText)).toBeInTheDocument();
+  });
+
   it("is shown once: dismissing it keeps it gone on the next new chat", () => {
     mockAgent = sharedKbAgent;
     const { unmount } = render(<Harness messages={[greeting]} />);

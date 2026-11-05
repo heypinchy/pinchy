@@ -1,7 +1,7 @@
 "use client";
 
 import { type FC, useContext, useState } from "react";
-import { AuiIf, ThreadPrimitive } from "@assistant-ui/react";
+import { AuiIf, ThreadPrimitive, useAuiState } from "@assistant-ui/react";
 import { Info } from "lucide-react";
 import { AgentIdContext, ChatStatusContext } from "@/components/chat";
 import { useAgentsContext } from "@/components/agents-provider";
@@ -85,6 +85,10 @@ const NewConversationContent: FC = () => {
   const agentId = useContext(AgentIdContext);
   const { getAgent } = useAgentsContext();
   const agent = agentId ? getAgent(agentId) : undefined;
+  // A chip sends and then clears the composer's text, so while the user is
+  // typing it would throw their draft away: the chips step aside. Text only —
+  // an attachment survives a chip click and may well be what it is about.
+  const hasDraftText = useAuiState((s) => s.composer.text.trim() !== "");
 
   if (chatStatus.kind !== "ready" || !agent) return null;
 
@@ -94,7 +98,7 @@ const NewConversationContent: FC = () => {
 
   return (
     <div className="mx-auto mt-2 mb-4 flex w-full max-w-(--thread-max-width) flex-col items-center gap-3">
-      <StarterPromptChips prompts={agent.starterPrompts ?? []} />
+      {!hasDraftText && <StarterPromptChips prompts={agent.starterPrompts ?? []} />}
       {sharesMemory && <SharedMemoryNotice />}
     </div>
   );
@@ -108,16 +112,12 @@ const NewConversationContent: FC = () => {
  * opens every new conversation with the greeting as an assistant message, so
  * the thread is never empty once the chat is ready. The starter prompts used
  * to sit behind `isEmpty` and therefore never rendered. An empty thread is
- * still ThreadWelcome's to handle. Hidden while the composer holds text.
+ * still ThreadWelcome's to handle.
  */
 export const NewConversationPrompts: FC = () => (
   <AuiIf
     condition={(s) =>
-      s.thread.messages.length > 0 &&
-      s.thread.messages.every((m) => m.role !== "user") &&
-      // A chip sends and then clears the composer; while the user is typing
-      // it would throw their draft away, so it steps aside.
-      s.composer.isEmpty
+      s.thread.messages.length > 0 && s.thread.messages.every((m) => m.role !== "user")
     }
   >
     <NewConversationContent />
