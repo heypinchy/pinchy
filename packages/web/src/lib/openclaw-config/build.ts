@@ -63,6 +63,7 @@ import {
   deletesAProvider,
 } from "./size-drop";
 import {
+  fileOnlyDeliveryPending,
   getPendingConfigPushCount,
   nextConfigPushGeneration,
   nextRegenerateSequence,
@@ -1860,8 +1861,15 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // `BASE_RELOAD_RULES` to the default full-restart trigger. Result: every
   // settings save costs 15-30 s of "Agent runtime is not available" downtime
   // (#193). Removable when we bump OpenClaw past the upstream fix; tracked in #215.
+  //
+  // The file stands for OpenClaw's runtime only while every push reached that
+  // runtime. After a push fell back to writing the file (noteFileOnlyDelivery),
+  // a running OpenClaw may never have loaded it, so the target goes to
+  // pushConfigInBackground, whose own no-op guard compares against the
+  // runtime and spends no config.apply when OpenClaw already runs it.
   const unchanged =
     onDiskContent !== undefined &&
+    !fileOnlyDeliveryPending() &&
     (onDiskContent === newContent ||
       configsAreEquivalentUpToOpenClawMetadata(onDiskContent, newContent));
   // Set below when the guard lets a deletion through that OpenClaw will refuse.

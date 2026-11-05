@@ -5113,6 +5113,67 @@ describe("regenerateOpenClawConfig", () => {
       expect(undeliveredConfigChange()).toBe(true);
     });
   });
+
+  // CI run 41906476538: the setup wizard's push waited out OpenClaw's restart
+  // ("Not connected"), gave up, and wrote openclaw.json instead. OpenClaw was
+  // already running by then and never reloaded that file, so Smithers stayed
+  // out of its runtime. The regenerate on the connect that followed 0.3 s later
+  // found openclaw.json already equal to its target and pushed nothing — the
+  // file says nothing about a running OpenClaw that never read it.
+  describe("a config that reached openclaw.json only through a push's file fallback", () => {
+    const ocRuntimeWithoutTheChange = { hash: "h-runtime", config: { gateway: { mode: "local" } } };
+
+    /** Regenerate while OpenClaw is unreachable until the push falls back to the file. */
+    async function regenerateIntoFileFallback(): Promise<void> {
+      mockConfigGet.mockRejectedValue(new Error("Not connected to OpenClaw Gateway"));
+      mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+      vi.useFakeTimers();
+      try {
+        // Not awaited before the clock runs: regenerate itself waits on timers.
+        const regenerated = regenerateOpenClawConfig();
+        // 60 s "Not connected" budget, then the backoff slots.
+        for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(2_100);
+        for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
+        await regenerated;
+      } finally {
+        vi.useRealTimers();
+      }
+      const onDisk = writtenOpenClawConfig(mockedWriteFileSync);
+      mockedWriteFileSync.mockClear();
+      mockedReadFileSync.mockReturnValue(onDisk);
+      expect(mockConfigApply, "precondition: nothing reached config.apply").not.toHaveBeenCalled();
+    }
+
+    it("is pushed by the next regenerate although openclaw.json already holds it", async () => {
+      await regenerateIntoFileFallback();
+      mockConfigGet.mockReset().mockResolvedValue(ocRuntimeWithoutTheChange);
+      mockConfigApply.mockReset().mockResolvedValue(undefined);
+
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+    });
+
+    it("is trusted to openclaw.json again once a push reached OpenClaw's runtime", async () => {
+      await regenerateIntoFileFallback();
+      mockConfigGet.mockReset().mockResolvedValue(ocRuntimeWithoutTheChange);
+      mockConfigApply.mockReset().mockResolvedValue(undefined);
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+      expect(mockConfigApply, "precondition: the change was pushed").toHaveBeenCalledTimes(1);
+
+      // An unchanged regenerate is back on the fast path: no config.get, no
+      // config.apply slot spent on a config OpenClaw already runs.
+      mockConfigGet.mockClear();
+      mockConfigApply.mockClear();
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+
+      expect(mockConfigGet).not.toHaveBeenCalled();
+      expect(mockConfigApply).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("sanitizeOpenClawConfig", () => {

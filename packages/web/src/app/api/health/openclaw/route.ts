@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { restartState } from "@/server/restart-state";
 import { openClawConnectionState } from "@/server/openclaw-connection-state";
 import { getOpenClawClient } from "@/server/openclaw-client";
+import { dispatchableAgentIds } from "@/server/agent-readiness";
 import { getChannelHealthMonitor } from "@/server/channel-health-singleton";
 import { getPendingConfigPushCount } from "@/lib/openclaw-config/push-state";
 import { requireAdmin } from "@/lib/api-auth";
@@ -13,10 +14,14 @@ import { safeProviderError } from "@/lib/audit";
  * Default mode: returns `{ status, connected }` — cheap synchronous check
  * used by browser status indicators and CI stability gates.
  *
- * With `?agentId=<uuid>`: additionally queries OpenClaw's runtime config
- * (`config.get`) and returns `{ ..., agentDispatchable: boolean }`. True iff
- * OC's `agents.list` currently contains the requested id, i.e. dispatching
- * a chat to that agent right now would NOT fail with "unknown agent id".
+ * With `?agentId=<uuid>`: additionally queries OpenClaw's runtime
+ * (`agents.list`) and returns `{ ..., agentDispatchable: boolean }`. True iff
+ * the agent ids OC's dispatch handler accepts include the requested id, i.e.
+ * dispatching a chat to that agent right now would NOT fail with "unknown
+ * agent id" — the same predicate the chat path's readiness gate uses
+ * (`dispatchableAgentIds`, server/agent-readiness.ts). Not `config.get`: that
+ * reads openclaw.json, which can name an agent the running OpenClaw never
+ * loaded (CI run 41906476538).
  *
  * The query mode exists to close the race window after `PATCH /api/agents/:id`
  * or `PUT /api/agents/:id/integrations` returns 200: those endpoints fire
@@ -81,17 +86,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(base);
   }
 
-  // Agent-dispatchable probe. Failure modes (OC not connected, config.get
-  // RPC throws, list missing) all collapse to `agentDispatchable: false` so
+  // Agent-dispatchable probe. Failure modes (OC not connected, agents.list
+  // RPC throws or is missing) all collapse to `agentDispatchable: false` so
   // the poll keeps trying — never breaks the test loop with a 5xx.
   let agentDispatchable = false;
   try {
     const client = getOpenClawClient();
-    const result = (await client.config.get()) as {
-      config?: { agents?: { list?: Array<{ id?: string }> } };
-    };
-    const list = result?.config?.agents?.list ?? [];
-    agentDispatchable = list.some((a) => a?.id === agentId);
+    agentDispatchable = dispatchableAgentIds(await client.agents.list()).includes(agentId);
   } catch {
     agentDispatchable = false;
   }

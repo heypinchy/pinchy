@@ -1,4 +1,4 @@
-import { undeliveredConfigChange } from "@/lib/openclaw-config/push-state";
+import { fileOnlyDeliveryPending, undeliveredConfigChange } from "@/lib/openclaw-config/push-state";
 
 /**
  * The regenerate a connection to OpenClaw owes, run from server.ts's
@@ -19,6 +19,12 @@ import { undeliveredConfigChange } from "@/lib/openclaw-config/push-state";
  * once its config reaches OpenClaw — pushed, or found already in openclaw.json
  * (noteFullRegenerateDelivered).
  *
+ * It also regenerates when a push could reach OpenClaw only by writing
+ * openclaw.json (noteFileOnlyDelivery): OpenClaw may have been running but not
+ * yet connected, and a running OpenClaw does not reliably reload that file. The
+ * regenerate pushes it, because build.ts does not take the file for the
+ * runtime until a push has reached the runtime.
+ *
  * Every other reconnect runs none, to prevent a cascade: if a push triggers an
  * OC restart (large diff on fresh install), the reconnect after it must not
  * fire it again. A debt cannot loop either: a regenerate whose config reaches
@@ -29,10 +35,17 @@ export function regenerateOnConnect(
   regenerate: () => Promise<void>
 ): void {
   if (!firstConnect) {
-    if (!undeliveredConfigChange()) return;
-    console.log(
-      "[server] OpenClaw reconnected with a config change Pinchy could not deliver while it was unreachable; regenerating"
-    );
+    if (undeliveredConfigChange()) {
+      console.log(
+        "[server] OpenClaw reconnected with a config change Pinchy could not deliver while it was unreachable; regenerating"
+      );
+    } else if (fileOnlyDeliveryPending()) {
+      console.log(
+        "[server] OpenClaw reconnected after a config change reached only openclaw.json; regenerating to push it to the runtime"
+      );
+    } else {
+      return;
+    }
   }
   regenerate().catch((err: unknown) => {
     console.warn("[server] on-connected regenerateOpenClawConfig failed:", err);

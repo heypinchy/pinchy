@@ -66,6 +66,8 @@ interface ConfigPushState {
    * OpenClaw, 0 before any (see noteFullRegenerateDelivered).
    */
   deliveredSeq: number;
+  /** See noteFileOnlyDelivery. */
+  fileOnlyDelivery: boolean;
 }
 
 /**
@@ -109,6 +111,7 @@ function state(): ConfigPushState {
       lastGoodBound: undefined,
       undeliveredSeq: 0,
       deliveredSeq: 0,
+      fileOnlyDelivery: false,
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -118,6 +121,7 @@ function state(): ConfigPushState {
   existing.regenerateSeq ??= 0;
   existing.undeliveredSeq ??= 0;
   existing.deliveredSeq ??= 0;
+  existing.fileOnlyDelivery ??= false;
   return existing as ConfigPushState;
 }
 
@@ -331,6 +335,42 @@ export function fullRegenerateDeliveredSince(seq: number): boolean {
   return state().deliveredSeq > seq;
 }
 
+/**
+ * Record that a push over a WS client gave up on config.apply and wrote
+ * openclaw.json instead (the file fallbacks in write.ts). The file then holds
+ * the newest config, but nothing says OpenClaw's runtime does: OpenClaw may
+ * have been running all along, only not connected to Pinchy yet — and a
+ * running OpenClaw does not reliably reload a file Pinchy renames into place
+ * (#464). CI run 41906476538 is that shape: the setup wizard's push waited out
+ * OpenClaw's restart, wrote the file 0.3 s before Pinchy reconnected, and
+ * Smithers stayed out of the runtime.
+ *
+ * Until a push reaches the runtime (settleFileOnlyDelivery), openclaw.json is
+ * no proof of what OpenClaw runs: a regenerate that finds its target there
+ * still pushes it (build.ts), and a reconnect regenerates
+ * (server/openclaw-connect-regenerate.ts). Not for the no-client write at boot:
+ * that one precedes the first connect, which regenerates anyway.
+ *
+ * Process-wide only, not persisted: after a Pinchy restart the first connect
+ * regenerates anyway.
+ */
+export function noteFileOnlyDelivery(): void {
+  state().fileOnlyDelivery = true;
+}
+
+/** Whether openclaw.json may hold a config OpenClaw's runtime never loaded (noteFileOnlyDelivery). */
+export function fileOnlyDeliveryPending(): boolean {
+  return state().fileOnlyDelivery;
+}
+
+/**
+ * The newest push reached OpenClaw's runtime — applied over config.apply, or
+ * found equal to it — so the runtime now holds everything the file does.
+ */
+export function settleFileOnlyDelivery(): void {
+  state().fileOnlyDelivery = false;
+}
+
 /** `value` with every string replaced by "": which SecretRefs it resolves, and nothing else. */
 function shapeOf<T>(value: T): T {
   if (typeof value === "string") return "" as T;
@@ -380,6 +420,7 @@ export function _resetConfigPushState(): void {
   s.pending = 0;
   s.undeliveredSeq = 0;
   s.deliveredSeq = 0;
+  s.fileOnlyDelivery = false;
   s.unservedCalls = undefined;
   s.writtenSecretsShape = undefined;
   s.lastGoodBound = undefined;

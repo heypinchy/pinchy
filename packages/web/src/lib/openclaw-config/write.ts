@@ -22,6 +22,8 @@ import {
   noteUndeliveredConfigChange,
   noteFullRegenerateDelivered,
   fullRegenerateDeliveredSince,
+  noteFileOnlyDelivery,
+  settleFileOnlyDelivery,
 } from "./push-state";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
@@ -484,6 +486,14 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       if (!options.fullRegenerate) return;
       noteFullRegenerateDelivered(regenerateSeq);
     };
+    // The target reached OpenClaw's RUNTIME (applied over config.apply, or
+    // found equal to it), not just openclaw.json. As the newest push, that
+    // settles a file-only delivery of an older one (noteFileOnlyDelivery):
+    // this push started after it, so its payload carries the same change.
+    const runtimeReached = () => {
+      if (generation === getCurrentConfigPushGeneration()) settleFileOnlyDelivery();
+      targetReached();
+    };
     // A payload that names a key secrets.json no longer holds — captured
     // before a regenerate took the key out (a targeted writer's copy of the
     // pre-bridge file, an older regenerate's payload) — is one OpenClaw refuses
@@ -536,7 +546,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         return false;
       }
       if (namesRemovedKey(content)) return false;
-      return writeFile(content);
+      if (!writeFile(content)) return false;
+      noteFileOnlyDelivery();
+      return true;
     };
     let client;
     try {
@@ -679,7 +691,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             console.log(
               `[openclaw-config] push gen=${String(generation)}: no-op skip (supplemented payload ≡ OC runtime)`
             );
-            targetReached();
+            runtimeReached();
             return;
           }
         }
@@ -727,7 +739,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         console.log(
           `[openclaw-config] push gen=${String(generation)}: applied via WS config.apply (in-process, synchronous runtime refresh)${rateLimitAttempts > 0 ? ` after ${String(rateLimitAttempts)} rate-limit wait(s)` : ""}`
         );
-        targetReached();
+        runtimeReached();
         onChangeApplied?.();
         return;
       } catch (err) {

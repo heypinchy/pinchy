@@ -16,6 +16,7 @@ import { execSync, spawn } from "child_process";
 import path from "path";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { FAKE_OLLAMA_PORT } from "../shared/fake-ollama/fake-ollama-server";
+import { waitForAgentDispatchable } from "../shared/dispatch-probe";
 import { stackDbUrl } from "../shared/stack-db";
 
 const INTEGRATION_DB_URL = stackDbUrl(5435);
@@ -249,5 +250,44 @@ export default async function globalSetup() {
   if (!reconnected) {
     throw new Error("[integration-setup] Pinchy did not reconnect to OpenClaw within 300s");
   }
-  console.log("[integration-setup] Pinchy reconnected to OpenClaw — integration stack ready");
+  console.log("[integration-setup] Pinchy reconnected to OpenClaw");
+
+  // 8. Wait until OpenClaw's runtime accepts Smithers — what the first spec
+  //    of every shard dispatches to. A connection says nothing about the
+  //    runtime's agent list: in CI run 41906476538 the setup wizard's push
+  //    waited out the restart above, fell back to writing openclaw.json, and
+  //    the running OpenClaw never reloaded it, so the first chat was rejected
+  //    with `unknown agent id` 12 s after "ready". `agentDispatchable` reads
+  //    `agents.list` through the same predicate as the chat path's readiness
+  //    gate, so this exits on exactly the condition the dispatch needs.
+  const smithersId = await adminSmithersId();
+  await waitForAgentDispatchable(
+    (agentId) => fetch(`${PINCHY_URL}/api/health/openclaw?agentId=${agentId}`),
+    smithersId,
+    { deadlineMs: 120_000 }
+  );
+  console.log(
+    `[integration-setup] OpenClaw's runtime accepts Smithers (${smithersId}) — integration stack ready`
+  );
+}
+
+/** The setup wizard's Smithers, owned by the admin it created. */
+async function adminSmithersId(): Promise<string> {
+  const postgres = (await import("postgres")).default;
+  const sql = postgres(INTEGRATION_DB_URL);
+  try {
+    const rows = await sql<{ id: string }[]>`
+      SELECT a.id FROM agents a
+      JOIN "user" u ON u.id = a.owner_id
+      WHERE u.email = 'admin@integration.local' AND a.name = 'Smithers' AND a.deleted_at IS NULL
+      ORDER BY a.created_at
+      LIMIT 1
+    `;
+    if (rows.length === 0) {
+      throw new Error("[integration-setup] the setup wizard created no Smithers for the admin");
+    }
+    return rows[0].id;
+  } finally {
+    await sql.end();
+  }
 }
