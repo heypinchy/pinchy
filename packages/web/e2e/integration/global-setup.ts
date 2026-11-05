@@ -272,8 +272,8 @@ export default async function globalSetup() {
       })),
     smithersId,
     // A rate-limited delivery lands with the follow-up one window (60 s) later.
-    // Rate-limited once more, it would need the next follow-up (120 s on) and
-    // miss this — loudly, which is the point of the wait.
+    // Rate-limited once more, it would need the next follow-up (~180 s after
+    // the fallback) and miss this — loudly, which is the point of the wait.
     { deadlineMs: 180_000 }
   );
   console.log(

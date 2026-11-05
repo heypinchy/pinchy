@@ -385,15 +385,28 @@ export interface PushConfigOptions {
 }
 
 /**
- * How OpenClaw 2026.7.1's config.apply words a refusal of the config itself
- * (gateway/server-methods/config.ts): schema issues
- * (`summarizeConfigValidationIssues` → "invalid config: …"), an unresolvable
- * SecretRef ("invalid config: active SecretRef resolution failed …"), and the
- * bare "invalid config" fallback. The same payload would be refused again, so
- * such a fallback queues no follow-up. Everything else — a timeout, a stale
- * hash past its retries, a disconnect, a rate limit — passes.
+ * How OpenClaw 2026.7.1's config.apply words a refusal of the config itself —
+ * the refusals known to be permanent, read from its dist:
+ * - "invalid config": schema issues (`summarizeConfigValidationIssues` →
+ *   "invalid config: …"), an unresolvable SecretRef ("invalid config: active
+ *   SecretRef resolution failed …"), the bare fallback, and — by the same
+ *   substring — "invalid config.apply params: …";
+ * - "Config write rejected": `replaceConfigFile` refusing the write (e.g.
+ *   `gateway-mode-removed`), which also leaves an openclaw.json.rejected.<ts>
+ *   file behind on every attempt;
+ * - "is not valid as real data": `restoreRedactedValues` meeting a redaction
+ *   sentinel with no original value.
+ * The same payload would be refused again, so such a fallback queues no
+ * follow-up. Anything else — a timeout, a stale hash past its retries, a
+ * disconnect, a rate limit, a refusal not listed here — is retried by the
+ * follow-up at up to every 10 min on purpose: a wasted regenerate costs less
+ * than a stranded agent.
  */
-const CONFIG_REFUSED_ERROR_FRAGMENT = "invalid config";
+const CONFIG_REFUSED_ERROR_FRAGMENTS = [
+  "invalid config",
+  "Config write rejected",
+  "is not valid as real data",
+];
 
 /**
  * The follow-up regenerate a file-only delivery schedules (push-state.ts).
@@ -571,7 +584,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // A file-write fallback for a shrink would land the target past OpenClaw's
     // guard (see MAX_SHRINK_STEPS) — refuse it instead.
     // `transient`: the apply failed for a reason that passes — anything but
-    // OpenClaw refusing the config itself (CONFIG_REFUSED_ERROR_FRAGMENT). A
+    // OpenClaw refusing the config itself (CONFIG_REFUSED_ERROR_FRAGMENTS). A
     // transient fallback queues a follow-up; a refusal leaves the file
     // unconfirmed and ends any running follow-up chain, because a retry would
     // be refused the same way.
@@ -583,8 +596,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       if (namesRemovedKey(content)) return false;
       if (!writeFile(content)) return false;
       noteFileOnlyDelivery();
-      // A disconnect delivers it on the reconnect too; a fallback while
-      // OpenClaw stays connected (rate limit) has nothing else coming.
+      // Every fallback but a refusal gets one: a disconnect is delivered on the
+      // reconnect too, but a rate limit or a timeout while OpenClaw stays
+      // connected has nothing else coming.
       if (transient) scheduleFileOnlyFollowUp(regenerateForFileOnlyDelivery);
       else cancelFileOnlyFollowUp();
       return true;
@@ -933,7 +947,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           const fallback = lastSupplemented ?? supplementPayloadWithFileFields(newContent);
           if (
             writeFallback(fallback, {
-              transient: !message.includes(CONFIG_REFUSED_ERROR_FRAGMENT),
+              transient: !CONFIG_REFUSED_ERROR_FRAGMENTS.some((f) => message.includes(f)),
             })
           ) {
             targetReached();

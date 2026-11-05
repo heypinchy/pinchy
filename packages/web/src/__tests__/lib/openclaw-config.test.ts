@@ -5236,7 +5236,11 @@ describe("regenerateOpenClawConfig", () => {
         mockConfigApply.mockRejectedValue(new Error(error));
       }
       pushConfigInBackground(JSON.stringify({ gateway: { mode: "local" } }));
-      for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(2_100);
+      // Only until the fallback: further, and a follow-up would already fire
+      // against mocks that still fail.
+      for (let i = 0; i < 40 && !fileOnlyDeliveryPending(); i++) {
+        await vi.advanceTimersByTimeAsync(2_000);
+      }
       expect(fileOnlyDeliveryPending(), "precondition: it fell back").toBe(true);
     }
     /** OpenClaw accepts again; how many applies land over the next `minutes`. */
@@ -5256,6 +5260,28 @@ describe("regenerateOpenClawConfig", () => {
         await pushIntoFallback(error, failOn);
         expect(await appliesOver(2)).toBe(1);
         expect(fileOnlyDeliveryPending()).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // OpenClaw 2026.7.1 refuses these for good (config-*.js / io-*.js /
+    // redact-snapshot-*.js): retrying would only repeat the refusal.
+    it.each([
+      ["a schema issue", "invalid config: agents.list.0.model"],
+      [
+        "a refused write",
+        "Config write rejected: /root/.openclaw/openclaw.json (gateway-mode-removed)",
+      ],
+      [
+        "a redaction sentinel",
+        'Sentinel value "__OPENCLAW_REDACTED__" in key models.x.apiKey is not valid as real data',
+      ],
+    ])("queues no follow-up for %s", async (_what, error) => {
+      vi.useFakeTimers();
+      try {
+        await pushIntoFallback(error, "apply");
+        expect(await appliesOver(30)).toBe(0);
       } finally {
         vi.useRealTimers();
       }

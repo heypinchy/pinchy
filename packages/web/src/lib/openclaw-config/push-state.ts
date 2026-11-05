@@ -378,11 +378,11 @@ export function fullRegenerateDeliveredSince(seq: number): boolean {
  * that same file (write.ts) — and a reconnect regenerates
  * (server/openclaw-connect-regenerate.ts).
  *
- * A fallback with no reconnect coming — the rate-limit retries ran out while
- * OpenClaw stayed connected, the shape a fresh install's first restarts can
- * produce — gets a follow-up regenerate one rate-limit window later
- * (scheduleFileOnlyFollowUp), as does a newest push that ends without an
- * apply while it waits.
+ * Every fallback except OpenClaw refusing the config itself gets a follow-up
+ * regenerate one rate-limit window later (scheduleFileOnlyFollowUp) — the one
+ * delivery there is when no reconnect is coming: the rate-limit retries ran
+ * out, or config.apply timed out, while OpenClaw stayed connected, the shapes
+ * a fresh install's first restarts can produce.
  *
  * Gap, stated rather than closed here: the no-client write at boot does not
  * set this, so a Pinchy restart that changes openclaw.json while OpenClaw
@@ -418,7 +418,10 @@ export function settleFileOnlyDelivery(): void {
 /**
  * Stop the follow-up chain, leaving the delivery pending: OpenClaw refused the
  * config itself (write.ts), so a retry would be refused the same way. The next
- * change, or a reconnect, still delivers what the file holds.
+ * change, or a reconnect, still delivers what the file holds. Until one lands,
+ * every regenerate — an unchanged one too — and every reconnect pushes
+ * (config.get, its refused applies, a file rewrite) instead of taking the
+ * build.ts fast path; nothing schedules those, so it is bounded by them.
  */
 export function cancelFileOnlyFollowUp(): void {
   clearFileOnlyFollowUp(state());
