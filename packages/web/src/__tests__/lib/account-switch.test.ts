@@ -177,6 +177,18 @@ describe("account switch on a shared browser (#1286)", () => {
     }
   });
 
+  it("still wipes and moves on when the sign-out request itself fails", async () => {
+    // Offline or a restarting server: the fetch rejects instead of answering.
+    mockSignOut.mockRejectedValue(new TypeError("Failed to fetch"));
+    seedPreviousUsersState();
+
+    await leaveAccount();
+
+    expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBeNull();
+    expect(localStorage.getItem("pinchy:account")).toMatch(/^signed-out:/);
+    expect(assign).toHaveBeenCalledWith("/login");
+  });
+
   describe("other open tabs", () => {
     // Cookies are shared across tabs, but a tab's in-memory state is not: a
     // second tab of the previous person keeps their chat list and drafts, and
@@ -229,6 +241,28 @@ describe("account switch on a shared browser (#1286)", () => {
       seedPreviousUsersState();
       expect(await claimAccount("user-b")).toBe(false);
       expect(localStorage.getItem("pinchy:composer:draft:agent-1")).toBe("half-written reply");
+    });
+
+    it("asks for no reload when there was nothing of anyone's to wipe", async () => {
+      // A fresh browser (or an E2E context signed in over the API) has no
+      // record and no state: claiming it must not reload the page under the
+      // person already using it.
+      expect(await claimAccount("user-a")).toBe(false);
+      expect(localStorage.getItem("pinchy:account")).toBe("user-a");
+    });
+
+    it("records the new owner before waiting on the share cache", async () => {
+      // Another tab reading the record mid-claim must see the new owner, not
+      // nobody (which would make it wipe the share being kept).
+      let seenDuringSweep: string | null = "unset";
+      mockSweepStaleShares.mockImplementation(async () => {
+        seenDuringSweep = localStorage.getItem("pinchy:account");
+      });
+      await leaveAccount();
+
+      await enterAccount("user-a", "/");
+
+      expect(seenDuringSweep).toBe("user-a");
     });
   });
 

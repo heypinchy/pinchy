@@ -48,17 +48,34 @@ export const navigation = {
 
 // Storage can throw (Safari private mode, blocked site data). Wiping is a
 // best effort and must never stand between a person and signing in or out.
-function wipePinchyStorage(): void {
+// The account record itself is left alone: callers overwrite it, and removing
+// it first would let another tab read "nobody" in between. Returns whether it
+// removed anything a page could have rendered from.
+function wipePinchyStorage(): boolean {
+  let removed = false;
   try {
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i);
-      if (key?.startsWith(PINCHY_PREFIX)) localStorage.removeItem(key);
+      if (key?.startsWith(PINCHY_PREFIX) && key !== ACCOUNT_KEY) {
+        localStorage.removeItem(key);
+        removed = true;
+      }
     }
   } catch {
     // ignore
   }
   try {
+    if (sessionStorage.length > 0) removed = true;
     sessionStorage.clear();
+  } catch {
+    // ignore
+  }
+  return removed;
+}
+
+function forgetAccount(): void {
+  try {
+    localStorage.removeItem(ACCOUNT_KEY);
   } catch {
     // ignore
   }
@@ -82,11 +99,6 @@ async function keepRecentShares(): Promise<void> {
   }
 }
 
-async function wipeAll(): Promise<void> {
-  wipePinchyStorage();
-  await forgetShares();
-}
-
 /** The account this browser's Pinchy storage was last claimed for, if readable. */
 export function recordedAccount(): string | null {
   try {
@@ -107,42 +119,50 @@ function recordAccount(value: string): void {
 /**
  * Makes this browser's storage belong to `userId`: wipes it if someone else
  * was recorded (or nobody), then records them. Returns whether a tab that
- * already rendered from that storage should reload: only when it wiped AND the
- * record stuck. Where storage cannot be read or written, every load would
- * otherwise look like a switch and reload again, forever.
+ * already rendered from that storage should reload: only when the wipe removed
+ * something AND the record stuck. Where storage cannot be read or written,
+ * every load would otherwise look like a switch and reload again, forever; and
+ * a fresh browser with nothing in it needs no reload at all.
  */
 export async function claimAccount(userId: string): Promise<boolean> {
   const previous = recordedAccount();
-  const wiped = previous !== userId;
-  if (wiped) {
-    wipePinchyStorage();
-    // After a sign-out the earlier shares are already gone, so any share there
-    // now was made while nobody was signed in. Keep a recent one for the
-    // person signing in; someone else's session merely expired, drop them all.
-    if (previous?.startsWith(SIGNED_OUT_PREFIX)) await keepRecentShares();
-    else await forgetShares();
-  }
+  if (previous === userId) return false;
+  const removed = wipePinchyStorage();
   recordAccount(userId);
-  return wiped && recordedAccount() === userId;
+  // After a sign-out the earlier shares are already gone, so any share there
+  // now was made while nobody was signed in. Keep a recent one for the person
+  // signing in; when someone else's session merely expired, drop them all.
+  if (previous?.startsWith(SIGNED_OUT_PREFIX)) await keepRecentShares();
+  else await forgetShares();
+  return removed && recordedAccount() === userId;
 }
 
 /**
  * Signs out, wipes this browser's Pinchy storage, and reloads into the login
- * page. A sign-out the server refuses still wipes: on a shared browser the
- * next person starting clean matters more than the outcome of the request.
+ * page. A sign-out that is refused or never reaches the server still wipes: on
+ * a shared browser the next person starting clean matters more than the
+ * outcome of the request.
  */
 export async function leaveAccount(): Promise<void> {
-  await authClient.signOut();
-  await wipeAll();
+  try {
+    await authClient.signOut();
+  } catch {
+    // Offline or a restarting server; wipe and leave all the same.
+  }
+  wipePinchyStorage();
   // Always a new value, so every other tab gets a storage event.
   recordAccount(`${SIGNED_OUT_PREFIX}${Date.now()}`);
+  await forgetShares();
   navigation.assign("/login");
 }
 
 /** Enters the account that just signed in, with a full load to `target`. */
 export async function enterAccount(userId: string | undefined, target: string): Promise<void> {
-  if (!userId) await wipeAll();
-  else if (recordedAccount() === userId) await keepRecentShares();
+  if (!userId) {
+    wipePinchyStorage();
+    forgetAccount();
+    await forgetShares();
+  } else if (recordedAccount() === userId) await keepRecentShares();
   else await claimAccount(userId);
   navigation.assign(target);
 }
