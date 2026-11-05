@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { getAllSettings, setSetting } from "@/lib/settings";
+import { getAllSettings } from "@/lib/settings";
 import { getOrgTimezone, setOrgTimezone, isValidIanaTimezone } from "@/lib/settings-timezone";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 import { orgSettingSchema } from "@/lib/schemas/settings";
-import { isPolicyKey } from "@/lib/instance-policy";
 
 export async function GET() {
   const sessionOrError = await requireAdmin();
@@ -23,59 +22,33 @@ export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
+  // The schema allow-lists the key (org.timezone only); every other setting
+  // has a dedicated route with its own validation, side effects and audit.
   const parsed = await parseRequestBody(orgSettingSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { key, value } = parsed.data;
+  const { value } = parsed.data;
 
-  // The member-access switches have their own route: it audits a from/to diff
-  // and refreshes OpenClaw and Telegram, neither of which happens here.
-  if (isPolicyKey(key)) {
-    return NextResponse.json(
-      { error: `${key} is set through PUT /api/settings/governance` },
-      { status: 400 }
+  // Validate client input first (400). Persistence failures below are NOT
+  // caught here, so a genuine DB error surfaces as a 500 rather than being
+  // misreported to the client as bad input.
+  if (!isValidIanaTimezone(value)) {
+    return NextResponse.json({ error: `invalid IANA timezone: ${value}` }, { status: 400 });
+  }
+  const previous = await getOrgTimezone();
+  await setOrgTimezone(value);
+  // Only log when it actually changed, so a no-op save doesn't spam the audit
+  // log with from===to rows.
+  if (previous !== value) {
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: sessionOrError.user.id!,
+        eventType: "settings.updated",
+        resource: "settings",
+        detail: { changes: { timezone: { from: previous, to: value } } },
+        outcome: "success",
+      })
     );
   }
-
-  if (key === "org.timezone") {
-    // Validate client input first (400). Persistence failures below are NOT
-    // caught here, so a genuine DB error surfaces as a 500 rather than being
-    // misreported to the client as bad input.
-    if (!isValidIanaTimezone(value)) {
-      return NextResponse.json({ error: `invalid IANA timezone: ${value}` }, { status: 400 });
-    }
-    const previous = await getOrgTimezone();
-    await setOrgTimezone(value);
-    // The generic branch below intentionally logs a value-less `config.changed`
-    // because it also handles secret keys (api_key*), where a from/to diff would
-    // leak the secret into the audit detail. The timezone is not a secret, so it
-    // gets the richer `settings.updated` diff — but only when it actually changed,
-    // so a no-op save doesn't spam the audit log with from===to rows.
-    if (previous !== value) {
-      after(() =>
-        appendAuditLog({
-          actorType: "user",
-          actorId: sessionOrError.user.id!,
-          eventType: "settings.updated",
-          resource: "settings",
-          detail: { changes: { timezone: { from: previous, to: value } } },
-          outcome: "success",
-        })
-      );
-    }
-    return NextResponse.json({ success: true });
-  }
-
-  await setSetting(key, value, key.includes("api_key"));
-
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: sessionOrError.user.id!,
-      eventType: "config.changed",
-      detail: { key },
-      outcome: "success",
-    })
-  );
-
   return NextResponse.json({ success: true });
 }
