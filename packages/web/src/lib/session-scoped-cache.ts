@@ -19,3 +19,67 @@ export function sessionScopedCacheHeaders(maxAgeSeconds: number): {
     vary: "Cookie",
   };
 }
+
+/**
+ * Headers for an access-checked document the browser may keep but must not
+ * reuse without asking first.
+ *
+ * A lifetime (`sessionScopedCacheHeaders`) lets the browser reuse its copy
+ * without contacting the server, so a reader whose access was revoked keeps
+ * reading the document until the copy expires: the agent's grant was
+ * removed, or the reader lost access to the agent, and the cached copy never
+ * reaches either check. `no-cache` keeps the copy but makes every reuse a
+ * conditional request, which the route answers only after its access check —
+ * with 304 and no body when the document is unchanged, so a large PDF is not
+ * sent again. `Vary: Cookie` keeps a copy from crossing sessions, as above.
+ */
+export function sessionScopedRevalidateHeaders(etag: string): {
+  "cache-control": string;
+  vary: string;
+  etag: string;
+} {
+  return { "cache-control": "private, no-cache", vary: "Cookie", etag };
+}
+
+/**
+ * A weak validator for one representation of a file on disk.
+ *
+ * Weak because size + mtime + inode only make byte-identity likely, not
+ * certain (two writes within one mtime tick, same size). That is enough to
+ * answer "has this changed?" with a 304, and it is exactly why a range is
+ * never stitched onto a cached copy on the strength of it — see
+ * `rangeAllowedByIfRange`. `variant` separates two representations of one
+ * document (an Office original and its converted PDF).
+ */
+export function weakFileEtag(
+  stat: { size: number; mtimeMs: number; ino: number },
+  variant: string
+): string {
+  const parts = [stat.size, Math.trunc(stat.mtimeMs), stat.ino].map((n) => n.toString(36));
+  return `W/"${parts.join("-")}-${variant.replace(/[^a-z0-9]/gi, "")}"`;
+}
+
+/**
+ * Whether `If-None-Match` names this representation (RFC 9110 §13.1.2): weak
+ * comparison, a comma-separated list, or `*` for any current representation.
+ * Callers MUST evaluate this only after the access check — a match answers
+ * 304, which tells the browser to show what it already holds.
+ */
+export function ifNoneMatchHits(header: string | null, etag: string): boolean {
+  if (!header) return false;
+  const opaque = (tag: string) => tag.trim().replace(/^W\//, "");
+  const ours = opaque(etag);
+  return header.split(",").some((tag) => tag.trim() === "*" || opaque(tag) === ours);
+}
+
+/**
+ * Whether a `Range` may be honoured given the request's `If-Range`
+ * (RFC 9110 §13.1.5). If-Range asks for the range only when the client's copy
+ * is the current one, and that needs a STRONG validator match. Every
+ * validator served here is weak, so a present If-Range never matches and the
+ * range is ignored: the full document is sent instead of splicing a range of
+ * a new edition onto a cached copy of the old one.
+ */
+export function rangeAllowedByIfRange(header: string | null): boolean {
+  return header === null;
+}

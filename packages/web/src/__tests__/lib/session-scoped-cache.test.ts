@@ -1,0 +1,63 @@
+import { describe, it, expect } from "vitest";
+import {
+  ifNoneMatchHits,
+  rangeAllowedByIfRange,
+  sessionScopedRevalidateHeaders,
+  weakFileEtag,
+} from "@/lib/session-scoped-cache";
+
+const STAT = { size: 1234, mtimeMs: 1_700_000_000_123.456, ino: 42 };
+
+describe("sessionScopedRevalidateHeaders", () => {
+  it("keeps the copy but requires revalidation, per session", () => {
+    expect(sessionScopedRevalidateHeaders('W/"x"')).toEqual({
+      "cache-control": "private, no-cache",
+      vary: "Cookie",
+      etag: 'W/"x"',
+    });
+  });
+});
+
+describe("weakFileEtag", () => {
+  it("is a weak, quoted validator", () => {
+    expect(weakFileEtag(STAT, "original")).toMatch(/^W\/"[a-z0-9-]+"$/);
+  });
+
+  it("changes with size, mtime, inode and representation", () => {
+    const base = weakFileEtag(STAT, "original");
+    expect(weakFileEtag({ ...STAT, size: 1235 }, "original")).not.toBe(base);
+    expect(weakFileEtag({ ...STAT, mtimeMs: STAT.mtimeMs + 1 }, "original")).not.toBe(base);
+    expect(weakFileEtag({ ...STAT, ino: 43 }, "original")).not.toBe(base);
+    expect(weakFileEtag(STAT, "converted")).not.toBe(base);
+  });
+});
+
+describe("ifNoneMatchHits", () => {
+  const etag = weakFileEtag(STAT, "original");
+  const strong = etag.replace(/^W\//, "");
+
+  it("misses without a header", () => {
+    expect(ifNoneMatchHits(null, etag)).toBe(false);
+    expect(ifNoneMatchHits("", etag)).toBe(false);
+  });
+
+  it("matches weakly, in a list, and on a wildcard", () => {
+    expect(ifNoneMatchHits(etag, etag)).toBe(true);
+    expect(ifNoneMatchHits(strong, etag)).toBe(true);
+    expect(ifNoneMatchHits(`"a", W/"b" , ${etag}`, etag)).toBe(true);
+    expect(ifNoneMatchHits("*", etag)).toBe(true);
+  });
+
+  it("misses a different validator", () => {
+    expect(ifNoneMatchHits(weakFileEtag(STAT, "converted"), etag)).toBe(false);
+    expect(ifNoneMatchHits('W/"other"', etag)).toBe(false);
+  });
+});
+
+describe("rangeAllowedByIfRange", () => {
+  it("honours a range only when no If-Range asks for a strong match it cannot get", () => {
+    expect(rangeAllowedByIfRange(null)).toBe(true);
+    expect(rangeAllowedByIfRange('W/"x"')).toBe(false);
+    expect(rangeAllowedByIfRange("Wed, 21 Oct 2026 07:28:00 GMT")).toBe(false);
+  });
+});

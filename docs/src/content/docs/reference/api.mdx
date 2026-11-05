@@ -399,11 +399,11 @@ The chat asks this when you press Retry, not when the run failed — see [Retryi
 
 ### `GET /api/agents/:agentId/uploads/:filename`
 
-Download a file the caller uploaded to this agent. Cached like `workspace-file` below: for an hour, and only for the same session.
+Download a file the caller uploaded to this agent. Cached like `workspace-file` below: kept, but checked again on every reuse, and only for the same session.
 
 ### `GET /api/agents/:agentId/artifacts/:filename`
 
-Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files). Cached like `workspace-file` below: for an hour, and only for the same session.
+Download a file the agent produced and delivered in chat — see [Generating files](/guides/file-uploads/#generating-files). Cached like `workspace-file` below: kept, but checked again on every reuse, and only for the same session.
 
 Serves a file the caller was actually handed, not whatever currently carries that name. Each delivery records where the file was and a checksum of its contents, and the download is refused with `404` unless the file on disk still matches one of the caller's own deliveries of that name. On a shared agent that matters: everyone's chats write into the same workspace, so without it a later file of the same name — from a conversation you cannot see — would be served under your download link.
 
@@ -419,7 +419,9 @@ Write a file into the agent's own workspace.
 
 Serve a file from a directory this agent is granted under `allowed_paths` — the path behind a knowledge-base citation you click. Supports byte ranges, so a PDF viewer can jump straight to the cited page.
 
-The bytes are sent with `Cache-Control: private, max-age=3600` and `Vary: Cookie`. The browser reuses its copy only while the request carries the same cookies; a different session, such as another person signing in on the same browser, asks the server again and goes through the access check.
+The bytes are sent with `Cache-Control: private, no-cache`, `Vary: Cookie` and a weak `ETag`. The browser keeps its copy but asks the server before every reuse, and the server answers only after the access check: if the agent's grant was removed, or you lost access to the agent, the answer is `403` or `404` — never the cached document. An unchanged document you may still see is answered `304 Not Modified` without its bytes, so a large PDF is not sent again; that reuse is logged as a view like any other. `Vary: Cookie` keeps a copy from crossing sessions, such as another person signing in on the same browser.
+
+A `Range` request is honoured on its own. Sent with `If-Range`, it is answered with the whole file instead: `If-Range` needs a strong validator, and splicing a range of a newer edition onto a cached copy of an older one would corrupt the document.
 
 **Query parameters:**
 

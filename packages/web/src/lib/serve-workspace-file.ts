@@ -5,7 +5,11 @@ import { extname } from "path";
 import { fileTypeFromBuffer } from "file-type";
 import { ALLOWED_ATTACHMENT_MIMES, ALLOWED_TEXT_MIMES } from "@/lib/upload-validation";
 import { EXTENSION_TO_MIME } from "@/lib/attachment-mime";
-import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
+import {
+  ifNoneMatchHits,
+  sessionScopedRevalidateHeaders,
+  weakFileEtag,
+} from "@/lib/session-scoped-cache";
 
 /**
  * Binary MIME types that are safe to SERVE for download but are intentionally
@@ -78,12 +82,20 @@ export const SERVABLE_DELIVERED_MIMES: ReadonlySet<string> = new Set<string>([
  * the open below follows symlinks, so handing it an unresolved path would
  * re-follow a link the caller's containment check has already read once.
  *
+ * `request` carries the browser's validator. The response is cached
+ * `no-cache`, so every reuse comes back here as a conditional request, and
+ * the caller's access check has already run by the time it does: an unchanged
+ * file the caller may still see is answered 304 without a body, anyone else
+ * never gets this far (#1286 follow-up).
+ *
  * Returns 404 if the file is missing/not a regular file, 415 if its content-type
- * is outside the upload allowlist, 200 with the bytes otherwise.
+ * is outside the upload allowlist, 304 if `If-None-Match` names the file as it
+ * is, 200 with the bytes otherwise.
  */
 export async function streamWorkspaceFile(
   fullPath: string,
-  safeName: string
+  safeName: string,
+  request: Request
 ): Promise<NextResponse> {
   // Open FIRST, then fstat the open handle (never re-stat the path) — a
   // check-then-open on the path is a TOCTOU race (js/file-system-race). A
@@ -99,11 +111,13 @@ export async function streamWorkspaceFile(
     return new NextResponse("Not found", { status: 404 });
   }
   let buffer: Buffer;
+  let etag: string;
   try {
     const info = await fh.stat();
     if (!info.isFile()) {
       return new NextResponse("Not found", { status: 404 });
     }
+    etag = weakFileEtag(info, "file");
     buffer = await fh.readFile();
   } finally {
     await fh.close();
@@ -134,13 +148,21 @@ export async function streamWorkspaceFile(
     servedMime = detected.mime;
   }
 
+  // After the MIME check, so a conditional request can never turn a 415 into
+  // a 304. The file is small (uploads are capped at upload time), so reading
+  // it before answering costs little; what a 304 saves is the transfer.
+  if (ifNoneMatchHits(request.headers.get("if-none-match"), etag)) {
+    return new NextResponse(null, { status: 304, headers: sessionScopedRevalidateHeaders(etag) });
+  }
+
   return new NextResponse(Uint8Array.from(buffer), {
     headers: {
       "content-type": servedMime,
       "content-length": String(buffer.byteLength),
-      // Keyed to the session: a cached file must not reach the next user on
-      // the same browser past the caller's access check (#1286).
-      ...sessionScopedCacheHeaders(3600),
+      // Kept, but revalidated on every reuse: the reuse reaches the caller's
+      // access check, so a revoked grant stops it; keyed to the session so a
+      // copy never reaches the next user on the same browser (#1286).
+      ...sessionScopedRevalidateHeaders(etag),
       // Inline so the browser renders PDFs/images directly instead of forcing a
       // download. The filename is advisory.
       "content-disposition": `inline; filename="${safeName.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,

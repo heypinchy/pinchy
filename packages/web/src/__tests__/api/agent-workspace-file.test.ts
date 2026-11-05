@@ -404,14 +404,14 @@ describe("GET /api/agents/[agentId]/workspace-file — large files and byte rang
   it("keys its browser cache to the session, so the next user on a shared browser cannot read it from cache (#1286)", async () => {
     // The browser keys its cache by URL. Without Vary: Cookie, a document
     // cached for one user is served to whoever signs in next on the same
-    // browser for the whole max-age — past the access check above, which the
-    // cached copy never reaches.
+    // browser — past the access check above. `no-cache` makes even the same
+    // user's reuse go back through that check (see the revalidation block).
     const pdfPath = join(allowedRoot, "handbook.pdf");
     writeFileSync(pdfPath, PDF_BYTES);
 
     const res = await callGET("agent-1", pdfPath);
 
-    expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(res.headers.get("cache-control")).toBe("private, no-cache");
     expect(res.headers.get("vary")).toBe("Cookie");
   });
 
@@ -523,6 +523,205 @@ describe("GET /api/agents/[agentId]/workspace-file — large files and byte rang
  * with HEAD. Any authenticated user could then exhaust the process's descriptor
  * limit with a loop.
  */
+describe("GET /api/agents/[agentId]/workspace-file — every reuse of a cached copy is re-checked", () => {
+  // A cached document used to be reused for an hour without asking the
+  // server, so revoking the agent's grant (or the user's access to the agent)
+  // did not stop a browser that already held a copy. `no-cache` + an ETag
+  // makes every reuse a conditional request that passes the access check
+  // first; only an unchanged document the reader may still see gets a 304,
+  // and the bytes are not sent again.
+  async function cachedEtag(pdfPath: string): Promise<string> {
+    const first = await callGET("agent-1", pdfPath);
+    expect(first.status).toBe(200);
+    const etag = first.headers.get("etag");
+    expect(etag).toMatch(/^W\/"[^"]+"$/);
+    return etag!;
+  }
+
+  it("tells the browser to revalidate before every reuse, and gives it a validator", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callGET("agent-1", pdfPath);
+
+    expect(res.headers.get("cache-control")).toBe("private, no-cache");
+    expect(res.headers.get("cache-control")).not.toMatch(/max-age/);
+    expect(res.headers.get("vary")).toBe("Cookie");
+    expect(res.headers.get("etag")).toMatch(/^W\/"[^"]+"$/);
+  });
+
+  it("answers an unchanged document with 304 and no body", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+
+    const res = await callGET("agent-1", pdfPath, { "if-none-match": etag });
+
+    expect(res.status).toBe(304);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("etag")).toBe(etag);
+    expect(res.headers.get("cache-control")).toBe("private, no-cache");
+    expect(res.headers.get("vary")).toBe("Cookie");
+  });
+
+  it("matches the validator inside a list, and weakly (a strong copy of the tag matches too)", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+    const strong = etag.replace(/^W\//, "");
+
+    const res = await callGET("agent-1", pdfPath, { "if-none-match": `"other", ${strong}` });
+
+    expect(res.status).toBe(304);
+  });
+
+  it("answers a revoked grant with 403, never with 304", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+
+    // The admin removes the folder from the agent's allowed_paths.
+    mockGetAgentWithAccess.mockResolvedValue({
+      id: "agent-1",
+      name: "Smithers",
+      pluginConfig: { "pinchy-files": { allowed_paths: [outsideDir] } },
+    });
+    const res = await callGET("agent-1", pdfPath, { "if-none-match": etag });
+
+    expect(res.status).toBe(403);
+    expect(mockDeferAuditLog).toHaveBeenLastCalledWith(
+      expect.objectContaining({ outcome: "failure" })
+    );
+  });
+
+  it("answers revoked access to the agent with that denial, never with 304", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+
+    mockGetAgentWithAccess.mockResolvedValue(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+    const res = await callGET("agent-1", pdfPath, { "if-none-match": etag });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("answers a wildcard with 304 only after the access check", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const outsidePath = join(outsideDir, "secret.pdf");
+    writeFileSync(outsidePath, SECRET_BYTES);
+
+    expect((await callGET("agent-1", pdfPath, { "if-none-match": "*" })).status).toBe(304);
+    expect((await callGET("agent-1", outsidePath, { "if-none-match": "*" })).status).toBe(403);
+  });
+
+  it("sends the new bytes when the document changed since it was cached", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+
+    const changed = Buffer.from("%PDF-1.4\na revised, longer edition of the handbook\n%%EOF");
+    writeFileSync(pdfPath, changed);
+    const res = await callGET("agent-1", pdfPath, { "if-none-match": etag });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("etag")).not.toBe(etag);
+    expect(Buffer.from(await res.arrayBuffer()).equals(changed)).toBe(true);
+  });
+
+  it("logs a revalidated reuse as a view, because the reader is looking at the document again", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+    mockDeferAuditLog.mockClear();
+
+    await callGET("agent-1", pdfPath, { "if-none-match": etag });
+
+    expect(mockDeferAuditLog).toHaveBeenCalledTimes(1);
+    expect(mockDeferAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "knowledge.source_viewed",
+        outcome: "success",
+        detail: expect.objectContaining({ partial: false, representation: "original" }),
+      })
+    );
+  });
+
+  it("answers a range request for an unchanged document with 304, not a fresh range", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+
+    const res = await callGET("agent-1", pdfPath, { "if-none-match": etag, range: "bytes=0-3" });
+
+    expect(res.status).toBe(304);
+    expect(res.body).toBeNull();
+  });
+
+  it("serves the whole file when If-Range accompanies the range, since a weak validator cannot vouch for the bytes", async () => {
+    // RFC 9110 §13.1.5: If-Range needs a STRONG match. Every validator this
+    // route hands out is weak, so stitching a range onto a cached copy could
+    // splice two editions of a document. The full file is always correct.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+
+    const res = await callGET("agent-1", pdfPath, { range: "bytes=0-3", "if-range": etag });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-range")).toBeNull();
+    expect(Buffer.from(await res.arrayBuffer()).equals(PDF_BYTES)).toBe(true);
+  });
+
+  it("still honours a range without If-Range", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callGET("agent-1", pdfPath, { range: "bytes=0-3" });
+
+    expect(res.status).toBe(206);
+    expect(res.headers.get("etag")).toMatch(/^W\/"[^"]+"$/);
+  });
+
+  it("answers a conditional HEAD with 304, and a revoked one with 403", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+    const { GET } = await import("@/app/api/agents/[agentId]/workspace-file/route");
+    const head = () => {
+      const url = new URL("http://localhost/api/agents/agent-1/workspace-file");
+      url.searchParams.set("path", pdfPath);
+      const req = new NextRequest(url, { method: "HEAD", headers: { "if-none-match": etag } });
+      return GET(req, {
+        params: Promise.resolve({ agentId: "agent-1" }),
+      } as unknown as Parameters<typeof GET>[1]);
+    };
+
+    expect((await head()).status).toBe(304);
+    mockGetAgentWithAccess.mockResolvedValue({
+      id: "agent-1",
+      name: "Smithers",
+      pluginConfig: { "pinchy-files": { allowed_paths: [] } },
+    });
+    expect((await head()).status).toBe(403);
+  });
+
+  it("holds no descriptor open after answering 304", async () => {
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+    const etag = await cachedEtag(pdfPath);
+    const before = countOpenDescriptors();
+
+    for (let i = 0; i < 20; i++) {
+      await callGET("agent-1", pdfPath, { "if-none-match": etag });
+    }
+
+    expect(countOpenDescriptors()).toBeLessThanOrEqual(before);
+  });
+});
+
 describe("GET /api/agents/[agentId]/workspace-file — HEAD does not leak descriptors", () => {
   // Larger than the read stream's internal buffer. Below that the stream drains
   // itself and closes the handle by accident, which would make this pass

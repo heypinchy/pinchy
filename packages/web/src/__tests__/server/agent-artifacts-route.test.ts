@@ -88,10 +88,11 @@ function writeArtifact(agentId: string, zone: string, filename: string, bytes: B
   writeFileSync(join(dir, filename), bytes);
 }
 
-async function callGET(agentId: string, filename: string) {
+async function callGET(agentId: string, filename: string, headers?: HeadersInit) {
   const { GET } = await import("@/app/api/agents/[agentId]/artifacts/[filename]/route");
   const req = makeNextRequest(
-    `http://localhost/api/agents/${agentId}/artifacts/${encodeURIComponent(filename)}`
+    `http://localhost/api/agents/${agentId}/artifacts/${encodeURIComponent(filename)}`,
+    headers ? { headers } : undefined
   );
   return GET(req, routeContext({ agentId, filename }));
 }
@@ -338,5 +339,44 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
       writeArtifact("agent-1", "workbench", "salary.pdf", PDF_BYTES);
       expect((await callGET("agent-1", "salary.pdf")).status).toBe(404);
     });
+  });
+});
+
+describe("GET /api/agents/[agentId]/artifacts/[filename] — a cached copy is re-checked on every reuse", () => {
+  async function cachedEtag(): Promise<string> {
+    writeArtifact("agent-1", "workbench", "report.pdf", PDF_BYTES);
+    const first = await callGET("agent-1", "report.pdf");
+    expect(first.status).toBe(200);
+    return first.headers.get("etag")!;
+  }
+
+  it("answers an unchanged delivery with 304 and no body", async () => {
+    const etag = await cachedEtag();
+
+    const res = await callGET("agent-1", "report.pdf", { "if-none-match": etag });
+
+    expect(res.status).toBe(304);
+    expect(res.body).toBeNull();
+  });
+
+  it("answers a caller whose grant is gone with 404, never with 304", async () => {
+    const etag = await cachedEtag();
+    mockGrantLookup.mockResolvedValue([]);
+
+    const res = await callGET("agent-1", "report.pdf", { "if-none-match": etag });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("answers revoked access to the agent with that denial, never with 304", async () => {
+    const { NextResponse } = await import("next/server");
+    const etag = await cachedEtag();
+    mockGetAgentWithAccess.mockResolvedValue(
+      NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    );
+
+    const res = await callGET("agent-1", "report.pdf", { "if-none-match": etag });
+
+    expect(res.status).toBe(403);
   });
 });

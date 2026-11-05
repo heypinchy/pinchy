@@ -43,7 +43,12 @@ import {
   type VerifiedSource,
 } from "@/lib/knowledge/verified-source";
 import type { AgentPluginConfig } from "@/db/schema";
-import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
+import {
+  ifNoneMatchHits,
+  rangeAllowedByIfRange,
+  sessionScopedRevalidateHeaders,
+  weakFileEtag,
+} from "@/lib/session-scoped-cache";
 
 type Params = { params: Promise<{ agentId: string }> };
 
@@ -559,7 +564,36 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     return new NextResponse("Not found", { status: 404 });
   }
 
-  const range = parseRangeHeader(req.headers.get("range"), info.size);
+  // The browser keeps this document `no-cache`, so every reuse of its copy
+  // arrives here as a conditional request — past the agent-access and
+  // allowed_paths checks above, which is the point: a revoked grant answers
+  // 403 here, never 304. Only an unchanged document the reader may still see
+  // is answered 304, without its bytes. A 304 is the reader looking at the
+  // document again, so it is audited as a view like any other.
+  const etag = weakFileEtag(info, representation);
+  if (ifNoneMatchHits(req.headers.get("if-none-match"), etag)) {
+    await fh.close();
+    deferAuditLog(
+      sourceAccessAuditEntry({
+        eventType,
+        userId: session.user.id!,
+        agentId: agent.id,
+        agentName: agent.name,
+        documentName,
+        outcome: "success",
+        partial: false,
+        representation,
+      })
+    );
+    return new NextResponse(null, { status: 304, headers: sessionScopedRevalidateHeaders(etag) });
+  }
+
+  // A range continues a copy the client already holds. With If-Range it is
+  // asked for only if that copy is current, which a weak validator cannot
+  // vouch for — so the whole document is sent rather than a spliced one.
+  const range = rangeAllowedByIfRange(req.headers.get("if-range"))
+    ? parseRangeHeader(req.headers.get("range"), info.size)
+    : ({ kind: "full" } as const);
   if (range.kind === "unsatisfiable") {
     await fh.close();
     auditFailure("range_not_satisfiable");
@@ -627,9 +661,10 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       // document before rendering anything.
       "accept-ranges": "bytes",
       ...(isPartial ? { "content-range": `bytes ${start}-${end}/${info.size}` } : {}),
-      // Keyed to the session: a cached document must not reach the next user
-      // on the same browser past the access check above (#1286).
-      ...sessionScopedCacheHeaders(3600),
+      // Kept, but revalidated on every reuse so the reuse passes the access
+      // check above; keyed to the session so a copy never reaches the next
+      // user on the same browser (#1286).
+      ...sessionScopedRevalidateHeaders(etag),
       // nosniff so the browser can never override our extension-derived
       // Content-Type via its own MIME sniffing — the anti-XSS control that
       // makes the inline/attachment split above meaningful.
