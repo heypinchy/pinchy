@@ -45,6 +45,16 @@ describe("Table scroll container (#1300)", () => {
     expect(region).toHaveAttribute("tabindex", "0");
   });
 
+  it("ignores a 1px rounding overshoot, which is not a scroll", () => {
+    stubWidths(341, 340);
+    expect(renderTable()).not.toHaveAttribute("tabindex");
+  });
+
+  it("is focusable from a 2px overflow on", () => {
+    stubWidths(342, 340);
+    expect(renderTable()).toHaveAttribute("tabindex", "0");
+  });
+
   it("adds no tab stop when the table fits", () => {
     stubWidths(300, 340);
     const region = renderTable();
