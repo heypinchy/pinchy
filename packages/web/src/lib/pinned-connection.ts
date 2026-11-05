@@ -16,11 +16,14 @@ import { Agent, fetch as undiciFetch } from "undici";
 // imported from there: a plugin directory is mounted standalone and owns its
 // own `undici`, so the two copies share the idea, not the module.
 //
-// Pinned to undici 7, the major Node 22 bundles. undici 8 installs its own
-// global dispatcher when it loads (it reads a global slot Node 22 never sets)
-// and so replaces the one Node's `fetch` uses — for the whole process, since
-// this module loads at boot. An operator's NODE_USE_ENV_PROXY egress proxy
-// would vanish from every plain fetch in Pinchy.
+// Pinned to undici 7, because of how it treats Node's global dispatcher slot.
+// Node 22 bundles undici 6, which keeps the dispatcher Node's `fetch` uses in
+// the `undici.globalDispatcher.1` slot (NODE_USE_ENV_PROXY installs its proxy
+// agent there before any user code runs). undici 7 reads that slot and only
+// fills it when it is empty; it never overwrites one that is set. undici 8
+// reads `.2` only, so it installs its own dispatcher into `.1` on load and
+// replaces Node's — for the whole process, since this module loads at boot.
+// An operator's egress proxy would vanish from every plain fetch in Pinchy.
 // pinned-connection-global-dispatcher.test.ts holds that line.
 //
 // What this does NOT reach: the connections that matter most at runtime are
