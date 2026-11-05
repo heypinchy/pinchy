@@ -5,6 +5,7 @@ import { extname } from "path";
 import { fileTypeFromBuffer } from "file-type";
 import { ALLOWED_ATTACHMENT_MIMES, ALLOWED_TEXT_MIMES } from "@/lib/upload-validation";
 import { EXTENSION_TO_MIME } from "@/lib/attachment-mime";
+import { sessionScopedCacheHeaders } from "@/lib/session-scoped-cache";
 
 /**
  * Binary MIME types that are safe to SERVE for download but are intentionally
@@ -137,7 +138,9 @@ export async function streamWorkspaceFile(
     headers: {
       "content-type": servedMime,
       "content-length": String(buffer.byteLength),
-      "cache-control": "private, max-age=3600",
+      // Keyed to the session: a cached file must not reach the next user on
+      // the same browser past the caller's access check (#1286).
+      ...sessionScopedCacheHeaders(3600),
       // Inline so the browser renders PDFs/images directly instead of forcing a
       // download. The filename is advisory.
       "content-disposition": `inline; filename="${safeName.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,

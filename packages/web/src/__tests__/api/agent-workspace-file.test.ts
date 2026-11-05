@@ -401,6 +401,20 @@ describe("GET /api/agents/[agentId]/workspace-file — large files and byte rang
     expect(res.headers.get("accept-ranges")).toBe("bytes");
   });
 
+  it("keys its browser cache to the session, so the next user on a shared browser cannot read it from cache (#1286)", async () => {
+    // The browser keys its cache by URL. Without Vary: Cookie, a document
+    // cached for one user is served to whoever signs in next on the same
+    // browser for the whole max-age — past the access check above, which the
+    // cached copy never reaches.
+    const pdfPath = join(allowedRoot, "handbook.pdf");
+    writeFileSync(pdfPath, PDF_BYTES);
+
+    const res = await callGET("agent-1", pdfPath);
+
+    expect(res.headers.get("cache-control")).toBe("private, max-age=3600");
+    expect(res.headers.get("vary")).toBe("Cookie");
+  });
+
   it("answers a byte range from a file too large to buffer, reading only that span", async () => {
     const hugePath = join(allowedRoot, "compilation-binder.pdf");
     writeSparseFile(hugePath, OVER_BUFFER_LIMIT, PDF_BYTES);
