@@ -52,18 +52,18 @@ describe("config push pending-state tracker", () => {
   });
 
   it("counts started pushes and settles them back to zero", () => {
-    trackConfigPushStarted();
+    trackConfigPushStarted(1);
     expect(getPendingConfigPushCount()).toBe(1);
-    trackConfigPushStarted();
+    trackConfigPushStarted(2);
     expect(getPendingConfigPushCount()).toBe(2);
-    trackConfigPushSettled();
+    trackConfigPushSettled(1);
     expect(getPendingConfigPushCount()).toBe(1);
-    trackConfigPushSettled();
+    trackConfigPushSettled(2);
     expect(getPendingConfigPushCount()).toBe(0);
   });
 
   it("floors at zero on a spurious extra settle (never goes negative)", () => {
-    trackConfigPushSettled();
+    trackConfigPushSettled(1);
     expect(getPendingConfigPushCount()).toBe(0);
   });
 
@@ -72,7 +72,7 @@ describe("config push pending-state tracker", () => {
     // own module instance of push-state. A plain module-level variable would
     // give the health route a counter the server's pushes never touch. Pin the
     // contract: the state lives under a well-known globalThis key.
-    trackConfigPushStarted();
+    trackConfigPushStarted(1);
     const state = (globalThis as Record<string, unknown>).__pinchyConfigPushState as {
       pending: number;
     };
@@ -132,8 +132,8 @@ describe("config push pending-state tracker", () => {
     (globalThis as Record<string, unknown>).__pinchyConfigPushState = { generation: 4 };
 
     expect(getPendingConfigPushCount()).toBe(0);
-    trackConfigPushStarted();
-    trackConfigPushSettled();
+    trackConfigPushStarted(4);
+    trackConfigPushSettled(4);
     expect(getPendingConfigPushCount()).toBe(0);
     expect(getCurrentConfigPushGeneration()).toBe(4);
   });

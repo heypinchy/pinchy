@@ -190,8 +190,8 @@ export async function settleOpenClawBestEffort(
  * (both fire-and-forget regenerates), OC's hot-reload can still be in
  * flight when the API returns 200. Worse: if Pinchy's prior tests
  * exhausted OC's `config.apply` rate-limit window (~3 calls / 45 s),
- * the probe's regens fall through to the inotify file-watcher fallback
- * whose debounce can stretch past the stability check. The result is
+ * the probe's regens fall through to the file-write fallback, which a
+ * running OpenClaw may not reload at all (CI run 41906476538). The result is
  * "unknown agent id" errors when the test fires its chat.
  *
  * Tests that immediately dispatch to an agent created earlier in their

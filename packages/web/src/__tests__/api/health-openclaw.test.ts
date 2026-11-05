@@ -94,16 +94,16 @@ describe("GET /api/health/openclaw", () => {
     // so E2E stability gates dispatched into the gap and the agent ran without
     // its freshly-granted tools. The gate needs this counter to wait it out.
     mockConnectionState.connected = true;
-    pushState.trackConfigPushStarted();
-    pushState.trackConfigPushStarted();
+    pushState.trackConfigPushStarted(1);
+    pushState.trackConfigPushStarted(2);
 
     const response = await GET(fakeRequest());
     const body = await response.json();
 
     expect(body).toEqual({ status: "ok", connected: true, configPushesPending: 2 });
 
-    pushState.trackConfigPushSettled();
-    pushState.trackConfigPushSettled();
+    pushState.trackConfigPushSettled(1);
+    pushState.trackConfigPushSettled(2);
     const after = await (await GET(fakeRequest())).json();
     expect(after.configPushesPending).toBe(0);
   });

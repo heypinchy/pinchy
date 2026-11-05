@@ -92,6 +92,8 @@ export async function GET(request: NextRequest) {
   let agentDispatchable = false;
   try {
     const client = getOpenClawClient();
+    // No `hasMethod("agents.list")` gate like the readiness gate's: the pinned
+    // OpenClaw has it, and without it this answers false (never a false true).
     agentDispatchable = dispatchableAgentIds(await client.agents.list()).includes(agentId);
   } catch {
     agentDispatchable = false;

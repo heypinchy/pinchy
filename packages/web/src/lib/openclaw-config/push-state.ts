@@ -130,10 +130,10 @@ function state(): ConfigPushState {
 }
 
 /** Record that a `pushConfigInBackground` coroutine has started. */
-export function trackConfigPushStarted(generation?: number): void {
+export function trackConfigPushStarted(generation: number): void {
   const s = state();
   s.pending++;
-  if (generation !== undefined) s.inFlightGenerations.add(generation);
+  s.inFlightGenerations.add(generation);
 }
 
 /**
@@ -141,10 +141,13 @@ export function trackConfigPushStarted(generation?: number): void {
  * superseded by a newer push, or file-write fallback. Floors at zero so a
  * spurious double-settle can never wedge the counter negative.
  */
-export function trackConfigPushSettled(generation?: number): void {
+// `generation` is required so `.finally(trackConfigPushSettled)` cannot type-
+// check: called with no argument, it would leave the generation in the set,
+// and newestPushInFlight() would defer every reconnect to a push long gone.
+export function trackConfigPushSettled(generation: number): void {
   const s = state();
   s.pending = Math.max(0, s.pending - 1);
-  if (generation !== undefined) s.inFlightGenerations.delete(generation);
+  s.inFlightGenerations.delete(generation);
 }
 
 /**

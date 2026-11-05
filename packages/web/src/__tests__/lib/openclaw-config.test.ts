@@ -275,6 +275,7 @@ import { MAX_EFFECTIVE_CONTEXT_TOKENS } from "@/lib/openclaw-config/effective-co
 import { OPENCLAW_GATEWAY_BIND, OPENCLAW_GATEWAY_MODE } from "@/lib/openclaw-config/paths";
 import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
+import { regenerateOnConnect } from "@/server/openclaw-connect-regenerate";
 import {
   getPendingConfigPushCount,
   _resetConfigPushState,
@@ -283,6 +284,7 @@ import {
   undeliveredConfigChange,
   noteFileOnlyDelivery,
   fileOnlyDeliveryPending,
+  nextConfigPushGeneration,
   trackConfigPushStarted,
   trackConfigPushSettled,
   scheduleShrinkResume,
@@ -5106,13 +5108,14 @@ describe("regenerateOpenClawConfig", () => {
     it("stays owed while a push is still in flight, which may still land other content", async () => {
       await settleOnDiskTarget();
       noteUndeliveredConfigChange(nextRegenerateSequence());
-      trackConfigPushStarted();
+      const inFlight = nextConfigPushGeneration();
+      trackConfigPushStarted(inFlight);
 
       try {
         await regenerateOpenClawConfig();
         await drainBackgroundCoroutine();
       } finally {
-        trackConfigPushSettled();
+        trackConfigPushSettled(inFlight);
       }
 
       expect(undeliveredConfigChange()).toBe(true);
@@ -5159,6 +5162,16 @@ describe("regenerateOpenClawConfig", () => {
       mockedReadFileSync.mockReturnValue(onDisk);
       expect(mockConfigApply, "precondition: nothing reached config.apply").not.toHaveBeenCalled();
     }
+
+    it("leaves the reconnect after it to regenerate (the push that wrote it has ended)", async () => {
+      await regenerateIntoFileFallback();
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const regenerate = vi.fn(async () => {});
+
+      regenerateOnConnect({ firstConnect: false }, regenerate);
+
+      expect(regenerate).toHaveBeenCalledTimes(1);
+    });
 
     it("is pushed by the next regenerate although openclaw.json already holds it", async () => {
       await regenerateIntoFileFallback();
