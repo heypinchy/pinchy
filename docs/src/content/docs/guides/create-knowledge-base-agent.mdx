@@ -240,7 +240,7 @@ If the list is empty after a run that finished, that's the whole message: every 
 
 Not every file on a share is one we can index. A scanned nameplate saved as `.tif`, a price list from 2009 in `.xls`, a plain `.txt` or `.rtf` note: the run finds them, and leaves them out of the index. Without a word, that looks like a model problem. A folder of 13 files reports 11 documents, and the agent can't answer a question the other two would have answered.
 
-So the run counts them — `N not supported` in the **Index** section — and **Download the list** gives you a CSV with every such file's full path and type. Sort it by type and you know what to do: save the scans as PDF, the old workbooks as `.xlsx`, and the next run picks them up. Or tell your users up front that the agent can't see them.
+So the run counts them — `N not supported` in the **Index** section — and after a run that finished, **Download the list** gives you a CSV with every such file's full path and type. Sort it by type and you know what to do: save the scans as PDF, the old workbooks as `.xlsx`, and the next run picks them up. Or tell your users up front that the agent can't see them.
 
 The list is scoped to the agent's granted folders, like search itself. It describes the share as the last run that finished found it, so a file you converted drops off after the next run. A folder the run couldn't read — a share that failed to mount — keeps the files it listed before: we don't know they're gone. Hidden files and the clutter operating systems and Office leave behind (`Thumbs.db`, `~$Report.docx`, `*.tmp`) aren't documents, so they aren't counted or listed.
 
