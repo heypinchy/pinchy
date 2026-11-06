@@ -487,7 +487,7 @@ describe("ClientRouter", () => {
       expect((entry as { providerError: string }).providerError).not.toContain("10.1.2.3");
     });
 
-    it("supersedes the triggering message's durable error once its run succeeds", async () => {
+    it("supersedes the session's earlier durable errors once a run succeeds", async () => {
       async function* stream() {
         yield {
           type: "userMessagePersisted" as const,
@@ -508,9 +508,11 @@ describe("ClientRouter", () => {
         clientMessageId: "cm-3",
       });
 
+      // Every error recorded before this success, not only the one this
+      // message raised: a later turn that went through answers them all (#1301).
       expect(mockSupersedeChatSessionErrors).toHaveBeenCalledWith({
         sessionKey: "agent:agent-1:direct:user-1",
-        clientMessageId: "cm-3",
+        before: expect.any(Date),
       });
       expect(mockRecordChatSessionError).not.toHaveBeenCalled();
     });
@@ -540,6 +542,62 @@ describe("ClientRouter", () => {
       });
 
       expect(mockRecordChatSessionError).toHaveBeenCalledTimes(1);
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+
+    it("does NOT supersede on a turn boundary inside a run that then fails", async () => {
+      // openclaw-node emits `done` between the turns of one run ("one moment",
+      // a tool, then the reply). The run has not gone through until it ends.
+      async function* stream() {
+        yield { type: "text" as const, text: "One moment", runId: "r1" };
+        yield { type: "done" as const, text: "", runId: "r1" };
+        yield { type: "error" as const, text: "Rate limit reached", runId: "r1" };
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-mid",
+      });
+
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+
+    it("does NOT supersede when the run throws after it said something", async () => {
+      async function* stream() {
+        yield { type: "text" as const, text: "Working on it", runId: "r1" };
+        throw new Error("FailoverError: upstream exploded");
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-throw",
+      });
+
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+
+    it("does NOT supersede on a turn that said nothing", async () => {
+      // A silent run is a failure of its own (the silent-stream banner), not a
+      // message that went through.
+      async function* stream() {
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-silent",
+      });
+
       expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
     });
   });

@@ -418,7 +418,7 @@ Summarize the caller's conversation with this agent so a long context stops degr
 
 ### `GET /api/agents/:agentId/active-error`
 
-The agent's current "paused" banner for the caller: the latest error that has not been superseded or dismissed, or `null`. Pass `?chatId=` to address one specific chat; omit it for the default per-user session. The session key embeds the caller's own id, so a user can only ever read their own errors.
+The agent's current "paused" banner for the caller: the latest error from the last 24 hours that has not been superseded (a later message in the conversation went through) or dismissed, or `null`. Pass `?chatId=` to address one specific chat; omit it for the default per-user session. The session key embeds the caller's own id, so a user can only ever read their own errors.
 
 ### `DELETE /api/agents/:agentId/active-error?id=<errorId>`
 
