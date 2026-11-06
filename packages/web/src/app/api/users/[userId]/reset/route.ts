@@ -8,7 +8,6 @@ import { createInvite } from "@/lib/invites";
 import { parseOptionalRequestBody } from "@/lib/api-validation";
 import { resetPasswordSchema } from "@/lib/schemas/users";
 import type { EmailDelivery } from "@/lib/schemas/system-mail";
-import { deliverLinkEmail } from "@/lib/system-mail/deliver";
 
 export async function POST(
   request: NextRequest,
@@ -43,18 +42,24 @@ export async function POST(
   // The token exists from here on; a failed send still returns it.
   let emailDelivery: EmailDelivery | undefined;
   if (parsed.data.sendEmail && user.email) {
-    emailDelivery = await deliverLinkEmail({
-      request,
-      kind: "reset",
-      to: user.email,
-      token: invite.token,
-      expiresAt: invite.expiresAt,
-      inviteId: invite.id,
-      actor: { id: session.user.id, name: session.user.name, email: session.user.email },
-    }).catch((err: unknown): EmailDelivery => {
-      console.error("[reset] email delivery crashed:", err);
-      return { sent: false, error: "Something went wrong sending the email." };
-    });
+    // Loaded only when an email is asked for: with the mailer off, this route
+    // must not pull in the mail stack (nodemailer, the domain lookup) at all.
+    emailDelivery = await import("@/lib/system-mail/deliver")
+      .then(({ deliverLinkEmail }) =>
+        deliverLinkEmail({
+          request,
+          kind: "reset",
+          to: user.email,
+          token: invite.token,
+          expiresAt: invite.expiresAt,
+          inviteId: invite.id,
+          actor: { id: session.user.id, name: session.user.name, email: session.user.email },
+        })
+      )
+      .catch((err: unknown): EmailDelivery => {
+        console.error("[reset] email delivery crashed:", err);
+        return { sent: false, error: "Something went wrong sending the email." };
+      });
   }
 
   return NextResponse.json(

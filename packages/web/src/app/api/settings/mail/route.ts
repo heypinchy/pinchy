@@ -45,8 +45,27 @@ function auditValue(value: unknown): unknown {
   return value ?? null;
 }
 
+type AuditedConfig = Pick<SystemMailConfig, (typeof AUDITED_FIELDS)[number]>;
+
+/**
+ * The audited fields only. The diff is built from this copy, never from the
+ * config that carries the password, so no path leads from the secret to the
+ * audit row (or to redactEmail's HMAC).
+ */
+function audited(config: SystemMailConfig | null): AuditedConfig | null {
+  if (!config) return null;
+  return {
+    host: config.host,
+    port: config.port,
+    security: config.security,
+    username: config.username,
+    fromAddress: config.fromAddress,
+    fromName: config.fromName,
+  };
+}
+
 /** Non-secret fields that differ, as `{ from, to }`. The password never appears. */
-function diff(before: SystemMailConfig | null, after: SystemMailConfig | null) {
+function diff(before: AuditedConfig | null, after: AuditedConfig | null) {
   const changes: Record<string, { from: unknown; to: unknown }> = {};
   for (const field of AUDITED_FIELDS) {
     const from = before?.[field] ?? null;
@@ -76,7 +95,7 @@ export async function PUT(request: NextRequest) {
 
   const stored = await getSystemMailConfig();
   const next = mergeWithStoredPassword(parsed.data, stored);
-  const changes = diff(stored, next);
+  const changes = diff(audited(stored), audited(next));
   const passwordChanged = (stored?.password ?? null) !== (next.password ?? null);
 
   // Verify before saving: nothing is persisted that hasn't proven it can
@@ -129,7 +148,7 @@ export async function DELETE() {
     actorId: session.user.id,
     eventType: "settings.updated",
     resource: "settings:mail",
-    detail: { changes: diff(stored, null), passwordChanged: Boolean(stored.password) },
+    detail: { changes: diff(audited(stored), null), passwordChanged: Boolean(stored.password) },
     outcome: "success",
   });
 

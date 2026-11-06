@@ -146,7 +146,10 @@ test.describe("System mailer — invitations arrive by email", () => {
       await invitePage.getByLabel("Password", { exact: true }).fill("invitee-password-123");
       await invitePage.getByLabel("Confirm password").fill("invitee-password-123");
       await invitePage.getByRole("button", { name: "Create account" }).click();
-      await expect(invitePage.getByText("Account created!")).toBeVisible();
+      // Claiming also creates the invitee's personal agent and regenerates the
+      // OpenClaw config; with a real OpenClaw in this stack that can take well
+      // over the default 5s (CI run 42112256594 sat on "Creating account...").
+      await expect(invitePage.getByText("Account created!")).toBeVisible({ timeout: 30_000 });
     } finally {
       await invitePage.close();
     }

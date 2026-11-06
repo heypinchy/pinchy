@@ -110,7 +110,9 @@ describe("EmailDeliverySettings", () => {
       password: "s3cret",
       fromAddress: "pinchy@example.com",
     });
-    expect(await screen.findByText(/smtp\.example\.com:587/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("smtp.example.com:587 · STARTTLS · from pinchy@example.com")
+    ).toBeInTheDocument();
   });
 
   it("shows a failed verification inline and keeps the form open", async () => {

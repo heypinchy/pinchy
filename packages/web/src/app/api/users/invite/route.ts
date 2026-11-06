@@ -11,7 +11,6 @@ import { inArray } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
 import { inviteUserSchema } from "@/lib/schemas/users";
 import type { EmailDelivery } from "@/lib/schemas/system-mail";
-import { deliverLinkEmail } from "@/lib/system-mail/deliver";
 
 export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -91,18 +90,24 @@ export async function POST(request: NextRequest) {
   // the admin can copy the link (#1309).
   let emailDelivery: EmailDelivery | undefined;
   if (sendEmail) {
-    emailDelivery = await deliverLinkEmail({
-      request,
-      kind: "invite",
-      to: email,
-      token: invite.token,
-      expiresAt: invite.expiresAt,
-      inviteId: invite.id,
-      actor: { id: session.user.id, name: session.user.name, email: session.user.email },
-    }).catch((err: unknown): EmailDelivery => {
-      console.error("[invite] email delivery crashed:", err);
-      return { sent: false, error: "Something went wrong sending the email." };
-    });
+    // Loaded only when an email is asked for: with the mailer off, this route
+    // must not pull in the mail stack (nodemailer, the domain lookup) at all.
+    emailDelivery = await import("@/lib/system-mail/deliver")
+      .then(({ deliverLinkEmail }) =>
+        deliverLinkEmail({
+          request,
+          kind: "invite",
+          to: email,
+          token: invite.token,
+          expiresAt: invite.expiresAt,
+          inviteId: invite.id,
+          actor: { id: session.user.id, name: session.user.name, email: session.user.email },
+        })
+      )
+      .catch((err: unknown): EmailDelivery => {
+        console.error("[invite] email delivery crashed:", err);
+        return { sent: false, error: "Something went wrong sending the email." };
+      });
   }
 
   return NextResponse.json(emailDelivery ? { ...invite, emailDelivery } : invite, { status: 201 });
