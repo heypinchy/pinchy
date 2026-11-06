@@ -1512,14 +1512,86 @@ describe("pinchy_generate_file tool", () => {
     expect(tool.name).toBe("pinchy_generate_file");
   });
 
-  async function makeGenerateFileTool() {
+  async function makeGenerateFileTool(ctx: { sessionKey?: string; messageChannel?: string } = {}) {
     const api = createMockApi({
       "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir, workbench] },
     });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
-    return getGenerateFileFactory()({ agentId: "agent-1" });
+    return getGenerateFileFactory()({ agentId: "agent-1", ...ctx });
   }
+
+  // What OpenClaw hands the factory for a run Pinchy's web chat started: the
+  // gateway `agent` call carries no channel, so it resolves to "webchat", on
+  // the user's direct session key.
+  const WEB_CHAT_CTX = { sessionKey: "agent:agent-1:direct:user-1", messageChannel: "webchat" };
+
+  async function generatedText(ctx: { sessionKey?: string; messageChannel?: string }) {
+    const tool = await makeGenerateFileTool(ctx);
+    const result = await tool.execute("call-1", {
+      format: "csv",
+      filename: "export",
+      columns: ["a"],
+      rows: [["1"]],
+    });
+    expect(result.isError).toBeFalsy();
+    return {
+      result,
+      text: result.content
+        .filter((b: { type: string }) => b.type === "text")
+        .map((b: { text: string }) => b.text)
+        .join("\n"),
+    };
+  }
+
+  // OpenClaw caches a tool's description per messageChannel, not per session,
+  // so an inbox run ("webchat" too) can be shown the description built for a
+  // web-chat run. The description must be true in every run; the per-run
+  // answer belongs in the result, which execute builds from the live ctx.
+  it("does not promise chat delivery unconditionally in its description", async () => {
+    const tool = await makeGenerateFileTool(WEB_CHAT_CTX);
+    expect(tool.description).not.toContain("delivered to the user in chat");
+    expect(tool.description).toContain("web chat");
+  });
+
+  it("tells the agent the file was delivered in a web-chat run", async () => {
+    const { text } = await generatedText(WEB_CHAT_CTX);
+    expect(text).toContain("Delivered to the user in chat");
+  });
+
+  it("tells the agent the file was delivered in a per-chat web session", async () => {
+    const { text } = await generatedText({
+      sessionKey: "agent:agent-1:direct:user-1:chat-abc",
+      messageChannel: "webchat",
+    });
+    expect(text).toContain("Delivered to the user in chat");
+  });
+
+  // Only a web-chat run ends in Pinchy's artifact poll (stream-pipe.ts
+  // deliverRunArtifacts), and OpenClaw forwards a `file` block to no channel.
+  it.each([
+    [
+      "a Telegram DM (same direct key shape, telegram channel)",
+      { sessionKey: "agent:agent-1:direct:123456789", messageChannel: "telegram" },
+    ],
+    [
+      "an automation inbox run (gateway call, so webchat, but not a direct session)",
+      { sessionKey: "agent:agent-1:inbox:ledger-1", messageChannel: "webchat" },
+    ],
+    [
+      "an OpenClaw cron run",
+      { sessionKey: "agent:agent-1:cron:job-1", messageChannel: "telegram" },
+    ],
+    ["a run whose channel OpenClaw did not report", { sessionKey: "agent:agent-1:direct:user-1" }],
+    ["a run with no session context at all", {}],
+  ])("does not claim chat delivery in %s", async (_label, ctx) => {
+    const { text, result } = await generatedText(ctx);
+    expect(text).not.toContain("Delivered to the user in chat");
+    expect(text).toContain("do not tell the user it was delivered");
+    expect(text).toContain("export.csv");
+    // The file block stays: it costs nothing where no one reads it.
+    expect(result.content[0]).toMatchObject({ type: "file", filename: "export.csv" });
+  });
 
   it("writes a csv file into the workbench, chowns it, and returns a file block + summary", async () => {
     const tool = await makeGenerateFileTool();
