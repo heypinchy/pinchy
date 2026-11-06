@@ -519,13 +519,20 @@ export type AuditLogEntry =
         | "approval.denied"
         | "approval.consumed"
         | "approval.expired";
+      //
+      // People are named, never identified by users.id: `detail` is stored
+      // verbatim and crypto-erasure cannot reach an id in it (#824, #1273). On
+      // a decision the approver is the row's (pseudonymized) actor; on the
+      // agent- and system-written rows the name is all there is. `resource`
+      // names the request, but the sweep reaps that row after 30 days.
       detail: {
         request: { id: string };
         agent: { id: string; name: string | null };
-        requester: { id: string; name: string | null };
-        approver?: { id: string; name: string | null };
+        requester: { name: string | null };
+        approver?: { name: string | null };
         toolName: string;
         argsDigest: string;
+        /** The person's own words, with any address scrubbed (`scrubEmails`). */
         reason?: string;
         /**
          * Whether the decision reached the tool call OpenClaw parked for it
@@ -558,7 +565,7 @@ export type AuditLogEntry =
       eventType: "approval.refused";
       detail: {
         agent: { id: string; name: string | null };
-        requester: { id: string; name: string | null };
+        requester: { name: string | null };
         toolName: string;
         argsDigest: string;
         reason: "too-large-to-show";
@@ -851,6 +858,12 @@ export type AuditLogEntry =
             filename: string;
             claimedMime: string;
             reason: string;
+            agent: EntityRef;
+          }
+        | {
+            // failure: request body exceeded the size bound before it was
+            // parsed, so there is no filename or claimed MIME to record
+            reason: "oversize";
             agent: EntityRef;
           };
     })

@@ -4,7 +4,7 @@ import { desc, and } from "drizzle-orm";
 import { auditLog } from "@/db/schema";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
 import { appendAuditLog } from "@/lib/audit";
-import { apiKeyActorName } from "@/lib/api-key-identity";
+import { resolveActorDisplay } from "@/lib/audit-actor-display";
 import { csvField } from "@/lib/csv";
 import { renderAuditPdf, buildFilterSummary, type AuditExportRow } from "@/lib/audit-pdf";
 import {
@@ -35,10 +35,10 @@ function toExportRow(e: AuditJoinedRow): AuditExportRow {
     timestamp: e.timestamp,
     actorType: e.actorType,
     actorId: e.actorId,
-    // Same api_key fallback as /api/audit — and it matters more here: this is
-    // the artifact that gets handed to an auditor, so a bare key id in the
-    // Actor column is a question Pinchy has to answer by hand later.
-    actorName: e.actorName ?? apiKeyActorName(e.actorType, e.detail),
+    // Same actor naming as /api/audit — and it matters more here: this is
+    // the artifact that gets handed to an auditor, so a bare key, agent or
+    // job id in the Actor column is a question Pinchy has to answer later.
+    actorName: resolveActorDisplay(e).actorName,
     eventType: e.eventType,
     resource: e.resource,
     resourceName: e.resourceAgentName ?? e.resourceUserName ?? null,

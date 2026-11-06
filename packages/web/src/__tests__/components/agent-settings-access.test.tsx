@@ -183,4 +183,65 @@ describe("AgentSettingsAccess", () => {
       screen.getByText(/Control which users and groups can access this agent/)
     ).toBeInTheDocument();
   });
+
+  describe("Restricted with no group (#1278)", () => {
+    it("says only admins can use the agent while no group is picked", async () => {
+      render(
+        <AgentSettingsAccess
+          agent={{ visibility: "restricted" }}
+          currentGroupIds={[]}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(
+        await screen.findByText("Only admins can use this agent until you pick at least one group.")
+      ).toBeInTheDocument();
+    });
+
+    it("drops the note as soon as a group is picked", async () => {
+      const user = userEvent.setup();
+      render(
+        <AgentSettingsAccess
+          agent={{ visibility: "restricted" }}
+          currentGroupIds={[]}
+          onChange={vi.fn()}
+        />
+      );
+
+      await user.click(await screen.findByRole("checkbox", { name: "Engineering" }));
+
+      expect(
+        screen.queryByText("Only admins can use this agent until you pick at least one group.")
+      ).not.toBeInTheDocument();
+    });
+
+    it("points to both ways out when no group exists yet", async () => {
+      vi.mocked(global.fetch).mockImplementation(async (url) => {
+        if (String(url) === "/api/enterprise/status") {
+          return { ok: true, json: async () => ({ enterprise: true }) } as Response;
+        }
+        if (String(url) === "/api/groups") {
+          return { ok: true, json: async () => [] } as Response;
+        }
+        return { ok: false } as Response;
+      });
+      render(
+        <AgentSettingsAccess
+          agent={{ visibility: "restricted" }}
+          currentGroupIds={[]}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(
+        await screen.findByText("Only admins can use this agent until you pick at least one group.")
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /no groups yet\. create one in settings → groups, or choose all users above/i
+        )
+      ).toBeInTheDocument();
+    });
+  });
 });

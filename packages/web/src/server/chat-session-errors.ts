@@ -17,26 +17,41 @@
  * (`agent:{agentId}:direct:{userId}`) — never a prefix — so errors can't leak
  * across sessions or users.
  */
-import { and, desc, eq, gte, isNull, like } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, like } from "drizzle-orm";
 
 import { db } from "@/db";
 import { chatSessionErrors, auditLog } from "@/db/schema";
+import { resolveActorIdMatchSet } from "@/lib/audit";
 
 /**
- * Did the agent execute any tool since `since`? Used to set `sideEffects` on a
- * persisted error so the banner can warn that a retry may DUPLICATE writes.
+ * Did the agent execute any tool for `userId` since `since`? Used to set
+ * `sideEffects` on a persisted error so the banner can warn that a retry may
+ * DUPLICATE writes.
  *
  * OpenClaw does not surface tool execution as a chat-stream chunk (verified by
  * E2E: a `tool.*` audit row lands but no `tool_use` chunk reaches the router),
- * so the audit trail is the only reliable signal. This runs only on the rare
- * error-persist path (once per failed run), not the hot history-load path, so
- * the audit-table read is acceptable. Scoped by `resource = agent:{agentId}`
- * (its case is stable, unlike the lowercased tool-audit `actorId`) plus a time
- * lower bound — it never misses a tool this run performed (the dangerous
- * false-negative); a different user's tool on a shared agent in the same narrow
- * window can over-warn, which is the safe direction.
+ * so the audit trail is the only reliable signal. Scoped by
+ * `resource = agent:{agentId}` (its case is stable), a time lower bound, and
+ * the caller as actor.
+ *
+ * The actor scope is a confidentiality boundary, not a precision tweak. A
+ * shared agent is one agent for every member, and the retry gate answers this
+ * question to whoever can poll it — counting the whole agent told a member
+ * whether a colleague had just run a tool (#1274). The tool-use route writes
+ * the user from the run's session key as actor, so the caller's own writes
+ * stay in scope. The match set covers every value that row can hold: the
+ * pseudonym `appendAuditLog` substitutes, the raw id, and the lowercased id the
+ * route keeps when it cannot map OpenClaw's lowercased session key back to
+ * `users.id` — missing any of them is the dangerous direction, an unguarded
+ * Retry after a write.
  */
-export async function agentRanToolSince(agentId: string, since: Date): Promise<boolean> {
+export async function agentRanToolSince(
+  agentId: string,
+  userId: string,
+  since: Date
+): Promise<boolean> {
+  const actorIds = new Set(await resolveActorIdMatchSet(userId));
+  actorIds.add(userId.toLowerCase());
   const [row] = await db
     .select({ id: auditLog.id })
     .from(auditLog)
@@ -44,7 +59,9 @@ export async function agentRanToolSince(agentId: string, since: Date): Promise<b
       and(
         eq(auditLog.resource, `agent:${agentId}`),
         like(auditLog.eventType, "tool.%"),
-        gte(auditLog.timestamp, since)
+        gte(auditLog.timestamp, since),
+        eq(auditLog.actorType, "user"),
+        inArray(auditLog.actorId, [...actorIds])
       )
     )
     .limit(1);
@@ -164,6 +181,7 @@ export async function resolveRetryGate({
 }): Promise<boolean> {
   const [row] = await db
     .select({
+      userId: chatSessionErrors.userId,
       sideEffects: chatSessionErrors.sideEffects,
       runStartedAt: chatSessionErrors.runStartedAt,
     })
@@ -175,7 +193,7 @@ export async function resolveRetryGate({
   if (!row) return false;
   if (row.sideEffects) return true;
   if (!row.runStartedAt) return false;
-  return agentRanToolSince(agentId, row.runStartedAt);
+  return agentRanToolSince(agentId, row.userId, row.runStartedAt);
 }
 
 /**

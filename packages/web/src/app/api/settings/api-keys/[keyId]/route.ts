@@ -1,7 +1,8 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 import { db } from "@/db";
 import { apiKeys } from "@/db/schema";
 
@@ -55,19 +56,29 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     return NextResponse.json({ error: "API key not found" }, { status: 404 });
   }
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "api_key.deleted",
-      resource: `api_key:${keyId}`,
-      // Name comes back from the DELETE's own `returning`, so it survives the
-      // row it describes. Nullable column — coalesce so DeleteDetail always
-      // gets a string.
-      detail: { name: deleted.name ?? "" },
-      outcome: "success",
-    })
-  );
+  const entry: AuditLogEntry = {
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "api_key.deleted",
+    resource: `api_key:${keyId}`,
+    // Name comes back from the DELETE's own `returning`, so it survives the
+    // row it describes. Nullable column — coalesce so DeleteDetail always
+    // gets a string.
+    detail: { name: deleted.name ?? "" },
+    outcome: "success",
+  };
+
+  // Awaited, so an admin who revokes a leaked key and opens the audit trail
+  // straight away finds the evidence row. But the DELETE has already
+  // committed: if the write fails the key IS revoked, and answering 500 would
+  // make the admin think otherwise and retry into a 404. So a failure is
+  // recorded as a signal (`audit_log_write_failed` + counter) and the
+  // response stays 200.
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
+  }
 
   return NextResponse.json({ success: true });
 });
