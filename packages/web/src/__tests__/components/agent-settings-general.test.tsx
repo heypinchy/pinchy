@@ -192,8 +192,11 @@ describe("AgentSettingsGeneral", () => {
       expect(screen.queryByText(/memory from all user conversations/i)).not.toBeInTheDocument();
       expect(screen.getByText(/doesn't keep memory/i)).toBeInTheDocument();
       // Uploads and created files persist in the agent's workspace whatever
-      // the Memory permission says, and every member of a shared agent sees them.
-      expect(screen.getByText(/files in its workspace are shared/i)).toBeInTheDocument();
+      // the Memory permission says. The agent reads them in every member's
+      // chats; members can't download each other's uploads themselves.
+      expect(
+        screen.getByText(/files in its workspace in every member's conversations/i)
+      ).toBeInTheDocument();
       expect(screen.queryByText(/nothing carries over/i)).not.toBeInTheDocument();
     });
 
