@@ -66,10 +66,18 @@ export async function findCitedPassage(
   if (!trimmed || !deps) return null;
 
   const [vector] = await deps.embed([trimmed]);
+  // The page's rows first, ranked after. A bare `ORDER BY embedding <=> v
+  // LIMIT 1` is the shape the HNSW index serves, and an HNSW scan returns its
+  // nearest neighbours org-wide before the page filter drops them all — an
+  // empty answer for a page that has passages. Materialising the page's rows
+  // keeps the ranking to the two or three it is meant to choose between.
   const nearest = await db.execute<PassageRow>(sql`
-    SELECT c.chunk_text FROM kb_chunks c
-    WHERE ${onPage} AND c.embedding IS NOT NULL
-    ORDER BY c.embedding <=> ${JSON.stringify(vector)}::vector
+    WITH on_page AS MATERIALIZED (
+      SELECT c.chunk_text, c.embedding FROM kb_chunks c
+      WHERE ${onPage} AND c.embedding IS NOT NULL
+    )
+    SELECT chunk_text FROM on_page
+    ORDER BY embedding <=> ${JSON.stringify(vector)}::vector
     LIMIT 1`);
   return nearest.length > 0 ? { text: nearest[0].chunk_text } : null;
 }

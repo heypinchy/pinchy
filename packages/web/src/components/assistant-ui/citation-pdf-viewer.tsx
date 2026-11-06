@@ -129,6 +129,12 @@ export const CitationPdfViewer: FC<{
         )
       : null;
 
+  // A page the reader turns to starts at its top; the cited page then
+  // scrolls to its passage below, which runs after this.
+  useLayoutEffect(() => {
+    if (paneRef.current) paneRef.current.scrollTop = 0;
+  }, [page]);
+
   // Bring the passage into view once it is drawn: on a phone the cited page
   // is taller than the pane, and the passage may sit below the fold.
   useLayoutEffect(() => {
@@ -141,7 +147,19 @@ export const CitationPdfViewer: FC<{
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div ref={paneRef} className="min-h-0 flex-1 overflow-auto bg-muted/40">
+      {/*
+        Focusable so a keyboard can scroll a page taller than the pane, as it
+        could in the browser's viewer. `scrollbar-gutter` keeps a classic
+        scrollbar from appearing after the width was measured and pushing the
+        page sideways.
+       */}
+      <div
+        ref={paneRef}
+        role="region"
+        aria-label={`Page ${page}`}
+        tabIndex={0}
+        className="min-h-0 flex-1 overflow-auto bg-muted/40 [scrollbar-gutter:stable] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      >
         <div className="relative mx-auto w-fit">
           {!shown && (
             <div className="absolute inset-0 flex items-center justify-center">
@@ -172,6 +190,18 @@ export const CitationPdfViewer: FC<{
               );
             })}
         </div>
+        {shown && (
+          // The canvas has no text a screen reader can read; the browser's
+          // viewer did. Same runs the highlight is computed from.
+          <p className="sr-only">
+            Text of page {page}:{" "}
+            {shown.runs
+              .map((run) => run.str)
+              .join(" ")
+              .replace(/\s+/g, " ")
+              .trim()}
+          </p>
+        )}
         {highlighted && passageText && (
           <p className="sr-only">Highlighted passage: {passageText.replace(/\s+/g, " ").trim()}</p>
         )}

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { resolve } from "node:path";
 
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
@@ -50,9 +51,10 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
     );
   }
 
-  // The index keys a document by the path it was found under, which inside a
-  // grant may be a symlink rather than the file it resolves to.
-  const sourcePaths = [...new Set([path, resolved.realPath])];
+  // Keyed on what the grant check looked at — the normalised path — plus the
+  // file it resolves to: a grant root may itself be a link, and the index can
+  // hold either spelling.
+  const sourcePaths = [...new Set([resolve(path), resolved.realPath])];
   const deps = kbEmbedderAvailable()
     ? { embed: (texts: string[]) => embedTexts(texts, kbEmbeddingConfig()) }
     : null;

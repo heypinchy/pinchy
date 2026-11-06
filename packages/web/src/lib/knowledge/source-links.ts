@@ -278,24 +278,56 @@ const CITATION_MARKERS = /\[(\d[\d,\s]{0,30})\]/g;
 /** `[1] ` right before a path: the number of the Sources entry it belongs to. */
 const ENTRY_NUMBER_BEFORE_PATH = /\[(\d{1,3})\]\s*[:.\-–—]?\s*$/;
 
-/** Blocks whose inline text forms sentences. List items and quotes hold paragraphs. */
-const SENTENCE_BLOCKS = new Set(["paragraph", "heading", "tableCell"]);
+/**
+ * Blocks whose inline text forms sentences. List items and quotes hold
+ * paragraphs. A table ROW, not a cell: the marker usually sits in a cell of
+ * its own, beside the cells it backs.
+ */
+const SENTENCE_BLOCKS = new Set(["paragraph", "heading", "tableRow"]);
+
+/** One inline marker, read at a given position (sticky). */
+const MARKER_AT = /\[\d[\d,\s]{0,30}\]/y;
 
 /**
- * Sentence boundaries: after `.`, `!` or `?` and whitespace — but not after a
- * one- or two-letter abbreviation. Without that exception the most common
- * thing a citation trails, "p. 4" / "S. 4", would end the sentence in the
- * middle of the reference.
+ * Sentence boundaries: a `.`, `!` or `?` followed by whitespace — with two
+ * exceptions that decide which sentence a citation belongs to.
+ *
+ * - Markers right after the stop stay with the sentence before it.
+ *   "claim. [1]" is as common as "claim [1]." (the contract only says "next
+ *   to the claim"), and read the other way source 1 would be handed the NEXT
+ *   sentence: a confident highlight of the wrong passage.
+ * - A one- or two-letter abbreviation does not end a sentence, or the most
+ *   common thing a citation trails, "p. 4" / "S. 4", would cut it in half.
+ *
+ * A hand-written scan rather than one regex, and every check looks at a
+ * bounded window: this runs on each streamed chunk of model output, and a
+ * whitespace run must cost linear time, not quadratic.
  */
 function splitSentences(text: string): Array<{ start: number; end: number }> {
   const sentences: Array<{ start: number; end: number }> = [];
   let start = 0;
-  const boundary = /[.!?]\s+/g;
-  for (let m = boundary.exec(text); m !== null; m = boundary.exec(text)) {
-    const before = text.slice(start, m.index);
-    if (m[0][0] === "." && /(?:^|[\s(])\p{L}{1,2}$/u.test(before)) continue;
-    sentences.push({ start, end: m.index + 1 });
-    start = m.index + m[0].length;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch !== "." && ch !== "!" && ch !== "?") continue;
+
+    let end = i + 1;
+    for (let k = end; ;) {
+      while (k < text.length && /\s/.test(text[k]) && k - end < 8) k++;
+      MARKER_AT.lastIndex = k;
+      if (!MARKER_AT.test(text)) break;
+      end = k = MARKER_AT.lastIndex;
+    }
+    if (end < text.length && !/\s/.test(text[end])) continue;
+    if (end === i + 1 && ch === ".") {
+      const tail = text.slice(Math.max(start, i - 3), i);
+      if (/(?:^|[\s(])\p{L}{1,2}$/u.test(tail)) continue;
+    }
+
+    sentences.push({ start, end });
+    let next = end;
+    while (next < text.length && /\s/.test(text[next])) next++;
+    start = next;
+    i = next - 1;
   }
   if (start < text.length) sentences.push({ start, end: text.length });
   return sentences;
@@ -305,14 +337,18 @@ function splitSentences(text: string): Array<{ start: number; end: number }> {
 function claimText(sentence: string): string {
   return sentence
     .replace(CITATION_MARKERS, "")
-    .replace(/\s+([.,;:!?])/g, "$1")
     .replace(/\s+/g, " ")
+    .replace(/ ([.,;:!?])/g, "$1")
     .trim();
+}
+
+function letters(text: string): number {
+  return text.match(/\p{L}/gu)?.length ?? 0;
 }
 
 function capClaim(sentences: string[]): string | undefined {
   const joined = sentences.slice(0, CLAIM_MAX_SENTENCES).join(" ");
-  if ((joined.match(/\p{L}/gu)?.length ?? 0) < CLAIM_MIN_LETTERS) return undefined;
+  if (letters(joined) < CLAIM_MIN_LETTERS) return undefined;
   if (joined.length <= CLAIM_MAX_CHARS) return joined;
   const cut = joined.slice(0, CLAIM_MAX_CHARS);
   const lastSpace = cut.lastIndexOf(" ");
@@ -321,7 +357,7 @@ function capClaim(sentences: string[]): string | undefined {
 
 function inlineText(node: MdastNode): string {
   if (node.type === "text" || node.type === "inlineCode") return node.value ?? "";
-  return (node.children ?? []).map(inlineText).join("");
+  return (node.children ?? []).map(inlineText).join(node.type === "tableRow" ? " " : "");
 }
 
 /**
@@ -345,6 +381,9 @@ function claimsByNumber(tree: MdastNode): Map<number, string[]> {
         }
         if (cited.size === 0) continue;
         const claim = claimText(sentence);
+        // A marker standing alone ("… [1]" after a list) is no claim, and must
+        // not use up one of the three sentences a claim may hold.
+        if (letters(claim) < CLAIM_MIN_LETTERS) continue;
         for (const n of cited) byNumber.set(n, [...(byNumber.get(n) ?? []), claim]);
       }
       return;
@@ -367,11 +406,14 @@ function claimFor(
   before: string,
   numbered: () => Map<number, string[]>
 ): string | undefined {
-  const entry = ENTRY_NUMBER_BEFORE_PATH.exec(before);
-  if (entry) {
-    const sentences = numbered().get(Number(entry[1]));
-    return sentences ? capClaim(sentences) : undefined;
-  }
+  // Only the end of `before` can hold the number; a bounded slice keeps the
+  // `\s*` in the pattern from going quadratic on a whitespace run.
+  const entry = ENTRY_NUMBER_BEFORE_PATH.exec(before.slice(-48));
+  const sentences = entry ? numbered().get(Number(entry[1])) : undefined;
+  if (sentences) return capClaim(sentences);
+  // No sentence cites the number elsewhere: the path may stand inside its own
+  // claim ("four hours [1]: quality/x.pdf, p. 4."), so read the sentence it
+  // is in. A bare Sources line yields too few letters and no claim.
   const sentence = splitSentences(value).find((s) => s.start <= start && end <= s.end);
   if (!sentence) return undefined;
   const text = value.slice(sentence.start, start) + value.slice(end, sentence.end);
@@ -488,10 +530,13 @@ export function buildSourceViewerUrl(href: string): string | null {
  * their passages are anchored on headings (a Word page break is a rendering
  * result, #933), so no page of that PDF names a set of candidates.
  *
- * Built from the href rather than from separate props so the request can only
- * ever ask about the document the viewer is showing. The agent comes from the
- * href's own path segment, which `WORKSPACE_FILE_HREF` already confines to a
- * same-origin `/api/agents/<id>/` url.
+ * Built from the href rather than from separate props, so it asks about the
+ * document the viewer shows — through the same citation path `parseSourceHref`
+ * reads, which confines it to the data root. (A hand-written href naming a
+ * path outside it opens that path and asks about its data-root reading; both
+ * requests are gated on their own, so the worst case is no highlight.) The
+ * agent comes from the href's own path segment, which `WORKSPACE_FILE_HREF`
+ * already confines to a same-origin `/api/agents/<id>/` url.
  */
 export function buildPassageRequest(
   href: string,

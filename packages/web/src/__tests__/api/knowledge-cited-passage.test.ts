@@ -139,8 +139,8 @@ describe("POST /api/agents/[agentId]/knowledge/passage", () => {
   });
 
   it("asks for the requested path and the file it resolves to", async () => {
-    // The index keys a document by the path it was found under, which may be a
-    // symlink inside the grant rather than the file it points at.
+    // A grant root may itself be a link; ingest resolves the root, so the
+    // index can hold either spelling.
     mockResolveAllowedFile.mockResolvedValueOnce({
       ok: true,
       realPath: "/data/quality/real/W.pdf",
@@ -152,6 +152,17 @@ describe("POST /api/agents/[agentId]/knowledge/passage", () => {
       "/data/quality/Wartung.pdf",
       "/data/quality/real/W.pdf",
     ]);
+  });
+
+  it("looks the document up under the path the grant was checked against", async () => {
+    // The grant check normalises; the index stores normalised paths. Keying
+    // on the raw spelling would ask about a path nobody checked.
+    await POST(
+      makeRequest({ ...validBody, path: "/data/quality/./sub/../Wartung.pdf" }),
+      ctx as never
+    );
+
+    expect(mockFindCitedPassage.mock.calls[0][1]).toEqual(["/data/quality/Wartung.pdf"]);
   });
 
   it("embeds the claim with the knowledge base's own embedder", async () => {

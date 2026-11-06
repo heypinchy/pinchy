@@ -667,7 +667,7 @@ Runs a hybrid (vector + full-text) search over the requesting agent's indexed, g
 
 Which indexed passage on a cited page an answer drew on — what the citation viewer asks before it highlights one. Read-only: it isn't audited itself, because it accompanies a document view that `workspace-file` already records as `knowledge.source_viewed`.
 
-It returns text from a document, so it refuses exactly what `workspace-file` refuses, and in the same order: an agent you can't use answers `404`, a path outside the agent's granted folders answers `403`, before the index is read.
+It returns text from a document, so it applies the same two gates as `workspace-file`, in the same order, before the index is read: the agent check (`404` for an agent you can't use, `403` for a paused one), then the agent's granted folders (`403` for a path outside them, `404` for a file that isn't there).
 
 **Request body:**
 
@@ -689,7 +689,7 @@ It returns text from a document, so it refuses exactly what `workspace-file` ref
 
 `passage` is the indexed text of the passage, or `null` when there is none to show: the page holds no indexed text, or it holds several passages and nothing says which — no `claim`, or the embedding model isn't available. With several, the one nearest to `claim` in meaning wins, which also works when the answer is in a different language than the document.
 
-**Errors:** `400` invalid body, `401` not authenticated, `403` path outside the agent's granted folders, `404` agent not found or not accessible, or file not found, `502` the lookup failed.
+**Errors:** `400` invalid body, `401` not authenticated, `403` path outside the agent's granted folders or agent paused, `404` agent not found or not accessible, or file not found, `502` the lookup failed.
 
 ### `GET /api/agents/:agentId/knowledge/unsearchable`
 

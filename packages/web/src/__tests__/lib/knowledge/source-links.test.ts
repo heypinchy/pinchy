@@ -670,6 +670,57 @@ describe("the claim a citation supports", () => {
     expect(claims(tree)[0].claim!.length).toBeLessThanOrEqual(600);
   });
 
+  it("binds a marker written after the full stop to the sentence before it", () => {
+    // "claim. [1]" is as common as "claim [1]." — the contract only says
+    // "next to the claim". Read the other way, source 1 would be given
+    // source 2's sentence: a confident highlight of the wrong passage.
+    for (const gap of [" ", ""]) {
+      const tree = run(
+        answer(
+          p(
+            `Der Auftragnehmer reagiert binnen vier Stunden.${gap}[1] Die Pauschale beträgt 1.200 Euro.${gap}[2]`
+          ),
+          sources("[1] quality/Wartung.pdf — p. 4", "[2] quality/Preise.pdf — p. 2")
+        )
+      );
+      expect(claims(tree).map((c) => c.claim)).toEqual([
+        "Der Auftragnehmer reagiert binnen vier Stunden.",
+        "Die Pauschale beträgt 1.200 Euro.",
+      ]);
+    }
+  });
+
+  it("reads a table row as one claim", () => {
+    // The marker usually sits in a cell of its own, next to the cells it backs.
+    const cell = (text: string): Node => ({
+      type: "tableCell",
+      children: [{ type: "text", value: text }],
+    });
+    const table: Node = {
+      type: "table",
+      children: [
+        { type: "tableRow", children: [cell("Reaktionszeit"), cell("vier Stunden"), cell("[1]")] },
+      ],
+    };
+    const tree = run(answer(table, sources("[1] quality/Wartung.pdf — p. 4")));
+    expect(claims(tree)[0].claim).toBe("Reaktionszeit vier Stunden");
+  });
+
+  it("falls back to the sentence when a numbered path stands inside its own claim", () => {
+    const tree = run(
+      answer(p("Der Auftragnehmer reagiert binnen vier Stunden [1]: quality/Wartung.pdf, S. 4."))
+    );
+    expect(claims(tree)[0].claim).toBe("Der Auftragnehmer reagiert binnen vier Stunden:, S. 4.");
+  });
+
+  it("stays fast on a long run of whitespace next to a citation", () => {
+    // Runs on every streamed chunk of model output about ingested documents.
+    const value = `[1]${" ".repeat(50_000)}x quality/Wartung.pdf — p. 4 and a claim [1]${" ".repeat(50_000)}.`;
+    const started = performance.now();
+    run(answer(p(value)));
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it("leaves the href exactly as it was", () => {
     const tree = run(answer(p("Four hours [1]."), sources("[1] quality/Wartung.pdf — p. 4")));
     expect(links(tree)[0].url).toBe(

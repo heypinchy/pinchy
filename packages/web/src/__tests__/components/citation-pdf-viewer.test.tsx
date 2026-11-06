@@ -239,4 +239,43 @@ describe("CitationPdfViewer", () => {
 
     expect(pdf.destroy).toHaveBeenCalled();
   });
+
+  it("gives a screen reader the page's text, which a canvas does not have", async () => {
+    // The browser's viewer exposed the page text; drawing the page ourselves
+    // must not take that away, highlight or not.
+    mockOpenPdf.mockResolvedValue(handle());
+    fetchSpy.mockResolvedValue(jsonResponse({ passage: null }));
+
+    renderViewer();
+
+    expect(await screen.findByText(/Text of page 4:/)).toHaveTextContent(
+      "§ 4 Reaktionszeiten Der Auftragnehmer reagiert auf Störungen innerhalb von vier Stunden. § 5 Vergütung"
+    );
+  });
+
+  it("starts a page the reader turns to at its top", async () => {
+    mockOpenPdf.mockResolvedValue(handle());
+    fetchSpy.mockResolvedValue(jsonResponse({ passage: null }));
+
+    renderViewer();
+    await screen.findByText("Page 4 of 12");
+    const pane = screen.getByRole("region", { name: "Page 4" });
+    pane.scrollTop = 900;
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    });
+    await screen.findByText("Page 5 of 12");
+
+    expect(screen.getByRole("region", { name: "Page 5" }).scrollTop).toBe(0);
+  });
+
+  it("lets a keyboard scroll a page taller than the pane", async () => {
+    mockOpenPdf.mockResolvedValue(handle());
+    fetchSpy.mockResolvedValue(jsonResponse({ passage: null }));
+
+    renderViewer();
+
+    expect(await screen.findByRole("region", { name: "Page 4" })).toHaveAttribute("tabindex", "0");
+  });
 });
