@@ -16,7 +16,9 @@
  *    session when no runId is given) and otherwise answers `aborted: false`,
  *    leaving no tombstone: a run accepted afterwards runs normally.
  *  - `agent.wait` answers a terminal snapshot (`endedAt`) for a run that is
- *    over and `status: "timeout"` otherwise — it does not long-poll.
+ *    over and `status: "timeout"` otherwise — it does not long-poll. A run
+ *    that was stopped answers `status: "error"` with `stopReason: "rpc"`, as
+ *    OpenClaw's normalised snapshot does.
  *  - A tool runs only when the test says the model got there (`runTool`), and
  *    only if the run is still running.
  *  - A dispatch OpenClaw turns away (`reject`) is answered `ok: false` before
@@ -181,11 +183,18 @@ export async function startFakeGateway(): Promise<FakeGateway> {
         case "agent.wait": {
           const run = runs.get(String(params.runId));
           if (run?.endedAt !== undefined) {
+            // A stopped run is recorded as `timeout` + `stopReason: "rpc"`, but
+            // `agent.wait` normalises its terminal snapshot first
+            // (`buildDedupeTerminalSnapshot` → `buildAgentRunTerminalOutcome`):
+            // a non-ok status with a cancellation stopReason is `cancelled`,
+            // and `cancelled` answers `status: "error"`. So the oracle reports
+            // a run the user stopped exactly like one that failed, told apart
+            // only by `stopReason` (#1301).
             respond(ws, msg.id, {
               runId: run.runId,
-              status: run.state === "aborted" ? "timeout" : run.state === "failed" ? "error" : "ok",
+              status: run.state === "aborted" || run.state === "failed" ? "error" : "ok",
               endedAt: run.endedAt,
-              ...(run.state === "aborted" ? { stopReason: "rpc" } : {}),
+              ...(run.state === "aborted" ? { stopReason: "rpc", error: "aborted" } : {}),
             });
           } else {
             respond(ws, msg.id, {

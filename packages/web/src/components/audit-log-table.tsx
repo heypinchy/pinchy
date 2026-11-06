@@ -114,10 +114,12 @@ function highlightJson(json: string): string {
 }
 
 function ActorCell({
+  actorType,
   actorId,
   actorName,
   actorDeleted,
 }: {
+  actorType: string;
   actorId: string;
   actorName: string | null;
   actorDeleted: boolean;
@@ -129,7 +131,8 @@ function ActorCell({
       <span>
         {actorName}{" "}
         <Badge variant="outline" className="text-xs ml-1">
-          deactivated
+          {/* Users are deactivated (banned) and can come back; agents are deleted. */}
+          {actorType === "agent" ? "deleted" : "deactivated"}
         </Badge>
       </span>
     );
@@ -504,6 +507,7 @@ export function AuditLogTable() {
                 <div className="text-sm">
                   <span className="text-muted-foreground">Actor: </span>
                   <ActorCell
+                    actorType={entry.actorType}
                     actorId={entry.actorId}
                     actorName={entry.actorName}
                     actorDeleted={entry.actorDeleted}
@@ -556,6 +560,7 @@ export function AuditLogTable() {
                       <TableCell>{new Date(entry.timestamp).toLocaleString()}</TableCell>
                       <TableCell>
                         <ActorCell
+                          actorType={entry.actorType}
                           actorId={entry.actorId}
                           actorName={entry.actorName}
                           actorDeleted={entry.actorDeleted}
@@ -618,6 +623,7 @@ export function AuditLogTable() {
                 <p>
                   {selectedEntry.actorType}:{" "}
                   <ActorCell
+                    actorType={selectedEntry.actorType}
                     actorId={selectedEntry.actorId}
                     actorName={selectedEntry.actorName}
                     actorDeleted={selectedEntry.actorDeleted}

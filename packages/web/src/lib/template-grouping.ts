@@ -142,13 +142,17 @@ export type CategoryId =
   | "knowledge-compliance"
   | "email";
 
+// Thematic order. Knowledge & Compliance leads because its templates need no
+// integration, only a folder (and a vision-capable model) — the integration
+// categories follow (#1270). groupTemplatesByCategory then moves any category
+// with nothing runnable to the end.
 const CATEGORY_DEFINITIONS: readonly { id: CategoryId; label: string }[] = [
+  { id: "knowledge-compliance", label: "Knowledge & Compliance" },
   { id: "sales-customers", label: "Sales & Customers" },
   { id: "finance-procurement", label: "Finance & Procurement" },
   { id: "hr-recruiting", label: "HR & Recruiting" },
   { id: "operations", label: "Operations" },
   { id: "marketing-web", label: "Marketing & Web" },
-  { id: "knowledge-compliance", label: "Knowledge & Compliance" },
   { id: "email", label: "Email" },
 ];
 
@@ -198,6 +202,15 @@ export interface CategorizedTemplates {
   custom: TemplateItem | null;
 }
 
+/**
+ * A template the admin can create right now: its integration is connected
+ * (`available`) and the provider has a model for its capabilities (not
+ * `disabled`).
+ */
+function isRunnable(template: TemplateItem): boolean {
+  return template.available !== false && template.disabled !== true;
+}
+
 export function groupTemplatesByCategory(templates: TemplateItem[]): CategorizedTemplates {
   let custom: TemplateItem | null = null;
   const buckets = new Map<CategoryId, TemplateItem[]>();
@@ -231,6 +244,17 @@ export function groupTemplatesByCategory(templates: TemplateItem[]): Categorized
 
     categories.push({ id: def.id, label: def.label, templates: items });
   }
+
+  // Categories the instance can use come first. A category where nothing is
+  // runnable (e.g. every Sales template without an Odoo connection) renders
+  // as a collapsed line or as greyed-out cards, and must not push
+  // a usable category below the fold (#1270). Array#sort is stable, so the
+  // thematic order holds within each group.
+  categories.sort((a, b) => {
+    const aRunnable = a.templates.some(isRunnable) ? 1 : 0;
+    const bRunnable = b.templates.some(isRunnable) ? 1 : 0;
+    return bRunnable - aRunnable;
+  });
 
   return { categories, custom };
 }

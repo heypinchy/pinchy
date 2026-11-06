@@ -691,11 +691,16 @@ export function NewAgentForm() {
                   {requiresDirectories && (
                     <div className="space-y-3">
                       <h4 className="text-sm font-medium">Data Directories</h4>
-                      <DirectoryPicker
-                        directories={directories}
-                        selected={selectedPaths}
-                        onChange={setSelectedPaths}
-                      />
+                      {/* One empty state, not two: the picker has its own, but
+                          this form's richer box replaces it here. */}
+                      {directories.length > 0 && (
+                        <DirectoryPicker
+                          directories={directories}
+                          selected={selectedPaths}
+                          onChange={setSelectedPaths}
+                          label="Data Directories"
+                        />
+                      )}
 
                       {directories.length === 0 && (
                         <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950">

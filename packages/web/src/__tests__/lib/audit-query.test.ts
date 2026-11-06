@@ -7,7 +7,8 @@ vi.mock("@/lib/audit", () => ({
   resolveActorIdMatchSet: (...args: unknown[]) => mockResolveActorIdMatchSet(...args),
 }));
 
-const mockLeftJoin3 = vi.fn().mockReturnValue({ leftJoin: "terminal" });
+const mockLeftJoin4 = vi.fn().mockReturnValue({ leftJoin: "terminal" });
+const mockLeftJoin3 = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin4 });
 const mockLeftJoin2 = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin3 });
 const mockLeftJoin1 = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin2 });
 const mockFrom = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin1 });
@@ -193,7 +194,7 @@ describe("auditSelectWithJoins", () => {
     ({ buildAuditFilters, auditSelectWithJoins } = await import("@/lib/audit-query"));
   });
 
-  it("selects from auditLog and applies the dual actor join plus resource joins", async () => {
+  it("selects from auditLog and applies the dual user-actor join, the agent-actor join and the resource joins", async () => {
     const { or, eq, sql } = await import("drizzle-orm");
     auditSelectWithJoins();
 
@@ -206,6 +207,8 @@ describe("auditSelectWithJoins", () => {
     );
     expect(eq).toHaveBeenCalledWith("audit_pseudonym", "actor_id");
     expect(eq).toHaveBeenCalledWith("id", "actor_id");
-    expect(sql).toHaveBeenCalledTimes(2);
+    // agent actor + resource agent + resource user
+    expect(sql).toHaveBeenCalledTimes(3);
+    expect(mockLeftJoin4).toHaveBeenCalledTimes(1);
   });
 });

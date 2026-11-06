@@ -17,7 +17,7 @@ vi.mock("@/lib/auth-client", () => ({
 vi.mock("next/navigation", () => ({
   useParams: () => ({ agentId: "agent-1" }),
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams("tab=instructions"),
   usePathname: () => "/chat/agent-1/settings",
 }));
 
@@ -77,7 +77,7 @@ function mockFetch() {
 }
 
 async function renderSettings() {
-  render(<AgentSettingsPageContent initialTab="instructions" />);
+  render(<AgentSettingsPageContent />);
   return waitFor(() => screen.getByRole("textbox"));
 }
 
@@ -100,7 +100,7 @@ describe("AgentSettingsPageContent — a draft carried over from chat (#1144)", 
   it("consumes the draft, so re-opening the tab shows only what is saved", async () => {
     stashInstructionDraft("agent-1", "Score leads by VUE.");
 
-    const { unmount } = render(<AgentSettingsPageContent initialTab="instructions" />);
+    const { unmount } = render(<AgentSettingsPageContent />);
     await waitFor(() => screen.getByRole("textbox"));
     expect(window.sessionStorage.getItem("pinchy:instruction-draft:agent-1")).toBeNull();
     unmount();

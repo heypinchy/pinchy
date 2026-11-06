@@ -272,6 +272,10 @@ A call to a Pinchy tool that carries a field the tool doesn't take is now refuse
 
 Two calls change for agents you already run. `email_search` now refuses an empty `query` too — v0.9.1 refused only a non-empty one, with a message naming the filters to use. And `odoo_delete` refuses `ids` (see [above](#deleting-in-odoo-now-requires-reading-the-record-first)). Both tool descriptions now say what to use instead, so an agent doesn't need the error to find out.
 
+#### `POST /api/settings` only accepts `org.timezone`
+
+The endpoint used to store any key you sent it, which let an admin write provider, domain-lock, enterprise-key or Telegram settings around the routes that own them — skipping their validation, side effects and audit entry. It now accepts `org.timezone` and answers every other key with `400`. The Settings UI only ever sent the timezone, so nothing changes there. If a script of yours posted other keys here, use the dedicated endpoint instead; the [API reference](/reference/api/) lists them.
+
 ### Upgrade notes
 
 The standard flow applies:
@@ -401,7 +405,7 @@ The same now goes for a saved **OpenAI-compatible provider**. Its base URL is ch
 
 Two gaps remain, and we'd rather say so.
 
-- **DNS rebinding.** The check resolves the hostname, and the Odoo or mail client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool pins the address it checked; the Odoo and mail clients don't yet.
+- **DNS rebinding.** The check resolves the hostname, and the Odoo or mail client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool pins the address it checked, and so, from this release, do the requests Pinchy makes itself right after a check: the mail **Test connection**, listing Odoo databases, and an OpenAI-compatible provider's model discovery and key check. Those also no longer contact a name that doesn't resolve. Everything else still looks the name up again: the agent's Odoo and mail tools, the agent runtime's requests to a provider, and Pinchy's other Odoo requests (testing credentials, previewing and syncing the schema).
 - **A name the two containers resolve differently.** Pinchy runs the check in its own container; the Odoo and mail tools connect from the agent runtime's (`openclaw`). Our `docker-compose.yml` used to map `ollama.local` — the Docker host — in the runtime's container only, so for Pinchy that name didn't resolve, the check let it through, and an Odoo URL on `ollama.local` reached the Docker host. The compose file for this release maps it in both containers, so it's checked as the Docker host's address like any other. Re-fetch the compose file as [described above](#audit_hmac_secret-in-env-now-actually-does-something) to pick that up, and if you've added `extra_hosts` entries of your own to the `openclaw` service, add them to `pinchy` too.
 
 #### An Odoo URL that redirects now fails instead of being followed
