@@ -189,6 +189,9 @@ export function Chat({
     ? getAgentAvatarSvg({ avatarSeed: liveAgent.avatarSeed, name: liveAgent.name })
     : avatarUrl;
   const displayIsPersonal = liveAgent?.isPersonal ?? isPersonal;
+  // Memory is a permission, not a property of shared agents: only an agent
+  // granted `pinchy_memory` turns conversations into team knowledge.
+  const keepsMemory = (liveAgent?.allowedTools ?? []).includes("pinchy_memory");
 
   const { bundle: chatBundle, publish } = useChatSession(agentId, chatId);
 
@@ -321,7 +324,9 @@ export function Chat({
                                           <TooltipContent>
                                             {displayIsPersonal
                                               ? "Your conversations are private and not shared with anyone."
-                                              : "Your conversations help build team knowledge that's available to all team members."}
+                                              : keepsMemory
+                                                ? "Your conversations help build team knowledge that's available to all team members."
+                                                : "Your whole team can use this agent, but it doesn't keep memory of your conversations."}
                                           </TooltipContent>
                                         </Tooltip>
                                       </TooltipProvider>
