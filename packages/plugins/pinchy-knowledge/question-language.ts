@@ -73,7 +73,9 @@ const LANGUAGES: readonly LanguageSignal[] = [
   },
   {
     name: "Italian",
-    openers: words("chi quale quali dove perché cosa ogni riassumi spiega elenca trova descrivi"),
+    openers: words(
+      "chi quale quali quante quanti come dove perché cosa ogni riassumi spiega elenca trova descrivi"
+    ),
     words: words(
       "il lo gli di del della dei delle che è chi ogni quante quanto quale quali sono " +
         "nel nella per non va ha"
@@ -137,7 +139,7 @@ export function questionText(prompt: string): string {
  * outvote a short caption in any other language.
  */
 const MEDIA_LINE = /\[media attached(?:\s+\d+\/\d+)?:[^\]]*\]/gi;
-const REPLY_MEDIA_HINT =
+export const REPLY_MEDIA_HINT =
   "To send an image back, use the message tool with structured media fields such as media, mediaUrl, path, or filePath. Keep caption in the text body.";
 
 /** Quoted wording is the documents' language, not the asker's. */

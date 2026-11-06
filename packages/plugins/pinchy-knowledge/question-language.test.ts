@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { detectQuestionLanguage, sharedOpeners } from "./question-language";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
+import { REPLY_MEDIA_HINT, detectQuestionLanguage, sharedOpeners } from "./question-language";
 
 describe("detectQuestionLanguage", () => {
   it.each([
@@ -120,5 +123,24 @@ describe("detectQuestionLanguage", () => {
       "To send an image back, use the message tool with structured media fields such as media, mediaUrl, path, or filePath. Keep caption in the text body.\n" +
       "Opisz ten dokument";
     expect(detectQuestionLanguage(prompt)).toBe("Polish");
+  });
+
+  it.each([
+    "Come funziona la garanzia?",
+    "Come si cambia l'olio della pompa P7?",
+    "Quanti giorni dura la garanzia?",
+  ])("names an Italian question that opens with come/quanti: %j", (question) => {
+    expect(detectQuestionLanguage(question)).toBe("Italian");
+  });
+
+  it("strips OpenClaw's reply-media hint as OpenClaw writes it", () => {
+    // The hint is copied byte for byte from OpenClaw. If a bump rewords it,
+    // the strip stops working without a word, so check the installed dist.
+    // packages/web is the workspace package that depends on openclaw.
+    const dist = join(__dirname, "../../web/node_modules/openclaw/dist");
+    const found = readdirSync(dist)
+      .filter((f) => f.endsWith(".js"))
+      .some((f) => readFileSync(join(dist, f), "utf8").includes(REPLY_MEDIA_HINT));
+    expect(found).toBe(true);
   });
 });
