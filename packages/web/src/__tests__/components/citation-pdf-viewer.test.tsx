@@ -327,8 +327,8 @@ describe("CitationPdfViewer for a Word section", () => {
     renderSection();
 
     expect(await screen.findByText("Page 3 of 12")).toBeInTheDocument();
-    expect(pdf.renderPage.mock.calls.map(([n]) => n)).toEqual([3]);
     await waitFor(() => expect(highlights()).toHaveLength(2));
+    expect(pdf.renderPage.mock.calls.at(-1)?.[0]).toBe(3);
     // Only the section's pages were read, and only until the passage was found.
     expect(pdf.pageRuns.mock.calls.map(([n]) => n)).toEqual([2, 3]);
   });
@@ -355,6 +355,64 @@ describe("CitationPdfViewer for a Word section", () => {
 
     expect(await screen.findByText("Page 2 of 12")).toBeInTheDocument();
     expect(pdf.pageRuns).not.toHaveBeenCalled();
+  });
+
+  it("opens the section without waiting for a slow passage lookup", async () => {
+    // A section usually holds several passages, so the lookup embeds the
+    // claim — seconds on a cold model. The section is known without it.
+    const pdf = wordHandle({ 3: PAGE_4.runs.map((r) => r.str) });
+    mockOpenPdf.mockResolvedValue(pdf);
+    fetchSpy.mockReturnValue(new Promise(() => {}));
+
+    renderSection();
+
+    expect(await screen.findByText("Page 2 of 12")).toBeInTheDocument();
+    expect(pdf.pageRuns).not.toHaveBeenCalled();
+  });
+
+  it("moves to the passage's page when the lookup answers after the section opened", async () => {
+    const pdf = wordHandle({ 3: PAGE_4.runs.map((r) => r.str) });
+    mockOpenPdf.mockResolvedValue(pdf);
+    let answer: (res: Response) => void = () => {};
+    fetchSpy.mockReturnValue(new Promise<Response>((resolve) => (answer = resolve)));
+
+    renderSection();
+    expect(await screen.findByText("Page 2 of 12")).toBeInTheDocument();
+
+    await act(async () => answer(jsonResponse({ passage: { text: PASSAGE_TEXT } })));
+
+    expect(await screen.findByText("Page 3 of 12")).toBeInTheDocument();
+    await waitFor(() => expect(highlights()).toHaveLength(2));
+  });
+
+  it("does not pull a reader back who paged on before the passage was found", async () => {
+    const pdf = wordHandle({ 3: PAGE_4.runs.map((r) => r.str) });
+    pdf.renderPage.mockResolvedValue({ ...PAGE_4, runs: [run("Inhaltsverzeichnis", 100)] });
+    mockOpenPdf.mockResolvedValue(pdf);
+    let answer: (res: Response) => void = () => {};
+    fetchSpy.mockReturnValue(new Promise<Response>((resolve) => (answer = resolve)));
+
+    renderSection();
+    expect(await screen.findByText("Page 2 of 12")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await screen.findByText("Page 4 of 12")).toBeInTheDocument();
+
+    await act(async () => answer(jsonResponse({ passage: { text: PASSAGE_TEXT } })));
+    await waitFor(() => expect(pdf.pageRuns).toHaveBeenCalled());
+
+    expect(screen.getByText("Page 4 of 12")).toBeInTheDocument();
+  });
+
+  it("falls back without waiting for the passage lookup when the heading is unknown", async () => {
+    const pdf = wordHandle();
+    pdf.outline.mockResolvedValue([]);
+    mockOpenPdf.mockResolvedValue(pdf);
+    fetchSpy.mockReturnValue(new Promise(() => {}));
+
+    renderSection();
+
+    expect(await screen.findByTestId("browser-viewer")).toBeInTheDocument();
   });
 
   it("falls back to the browser's viewer when the outline has no such heading", async () => {

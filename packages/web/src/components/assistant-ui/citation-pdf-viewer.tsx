@@ -69,9 +69,8 @@ export const CitationPdfViewer: FC<{
   const [page, setPage] = useState(givenPage);
   const [rendered, setRendered] = useState<{ page: number; result: RenderedPdfPage } | null>(null);
   const [passageText, setPassageText] = useState<string | null>(null);
-  // Whether the lookup has answered (or failed, or was never needed). A
-  // section is searched for its passage only once this is known.
-  const [passageSettled, setPassageSettled] = useState(!passage);
+  // A Word citation's section, once the outline has named its pages.
+  const [section, setSection] = useState<{ first: number; last: number } | null>(null);
   const paneRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
@@ -107,12 +106,8 @@ export const CitationPdfViewer: FC<{
     if (!passage) return;
     let cancelled = false;
     apiPost<{ passage: { text: string } | null }>(passage.url, passage.body).then(
-      (res) => {
-        if (cancelled) return;
-        setPassageText(res.passage?.text ?? null);
-        setPassageSettled(true);
-      },
-      () => !cancelled && setPassageSettled(true)
+      (res) => !cancelled && setPassageText(res.passage?.text ?? null),
+      () => {}
     );
     return () => {
       cancelled = true;
@@ -121,35 +116,48 @@ export const CitationPdfViewer: FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [passage?.url, JSON.stringify(passage?.body)]);
 
-  // A Word citation: which page of the converted PDF holds the cited section,
-  // and within it the passage. Bounded by the section (`findSectionPage`), so a
-  // long document costs a few pages' text, not all of it. No such heading in
-  // the outline means there is no section to open at — the browser's viewer.
+  // A Word citation, first step: which pages of the converted PDF the cited
+  // section spans, from the outline alone. It does not wait for the passage
+  // lookup — that embeds the claim, seconds on a cold model — so the section
+  // opens as soon as the document does, and a heading the outline does not
+  // have falls back to the browser's viewer just as fast.
   useEffect(() => {
     if (citedPage !== null || !pdf) return;
     // Nothing to open at: the browser's viewer, rather than a spinner forever.
     if (!heading) return fail();
-    if (!passageSettled) return;
     let cancelled = false;
-    pdf
-      .outline()
-      .then((entries) => {
+    pdf.outline().then(
+      (entries) => {
+        if (cancelled) return;
         const range = sectionPages(entries, heading, pdf.numPages);
-        if (!range) throw new Error("heading not in the outline");
-        return findSectionPage(pdf, range, passageText);
-      })
-      .then(
-        (found) => {
-          if (cancelled) return;
-          setCitedPage(found);
-          setPage(found);
-        },
-        () => !cancelled && fail()
-      );
+        if (!range) return fail();
+        setSection(range);
+        setCitedPage(range.first);
+        setPage(range.first);
+      },
+      () => !cancelled && fail()
+    );
     return () => {
       cancelled = true;
     };
-  }, [citedPage, heading, pdf, passageSettled, passageText]);
+  }, [citedPage, heading, pdf]);
+
+  // Second step, once the passage is known: which page of the section holds
+  // it. Bounded by the section (`findSectionPage`), so a long document costs a
+  // few pages' text, not all of it. The highlight moves to that page; the
+  // reader moves with it only if they are still where the section opened.
+  useEffect(() => {
+    if (!pdf || !section || !passageText) return;
+    let cancelled = false;
+    findSectionPage(pdf, section, passageText).then((found) => {
+      if (cancelled || found === section.first) return;
+      setCitedPage(found);
+      setPage((current) => (current === section.first ? found : current));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [pdf, section, passageText]);
 
   useEffect(() => {
     if (!pdf || page === null || !canvasRef.current) return;
