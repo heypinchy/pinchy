@@ -27,7 +27,7 @@ function words(list: string): ReadonlySet<string> {
 interface LanguageSignal {
   name: string;
   words: ReadonlySet<string>;
-  /** Letters no other language in this list uses. Any of them adds 2. */
+  /** Letters no other language in this list uses. Any of them adds 2, next to a function word. */
   letters?: RegExp;
 }
 
@@ -36,7 +36,8 @@ const LANGUAGES: readonly LanguageSignal[] = [
     name: "German",
     words: words(
       "der die das und ist wer wie wann wo warum welche welcher welches hat haben war " +
-        "wurde wurden mit von den dem des im ein eine einer für auf nicht zu bei nach"
+        "wurde wurden mit von den dem des im ein eine einer für auf nicht zu zur zum bei nach " +
+        "steht gibt sind kann können bitte mir ich uns unser unsere dieser diese dieses über wird"
     ),
     letters: /[äß]/i,
   },
@@ -90,6 +91,15 @@ const LANGUAGES: readonly LanguageSignal[] = [
   },
 ];
 
+/**
+ * The words the user typed. Pinchy appends a `<pinchy:attachments>` block of
+ * English markup and workspace paths to a message that carries files; left in,
+ * it reads as English and outvotes a short question in any other language.
+ */
+export function questionText(prompt: string): string {
+  return prompt.replace(/<pinchy:attachments>[\s\S]*?<\/pinchy:attachments>/g, " ").trim();
+}
+
 /** Quoted wording is the documents' language, not the asker's. */
 function stripQuoted(text: string): string {
   return text
@@ -100,14 +110,16 @@ function stripQuoted(text: string): string {
 }
 
 export function detectQuestionLanguage(text: string): string | null {
-  const stripped = stripQuoted(text);
+  const stripped = stripQuoted(questionText(text));
   const tokens = stripped.toLowerCase().match(/\p{L}+/gu) ?? [];
-  const scores = LANGUAGES.map((lang) => ({
-    name: lang.name,
-    score:
-      tokens.filter((t) => lang.words.has(t)).length +
-      (lang.letters && lang.letters.test(stripped) ? 2 : 0),
-  })).sort((a, b) => b.score - a.score);
+  const scores = LANGUAGES.map((lang) => {
+    const wordHits = tokens.filter((t) => lang.words.has(t)).length;
+    // A letter counts only alongside a function word of the same language:
+    // on its own it is as likely to come from a document title or a name
+    // ("Summarize the Qualitätshandbuch", "Łukasz") as from the question.
+    const letterBonus = wordHits > 0 && lang.letters?.test(stripped) ? 2 : 0;
+    return { name: lang.name, score: wordHits + letterBonus };
+  }).sort((a, b) => b.score - a.score);
   const [first, second] = scores;
   if (!first || first.score < 2 || first.score === second?.score) return null;
   return first.name;

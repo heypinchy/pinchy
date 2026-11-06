@@ -46,4 +46,27 @@ describe("detectQuestionLanguage", () => {
       )
     ).toBe("Polish");
   });
+
+  it.each([
+    "Summarize the Qualitätshandbuch",
+    "Explain the Gefährdungsbeurteilung",
+    "Any news on the Größenprüfung?",
+  ])("doesn't let one German document name outvote an English question: %j", (question) => {
+    // People who ask in English about German documents are who #1296 is for.
+    // A letter counts only for a language that also has a function word.
+    expect(detectQuestionLanguage(question)).not.toBe("German");
+  });
+
+  it("doesn't read a Polish personal name as a Polish question", () => {
+    expect(detectQuestionLanguage("Show me Łukasz's report")).not.toBe("Polish");
+  });
+
+  it("reads past the attachment block Pinchy appends to a message", () => {
+    // The block is English markup with workspace paths. Left in, it reads as
+    // English and outvotes a short German or Polish question.
+    const block =
+      "\n\n<pinchy:attachments>\n- `/root/.openclaw/workspaces/a1/uploads/wartung.pdf` (application/pdf, 1.2 MB) — analyze with `pinchy_read`\n</pinchy:attachments>";
+    expect(detectQuestionLanguage(`Was steht in dieser Datei zur Wartung?${block}`)).toBe("German");
+    expect(detectQuestionLanguage(`Kto podpisał ten protokół?${block}`)).toBe("Polish");
+  });
 });
