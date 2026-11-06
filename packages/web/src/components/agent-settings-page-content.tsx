@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useTabParam, AGENT_SETTINGS_TABS, type AgentSettingsTab } from "@/hooks/use-tab-param";
 import { authClient } from "@/lib/auth-client";
 import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SettingsNavGroupLabel } from "@/components/settings-nav-group-label";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -112,6 +114,34 @@ const ADMIN_ONLY_TABS = new Set<AgentSettingsTab>([
   "automations",
 ]);
 
+/**
+ * The sections that are DRAFTS: edits collect across them and the save bar
+ * commits them together. Every other section (Telegram, Automations,
+ * Diagnostics) acts the moment you click, and must not carry a Save button that
+ * promises a step it does not have.
+ */
+const DRAFT_TABS = new Set<AgentSettingsTab>([
+  "general",
+  "personality",
+  "instructions",
+  "permissions",
+  "access",
+]);
+
+/** Labels for the mobile drill-down header — the same words as the sidebar. */
+// A Map, not an object indexed by the tab: a computed member access on an
+// object literal is what `security/detect-object-injection` reports.
+const TAB_LABELS = new Map<AgentSettingsTab, string>([
+  ["general", "General"],
+  ["personality", "Personality"],
+  ["instructions", "Instructions"],
+  ["permissions", "Permissions"],
+  ["access", "Access"],
+  ["telegram", "Telegram"],
+  ["automations", "Automations"],
+  ["diagnostics", "Diagnostics"],
+]);
+
 function DirtyDot() {
   return (
     <span
@@ -193,7 +223,23 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
             (tab === "telegram" && canManageTelegram) ||
             (tab === "automations" && canManageAutomations)
         );
-  const [activeTab, setActiveTab] = useTabParam("general", visibleTabs, initialTab);
+  // `keepParamForDefault` so choosing General still writes `?tab=general`: on a
+  // phone the bare URL is the section LIST and an explicit tab is a section,
+  // the same two-level drill-down as the global Settings.
+  const [activeTab, setActiveTab, isTabExplicit] = useTabParam("general", visibleTabs, initialTab, {
+    keepParamForDefault: true,
+  });
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
+  // Leaves the section for the list. `replace`, not push — see the identical
+  // control in settings-page-content.tsx: Back must not walk into the section
+  // the user just left. Only `tab` is dropped; other params survive.
+  const goToSectionList = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("tab");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }, [pathname, router, searchParams]);
 
   const [providers, setProviders] = useState<Provider[]>([]);
   const [soulContent, setSoulContent] = useState("");
@@ -484,7 +530,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-2xl">
+      <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-5xl">
         <div className="flex items-center justify-between mb-6">
           <button
             onClick={() => {
@@ -501,8 +547,38 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
           <h1 className="text-2xl font-bold">Agent Settings</h1>
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList>
+        <Tabs
+          value={activeTab}
+          onValueChange={setActiveTab}
+          orientation="vertical"
+          className="flex-col md:flex-row md:gap-10"
+        >
+          {isTabExplicit && (
+            <div className="flex items-center gap-2 pb-2 md:hidden">
+              <button
+                type="button"
+                onClick={goToSectionList}
+                aria-label="Back to agent settings"
+                className="text-muted-foreground hover:text-foreground -ml-1 rounded-md px-1 py-1 text-sm font-medium"
+              >
+                &lsaquo; Agent Settings
+              </button>
+              <span className="text-sm font-medium">{TAB_LABELS.get(activeTab)}</span>
+            </div>
+          )}
+
+          {/* Grouped like the global Settings. The groups are not decoration:
+              "Agent" and "Governance" are drafts saved together by the bar at
+              the bottom, "Channels & Automation" and "Support" act at once.
+              A group whose sections the viewer does not get is left out. */}
+          <TabsList
+            variant="sidebar"
+            className={cn(
+              "h-fit w-full shrink-0 flex-col items-stretch gap-0.5 md:sticky md:top-0 md:w-56 md:self-start",
+              isTabExplicit ? "hidden md:flex" : "flex md:flex"
+            )}
+          >
+            <SettingsNavGroupLabel first>Agent</SettingsNavGroupLabel>
             <TabsTrigger value="general">
               General {dirtyTabs.has("general") && <DirtyDot />}
             </TabsTrigger>
@@ -512,128 +588,143 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
             <TabsTrigger value="instructions">
               Instructions {dirtyTabs.has("instructions") && <DirtyDot />}
             </TabsTrigger>
+
             {showPermissions && (
-              <TabsTrigger value="permissions">
-                Permissions {dirtyTabs.has("permissions") && <DirtyDot />}
-              </TabsTrigger>
+              <>
+                <SettingsNavGroupLabel>Governance</SettingsNavGroupLabel>
+                <TabsTrigger value="permissions">
+                  Permissions {dirtyTabs.has("permissions") && <DirtyDot />}
+                </TabsTrigger>
+                <TabsTrigger value="access">
+                  Access {dirtyTabs.has("access") && <DirtyDot />}
+                </TabsTrigger>
+              </>
             )}
-            {showPermissions && (
-              <TabsTrigger value="access">
-                Access {dirtyTabs.has("access") && <DirtyDot />}
-              </TabsTrigger>
+
+            {(canManageTelegram || canManageAutomations) && (
+              <SettingsNavGroupLabel>Channels &amp; Automation</SettingsNavGroupLabel>
             )}
             {canManageTelegram && <TabsTrigger value="telegram">Telegram</TabsTrigger>}
             {canManageAutomations && <TabsTrigger value="automations">Automations</TabsTrigger>}
+
+            <SettingsNavGroupLabel>Support</SettingsNavGroupLabel>
             <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="general" keepMounted>
-            <AgentSettingsGeneral
-              agent={agent}
-              providers={providers}
-              canDelete={canDelete}
-              onChange={handleGeneralChange}
-            />
-          </TabsContent>
-
-          <TabsContent value="personality" keepMounted>
-            <AgentSettingsPersonality
-              agentId={agentId}
-              agent={{
-                avatarSeed: agent.avatarSeed,
-                name: agent.name,
-                personalityPresetId: agent.personalityPresetId,
-              }}
-              soulContent={soulContent}
-              onChange={handlePersonalityChange}
-            />
-          </TabsContent>
-
-          <TabsContent value="instructions" keepMounted>
-            <AgentSettingsFile
-              agentId={agentId}
-              filename="AGENTS.md"
-              content={agentsContent}
-              appendDraft={carriedDraft ?? undefined}
-              onChange={handleInstructionsChange}
-            />
-          </TabsContent>
-
-          {showPermissions && (
-            <TabsContent value="permissions" keepMounted>
-              <AgentSettingsPermissions
+          <div className={cn("min-w-0 flex-1", isTabExplicit ? "block" : "hidden md:block")}>
+            <TabsContent value="general" keepMounted>
+              <AgentSettingsGeneral
                 agent={agent}
-                directories={directories}
-                connections={connections}
-                isAdmin={isAdmin}
-                onChange={handlePermissionsChange}
+                providers={providers}
+                canDelete={canDelete}
+                onChange={handleGeneralChange}
               />
             </TabsContent>
-          )}
 
-          {showPermissions && (
-            <TabsContent value="access" keepMounted>
-              <AgentSettingsAccess
-                agent={{ visibility: agent.visibility }}
-                currentGroupIds={agent.groupIds || []}
-                onChange={handleAccessChange}
-                isAdmin={isAdmin}
-              />
-            </TabsContent>
-          )}
-
-          {canManageTelegram && (
-            <TabsContent value="telegram">
-              <AgentTelegramSettings
+            <TabsContent value="personality" keepMounted>
+              <AgentSettingsPersonality
                 agentId={agentId}
-                isSmithers={agent.isPersonal}
-                isAdmin={isAdmin}
+                agent={{
+                  avatarSeed: agent.avatarSeed,
+                  name: agent.name,
+                  personalityPresetId: agent.personalityPresetId,
+                }}
+                soulContent={soulContent}
+                onChange={handlePersonalityChange}
               />
             </TabsContent>
-          )}
 
-          {/* Self-contained and lazily mounted (no `keepMounted`), like Telegram
+            <TabsContent value="instructions" keepMounted>
+              <AgentSettingsFile
+                agentId={agentId}
+                filename="AGENTS.md"
+                content={agentsContent}
+                appendDraft={carriedDraft ?? undefined}
+                onChange={handleInstructionsChange}
+              />
+            </TabsContent>
+
+            {showPermissions && (
+              <TabsContent value="permissions" keepMounted>
+                <AgentSettingsPermissions
+                  agent={agent}
+                  directories={directories}
+                  connections={connections}
+                  isAdmin={isAdmin}
+                  onChange={handlePermissionsChange}
+                />
+              </TabsContent>
+            )}
+
+            {showPermissions && (
+              <TabsContent value="access" keepMounted>
+                <AgentSettingsAccess
+                  agent={{ visibility: agent.visibility }}
+                  currentGroupIds={agent.groupIds || []}
+                  onChange={handleAccessChange}
+                  isAdmin={isAdmin}
+                />
+              </TabsContent>
+            )}
+
+            {canManageTelegram && (
+              <TabsContent value="telegram">
+                <AgentTelegramSettings
+                  agentId={agentId}
+                  isSmithers={agent.isPersonal}
+                  isAdmin={isAdmin}
+                />
+              </TabsContent>
+            )}
+
+            {/* Self-contained and lazily mounted (no `keepMounted`), like Telegram
               and Diagnostics: it does its own GET/PATCH/DELETE and persists each
               toggle immediately, so it stays out of the shared draft/Save flow
               and its list fetch only fires when the tab is actually opened. */}
-          {canManageAutomations && (
-            <TabsContent value="automations">
-              <AgentSettingsAutomations
-                agentId={agentId}
-                memberPolicyApplies={!isAdmin && agent?.isPersonal === true}
-              />
-            </TabsContent>
-          )}
+            {canManageAutomations && (
+              <TabsContent value="automations">
+                <AgentSettingsAutomations
+                  agentId={agentId}
+                  memberPolicyApplies={!isAdmin && agent?.isPersonal === true}
+                />
+              </TabsContent>
+            )}
 
-          {/* No `keepMounted`, unlike the editing tabs: mounting lazily keeps
+            {/* No `keepMounted`, unlike the editing tabs: mounting lazily keeps
               this tab's chat-list fetch off every Settings page load, including
               the vast majority that never open Diagnostics. The trade-off is
               real but small — a half-typed description is lost when switching
               tabs mid-report. Worth revisiting if anyone actually hits it. */}
-          <TabsContent value="diagnostics">
-            <AgentSettingsDiagnostics agentId={agentId} agentName={agent.name} />
-          </TabsContent>
+            <TabsContent value="diagnostics">
+              <AgentSettingsDiagnostics agentId={agentId} agentName={agent.name} />
+            </TabsContent>
+          </div>
         </Tabs>
       </div>
 
-      {/* Save bar — pinned at bottom, outside scroll area */}
-      <div className="shrink-0 border-t bg-background px-4 md:px-6 py-3 flex items-center justify-between">
-        <span className="text-sm text-muted-foreground">
-          {hasDirtyTabs ? "Unsaved changes" : "All changes saved"}
-        </span>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button size="sm" onClick={handleSaveClick} disabled={!hasDirtyTabs || saving}>
-                {saving ? "Saving..." : needsRestart ? "Save & Restart" : "Save"}
-              </Button>
-            </TooltipTrigger>
-            {needsRestart && (
-              <TooltipContent>Will briefly restart the agent runtime</TooltipContent>
-            )}
-          </Tooltip>
-        </TooltipProvider>
-      </div>
+      {/* Save bar — pinned at bottom, outside scroll area. Shown on the draft
+          sections it saves, and anywhere else only while something IS unsaved:
+          hiding it on a live section must never hide a pending edit made in
+          another section. */}
+      {(DRAFT_TABS.has(activeTab) || hasDirtyTabs) && (
+        <div className="shrink-0 border-t bg-background px-4 md:px-6 py-3 flex items-center justify-between">
+          <span className="text-sm text-muted-foreground">
+            {hasDirtyTabs ? "Unsaved changes" : "All changes saved"}
+          </span>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="sm" onClick={handleSaveClick} disabled={!hasDirtyTabs || saving}>
+                  {saving ? "Saving..." : needsRestart ? "Save & Restart" : "Save"}
+                </Button>
+              </TooltipTrigger>
+              {needsRestart && (
+                <TooltipContent>Will briefly restart the agent runtime</TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+      )}
 
       {/* Confirmation dialog for restart */}
       <AlertDialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
