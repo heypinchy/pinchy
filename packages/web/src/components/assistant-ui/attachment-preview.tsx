@@ -143,7 +143,21 @@ const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
  * Office file is converted, the same dialog offers the original beside its
  * converted PDF, and that has to be a datum rather than a redesign of the row.
  */
-export type DocumentDownload = { label: string; url: string };
+export type DocumentDownload = {
+  label: string;
+  url: string;
+  /**
+   * The name the file lands under, when the label is not it — "PDF" names a
+   * representation, `Angebot.pdf` names the file. Shown on hover and carried
+   * in the accessible name, so a screen reader hears which file it is taking.
+   */
+  filename?: string;
+};
+
+/** "Download PDF: Angebot.pdf" — starts with the visible label (WCAG 2.5.3). */
+function downloadAccessibleName({ label, filename }: DocumentDownload): string {
+  return filename && filename !== label ? `Download ${label}: ${filename}` : `Download ${label}`;
+}
 
 /**
  * The url the same document is fetched from when the reader wants to keep it.
@@ -179,8 +193,8 @@ function downloadUrlFor(url: string): string {
  *
  * So our chrome occupies a row ABOVE the viewer and the viewer gets everything
  * below it, edge to edge. Nothing overlaps, nothing needs tinting, and the row
- * earns its height: it names the document (the browser's title bar shows the
- * route segment, "workspace-file", which tells a reader nothing) and it offers
+ * earns its height: it names the document in our own words, whatever the
+ * browser's viewer makes of the url or the file's metadata, and it offers
  * a full tab — the only thing that works on iOS Safari, where an embedded PDF
  * renders blank whatever we do.
  *
@@ -265,7 +279,12 @@ export const PdfDialog: FC<{
                   on purpose, so a Content-Disposition filename — the one that
                   carries umlauts intact — still wins.
                  */}
-                <a href={download.url} download aria-label={`Download ${download.label}`}>
+                <a
+                  href={download.url}
+                  download
+                  aria-label={downloadAccessibleName(download)}
+                  title={download.filename ?? download.label}
+                >
                   <Download className="size-4" />
                   {namesDownloads && <span className="max-w-32 truncate">{download.label}</span>}
                 </a>

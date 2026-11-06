@@ -318,6 +318,47 @@ export function parseSourceHref(
 }
 
 /**
+ * The url the citation viewer opens, which is the citation's href with the
+ * served document's NAME appended as a last path segment:
+ * `/api/agents/a/workspace-file/Angebot.pdf?path=…#page=3`. Null for anything
+ * that is not a citation.
+ *
+ * Why it exists (#1268): a browser's built-in PDF viewer titles a document
+ * after the last path segment of its url whenever the file carries no title of
+ * its own — Chrome reads nothing else, not even Content-Disposition. For every
+ * citation that segment was the route, so the toolbar above a reader's
+ * document said "workspace-file". It names the bytes SHOWN, which for an
+ * Office source is the converted PDF: a `.docx` name on PDF bytes would title
+ * a PDF as a Word file.
+ *
+ * Derived here rather than written into the markdown link, so the shape the
+ * renderer recognises as a citation (`WORKSPACE_FILE_HREF`) does not widen: a
+ * model-authored link still has to look exactly like one `buildSourceHref`
+ * built. The name is presentation only — `path` decides which file is read,
+ * and the route refuses a name that is not the name of what it serves.
+ */
+export function buildSourceViewerUrl(href: string): string | null {
+  const source = parseSourceHref(href);
+  if (!source) return null;
+
+  const [base, fragment] = splitFragment(href);
+  const [routePath, query] = [base.slice(0, base.indexOf("?")), base.slice(base.indexOf("?"))];
+  const name = leafName(source.path);
+  const shown = isOfficeFile(source.path) ? convertedPdfName(name) : name;
+  return `${routePath}/${encodeURIComponent(shown)}${query}${fragment}`;
+}
+
+/** `[everything before "#", "#…" or ""]` — the fragment keeps its `#`. */
+function splitFragment(href: string): [string, string] {
+  const hash = href.indexOf("#");
+  return hash === -1 ? [href, ""] : [href.slice(0, hash), href.slice(hash)];
+}
+
+function leafName(path: string): string {
+  return path.split("/").filter(Boolean).pop() ?? path;
+}
+
+/**
  * What a reader may take away from the viewer for one cited document, in the
  * order the header shows them. Null for anything that is not a citation.
  *
@@ -330,6 +371,12 @@ export function parseSourceHref(
  * the conversion. Original first, because it is the document; the PDF is the
  * convenience.
  *
+ * The pair is LABELLED by representation — "Original (.docx)" and "PDF" — and
+ * not by filename (#1268). Both filenames are the same up to the extension,
+ * and the header truncates a label long before the extension, so two
+ * filename labels read "Vorlage_Wartung…" twice. The filename stays on each
+ * entry for the tooltip and the accessible name.
+ *
  * `variant` is named on BOTH, including the single-entry PDF case. A default
  * that means "the thing to look at" is right for a viewer and wrong for a save:
  * being explicit here is what stops a later widening of that default from
@@ -338,16 +385,22 @@ export function parseSourceHref(
  * The fragment goes: `#page=510` positions a viewer and means nothing to a
  * saved file.
  */
-export function buildSourceDownloads(href: string): Array<{ label: string; url: string }> | null {
+export function buildSourceDownloads(
+  href: string
+): Array<{ label: string; filename: string; url: string }> | null {
   const source = parseSourceHref(href);
   if (!source) return null;
 
-  const base = href.split("#")[0];
-  const name = source.path.split("/").filter(Boolean).pop() ?? source.path;
-  const original = { label: name, url: `${base}&download=1&variant=original` };
-  if (!isOfficeFile(source.path)) return [original];
+  const [base] = splitFragment(href);
+  const name = leafName(source.path);
+  const originalUrl = `${base}&download=1&variant=original`;
+  if (!isOfficeFile(source.path)) return [{ label: name, filename: name, url: originalUrl }];
 
-  return [original, { label: convertedPdfName(name), url: `${base}&download=1&variant=converted` }];
+  const extension = name.slice(name.lastIndexOf("."));
+  return [
+    { label: `Original (${extension})`, filename: name, url: originalUrl },
+    { label: "PDF", filename: convertedPdfName(name), url: `${base}&download=1&variant=converted` },
+  ];
 }
 
 /**

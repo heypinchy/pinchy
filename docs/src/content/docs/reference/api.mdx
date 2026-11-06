@@ -438,6 +438,10 @@ A `Range` request is honoured on its own. Sent with `If-Range`, it is answered w
 
 `download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation was served — or, on a `304`, which one was checked (`original`, `converted` or `rows`).
 
+### `GET /api/agents/:agentId/workspace-file/:name?path=<path>`
+
+The same file, under a URL whose last segment is its name — the URL the citation viewer opens, so the browser's PDF viewer shows the document's name instead of `workspace-file`. Takes the same query parameters as the route above and behaves exactly like it: `path` alone decides which file is read, against the same grant, with the same audit rows. `:name` must be the name of the file actually served — for a Word or PowerPoint source that's its converted PDF (`Angebot.pdf` for `Angebot.docx`), unless `variant=original` asks for the original. When the requested path is a link, the link's name counts as well as the target's. Any other name answers `404`, and the audit row records `name_mismatch`. `variant=rows` answers JSON rather than a file, so it doesn't check the name.
+
 ### `GET /api/agents/:agentId/telegram-chat`
 
 The mirrored transcript of this agent's Telegram conversations, for reading them in the web UI.

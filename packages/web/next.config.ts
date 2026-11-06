@@ -71,6 +71,14 @@ const nextConfig: NextConfig = {
         headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
       },
       {
+        // The same handler under the url the citation viewer actually opens,
+        // which ends in the document's name so the browser's PDF viewer titles
+        // it by that instead of "workspace-file" (#1268). A url of its own, so
+        // a relaxation of its own. Same-origin only.
+        source: "/api/agents/:agentId/workspace-file/:name",
+        headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
+      },
+      {
         // Service worker must not be long-cached, otherwise future SW updates
         // never reach users. Same pattern as other PWAs (Slack, Mattermost).
         source: "/sw.js",
