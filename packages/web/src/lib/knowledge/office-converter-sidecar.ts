@@ -482,7 +482,7 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
       return;
     }
 
-    readBody(req, MAX_REQUEST_BYTES)
+    readBody(req, MAX_REQUEST_BYTES, "drain")
       .then(async (text) => {
         const parsed = parseRequest(text);
         if (typeof parsed === "string") {
@@ -501,7 +501,14 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
           });
           answer = [200, result];
         } catch (err) {
-          answer = [500, { error: err instanceof Error ? err.message : String(err) }];
+          // The details go to this container's log, not over the socket.
+          console.error("[office-converter] the converter could not run:", err);
+          answer = [
+            500,
+            {
+              error: "the converter could not run; see `docker compose logs office-converter`",
+            },
+          ];
         }
         // The profile is the converter's, made of directories with modes
         // LibreOffice picks. Emptied here, by the uid that created it, so the
@@ -533,7 +540,8 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
         reply(...answer);
       })
       .catch((err: unknown) => {
-        reply(400, { error: err instanceof Error ? err.message : String(err) });
+        console.error("[office-converter] could not read a request:", err);
+        if (!res.headersSent) reply(400, { error: "the request could not be read" });
       });
   });
 }
@@ -677,17 +685,32 @@ async function orphans(options: LeftoverProcessOptions): Promise<number[]> {
   return left.sort((a, b) => a - b);
 }
 
-function readBody(stream: IncomingMessage, limit = Number.POSITIVE_INFINITY): Promise<string> {
+/**
+ * Reads a body up to `limit` characters. Past it: `"destroy"` drops the
+ * connection — the web side reading an answer no converter sends —, `"drain"`
+ * discards the rest so an answer can still go back — the sidecar reading a
+ * request.
+ */
+function readBody(
+  stream: IncomingMessage,
+  limit = Number.POSITIVE_INFINITY,
+  overflow: "destroy" | "drain" = "destroy"
+): Promise<string> {
   return new Promise((resolve, reject) => {
     let text = "";
     stream.setEncoding("utf8");
-    stream.on("data", (chunk: string) => {
+    const onData = (chunk: string) => {
       text += chunk;
       if (text.length > limit) {
-        stream.destroy();
-        reject(new Error("request body too large"));
+        if (overflow === "destroy") stream.destroy();
+        else {
+          stream.off("data", onData);
+          stream.resume();
+        }
+        reject(new Error("body too large"));
       }
-    });
+    };
+    stream.on("data", onData);
     stream.on("end", () => resolve(text));
     stream.on("error", reject);
   });

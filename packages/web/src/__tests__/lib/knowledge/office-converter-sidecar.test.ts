@@ -221,13 +221,43 @@ describe("office-converter sidecar protocol", () => {
   });
 
   it("reports a converter that throws inside the sidecar as an error, not a result", async () => {
+    // The answer says the converter could not run and where to look; the
+    // error itself goes to the converter's own log, not over the socket.
     await startServer();
     answer = async () => {
       throw new Error("spawn soffice ENOENT");
     };
-    const { converter, run } = await stagedBatch(["0.docx"]);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { converter, run } = await stagedBatch(["0.docx"]);
 
-    await expect(converter.runConverter(run)).rejects.toThrow(/spawn soffice ENOENT/);
+      const err = await converter.runConverter(run).catch((e: Error) => e);
+
+      expect(String(err)).toMatch(/could not run.*docker compose logs office-converter/);
+      expect(String(err)).not.toMatch(/ENOENT/);
+      expect(logged.mock.calls.map((c) => c.join(" ")).join("\n")).toMatch(/spawn soffice ENOENT/);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("answers a request it cannot read with a fixed reason, never the error itself", async () => {
+    await startServer();
+    const big = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = request(
+        { socketPath: converterSocketPath(spool), method: "POST", path: "/convert" },
+        (res) => {
+          let text = "";
+          res.on("data", (c: Buffer) => (text += c.toString("utf8")));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body: text }));
+        }
+      );
+      req.on("error", reject);
+      req.end("x".repeat(70 * 1024));
+    });
+
+    expect(big.status).toBe(400);
+    expect(JSON.parse(big.body)).toEqual({ error: "the request could not be read" });
   });
 
   it("says where it looked and what to check when no sidecar is listening", async () => {
