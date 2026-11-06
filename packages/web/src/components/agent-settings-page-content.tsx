@@ -150,7 +150,7 @@ function describeSaveFailure(reason: unknown): string {
   return "Failed to save settings";
 }
 
-export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }) {
+export function AgentSettingsPageContent() {
   const params = useParams();
   const router = useRouter();
   const agentId = params.agentId as string;
@@ -193,7 +193,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
             (tab === "telegram" && canManageTelegram) ||
             (tab === "automations" && canManageAutomations)
         );
-  const [activeTab, setActiveTab] = useTabParam("general", visibleTabs, initialTab);
+  const [activeTab, setActiveTab] = useTabParam("general", visibleTabs);
 
   const [providers, setProviders] = useState<Provider[]>([]);
   const [soulContent, setSoulContent] = useState("");

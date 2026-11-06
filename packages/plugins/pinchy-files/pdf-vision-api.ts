@@ -305,10 +305,11 @@ async function describeViaGoogle(
   if (!apiKey) return null;
 
   const response = await fetchWithRetry(
-    `https://generativelanguage.googleapis.com/v1/models/${modelId}:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1/models/${modelId}:generateContent`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      // Header, not ?key=: query strings leak into proxy logs and error messages.
+      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
       body: JSON.stringify({
         contents: [
           {

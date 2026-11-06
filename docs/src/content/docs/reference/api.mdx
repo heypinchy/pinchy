@@ -395,7 +395,7 @@ Whether retrying the caller's last failed run in this conversation could duplica
 | ------------- | --------- | ---------------------------------------------------------------------- |
 | `sideEffects` | `boolean` | `true` when the failed run had already executed at least one tool call |
 
-The chat asks this when you press Retry, not when the run failed — see [Retrying after the agent already acted](/guides/retry-messages/#retrying-after-the-agent-already-acted). The time window comes from the stored run, never from the request, so this cannot be used to query an agent's tool history.
+The chat asks this when you press Retry, not when the run failed — see [Retrying after the agent already acted](/guides/retry-messages/#retrying-after-the-agent-already-acted). The time window comes from the stored run, never from the request, and only tool calls made on the caller's behalf count — on a shared agent, another member's activity in the same window never turns the answer to `true`. So this cannot be used to query an agent's tool history.
 
 ### `GET /api/agents/:agentId/uploads/:filename`
 
@@ -437,6 +437,10 @@ A `Range` request is honoured on its own. Sent with `If-Range`, it is answered w
 `variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`, and one that is too large to read safely answers `413` — refused without being opened when it is over 100 MB, unpacks to far more than it weighs, has a sheet (or another part the reader reads as text) over 16 MB or a picture over 32 MB, and refused after the attempt when reading it needs more memory than the separate process the rows are read in may use (384 MB). That process is why a heavy workbook never costs Pinchy's own memory. `503` is about the reader, never the workbook: there was no room on the artifact volume for the private copy the rows are read from, the process could not be started, ran past its two-minute limit or was stopped by the system — or two reads are already waiting for it, in which case the answer carries `Retry-After`. Workbooks are read one at a time, the index's reads included, so a request that is abandoned while it waits or reads (a reload, a closed preview) has its read dropped; its audit row says `cancelled`.
 
 `download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation was served — or, on a `304`, which one was checked (`original`, `converted` or `rows`).
+
+### `GET /api/agents/:agentId/workspace-file/:name?path=<path>`
+
+The same file, under a URL whose last segment is its name — the URL the citation viewer opens, so the browser's PDF viewer shows the document's name instead of `workspace-file`. Takes the same query parameters as the route above and behaves exactly like it: `path` alone decides which file is read, against the same grant, with the same audit rows. `:name` must be the name of the file actually served — for a Word or PowerPoint source that's its converted PDF (`Angebot.pdf` for `Angebot.docx`), unless `variant=original` asks for the original. When the requested path is a link, the link's name counts as well as the target's. Any other name answers `404`, and the audit row records `name_mismatch`. `variant=rows` answers JSON rather than a file, so it doesn't check the name.
 
 ### `GET /api/agents/:agentId/telegram-chat`
 
@@ -861,16 +865,16 @@ Get all application settings. Encrypted values (such as API keys) are masked in 
 
 ### `POST /api/settings`
 
-Update a setting.
+Set the organisation timezone (admin only). `org.timezone` is the only key this endpoint accepts; any other key is refused with a `400` validation error. Providers, the enterprise key, the domain lock, Telegram and the member-access switches each have their own endpoint, with their own validation and audit entry.
 
 **Request body:**
 
-| Field   | Type   | Required | Description   |
-| ------- | ------ | -------- | ------------- |
-| `key`   | string | Yes      | Setting key   |
-| `value` | string | Yes      | Setting value |
+| Field   | Type   | Required | Description                                                  |
+| ------- | ------ | -------- | ------------------------------------------------------------ |
+| `key`   | string | Yes      | Must be `org.timezone`                                       |
+| `value` | string | Yes      | An IANA timezone name, e.g. `Europe/Vienna`; otherwise `400` |
 
-Settings with `api_key` in the key name are automatically encrypted at rest. Keys starting with `policy.` are refused with `400`: the member-access switches go through `PUT /api/settings/governance` below, which audits what changed and updates Telegram routing.
+A save that changes the timezone writes a `settings.updated` audit entry with the from/to values.
 
 **Response:** `{ "success": true }`
 
@@ -1550,7 +1554,7 @@ Remove Telegram from every agent at once. **Admin only.** This is the backend fo
 
 External system integrations — **Odoo**, **email** (Gmail and Microsoft 365 via OAuth), and **Web Search**. See [Integrations](/concepts/integrations/) for the conceptual overview, [Connect Odoo](/guides/connect-odoo/) for the Odoo setup guide, and [Connect Email](/guides/connect-email/) for the email setup guide.
 
-Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `ALLOW_PRIVATE_URLS=1` additionally allows the [private ranges](/reference/network-address-checks/#private-ranges) — RFC 1918, Tailscale's `100.64.0.0/10`, IPv6 unique-local and the rest — for an on-premise Odoo; loopback, link-local, cloud-metadata and reserved addresses stay refused either way. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
+Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `list-databases` is the exception: it sends its request to the address the guard just checked rather than looking the name up again, so a name with no answer is answered with `400` and `"Could not resolve the server's host name. Check the URL for a typo."`, and nothing is contacted. `ALLOW_PRIVATE_URLS=1` additionally allows the [private ranges](/reference/network-address-checks/#private-ranges) — RFC 1918, Tailscale's `100.64.0.0/10`, IPv6 unique-local and the rest — for an on-premise Odoo; loopback, link-local, cloud-metadata and reserved addresses stay refused either way. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
 
 ### `GET /api/integrations`
 
@@ -1791,7 +1795,7 @@ Returns the decrypted credentials for a connection, auto-refreshing an expired O
 | Status | Meaning                                                                                                                                        |
 | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `200`  | Credentials returned                                                                                                                           |
-| `400`  | `agentId` missing                                                                                                                              |
+| `400`  | `agentId` missing, longer than 128 characters, or containing anything but letters, digits, `-` and `_` (no audit row: malformed, not denied)   |
 | `401`  | Gateway token missing or wrong; the plugins retry it for about 3.75 s before giving up                                                         |
 | `403`  | The agent is not granted this connection, the connection is still `pending`, or its stored Odoo URL / IMAP / SMTP host fails the address check |
 | `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                |
@@ -2301,6 +2305,8 @@ Retrieve a paginated, filterable audit log. **Admin only.**
   "limit": 50
 }
 ```
+
+`actorName` is resolved when the log is read: a user's current name, an agent's current name for `actorType: "agent"` rows, the key's name for `api_key` rows (snapshotted into `detail` when the row was written), and a readable label for `system` rows (for example `"Scheduled reindex"` for `kb-index-scheduler`). It is `null` when nothing resolves — an erased user, or an agent that no longer exists. `actorDeleted` is `true` for a deactivated user or a deleted agent. `actorId` is always the raw value the row was written with.
 
 `outcome` is one of `"success"` or `"failure"`. `error` is `null` for successes and a short error message for failures (e.g. `"seat_cap"` on a blocked invite). Both fields are part of the HMAC-signed v2 row shape.
 

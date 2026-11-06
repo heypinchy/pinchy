@@ -1,11 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import {
+  CalendarClock,
+  Circle,
+  CircleCheck,
+  CircleX,
+  LoaderCircle,
+  RefreshCw,
+  TriangleAlert,
+} from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { KnowledgeUnsearchableList } from "@/components/knowledge-unsearchable-list";
 import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import {
@@ -71,11 +82,16 @@ export interface KnowledgeReindexSectionProps {
    */
   allowedPathCount: number;
   /**
-   * True while the directory picker holds selections that differ from the
-   * saved grants. A reindex only ever sees the SAVED grants, so the section
-   * says so instead of letting the admin believe unsaved checkmarks count.
+   * True while the directory picker holds changes that aren't saved. A reindex
+   * reads the SAVED grants, so it would run over the old folders: the trigger
+   * waits until the change is saved, and says so.
    */
   hasUnsavedPathChanges?: boolean;
+  /**
+   * The saved folders, normalized and joined. Swapping one folder for another
+   * keeps the count, so the list (and the badge it feeds) re-reads on this.
+   */
+  savedPathsKey?: string;
   /** Poll cadence while a run is in flight. Injectable so tests need not wait seconds. */
   pollIntervalMs?: number;
 }
@@ -87,17 +103,38 @@ export interface KnowledgeReindexSectionProps {
  * reading logs.
  *
  * Belongs under the "Allowed Directories" picker because a reindex operates on
- * exactly the folders granted there.
+ * exactly the folders granted there. The picker owns the "unsaved changes"
+ * notice, which says what saving will change; this section only holds the
+ * trigger back until then (#1305).
+ *
+ * Layout (#1305): a status line an admin can read at a glance — a badge that
+ * says healthy / needs attention / failed / indexing, and one sentence — with
+ * the trigger beside it; the run's detail below; the nightly schedule as a
+ * footer, because it is about the future rather than the last run.
  */
 export function KnowledgeReindexSection({
   agentId,
   allowedPathCount,
   hasUnsavedPathChanges = false,
+  savedPathsKey,
   pollIntervalMs = 3000,
 }: KnowledgeReindexSectionProps) {
   const [job, setJob] = useState<ReindexJob | null>(null);
   const [schedule, setSchedule] = useState<ReindexSchedule | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Whether ANY status read has answered yet, and whether the last one failed
+  // before any did. Without it the section said "Not indexed" while it was
+  // still asking — about an index that might be perfectly fine.
+  const [read, setRead] = useState<"pending" | "ok" | "failed">("pending");
+  // While a retry is in flight the button stays (disabled) rather than
+  // unmounting under the keyboard focus that just pressed it.
+  const [retrying, setRetrying] = useState(false);
+  // Documents in this agent's folders with no readable text, across the whole
+  // corpus — reported up by the list. The last run's counts alone can't carry
+  // the badge: a scan found last week is merely "unchanged" tonight.
+  const [noTextCount, setNoTextCount] = useState(0);
+  const statusId = useId();
+  const saveFirstId = useId();
   const url = `/api/agents/${agentId}/knowledge/reindex`;
 
   // Monotonic ticket per status read: a response only lands if it is still the
@@ -114,8 +151,12 @@ export function KnowledgeReindexSection({
       if (seq === fetchSeq.current) {
         setJob(res.job);
         if (res.schedule) setSchedule(res.schedule);
+        setRead("ok");
       }
     } catch {
+      // Only a section that has never had an answer says so; once one landed,
+      // the last-known state stands (see below).
+      if (seq === fetchSeq.current) setRead((prev) => (prev === "ok" ? prev : "failed"));
       // A failed status read is non-fatal: keep the last-known state and let the
       // next poll (or the user) retry. Deliberately no toast — a polling error
       // would spam one every interval.
@@ -129,6 +170,31 @@ export function KnowledgeReindexSection({
   // Poll ONLY while a run is in flight; the effect tears the interval down the
   // moment the status leaves pending/running, so a finished run stops polling.
   const active = isActive(job);
+
+  // The moment a run this section watched comes to an end. A small corpus can
+  // finish between two polls, so the bar never gets to say "x of y" — without
+  // this, a run ended with nothing but a new timestamp (#1305). A run that had
+  // already ended when the page opened is not news, and gets no toast.
+  const wasActive = useRef(false);
+  useEffect(() => {
+    if (wasActive.current && !active && job) {
+      if (job.status === "succeeded") {
+        const finished = job.counts
+          ? `Reindex finished: ${summarizeRun(job.counts)}.`
+          : "Reindex finished.";
+        // Not a green "done" beside a red "2 failed". The toast reports this
+        // run; the badge may also reflect documents without text from earlier.
+        if (runNeedsAttention(job)) {
+          toast.info(`${finished} Something needs your attention.`);
+        } else {
+          toast.success(finished);
+        }
+      }
+      // A failure gets no toast: it stays inline, where it is until fixed
+      // (AGENTS.md: never inline and toast for the same action).
+    }
+    wasActive.current = active;
+  }, [active, job]);
   useEffect(() => {
     if (!active) return;
     const id = setInterval(() => void fetchStatus(), pollIntervalMs);
@@ -162,9 +228,12 @@ export function KnowledgeReindexSection({
       setSamples((prev) => (prev.length === 0 ? prev : []));
       return;
     }
-    setSamples((prev) =>
-      appendProgressSample(prev, { at: Date.now(), processedBytes: job.processedBytes })
-    );
+    // Read the clock HERE, when the reading arrived — not inside the updater,
+    // which React may run a render later. Dated late, the first reading
+    // shortened the measured span and the estimate came out too short; it made
+    // "projects the remaining time" fail whenever the first render was slow.
+    const sample = { at: Date.now(), processedBytes: job.processedBytes };
+    setSamples((prev) => appendProgressSample(prev, sample));
   }, [active, job]);
 
   const handleReindex = useCallback(async () => {
@@ -202,60 +271,243 @@ export function KnowledgeReindexSection({
     }
   }, [url, fetchStatus]);
 
-  const triggerDisabled = allowedPathCount === 0 || active || submitting;
+  const triggerDisabled = allowedPathCount === 0 || active || submitting || hasUnsavedPathChanges;
+
+  const status = describeStatus(allowedPathCount, job, active, read, noTextCount);
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-4">
-        <h4 className="text-sm font-medium">Index</h4>
-        <Button size="sm" variant="outline" onClick={handleReindex} disabled={triggerDisabled}>
-          {active ? "Reindexing…" : "Reindex now"}
-        </Button>
+      <h4 className="text-sm font-medium">Index</h4>
+      <div className="rounded-lg border">
+        <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+          {/* Badge + one sentence, and nothing that changes per poll: a live
+              region that re-reads "Indexing 41 of 300" every three seconds is
+              noise. The moving numbers live below, outside it. */}
+          <div className="min-w-0 space-y-1">
+            <div
+              role="status"
+              className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+            >
+              <IndexStatusBadge tone={status.tone} label={status.label} />
+              <span id={statusId}>{status.headline}</span>
+            </div>
+            {(read === "failed" || retrying) && !active && allowedPathCount > 0 && (
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0"
+                disabled={retrying}
+                onClick={async () => {
+                  setRetrying(true);
+                  setRead("pending");
+                  await fetchStatus();
+                  setRetrying(false);
+                }}
+              >
+                Try again
+              </Button>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleReindex}
+            disabled={triggerDisabled}
+            aria-describedby={
+              triggerDisabled && !active
+                ? hasUnsavedPathChanges
+                  ? saveFirstId
+                  : statusId
+                : undefined
+            }
+            className="w-full shrink-0 sm:w-auto"
+          >
+            <RefreshCw
+              className={active ? "animate-spin motion-reduce:animate-none" : undefined}
+              aria-hidden="true"
+            />
+            {active ? "Reindexing…" : "Reindex now"}
+          </Button>
+        </div>
+
+        {(allowedPathCount > 0 || hasUnsavedPathChanges) && (
+          <div className="space-y-3 px-4 pb-4 empty:hidden">
+            {hasUnsavedPathChanges && !active && (
+              <p id={saveFirstId} className="text-sm text-muted-foreground">
+                Save your directory changes first: a reindex works on the saved directories.
+              </p>
+            )}
+            {allowedPathCount === 0 ? null : active && job ? (
+              <RunningState job={job} now={now} samples={samples} />
+            ) : job?.status === "succeeded" ? (
+              <SucceededState job={job} />
+            ) : job?.status === "failed" ? (
+              <FailedState job={job} />
+            ) : null}
+
+            {/* Which documents the counts above mean by "unsearchable" (#935).
+                Hidden while a run is in flight — the list is about to change —
+                and hidden without a grant, where there is nothing to report on.
+                Documents that exist are listed in every other state, since the
+                index is corpus-wide and another agent's run can have filled
+                this scope.
+
+                A zero, though, is only announced after a SUCCEEDED run. Before
+                any run, "every document came back with searchable text" is
+                trivially true of an empty index and would sit under "Not
+                indexed"; after a FAILED one it would sit under "Last reindex
+                failed" and read as an all-clear about a run that stopped early.
+                Both are reassurances the evidence doesn't support. */}
+            {allowedPathCount > 0 && !active && (
+              <KnowledgeUnsearchableList
+                agentId={agentId}
+                announceNone={status.tone === "good"}
+                onNoTextCount={setNoTextCount}
+                reloadKey={`${savedPathsKey ?? allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
+              />
+            )}
+          </div>
+        )}
+
+        {allowedPathCount > 0 && schedule && (
+          <div className="flex items-start gap-2 border-t bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+            <CalendarClock className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <ScheduleNote schedule={schedule} />
+          </div>
+        )}
       </div>
-
-      {hasUnsavedPathChanges && (
-        <p className="text-sm text-muted-foreground">
-          You have unsaved directory changes — a reindex uses the saved grants. Save to include
-          them.
-        </p>
-      )}
-
-      {allowedPathCount === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          Grant at least one directory to enable indexing.
-        </p>
-      ) : active && job ? (
-        <RunningState job={job} now={now} samples={samples} />
-      ) : job?.status === "succeeded" ? (
-        <SucceededState job={job} />
-      ) : job?.status === "failed" ? (
-        <FailedState job={job} />
-      ) : (
-        <p className="text-sm text-muted-foreground">Not yet indexed.</p>
-      )}
-
-      {allowedPathCount > 0 && schedule && <ScheduleNote schedule={schedule} />}
-
-      {/* Which documents the counts above mean by "unsearchable" (#935). Hidden
-          while a run is in flight — the list is about to change — and hidden
-          without a grant, where there is nothing to report on. Documents that
-          exist are listed in every other state, since the index is corpus-wide
-          and another agent's run can have filled this scope.
-
-          A zero, though, is only announced after a SUCCEEDED run. Before any
-          run, "every document came back with searchable text" is trivially true
-          of an empty index and would sit under "Not yet indexed"; after a
-          FAILED one it would sit under "Last reindex failed" and read as an
-          all-clear about a run that stopped early. Both are reassurances the
-          evidence doesn't support. */}
-      {allowedPathCount > 0 && !active && (
-        <KnowledgeUnsearchableList
-          agentId={agentId}
-          announceNone={job?.status === "succeeded"}
-          reloadKey={`${allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
-        />
-      )}
     </div>
+  );
+}
+
+type StatusTone = "neutral" | "busy" | "good" | "attention" | "bad";
+
+interface IndexStatus {
+  tone: StatusTone;
+  /** One or two words for the badge. */
+  label: string;
+  /** The sentence beside it. Stable while a run is in flight — see the live region. */
+  headline: string;
+}
+
+/**
+ * The section's answer to "is this index healthy?", before any number is read.
+ *
+ * "Needs attention" is a run that finished but left something an agent can't
+ * answer from: a document that failed or holds no searchable text, or a
+ * folder it couldn't read. Those are exactly the counters the summary below
+ * colours, so the badge and the detail never disagree.
+ */
+function describeStatus(
+  allowedPathCount: number,
+  job: ReindexJob | null,
+  active: boolean,
+  read: "pending" | "ok" | "failed",
+  noTextCount: number
+): IndexStatus {
+  if (allowedPathCount === 0) {
+    return {
+      tone: "neutral",
+      label: "No directories",
+      headline: "Grant at least one directory above and save to build this agent's index.",
+    };
+  }
+  // A run this component just started is known without a read; anything else
+  // isn't until the first read answers.
+  if (!active && read === "pending") {
+    return { tone: "neutral", label: "Checking", headline: "Checking the index…" };
+  }
+  if (!active && read === "failed") {
+    return {
+      tone: "neutral",
+      label: "Unknown",
+      headline: "Couldn't load the index status.",
+    };
+  }
+  if (active) {
+    return {
+      tone: "busy",
+      label: "Indexing",
+      headline: "Reading the directories. The run continues if you leave this page.",
+    };
+  }
+  if (job?.status === "failed") {
+    return {
+      tone: "bad",
+      label: "Failed",
+      headline: `Last reindex failed ${formatWhen(job.finishedAt)}.`,
+    };
+  }
+  if (job?.status === "succeeded") {
+    // Anything an admin did not start, Pinchy did: the nightly run, or the one
+    // it starts itself after an update changed how documents are converted.
+    const how = job.trigger !== undefined && job.trigger !== "manual" ? "automatically " : "";
+    const summary = job.counts ? ` — ${summarizeRun(job.counts)}` : "";
+    const headline = `Last indexed ${how}${formatWhen(job.finishedAt)}${summary}.`;
+    const needsAttention = runNeedsAttention(job) || noTextCount > 0;
+    // A green badge says the last run went well. It can't say that folders
+    // granted SINCE that run are in it: the route doesn't hand out the run's
+    // paths. The nightly run (or Reindex now) closes that gap.
+    return needsAttention
+      ? { tone: "attention", label: "Needs attention", headline }
+      : { tone: "good", label: "Indexed", headline };
+  }
+  // About THIS agent's runs, not about what it can find: the index is shared,
+  // so another agent's run may already have made these folders searchable.
+  return {
+    tone: "neutral",
+    label: "No runs yet",
+    headline: "This agent hasn't been indexed yet. Start its first run with Reindex now.",
+  };
+}
+
+/** Whether the run itself left something an agent can't answer from. */
+function runNeedsAttention(job: ReindexJob): boolean {
+  return (
+    (job.counts?.failed ?? 0) > 0 ||
+    (job.counts?.unsearchable ?? 0) > 0 ||
+    (job.unavailableFolders ?? 0) > 0
+  );
+}
+
+/** "13 documents checked, 2 new or changed" — a run in words, for the status line and the toast. */
+function summarizeRun(counts: IngestResult): string {
+  const checked = counts.indexed + counts.skipped + counts.unsearchable + counts.failed;
+  const changes = [
+    counts.indexed > 0 ? `${counts.indexed} new or changed` : null,
+    counts.removed > 0 ? `${counts.removed} removed` : null,
+  ].filter((part): part is string => part !== null);
+  const what = changes.length > 0 ? changes.join(", ") : "nothing new";
+  return `${checked} ${checked === 1 ? "document" : "documents"} checked, ${what}`;
+}
+
+// Same palette as StatusBadge (status-badge.tsx), so "healthy" looks the same
+// here as on the Users and Groups pages. Each pair clears 4.5:1 in light and
+// dark (muted-foreground on muted does not: 4.34:1).
+const TONE_CLASSES: Record<StatusTone, string> = {
+  neutral: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200",
+  busy: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+  good: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+  attention: "bg-amber-100 text-amber-900 dark:bg-amber-900 dark:text-amber-100",
+  bad: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+};
+
+const TONE_ICONS: Record<StatusTone, typeof Circle> = {
+  neutral: Circle,
+  busy: LoaderCircle,
+  good: CircleCheck,
+  attention: TriangleAlert,
+  bad: CircleX,
+};
+
+function IndexStatusBadge({ tone, label }: { tone: StatusTone; label: string }) {
+  const Icon = TONE_ICONS[tone];
+  return (
+    <Badge variant="outline" className={`border-transparent ${TONE_CLASSES[tone]}`}>
+      {/* Static even while busy: the button beside it already spins. */}
+      <Icon aria-hidden="true" />
+      {label}
+    </Badge>
   );
 }
 
@@ -290,7 +542,7 @@ function RunningState({
   if (job.total === null) {
     return (
       <div className="space-y-2">
-        <Progress value={0} />
+        <Progress value={null} aria-label="Indexing progress" />
         <p className="text-sm text-muted-foreground">
           Discovering documents…{elapsedSuffix}
           {etaSuffix}
@@ -300,7 +552,7 @@ function RunningState({
   }
   return (
     <div className="space-y-2">
-      <Progress value={progressPct(job)} />
+      <Progress value={progressPct(job)} aria-label="Indexing progress" />
       <p className="text-sm text-muted-foreground">
         Indexing {job.processed} of {job.total} documents…{elapsedSuffix}
         {etaSuffix}
@@ -369,7 +621,7 @@ function ScheduleNote({ schedule }: { schedule: ReindexSchedule }) {
   } else {
     text = `New and changed documents are picked up every night at ${nightlyTimeText(schedule)}.${nextRunText(schedule.nextRun)}`;
   }
-  return <p className="text-sm text-muted-foreground">{text}</p>;
+  return <p>{text}</p>;
 }
 
 const CLOCK: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
@@ -452,36 +704,45 @@ function UnavailableFoldersNote({ count }: { count: number }) {
     count === 1
       ? "One folder couldn't be read, so its documents were left as they were. If it lives on a network share, check that it is mounted."
       : `${count} folders couldn't be read, so their documents were left as they were. If they live on a network share, check that it is mounted.`;
-  return <p className="text-sm text-amber-600 dark:text-amber-500">{text}</p>;
+  return (
+    <p className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <span>{text}</span>
+    </p>
+  );
 }
 
 function SucceededState({ job }: { job: ReindexJob }) {
-  // Anything an admin did not start, Pinchy did: the nightly run, or the one
-  // it starts itself after an update changed how documents are converted.
-  const how = job.trigger !== undefined && job.trigger !== "manual" ? "automatically " : "";
+  if (!job.counts && !(job.unavailableFolders ?? 0)) return null;
   return (
-    <div className="space-y-2">
-      <p className="text-sm text-muted-foreground">
-        Last indexed {how}
-        {formatWhen(job.finishedAt)}.
-      </p>
+    <>
       {job.counts && <CountsSummary counts={job.counts} />}
       {(job.unavailableFolders ?? 0) > 0 && (
         <UnavailableFoldersNote count={job.unavailableFolders!} />
       )}
-    </div>
+    </>
   );
 }
 
 function FailedState({ job }: { job: ReindexJob }) {
+  // The status line already says it failed and when; this says why.
   return (
-    <Alert variant="destructive">
-      <AlertTitle>Last reindex failed</AlertTitle>
-      <AlertDescription className="space-y-2">
-        {job.error && <span>{job.error}</span>}
-        {job.counts && <CountsSummary counts={job.counts} />}
-      </AlertDescription>
-    </Alert>
+    <>
+      {job.error && (
+        <Alert variant="destructive">
+          <CircleX aria-hidden="true" />
+          <AlertDescription>{job.error}</AlertDescription>
+        </Alert>
+      )}
+      {job.counts && !allZero(job.counts) && <CountsSummary counts={job.counts} />}
+    </>
+  );
+}
+
+/** A run that stopped before reading anything has nothing to count. */
+function allZero(counts: IngestResult): boolean {
+  return (
+    counts.indexed + counts.skipped + counts.removed + counts.unsearchable + counts.failed === 0
   );
 }
 
@@ -491,31 +752,59 @@ function FailedState({ job }: { job: ReindexJob }) {
  * at zero — rather than folded into a single "done" number.
  */
 function CountsSummary({ counts }: { counts: IngestResult }) {
+  const archived = counts.archived ?? 0;
   return (
-    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-      <span className="text-muted-foreground">{counts.indexed} indexed</span>
-      {/* The ingest counter is `skipped`, but every path into it is a file
-          whose content hash matched: nothing to do, not something left out. */}
-      <span className="text-muted-foreground">{counts.skipped} unchanged</span>
-      {counts.removed > 0 && (
-        <span className="text-muted-foreground">{counts.removed} removed</span>
+    <div className="space-y-1">
+      <ul aria-label="Last run" className="flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
+        <li className="text-muted-foreground">{counts.indexed} new or changed</li>
+        {/* The ingest counter is `skipped`, but every path into it is a file
+            whose content hash matched: nothing to do, not something left out. */}
+        <li className="text-muted-foreground">{counts.skipped} unchanged</li>
+        {counts.removed > 0 && <li className="text-muted-foreground">{counts.removed} removed</li>}
+        {/* `unsearchable` in the API; "unsearchable" on screen was not
+            understood. The list below names them when there are any. */}
+        <li
+          className={
+            counts.unsearchable > 0
+              ? "font-medium text-amber-700 dark:text-amber-400"
+              : "text-muted-foreground"
+          }
+        >
+          {counts.unsearchable} without readable text
+        </li>
+        <li
+          className={counts.failed > 0 ? "font-medium text-destructive" : "text-muted-foreground"}
+        >
+          {counts.failed} failed
+        </li>
+        {/* Orthogonal to the others: an archived document is also new or
+            unchanged. Shown only when there are some. */}
+        {archived > 0 && <li className="text-muted-foreground">{archived} in archive folders</li>}
+      </ul>
+      {archived > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Documents in archive folders (like OLD or Archiv) are indexed, but the agent searches them
+          only when asked about the archive. Everyday answers come from current documents.
+        </p>
       )}
-      <span
-        className={
-          counts.unsearchable > 0 ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground"
-        }
-      >
-        {counts.unsearchable} unsearchable
-      </span>
-      <span className={counts.failed > 0 ? "text-destructive" : "text-muted-foreground"}>
-        {counts.failed} failed
-      </span>
     </div>
   );
 }
 
-function formatWhen(iso: string | null): string {
+/**
+ * When a run finished, as the rest of a sentence: "today at 18:15",
+ * "yesterday at 23:50", "on 28 Oct 2026 at 09:05". Local time, to the minute —
+ * an admin checking the index wants "an hour ago", not "18:15:10" to work it
+ * out from (#1305). `now` is injectable for tests.
+ */
+export function formatWhen(iso: string | null, now: Date = new Date()): string {
   if (!iso) return "just now";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "just now" : d.toLocaleString();
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "just now";
+  const time = at.toLocaleTimeString(undefined, CLOCK);
+  const days = localDaysBetween(at, now);
+  // <= 0: a server clock a little ahead of this one is still "today".
+  if (days <= 0) return `today at ${time}`;
+  if (days === 1) return `yesterday at ${time}`;
+  return `on ${at.toLocaleDateString(undefined, { dateStyle: "medium" })} at ${time}`;
 }

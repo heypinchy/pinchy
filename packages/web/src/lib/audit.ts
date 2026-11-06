@@ -848,6 +848,12 @@ export type AuditLogEntry =
             claimedMime: string;
             reason: string;
             agent: EntityRef;
+          }
+        | {
+            // failure: request body exceeded the size bound before it was
+            // parsed, so there is no filename or claimed MIME to record
+            reason: "oversize";
+            agent: EntityRef;
           };
     })
   | (AuditLogBase & {
