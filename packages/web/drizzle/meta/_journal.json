@@ -565,8 +565,15 @@
     {
       "idx": 80,
       "version": "7",
-      "when": 1793873776291,
-      "tag": "0080_kb_index_job_initial_trigger",
+      "when": 1793871461328,
+      "tag": "0080_kb_unsupported_files",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1793955007957,
+      "tag": "0081_kb_index_job_initial_trigger",
       "breakpoints": true
     }
   ]

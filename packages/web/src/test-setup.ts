@@ -75,6 +75,11 @@ if (typeof EventTarget !== "undefined") {
 // Radix UI Checkbox uses ResizeObserver which is not available in jsdom
 if (typeof window !== "undefined") {
   global.ResizeObserver = class {
+    // Same signature as the real constructor, so callers that pass their
+    // callback (ui/table.tsx) match it.
+    constructor(callback: ResizeObserverCallback) {
+      void callback;
+    }
     observe() {}
     unobserve() {}
     disconnect() {}

@@ -89,7 +89,7 @@ For the full list of tabs in Agent Settings and who sees which, see [Agent Setti
 
 ### Configuring directory access
 
-The **Allowed Directories** picker appears in the Knowledge Base section of the Permissions tab. Select which directories under `/data/` this agent should be able to read — these are in addition to the agent's own workspace files.
+The **Allowed Directories** picker appears in the Knowledge Base section of the Permissions tab. Select which directories under `/data/` this agent should be able to read — these are in addition to the agent's own workspace files. A directory can be a mount or any folder inside one; granting a folder grants everything below it (see [Granting a subfolder](/guides/mount-data-directories/#granting-a-subfolder)).
 
 For example, if you mounted your HR policies at `/data/hr-policies`, select that directory to let the agent read those documents — and nothing else.
 

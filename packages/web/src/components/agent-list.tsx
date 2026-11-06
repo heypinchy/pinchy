@@ -13,6 +13,8 @@ export interface Agent {
   tagline: string | null;
   starterPrompts: string[];
   avatarSeed: string | null;
+  /** Granted tool ids; `pinchy_memory` means the agent keeps memory. */
+  allowedTools?: string[];
 }
 
 interface AgentListProps {
@@ -58,10 +60,7 @@ export function AgentList({ agents, currentPath, onAgentClick }: AgentListProps)
                   {agent.name}
                 </span>
                 {agent.tagline && (
-                  <span
-                    className={`text-xs truncate ${isActive ? "text-muted-foreground" : "text-muted-foreground/70"}`}
-                    title={agent.tagline}
-                  >
+                  <span className="text-xs truncate text-muted-foreground" title={agent.tagline}>
                     {agent.tagline}
                   </span>
                 )}

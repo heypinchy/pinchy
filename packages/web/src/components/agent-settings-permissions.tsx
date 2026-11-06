@@ -348,7 +348,8 @@ export function AgentSettingsPermissions({
           <div className="space-y-1">
             <h4 className="text-sm font-medium">Allowed Directories</h4>
             <p className="text-sm text-muted-foreground">
-              Agents can read these directories. They can never write to them.
+              Agents can read these directories and every folder inside them. They can never write
+              to them.
             </p>
           </div>
           <DirectoryPicker
@@ -356,6 +357,7 @@ export function AgentSettingsPermissions({
             selected={allowedPaths}
             onChange={handlePathsChange}
             label="Allowed Directories"
+            browseSubfolders={isAdmin}
           />
           {/* Beside the checkboxes that made the change, not in the index
               block below: it is a fact about this form, and only an admin has
@@ -500,7 +502,14 @@ function UnsavedDirectoriesNotice({
     path;
   const notIn = (list: string[]) => (path: string) => !list.some((p) => isSameDirectory(p, path));
   const added = selected.filter(notIn(saved)).map(nameOf);
-  const removed = saved.filter(notIn(selected)).map(nameOf);
+  // A saved subfolder that a newly ticked parent folds in is gone from the
+  // list but not from what the agent reads (#1269), so it is no removal.
+  const stillCovered = (path: string) =>
+    selected.some((p) => directoryKey(path).startsWith(directoryKey(p) + "/"));
+  const removed = saved
+    .filter(notIn(selected))
+    .filter((path) => !stillCovered(path))
+    .map(nameOf);
 
   const changes = [
     added.length > 0 ? `starts reading ${listFormat.format(added)}` : null,

@@ -16,6 +16,7 @@ import { SettingsApiKeys } from "@/components/settings-api-keys";
 import { SettingsIntegrations } from "@/components/settings-integrations";
 
 import { SettingsLicense } from "@/components/settings-license";
+import type { AgentRef } from "@/lib/schemas/agents";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
 import { TimezoneSettings } from "@/components/timezone-settings";
@@ -70,10 +71,12 @@ const TAB_LABELS: Record<SettingsTab, string> = {
 export function SettingsPageContent({
   isAdmin,
   initialLicense,
+  initialAdminOnlyAgents,
   oauthError,
 }: {
   isAdmin: boolean;
   initialLicense?: LicenseInfo;
+  initialAdminOnlyAgents?: AgentRef[];
   oauthError?: string;
 }) {
   const { data: session } = authClient.useSession();
@@ -222,7 +225,7 @@ export function SettingsPageContent({
           >
             <div
               role="presentation"
-              className="text-muted-foreground/70 px-2 pt-1 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
+              className="text-muted-foreground px-2 pt-1 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
             >
               Personal
             </div>
@@ -234,7 +237,7 @@ export function SettingsPageContent({
               <>
                 <div
                   role="presentation"
-                  className="text-muted-foreground/70 px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
+                  className="text-muted-foreground px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
                 >
                   Administration
                 </div>
@@ -250,7 +253,7 @@ export function SettingsPageContent({
                 <TabsTrigger value="organization">Organization</TabsTrigger>
                 <div
                   role="presentation"
-                  className="text-muted-foreground/70 px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
+                  className="text-muted-foreground px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
                 >
                   Security &amp; Compliance
                 </div>
@@ -362,6 +365,7 @@ export function SettingsPageContent({
                 <SettingsLicense
                   onEnterpriseActivated={handleEnterpriseActivated}
                   initialLicense={initialLicense}
+                  initialAdminOnlyAgents={initialAdminOnlyAgents}
                 />
               </TabsContent>
             )}

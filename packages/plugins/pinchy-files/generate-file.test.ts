@@ -155,6 +155,29 @@ describe("generateFile xlsx", () => {
     expect(sheetName).not.toMatch(/[*?:\\/[\]]/);
     expect(sheetName).toBe("Q1 Q2 Comparison");
   });
+
+  it.each([
+    ["History", "Sheet1"],
+    ["history", "Sheet1"],
+    ["'Q3", "Q3"],
+    ["Q3'", "Q3"],
+    ["'Q3'", "Q3"],
+    ["' Q3 '", "Q3"],
+    ["''", "Sheet1"],
+    ["O'Brien", "O'Brien"],
+    // The 31-char cut itself exposes the quote, so stripping must come after the slice.
+    ["a".repeat(30) + "'x", "a".repeat(30)],
+  ])("does not crash on the sheet title %j and uses %j", async (title, expected) => {
+    const { buffer } = await generateFile({
+      format: "xlsx",
+      title,
+      columns: ["a"],
+      rows: [["1"]],
+    });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer as unknown as Parameters<typeof wb.xlsx.load>[0]);
+    expect(wb.worksheets[0].name).toBe(expected);
+  });
 });
 
 describe("generateFile pdf", () => {

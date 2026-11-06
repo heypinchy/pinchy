@@ -61,6 +61,10 @@ import { useChatSessionRetryHistory } from "@/components/chat-session-provider";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 import { useAgentsContext } from "@/components/agents-provider";
 import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
+import {
+  NewConversationPrompts,
+  StarterPromptChips,
+} from "@/components/assistant-ui/new-conversation";
 import { Progress } from "@/components/ui/progress";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
@@ -95,7 +99,7 @@ function formatTimestamp(iso: string): string {
 const MessageTimestamp: FC = () => {
   const timestamp = useMessage((s) => s.metadata?.custom?.timestamp as string | undefined);
   if (!timestamp) return null;
-  return <span className="text-xs text-muted-foreground/60">{formatTimestamp(timestamp)}</span>;
+  return <span className="text-xs text-muted-foreground">{formatTimestamp(timestamp)}</span>;
 };
 
 const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMessages }) => {
@@ -114,6 +118,8 @@ const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMess
               AssistantMessage,
             }}
           />
+
+          <NewConversationPrompts />
 
           {/* At the end of the conversation, because that is where the parked
               run stands (#1132). Inside the viewport rather than the sticky
@@ -214,24 +220,14 @@ export const ThreadWelcome: FC = () => {
     // Every agent has a greetingMessage at the schema level, so the server
     // always sends an opening assistant bubble — that's the welcome. A second
     // hardcoded "How can I help you today?" would be redundant and would flash
-    // briefly during the React-state ↔ assistant-ui store sync window. So we
-    // only render the per-agent starter prompts (#570) as clickable chips when
-    // configured; with none set, this stays null as before.
+    // briefly during the React-state ↔ assistant-ui store sync window.
+    // Normally the greeting lands, the thread is no longer empty, and the
+    // starter prompts render below it (NewConversationPrompts, #1275). This
+    // branch only covers a ready thread with no greeting at all.
     if (starterPrompts.length === 0) return null;
     return (
       <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col items-center justify-center gap-4">
-        <div className="flex flex-wrap items-center justify-center gap-2 px-4">
-          {starterPrompts.map((prompt) => (
-            <ThreadPrimitive.Suggestion
-              key={prompt}
-              prompt={prompt}
-              send
-              className="max-w-full rounded-2xl border px-4 py-1.5 text-sm break-words text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              {prompt}
-            </ThreadPrimitive.Suggestion>
-          ))}
-        </div>
+        <StarterPromptChips prompts={starterPrompts} />
       </div>
     );
   }
@@ -313,7 +309,7 @@ export const ThreadWelcome: FC = () => {
           <p className="text-sm font-medium text-muted-foreground">Starting agent...</p>
           <p
             data-testid="startup-message"
-            className="text-xs text-muted-foreground/60 transition-opacity duration-300"
+            className="text-xs text-muted-foreground transition-opacity duration-300"
           >
             {STARTUP_MESSAGES[messageIndex]}
           </p>

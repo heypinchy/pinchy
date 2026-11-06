@@ -151,11 +151,19 @@ export function AgentSettingsAccess({
         <section className="space-y-4">
           <h3 className="text-lg font-semibold">Allowed Groups</h3>
           <p className="text-sm text-muted-foreground">
-            Select which groups can access this agent.
+            Members of the selected groups can use this agent. Admins always can.
           </p>
+          {/* Restricted with no group is a valid, deliberate state ("admins
+              only") and the default for every new agent — but on its own the
+              dropdown reads as if members had access. Say what it means. */}
+          {selectedGroupIds.length === 0 && (
+            <p className="rounded-md border bg-muted/50 p-3 text-sm">
+              Only admins can use this agent until you pick at least one group.
+            </p>
+          )}
           {groups.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No groups available. Create groups in Settings first.
+              No groups yet. Create one in Settings → Groups, or choose All users above.
             </p>
           ) : (
             <div className="space-y-3">

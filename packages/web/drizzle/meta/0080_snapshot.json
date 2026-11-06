@@ -1,5 +1,5 @@
 {
-  "id": "5b4a4039-2725-4f5e-b170-7b5c66cd7feb",
+  "id": "cc855eaa-9a70-4309-91c8-be95d496dd63",
   "prevId": "6d54b38c-5ce7-4194-99b7-b0d4c521961c",
   "version": "7",
   "dialect": "postgresql",
@@ -2691,9 +2691,52 @@
         },
         "kb_index_jobs_trigger_check": {
           "name": "kb_index_jobs_trigger_check",
-          "value": "\"kb_index_jobs\".\"trigger\" IN ('manual', 'scheduled', 'upgrade', 'initial')"
+          "value": "\"kb_index_jobs\".\"trigger\" IN ('manual', 'scheduled', 'upgrade')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.kb_unsupported_files": {
+      "name": "kb_unsupported_files",
+      "schema": "",
+      "columns": {
+        "org_id": {
+          "name": "org_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_path": {
+          "name": "source_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "file_type": {
+          "name": "file_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "seen_at": {
+          "name": "seen_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "kb_unsupported_files_org_id_source_path_pk": {
+          "name": "kb_unsupported_files_org_id_source_path_pk",
+          "columns": ["org_id", "source_path"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.models": {

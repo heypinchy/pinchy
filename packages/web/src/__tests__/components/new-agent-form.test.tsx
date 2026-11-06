@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { onTestFinished, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Mock } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -175,6 +175,30 @@ describe("NewAgentForm — URL history", () => {
       expect(mockPush).toHaveBeenCalledWith(expect.stringContaining("template=custom"));
     });
     expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  // #1280: picking a template far down the list only changes a search param,
+  // so Next keeps the AppShell scroller where it was. The form rendered into
+  // that offset with its heading scrolled up under the banner above it.
+  it("brings the top of the form into view when a template is picked", async () => {
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    onTestFinished(() => {
+      HTMLElement.prototype.scrollIntoView = original;
+    });
+    render(<NewAgentForm />);
+    await waitFor(() => {
+      expect(screen.getByText(/start from scratch/i)).toBeInTheDocument();
+    });
+    scrollIntoView.mockClear();
+
+    await userEvent.click(screen.getByText(/start from scratch/i));
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument());
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    const target = scrollIntoView.mock.contexts.at(-1) as Element;
+    expect(target.contains(screen.getByRole("heading", { level: 1 }))).toBe(true);
   });
 
   it("returns to template selector when searchParams lose the template parameter (browser Back)", async () => {
