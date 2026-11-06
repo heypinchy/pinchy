@@ -115,6 +115,10 @@ export async function recordChatSessionError(
       sideEffects: input.sideEffects,
       runStartedAt: input.runStartedAt ?? null,
       showBanner: input.showBanner ?? true,
+      // App time, not the column's `now()` default: every bound this row is
+      // compared against (`supersedeChatSessionErrors`' `before`, the banner's
+      // max age) is app time. See supersedeChatSessionErrors.
+      createdAt: new Date(),
     })
     .returning();
   return row;
@@ -217,9 +221,14 @@ export async function resolveRetryGate({
  * hours after the fact (#1301) — and the docs had promised all along that it
  * "clears itself automatically as soon as a message goes through again".
  *
- * `before` is app time compared against `created_at`, which the database fills
- * with `now()` — the same convention as `agentRanToolSince`, and sound on the
- * UTC session the Pinchy stack runs its database with.
+ * `before` is app time, and so is `created_at`: `recordChatSessionError` stamps
+ * it rather than leaving it to the column's `now()`. Two clocks made the
+ * comparison wrong in both directions it can go. A database clock ahead of the
+ * app's made an error recorded before the successful turn look newer than it,
+ * and the banner stayed on top of the answer. And `now()` keeps microseconds a
+ * JS Date cannot hold, so even on one clock a row sat a fraction of a
+ * millisecond after its own timestamp as the app reads it — the flake that
+ * exposed this.
  */
 export async function supersedeChatSessionErrors({
   sessionKey,
