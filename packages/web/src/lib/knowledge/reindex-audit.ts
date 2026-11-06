@@ -114,6 +114,13 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
             unsearchable: args.counts.unsearchable,
             failed: args.counts.failed,
             archived: args.counts.archived,
+            // A count, never the list behind it (kb_unsupported_files): a
+            // share can hold 100k such files, and their paths are exactly
+            // what this row must not carry. Absent when the run never got as
+            // far as discovery.
+            ...(args.counts.unsupported !== undefined
+              ? { unsupported: args.counts.unsupported }
+              : {}),
           }
         : {}),
       // Field by field for the same reason as `counts` above: the worker's
