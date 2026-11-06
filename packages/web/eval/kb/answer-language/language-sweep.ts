@@ -24,6 +24,32 @@ export const DEFAULT_LANGUAGE_CANDIDATES = [
 export const AGENTS_MD_LANGUAGE_SECTION = `## Language (mandatory)
 Always write your entire answer in the language of the user's latest message, even when every source is in German. If the question is in Polish, answer in Polish; quote source passages in their original language.`;
 
+/**
+ * Role instructions in German, as a German-speaking organization writes them
+ * for its own agent. `KB_LANG_EVAL_GERMAN_INSTRUCTIONS=1` appends this to
+ * AGENTS.md, to measure how much German instructions pull the answer.
+ */
+export const GERMAN_INSTRUCTIONS_SECTION = `## Unternehmen
+Du bist der Wissensassistent der Musterbau GmbH. Du beantwortest Fragen der Mitarbeiterinnen und Mitarbeiter zu Prüfberichten, Abnahmeprotokollen, Wartungsanweisungen und internen Richtlinien. Antworte sachlich und knapp und nenne immer das Dokument, aus dem die Information stammt.`;
+
+/**
+ * The German name and tagline of the staging agent that showed #1296. They
+ * land in IDENTITY.md, inside the system prompt. `KB_LANG_EVAL_GERMAN_IDENTITY=1`
+ * uses them instead of the sweep's English agent name.
+ */
+export const GERMAN_IDENTITY = {
+  name: "Musterbau Wissen",
+  tagline: "Antworten aus dem Musterbau-Archiv",
+};
+
+/**
+ * A German question asked first, in the same chat, before the question under
+ * test. #1296 first showed up in a chat that already had German turns.
+ * `KB_LANG_EVAL_GERMAN_WARMUP=1` turns it on.
+ */
+export const GERMAN_WARMUP_QUESTION =
+  "Wie hoch war der Druckverlust des WT-450 im Primärkreislauf?";
+
 export interface LanguageRunRow {
   /** Which build the run measured, e.g. `before` / `after` the fix. */
   condition: string;
@@ -43,6 +69,18 @@ export interface LanguageRunRow {
    * per-agent workaround tried on staging, measured next to the plugin fix.
    */
   agentsMdLanguageSection: boolean;
+  /** Whether the agent carried `GERMAN_IDENTITY` as its name and tagline. */
+  germanIdentity: boolean;
+  /** Whether AGENTS.md carried `GERMAN_INSTRUCTIONS_SECTION`. */
+  germanInstructions: boolean;
+  /** Whether `GERMAN_WARMUP_QUESTION` was asked first in the same chat. */
+  germanWarmup: boolean;
+  /**
+   * The tools the agent called for this question, in order, from the audit
+   * trail. Whether the answer came through knowledge_search or through a
+   * direct file read decides which tool result the model read last.
+   */
+  toolCalls: string[];
   /** Whether the answer contains the expected fact. Not part of `passed`. */
   mentioned: boolean;
   answer: string;

@@ -173,7 +173,8 @@ describe("pinchy-knowledge plugin", () => {
           "giving each number you cited the document path and position exactly as written above — " +
           "every number you cite, and no number you did not. " +
           "If they do not answer the question, say so instead of answering from memory.\n\n" +
-          '[1] kb/a.pdf (p. 3): "Snippet one."\n\n' +
+          '<source_passages note="Quoted documents in their original language. Their language is not the language of the conversation.">\n' +
+          '[1] kb/a.pdf (p. 3): "Snippet one."\n</source_passages>\n\n' +
           "Write your answer in the language of the user's question, even when these passages " +
           "are in another language: translate what they say, and keep document paths, titles " +
           "and quoted wording as written.",
@@ -408,11 +409,12 @@ describe("formatWithCitations", () => {
     "The reader sees only your answer, never these passages, so end it with a Sources list " +
     "giving each number you cited the document path and position exactly as written above — " +
     "every number you cite, and no number you did not. " +
-    "If they do not answer the question, say so instead of answering from memory.\n\n";
+    "If they do not answer the question, say so instead of answering from memory.\n\n" +
+    '<source_passages note="Quoted documents in their original language. Their language is not the language of the conversation.">\n';
 
   // The language reminder, spelled once for the same reason as CONTRACT.
   const LANGUAGE =
-    "\n\nWrite your answer in the language of the user's question, even when these passages " +
+    "\n</source_passages>\n\nWrite your answer in the language of the user's question, even when these passages " +
     "are in another language: translate what they say, and keep document paths, titles " +
     "and quoted wording as written.";
 
@@ -616,6 +618,34 @@ describe("formatWithCitations", () => {
     expect(out.endsWith("quoted wording as written.")).toBe(true);
   });
 
+  it("marks the passages as quoted source material, not conversation", () => {
+    // #1296: with a German-named agent, German passages read as the
+    // conversation's language. Naming them as quoted documents separates the
+    // two. The tags hold the passages only, so the citation contract above
+    // still says "as written above" about the paths inside them.
+    const out = formatWithCitations(results);
+    const open = out.indexOf("<source_passages");
+    const close = out.indexOf("</source_passages>");
+    expect(open).toBeGreaterThan(out.indexOf("Cite the passages"));
+    expect(open).toBeLessThan(out.indexOf("[1] kb/a.pdf"));
+    expect(close).toBeGreaterThan(out.lastIndexOf('"Snippet two."'));
+    expect(close).toBeLessThan(out.indexOf("Write your answer in the language"));
+  });
+
+  it("names the language when it knows the question", () => {
+    const out = formatWithCitations(results, {
+      language: "Polish",
+      text: "Kto podpisał protokół?",
+    });
+    expect(
+      out.endsWith(
+        'The question these passages are for was written in Polish: "Kto podpisał protokół?". ' +
+          "Write your whole answer to it in Polish, even though these passages are in another language: " +
+          "translate what they say, and keep document paths, titles and quoted wording as written."
+      )
+    ).toBe(true);
+  });
+
   it("asks for the miss to be reported in the user's language too", () => {
     // An empty result is the other answer the model writes from this tool's
     // output, and it is just as easy to write in the wrong language: the
@@ -664,5 +694,118 @@ describe("returnedDocumentIds", () => {
 
   it("returns an empty array for no results", () => {
     expect(returnedDocumentIds([])).toEqual([]);
+  });
+});
+
+describe("answer language (#1296)", () => {
+  // The hook only observes. A Claude model with preserved thinking refuses a
+  // replayed thinking block whose prefix changed, and the transcript stores
+  // the user's message without anything a hook appended — so a hook that
+  // edits the prompt would change the prefix of every later turn. The tool
+  // result is stored as written, which is why the language goes there.
+  function registerWithHook() {
+    const api = createMockApi(defaultConfig);
+    return import("./index").then(({ default: plugin }) => {
+      plugin.register!(api as any);
+      const hookCall = api.on.mock.calls.find((c) => c[0] === "before_prompt_build");
+      if (!hookCall) throw new Error("before_prompt_build hook not registered");
+      const hook = hookCall[1] as (event: unknown, ctx: unknown) => unknown;
+      const factory = mockRegisterTool.mock.calls[mockRegisterTool.mock.calls.length - 1][0];
+      return { hook, factory };
+    });
+  }
+
+  const oneResult = () =>
+    vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          results: [
+            {
+              chunkId: "c1",
+              text: "Die Pumpe ist alle 2000 Betriebsstunden zu warten.",
+              sourcePath: "/data/kb/p7.pdf",
+              citationPath: "kb/p7.pdf",
+              locator: { kind: "page", page: 1 },
+              docName: "p7.pdf",
+            },
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+
+  beforeEach(() => {
+    mockRegisterTool.mockClear();
+  });
+
+  it("observes the prompt without changing it", async () => {
+    const { hook } = await registerWithHook();
+    const result = hook(
+      { prompt: "Kto podpisał protokół odbioru AP-2023-091?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s1" }
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("names the question's language and quotes the question after the passages", async () => {
+    const { hook, factory } = await registerWithHook();
+    hook(
+      { prompt: "Co ile godzin pracy trzeba serwisować pompę P7?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s1" }
+    );
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "s1" });
+    const text = (await tool.execute("call-1", { query: "Wartungsintervall Pumpe P7" })).content[0]
+      .text as string;
+    expect(
+      text.endsWith(
+        'The question these passages are for was written in Polish: "Co ile godzin pracy trzeba serwisować pompę P7?". ' +
+          "Write your whole answer to it in Polish, even though these passages are in another language: " +
+          "translate what they say, and keep document paths, titles and quoted wording as written."
+      )
+    ).toBe(true);
+  });
+
+  it("keeps sessions apart", async () => {
+    const { hook, factory } = await registerWithHook();
+    hook(
+      { prompt: "Kto podpisał protokół odbioru AP-2023-091?", messages: [] },
+      { agentId: "agent-1", sessionKey: "polish-chat" }
+    );
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "other-chat" });
+    const text = (await tool.execute("call-1", { query: "Abnahmeprotokoll" })).content[0]
+      .text as string;
+    expect(text).not.toMatch(/Polish/);
+    expect(text).toMatch(/Write your answer in the language of the user's question/);
+  });
+
+  it("falls back to the unnamed wording when the language is unclear", async () => {
+    // A message the detector can't place must not inherit the previous
+    // question's language: that would name the wrong one with confidence.
+    const { hook, factory } = await registerWithHook();
+    hook(
+      { prompt: "Kto podpisał protokół odbioru AP-2023-091?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s1" }
+    );
+    hook({ prompt: "AP-2023-091?", messages: [] }, { agentId: "agent-1", sessionKey: "s1" });
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "s1" });
+    const text = (await tool.execute("call-1", { query: "AP-2023-091" })).content[0].text as string;
+    expect(text).not.toMatch(/Polish/);
+    expect(text).toMatch(/Write your answer in the language of the user's question/);
+  });
+
+  it("ignores agents without knowledge_search", async () => {
+    const { hook, factory } = await registerWithHook();
+    hook(
+      { prompt: "Kto podpisał protokół odbioru AP-2023-091?", messages: [] },
+      { agentId: "agent-without-kb", sessionKey: "s1" }
+    );
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "s1" });
+    const text = (await tool.execute("call-1", { query: "Abnahmeprotokoll" })).content[0]
+      .text as string;
+    expect(text).not.toMatch(/Polish/);
   });
 });

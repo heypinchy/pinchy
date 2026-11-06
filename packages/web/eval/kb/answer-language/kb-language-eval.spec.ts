@@ -48,6 +48,9 @@ import { gradeAnswerLanguage } from "../../../src/lib/eval/kb/answer-language";
 import { buildKbSweepAgentPayload, KB_SWEEP_ALLOWED_TOOLS } from "../sweep-agent";
 import {
   AGENTS_MD_LANGUAGE_SECTION,
+  GERMAN_IDENTITY,
+  GERMAN_INSTRUCTIONS_SECTION,
+  GERMAN_WARMUP_QUESTION,
   LANGUAGE_SWEEP_LABEL,
   languageCandidatesFromEnv,
   languageConditionFromEnv,
@@ -108,14 +111,32 @@ async function seedAnthropicKey(dbUrl: string): Promise<void> {
   }
 }
 
-/** Appends the staging workaround's language section to the agent's AGENTS.md. */
-async function appendAgentsMdSection(cookie: string, agentId: string): Promise<void> {
+/** The tools `agentId` called since `since`, oldest first, from the audit trail. */
+async function toolCallsSince(cookie: string, agentId: string, since: string): Promise<string[]> {
+  const qs = new URLSearchParams({ from: since, limit: "100" });
+  const res = await pinchyGet(`/api/audit?${qs.toString()}`, cookie);
+  if (!res.ok) throw new Error(`Audit query failed: ${String(res.status)}`);
+  const body = (await res.json()) as {
+    entries: Array<{ eventType: string; resource: string | null; timestamp: string }>;
+  };
+  return body.entries
+    .filter((e) => e.resource === `agent:${agentId}` && e.eventType.startsWith("tool."))
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    .map((e) => e.eventType.slice("tool.".length));
+}
+
+/** Appends `section` to the agent's AGENTS.md. */
+async function appendAgentsMdSection(
+  cookie: string,
+  agentId: string,
+  section: string
+): Promise<void> {
   const getRes = await pinchyGet(`/api/agents/${agentId}/files/AGENTS.md`, cookie);
   if (!getRes.ok) throw new Error(`Failed to read AGENTS.md: ${String(getRes.status)}`);
   const { content } = (await getRes.json()) as { content: string };
   const putRes = await pinchyPut(
     `/api/agents/${agentId}/files/AGENTS.md`,
-    { content: `${content.trimEnd()}\n\n${AGENTS_MD_LANGUAGE_SECTION}\n` },
+    { content: `${content.trimEnd()}\n\n${section}\n` },
     cookie
   );
   if (!putRes.ok) {
@@ -124,9 +145,11 @@ async function appendAgentsMdSection(cookie: string, agentId: string): Promise<v
 }
 
 /** Creates the Knowledge Base agent over the German corpus and indexes it. */
-async function setupAgent(cookie: string): Promise<string> {
+async function setupAgent(cookie: string, germanIdentity: boolean): Promise<string> {
   const payload = {
-    ...buildKbSweepAgentPayload(`KB-Language-${Date.now()}`),
+    ...buildKbSweepAgentPayload(
+      germanIdentity ? GERMAN_IDENTITY.name : `KB-Language-${Date.now()}`
+    ),
     pluginConfig: { "pinchy-files": { allowed_paths: [CORPUS_ROOT] } },
   };
   const createRes = await pinchyPost("/api/agents", payload, cookie);
@@ -142,6 +165,7 @@ async function setupAgent(cookie: string): Promise<string> {
     {
       allowedTools: KB_SWEEP_ALLOWED_TOOLS,
       pluginConfig: { "pinchy-files": { allowed_paths: [CORPUS_ROOT] } },
+      ...(germanIdentity ? { tagline: GERMAN_IDENTITY.tagline } : {}),
     },
     cookie
   );
@@ -194,16 +218,30 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
     await seedAnthropicKey(dbUrl);
     const cookie = await login();
 
+    // Emptied first: `docker cp` adds files but never removes one, and a
+    // document renamed here would otherwise stay indexed under its old name.
+    docker(["exec", OPENCLAW_CONTAINER, "rm", "-rf", CORPUS_ROOT]);
     docker(["exec", OPENCLAW_CONTAINER, "mkdir", "-p", CORPUS_ROOT]);
     docker(["cp", `${DOCS_DIR}/.`, `${OPENCLAW_CONTAINER}:${CORPUS_ROOT}`]);
+    // Only the PDFs are the corpus. The Markdown next to them is their source,
+    // and an agent that can list the folder would read it instead of searching.
+    docker(["exec", OPENCLAW_CONTAINER, "find", CORPUS_ROOT, "-name", "*.md", "-delete"]);
     const reminderInToolResult = pluginCarriesReminder();
     console.log(
       `[kb-language] condition=${condition} reminderInToolResult=${String(reminderInToolResult)}`
     );
 
-    const agentId = await setupAgent(cookie);
+    const germanIdentity = process.env.KB_LANG_EVAL_GERMAN_IDENTITY === "1";
+    const agentId = await setupAgent(cookie, germanIdentity);
     const agentsMdLanguageSection = process.env.KB_LANG_EVAL_AGENTS_MD_SECTION === "1";
-    if (agentsMdLanguageSection) await appendAgentsMdSection(cookie, agentId);
+    const germanInstructions = process.env.KB_LANG_EVAL_GERMAN_INSTRUCTIONS === "1";
+    const germanWarmup = process.env.KB_LANG_EVAL_GERMAN_WARMUP === "1";
+    if (germanInstructions) {
+      await appendAgentsMdSection(cookie, agentId, GERMAN_INSTRUCTIONS_SECTION);
+    }
+    if (agentsMdLanguageSection) {
+      await appendAgentsMdSection(cookie, agentId, AGENTS_MD_LANGUAGE_SECTION);
+    }
     await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
 
     const existing = await readRows();
@@ -237,25 +275,38 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
         lang: question.lang,
         reminderInToolResult,
         agentsMdLanguageSection,
+        germanIdentity,
+        germanInstructions,
+        germanWarmup,
         at: new Date().toISOString(),
       };
       try {
         await loginViaUI(page, getAdminEmail(), getAdminPassword());
         const chatId = randomUUID();
+        let since = new Date().toISOString();
+        if (germanWarmup) {
+          await dispatchAndScrape(page, agentId, GERMAN_WARMUP_QUESTION, {
+            chatId,
+            idleTimeoutMs: 120_000,
+          });
+          since = new Date().toISOString();
+        }
         await dispatchAndScrape(page, agentId, question.query, { chatId, idleTimeoutMs: 120_000 });
         const answer = await getRawAssistantMessage(page, agentId, chatId);
+        const toolCalls = await toolCallsSince(cookie, agentId, since);
         const verdict = gradeAnswerLanguage(answer, question.lang);
         await appendRow({
           ...base,
           passed: verdict.passed,
           found: verdict.found,
+          toolCalls,
           mentioned: question.mentions.test(answer),
           answer,
           latencyMs: Date.now() - start,
         });
         console.log(
           `[kb-language] ${model} ${questionId}: ${verdict.passed ? "PASS" : "FAIL"} ` +
-            `found=${verdict.found.join(",") || "-"}`
+            `found=${verdict.found.join(",") || "-"} tools=${toolCalls.join(",") || "-"}`
         );
       } catch (err) {
         console.warn(`[kb-language] ${model} ${questionId}: infra error ${describeError(err)}`);
@@ -263,6 +314,7 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
           ...base,
           passed: false,
           found: [],
+          toolCalls: [],
           mentioned: false,
           answer: "",
           latencyMs: Date.now() - start,

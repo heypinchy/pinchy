@@ -9,6 +9,7 @@
  * of Pinchy's governance logic already lives.
  */
 
+import { detectQuestionLanguage } from "./question-language";
 import { refusingUnknownParams } from "./unknown-params";
 import { formatLocator, type ChunkLocator } from "./locator";
 
@@ -39,6 +40,11 @@ function isTimeout(error: unknown): boolean {
 
 interface PluginToolContext {
   agentId?: string;
+  sessionKey?: string;
+}
+
+interface PromptBuildEvent {
+  prompt?: unknown;
 }
 
 // Presence-only per-agent gating: an entry in `agents` means the agent may
@@ -63,6 +69,10 @@ interface PluginApi {
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
     opts?: { name?: string }
+  ) => void;
+  on?: (
+    hookName: "before_prompt_build",
+    handler: (event: PromptBuildEvent, ctx: PluginToolContext) => undefined
   ) => void;
 }
 
@@ -184,6 +194,54 @@ const ANSWER_LANGUAGE =
   "are in another language: translate what they say, and keep document paths, titles " +
   "and quoted wording as written.";
 
+/** The question a search was made for, as the before_prompt_build hook saw it. */
+export interface AskedQuestion {
+  language: string;
+  text: string;
+}
+
+/**
+ * The language rule with the language named and the question quoted (#1296).
+ *
+ * Measured, not guessed: with a German-named agent and German sources, Claude
+ * Haiku 5.5 and Sonnet 5 kept answering Polish questions in German when the
+ * rule only said "the language of the user's question". Naming the language
+ * moved them. The question is quoted so the sentence stays tied to it: this
+ * text is stored in the transcript, and a later turn in another language must
+ * read it as being about an earlier question, not as an order for its own.
+ */
+function namedAnswerLanguage({ language, text }: AskedQuestion): string {
+  return (
+    `The question these passages are for was written in ${language}: "${text}". ` +
+    `Write your whole answer to it in ${language}, even though these passages are in another ` +
+    "language: translate what they say, and keep document paths, titles and quoted wording as written."
+  );
+}
+
+/**
+ * The passages are wrapped as quoted source material. With a German-named
+ * agent, a block of German passages otherwise reads as the language of the
+ * conversation. The note says what they are; the tags mark where they end.
+ */
+const SOURCES_OPEN =
+  '<source_passages note="Quoted documents in their original language. Their language is not the language of the conversation.">';
+const SOURCES_CLOSE = "</source_passages>";
+
+/** A quoted question longer than this is cut, so a pasted document can't flood the result. */
+const MAX_QUOTED_QUESTION = 300;
+
+/**
+ * The language and wording of the latest message per session, seen by the
+ * before_prompt_build hook and read by the tool call that follows. Bounded,
+ * oldest first out, because sessions are never told to us as finished.
+ */
+const MAX_TRACKED_SESSIONS = 1000;
+
+function quotedQuestion(prompt: string): string {
+  const text = prompt.replace(/\s+/g, " ").trim();
+  return text.length > MAX_QUOTED_QUESTION ? `${text.slice(0, MAX_QUOTED_QUESTION)}…` : text;
+}
+
 /**
  * The other half of grounding, and the half a template is least likely to
  * spell out: an empty retrieval is a fact about the corpus, not an invitation
@@ -216,7 +274,10 @@ const NO_RESULTS =
  * result, so citing one would state something false of the document the reader
  * opens.
  */
-export function formatWithCitations(results: KnowledgeSearchResult[]): string {
+export function formatWithCitations(
+  results: KnowledgeSearchResult[],
+  question?: AskedQuestion
+): string {
   if (results.length === 0) {
     return NO_RESULTS;
   }
@@ -226,7 +287,8 @@ export function formatWithCitations(results: KnowledgeSearchResult[]): string {
       return `[${index + 1}] ${result.citationPath}${anchor}: "${result.text}"`;
     })
     .join("\n\n");
-  return `${CITATION_CONTRACT}\n\n${sources}\n\n${ANSWER_LANGUAGE}`;
+  const language = question ? namedAnswerLanguage(question) : ANSWER_LANGUAGE;
+  return `${CITATION_CONTRACT}\n\n${SOURCES_OPEN}\n${sources}\n${SOURCES_CLOSE}\n\n${language}`;
 }
 
 function normalizeBaseUrl(url: string): string {
@@ -269,6 +331,30 @@ const plugin = {
 
     const { gatewayToken, agents: agentConfigs } = config;
     const apiBaseUrl = normalizeBaseUrl(config.apiBaseUrl);
+
+    // Observes the user's message and returns nothing. Changing the prompt
+    // here would be the obvious way to remind the model of its language, and
+    // it is the wrong one: the transcript keeps the message without what a
+    // hook appended, so every later turn would replay a different prefix, and
+    // Claude models with preserved thinking refuse a thinking block whose
+    // prefix changed. The tool result is stored as written, so it carries the
+    // language instead.
+    const askedQuestions = new Map<string, AskedQuestion>();
+    api.on?.("before_prompt_build", (event, ctx) => {
+      const sessionKey = ctx.sessionKey;
+      if (!sessionKey || !ctx.agentId || !agentConfigs?.[ctx.agentId]) return undefined;
+      const prompt = typeof event.prompt === "string" ? event.prompt : "";
+      const language = detectQuestionLanguage(prompt);
+      askedQuestions.delete(sessionKey);
+      if (language) {
+        askedQuestions.set(sessionKey, { language, text: quotedQuestion(prompt) });
+        if (askedQuestions.size > MAX_TRACKED_SESSIONS) {
+          const oldest = askedQuestions.keys().next().value;
+          if (oldest !== undefined) askedQuestions.delete(oldest);
+        }
+      }
+      return undefined;
+    });
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -349,7 +435,15 @@ const plugin = {
               const results = Array.isArray(data.results) ? data.results : [];
 
               return {
-                content: [{ type: "text", text: formatWithCitations(results) }],
+                content: [
+                  {
+                    type: "text",
+                    text: formatWithCitations(
+                      results,
+                      ctx.sessionKey ? askedQuestions.get(ctx.sessionKey) : undefined
+                    ),
+                  },
+                ],
                 details: {
                   toolName: "knowledge_search",
                   returnedDocumentIds: returnedDocumentIds(results),

@@ -62,7 +62,7 @@ const SOURCES_HEADING = /^[\s*_#>-]*(sources|quellen|źródła|zrodla|fonti|font
 function stripNonAnswerText(answer: string): string {
   return answer
     .replace(SOURCES_HEADING, "")
-    .replace(/„[^“”]*[“”]/g, " ")
+    .replace(/„[^“”"]*[“”"]/g, " ")
     .replace(/“[^”]*”/g, " ")
     .replace(/"[^"]*"/g, " ")
     .replace(/«[^»]*»/g, " ")
