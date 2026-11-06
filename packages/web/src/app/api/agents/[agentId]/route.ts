@@ -250,17 +250,27 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     );
   }
 
+  // A runtime failure inside updateAgent is held, not answered on the spot.
+  // The row is committed at that point, and the rest of this request — the
+  // group replace, the Telegram allow-stores — does not depend on the runtime.
+  // Returning early skipped all of it while the response said "Settings were
+  // saved": the settings page sends the Access tab's `groupIds` in the same
+  // PATCH as the Permissions tab's `allowedTools`, so the admin was told a
+  // group change landed that never ran, and the failure audit row could not
+  // record it.
   let agent: typeof existingAgent;
+  let runtimeError: AgentRuntimeUpdateError | null = null;
   try {
     agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
   } catch (err) {
     if (err instanceof AgentRuntimeUpdateError) {
-      return runtimeUpdateFailed(err, Object.keys(changes).length > 0 ? { changes } : null);
+      runtimeError = err;
+      agent = err.agent;
+    } else {
+      const cause = err instanceof Error ? err.message : String(err);
+      console.error(`[agents] update failed for agent ${agentId}:`, err);
+      return NextResponse.json({ error: `Could not update the agent: ${cause}` }, { status: 500 });
     }
-
-    const cause = err instanceof Error ? err.message : String(err);
-    console.error(`[agents] update failed for agent ${agentId}:`, err);
-    return NextResponse.json({ error: `Could not update the agent: ${cause}` }, { status: 500 });
   }
 
   // Capture old group IDs for audit diff (BEFORE delete/insert)
@@ -338,6 +348,12 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   // `after()` cannot be cancelled once queued, so a success row registered
   // first would still be written after this fails — one request leaving two
   // rows that disagree, with the wrong one claiming `outcome: "success"`.
+  if (runtimeError) {
+    // No second push: it could not make the first one's state current, and a
+    // second failure would only repeat the message.
+    return runtimeUpdateFailed(runtimeError, hasAuditableChange ? auditDetail : null);
+  }
+
   if (data.allowedTools !== undefined || data.pluginConfig !== undefined) {
     try {
       await regenerateOpenClawConfig();

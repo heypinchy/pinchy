@@ -453,3 +453,108 @@ describe("PATCH /api/agents/[agentId] — the permission-change config push", ()
     expect(rows[0].outcome).toBe("success");
   });
 });
+
+// The settings page saves the Permissions and Access tabs in ONE PATCH:
+// `allowedTools`/`pluginConfig` and `groupIds` together. The group replace ran
+// only after `updateAgent` returned, so when updateAgent's runtime push threw,
+// the handler answered "Settings were saved" and returned before the group
+// rows were touched. The admin was told the access change landed; it had not,
+// and the failure audit row could not say otherwise because it never knew.
+describe("PATCH /api/agents/[agentId] — group change alongside a failed runtime push", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  const EXISTING = {
+    id: "agent-1",
+    name: "Penny",
+    model: "old",
+    allowedTools: [],
+    isPersonal: false,
+    ownerId: null,
+  };
+
+  function patchToolsAndGroups() {
+    return new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ allowedTools: ["email_read"], groupIds: ["group-sales"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  async function runWithUpdateAgentRejecting(err: unknown) {
+    adminSession();
+    mockAgent(EXISTING);
+    vi.mocked(updateAgent).mockRejectedValueOnce(err);
+    // The group-name lookup for the audit diff.
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "group-sales", name: "Sales" }]),
+      }),
+    } as never);
+
+    const res = await PATCH(patchToolsAndGroups(), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    await flushAfter();
+    return res;
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  it("applies the group replace before answering 'Settings were saved'", async () => {
+    const res = await runWithUpdateAgentRejecting(runtimeFailure());
+
+    expect(res.status).toBe(500);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/saved/i);
+    // The claim above covers the groups only if they were really written.
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.insert).toHaveBeenCalled();
+    const values = vi.mocked(db.insert).mock.results[0].value.values as ReturnType<typeof vi.fn>;
+    expect(values).toHaveBeenCalledWith([{ agentId: "agent-1", groupId: "group-sales" }]);
+  });
+
+  it("records the group diff on the failure audit row", async () => {
+    await runWithUpdateAgentRejecting(runtimeFailure());
+
+    const rows = vi
+      .mocked(appendAuditLog)
+      .mock.calls.map(([entry]) => entry)
+      .filter((entry) => entry.eventType === "agent.updated");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].outcome).toBe("failure");
+    expect(rows[0].detail).toMatchObject({
+      changes: { allowedTools: { to: ["email_read"] } },
+      allowedGroups: { added: [{ id: "group-sales", name: "Sales" }], removed: [] },
+      runtimeUpdate: { applied: false },
+    });
+  });
+
+  it("recalculates the Telegram allow-stores for the committed group change", async () => {
+    await runWithUpdateAgentRejecting(runtimeFailure());
+
+    expect(recalculateTelegramAllowStores).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not try the second push once the first one has failed", async () => {
+    // One failure, one answer: a second attempt that happened to succeed would
+    // not make the first one's runtime state current, and a second failure
+    // would only repeat the message.
+    await runWithUpdateAgentRejecting(runtimeFailure());
+
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+  });
+
+  it("leaves the groups alone when the row write itself failed", async () => {
+    // The response then says nothing was stored — so nothing may be.
+    const res = await runWithUpdateAgentRejecting(new Error("connection terminated unexpectedly"));
+
+    expect(res.status).toBe(500);
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(recalculateTelegramAllowStores).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+});
