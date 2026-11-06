@@ -35,9 +35,10 @@ docker compose pull
 docker compose up -d
 ```
 
-This starts three services:
+This starts four services:
 
 - **Pinchy** — the web app on port 7777
+- **Office converter** — turns Word and PowerPoint files into PDFs for the knowledge base (no network at all)
 - **OpenClaw** — the AI agent runtime (internal, not exposed)
 - **PostgreSQL** — the database
 

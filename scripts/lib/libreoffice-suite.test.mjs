@@ -61,6 +61,19 @@ test("their own config includes them and runs one file at a time", () => {
   assert.match(config, /fileParallelism:\s*false/);
 });
 
+test("their config converts in-process, whatever spool the image names", () => {
+  // The CI job runs them inside the Pinchy image, and that image sets
+  // KB_OFFICE_SPOOL_DIR so production converts in the office-converter
+  // sidecar. There is no sidecar in that `docker run`: inherited, the variable
+  // would route every conversion to a socket nobody listens on, and each suite
+  // would measure "not reachable" instead of LibreOffice. These suites measure
+  // the in-process layers (profile, preflight); the sidecar has its own canary.
+  assert.match(
+    read(WEB, "vitest.libreoffice.config.ts"),
+    /env:\s*\{[^}]*KB_OFFICE_SPOOL_DIR:\s*""/,
+  );
+});
+
 test("pnpm test:libreoffice runs that config, from the root and from the web package", () => {
   const web = JSON.parse(read(WEB, "package.json")).scripts;
   const root = JSON.parse(read(ROOT, "package.json")).scripts;
