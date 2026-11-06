@@ -338,6 +338,26 @@ describe("describePageImage", () => {
     );
   });
 
+  it("sends the Google API key in the x-goog-api-key header, never in the URL", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: "Google extracted text" }] } }],
+      }),
+    });
+
+    await describePageImage("base64data", {
+      model: "google/gemini-2.5-flash",
+      resolveApiKey: async () => "secret-google-key",
+    });
+
+    const [url, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [string, RequestInit];
+    expect(url).not.toContain("key=");
+    expect(url).not.toContain("secret-google-key");
+    expect((init.headers as Record<string, string>)["x-goog-api-key"]).toBe("secret-google-key");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("rejects invalid model IDs to prevent URL injection", async () => {
     await expect(
       describePageImage("base64data", {

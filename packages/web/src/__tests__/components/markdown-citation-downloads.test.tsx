@@ -95,7 +95,7 @@ describe("what the renderer hands the viewer for a citation", () => {
   it("supplies both representations of an Office source", async () => {
     const downloads = await downloadsOf("- [1] noack/QF_2012/Angebot.doc — S. 3");
 
-    expect(downloads?.map((d) => d.label)).toEqual(["Angebot.doc", "Angebot.pdf"]);
+    expect(downloads?.map((d) => d.label)).toEqual(["Original (.doc)", "PDF"]);
   });
 
   it("supplies exactly one for a PDF, which has only one representation", async () => {
@@ -104,15 +104,17 @@ describe("what the renderer hands the viewer for a citation", () => {
     expect(downloads?.map((d) => d.label)).toEqual(["document.pdf"]);
   });
 
-  it("opens the viewer at the citation's own url, unchanged by any of this", async () => {
-    // The preview url is what carries `#page=N`, and the download urls are
-    // derived FROM it. If this ever drifted, a reader would be shown one
-    // document and handed another.
+  it("opens the viewer at the citation's own document and page, under the document's name", async () => {
+    // The preview url carries `#page=N` and the same `path` the download urls
+    // are derived from — if those drifted, a reader would be shown one
+    // document and handed another. Its last path segment is the name of the
+    // PDF being shown, which is what a browser's viewer titles it by; the
+    // bare route would title it "workspace-file" (#1268).
     renderAnswer("- [1] noack/QF_2012/Angebot.doc — S. 3");
 
     const dialog = await screen.findByTestId("pdf-dialog");
     expect(dialog.getAttribute("data-url")).toBe(
-      "/api/agents/agent-1/workspace-file?path=%2Fdata%2Fnoack%2FQF_2012%2FAngebot.doc#page=3"
+      "/api/agents/agent-1/workspace-file/Angebot.pdf?path=%2Fdata%2Fnoack%2FQF_2012%2FAngebot.doc#page=3"
     );
   });
 });

@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
-import { ChevronRight, Folder } from "lucide-react";
+import { ChevronRight, Folder, FolderOpen } from "lucide-react";
 import { apiGet } from "@/lib/api-client";
 import { directoryKey as key } from "@/lib/directory-path";
+import { DocsLink } from "@/components/docs-link";
 
 interface Directory {
   path: string;
@@ -22,6 +22,8 @@ interface DirectoryPickerProps {
   directories: Directory[];
   selected: string[];
   onChange: (selected: string[]) => void;
+  /** Accessible name of the group — the visible heading it sits under. */
+  label?: string;
   /**
    * Whether folders can be opened to grant a subfolder. The listing route is
    * admin-only. Every surface that renders the picker today is admin-only too
@@ -70,9 +72,11 @@ export function DirectoryPicker({
   directories,
   selected,
   onChange,
+  label,
   browseSubfolders = true,
   loadChildren = fetchChildren,
 }: DirectoryPickerProps) {
+  const idPrefix = useId();
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [children, setChildren] = useState<Map<string, ChildState>>(() => new Map());
   const requested = useRef(new Set<string>());
@@ -136,10 +140,16 @@ export function DirectoryPicker({
 
   if (directories.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
-        No directories available. Mount directories under <code>/data/</code> in your
-        docker-compose.yml to make them accessible to agents.
-      </p>
+      <div className="flex items-start gap-3 rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        <FolderOpen className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        <p>
+          No directories are available yet. They show up here once they&apos;re mounted under{" "}
+          <code>/data/</code>.{" "}
+          <DocsLink path="guides/mount-data-directories" className="font-medium underline">
+            How to mount data directories
+          </DocsLink>
+        </p>
+      </div>
     );
   }
 
@@ -197,112 +207,147 @@ export function DirectoryPicker({
     return parentState?.status === "loaded" || parentState?.status === "error";
   });
 
-  function renderFolder(dir: Directory, depth: number) {
+  // Counted by directory, not by stored spelling: a trailing-slash grant is
+  // one. Subfolder grants are counted apart — "1 of 3" must not read as the
+  // whole story when an agent also reads two folders inside another mount.
+  const mountKeys = directories.map((dir) => key(dir.path));
+  const selectedMounts = mountKeys.filter((k) => selectedKeys.has(k)).length;
+  const selectedSubfolders = [...selectedKeys].filter((k) =>
+    mountKeys.some((mount) => isInside(k, mount))
+  ).length;
+
+  // Rows are indented by depth; the chevron column keeps names aligned.
+  const indent = (depth: number) => ({ paddingLeft: `${0.75 + depth * 1.5}rem` });
+
+  function renderFolder(dir: Directory, depth: number, index: string) {
     const k = key(dir.path);
     const isOpen = expanded.has(k);
     const cover = coveringGrant(dir.path);
     const checked = cover !== undefined || selectedKeys.has(k);
     const state = children.get(k);
+    const checkboxId = `${idPrefix}-dir-${index}`;
+    const pathId = `${checkboxId}-path`;
+    const coverId = `${checkboxId}-cover`;
 
     return (
-      <li key={k}>
-        <div className="flex items-center gap-2" style={{ paddingLeft: `${depth * 1.5}rem` }}>
+      <div key={k}>
+        <div className="flex items-center" style={indent(depth)}>
+          {/* Beside the label, never inside it: a click on the chevron must
+              open the folder, not tick it. */}
           {browseSubfolders && (
             <button
               type="button"
-              className="rounded p-0.5 text-muted-foreground hover:bg-muted"
+              className="-ml-1 mr-1 rounded p-0.5 text-muted-foreground hover:bg-muted"
               aria-label={`${isOpen ? "Hide" : "Show"} subfolders of ${dir.name}`}
               aria-expanded={isOpen}
               onClick={() => toggleExpanded(dir.path)}
             >
               <ChevronRight
                 className={`size-4 transition-transform ${isOpen ? "rotate-90" : ""}`}
+                aria-hidden="true"
               />
             </button>
           )}
-          <Checkbox
-            id={`dir-${k}`}
-            checked={checked}
-            disabled={cover !== undefined}
-            onCheckedChange={() => toggle(dir.path)}
-            aria-label={dir.name}
-          />
-          <Label
-            htmlFor={`dir-${k}`}
-            className={`flex items-center gap-2 ${cover ? "" : "cursor-pointer"}`}
+          {/* The whole row is the hit target, not just the 16px box. */}
+          <label
+            htmlFor={checkboxId}
+            className={`flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-3 transition-colors hover:bg-muted/50 has-[:focus-visible]:bg-muted/50 ${cover ? "" : "cursor-pointer"}`}
           >
-            <Folder className="size-4 text-muted-foreground" />
-            <span>{dir.name}</span>
-            {depth === 0 && <span className="text-xs text-muted-foreground">{dir.path}</span>}
-            {cover && (
-              <span className="text-xs text-muted-foreground">
-                Included with {cover.replace(/\/+$/, "").split("/").pop()}
+            <Checkbox
+              id={checkboxId}
+              checked={checked}
+              disabled={cover !== undefined}
+              onCheckedChange={() => toggle(dir.path)}
+              aria-label={dir.name}
+              aria-describedby={cover ? `${pathId} ${coverId}` : pathId}
+            />
+            <Folder
+              className={`size-4 shrink-0 ${checked ? "text-foreground" : "text-muted-foreground"}`}
+              aria-hidden="true"
+            />
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium">{dir.name}</span>
+              <span id={pathId} className="block break-all text-xs text-muted-foreground">
+                {dir.path}
               </span>
-            )}
-          </Label>
+              {cover && (
+                <span id={coverId} className="block text-xs text-muted-foreground">
+                  Included with {key(cover).split("/").pop()}
+                </span>
+              )}
+            </span>
+          </label>
         </div>
         {isOpen && (
-          <div style={{ paddingLeft: `${(depth + 1) * 1.5 + 1.75}rem` }}>
+          <div aria-live="polite" style={indent(depth + 1)} className="pl-7">
             {(!state || state.status === "loading") && (
-              <p className="py-1 text-xs text-muted-foreground">Loading…</p>
+              <p className="pb-2 text-xs text-muted-foreground">Loading…</p>
             )}
             {state?.status === "error" && (
-              <p className="py-1 text-xs text-destructive">
+              <p className="pb-2 text-xs text-destructive">
                 Couldn&apos;t load the subfolders. Close and open the folder to try again.
               </p>
             )}
             {state?.status === "loaded" && state.directories.length === 0 && (
-              <p className="py-1 text-xs text-muted-foreground">No subfolders</p>
+              <p className="pb-2 text-xs text-muted-foreground">No subfolders</p>
             )}
           </div>
         )}
         {isOpen && state?.status === "loaded" && state.directories.length > 0 && (
           <>
-            <ul className="mt-2 space-y-2">
-              {state.directories.map((child) => renderFolder(child, depth + 1))}
-            </ul>
+            {state.directories.map((child, childIndex) =>
+              renderFolder(child, depth + 1, `${index}-${childIndex}`)
+            )}
             {state.truncated && (
-              <p
-                className="py-1 text-xs text-muted-foreground"
-                style={{ paddingLeft: `${(depth + 1) * 1.5 + 1.75}rem` }}
-              >
+              <p className="pb-2 pl-7 text-xs text-muted-foreground" style={indent(depth + 1)}>
                 Showing only the first {state.directories.length} subfolders.
               </p>
             )}
           </>
         )}
-      </li>
+      </div>
     );
   }
 
   return (
-    <div className="space-y-3">
-      <ul className="space-y-3">{directories.map((dir) => renderFolder(dir, 0))}</ul>
+    <div className="space-y-2">
+      <div role="group" aria-label={label} className="divide-y overflow-hidden rounded-lg border">
+        {directories.map((dir, index) => renderFolder(dir, 0, String(index)))}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {selectedMounts} of {directories.length} selected
+        {selectedSubfolders > 0 &&
+          `, plus ${selectedSubfolders} ${selectedSubfolders === 1 ? "subfolder" : "subfolders"}`}
+      </p>
       {missing.length > 0 && (
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">
             {browseSubfolders
-              ? "Also granted, but not found in the folders above:"
+              ? "Also granted, but not shown in the folders above:"
               : "Also granted:"}
           </p>
-          <ul className="space-y-2">
-            {missing.map((grant) => {
-              const label = key(grant);
+          <div className="divide-y overflow-hidden rounded-lg border">
+            {missing.map((grant, index) => {
+              const grantKey = key(grant);
+              const checkboxId = `${idPrefix}-missing-${index}`;
               return (
-                <li key={label} className="flex items-center gap-3">
+                <label
+                  key={grantKey}
+                  htmlFor={checkboxId}
+                  className="flex cursor-pointer items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/50 has-[:focus-visible]:bg-muted/50"
+                >
                   <Checkbox
-                    id={`missing-${label}`}
+                    id={checkboxId}
                     checked
                     onCheckedChange={() => toggle(grant)}
-                    aria-label={label}
+                    aria-label={grantKey}
                   />
-                  <Label htmlFor={`missing-${label}`} className="cursor-pointer text-sm">
-                    {label}
-                  </Label>
-                </li>
+                  <Folder className="size-4 shrink-0 text-foreground" aria-hidden="true" />
+                  <span className="min-w-0 break-all text-sm">{grantKey}</span>
+                </label>
               );
             })}
-          </ul>
+          </div>
         </div>
       )}
     </div>

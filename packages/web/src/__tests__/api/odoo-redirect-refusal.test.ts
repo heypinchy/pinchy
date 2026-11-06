@@ -22,9 +22,16 @@ vi.mock("@/lib/auth", () => ({
 
 // The "public" Odoo URL in these tests is 127.0.0.1, which the real guard
 // rightly refuses. The guard is not what is under test here — what happens
-// AFTER it said yes is — so it waves the entry URL through.
+// AFTER it said yes is — so it waves the entry URL through. A route that pins
+// its request gets the listener's own address as the checked answer, so the
+// real `pinnedFetch` connects to it.
 vi.mock("@/lib/integrations/url-validation", () => ({
   validateExternalUrl: async (url: string) => ({ valid: true, url: new URL(url).origin }),
+  resolveExternalUrlTarget: async (url: string) => ({
+    valid: true,
+    url: new URL(url).origin,
+    target: [{ address: new URL(url).hostname, family: 4 }],
+  }),
 }));
 
 // The schema-sync route reads a stored connection. Only storage and the

@@ -52,8 +52,8 @@ vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
 }));
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+vi.mock("@/lib/audit-deferred", () => ({
+  deferAuditLog: vi.fn(),
 }));
 
 vi.mock("@/db", () => ({
@@ -61,7 +61,7 @@ vi.mock("@/db", () => ({
 }));
 
 import { POST, GET } from "@/app/api/settings/api-keys/route";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { apiKeys, users } from "@/db/schema";
 import { PINCHY_SERVICE_ACCOUNT_ID } from "@/lib/api-key-identity";
 
@@ -188,7 +188,7 @@ describe("POST /api/settings/api-keys", () => {
 
     // Exact-match: proves the detail carries ONLY {id, name, scopes,
     // expiresAt} — no `key` field could sneak in unnoticed.
-    expect(appendAuditLog).toHaveBeenCalledWith({
+    expect(deferAuditLog).toHaveBeenCalledWith({
       actorType: "user",
       actorId: "admin-1",
       eventType: "api_key.created",
@@ -198,8 +198,8 @@ describe("POST /api/settings/api-keys", () => {
     });
 
     // Defense in depth beyond the exact-match above: the plaintext secret
-    // must not appear ANYWHERE in any appendAuditLog call, ever.
-    for (const call of vi.mocked(appendAuditLog).mock.calls) {
+    // must not appear ANYWHERE in any deferAuditLog call, ever.
+    for (const call of vi.mocked(deferAuditLog).mock.calls) {
       expect(JSON.stringify(call)).not.toContain("pinchy_super_secret_value");
     }
   });
@@ -209,7 +209,7 @@ describe("POST /api/settings/api-keys", () => {
 
     expect(response.status).toBe(400);
     expect(mockCreateApiKey).not.toHaveBeenCalled();
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 400 for empty scopes (default-deny: at least one scope required)", async () => {
@@ -275,7 +275,7 @@ describe("POST /api/settings/api-keys", () => {
 
     expect(response.status).toBe(403);
     expect(mockCreateApiKey).not.toHaveBeenCalled();
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 });
 
@@ -525,7 +525,7 @@ describe("GET /api/settings/api-keys", () => {
 
     await GET(getRequest(), routeContext());
 
-    expect(appendAuditLog).not.toHaveBeenCalled();
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 403 Forbidden for a non-admin session and never queries keys", async () => {

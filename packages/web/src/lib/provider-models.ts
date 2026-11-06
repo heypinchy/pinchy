@@ -155,8 +155,9 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
   },
   google: {
     url: (apiKey) =>
-      `${resolveProviderBaseUrl("google", "https://generativelanguage.googleapis.com")}/v1beta/models?key=${apiKey}`,
-    headers: () => ({}),
+      `${resolveProviderBaseUrl("google", "https://generativelanguage.googleapis.com")}/v1beta/models`,
+    // Header, not ?key=: query strings leak into proxy logs and error messages.
+    headers: (apiKey) => ({ "x-goog-api-key": apiKey }),
     transform: (data) =>
       (data.models as { name: string; displayName: string; supportedGenerationMethods: string[] }[])
         .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))

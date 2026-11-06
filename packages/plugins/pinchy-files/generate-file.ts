@@ -89,7 +89,10 @@ function csvField(value: CellValue): string {
 }
 
 function renderCsv(columns: string[], rows: CellValue[][]): Buffer {
-  const lines = [columns.join(","), ...rows.map((row) => row.map(csvField).join(","))];
+  const lines = [
+    columns.map(csvField).join(","),
+    ...rows.map((row) => row.map(csvField).join(",")),
+  ];
   return Buffer.from(CSV_BOM + lines.join("\r\n") + "\r\n", "utf-8");
 }
 

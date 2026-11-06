@@ -84,7 +84,9 @@ function buildFileUrl(agentId: string, filename: string, source: "uploads" | "ar
  * - `application/pdf` → small `<embed>` thumbnail; click opens a modal with
  *   the browser's native PDF viewer at full size.
  * - `image/*` → inline `<img>`; click opens a modal with the full image.
- * - anything else (or missing agentId / filename) → a plain chip.
+ * - anything else → a chip that downloads the file (#1298): a CSV or XLSX
+ *   has no viewer here, and taking it away is what it was delivered for.
+ * - missing agentId / filename → a plain chip, since there is no URL to build.
  */
 export const AttachmentPreview: FC = () => {
   const { mimeType, filename } = useMessagePartFile();
@@ -121,7 +123,14 @@ export const AttachmentPreview: FC = () => {
     if (readiness === "probing") return <Probing filename={filename} />;
     return <ImagePreview url={url!} filename={filename} warning={capabilityWarning} />;
   }
-  return <Chip filename={filename} mimeType={mimeType} warning={capabilityWarning} />;
+  return (
+    <Chip
+      filename={filename}
+      mimeType={mimeType}
+      warning={capabilityWarning}
+      href={buildFileUrl(agentId, filename, fileSource)}
+    />
+  );
 };
 
 const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
@@ -134,7 +143,21 @@ const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
  * Office file is converted, the same dialog offers the original beside its
  * converted PDF, and that has to be a datum rather than a redesign of the row.
  */
-export type DocumentDownload = { label: string; url: string };
+export type DocumentDownload = {
+  label: string;
+  url: string;
+  /**
+   * The name the file lands under, when the label is not it — "PDF" names a
+   * representation, `Angebot.pdf` names the file. Shown on hover and carried
+   * in the accessible name, so a screen reader hears which file it is taking.
+   */
+  filename?: string;
+};
+
+/** "Download PDF: Angebot.pdf" — starts with the visible label (WCAG 2.5.3). */
+function downloadAccessibleName({ label, filename }: DocumentDownload): string {
+  return filename && filename !== label ? `Download ${label}: ${filename}` : `Download ${label}`;
+}
 
 /**
  * The url the same document is fetched from when the reader wants to keep it.
@@ -170,8 +193,8 @@ function downloadUrlFor(url: string): string {
  *
  * So our chrome occupies a row ABOVE the viewer and the viewer gets everything
  * below it, edge to edge. Nothing overlaps, nothing needs tinting, and the row
- * earns its height: it names the document (the browser's title bar shows the
- * route segment, "workspace-file", which tells a reader nothing) and it offers
+ * earns its height: it names the document in our own words, whatever the
+ * browser's viewer makes of the url or the file's metadata, and it offers
  * a full tab — the only thing that works on iOS Safari, where an embedded PDF
  * renders blank whatever we do.
  *
@@ -256,7 +279,12 @@ export const PdfDialog: FC<{
                   on purpose, so a Content-Disposition filename — the one that
                   carries umlauts intact — still wins.
                  */}
-                <a href={download.url} download aria-label={`Download ${download.label}`}>
+                <a
+                  href={download.url}
+                  download
+                  aria-label={downloadAccessibleName(download)}
+                  title={download.filename ?? download.label}
+                >
                   <Download className="size-4" />
                   {namesDownloads && <span className="max-w-32 truncate">{download.label}</span>}
                 </a>
@@ -359,20 +387,37 @@ const Probing: FC<{ filename: string }> = ({ filename }) => (
   </div>
 );
 
-const Chip: FC<{ filename: string | undefined; mimeType: string; warning?: string | null }> = ({
-  filename,
-  mimeType,
-  warning,
-}) => {
+const Chip: FC<{
+  filename: string | undefined;
+  mimeType: string;
+  warning?: string | null;
+  /** Where the file downloads from; without it the chip only names the file. */
+  href?: string;
+}> = ({ filename, mimeType, warning, href }) => {
   const label = filename ?? (mimeType === "application/pdf" ? "PDF document" : "File");
+  const className = `my-1 flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2${warning ? " border-amber-500/60" : ""}`;
   return (
     <div>
-      <div
-        className={`my-1 flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2${warning ? " border-amber-500/60" : ""}`}
-      >
-        <FileText className="size-5 shrink-0 text-muted-foreground" />
-        <span className="truncate text-sm">{label}</span>
-      </div>
+      {href ? (
+        // `download` because the routes serve `inline`: without it a CSV opens
+        // as text in the tab. Left without a value so the Content-Disposition
+        // filename, which carries umlauts intact, still names the saved file.
+        <a
+          href={href}
+          download
+          aria-label={`Download ${label}`}
+          className={`${className} max-w-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+        >
+          <FileText className="size-5 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm">{label}</span>
+          <Download className="ml-auto size-4 shrink-0 text-muted-foreground" />
+        </a>
+      ) : (
+        <div className={className}>
+          <FileText className="size-5 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm">{label}</span>
+        </div>
+      )}
       {warning && <CapabilityWarning message={warning} />}
     </div>
   );

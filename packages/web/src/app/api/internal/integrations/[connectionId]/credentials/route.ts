@@ -19,6 +19,14 @@ import {
   OAuthSettingsMissingError,
 } from "@/lib/integrations/resolve-credentials";
 
+// Agent ids are `crypto.randomUUID()` (db/schema.ts), but the route accepts any
+// conservative id rather than only UUIDs so an unusual legacy id is not locked
+// out. The point is the bound: `agentId` comes from the query string and is
+// written into audit rows as `actorId` (a text column that `truncateDetail`
+// does not cover) and into `detail`, so an unbounded value mints oversized rows.
+const MAX_AGENT_ID_LENGTH = 128;
+const AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ connectionId: string }> }
@@ -42,6 +50,17 @@ export async function GET(
   if (!agentId) {
     return NextResponse.json(
       { error: "agentId is required — the calling plugin must identify its agent" },
+      { status: 400 }
+    );
+  }
+
+  // Malformed input, not a denial: no audit row, or the oversized value would
+  // land in the trail anyway.
+  if (agentId.length > MAX_AGENT_ID_LENGTH || !AGENT_ID_PATTERN.test(agentId)) {
+    return NextResponse.json(
+      {
+        error: "agentId is malformed — expected at most 128 characters of letters, digits, - or _",
+      },
       { status: 400 }
     );
   }

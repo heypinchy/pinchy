@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   validateExternalUrl,
+  resolveExternalUrlTarget,
   isPrivateUrl,
   classifyIpAddress,
   type UrlHostResolver,
@@ -608,6 +609,93 @@ describe("validateExternalUrl", () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
       const result = await validateWithoutDns("not-a-url");
       expect(result).toEqual({ valid: false, error: expect.any(String) });
+    });
+  });
+});
+
+describe("resolveExternalUrlTarget", () => {
+  // The variant for a caller that connects: it returns the address it
+  // classified so the request can be pinned to it, and a name with no answer
+  // is refused — one lookup, so nothing later gets to resolve it again.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns the origin and the address it classified", async () => {
+    await expect(
+      resolveExternalUrlTarget("https://odoo.example.com/web", resolveTo(["93.184.216.34"]))
+    ).resolves.toEqual({
+      valid: true,
+      url: "https://odoo.example.com",
+      target: [{ address: "93.184.216.34", family: 4 }],
+    });
+  });
+
+  it("pins an address literal to itself without asking the resolver", async () => {
+    const resolver = vi.fn<UrlHostResolver>(async () => ["93.184.216.34"]);
+
+    await expect(
+      resolveExternalUrlTarget("http://[2606:2800:220:1::1]:8069", resolver)
+    ).resolves.toEqual({
+      valid: true,
+      url: "http://[2606:2800:220:1::1]:8069",
+      target: [{ address: "2606:2800:220:1::1", family: 6 }],
+    });
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it("returns every address it classified, so a dual-stack host keeps its fallback", async () => {
+    await expect(
+      resolveExternalUrlTarget(
+        "https://odoo.example.com",
+        resolveTo(["2606:2800:220:1::1", "93.184.216.34"])
+      )
+    ).resolves.toEqual({
+      valid: true,
+      url: "https://odoo.example.com",
+      target: [
+        { address: "2606:2800:220:1::1", family: 6 },
+        { address: "93.184.216.34", family: 4 },
+      ],
+    });
+  });
+
+  it("refuses a name whose lookup fails, instead of failing open", async () => {
+    await expect(
+      resolveExternalUrlTarget("https://typo-odoo.example.com", unresolvable)
+    ).resolves.toEqual({ valid: false, error: expect.stringContaining("resolve") });
+  });
+
+  it("refuses a name that resolves to nothing", async () => {
+    await expect(
+      resolveExternalUrlTarget("https://empty.example.com", resolveTo([]))
+    ).resolves.toEqual({ valid: false, error: expect.stringContaining("resolve") });
+  });
+
+  it("still refuses what validateExternalUrl refuses", async () => {
+    await expect(
+      resolveExternalUrlTarget(
+        "https://odoo.example.com",
+        resolveTo(["93.184.216.34", "127.0.0.1"])
+      )
+    ).resolves.toMatchObject({ valid: false });
+    await expect(
+      resolveExternalUrlTarget("https://odoo.example.com", resolveTo(["10.0.0.5"]))
+    ).resolves.toEqual({ valid: false, error: expect.stringContaining("ALLOW_PRIVATE_URLS") });
+    await expect(
+      resolveExternalUrlTarget("ftp://odoo.example.com", resolveTo([]))
+    ).resolves.toMatchObject({ valid: false });
+  });
+
+  it("allows a private address with ALLOW_PRIVATE_URLS=1, pinned", async () => {
+    vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+
+    await expect(
+      resolveExternalUrlTarget("http://odoo-mock:8069", resolveTo(["172.18.0.4"]))
+    ).resolves.toEqual({
+      valid: true,
+      url: "http://odoo-mock:8069",
+      target: [{ address: "172.18.0.4", family: 4 }],
     });
   });
 });
