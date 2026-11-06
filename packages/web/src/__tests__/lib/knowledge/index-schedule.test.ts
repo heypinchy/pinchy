@@ -186,13 +186,14 @@ describe("slotInstant", () => {
 
   it("is the first minute after the gap on the spring-forward night", () => {
     // 2026-03-29 in Vienna: 02:00 never happens; the slot is due at 03:00 CEST.
+    const halfPast: IndexSchedule = { enabled: true, time: "02:30" };
     const at = slotInstant("2026-03-29", "02:30", "Europe/Vienna");
     expect(at.toISOString()).toBe("2026-03-29T01:00:00.000Z");
-    expect(isSlotDue(localClock(at, "Europe/Vienna"), NIGHTLY, "2026-03-28")).toBe(true);
+    expect(isSlotDue(localClock(at, "Europe/Vienna"), halfPast, "2026-03-28")).toBe(true);
     expect(
       isSlotDue(
         localClock(new Date(at.getTime() - 60_000), "Europe/Vienna"),
-        { enabled: true, time: "02:30" },
+        halfPast,
         "2026-03-28"
       )
     ).toBe(false);
