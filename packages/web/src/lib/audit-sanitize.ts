@@ -132,13 +132,14 @@ export function sanitizeDetail<T>(detail: T): T {
 const AUDIT_ID_MAX_LENGTH = 128;
 
 /**
- * Clamps a caller-supplied id before it is written into an audit row
+ * Clamps a caller-supplied agent or user id before it is written into an audit row
  * (`actorId`, `resource: agent:<id>`, `{ id, name }` snapshots). Clamps,
  * never rejects: on the sink routes a 400 would drop the row, and on the
  * budget check the plugin reads any error as "let the run through".
- * Only for audit write sites — lookups and responses keep the raw value.
+ * Only for audit write sites — lookups and responses keep the raw value, and
+ * an id read back from the database is ours and is never clamped.
  */
-export function boundAgentIdForAudit(id: string): string {
+export function boundIdForAudit(id: string): string {
   const bounded = id.slice(0, AUDIT_ID_MAX_LENGTH).replace(/[^A-Za-z0-9_-]/g, "_");
   return bounded || "unknown";
 }

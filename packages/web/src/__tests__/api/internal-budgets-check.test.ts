@@ -258,4 +258,13 @@ describe("POST /api/internal/budgets/check", () => {
     // the budget lookup still sees the raw id
     expect(getExhaustedBlockingBudgetMock).toHaveBeenCalledWith(hostile);
   });
+
+  it("leaves a linked user's database id untouched, even outside the clamp's alphabet", async () => {
+    getExhaustedBlockingBudgetMock.mockResolvedValue(agentBudget());
+    channelLinksFindFirst.mockResolvedValue({ userId: "Legacy.User@Import-1" });
+    await POST(makeRequest({ agentId: AGENT.id, channel: "telegram", senderId: "1" }));
+    expect(appendAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({ actorType: "user", actorId: "Legacy.User@Import-1" })
+    );
+  });
 });
