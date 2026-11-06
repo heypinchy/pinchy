@@ -273,7 +273,7 @@ describe("SettingsApiKeys", () => {
         expect(screen.getByText(plaintextSecret)).toBeInTheDocument();
       });
 
-      await user.click(screen.getByRole("button", { name: "Copy" }));
+      await user.click(screen.getByRole("button", { name: "Copy key" }));
 
       await waitFor(() => {
         expect(writeText).toHaveBeenCalledWith(plaintextSecret);

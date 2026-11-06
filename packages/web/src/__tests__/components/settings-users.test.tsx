@@ -288,7 +288,7 @@ describe("SettingsUsers", () => {
       expect(screen.getByText("http://localhost:7777/invite/invite-token-abc")).toBeInTheDocument();
     });
 
-    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
   });
 
   it("should show copied feedback when invite link Copy button is clicked", async () => {
@@ -325,10 +325,10 @@ describe("SettingsUsers", () => {
         ).toBeInTheDocument()
       );
 
-      await user.click(screen.getByRole("button", { name: "Copy" }));
+      await user.click(screen.getByRole("button", { name: "Copy link" }));
 
       await waitFor(() => {
-        expect(screen.getByRole("button", { name: "Copied!" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
       });
       // The spy is what makes the success path deterministic, so assert it was
       // really the invite link that went to the clipboard — otherwise the spy
@@ -840,14 +840,14 @@ describe("SettingsUsers", () => {
         const inviteRow = within(table).getAllByText("expired@example.com")[0].closest("tr")!;
         await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
 
-        // Scope to the link panel: the button carries the bare label "Copy",
+        // Scope to the link panel: the button carries the label "Copy link",
         // which is not unique on this screen once a dialog is open.
         const link = await screen.findByText("http://localhost:7777/invite/resend-token-xyz");
         const panel = link.closest("div")!;
-        await user.click(within(panel).getByRole("button", { name: "Copy" }));
+        await user.click(within(panel).getByRole("button", { name: "Copy link" }));
 
         await waitFor(() => {
-          expect(within(panel).getByRole("button", { name: "Copied!" })).toBeInTheDocument();
+          expect(within(panel).getByRole("button", { name: "Copied" })).toBeInTheDocument();
         });
         expect(writeText).toHaveBeenCalledWith("http://localhost:7777/invite/resend-token-xyz");
       } finally {
