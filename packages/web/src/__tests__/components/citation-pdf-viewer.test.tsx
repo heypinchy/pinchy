@@ -387,7 +387,10 @@ describe("CitationPdfViewer for a Word section", () => {
 
   it("does not pull a reader back who paged on before the passage was found", async () => {
     const pdf = wordHandle({ 3: PAGE_4.runs.map((r) => r.str) });
-    pdf.renderPage.mockResolvedValue({ ...PAGE_4, runs: [run("Inhaltsverzeichnis", 100)] });
+    // Drawn and scanned pages agree: only page 3 holds the passage.
+    pdf.renderPage.mockImplementation(async (n: number) =>
+      n === 3 ? PAGE_4 : { ...PAGE_4, runs: [run("Inhaltsverzeichnis", 100)] }
+    );
     mockOpenPdf.mockResolvedValue(pdf);
     let answer: (res: Response) => void = () => {};
     fetchSpy.mockReturnValue(new Promise<Response>((resolve) => (answer = resolve)));
@@ -399,9 +402,15 @@ describe("CitationPdfViewer for a Word section", () => {
     expect(await screen.findByText("Page 4 of 12")).toBeInTheDocument();
 
     await act(async () => answer(jsonResponse({ passage: { text: PASSAGE_TEXT } })));
-    await waitFor(() => expect(pdf.pageRuns).toHaveBeenCalled());
+    await waitFor(() => expect(pdf.pageRuns).toHaveBeenCalledWith(3));
+    await act(async () => {});
 
+    // The reader stayed where they were…
     expect(screen.getByText("Page 4 of 12")).toBeInTheDocument();
+    // …and the highlight did move: the page they come back to is page 3.
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(await screen.findByText("Page 3 of 12")).toBeInTheDocument();
+    await waitFor(() => expect(highlights()).toHaveLength(2));
   });
 
   it("falls back without waiting for the passage lookup when the heading is unknown", async () => {

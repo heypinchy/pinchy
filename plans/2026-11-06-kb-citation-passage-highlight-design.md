@@ -208,9 +208,13 @@ Same gates, same order, same `audit-exempt` reasoning.
 - Heading: open the converted PDF, read its outline, find the entry whose
   joined path equals the heading. Not found (no outline, heading renamed since
   indexing, model misspelled it) → the browser's `<embed>`, exactly as today.
-  Found → scan the section's pages for the passage; open at the page where it
-  is found, highlighted, or at the section's first page when there is no
-  passage or it is not found within the cap.
+  Found → open at the section's first page at once, without waiting for the
+  passage lookup: with several candidates the lookup embeds the claim, which
+  takes seconds on a cold embedding model, and the first review round found a
+  Word citation stuck on a spinner that long. Once the passage arrives, scan
+  the section's pages for it and move the highlight to the page that holds it;
+  the reader moves with it only if they are still on the section's first page.
+  No passage, or not found within the cap → stay at the section's first page.
 - Any load, outline or render failure → the `<embed>`, as for PDFs.
 
 ### Tests (addendum)

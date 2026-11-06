@@ -223,8 +223,9 @@ const TRAILING_SLIDE = /^\s*(?:[—–\-,:]\s*)?(?:\(\s*)?(?:slide|folie)\s*(\d{
  * hold commas or dots — but stops before a `;` or a `[n]` that starts the
  * next citation on the same line.
  *
- * Every whitespace run is unambiguous, and the alternatives inside a heading
- * start with different characters, so a long line cannot backtrack.
+ * The separator's whitespace runs are unambiguous, and the alternatives
+ * inside a heading start with different characters, so a long line costs at
+ * most quadratic time on a heading that never closes, never exponential.
  */
 const TRAILING_HEADING =
   /^\s*(?:[—–\-,:]\s*)?(?:\(\s*§\s*((?:[^()\n]|\([^()\n]*\))+)\)|§\s*([^\n;[]+))/;

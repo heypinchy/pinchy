@@ -850,9 +850,11 @@ describe("the section an Office citation names", () => {
   });
 
   it("ends an unparenthesised heading before the next citation on the line", () => {
-    const [first] = sections(run(paragraph("[1] q/a.docx — § Qualität; [2] q/b.pdf — p. 3")));
+    const [semicolon] = sections(run(paragraph("[1] q/a.docx — § Qualität; [2] q/b.pdf — p. 3")));
+    const [bracket] = sections(run(paragraph("[1] q/a.docx — § Qualität [2] q/b.pdf — p. 3")));
 
-    expect(first.heading).toBe("Qualität");
+    expect(semicolon.heading).toBe("Qualität");
+    expect(bracket.heading).toBe("Qualität");
   });
 
   it("leaves the href exactly as it was", () => {
