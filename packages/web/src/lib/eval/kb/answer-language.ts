@@ -89,7 +89,7 @@ function classify(sentence: string): AnswerLanguage | null {
     n: words.filter((w) => FUNCTION_WORDS[lang].has(w)).length,
   })).sort((a, b) => b.n - a.n);
   const [first, second] = hits;
-  if (first && first.n >= 2 && first.n !== second?.n) return first.lang;
+  if (first && first.n >= 2) return first.n === second?.n ? null : first.lang;
   // Too few function words to decide (abbreviations like "nr" and "Ing." cut
   // sentences short). A language's own letters decide only if that language
   // also has a function word here, so a German noun dropped into a Polish

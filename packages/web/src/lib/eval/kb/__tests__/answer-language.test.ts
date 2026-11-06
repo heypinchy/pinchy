@@ -100,6 +100,12 @@ describe("gradeAnswerLanguage", () => {
 });
 
 describe("sentenceLanguages", () => {
+  it("leaves a sentence mixed half and half neutral, letters notwithstanding", () => {
+    // Two Polish and two German function words: the letters must not break
+    // the tie, or a genuinely mixed sentence would count as Polish.
+    expect(sentenceLanguages("Ważny protokół jest w der Akte und Huber.")).toEqual([]);
+  });
+
   it("ignores inline citations, bold markers and quoted wording", () => {
     // Every German word here is inside quotes, so nothing is left to read as
     // German: the sentence is Polish.
