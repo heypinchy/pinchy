@@ -212,6 +212,24 @@ describe("KnowledgeReindexSection", () => {
       expect(await screen.findByText(/1 file is of a type pinchy can't read/i)).toBeInTheDocument();
     });
 
+    // After a failed run the list is still the previous run's — it is written
+    // only by a run that reaches the end — so a link beside this run's number
+    // would offer a file that doesn't match it.
+    it("counts them after a failed run but offers no list", async () => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "failed",
+          error: "Embedder down",
+          counts: { ...counts, unsupported: 3 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText("3 not supported")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /download the list/i })).not.toBeInTheDocument();
+    });
+
     it("says nothing more than the zero when every file could be read", async () => {
       mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 0 } }) });
 

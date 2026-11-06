@@ -173,6 +173,32 @@ describe("GET /api/agents/[agentId]/knowledge/unsupported", () => {
     expect(await res.text()).toContain(`"'=HYPERLINK(""http://x"")",""`);
   });
 
+  // An admin who cancels a 100k-row download must not leave the route paging
+  // through the rest of the table for nobody.
+  it("stops paging when the download is cancelled", async () => {
+    let closed = false;
+    let pagesRead = 0;
+    mockListUnsupportedFiles.mockImplementation(async function* () {
+      try {
+        for (;;) {
+          pagesRead++;
+          yield [{ sourcePath: `/data/hr/${pagesRead}.tif`, type: ".tif" }];
+        }
+      } finally {
+        closed = true;
+      }
+    });
+
+    const res = await GET(makeRequest(), ctx as never);
+    const reader = res.body!.getReader();
+    await reader.read(); // header
+    await reader.read(); // first page
+    await reader.cancel();
+
+    expect(closed).toBe(true);
+    expect(pagesRead).toBeLessThan(5);
+  });
+
   it("falls back to a generic file name when the agent's name has no usable characters", async () => {
     mockGetAgentWithAccess.mockResolvedValueOnce({ ...agentRow, name: '"/\\' });
 

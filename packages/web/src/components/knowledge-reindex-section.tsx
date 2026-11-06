@@ -723,9 +723,14 @@ function UnavailableFoldersNote({ count }: { count: number }) {
  * convert. A plain link, so the browser streams the file to disk instead of
  * this page holding it in memory.
  *
- * Shown after a successful run only. After a failed one the list is still the
- * previous run's (it is written when a run reaches the end), and the count
- * beside it is this run's — two numbers that need not agree.
+ * Shown after a successful run only: after a failed one the list is still the
+ * previous run's (it is written when a run reaches the end).
+ *
+ * Even then the count and the list need not match exactly, and the copy says
+ * "the list", not "these N files". The count is this run's; the list also keeps
+ * files from folders the run had to leave as they were, and follows the
+ * agent's grants as they are now rather than as they were when the run was
+ * queued.
  */
 function UnsupportedFilesNote({ agentId, count }: { agentId: string; count: number }) {
   const files = count === 1 ? "1 file is" : `${count} files are`;
