@@ -86,7 +86,7 @@ function PermissionPreview({ template }: { template?: Template }) {
         {items.map((item) => (
           <li key={item.text} className="flex items-center gap-2 text-sm text-muted-foreground">
             {item.icon === "check" && <Check className="size-4 text-green-600 shrink-0" />}
-            {item.icon === "cross" && <X className="size-4 text-muted-foreground/50 shrink-0" />}
+            {item.icon === "cross" && <X className="size-4 text-muted-foreground shrink-0" />}
             {item.icon === "warning" && (
               <AlertTriangle className="size-4 text-yellow-600 shrink-0" />
             )}

@@ -483,6 +483,10 @@ Three things worth knowing before the first night:
 
 [Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current) has the details, including how a missed night is caught up.
 
+#### Files the knowledge base can't read are counted and listed
+
+A `.tif` scan, an old `.xls` or a `.txt` on a share used to vanish without a trace: no document, no counter, nothing to look up. A run now counts them as `N not supported` in the agent's **Index** section, and **Download the list** gives you a CSV with each one's path and type, so you can convert them or tell users what the agent can't see. Nothing to configure. The count and the list appear after each agent's next run. For an agent with knowledge search, the nightly run is enough; any other agent needs **Reindex now**. [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read) has the details.
+
 #### Stopping a reply keeps what it already said
 
 The chat composer's **stop** button has always promised to keep the words already on screen and only stop paying for the rest. It did not always keep them: pressing stop could clear the partial reply a moment later and leave a banner reading _"The model provider timed out."_ for something you did on purpose.
@@ -589,7 +593,7 @@ Whenever an agent's plugin configuration changed — its folders, web search set
 
 ### Database migrations
 
-The migrations `0056`–`0079` run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
+The migrations `0056`–`0080` run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
 
 - `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder and clears the two Knowledge Base tables.
 - `0057` — backfills `kb_documents.status` so documents ingested before the archive rule existed are classified by it too.
@@ -612,6 +616,7 @@ The migrations `0056`–`0079` run automatically on startup — no manual steps.
 - `0077` — `artifact_format_version` on `kb_documents`: which version of the rules for converting Word and PowerPoint files a document's indexed text comes from, so a later change to those rules knows which documents to convert again.
 - `0078` — `upgrade` as a third `trigger` on `kb_index_jobs`, for the reindex Pinchy starts on its own after such a change.
 - `0079` — `artifact_format_version` on `kb_index_jobs`: the version of those rules a run converted under, so a run from before the upgrade doesn't count as one that already converted a folder's files under the new rules. Jobs that predate it carry nothing, and count as runs under earlier rules.
+- `0080` — `kb_unsupported_files`, the list of files a run found but can't index, behind the new **Download the list** in the Index section. It starts empty and fills on each agent's next run.
 
 ## Upgrading from v0.9.0 to v0.9.1
 

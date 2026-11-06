@@ -666,7 +666,11 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # ≥2× the slowest green run: up to 16.8 min on 2026-11-05 before the
+    # accessibility sweep (e2e/23-accessibility.spec.ts) joined; its first
+    # green run with the sweep took 9.6 min (run 42106485600). Room for the
+    # slow end of that spread plus the sweep, doubled.
+    timeout-minutes: 40
 
     services:
       postgres:
