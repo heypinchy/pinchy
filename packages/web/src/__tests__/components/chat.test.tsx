@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { Chat } from "@/components/chat";
 import { makeAgent } from "@/test-helpers/fixtures";
@@ -231,6 +232,29 @@ describe("Chat", () => {
   it("should show 'Shared' badge for shared agents", () => {
     render(<Chat agentId="agent-1" agentName="Sales Bot" isPersonal={false} />);
     expect(screen.getByText("Shared")).toBeInTheDocument();
+  });
+
+  describe("Shared badge tooltip", () => {
+    // Memory is a per-agent permission (`pinchy_memory`). Only an agent that
+    // holds it turns conversations into shared knowledge (#1275).
+    async function hoverSharedBadge() {
+      await userEvent.hover(screen.getByText("Shared"));
+    }
+
+    it("says conversations build team knowledge when the agent has memory", async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ allowedTools: ["pinchy_memory"] }));
+      render(<Chat agentId="agent-1" agentName="Sales Bot" />);
+      await hoverSharedBadge();
+      expect((await screen.findAllByText(/help build team knowledge/i)).length).toBeGreaterThan(0);
+    });
+
+    it("does not claim team knowledge when the agent has no memory", async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ allowedTools: ["knowledge_search"] }));
+      render(<Chat agentId="agent-1" agentName="Sales Bot" />);
+      await hoverSharedBadge();
+      expect((await screen.findAllByText(/doesn't keep memory/i)).length).toBeGreaterThan(0);
+      expect(screen.queryByText(/team knowledge/i)).not.toBeInTheDocument();
+    });
   });
 
   it("should show 'Private' badge for personal agents", () => {
