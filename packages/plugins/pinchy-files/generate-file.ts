@@ -114,8 +114,11 @@ function sanitizeSheetName(title: string | undefined): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, XLSX_SHEET_NAME_MAX_LENGTH)
-    .trim();
-  return sanitized || "Sheet1";
+    // ExcelJS throws when the first or last character is a single quote.
+    .replace(/^['\s]+|['\s]+$/g, "");
+  // "History" is reserved (ExcelJS matches it exactly, Excel case-insensitively).
+  if (!sanitized || sanitized.toLowerCase() === "history") return "Sheet1";
+  return sanitized;
 }
 
 async function renderXlsx(
