@@ -334,7 +334,8 @@ async function walkDir(
       // share an lstat per file is a round trip per file.
       const kind = classifyFile(entry.name, allowedExtensions);
       if (kind === "eligible") listing.files.set(absPath, await describeFile(realPath));
-      else if (kind === "unsupported") listing.unsupported.set(absPath, unsupportedFileType(entry.name));
+      else if (kind === "unsupported")
+        listing.unsupported.set(absPath, unsupportedFileType(entry.name));
     }
   }
 }

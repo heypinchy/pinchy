@@ -135,7 +135,11 @@ it("reads nothing for an agent granted nothing", async () => {
 });
 
 it("never reads another organisation's rows", async () => {
-  await recordUnsupportedFiles("org-other", [{ rootDir: "/data", files: files("/data/A.xls") }], []);
+  await recordUnsupportedFiles(
+    "org-other",
+    [{ rootDir: "/data", files: files("/data/A.xls") }],
+    []
+  );
 
   expect(await countUnsupportedFiles(ORG_ID, ["/data"])).toBe(0);
 });
