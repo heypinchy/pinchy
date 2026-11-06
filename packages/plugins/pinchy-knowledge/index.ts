@@ -9,7 +9,7 @@
  * of Pinchy's governance logic already lives.
  */
 
-import { detectQuestionLanguage } from "./question-language";
+import { detectQuestionLanguage, questionText } from "./question-language";
 import { refusingUnknownParams } from "./unknown-params";
 import { formatLocator, type ChunkLocator } from "./locator";
 
@@ -189,12 +189,14 @@ const CITATION_CONTRACT =
  * model how to treat the passages and leads them. This one is about the answer
  * that comes next, so it sits directly before the model starts writing.
  *
- * It names no language on purpose. The plugin sees only the search query, and
- * the model may have written that query in the documents' language rather
- * than the user's.
+ * This is the wording used when the language could not be named: the hook saw
+ * no message for this session, or `detectQuestionLanguage` could not tell.
+ * The search query is no substitute, because the model often writes it in the
+ * documents' language rather than the user's.
  */
 const ANSWER_LANGUAGE =
-  "Write your answer in the language of the user's question, even when these passages " +
+  "Write your answer in the language of the user's question (unless the question asks for a " +
+  "different language), even when these passages " +
   "are in another language: translate what they say, and keep document paths, titles " +
   "and quoted wording as written.";
 
@@ -217,7 +219,8 @@ export interface AskedQuestion {
 function namedAnswerLanguage({ language, text }: AskedQuestion): string {
   return (
     `The question these passages are for was written in ${language}: "${text}". ` +
-    `Write your whole answer to it in ${language}, even though these passages are in another ` +
+    `Write your whole answer to it in ${language} (unless the question asks for a different ` +
+    `language), even though these passages are in another ` +
     "language: translate what they say, and keep document paths, titles and quoted wording as written."
   );
 }
@@ -242,7 +245,7 @@ const MAX_QUOTED_QUESTION = 300;
 const MAX_TRACKED_SESSIONS = 1000;
 
 function quotedQuestion(prompt: string): string {
-  const text = prompt.replace(/\s+/g, " ").trim();
+  const text = questionText(prompt).replace(/\s+/g, " ").trim();
   return text.length > MAX_QUOTED_QUESTION ? `${text.slice(0, MAX_QUOTED_QUESTION)}…` : text;
 }
 

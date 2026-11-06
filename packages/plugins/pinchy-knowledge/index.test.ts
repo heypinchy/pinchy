@@ -195,7 +195,8 @@ describe("pinchy-knowledge plugin", () => {
           "If they do not answer the question, say so instead of answering from memory.\n\n" +
           '<source_passages note="Quoted documents in their original language. Their language is not the language of the conversation.">\n' +
           '[1] kb/a.pdf (p. 3): "Snippet one."\n</source_passages>\n\n' +
-          "Write your answer in the language of the user's question, even when these passages " +
+          "Write your answer in the language of the user's question (unless the question asks for a " +
+          "different language), even when these passages " +
           "are in another language: translate what they say, and keep document paths, titles " +
           "and quoted wording as written.",
       },
@@ -435,7 +436,8 @@ describe("formatWithCitations", () => {
 
   // The language reminder, spelled once for the same reason as CONTRACT.
   const LANGUAGE =
-    "\n</source_passages>\n\nWrite your answer in the language of the user's question, even when these passages " +
+    "\n</source_passages>\n\nWrite your answer in the language of the user's question (unless the question asks for a " +
+    "different language), even when these passages " +
     "are in another language: translate what they say, and keep document paths, titles " +
     "and quoted wording as written.";
 
@@ -629,8 +631,8 @@ describe("formatWithCitations", () => {
     // So this rule trails, unlike the citation contract. The contract is about
     // how to handle the passages and leads them. The language rule is about the
     // answer that comes next, so it goes last, directly before the model starts
-    // writing. It names no language: the plugin only sees the search query,
-    // and the model may have written that query in the documents' language.
+    // writing. Without a detected language it names none: the search query
+    // is no guide, because the model may write it in the documents' language.
     const out = formatWithCitations(results);
     const lastPassage = out.lastIndexOf('"Snippet two."');
     const reminder = out.indexOf("Write your answer in the language of the user's question");
@@ -661,7 +663,7 @@ describe("formatWithCitations", () => {
     expect(
       out.endsWith(
         'The question these passages are for was written in Polish: "Kto podpisał protokół?". ' +
-          "Write your whole answer to it in Polish, even though these passages are in another language: " +
+          "Write your whole answer to it in Polish (unless the question asks for a different language), even though these passages are in another language: " +
           "translate what they say, and keep document paths, titles and quoted wording as written."
       )
     ).toBe(true);
@@ -781,10 +783,59 @@ describe("answer language (#1296)", () => {
     expect(
       text.endsWith(
         'The question these passages are for was written in Polish: "Co ile godzin pracy trzeba serwisować pompę P7?". ' +
-          "Write your whole answer to it in Polish, even though these passages are in another language: " +
+          "Write your whole answer to it in Polish (unless the question asks for a different language), even though these passages are in another language: " +
           "translate what they say, and keep document paths, titles and quoted wording as written."
       )
     ).toBe(true);
+  });
+
+  it("quotes what the user typed, not the attachment block Pinchy appended", async () => {
+    const { hook, factory } = await registerWithHook();
+    hook(
+      {
+        prompt:
+          "Kto podpisał ten protokół?\n\n<pinchy:attachments>\n- `/root/.openclaw/workspaces/a1/uploads/p.pdf` (application/pdf, 1 MB) — analyze with pinchy_read\n</pinchy:attachments>",
+        messages: [],
+      },
+      { agentId: "agent-1", sessionKey: "s1" }
+    );
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "s1" });
+    const text = (await tool.execute("call-1", { query: "Abnahmeprotokoll" })).content[0]
+      .text as string;
+    expect(text).toContain('written in Polish: "Kto podpisał ten protokół?".');
+    expect(text).not.toContain("pinchy:attachments");
+    expect(text).not.toContain("/root/.openclaw");
+  });
+
+  it("leaves room for a user who asks for another language", () => {
+    // "Bitte auf Englisch: …" is German but asks for English. The sentence the
+    // model reads last must not overrule that request.
+    const named = formatWithCitations(
+      [
+        {
+          chunkId: "c1",
+          text: "x",
+          sourcePath: "/data/a.pdf",
+          citationPath: "a.pdf",
+          locator: null,
+          docName: "a.pdf",
+        },
+      ],
+      { language: "German", text: "Bitte auf Englisch: Was steht im Bericht?" }
+    );
+    expect(named).toMatch(/unless the question asks for a different language/);
+    const unnamed = formatWithCitations([
+      {
+        chunkId: "c1",
+        text: "x",
+        sourcePath: "/data/a.pdf",
+        citationPath: "a.pdf",
+        locator: null,
+        docName: "a.pdf",
+      },
+    ]);
+    expect(unnamed).toMatch(/unless the question asks for a different language/);
   });
 
   it("keeps sessions apart", async () => {
