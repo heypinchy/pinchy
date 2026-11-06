@@ -22,6 +22,7 @@ import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { ActiveRuns, type ActiveRun } from "@/server/active-runs";
+import { stripMediaDirectives } from "@/server/media-directive";
 import { NEVER_DISCONNECTS, type DisconnectSignal } from "@/server/openclaw-disconnect-signal";
 import type { SessionPokeBridge } from "@/server/session-poke-bridge";
 import {
@@ -953,6 +954,17 @@ export class ClientRouter {
           // Strip protocol tags from assistant responses
           content = content.replace(/<\/?final>/g, "");
 
+          // OpenClaw's `MEDIA:<path>` attachment lines (#1298) — the delivered
+          // chip stands for the file. A reply that was nothing BUT a directive
+          // is kept for now, empty: it is the turn its chip belongs to, and
+          // dropping it would move the chip onto an earlier answer.
+          let mediaOnly = false;
+          if (msg.role === "assistant") {
+            const stripped = stripMediaDirectives(content);
+            mediaOnly = stripped !== content && stripped.trim() === "";
+            content = stripped;
+          }
+
           // Match the placeholder both bare and behind OpenClaw's optional
           // leading `[timestamp]` prefix (which it stamps on user messages —
           // see the timestamp-strip below). Without the second form, a
@@ -997,6 +1009,7 @@ export class ClientRouter {
             content,
             files,
             oversized: isOversizedPlaceholder,
+            mediaOnly,
             rawContent:
               typeof msg.content === "string"
                 ? msg.content
@@ -1017,13 +1030,14 @@ export class ClientRouter {
         // is stripped — dropping them here would silently delete the user's
         // own upload from history. The chip's `files` metadata is the carrier
         // of meaning in that case, so it must be enough on its own.
-        .filter((msg) => msg.content || (msg.files && msg.files.length > 0))
+        .filter((msg) => msg.content || msg.mediaOnly || (msg.files && msg.files.length > 0))
         .filter((msg) => !(msg.role === "user" && msg.rawContent.startsWith(QUEUED_RETRY_PREFIX)))
-        .map(({ role, content, files, timestamp, oversized }) => ({
+        .map(({ role, content, files, timestamp, oversized, mediaOnly }) => ({
           role,
           content,
           files,
           timestamp,
+          mediaOnly,
           ...(oversized ? { oversized: true as const } : {}),
         }));
 
@@ -1070,13 +1084,25 @@ export class ClientRouter {
         .from(agentDeliveredFiles)
         .where(eq(agentDeliveredFiles.sessionKey, sessionKey));
 
-      return attachDeliveredFilesToHistory(
-        withUploadIds,
-        grants.map((g) => ({
-          filename: g.filename,
-          mimeType: g.mimeType,
-          createdAt: g.createdAt.getTime(),
-        }))
+      return (
+        attachDeliveredFilesToHistory(
+          withUploadIds,
+          grants.map((g) => ({
+            filename: g.filename,
+            mimeType: g.mimeType,
+            createdAt: g.createdAt.getTime(),
+          }))
+        )
+          // A directive-only reply that got no chip (the grant is gone) has
+          // nothing left to show.
+          .filter((msg) => !msg.mediaOnly || (msg.files && msg.files.length > 0))
+          .map(({ role, content, files, timestamp, oversized }) => ({
+            role,
+            content,
+            files,
+            timestamp,
+            ...(oversized ? { oversized } : {}),
+          }))
       );
     };
 

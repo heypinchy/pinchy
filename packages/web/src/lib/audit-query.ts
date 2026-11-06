@@ -135,6 +135,7 @@ export async function buildAuditFilters(
  */
 export function auditSelectWithJoins() {
   const actorUser = alias(users, "actor_user");
+  const actorAgent = alias(agents, "actor_agent");
   const resourceAgent = alias(agents, "resource_agent");
   const resourceUser = alias(users, "resource_user");
 
@@ -154,6 +155,8 @@ export function auditSelectWithJoins() {
         error: auditLog.error,
         actorName: actorUser.name,
         actorBanned: actorUser.banned,
+        actorAgentName: actorAgent.name,
+        actorAgentDeletedAt: actorAgent.deletedAt,
         resourceAgentName: resourceAgent.name,
         resourceAgentDeleted: resourceAgent.deletedAt,
         resourceUserName: resourceUser.name,
@@ -167,6 +170,12 @@ export function auditSelectWithJoins() {
       .leftJoin(
         actorUser,
         or(eq(actorUser.auditPseudonym, auditLog.actorId), eq(actorUser.id, auditLog.actorId))
+      )
+      // Agent actors (retrieval.query, tool calls) carry the agent id. Gated
+      // on actorType so an agent id can never name a user row or vice versa.
+      .leftJoin(
+        actorAgent,
+        sql`${auditLog.actorType} = 'agent' AND ${auditLog.actorId} = ${actorAgent.id}`
       )
       .leftJoin(resourceAgent, sql`${auditLog.resource} = 'agent:' || ${resourceAgent.id}`)
       .leftJoin(resourceUser, sql`${auditLog.resource} = 'user:' || ${resourceUser.id}`)

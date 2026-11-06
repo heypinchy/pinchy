@@ -25,6 +25,10 @@ vi.mock("@/lib/auth", async (importOriginal) => {
 import { getSession } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
 import { GET } from "@/app/api/audit/route";
+import { db } from "@/db";
+import { agents } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { KB_INDEX_SCHEDULER_ACTOR } from "@/lib/knowledge/reindex-audit";
 import { makeNextRequest } from "@/test-helpers/route";
 
 function asAdmin() {
@@ -100,5 +104,78 @@ describe("GET /api/audit (integration)", () => {
     expect(status).toBe(200);
     expect(body.entries).toHaveLength(1);
     expect(body.total).toBe(1);
+  });
+});
+
+// #1271: the Actor column showed `711ed709…` for an agent's retrieval.query
+// and `kb-index…` for the scheduled reindex, because the only actor join was
+// against `users`. Agent and system actors are named on the read side; the
+// row itself keeps the raw id it was written with.
+describe("GET /api/audit actor names for non-user actors (integration)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    asAdmin();
+  });
+
+  async function makeAgent(name: string) {
+    const [agent] = await db
+      .insert(agents)
+      .values({ name, model: "test-model", greetingMessage: "Hi" })
+      .returning();
+    return agent;
+  }
+
+  async function appendRetrievalRow(agent: { id: string; name: string }) {
+    await appendAuditLog({
+      actorType: "agent",
+      actorId: agent.id,
+      eventType: "retrieval.query",
+      resource: `agent:${agent.id}`,
+      detail: {
+        agent: { id: agent.id, name: agent.name },
+        queryHash: "h",
+        resultCount: 0,
+        returnedDocumentIds: [],
+      },
+      outcome: "success",
+    });
+  }
+
+  it("names an agent actor after the agent", async () => {
+    const agent = await makeAgent("Musterbau Wissen");
+    await appendRetrievalRow(agent);
+
+    const { body } = await get("http://localhost/api/audit");
+
+    expect(body.entries[0].actorType).toBe("agent");
+    expect(body.entries[0].actorId).toBe(agent.id);
+    expect(body.entries[0].actorName).toBe("Musterbau Wissen");
+    expect(body.entries[0].actorDeleted).toBe(false);
+  });
+
+  it("keeps a deleted agent's name and marks it deleted", async () => {
+    const agent = await makeAgent("Old Archivist");
+    await appendRetrievalRow(agent);
+    await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
+
+    const { body } = await get("http://localhost/api/audit");
+
+    expect(body.entries[0].actorName).toBe("Old Archivist");
+    expect(body.entries[0].actorDeleted).toBe(true);
+  });
+
+  it("gives a system actor a readable label", async () => {
+    await appendAuditLog({
+      actorType: "system",
+      actorId: KB_INDEX_SCHEDULER_ACTOR,
+      eventType: "knowledge.reindex",
+      detail: { agent: { id: "a1", name: "Archivist" }, pathCount: 1, trigger: "scheduled" },
+      outcome: "success",
+    });
+
+    const { body } = await get("http://localhost/api/audit");
+
+    expect(body.entries[0].actorId).toBe(KB_INDEX_SCHEDULER_ACTOR);
+    expect(body.entries[0].actorName).toBe("Scheduled reindex");
   });
 });
