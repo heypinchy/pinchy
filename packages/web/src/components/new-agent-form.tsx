@@ -173,6 +173,20 @@ export function NewAgentForm() {
     },
     [router, searchParams]
   );
+  // Picking a template (or going back to the list) changes only a search
+  // param, so Next leaves the AppShell scroller where it was — and a template
+  // picked far down the list rendered the form with its heading scrolled up
+  // under whatever sits above the scroller, the trial banner (#1280). Every
+  // switch between list and form starts at the top. Layout effect, so the
+  // shifted frame is never painted.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const shownTemplate = useRef(selectedTemplate);
+  useLayoutEffect(() => {
+    if (shownTemplate.current === selectedTemplate) return;
+    shownTemplate.current = selectedTemplate;
+    rootRef.current?.scrollIntoView?.({ block: "start" });
+  }, [selectedTemplate]);
+
   const [directories, setDirectories] = useState<Directory[]>([]);
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -497,7 +511,7 @@ export function NewAgentForm() {
     hasMissingModels;
 
   return (
-    <div className={"p-4 md:p-8 " + (selectedTemplate ? "max-w-lg" : "max-w-3xl")}>
+    <div ref={rootRef} className={"p-4 md:p-8 " + (selectedTemplate ? "max-w-lg" : "max-w-3xl")}>
       <h1 className="text-2xl font-bold mb-2">Create New Agent</h1>
 
       {!selectedTemplate ? (
