@@ -33,6 +33,7 @@ import { db } from "@/db";
 import { agentDeliveredFiles } from "@/db/schema";
 import { SERVABLE_DELIVERED_MIMES } from "@/lib/serve-workspace-file";
 import { hashFileBytes, locateDeliveredFile } from "@/lib/delivered-file-location";
+import { createMediaDirectiveFilter } from "@/server/media-directive";
 import { and, eq } from "drizzle-orm";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -128,6 +129,9 @@ export class StreamPipe {
     // could still grow into a SILENT_REPLY_TOKEN, then either flush or
     // suppress it when the turn ends.
     let textBuffer = "";
+    // Drops OpenClaw's `MEDIA:<path>` attachment lines from the reply (#1298);
+    // the chip from the artifacts poll below already stands for the file.
+    let mediaFilter = createMediaDirectiveFilter();
 
     // Safety net for issue #320: OpenClaw's embedded runner falls through to
     // `continue_normal` when `surface_error` fires with `params.timedOut`,
@@ -443,9 +447,9 @@ export class StreamPipe {
             sawText = true;
             textBuffer = stripFinalEnvelope(textBuffer + chunk.text);
             const safeLen = safeEmitLength(textBuffer);
-            if (safeLen > 0) {
-              const emit = textBuffer.slice(0, safeLen);
-              textBuffer = textBuffer.slice(safeLen);
+            const emit = safeLen > 0 ? mediaFilter.push(textBuffer.slice(0, safeLen)) : "";
+            textBuffer = textBuffer.slice(safeLen);
+            if (emit) {
               // Accumulate then mirror into the registry in the SAME synchronous
               // block as the broadcast: a reconnect's atomic snapshot+addListener
               // means any chunk is either fully before the snapshot (counted in
@@ -533,12 +537,16 @@ export class StreamPipe {
             // Flush remaining buffer at end-of-turn. If the entire turn
             // resolved to the silent-reply sentinel, suppress it; otherwise
             // emit whatever text was held back.
-            if (textBuffer && textBuffer !== SILENT_REPLY_TOKEN) {
-              emittedContent += textBuffer;
+            const tail =
+              (textBuffer && textBuffer !== SILENT_REPLY_TOKEN
+                ? mediaFilter.push(textBuffer)
+                : "") + mediaFilter.flush();
+            if (tail) {
+              emittedContent += tail;
               activeRuns.setContent(sessionKey, emittedContent);
               broadcastForRun(sessionKey, clientWs, {
                 type: "chunk",
-                content: textBuffer,
+                content: tail,
                 messageId,
               });
             }
@@ -552,6 +560,7 @@ export class StreamPipe {
         // stores them in history).
         if (chunk.type === "done") {
           textBuffer = "";
+          mediaFilter = createMediaDirectiveFilter();
           // The completed turn is now in OpenClaw history; the next turn starts
           // with an empty resume buffer (updateMessageId clears the registry's).
           emittedContent = "";

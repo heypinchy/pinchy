@@ -34,11 +34,12 @@ vi.mock("@/lib/audit-pdf", async () => {
 });
 
 // Build chainable mock for
-// select().from().leftJoin().leftJoin().leftJoin().where().orderBy().limit()
+// select().from().leftJoin() ×4 .where().orderBy().limit()
 const mockLimit = vi.fn();
 const mockOrderBy = vi.fn().mockReturnValue({ limit: mockLimit });
 const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
-const mockLeftJoin3 = vi.fn().mockReturnValue({ where: mockWhere });
+const mockLeftJoin4 = vi.fn().mockReturnValue({ where: mockWhere });
+const mockLeftJoin3 = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin4 });
 const mockLeftJoin2 = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin3 });
 const mockLeftJoin1 = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin2 });
 const mockFrom = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin1 });
@@ -194,6 +195,52 @@ describe("GET /api/audit/export", () => {
     const body = await response.text();
     expect(body).toContain("api_key");
     expect(body).toContain("CI Deploy");
+  });
+
+  it("names agent and system actors in the CSV (#1271)", async () => {
+    const base = {
+      timestamp: new Date("2026-02-21T10:00:00Z"),
+      resource: null,
+      detail: {},
+      rowHmac: "abc123",
+      version: 2,
+      outcome: "success",
+      error: null,
+      actorName: null,
+      actorBanned: null,
+      resourceAgentName: null,
+      resourceAgentDeleted: null,
+      resourceUserName: null,
+      resourceUserBanned: null,
+    };
+    mockLimit.mockResolvedValue([
+      {
+        ...base,
+        id: 1,
+        actorType: "agent",
+        actorId: "711ed709-agent",
+        eventType: "retrieval.query",
+        actorAgentName: "Musterbau Wissen",
+        actorAgentDeletedAt: null,
+      },
+      {
+        ...base,
+        id: 2,
+        actorType: "system",
+        actorId: "kb-index-scheduler",
+        eventType: "knowledge.reindex",
+        actorAgentName: null,
+        actorAgentDeletedAt: null,
+      },
+    ]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const request = new Request("http://localhost/api/audit/export");
+    const response = await GET(request as unknown as Parameters<typeof GET>[0]);
+
+    const body = await response.text();
+    expect(body).toContain('"Musterbau Wissen"');
+    expect(body).toContain('"Scheduled reindex"');
   });
 
   it("neutralizes a formula-injection display name in the CSV output", async () => {

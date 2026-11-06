@@ -23,11 +23,10 @@ export const KNOWLEDGE_BASE_TEMPLATES: Record<string, AgentTemplate> = {
     defaultPersonality: "the-professor",
     defaultTagline: "Answer questions from your docs",
     suggestedNames: ["Ada", "Sage", "Atlas", "Navi", "Iris", "Archie", "Luna", "Cleo"],
-    defaultStarterPrompts: [
-      "Summarize the main points of this document",
-      "What does our policy say about data retention?",
-      "Which documents cover onboarding?",
-    ],
+    // No defaultStarterPrompts, on purpose: a role template knows its domain,
+    // a knowledge base does not know its documents. Any default names a topic
+    // the corpus may not contain, in a language the organisation may not use
+    // (#1270). Admins add their own in the agent's General settings.
     // Persona-only AGENTS.md. The retrieval and citation workflow lives in the
     // knowledge-search SKILL.md so it can be reused across templates.
     defaultAgentsMd: `## Your Role
