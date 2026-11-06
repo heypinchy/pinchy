@@ -109,18 +109,18 @@ const testConfig: PluginConfig = {
   },
 };
 
+// The subset of OpenClaw's PluginToolContext the plugin reads.
+type ToolCtx = { agentId?: string; sessionKey?: string; messageChannel?: string };
+
 function createApi(pluginConfig: PluginConfig = testConfig) {
   const tools: Array<{
-    factory: (ctx: { agentId?: string }) => AgentTool | null;
+    factory: (ctx: ToolCtx) => AgentTool | null;
     name: string;
   }> = [];
 
   const api = {
     pluginConfig,
-    registerTool: (
-      factory: (ctx: { agentId?: string }) => AgentTool | null,
-      opts?: { name?: string }
-    ) => {
+    registerTool: (factory: (ctx: ToolCtx) => AgentTool | null, opts?: { name?: string }) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
   };
@@ -135,11 +135,12 @@ function createApi(pluginConfig: PluginConfig = testConfig) {
 function findTool(
   tools: ReturnType<typeof createApi>,
   name: string,
-  agentId?: string
+  agentId?: string,
+  ctx: Omit<ToolCtx, "agentId"> = {}
 ): AgentTool | null {
   const entry = tools.find((t) => t.name === name);
   if (!entry) return null;
-  return entry.factory({ agentId });
+  return entry.factory({ agentId, ...ctx });
 }
 
 const agentId = "agent-1";
@@ -2300,9 +2301,18 @@ describe("email_get_attachment", () => {
   // The web side only renders a chip for types its serving route can stream
   // (SERVABLE_DELIVERED_MIMES). The tool result must say the same thing the
   // chat will show, or the agent claims a delivery the user never sees.
-  async function guidanceFor(filename: string, mimeType: string) {
+  // What OpenClaw hands the factory for a run Pinchy's web chat started: the
+  // gateway `agent` call carries no channel, so it resolves to "webchat", on
+  // the user's direct session key.
+  const WEB_CHAT_CTX = { sessionKey: "agent:agent-1:direct:user-1", messageChannel: "webchat" };
+
+  async function guidanceFor(
+    filename: string,
+    mimeType: string,
+    ctx: Omit<ToolCtx, "agentId"> = WEB_CHAT_CTX
+  ) {
     mockGetAttachment.mockResolvedValue({ filename, mimeType, data: Buffer.from("x") });
-    const tool = findTool(createApi(), "email_get_attachment", agentId)!;
+    const tool = findTool(createApi(), "email_get_attachment", agentId, ctx)!;
     const result = await tool.execute("call-1", { messageId: "msg-1", attachmentId: "att-1" });
     const guidance = result.content
       .filter((b) => b.type === "text")
@@ -2316,6 +2326,45 @@ describe("email_get_attachment", () => {
   it("says 'delivered in chat' for a type the chat can offer as a download", async () => {
     const { guidance } = await guidanceFor("invoice.pdf", "application/pdf");
     expect(guidance).toContain("Delivered to the user in chat");
+  });
+
+  it("says 'delivered in chat' in a per-chat web session", async () => {
+    const { guidance } = await guidanceFor("invoice.pdf", "application/pdf", {
+      sessionKey: "agent:agent-1:direct:user-1:chat-abc",
+      messageChannel: "webchat",
+    });
+    expect(guidance).toContain("Delivered to the user in chat");
+  });
+
+  // Only a web-chat run ends in Pinchy's artifact poll (stream-pipe.ts
+  // deliverRunArtifacts), and OpenClaw forwards a `file` block to no channel.
+  // Anywhere else no chip appears, so the result must not claim one.
+  it.each([
+    [
+      "a Telegram DM (same direct key shape, telegram channel)",
+      { sessionKey: "agent:agent-1:direct:123456789", messageChannel: "telegram" },
+    ],
+    [
+      "an automation inbox run (gateway call, so webchat, but not a direct session)",
+      { sessionKey: "agent:agent-1:inbox:ledger-1", messageChannel: "webchat" },
+    ],
+    [
+      "an OpenClaw cron run",
+      { sessionKey: "agent:agent-1:cron:job-1", messageChannel: "telegram" },
+    ],
+    ["a run whose channel OpenClaw did not report", { sessionKey: "agent:agent-1:direct:user-1" }],
+    ["a run with no session context at all", {}],
+  ])("does not claim chat delivery of a servable file in %s", async (_label, ctx) => {
+    const { result, guidance, file } = await guidanceFor("invoice.pdf", "application/pdf", ctx);
+    expect(result.isError).toBeFalsy();
+    expect(guidance).not.toContain("Delivered to the user in chat");
+    expect(guidance).toContain("do not tell the user it was delivered");
+    expect(guidance).toContain("invoice.pdf");
+    // Still useful to the agent: the follow-up tools work on the saved file.
+    expect(guidance).toContain("pdf tool");
+    expect(guidance).toContain("odoo_attach_file");
+    // The file block stays: it costs nothing where no one reads it.
+    expect(file?.mimeType).toBe("application/pdf");
   });
 
   it.each([
