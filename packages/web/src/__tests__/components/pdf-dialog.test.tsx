@@ -18,8 +18,13 @@
  * which is also the only thing that works on iOS Safari, where an embedded PDF
  * renders blank no matter what we do.
  */
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+
+const mockOpenPdf = vi.fn();
+vi.mock("@/lib/pdf/browser-pdf", () => ({
+  openPdf: (...args: unknown[]) => mockOpenPdf(...args),
+}));
 
 import { PdfDialog } from "@/components/assistant-ui/attachment-preview";
 import { buildSourceDownloads, buildSourceHref } from "@/lib/knowledge/source-links";
@@ -257,5 +262,90 @@ describe("PdfDialog — taking the document", () => {
 
     const controls = screen.getByRole("link", { name: /download/i }).parentElement!;
     expect(controls.className).toContain("shrink-0");
+  });
+});
+
+/**
+ * A page citation with a passage to find opens into our own renderer instead
+ * of the browser's viewer, which cannot highlight (#1268). Everything else
+ * keeps the browser's viewer — see citation-pdf-viewer.test.tsx for the
+ * renderer itself.
+ */
+describe("PdfDialog with a passage to highlight", () => {
+  const passage = {
+    url: "/api/agents/a1/knowledge/passage",
+    body: { path: "/data/noack/PPR/document.pdf", page: 510 },
+  };
+
+  it("draws the cited page itself instead of embedding the browser's viewer", async () => {
+    mockOpenPdf.mockReset().mockResolvedValue({
+      numPages: 600,
+      renderPage: vi.fn(async () => ({ width: 600, height: 800, runs: [] })),
+      destroy: vi.fn(),
+    });
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ passage: null }), { status: 200 }));
+
+    render(
+      <PdfDialog
+        url={SOURCE_URL}
+        title="noack/PPR/document.pdf"
+        page={510}
+        passage={passage}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    expect(await screen.findByText("Page 510 of 600")).toBeInTheDocument();
+    expect(document.querySelector("embed")).toBeNull();
+    // One page label, not the header's and the viewer's both.
+    expect(screen.getAllByText(/page 510/i)).toHaveLength(1);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    fetchSpy.mockRestore();
+  });
+
+  it("falls back to the browser's viewer at the cited page when the document will not open", async () => {
+    mockOpenPdf.mockReset().mockRejectedValue(new Error("Invalid PDF structure"));
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ passage: null }), { status: 200 }));
+
+    render(
+      <PdfDialog
+        url={SOURCE_URL}
+        title="noack/PPR/document.pdf"
+        page={510}
+        passage={passage}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    await waitFor(() => expect(document.querySelector("embed")).toHaveAttribute("src", SOURCE_URL));
+    expect(screen.getByText(/page 510/i)).toBeInTheDocument();
+    fetchSpy.mockRestore();
+  });
+
+  it("keeps the browser's viewer when there is no passage to look for", () => {
+    mockOpenPdf.mockReset();
+
+    render(
+      <PdfDialog
+        url={SOURCE_URL}
+        title="noack/PPR/document.pdf"
+        page={510}
+        passage={null}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    expect(document.querySelector("embed")).toHaveAttribute("src", SOURCE_URL);
+    expect(mockOpenPdf).not.toHaveBeenCalled();
   });
 });
