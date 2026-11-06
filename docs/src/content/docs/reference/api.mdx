@@ -317,6 +317,49 @@ Delete an agent. **Admin only.** Personal agents (auto-created Smithers) cannot 
 - `403` — not an admin
 - `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 
+### `GET /api/agents/admin-only`
+
+List the shared agents only admins can use under a license: visibility **Restricted** with no group assigned. **Admin only.** Answers in every license state — on a community instance it is the list of agents members would lose the moment a key is activated. Personal and deleted agents never appear.
+
+**Response:** `200 OK`
+
+```json
+{
+  "agents": [{ "id": "a1b2c3", "name": "Sales Assistant" }]
+}
+```
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+
+### `POST /api/agents/admin-only/open-to-all`
+
+Make the named admin-only agents visible to every user. **Admin only, enterprise.** This widens access, so it only ever happens as an explicit request for the agents you name — activating a license never does it on its own.
+
+**Request body:**
+
+| Field      | Type     | Required | Description                         |
+| ---------- | -------- | -------- | ----------------------------------- |
+| `agentIds` | string[] | Yes      | 1–200 agent IDs to set to All users |
+
+Only agents that are still Restricted with no group are changed. An agent that got a group (or was deleted) after you loaded the list is left alone, so this can never widen a group-scoped agent. Each changed agent writes an `agent.updated` audit entry with `changes.visibility` from `restricted` to `all`, the same entry the Access tab writes.
+
+**Response:** `200 OK` — the agents that were actually changed (an empty list if none still qualified):
+
+```json
+{
+  "agents": [{ "id": "a1b2c3", "name": "Sales Assistant" }]
+}
+```
+
+**Errors:**
+
+- `400` — `agentIds` is missing, empty, or longer than 200
+- `401` — not authenticated
+- `403` — not an admin, or no active license
+
 ### `POST /api/agents/:agentId/uploads`
 
 Stage a file for an upcoming chat message. The file is held in the agent's staging area; the chat sends the returned `id` as one of its `attachmentIds` rather than inlining the file. Anyone with access to the agent can upload.
@@ -375,7 +418,7 @@ Summarize the caller's conversation with this agent so a long context stops degr
 
 ### `GET /api/agents/:agentId/active-error`
 
-The agent's current "paused" banner for the caller: the latest error that has not been superseded or dismissed, or `null`. Pass `?chatId=` to address one specific chat; omit it for the default per-user session. The session key embeds the caller's own id, so a user can only ever read their own errors.
+The agent's current "paused" banner for the caller: the latest error from the last 24 hours that has not been superseded (a later message in the conversation went through) or dismissed, or `null`. Pass `?chatId=` to address one specific chat; omit it for the default per-user session. The session key embeds the caller's own id, so a user can only ever read their own errors.
 
 ### `DELETE /api/agents/:agentId/active-error?id=<errorId>`
 
@@ -849,6 +892,44 @@ List directories available under `/data/` for agent configuration.
 ```
 
 Returns an empty array if `/data/` does not exist or contains no subdirectories. Hidden directories (starting with `.`) are excluded.
+
+These are the top-level mounts, as the `openclaw` container found them when it started. To grant a folder inside one, list its subfolders with [`GET /api/data-directories/children`](#get-apidata-directorieschildren).
+
+### `GET /api/data-directories/children`
+
+List the subfolders of one folder below a `/data/` mount, one level at a time. The directory picker calls this when you open a folder. **Admin only.**
+
+**Query parameters:**
+
+| Parameter | Description                                                                                |
+| --------- | ------------------------------------------------------------------------------------------ |
+| `path`    | The folder to list, URL-encoded — for example `/data/suppliers`. A trailing slash is fine. |
+
+**Response:**
+
+```json
+{
+  "directories": [
+    { "path": "/data/suppliers/food", "name": "food" },
+    { "path": "/data/suppliers/vet", "name": "vet" }
+  ],
+  "truncated": false
+}
+```
+
+| Field         | Description                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `directories` | The folder's direct subfolders, sorted by name. Files, hidden folders (starting with `.`) and operating-system folders such as `$RECYCLE.BIN` are left out, as is any symbolic link. |
+| `truncated`   | `true` when the folder holds more than 500 subfolders. Only the first 500 are returned.                                                                                              |
+
+The folder is read in the `pinchy` container, so a share mounted only on `openclaw` lists no subfolders. See [Why both services](/guides/mount-data-directories/#why-both-services).
+
+**Errors:**
+
+- `400` — `path` is missing, isn't under `/data/`, or is `/data/` itself (the mounts come from [`GET /api/data-directories`](#get-apidata-directories))
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — the folder doesn't exist, isn't a folder, can't be read, or is reached through a symbolic link
 
 ## Settings
 
@@ -1928,16 +2009,16 @@ Get the current enterprise license status and seat usage. Any authenticated user
 }
 ```
 
-| Field           | Type           | Description                                                                                                    |
-| --------------- | -------------- | -------------------------------------------------------------------------------------------------------------- |
-| `enterprise`    | boolean        | Whether an active enterprise license is present                                                                |
-| `type`          | string \| null | `"trial"` or `"paid"`. `null` when no license is active.                                                       |
-| `org`           | string \| null | Organisation name encoded in the license token. `null` when no license is active.                              |
-| `expiresAt`     | string \| null | ISO 8601 expiry timestamp. `null` for non-expiring tokens or when no license is active.                        |
-| `daysRemaining` | number \| null | Days until the key expires. `null` when the key has no expiry or no license is active.                         |
-| `managedByEnv`  | boolean        | `true` when the key comes from the `PINCHY_ENTERPRISE_KEY` environment variable (read-only in the Settings UI) |
-| `seatsUsed`     | number         | Number of seats currently in use: active users + valid pending invitations                                     |
-| `maxUsers`      | number         | Maximum seats allowed by the license. `0` means unlimited.                                                     |
+| Field           | Type           | Description                                                                                                                                                |
+| --------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enterprise`    | boolean        | Whether an active enterprise license is present                                                                                                            |
+| `type`          | string \| null | `"trial"` or `"paid"`. `null` when no license is active.                                                                                                   |
+| `org`           | string \| null | Organisation name encoded in the license token. `null` when no license is active.                                                                          |
+| `expiresAt`     | string \| null | ISO 8601 expiry timestamp. `null` for non-expiring tokens or when no license is active.                                                                    |
+| `daysRemaining` | number \| null | Days until the key expires, rounded up: a key with hours left counts as `1`, `0` means expired. `null` when the key has no expiry or no license is active. |
+| `managedByEnv`  | boolean        | `true` when the key comes from the `PINCHY_ENTERPRISE_KEY` environment variable (read-only in the Settings UI)                                             |
+| `seatsUsed`     | number         | Number of seats currently in use: active users + valid pending invitations                                                                                 |
+| `maxUsers`      | number         | Maximum seats allowed by the license. `0` means unlimited.                                                                                                 |
 
 **Seat cap behaviour:** the seat cap is a **soft cap with a 20% grace window**. When `maxUsers > 0`, invites keep working up to `floor(1.2 * maxUsers)` seats (for example 12 on a 10-seat license); in the 100–120% grace band admins see a notice but invites still succeed and nothing is blocked. Only when `seatsUsed >= floor(1.2 * maxUsers)` is the **Invite User** button disabled and the API rejects new invitations with `403` (the response includes `graceCap`). Existing users are never affected. See [Enterprise Setup — Seat cap enforcement](/guides/enterprise-setup/#seat-cap-enforcement) for the full explanation.
 
@@ -1969,7 +2050,7 @@ The key is verified **before** it is stored. A key Pinchy refuses is never writt
 }
 ```
 
-`daysRemaining` counts from the moment of the request, so it moves while `expiresAt` stays put.
+`daysRemaining` counts from the moment of the request and rounds up, so a 7-day key issued today reads `7`. It moves while `expiresAt` stays put.
 
 **Errors:**
 

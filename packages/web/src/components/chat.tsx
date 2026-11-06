@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useEffect } from "react";
+import { createContext, useContext, useEffect } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { AssistantRuntime } from "@assistant-ui/react";
 import type { PendingUpload } from "@/hooks/use-ws-runtime";
@@ -18,6 +18,8 @@ import { AiDisclosureLabel } from "@/components/ai-disclosure-label";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { type ChatStatus, useChatStatus } from "@/hooks/use-chat-status";
+import { usePendingApprovals } from "@/hooks/use-pending-approvals";
+import { directSessionChatId } from "@/lib/session-key";
 import { recordLastChat } from "@/lib/last-chat-store";
 
 function getStatusIndicator(status: ChatStatus): { colorClass: string; label: string } {
@@ -95,6 +97,35 @@ export const RetryPendingUploadContext = createContext<(localId: string) => void
  */
 export const ChatStatusContext = createContext<ChatStatus>({ kind: "starting" });
 
+/**
+ * The hint for a reply that is slow to arrive. A run parked on a confirmation
+ * is not slow — it waits for the user, and blaming "high demand" sends them
+ * looking for a problem that isn't there (#1301).
+ *
+ * Only a confirmation of THIS chat's session explains it: a confirmation stalls
+ * the run of its own session, and approving one waiting in another chat with
+ * the same agent (#508) does nothing for this one. Stricter than
+ * `ThreadApprovals`' agent filter on purpose — that one decides where a card
+ * is drawn, this one claims why this run is waiting. A card the 5 s poll has
+ * not brought in yet shows the ordinary hint until it does.
+ */
+function DelayHint() {
+  const agentId = useContext(AgentIdContext);
+  const chatId = useContext(ChatIdContext);
+  const { approvals } = usePendingApprovals();
+  const openChat = chatId?.toLowerCase() ?? null;
+  const awaitingConfirmation =
+    agentId !== null &&
+    approvals.some((a) => a.agentId === agentId && directSessionChatId(a.sessionKey) === openChat);
+  return (
+    <div className="px-4 py-2 text-center text-xs text-muted-foreground border-t">
+      {awaitingConfirmation
+        ? "Waiting for your confirmation."
+        : "The agent is taking longer than usual. This may be due to high demand."}
+    </div>
+  );
+}
+
 interface ChatStatusBannerProps {
   status: ChatStatus;
   isDelayed: boolean;
@@ -102,11 +133,7 @@ interface ChatStatusBannerProps {
 
 function ChatStatusBanner({ status, isDelayed }: ChatStatusBannerProps) {
   if (status.kind === "responding" && isDelayed) {
-    return (
-      <div className="px-4 py-2 text-center text-xs text-muted-foreground border-t">
-        The agent is taking longer than usual. This may be due to high demand.
-      </div>
-    );
+    return <DelayHint />;
   }
   if (status.kind === "unavailable" && status.reason === "exhausted") {
     return (
@@ -162,6 +189,9 @@ export function Chat({
     ? getAgentAvatarSvg({ avatarSeed: liveAgent.avatarSeed, name: liveAgent.name })
     : avatarUrl;
   const displayIsPersonal = liveAgent?.isPersonal ?? isPersonal;
+  // Memory is a permission, not a property of shared agents: only an agent
+  // granted `pinchy_memory` turns conversations into team knowledge.
+  const keepsMemory = (liveAgent?.allowedTools ?? []).includes("pinchy_memory");
 
   const { bundle: chatBundle, publish } = useChatSession(agentId, chatId);
 
@@ -294,7 +324,9 @@ export function Chat({
                                           <TooltipContent>
                                             {displayIsPersonal
                                               ? "Your conversations are private and not shared with anyone."
-                                              : "Your conversations help build team knowledge that's available to all team members."}
+                                              : keepsMemory
+                                                ? "Your conversations help build team knowledge that's available to all team members."
+                                                : "Your whole team can use this agent, but it doesn't keep memory of your conversations."}
                                           </TooltipContent>
                                         </Tooltip>
                                       </TooltipProvider>

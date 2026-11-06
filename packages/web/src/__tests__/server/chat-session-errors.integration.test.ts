@@ -13,6 +13,7 @@ import {
   dismissChatSessionError,
   agentRanToolSince,
   resolveRetryGate,
+  ACTIVE_ERROR_MAX_AGE_MS,
 } from "@/server/chat-session-errors";
 import { appendAuditLog } from "@/lib/audit";
 
@@ -73,28 +74,68 @@ describe("chat session errors persistence", () => {
     expect(active!.errorClass).toBe("transient");
   });
 
-  it("clears the active error once the triggering message's run succeeds (supersede by clientMessageId)", async () => {
+  it("clears the active error once a later turn of the session succeeds — the retry, or any other message", async () => {
     const user = await seedUser();
     const agent = await seedAgent(user.id);
     const input = { ...base(user, agent), clientMessageId: "m1" };
     await recordChatSessionError(input);
 
-    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, clientMessageId: "m1" });
+    // The user moved on to m2 and got an answer: the banner about m1 is no
+    // longer where the conversation stands (#1301). Superseding only on m1's
+    // own success left it on top of every later answer, reload after reload.
+    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: new Date() });
 
     expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
   });
 
-  it("does NOT clear the error when a DIFFERENT message succeeds", async () => {
+  it("does NOT clear an error recorded after the successful turn's bound", async () => {
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const input = { ...base(user, agent), clientMessageId: "m1" };
+    const bound = new Date(Date.now() - 60_000);
+    await recordChatSessionError(input);
+
+    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: bound });
+
+    expect(await getActiveChatSessionError(input.sessionKey)).not.toBeNull();
+  });
+
+  it("does NOT clear another session's error", async () => {
     const user = await seedUser();
     const agent = await seedAgent(user.id);
     const input = { ...base(user, agent), clientMessageId: "m1" };
     await recordChatSessionError(input);
 
-    // The user moved on to an unrelated question m2 that succeeded — the
-    // unanswered m1 error must survive.
-    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, clientMessageId: "m2" });
+    await supersedeChatSessionErrors({
+      sessionKey: `${input.sessionKey}:other`,
+      before: new Date(),
+    });
 
     expect(await getActiveChatSessionError(input.sessionKey)).not.toBeNull();
+  });
+
+  it("ages an error out of the banner after a day, unresolved or not", async () => {
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const sessionKey = `agent:${agent.id}:direct:${user.id}`;
+    const hour = 60 * 60 * 1000;
+    const row = (providerError: string, ageMs: number) => ({
+      userId: user.id,
+      agentId: agent.id,
+      sessionKey,
+      agentName: agent.name,
+      errorClass: "transient",
+      transientReason: "rate_limit",
+      providerError,
+      sideEffects: false,
+      createdAt: new Date(Date.now() - ageMs),
+    });
+
+    await db.insert(chatSessionErrors).values(row("yesterday", ACTIVE_ERROR_MAX_AGE_MS + hour));
+    expect(await getActiveChatSessionError(sessionKey)).toBeNull();
+
+    await db.insert(chatSessionErrors).values(row("this morning", ACTIVE_ERROR_MAX_AGE_MS - hour));
+    expect((await getActiveChatSessionError(sessionKey))?.providerError).toBe("this morning");
   });
 
   it("hides a dismissed error and scopes dismissal to the owning user", async () => {
@@ -139,7 +180,7 @@ describe("chat session errors persistence", () => {
         transientReason: "rate_limit",
         providerError: "older",
         sideEffects: false,
-        createdAt: new Date("2026-06-18T09:00:00Z"),
+        createdAt: new Date(Date.now() - 10 * 60_000),
       },
       {
         userId: user.id,
@@ -150,7 +191,7 @@ describe("chat session errors persistence", () => {
         transientReason: "overloaded",
         providerError: "newer",
         sideEffects: false,
-        createdAt: new Date("2026-06-18T09:05:00Z"),
+        createdAt: new Date(Date.now() - 5 * 60_000),
       },
     ]);
 

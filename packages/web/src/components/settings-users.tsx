@@ -30,7 +30,7 @@ import {
 import { toast } from "sonner";
 import { ShieldAlert, X } from "lucide-react";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
 import { SALES_MAILTO, CALENDLY_URL } from "@/lib/conversion-links";
@@ -182,7 +182,6 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [inviteOpen, setInviteOpen] = useState(false);
   const [seatLimitOpen, setSeatLimitOpen] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
-  const { isCopied: isResetLinkCopied, copy: copyResetLink } = useCopyToClipboard();
   const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
   const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
   const [isEnterprise, setIsEnterprise] = useState(false);
@@ -357,17 +356,18 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         </CardHeader>
         <CardContent>
           {resetLink && (
-            <div className="mb-4 rounded border bg-muted p-3">
-              <p className="text-sm font-medium mb-1">Invite link:</p>
-              <p className="text-sm break-all">{resetLink}</p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-2"
-                onClick={() => copyResetLink(resetLink)}
-              >
-                {isResetLinkCopied ? "Copied!" : "Copy"}
-              </Button>
+            <div className="mb-4 space-y-1 rounded border p-3">
+              <p id="resent-invite-link-label" className="text-sm font-medium">
+                Invite link:
+              </p>
+              <CopyField
+                value={resetLink}
+                label="Invite link"
+                labelledBy="resent-invite-link-label"
+                copyLabel="Copy link"
+                share={{ title: "Pinchy invite" }}
+                autoFocus
+              />
             </div>
           )}
 

@@ -250,8 +250,8 @@ importers:
         specifier: ^0.18.13
         version: 0.18.13
       undici:
-        specifier: ^8.10.2
-        version: 8.12.2
+        specifier: ^7.30.1
+        version: 7.30.1
     devDependencies:
       '@types/node':
         specifier: ^26.1.2
