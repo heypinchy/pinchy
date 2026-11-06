@@ -851,16 +851,16 @@ Get all application settings. Encrypted values (such as API keys) are masked in 
 
 ### `POST /api/settings`
 
-Update a setting.
+Set the organisation timezone (admin only). `org.timezone` is the only key this endpoint accepts; any other key is refused with a `400` validation error. Providers, the enterprise key, the domain lock, Telegram and the member-access switches each have their own endpoint, with their own validation and audit entry.
 
 **Request body:**
 
-| Field   | Type   | Required | Description   |
-| ------- | ------ | -------- | ------------- |
-| `key`   | string | Yes      | Setting key   |
-| `value` | string | Yes      | Setting value |
+| Field   | Type   | Required | Description                                                  |
+| ------- | ------ | -------- | ------------------------------------------------------------ |
+| `key`   | string | Yes      | Must be `org.timezone`                                       |
+| `value` | string | Yes      | An IANA timezone name, e.g. `Europe/Vienna`; otherwise `400` |
 
-Settings with `api_key` in the key name are automatically encrypted at rest. Keys starting with `policy.` are refused with `400`: the member-access switches go through `PUT /api/settings/governance` below, which audits what changed and updates Telegram routing.
+A save that changes the timezone writes a `settings.updated` audit entry with the from/to values.
 
 **Response:** `{ "success": true }`
 
