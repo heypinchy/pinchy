@@ -16,7 +16,11 @@ import { NextRequest } from "next/server";
 
 import { mockSession } from "@/test-helpers/auth";
 import { setSetting } from "@/lib/settings";
-import { getIndexSchedule, saveIndexScheduleState } from "@/lib/knowledge/index-schedule-store";
+import {
+  getIndexSchedule,
+  saveIndexSchedule,
+  saveIndexScheduleState,
+} from "@/lib/knowledge/index-schedule-store";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -116,6 +120,25 @@ describe("GET /api/settings/knowledge-index-schedule", () => {
     });
   });
 
+  // The fall-back night in Vienna: the 02:30 slot ran at 02:30 CEST, then the
+  // clock went back. At 02:10 CET the local time is before 02:30 again, but
+  // tonight's run already happened — the screen must not promise it again.
+  it("reports tomorrow, not a run that already happened, after the clock went back", async () => {
+    await saveIndexSchedule({ enabled: true, time: "02:30" });
+    await saveIndexScheduleState({
+      lastSlot: "2026-10-25",
+      schedule: { enabled: true, time: "02:30" },
+      timezone: "Europe/Vienna",
+      sweep: null,
+      lastSweep: null,
+    });
+    vi.setSystemTime(new Date("2026-10-25T01:10:00Z"));
+
+    const body = await (await GET(new NextRequest(URL), ctx as never)).json();
+
+    expect(body.nextRun).toEqual({ date: "2026-10-26", time: "02:30", day: "tomorrow" });
+  });
+
   it("is admin-only", async () => {
     mockGetSession.mockResolvedValue(member);
     const res = await GET(new NextRequest(URL), ctx as never);
@@ -135,6 +158,27 @@ describe("PUT /api/settings/knowledge-index-schedule", () => {
       nextRun: { date: "2026-10-16", time: "23:30", day: "today" },
     });
     expect(await getIndexSchedule()).toEqual({ enabled: true, time: "23:30" });
+  });
+
+  // Tonight's 02:00 already ran. Moving the time to 23:30 is a new schedule:
+  // the scheduler re-takes the slot against it, so 23:30 today still runs —
+  // and the answer must say so rather than read the old slot as tonight's.
+  it("answers today for a new time still ahead, even after today's slot under the old time ran", async () => {
+    await saveIndexScheduleState({
+      lastSlot: "2026-10-16",
+      schedule: { enabled: true, time: "02:00" },
+      timezone: "Europe/Vienna",
+      sweep: null,
+      lastSweep: null,
+    });
+
+    const res = await PUT(putRequest({ enabled: true, time: "23:30" }), ctx as never);
+
+    expect((await res.json()).nextRun).toEqual({
+      date: "2026-10-16",
+      time: "23:30",
+      day: "today",
+    });
   });
 
   it("switches the nightly run off", async () => {

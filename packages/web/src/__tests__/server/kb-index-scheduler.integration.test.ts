@@ -520,6 +520,35 @@ describe("kb index scheduler", () => {
     expect((await jobs()).map((j) => j.agentId)).toEqual([first.id, second.id]);
   });
 
+  // On the fall-back night the hour before the change happens twice. A slot
+  // inside it that is not on the hour — 02:30 in Vienna, 01:30 in New York —
+  // passes, the clock goes back, and for the next half hour the latest passed
+  // slot reads as yesterday's again. That is the clock repeating itself, not a
+  // last slot from the future, and the second 02:30 must not start a second
+  // full walk of every knowledge base.
+  describe("on the night the clock goes back", () => {
+    it.each([
+      ["Europe/Vienna", "02:30", "2026-10-25T00:00:00Z", "2026-10-25T02:00:00Z"],
+      ["America/New_York", "01:30", "2026-11-01T04:00:00Z", "2026-11-01T07:00:00Z"],
+    ])(
+      "runs once in %s for a %s slot inside the repeated hour",
+      async (timezone, time, from, to) => {
+        await setSetting("org.timezone", timezone);
+        await saveIndexSchedule({ enabled: true, time });
+        await makeAgent("Handbook");
+
+        for (let t = Date.parse(from); t <= Date.parse(to); t += 60_000) {
+          await runKbIndexSchedulerTick({ now: new Date(t) });
+          // Finish each queued run at once, so a second sweep is not held
+          // back merely by the first one still draining.
+          await runNextIndexJob({ deps: fakeDeps() });
+        }
+
+        expect(await jobs()).toHaveLength(1);
+      }
+    );
+  });
+
   describe("when the admin changes the schedule", () => {
     it("does nothing while the schedule is off", async () => {
       await makeAgent("Handbook");

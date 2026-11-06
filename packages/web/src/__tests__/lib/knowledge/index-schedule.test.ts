@@ -97,7 +97,7 @@ describe("isSlotDue", () => {
 
 describe("nextIndexRun", () => {
   it("is tonight while today's slot is still ahead", () => {
-    expect(nextIndexRun({ date: "2026-10-17", minutes: 60 }, NIGHTLY)).toEqual({
+    expect(nextIndexRun({ date: "2026-10-17", minutes: 60 }, NIGHTLY, "2026-10-16")).toEqual({
       date: "2026-10-17",
       time: "02:00",
       day: "today",
@@ -105,17 +105,45 @@ describe("nextIndexRun", () => {
   });
 
   it("is tomorrow once today's slot has passed", () => {
-    expect(nextIndexRun({ date: "2026-10-17", minutes: 600 }, NIGHTLY)).toEqual({
+    expect(nextIndexRun({ date: "2026-10-17", minutes: 600 }, NIGHTLY, "2026-10-17")).toEqual({
       date: "2026-10-18",
       time: "02:00",
       day: "tomorrow",
     });
   });
 
+  // The fall-back night: a 02:30 slot in Vienna ran at the first 02:30, then
+  // the clock went back to 02:00. The local time is before 02:30 again, but
+  // tonight's slot is taken — the next run is tomorrow's, not one that
+  // already happened.
+  it("is tomorrow when the clock went back past a slot already taken today", () => {
+    const halfHourly: IndexSchedule = { enabled: true, time: "02:30" };
+    const clock = localClock(new Date("2026-10-25T01:10:00Z"), "Europe/Vienna");
+    expect(clock).toEqual({ date: "2026-10-25", minutes: 130 });
+    expect(nextIndexRun(clock, halfHourly, "2026-10-25")).toEqual({
+      date: "2026-10-26",
+      time: "02:30",
+      day: "tomorrow",
+    });
+  });
+
+  // No state yet, or one the scheduler is about to re-take: today's slot
+  // still lies ahead.
+  it.each([null, "corrupt", "2027-01-01"])(
+    "is tonight while today's slot is ahead and the last slot is %s",
+    (lastSlot) => {
+      expect(nextIndexRun({ date: "2026-10-17", minutes: 60 }, NIGHTLY, lastSlot)).toEqual({
+        date: "2026-10-17",
+        time: "02:00",
+        day: "today",
+      });
+    }
+  );
+
   it("is nothing while the schedule is off", () => {
-    expect(nextIndexRun({ date: "2026-10-17", minutes: 60 }, { ...NIGHTLY, enabled: false })).toBe(
-      null
-    );
+    expect(
+      nextIndexRun({ date: "2026-10-17", minutes: 60 }, { ...NIGHTLY, enabled: false }, null)
+    ).toBe(null);
   });
 });
 
