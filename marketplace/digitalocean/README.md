@@ -2,7 +2,7 @@
 
 A [Packer](https://www.packer.io/) build that produces a DigitalOcean snapshot
 image which runs Pinchy's **real production `docker-compose.yml`** — the same
-three-service stack (pinchy + openclaw + postgres), the same tmpfs secrets
+four-service stack (pinchy + office-converter + openclaw + postgres), the same tmpfs secrets
 volume, the same healthcheck ordering. Nothing about Pinchy's security model is
 adapted away; the Droplet just runs the stack we already ship and test.
 

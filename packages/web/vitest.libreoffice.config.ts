@@ -26,6 +26,13 @@ export default defineConfig({
     fileParallelism: false,
     testTimeout: 300_000,
     hookTimeout: 300_000,
+    // In-process, always. CI runs these inside the Pinchy image, which sets
+    // KB_OFFICE_SPOOL_DIR so production converts in the office-converter
+    // sidecar; there is no sidecar in that `docker run`, and inherited, the
+    // variable would turn every conversion into "not reachable". These suites
+    // measure LibreOffice and the in-process layers (profile, preflight); the
+    // sidecar boundary has its own canary (office-convert.sidecar.canary.test.ts).
+    env: { KB_OFFICE_SPOOL_DIR: "" },
   },
   resolve: {
     alias: {

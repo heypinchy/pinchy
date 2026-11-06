@@ -26,12 +26,14 @@ import {
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { format } from "node:util";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import mammoth from "mammoth";
 
 import {
@@ -794,6 +796,28 @@ describe("convertOfficeFiles", () => {
       await convertOfficeFiles(sources, deps(boom, { store }));
 
       expect(await listTree(join(storeDir, "staging"))).toEqual([]);
+    });
+
+    it("accepts only a regular file as the converter's output", async () => {
+      // The output directory is shared with the converter. What it leaves
+      // there is taken only if it is a plain file of its own, never by
+      // following a link to somewhere else.
+      const elsewhere = join(tmpRoot, "elsewhere.pdf");
+      await writeFile(elsewhere, "%PDF-1.4\nnot this document\n");
+      const [source] = [await corpusFile("a.doc", "x")];
+      const linking: RunConverter = async (call) => {
+        await symlink(elsewhere, join(call.outDir, "0.pdf"));
+        return { code: 0, signal: null, stderr: "" };
+      };
+
+      const [outcome] = await convertOfficeFiles([source], {
+        ...deps(fakeConverter({ outputs: {} })),
+        runConverter: linking,
+      });
+
+      expect(outcome.status).toBe("failed");
+      expect(outcome.reason).toMatch(/not a regular file/);
+      expect(await listTree(join(storeDir))).not.toContainEqual(expect.stringMatching(/\.pdf$/));
     });
 
     it("leaves the store untouched when nothing needs converting", async () => {
@@ -1860,6 +1884,257 @@ describe("the word-count oracle reads in a heap-capped child", () => {
       throw new Error("the word-count reader could not be started");
     });
     expect(await countSourceWordsWithOracle(path, { countDocxWords })).toBeNull();
+  });
+});
+
+describe("a batch shared with a converter that runs as another user", () => {
+  /** A preparer that writes a checked copy where it is told to, as the real one does. */
+  const checked = (contentHash: string) => async (_absPath: string, staged: string) => {
+    await writeFile(staged, "CHECKED COPY");
+    return {
+      relationshipsRemoved: 0,
+      altChunksRemoved: 0,
+      rtfGroupsRemoved: 0,
+      unpackedBytes: null,
+      contentHash,
+    };
+  };
+
+  it("creates each staged input exclusively, never writing through an entry already in its place", async () => {
+    // Inside the spool another process can create entries. Whatever sits at
+    // a staged name before the copy is written is refused, not followed —
+    // by the real preflight, which writes the copy.
+    const source = { absPath: join(corpusDir, "a.docx") };
+    await mkdir(corpusDir, { recursive: true });
+    await writeFile(source.absPath, docxWith({ documentRels: relationships() }));
+    const elsewhere = join(tmpRoot, "elsewhere.docx");
+    await writeFile(elsewhere, "UNTOUCHED");
+    const staging = join(tmpRoot, "staging");
+    const converter = fakeConverter({ outputs: {} });
+
+    const outcomes = await convertOfficeFiles(
+      [source],
+      deps(converter, {
+        prepareSource: undefined,
+        createStagingDir: async () => {
+          await mkdir(join(staging, "in"), { recursive: true });
+          await symlink(elsewhere, join(staging, "in", "0.docx"));
+          return staging;
+        },
+      })
+    );
+
+    expect(outcomes[0]).toMatchObject({ status: "infrastructure" });
+    expect(outcomes[0].reason).toMatch(/could not write the staged copy/);
+    expect(await readFile(elsewhere, "utf8")).toBe("UNTOUCHED");
+    expect(converter.calls).toHaveLength(0);
+  });
+
+  it("stages inputs the converter's group can read but never write, whatever the umask", async () => {
+    // The converter shares the web process's group. A umask of 002 — a
+    // user-private-group default — must not hand that group write access to
+    // the bytes the preflight checked. The real preflight writes the copy.
+    const source = { absPath: join(corpusDir, "a.docx") };
+    await mkdir(corpusDir, { recursive: true });
+    await writeFile(source.absPath, docxWith({ documentRels: relationships() }));
+    let mode = -1;
+    const run: RunConverter = async (call) => {
+      mode = (await stat(call.inputs[0])).mode & 0o777;
+      await writeFile(join(call.outDir, "0.pdf"), "%PDF-1.4\nconverted words\n");
+      return { code: 0, signal: null, stderr: "" };
+    };
+    const previous = process.umask(0o002);
+    try {
+      await convertOfficeFiles([source], deps({ run, calls: [] }, { prepareSource: undefined }));
+    } finally {
+      process.umask(previous);
+    }
+
+    expect(mode).toBe(0o640);
+  });
+
+  it("keeps the documents whose own runs worked when another document's own run fails", async () => {
+    // Through the sidecar, a run of one document can be refused (it left a
+    // process behind, the converter restarted under it). That is about that
+    // document's run, not its batch-mates'.
+    const sources = [
+      await corpusFile("a.doc", "alpha"),
+      await corpusFile("b.doc", "bravo"),
+      await corpusFile("c.doc", "charlie"),
+    ];
+    const run: RunConverter = async (call) => {
+      if (call.inputs.length > 1) return { code: 137, signal: null, stderr: "" };
+      const staged = call.inputs[0];
+      if (basename(staged).startsWith("1.")) {
+        throw new Error("office converter refused the batch: the converter left 1 process(es)");
+      }
+      await writeFile(
+        join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
+        "%PDF-1.4\nwords here\n"
+      );
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(sources, deps({ run, calls: [] }));
+
+    expect(outcomes.map((o) => o.status)).toEqual(["converted", "infrastructure", "converted"]);
+    expect(outcomes[1].reason).toMatch(/converter did not run: .*left 1 process/);
+  });
+
+  it("runs a batch that left a process behind one document at a time, as after a kill", async () => {
+    // Batches are fixed slices of a sorted queue: a document that makes the
+    // converter leave a process running must not take its batch-mates down
+    // with it every night.
+    const sources = [
+      await corpusFile("a.doc", "alpha"),
+      await corpusFile("b.doc", "bravo"),
+      await corpusFile("c.doc", "charlie"),
+    ];
+    const run: RunConverter = async (call) => {
+      if (call.inputs.length > 1) return { code: 0, signal: null, stderr: "", leftovers: true };
+      const staged = call.inputs[0];
+      if (basename(staged).startsWith("1.")) {
+        return { code: 0, signal: null, stderr: "", leftovers: true };
+      }
+      await writeFile(
+        join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
+        "%PDF-1.4\nwords here\n"
+      );
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(sources, deps({ run, calls: [] }));
+
+    expect(outcomes.map((o) => o.status)).toEqual(["converted", "infrastructure", "converted"]);
+    expect(outcomes[1].reason).toMatch(/left a process running/);
+  });
+
+  it("gives a document's own run its checked copy without writing it a second time", async () => {
+    // A killed batch is the large one; a second copy of each of its files
+    // would double what it holds on the volume while its documents run alone.
+    const sources = [await corpusFile("a.doc", "alpha"), await corpusFile("b.doc", "bravo")];
+    const inodes: number[][] = [];
+    let batchInputs: string[] = [];
+    const run: RunConverter = async (call) => {
+      if (call.inputs.length > 1) {
+        batchInputs = call.inputs;
+        return { code: 137, signal: null, stderr: "" };
+      }
+      const staged = call.inputs[0];
+      const original = batchInputs.find((p) => basename(p) === basename(staged))!;
+      inodes.push([(await stat(original)).ino, (await stat(staged)).ino]);
+      await writeFile(
+        join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
+        "%PDF-1.4\nwords here\n"
+      );
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(
+      sources,
+      deps({ run, calls: [] }, { prepareSource: checked("7".repeat(64)) })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual(["converted", "converted"]);
+    expect(inodes).toHaveLength(2);
+    for (const [original, own] of inodes) expect(own).toBe(original);
+  });
+
+  it("frees what the killed batch wrote before its documents run on their own", async () => {
+    // Its PDFs and its scratch sit on the volume the re-runs and the
+    // free-space check use.
+    const sources = [await corpusFile("a.doc", "alpha"), await corpusFile("b.doc", "bravo")];
+    let killed: { outDir: string; tmpDir: string } | null = null;
+    const leftOver: boolean[] = [];
+    const run: RunConverter = async (call) => {
+      if (call.inputs.length > 1) {
+        killed = { outDir: call.outDir, tmpDir: call.tmpDir };
+        await writeFile(join(call.outDir, "0.pdf"), "%PDF-1.4\nhalf");
+        await writeFile(join(call.tmpDir, "scratch"), "x");
+        return { code: 137, signal: null, stderr: "" };
+      }
+      leftOver.push(
+        existsSync(join(killed!.outDir, "0.pdf")) || existsSync(join(killed!.tmpDir, "scratch"))
+      );
+      const staged = call.inputs[0];
+      await writeFile(
+        join(call.outDir, basename(staged, extname(staged)) + ".pdf"),
+        "%PDF-1.4\nwords here\n"
+      );
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(sources, deps({ run, calls: [] }));
+
+    expect(outcomes.map((o) => o.status)).toEqual(["converted", "converted"]);
+    expect(leftOver).toEqual([false, false]);
+  });
+
+  it("refuses an output that is not a regular file without waiting on it", async () => {
+    // Opening a FIFO for reading blocks until something writes to it, and the
+    // converter can make one where its PDF should be.
+    const sources = [await corpusFile("a.docx", "x"), await corpusFile("b.docx", "y")];
+    const run: RunConverter = async (call) => {
+      execFileSync("mkfifo", [join(call.outDir, "0.pdf")]);
+      await writeFile(join(call.outDir, "1.pdf"), "%PDF-1.4\nconverted words\n");
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(
+      sources,
+      deps({ run, calls: [] }, { prepareSource: checked("3".repeat(64)) })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual(["failed", "converted"]);
+    expect(outcomes[0].reason).toMatch(/not a regular file/);
+  }, 10_000);
+
+  it("books an output it cannot open as that document's infrastructure failure, and keeps the rest", async () => {
+    const sources = [await corpusFile("a.docx", "x"), await corpusFile("b.docx", "y")];
+    const prepared = [checked("4".repeat(64)), checked("5".repeat(64))];
+    let n = 0;
+    const run: RunConverter = async (call) => {
+      await writeFile(join(call.outDir, "0.pdf"), "%PDF-1.4\nunreadable\n");
+      await chmod(join(call.outDir, "0.pdf"), 0o000);
+      await writeFile(join(call.outDir, "1.pdf"), "%PDF-1.4\nconverted words\n");
+      return { code: 0, signal: null, stderr: "" };
+    };
+
+    const outcomes = await convertOfficeFiles(
+      sources,
+      deps({ run, calls: [] }, { prepareSource: (path, staged) => prepared[n++](path, staged) })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual(["infrastructure", "converted"]);
+    expect(outcomes[0].reason).toMatch(/could not read the converter's output/);
+  });
+
+  it("keeps a conversion that worked when the converter left something it cannot remove", async () => {
+    // The converter owns what it writes. A directory of its own that the web
+    // process cannot enter must cost a leftover, not the run's results.
+    const source = await corpusFile("a.docx", "x");
+    let trap = "";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const run: RunConverter = async (call) => {
+      await writeFile(join(call.outDir, "0.pdf"), "%PDF-1.4\nconverted words\n");
+      trap = join(call.outDir, "trap");
+      await mkdir(trap);
+      await writeFile(join(trap, "stuck"), "x");
+      await chmod(trap, 0o500);
+      return { code: 0, signal: null, stderr: "" };
+    };
+    try {
+      const outcomes = await convertOfficeFiles(
+        [source],
+        deps({ run, calls: [] }, { prepareSource: checked("2".repeat(64)) })
+      );
+
+      expect(outcomes[0].status).toBe("converted");
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/could not remove the staged batch/));
+    } finally {
+      warn.mockRestore();
+      if (trap) await chmod(trap, 0o700);
+    }
   });
 });
 
