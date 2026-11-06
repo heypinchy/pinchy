@@ -486,6 +486,11 @@ describe("fetchProviderModels", () => {
     );
 
     const result = await fetchProviderModels();
+    const googleCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([u]) => String(u).includes("generativelanguage"))!;
+    expect(String(googleCall[0])).not.toContain("key=");
+    expect((googleCall[1] as RequestInit).headers).toEqual({ "x-goog-api-key": "AIza-test" });
     const google = result.find((p) => p.id === "google");
     expect(google).toBeDefined();
     expect(google!.models).toEqual([{ id: "google/gemini-2.5-flash", name: "Gemini 2.0 Flash" }]);

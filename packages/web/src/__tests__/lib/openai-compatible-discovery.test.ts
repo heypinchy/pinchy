@@ -15,16 +15,29 @@ import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 
 global.fetch = vi.fn();
 
+// The probe connects through `pinnedFetch` (real sockets, covered in
+// pinned-connection.test.ts). Here it hands the request to the mocked global
+// fetch, so the HTTP-behaviour tests below read the same, and records the
+// address each request was pinned to — the half this file is about.
+const { mockPinnedFetch } = vi.hoisted(() => ({ mockPinnedFetch: vi.fn() }));
+vi.mock("@/lib/pinned-connection", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/pinned-connection")>()),
+  pinnedFetch: mockPinnedFetch,
+}));
+
 // Every request goes through the SSRF guard, which resolves hostnames. No test
-// here may touch real DNS: by default every name is unresolvable, which the
-// guard treats as allowed (fail open), so tests about HTTP behaviour are
-// unaffected. Tests about the guard give a name a concrete answer.
+// here may touch real DNS: by default every name resolves to one public
+// address, so tests about HTTP behaviour are unaffected. Tests about the guard
+// give a name a different answer, or none.
+const PUBLIC_ANSWER = "93.184.216.34";
 const { mockLookup } = vi.hoisted(() => ({ mockLookup: vi.fn() }));
 vi.mock("dns/promises", () => ({ default: { lookup: mockLookup }, lookup: mockLookup }));
 
 beforeEach(() => {
   mockLookup.mockReset();
-  mockLookup.mockRejectedValue(Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" }));
+  mockLookup.mockResolvedValue([{ address: PUBLIC_ANSWER, family: 4 }]);
+  mockPinnedFetch.mockReset();
+  mockPinnedFetch.mockImplementation((url: string, init: RequestInit) => fetch(url, init));
 });
 
 describe("validateOpenAiCompatibleProvider", () => {
@@ -717,7 +730,11 @@ describe("fetchModels — the guard's DNS lookup is inside the probe's time budg
     );
   }
 
-  it("goes ahead with the request once the lookup budget is spent (fail open)", async () => {
+  it("gives up without a request once the lookup budget is spent", async () => {
+    // It used to go ahead (fail open), and the request then resolved the name
+    // a second time — a resolver that stalled the check could answer the
+    // connect with anything. There is one lookup now, and no answer means
+    // no request.
     vi.useFakeTimers();
     mockLookup.mockImplementation(() => new Promise(() => {}));
     vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
@@ -725,7 +742,8 @@ describe("fetchModels — the guard's DNS lookup is inside the probe's time budg
     const result = validateOpenAiCompatibleProvider("https://api.example.com/v1", "sk-key");
     await vi.advanceTimersByTimeAsync(PROVIDER_DNS_LOOKUP_TIMEOUT_MS);
 
-    expect(await result).toEqual({ valid: true });
+    expect(await result).toEqual({ valid: false, error: "network_error" });
+    expect(mockPinnedFetch).not.toHaveBeenCalled();
   });
 
   it("ends the whole hop — lookup and request together — within PROVIDER_PROBE_TIMEOUT_MS", async () => {
@@ -740,5 +758,107 @@ describe("fetchModels — the guard's DNS lookup is inside the probe's time budg
     await vi.advanceTimersByTimeAsync(PROVIDER_PROBE_TIMEOUT_MS);
 
     expect(settled).toEqual({ valid: false, error: "network_error" });
+  });
+});
+
+describe("fetchModels — the request goes to the address the guard classified", () => {
+  // DNS rebinding: the guard resolved the name, liked the answer, and the
+  // request then resolved it AGAIN — so a resolver that answers a public
+  // address first and 127.0.0.1 second walked straight past the check.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCustomModelCache();
+    vi.mocked(fetch).mockImplementation(
+      async () => new Response(JSON.stringify({ data: [{ id: "acme-large" }] }), { status: 200 })
+    );
+  });
+
+  it("pins the request to the checked answer, not to a second one", async () => {
+    mockLookup
+      .mockResolvedValueOnce([{ address: PUBLIC_ANSWER, family: 4 }])
+      .mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+
+    await fetchOpenAiCompatibleModels("https://rebind.acme.example/v1", "sk-key");
+
+    expect(mockPinnedFetch).toHaveBeenCalledTimes(1);
+    expect(mockPinnedFetch).toHaveBeenCalledWith(
+      "https://rebind.acme.example/v1/models",
+      expect.anything(),
+      [{ address: PUBLIC_ANSWER, family: 4 }]
+    );
+    // One resolution per hop: the one that was classified.
+    expect(mockLookup).toHaveBeenCalledTimes(1);
+  });
+
+  it("pins an IPv6 answer with its family", async () => {
+    mockLookup.mockResolvedValue([{ address: "2606:2800:220:1::1", family: 6 }]);
+
+    await fetchOpenAiCompatibleModels("https://v6.acme.example/v1", "sk-key");
+
+    expect(mockPinnedFetch).toHaveBeenCalledWith(expect.any(String), expect.anything(), [
+      { address: "2606:2800:220:1::1", family: 6 },
+    ]);
+  });
+
+  it("pins every checked answer of a dual-stack name, so the connect can fall back", async () => {
+    mockLookup.mockResolvedValue([
+      { address: "2606:2800:220:1::1", family: 6 },
+      { address: PUBLIC_ANSWER, family: 4 },
+    ]);
+
+    await fetchOpenAiCompatibleModels("https://dual.acme.example/v1", "sk-key");
+
+    expect(mockPinnedFetch).toHaveBeenCalledWith(expect.any(String), expect.anything(), [
+      { address: "2606:2800:220:1::1", family: 6 },
+      { address: PUBLIC_ANSWER, family: 4 },
+    ]);
+  });
+
+  it("pins an address literal to itself, without a lookup", async () => {
+    await fetchOpenAiCompatibleModels("http://10.0.0.5:8000/v1", "sk-key");
+
+    expect(mockLookup).not.toHaveBeenCalled();
+    expect(mockPinnedFetch).toHaveBeenCalledWith(expect.any(String), expect.anything(), [
+      { address: "10.0.0.5", family: 4 },
+    ]);
+  });
+
+  it("never requests a name whose lookup failed", async () => {
+    // The guard used to let an unresolvable name through, and the request's
+    // own lookup was then free to answer 127.0.0.1.
+    mockLookup.mockRejectedValue(Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" }));
+
+    const result = await validateOpenAiCompatibleProvider(
+      "https://flaky.acme.example/v1",
+      "sk-key"
+    );
+
+    expect(result).toEqual({ valid: false, error: "network_error" });
+    expect(mockPinnedFetch).not.toHaveBeenCalled();
+  });
+
+  it("pins every redirect hop to that hop's own checked answer", async () => {
+    mockLookup.mockImplementation(async (host: string) =>
+      host === "api.acme.example"
+        ? [{ address: PUBLIC_ANSWER, family: 4 }]
+        : [{ address: "93.184.216.35", family: 4 }]
+    );
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://cdn.acme.example/v1/models" },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ id: "acme-large" }] }), { status: 200 })
+      );
+
+    await fetchOpenAiCompatibleModels("https://api.acme.example/v1", "sk-key");
+
+    expect(mockPinnedFetch.mock.calls.map((call) => [call[0], call[2]])).toEqual([
+      ["https://api.acme.example/v1/models", [{ address: PUBLIC_ANSWER, family: 4 }]],
+      ["https://cdn.acme.example/v1/models", [{ address: "93.184.216.35", family: 4 }]],
+    ]);
   });
 });

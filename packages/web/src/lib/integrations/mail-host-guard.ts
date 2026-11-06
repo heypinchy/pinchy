@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { classifyIpAddress, type IpAddressClass } from "@/lib/integrations/url-validation";
+import { toPinnedAddress, type PinnedAddress } from "@/lib/pinned-connection";
 
 /**
  * SSRF guard for the IMAP/SMTP probes.
@@ -28,11 +29,18 @@ import { classifyIpAddress, type IpAddressClass } from "@/lib/integrations/url-v
  *     opt-in is the operator's explicit statement that reaching their own
  *     network is intended.
  *
- * Caveat, same as the rest of the app's SSRF checks: this resolves once and the
- * mail library resolves again when it connects, so a DNS answer that changes
- * between the two (rebinding) is not covered. Closing that would mean pinning
- * the connection to the address we checked, which neither imapflow nor
- * nodemailer exposes.
+ * The probes connect to the address this guard classified
+ * (`resolveAllowedMailHost`): imapflow and nodemailer are handed the IP as
+ * `host` and the name as `servername`, which both use for SNI and certificate
+ * verification. Neither resolves an IP, so there is one lookup and a DNS
+ * answer that changes between check and connect (rebinding) has nothing to
+ * change. `assertMailHostAllowed` stays for callers that only check a value
+ * and connect to nothing.
+ *
+ * Not covered: pinchy-email, in the OpenClaw container, resolves the stored
+ * host itself for every real IMAP/SMTP session, and `stored-destination.ts`'s
+ * re-check at credential fetch is again check-then-someone-else-connects.
+ * Pinchy can pin only the sockets it opens.
  */
 
 export class MailHostBlockedError extends Error {
@@ -114,12 +122,7 @@ export async function assertMailHostAllowed(
   host: string,
   resolver: MailHostResolver = resolveViaDns
 ): Promise<void> {
-  if (!isPlainHost(host)) {
-    throw new MailHostBlockedError(
-      "Blocked: enter the mail server as a plain host name or IP address, like imap.example.com, " +
-        "with no spaces, brackets, port or zone ID. An internationalised name goes in its xn-- form."
-    );
-  }
+  assertPlainHost(host);
 
   let addresses: string[];
   try {
@@ -128,6 +131,52 @@ export async function assertMailHostAllowed(
     return;
   }
 
+  assertAddressesAllowed(addresses);
+}
+
+/**
+ * The address a probe of `host` must open its socket to — the one this guard
+ * just classified — or a throw.
+ *
+ * For the callers that CONNECT. {@link assertMailHostAllowed} followed by a
+ * connect by name resolves twice, and a resolver can answer the two lookups
+ * differently (DNS rebinding): public for the check, 127.0.0.1 for the
+ * socket. Here there is one lookup and its answer is the destination.
+ *
+ * A lookup that fails is rethrown unchanged instead of passing: with one
+ * resolution there is no later connect to "fail naturally", and the original
+ * `ENOTFOUND` keeps the probe's "could not resolve the host" message for the
+ * typo case. When the name has several addresses every one was checked and
+ * the first is used: imapflow and nodemailer take a single `host`, so unlike
+ * `pinnedFetch` there is no lookup hook to hand the rest to. A mail host whose
+ * first address is down fails the test instead of falling back.
+ */
+export async function resolveAllowedMailHost(
+  host: string,
+  resolver: MailHostResolver = resolveViaDns
+): Promise<PinnedAddress> {
+  assertPlainHost(host);
+
+  // An address literal is its own answer; a resolver has nothing to add.
+  const addresses = isIP(host) !== 0 ? [host] : await resolver(host);
+  if (addresses.length === 0) {
+    throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
+  }
+
+  assertAddressesAllowed(addresses);
+  return toPinnedAddress(normalizeAddress(addresses[0]));
+}
+
+function assertPlainHost(host: string): void {
+  if (!isPlainHost(host)) {
+    throw new MailHostBlockedError(
+      "Blocked: enter the mail server as a plain host name or IP address, like imap.example.com, " +
+        "with no spaces, brackets, port or zone ID. An internationalised name goes in its xn-- form."
+    );
+  }
+}
+
+function assertAddressesAllowed(addresses: string[]): void {
   const allowPrivate = process.env.ALLOW_PRIVATE_MAIL_HOSTS === "1";
 
   for (const address of addresses) {

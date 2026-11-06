@@ -77,7 +77,12 @@ describe("GET /api/settings/knowledge-index-schedule", () => {
       enabled: true,
       time: "02:00",
       timezone: "Europe/Vienna",
-      nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+      nextRun: {
+        date: "2026-10-17",
+        time: "02:00",
+        day: "tomorrow",
+        at: "2026-10-17T00:00:00.000Z",
+      },
       currentSweep: null,
       lastSweep: null,
     });
@@ -136,7 +141,12 @@ describe("GET /api/settings/knowledge-index-schedule", () => {
 
     const body = await (await GET(new NextRequest(URL), ctx as never)).json();
 
-    expect(body.nextRun).toEqual({ date: "2026-10-26", time: "02:30", day: "tomorrow" });
+    expect(body.nextRun).toEqual({
+      date: "2026-10-26",
+      time: "02:30",
+      day: "tomorrow",
+      at: "2026-10-26T01:30:00.000Z",
+    });
   });
 
   // Tonight's 23:30 was taken in Tokyo; the org then moved to Vienna, where it
@@ -155,7 +165,12 @@ describe("GET /api/settings/knowledge-index-schedule", () => {
 
     const body = await (await GET(new NextRequest(URL), ctx as never)).json();
 
-    expect(body.nextRun).toEqual({ date: "2026-10-17", time: "23:30", day: "today" });
+    expect(body.nextRun).toEqual({
+      date: "2026-10-17",
+      time: "23:30",
+      day: "today",
+      at: "2026-10-17T21:30:00.000Z",
+    });
   });
 
   it("is admin-only", async () => {
@@ -174,7 +189,12 @@ describe("PUT /api/settings/knowledge-index-schedule", () => {
       enabled: true,
       time: "23:30",
       timezone: "Europe/Vienna",
-      nextRun: { date: "2026-10-16", time: "23:30", day: "today" },
+      nextRun: {
+        date: "2026-10-16",
+        time: "23:30",
+        day: "today",
+        at: "2026-10-16T21:30:00.000Z",
+      },
     });
     expect(await getIndexSchedule()).toEqual({ enabled: true, time: "23:30" });
   });
@@ -197,6 +217,7 @@ describe("PUT /api/settings/knowledge-index-schedule", () => {
       date: "2026-10-16",
       time: "23:30",
       day: "today",
+      at: "2026-10-16T21:30:00.000Z",
     });
   });
 
