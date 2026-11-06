@@ -296,6 +296,24 @@ describe.skipIf(!VERSION)(
         ],
         { env: { ...process.env, PINCHY_VERSION: VERSION } }
       ).catch(() => {});
+      // The converter ran as its own uid (998) and LibreOffice left its
+      // profiles in this bind mount with modes the runner's own user cannot
+      // enter. On Docker Desktop and OrbStack file ownership maps to the host
+      // user and this never shows; on a Linux runner it does. So the contents
+      // go first, as root, in the same image.
+      await execFileAsync("docker", [
+        "run",
+        "--rm",
+        "--user",
+        "0",
+        "--entrypoint",
+        "sh",
+        "-v",
+        `${root}:/canary`,
+        IMAGE,
+        "-c",
+        "rm -rf /canary/* /canary/.[!.]*",
+      ]).catch(() => {});
       rmSync(root, { recursive: true, force: true });
     });
 
