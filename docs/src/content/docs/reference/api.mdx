@@ -317,6 +317,49 @@ Delete an agent. **Admin only.** Personal agents (auto-created Smithers) cannot 
 - `403` — not an admin
 - `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 
+### `GET /api/agents/admin-only`
+
+List the shared agents only admins can use under a license: visibility **Restricted** with no group assigned. **Admin only.** Answers in every license state — on a community instance it is the list of agents members would lose the moment a key is activated. Personal and deleted agents never appear.
+
+**Response:** `200 OK`
+
+```json
+{
+  "agents": [{ "id": "a1b2c3", "name": "Sales Assistant" }]
+}
+```
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+
+### `POST /api/agents/admin-only/open-to-all`
+
+Make the named admin-only agents visible to every user. **Admin only, enterprise.** This widens access, so it only ever happens as an explicit request for the agents you name — activating a license never does it on its own.
+
+**Request body:**
+
+| Field      | Type     | Required | Description                         |
+| ---------- | -------- | -------- | ----------------------------------- |
+| `agentIds` | string[] | Yes      | 1–200 agent IDs to set to All users |
+
+Only agents that are still Restricted with no group are changed. An agent that got a group (or was deleted) after you loaded the list is left alone, so this can never widen a group-scoped agent. Each changed agent writes an `agent.updated` audit entry with `changes.visibility` from `restricted` to `all`, the same entry the Access tab writes.
+
+**Response:** `200 OK` — the agents that were actually changed (an empty list if none still qualified):
+
+```json
+{
+  "agents": [{ "id": "a1b2c3", "name": "Sales Assistant" }]
+}
+```
+
+**Errors:**
+
+- `400` — `agentIds` is missing, empty, or longer than 200
+- `401` — not authenticated
+- `403` — not an admin, or no active license
+
 ### `POST /api/agents/:agentId/uploads`
 
 Stage a file for an upcoming chat message. The file is held in the agent's staging area; the chat sends the returned `id` as one of its `attachmentIds` rather than inlining the file. Anyone with access to the agent can upload.
@@ -395,7 +438,7 @@ Whether retrying the caller's last failed run in this conversation could duplica
 | ------------- | --------- | ---------------------------------------------------------------------- |
 | `sideEffects` | `boolean` | `true` when the failed run had already executed at least one tool call |
 
-The chat asks this when you press Retry, not when the run failed — see [Retrying after the agent already acted](/guides/retry-messages/#retrying-after-the-agent-already-acted). The time window comes from the stored run, never from the request, so this cannot be used to query an agent's tool history.
+The chat asks this when you press Retry, not when the run failed — see [Retrying after the agent already acted](/guides/retry-messages/#retrying-after-the-agent-already-acted). The time window comes from the stored run, never from the request, and only tool calls made on the caller's behalf count — on a shared agent, another member's activity in the same window never turns the answer to `true`. So this cannot be used to query an agent's tool history.
 
 ### `GET /api/agents/:agentId/uploads/:filename`
 
@@ -437,6 +480,10 @@ A `Range` request is honoured on its own. Sent with `If-Range`, it is answered w
 `variant=rows` is what a spreadsheet citation's preview asks for. It answers JSON instead of bytes — `{ sheet, columns, rows }`, each row carrying its sheet row number and its cell texts index-aligned to `columns` — read through the same traversal the index used, so hidden rows and hidden sheets stay excluded. With none of `sheet`/`from`/`to` it opens the top of the first visible sheet; naming a sheet the workbook does not have answers `200` with an empty range (the document was found); a workbook that will not open answers `422`, and one that is too large to read safely answers `413` — refused without being opened when it is over 100 MB, unpacks to far more than it weighs, has a sheet (or another part the reader reads as text) over 16 MB or a picture over 32 MB, and refused after the attempt when reading it needs more memory than the separate process the rows are read in may use (384 MB). That process is why a heavy workbook never costs Pinchy's own memory. `503` is about the reader, never the workbook: there was no room on the artifact volume for the private copy the rows are read from, the process could not be started, ran past its two-minute limit or was stopped by the system — or two reads are already waiting for it, in which case the answer carries `Retry-After`. Workbooks are read one at a time, the index's reads included, so a request that is abandoned while it waits or reads (a reload, a closed preview) has its read dropped; its audit row says `cancelled`.
 
 `download` decides which audit row is written: `knowledge.source_viewed` without it, `knowledge.source_downloaded` with it. Reading a cited document and carrying it out of the building are different acts, so they are different rows — and the caller has to say which, because the response cannot: a `.docx` is served as an attachment either way. A successful read also records which representation was served — or, on a `304`, which one was checked (`original`, `converted` or `rows`).
+
+### `GET /api/agents/:agentId/workspace-file/:name?path=<path>`
+
+The same file, under a URL whose last segment is its name — the URL the citation viewer opens, so the browser's PDF viewer shows the document's name instead of `workspace-file`. Takes the same query parameters as the route above and behaves exactly like it: `path` alone decides which file is read, against the same grant, with the same audit rows. `:name` must be the name of the file actually served — for a Word or PowerPoint source that's its converted PDF (`Angebot.pdf` for `Angebot.docx`), unless `variant=original` asks for the original. When the requested path is a link, the link's name counts as well as the target's. Any other name answers `404`, and the audit row records `name_mismatch`. `variant=rows` answers JSON rather than a file, so it doesn't check the name.
 
 ### `GET /api/agents/:agentId/telegram-chat`
 
@@ -526,7 +573,12 @@ The agent's most recent index run — in flight or last finished — and whether
     "enabled": true,
     "time": "02:00",
     "timezone": "Europe/Vienna",
-    "nextRun": { "date": "2026-07-18", "time": "02:00", "day": "tomorrow" },
+    "nextRun": {
+      "date": "2026-07-18",
+      "time": "02:00",
+      "day": "tomorrow",
+      "at": "2026-07-18T00:00:00.000Z"
+    },
     "included": true
   },
   "job": {
@@ -570,13 +622,13 @@ The agent's most recent index run — in flight or last finished — and whether
 
 `schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
 
-| Field               | Description                                                                                                                                                                                              |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `schedule.enabled`  | Whether the instance reindexes knowledge-base agents on its own every night. Set with [`PUT /api/settings/knowledge-index-schedule`](#put-apisettingsknowledge-index-schedule).                          |
-| `schedule.time`     | The time of day it runs, in the organization timezone.                                                                                                                                                   |
-| `schedule.timezone` | The organization timezone `time` is read in.                                                                                                                                                             |
-| `schedule.nextRun`  | The next run as `date`, `time` and `day` (`today` or `tomorrow`), all in the organization timezone. `null` while the nightly reindex is off.                                                             |
-| `schedule.included` | Whether the nightly run covers **this** agent. Only agents that have the `knowledge_search` permission and at least one granted folder are swept; an agent that only reads files is reindexed on demand. |
+| Field               | Description                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schedule.enabled`  | Whether the instance reindexes knowledge-base agents on its own every night. Set with [`PUT /api/settings/knowledge-index-schedule`](#put-apisettingsknowledge-index-schedule).                                                                                                                                                                                                        |
+| `schedule.time`     | The time of day it runs, in the organization timezone.                                                                                                                                                                                                                                                                                                                                 |
+| `schedule.timezone` | The organization timezone `time` is read in.                                                                                                                                                                                                                                                                                                                                           |
+| `schedule.nextRun`  | The next run as `date`, `time` and `day` (`today` or `tomorrow`), all in the organization timezone, and as `at`, the same moment as a UTC timestamp — the one to convert for a reader elsewhere. On the night the clocks go forward, a `time` that doesn't happen that night is reached at the first minute after the jump, and `at` says so. `null` while the nightly reindex is off. |
+| `schedule.included` | Whether the nightly run covers **this** agent. Only agents that have the `knowledge_search` permission and at least one granted folder are swept; an agent that only reads files is reindexed on demand.                                                                                                                                                                               |
 
 `unsearchable` and `failed` can be non-zero on a `succeeded` run: the reindex itself worked, and these are its findings about the corpus.
 
@@ -605,7 +657,12 @@ Once a night, at `time` in the [organization timezone](/reference/organization-t
   "enabled": true,
   "time": "02:00",
   "timezone": "Europe/Vienna",
-  "nextRun": { "date": "2026-10-18", "time": "02:00", "day": "tomorrow" },
+  "nextRun": {
+    "date": "2026-10-18",
+    "time": "02:00",
+    "day": "tomorrow",
+    "at": "2026-10-18T00:00:00.000Z"
+  },
   "currentSweep": null,
   "lastSweep": {
     "slot": "2026-10-17",
@@ -620,7 +677,7 @@ Once a night, at `time` in the [organization timezone](/reference/organization-t
 | `enabled`      | Whether the nightly reindex runs. On by default.                                                                                                                                            |
 | `time`         | 24-hour `HH:MM`, in the organization timezone. Defaults to `02:00`.                                                                                                                         |
 | `timezone`     | The organization timezone `time` is read in.                                                                                                                                                |
-| `nextRun`      | `date`, `time` and `day` (`today` or `tomorrow`) of the next run, in the organization timezone. `null` while `enabled` is `false`.                                                          |
+| `nextRun`      | `date`, `time` and `day` (`today` or `tomorrow`) of the next run, in the organization timezone, and `at`, the same moment as a UTC timestamp. `null` while `enabled` is `false`.            |
 | `currentSweep` | The night still queueing its agents: `slot` (the date it's for), `startedAt`, `agentCount`, and `waiting` — how many agents haven't had their turn yet. `null` when nothing is in progress. |
 | `lastSweep`    | The most recent night that queued all its agents: `slot`, `startedAt`, `agentCount`. Each agent's own outcome is on [`GET …/knowledge/reindex`](#get-apiagentsagentidknowledgereindex).     |
 
@@ -851,16 +908,16 @@ Get all application settings. Encrypted values (such as API keys) are masked in 
 
 ### `POST /api/settings`
 
-Update a setting.
+Set the organisation timezone (admin only). `org.timezone` is the only key this endpoint accepts; any other key is refused with a `400` validation error. Providers, the enterprise key, the domain lock, Telegram and the member-access switches each have their own endpoint, with their own validation and audit entry.
 
 **Request body:**
 
-| Field   | Type   | Required | Description   |
-| ------- | ------ | -------- | ------------- |
-| `key`   | string | Yes      | Setting key   |
-| `value` | string | Yes      | Setting value |
+| Field   | Type   | Required | Description                                                  |
+| ------- | ------ | -------- | ------------------------------------------------------------ |
+| `key`   | string | Yes      | Must be `org.timezone`                                       |
+| `value` | string | Yes      | An IANA timezone name, e.g. `Europe/Vienna`; otherwise `400` |
 
-Settings with `api_key` in the key name are automatically encrypted at rest. Keys starting with `policy.` are refused with `400`: the member-access switches go through `PUT /api/settings/governance` below, which audits what changed and updates Telegram routing.
+A save that changes the timezone writes a `settings.updated` audit entry with the from/to values.
 
 **Response:** `{ "success": true }`
 
@@ -1409,9 +1466,25 @@ Revoke a pending invite.
 
 ### `GET /api/invite/:token`
 
-What kind of flow this token opens, so the page can render the right form. **No authentication required.**
+What kind of flow this token opens, and what the page shows before the form. **No authentication required.**
 
-**Response:** `{ "type": "invite" }` for a new-user claim, `{ "type": "reset" }` for a password reset on an existing account. The distinction matters: the reset form deliberately has no name field, so resetting a password can't overwrite the user's display name.
+**Response:** `200 OK`
+
+```json
+{
+  "type": "invite",
+  "email": "bob@example.com",
+  "invitedBy": "Ada Lovelace"
+}
+```
+
+| Field       | Type           | Description                                                                                                                                                               |
+| ----------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`      | string         | `invite` for a new-user claim, `reset` for a password reset on an existing account. The reset form has no name field, so a reset can't overwrite the user's display name. |
+| `email`     | string         | The address the account signs in with                                                                                                                                     |
+| `invitedBy` | string \| null | Display name of the admin who created the invite. `null` on a reset, or if that admin has no name or has been deactivated                                                 |
+
+The token is the only credential here, so the response holds nothing its holder shouldn't see: their own sign-in address and the inviter's display name, never the inviter's email. An unknown, claimed or expired token gets only an error.
 
 **Errors:** an `error` message with `410` when the token is unknown, already claimed or expired, or the invite has no email address; `404` when a reset token's user no longer exists.
 
@@ -1540,7 +1613,7 @@ Remove Telegram from every agent at once. **Admin only.** This is the backend fo
 
 External system integrations — **Odoo**, **email** (Gmail and Microsoft 365 via OAuth), and **Web Search**. See [Integrations](/concepts/integrations/) for the conceptual overview, [Connect Odoo](/guides/connect-odoo/) for the Odoo setup guide, and [Connect Email](/guides/connect-email/) for the email setup guide.
 
-Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `ALLOW_PRIVATE_URLS=1` additionally allows the [private ranges](/reference/network-address-checks/#private-ranges) — RFC 1918, Tailscale's `100.64.0.0/10`, IPv6 unique-local and the rest — for an on-premise Odoo; loopback, link-local, cloud-metadata and reserved addresses stay refused either way. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
+Every route below that accepts an Odoo URL — create, update, sync, `test-credentials`, `list-databases` and `sync-preview` — runs the same SSRF guard. An address literal is classified as it stands; a hostname is resolved first and **every** address it answers with is classified, so a name pointing at an internal address is refused exactly like the address itself. A name that does not resolve is allowed through — it is far more likely a typo, and the request fails on its own. `list-databases` is the exception: it sends its request to the address the guard just checked rather than looking the name up again, so a name with no answer is answered with `400` and `"Could not resolve the server's host name. Check the URL for a typo."`, and nothing is contacted. `ALLOW_PRIVATE_URLS=1` additionally allows the [private ranges](/reference/network-address-checks/#private-ranges) — RFC 1918, Tailscale's `100.64.0.0/10`, IPv6 unique-local and the rest — for an on-premise Odoo; loopback, link-local, cloud-metadata and reserved addresses stay refused either way. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network). An Odoo URL longer than 2048 characters is rejected with `400`.
 
 ### `GET /api/integrations`
 
@@ -1781,7 +1854,7 @@ Returns the decrypted credentials for a connection, auto-refreshing an expired O
 | Status | Meaning                                                                                                                                        |
 | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `200`  | Credentials returned                                                                                                                           |
-| `400`  | `agentId` missing                                                                                                                              |
+| `400`  | `agentId` missing, longer than 128 characters, or containing anything but letters, digits, `-` and `_` (no audit row: malformed, not denied)   |
 | `401`  | Gateway token missing or wrong; the plugins retry it for about 3.75 s before giving up                                                         |
 | `403`  | The agent is not granted this connection, the connection is still `pending`, or its stored Odoo URL / IMAP / SMTP host fails the address check |
 | `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                |
@@ -1896,16 +1969,16 @@ Get the current enterprise license status and seat usage. Any authenticated user
 }
 ```
 
-| Field           | Type           | Description                                                                                                    |
-| --------------- | -------------- | -------------------------------------------------------------------------------------------------------------- |
-| `enterprise`    | boolean        | Whether an active enterprise license is present                                                                |
-| `type`          | string \| null | `"trial"` or `"paid"`. `null` when no license is active.                                                       |
-| `org`           | string \| null | Organisation name encoded in the license token. `null` when no license is active.                              |
-| `expiresAt`     | string \| null | ISO 8601 expiry timestamp. `null` for non-expiring tokens or when no license is active.                        |
-| `daysRemaining` | number \| null | Days until the key expires. `null` when the key has no expiry or no license is active.                         |
-| `managedByEnv`  | boolean        | `true` when the key comes from the `PINCHY_ENTERPRISE_KEY` environment variable (read-only in the Settings UI) |
-| `seatsUsed`     | number         | Number of seats currently in use: active users + valid pending invitations                                     |
-| `maxUsers`      | number         | Maximum seats allowed by the license. `0` means unlimited.                                                     |
+| Field           | Type           | Description                                                                                                                                                |
+| --------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enterprise`    | boolean        | Whether an active enterprise license is present                                                                                                            |
+| `type`          | string \| null | `"trial"` or `"paid"`. `null` when no license is active.                                                                                                   |
+| `org`           | string \| null | Organisation name encoded in the license token. `null` when no license is active.                                                                          |
+| `expiresAt`     | string \| null | ISO 8601 expiry timestamp. `null` for non-expiring tokens or when no license is active.                                                                    |
+| `daysRemaining` | number \| null | Days until the key expires, rounded up: a key with hours left counts as `1`, `0` means expired. `null` when the key has no expiry or no license is active. |
+| `managedByEnv`  | boolean        | `true` when the key comes from the `PINCHY_ENTERPRISE_KEY` environment variable (read-only in the Settings UI)                                             |
+| `seatsUsed`     | number         | Number of seats currently in use: active users + valid pending invitations                                                                                 |
+| `maxUsers`      | number         | Maximum seats allowed by the license. `0` means unlimited.                                                                                                 |
 
 **Seat cap behaviour:** the seat cap is a **soft cap with a 20% grace window**. When `maxUsers > 0`, invites keep working up to `floor(1.2 * maxUsers)` seats (for example 12 on a 10-seat license); in the 100–120% grace band admins see a notice but invites still succeed and nothing is blocked. Only when `seatsUsed >= floor(1.2 * maxUsers)` is the **Invite User** button disabled and the API rejects new invitations with `403` (the response includes `graceCap`). Existing users are never affected. See [Enterprise Setup — Seat cap enforcement](/guides/enterprise-setup/#seat-cap-enforcement) for the full explanation.
 
@@ -1937,7 +2010,7 @@ The key is verified **before** it is stored. A key Pinchy refuses is never writt
 }
 ```
 
-`daysRemaining` counts from the moment of the request, so it moves while `expiresAt` stays put.
+`daysRemaining` counts from the moment of the request and rounds up, so a 7-day key issued today reads `7`. It moves while `expiresAt` stays put.
 
 **Errors:**
 
@@ -2148,10 +2221,10 @@ Approve or deny one of your own pending confirmations. The agent's tool call is 
 
 **Request body:**
 
-| Field      | Type   | Required | Description                                           |
-| ---------- | ------ | -------- | ----------------------------------------------------- |
-| `decision` | string | Yes      | `approve` or `deny`                                   |
-| `reason`   | string | No       | Why, up to 500 characters — recorded in the audit row |
+| Field      | Type   | Required | Description                                                                                                  |
+| ---------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------ |
+| `decision` | string | Yes      | `approve` or `deny`                                                                                          |
+| `reason`   | string | No       | Why, up to 500 characters — recorded in the audit row, with any email address replaced by `<email-redacted>` |
 
 **Response:**
 
@@ -2291,6 +2364,8 @@ Retrieve a paginated, filterable audit log. **Admin only.**
   "limit": 50
 }
 ```
+
+`actorName` is resolved when the log is read: a user's current name, an agent's current name for `actorType: "agent"` rows, the key's name for `api_key` rows (snapshotted into `detail` when the row was written), and a readable label for `system` rows (for example `"Scheduled reindex"` for `kb-index-scheduler`). It is `null` when nothing resolves — an erased user, or an agent that no longer exists. `actorDeleted` is `true` for a deactivated user or a deleted agent. `actorId` is always the raw value the row was written with.
 
 `outcome` is one of `"success"` or `"failure"`. `error` is `null` for successes and a short error message for failures (e.g. `"seat_cap"` on a blocked invite). Both fields are part of the HMAC-signed v2 row shape.
 

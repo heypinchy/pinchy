@@ -9,6 +9,7 @@ import {
   localClock,
   nextIndexRun,
   parseIndexSchedule,
+  slotInstant,
   type IndexSchedule,
 } from "@/lib/knowledge/index-schedule";
 
@@ -98,24 +99,78 @@ describe("isSlotDue", () => {
 
 describe("nextIndexRun", () => {
   it("is tonight while today's slot is still ahead", () => {
-    expect(nextIndexRun({ date: "2026-10-17", minutes: 60 }, NIGHTLY)).toEqual({
+    expect(nextIndexRun({ date: "2026-10-17", minutes: 60 }, NIGHTLY, "UTC")).toEqual({
       date: "2026-10-17",
       time: "02:00",
       day: "today",
+      at: "2026-10-17T02:00:00.000Z",
     });
   });
 
   it("is tomorrow once today's slot has passed", () => {
-    expect(nextIndexRun({ date: "2026-10-17", minutes: 600 }, NIGHTLY)).toEqual({
+    expect(nextIndexRun({ date: "2026-10-17", minutes: 600 }, NIGHTLY, "UTC")).toEqual({
       date: "2026-10-18",
       time: "02:00",
       day: "tomorrow",
+      at: "2026-10-18T02:00:00.000Z",
     });
   });
 
+  // The instant is what lets a viewer in another zone read the run in their
+  // own time: 02:00 in Vienna is 00:00 UTC in summer and 01:00 UTC in winter.
+  it("carries the instant of the run, read in the org timezone", () => {
+    expect(nextIndexRun({ date: "2026-07-17", minutes: 60 }, NIGHTLY, "Europe/Vienna")?.at).toBe(
+      "2026-07-17T00:00:00.000Z"
+    );
+    expect(nextIndexRun({ date: "2026-12-17", minutes: 60 }, NIGHTLY, "Europe/Vienna")?.at).toBe(
+      "2026-12-17T01:00:00.000Z"
+    );
+  });
+
   it("is nothing while the schedule is off", () => {
-    expect(nextIndexRun({ date: "2026-10-17", minutes: 60 }, { ...NIGHTLY, enabled: false })).toBe(
-      null
+    expect(
+      nextIndexRun({ date: "2026-10-17", minutes: 60 }, { ...NIGHTLY, enabled: false }, "UTC")
+    ).toBe(null);
+  });
+});
+
+// The instant a slot is taken at — the first moment the org-local clock on
+// that date reaches the scheduled time. That is the same rule isSlotDue
+// applies, so the two cannot disagree on the nights the clock changes.
+describe("slotInstant", () => {
+  it("reads the time in the org timezone", () => {
+    expect(slotInstant("2026-10-17", "02:00", "UTC").toISOString()).toBe(
+      "2026-10-17T02:00:00.000Z"
+    );
+    expect(slotInstant("2026-10-17", "02:00", "America/New_York").toISOString()).toBe(
+      "2026-10-17T06:00:00.000Z"
+    );
+    expect(slotInstant("2026-10-17", "23:30", "Asia/Kolkata").toISOString()).toBe(
+      "2026-10-17T18:00:00.000Z"
+    );
+  });
+
+  it("is the first minute after the gap on the spring-forward night", () => {
+    // 2026-03-29 in Vienna: 02:00 never happens; the slot is due at 03:00 CEST.
+    const at = slotInstant("2026-03-29", "02:30", "Europe/Vienna");
+    expect(at.toISOString()).toBe("2026-03-29T01:00:00.000Z");
+    expect(isSlotDue(localClock(at, "Europe/Vienna"), NIGHTLY, "2026-03-28")).toBe(true);
+    expect(
+      isSlotDue(
+        localClock(new Date(at.getTime() - 60_000), "Europe/Vienna"),
+        { enabled: true, time: "02:30" },
+        "2026-03-28"
+      )
+    ).toBe(false);
+  });
+
+  it("is the first of the two on the fall-back night", () => {
+    // 2026-10-25 in Vienna: 02:00 happens at 00:00 UTC (CEST) and again at 01:00 UTC (CET).
+    expect(slotInstant("2026-10-25", "02:00", "Europe/Vienna").toISOString()).toBe(
+      "2026-10-25T00:00:00.000Z"
+    );
+    expect(slotInstant("2026-10-25", "02:30", "Europe/Vienna").toISOString()).toBe(
+      "2026-10-25T00:30:00.000Z"
     );
   });
 });

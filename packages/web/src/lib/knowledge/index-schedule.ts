@@ -129,6 +129,12 @@ export interface NextIndexRun {
   time: string;
   /** Relative to the org-local date now; the next slot is always one of the two. */
   day: "today" | "tomorrow";
+  /**
+   * The same run as an instant (ISO 8601, UTC) — what a viewer needs to read
+   * it in their own time, the way every other timestamp in the app is shown.
+   * See slotInstant for the nights the clock changes.
+   */
+  at: string;
 }
 
 /**
@@ -146,15 +152,73 @@ export interface IndexScheduleStatus extends IndexSchedule {
   lastSweep: { slot: string; startedAt: string; agentCount: number } | null;
 }
 
-/** The next slot ahead of `clock`, or null while the schedule is off. */
-export function nextIndexRun(clock: LocalClock, schedule: IndexSchedule): NextIndexRun | null {
+/** The next slot ahead of `clock` (read in `timeZone`), or null while the schedule is off. */
+export function nextIndexRun(
+  clock: LocalClock,
+  schedule: IndexSchedule,
+  timeZone: string
+): NextIndexRun | null {
   if (!schedule.enabled) return null;
   const today = clock.minutes < minutesOf(schedule.time);
+  const date = today ? clock.date : shiftDate(clock.date, 1);
   return {
-    date: today ? clock.date : shiftDate(clock.date, 1),
+    date,
     time: schedule.time,
     day: today ? "today" : "tomorrow",
+    at: slotInstant(date, schedule.time, timeZone).toISOString(),
   };
+}
+
+const MINUTE_MS = 60_000;
+
+/**
+ * The instant a slot is due: the first moment the org-local clock on `date`
+ * reaches `time` — the rule isSlotDue applies, so the two agree on the nights
+ * the clock changes. On the spring-forward night a time inside the gap is due
+ * when the clock lands after it (02:30 in Vienna is 03:00 CEST); on the
+ * fall-back night a time that happens twice is due the first time.
+ *
+ * The zone's offset is read a day either side of the slot, which brackets
+ * any transition near it. Converting the wall-clock reading with each offset
+ * gives the candidates; one whose local clock reads exactly the slot is a real
+ * occurrence, and the earlier one wins (the fall-back night). When neither
+ * does, the slot fell into a spring-forward gap, the local clock only moves
+ * forward between the two candidates, and the earliest minute there that has
+ * reached the slot is the answer. Offsets are whole minutes everywhere, so
+ * minute steps are exact.
+ */
+export function slotInstant(date: string, time: string, timeZone: string): Date {
+  const target = minutesOf(time);
+  const [y, m, d] = date.split("-").map(Number);
+  // The slot's wall-clock reading, as if it were UTC.
+  const wall = Date.UTC(y, m - 1, d) + target * MINUTE_MS;
+  const offsetAt = (instant: number): number => {
+    const clock = localClock(new Date(instant), timeZone);
+    const [cy, cm, cd] = clock.date.split("-").map(Number);
+    return Date.UTC(cy, cm - 1, cd) + clock.minutes * MINUTE_MS - instant;
+  };
+  const day = 24 * 60 * MINUTE_MS;
+  const candidates = [wall - offsetAt(wall - day), wall - offsetAt(wall + day)].sort(
+    (p, q) => p - q
+  );
+
+  for (const instant of candidates) {
+    const clock = localClock(new Date(instant), timeZone);
+    if (clock.date === date && clock.minutes === target) return new Date(instant);
+  }
+
+  const reached = (instant: number): boolean => {
+    const clock = localClock(new Date(instant), timeZone);
+    return clock.date > date || (clock.date === date && clock.minutes >= target);
+  };
+  let lo = candidates[0];
+  let hi = candidates[1];
+  while (hi - lo > MINUTE_MS) {
+    const mid = lo + Math.floor((hi - lo) / 2 / MINUTE_MS) * MINUTE_MS;
+    if (reached(mid)) hi = mid;
+    else lo = mid;
+  }
+  return new Date(hi);
 }
 
 /** The fields of an agent row that decide whether the nightly sweep reindexes it. */

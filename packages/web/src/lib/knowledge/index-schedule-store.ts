@@ -132,7 +132,7 @@ export async function getIndexScheduleStatus(now: Date = new Date()): Promise<In
   return {
     ...schedule,
     timezone,
-    nextRun: nextIndexRun(localClock(now, timezone), schedule),
+    nextRun: nextIndexRun(localClock(now, timezone), schedule, timezone),
     currentSweep: state.sweep
       ? {
           slot: state.sweep.slot,

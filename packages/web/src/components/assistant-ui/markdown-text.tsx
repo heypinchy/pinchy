@@ -22,6 +22,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import {
   remarkSourceLinks,
   buildSourceDownloads,
+  buildSourceViewerUrl,
   parseSourceHref,
 } from "@/lib/knowledge/source-links";
 import { isSpreadsheetFile } from "@/lib/knowledge/office-formats";
@@ -195,8 +196,10 @@ const defaultComponents = memoizeMarkdownComponents({
         // what the reader is shown and what they can take away can never
         // describe two different documents. For an Office source that is the
         // original next to its converted PDF (#939).
+        // The viewer opens the same document under a url ending in its name,
+        // which is what the browser's PDF viewer titles it by (#1268).
         <PdfDialog
-          url={href}
+          url={buildSourceViewerUrl(href) ?? href}
           title={source.path}
           page={source.locator?.kind === "page" ? source.locator.page : null}
           downloads={buildSourceDownloads(href) ?? undefined}

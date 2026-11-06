@@ -119,7 +119,9 @@ export async function POST(request: NextRequest) {
       resource: `agent:${agentId}`,
       detail: {
         agent: { id: agentId, name: agent?.name ?? null },
-        requester: { id: requesterId, name: await requesterName() },
+        // Name only: `detail` is immutable, so a users.id here is out of reach
+        // of crypto-erasure (#824).
+        requester: { name: await requesterName() },
         toolName,
         argsDigest,
         reason: "too-large-to-show",
@@ -164,7 +166,7 @@ export async function POST(request: NextRequest) {
       detail: {
         request: { id: result.requestId },
         agent: { id: agentId, name: agent?.name ?? null },
-        requester: { id: requesterId, name: await requesterName() },
+        requester: { name: await requesterName() },
         toolName,
         argsDigest,
       },

@@ -270,7 +270,7 @@ Developing against an Odoo on your own machine? On OrbStack, `host.docker.intern
 :::note
 Two gaps remain, and we'd rather name them.
 
-- **DNS rebinding.** The check resolves the hostname, and the Odoo client resolves it again a moment later to connect, so a DNS server that answers differently the second time isn't caught. Closing it would mean pinning the Odoo client's connection to the address we checked, which it doesn't support yet. If that matters for your network, use an IP address or a name your own DNS controls.
+- **DNS rebinding.** The check resolves the hostname, and the Odoo client resolves it again a moment later to connect, so a DNS server that answers differently the second time isn't caught. Listing databases is the exception: Pinchy sends that request to the address it just checked, and doesn't contact a hostname that doesn't resolve. Testing credentials, previewing and syncing the schema, and the agent's Odoo tools still resolve it again — closing that would mean pinning the Odoo client's connection to the address we checked, which it doesn't support yet. If that matters for your network, use an IP address or a name your own DNS controls.
 - **A name only the agent runtime knows.** Pinchy runs the check in its own container; the Odoo tools connect from the agent runtime's (`openclaw`). Our `docker-compose.yml` gives both containers the same extra host names, so `ollama.local` — the Docker host — is checked as the Docker host's address. If you add `extra_hosts` entries of your own to the `openclaw` service, add them to `pinchy` too: a name the check can't resolve is let through, and the runtime then connects wherever its own entry points.
   :::
 

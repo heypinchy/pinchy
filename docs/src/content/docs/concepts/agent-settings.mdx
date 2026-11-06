@@ -37,7 +37,7 @@ The General tab controls the agent's identity and the AI model it uses.
 
 Below the form fields, the tab shows the **agent type** — either "Personal agent" or "Shared agent." Personal agents are private to their owner with isolated memory and conversations. Shared agents are accessible to all team members, and memory from all conversations is shared.
 
-**Starter prompts** are clickable suggestion chips shown in an empty chat with this agent. They lower the entry barrier for role-specific agents — for example "Summarize my latest HR tickets" on an HR assistant. Clicking a chip sends that prompt to the agent. Most templates ship with a few sensible starter prompts already filled in; edit them, add your own with **Add prompt**, or clear the list for no chips. The agent's greeting message is always shown regardless.
+**Starter prompts** are clickable suggestion chips shown in an empty chat with this agent. They lower the entry barrier for role-specific agents — for example "Summarize my latest HR tickets" on an HR assistant. Clicking a chip sends that prompt to the agent. Most templates ship with a few sensible starter prompts already filled in; edit them, add your own with **Add prompt**, or clear the list for no chips. **Knowledge Base** and **Custom Agent** start with none: a Custom Agent has no role to suggest prompts for, and a Knowledge Base can't know what your documents cover or which language your team uses, so any default would name a topic you may not have. The agent's greeting message is always shown regardless.
 
 The **Danger Zone** at the bottom of the General tab lets admins delete shared agents. Personal agents cannot be deleted.
 
@@ -142,7 +142,7 @@ New agents are created with **Restricted** visibility by default. This lets admi
 
 ### Group assignment
 
-When visibility is set to **Restricted**, a group picker appears listing all groups configured in **Settings**. Check one or more groups to grant their members access. If no groups are selected, only admins can see the agent.
+When visibility is set to **Restricted**, a group picker appears listing all groups configured in **Settings**. Check one or more groups to grant their members access. If no groups are selected, only admins can see the agent — the tab says so until you pick one. Agents in that state are also listed in **Settings → License**; see [Activating a license on an instance that already has agents](/concepts/groups/#activating-a-license-on-an-instance-that-already-has-agents).
 
 ## Telegram tab
 
@@ -203,10 +203,12 @@ Agents are created from the **Create New Agent** page. Pinchy ships with pre-con
 
 The generic starting points are:
 
-- **Knowledge Base** — pre-configured with safe file tools for answering questions from directories you select
+- **Knowledge Base** — pre-configured with knowledge search for answering questions from directories you select
 - **Custom Agent** — starts with **no permissions at all**, for when you want to configure everything yourself. Every other template arrives with **Memory** and **Create files** already on.
 
-Domain-specific templates (e.g., Sales Analyst, HR Analyst, Contract Analyzer) appear in the template picker when the corresponding integration is connected or their required capabilities are available. See [Connect Odoo](/guides/connect-odoo/#agent-templates) for the Odoo template list.
+Domain-specific templates (e.g., Sales Analyst, HR Analyst, Contract Analyzer) are grouped by theme. A template whose integration isn't connected yet sits behind a collapsed line such as "5 templates available with Odoo · Set up connection →", so you can still see what's there. Once Odoo is connected, a template that needs an Odoo module you don't have sits behind "1 more with additional Odoo modules". A template that needs a model capability your provider lacks — every template except Custom Agent needs a model that can read images — shows as a greyed-out card with a tooltip; see [Ollama setup](/guides/ollama-setup/#vision-templates).
+
+The groups are ordered by what your instance can run today. Every group with at least one template you can create right now comes first; groups where nothing is usable yet move to the end — before you connect Odoo, that's the groups made only of Odoo templates: Sales & Customers, Finance & Procurement and Operations. Within each half the order stays the same: **Knowledge & Compliance** first, because its templates need no integration, then Sales & Customers, Finance & Procurement, HR & Recruiting, Operations, Marketing & Web and Email. Connect an integration and its groups move up on their own. See [Connect Odoo](/guides/connect-odoo/#agent-templates) for the Odoo template list.
 
 Every agent you create is a **shared agent** — the only personal agent is the Smithers that Pinchy auto-creates for each user. This is why the **Permissions** and **Access** tabs, and therefore integrations like email or Odoo, are always available on agents you create but never on a personal Smithers. See [Integrations](/concepts/integrations/#integrations-are-admin-managed-and-attach-to-shared-agents) for what this means for connecting a private mailbox (short version: private per-user mailboxes aren't supported).
 

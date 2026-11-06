@@ -169,13 +169,13 @@ describe("approval card placement", () => {
       await screen.findByText(/Odoo needs your confirmation/i);
       expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
 
-      fireEvent.click(screen.getByRole("button", { name: /review .* for Smithers/i }));
+      fireEvent.click(screen.getByRole("button", { name: /review the request from Smithers/i }));
       expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
       expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(1);
 
-      fireEvent.click(screen.getByRole("button", { name: /review .* for Odoo/i }));
+      fireEvent.click(screen.getByRole("button", { name: /review the request from Odoo/i }));
       expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
-      expect(screen.getByText("x")).toBeInTheDocument();
+      expect(screen.getByText("X")).toBeInTheDocument();
       expect(screen.queryByText("recordId")).toBeNull();
     });
 
@@ -201,7 +201,7 @@ describe("approval card placement", () => {
       await screen.findByText(/Smithers needs your confirmation/i);
 
       expect(screen.getByRole("button", { name: /approve/i })).toBe(approve);
-      expect(screen.getByText("x")).toBeInTheDocument();
+      expect(screen.getByText("X")).toBeInTheDocument();
       const thread = screen
         .getAllByRole("region", { name: /pending approvals/i })
         .find((region) => within(region).queryByText(/Smithers/));

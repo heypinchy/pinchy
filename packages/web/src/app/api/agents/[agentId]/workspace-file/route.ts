@@ -53,7 +53,47 @@ import {
   weakStoredFileEtag,
 } from "@/lib/session-scoped-cache";
 
-type Params = { params: Promise<{ agentId: string }> };
+/**
+ * `name` is present only when the request arrived through `[name]/route.ts`,
+ * which re-exports this handler: the citation viewer's url, ending in the
+ * document's name so a browser's PDF viewer has something to title it by
+ * (#1268). It never selects anything — see `acceptedViewerNames`.
+ */
+type Params = { params: Promise<{ agentId: string; name?: string }> };
+
+/**
+ * The name a viewer url carries: its last path segment, decoded exactly once —
+ * which is also how the browser's viewer reads it to title the document. Read
+ * from the url rather than from `params.name`, so the check does not hinge on
+ * whether the framework hands a dynamic param over decoded: if it did not,
+ * every name with a space or an umlaut would 404. Decoding once more would let
+ * `a%2520b.pdf` stand for `a b.pdf`. Null for an undecodable segment.
+ */
+function viewerNameFromUrl(pathname: string): string | null {
+  try {
+    return decodeURIComponent(pathname.slice(pathname.lastIndexOf("/") + 1));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The names a viewer url may carry for these bytes, compared exactly.
+ *
+ * Two, because the requested path may end in a link (a grant pointing at a
+ * single file on a mounted share, say): the citation — and so the viewer url —
+ * carries the LINK's name, the resolved path the target's. Both name this document. For an Office source each is swapped to
+ * its converted name when the converted PDF is what is served.
+ */
+function acceptedViewerNames(
+  requestedPath: string,
+  realPath: string,
+  converted: boolean
+): string[] {
+  return [basename(realPath), basename(requestedPath)].map((name) =>
+    converted ? convertedPdfName(name) : name
+  );
+}
 
 /**
  * Which representation of one document the caller wants.
@@ -241,7 +281,7 @@ function sourceAccessAuditEntry(args: {
  * whether a given out-of-scope path exists.
  */
 export const GET = withAuth<Params>(async (req, { params }, session) => {
-  const { agentId } = await params;
+  const { agentId, name } = await params;
 
   // Access check FIRST — same gate as the chat itself, and the same helper
   // every other agent-scoped route uses (see uploads/[filename]/route.ts,
@@ -527,6 +567,22 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const servedPath = artifactPath ?? realPath;
   const servedName = artifactPath ? convertedPdfName(documentName) : documentName;
   const representation: Variant = artifactPath ? "converted" : "original";
+
+  // A viewer url names the document it shows. A name that is not the name of
+  // these bytes would title one document while serving another — in front of a
+  // reader whose whole purpose is checking a claim — so it is refused like a
+  // missing file. Decided AFTER the access check, so varying the name teaches
+  // a probe nothing about a path it may not read.
+  if (
+    name !== undefined &&
+    !acceptedViewerNames(requestedPath, realPath, artifactPath !== null).includes(
+      viewerNameFromUrl(req.nextUrl.pathname) ?? ""
+    )
+  ) {
+    await source.handle.close();
+    auditFailure("name_mismatch");
+    return new NextResponse("Not found", { status: 404 });
+  }
 
   // The original is served from the verified descriptor itself. The artifact
   // is opened from the store — a path derived from the content key, which no

@@ -162,6 +162,32 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
     // OpenClaw container could name any connectionId and get back a decrypted
     // Odoo password or mailbox token for an agent it had nothing to do with.
 
+    it.each([
+      ["oversized", "a".repeat(5000)],
+      ["just over the cap", "a".repeat(129)],
+      ["with a space", "agent 1"],
+      ["with a newline", "agent\n1"],
+      ["with a colon", "agent:1"],
+    ])("rejects a malformed agentId (%s) with 400 and writes no audit row", async (_label, bad) => {
+      const res = await GET(makeRequest("conn-1", bad), makeParams("conn-1"));
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toMatch(/agentId/);
+      expect(authorizeAgentConnection).not.toHaveBeenCalled();
+      expect(deferAuditLog).not.toHaveBeenCalled();
+      expect(decrypt).not.toHaveBeenCalled();
+    });
+
+    it("accepts a UUID agentId and a 128-char id into the grant check", async () => {
+      const uuid = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
+      await GET(makeRequest("conn-1", uuid), makeParams("conn-1"));
+      expect(authorizeAgentConnection).toHaveBeenCalledWith(uuid, "conn-1");
+      const max = "a".repeat(128);
+      await GET(makeRequest("conn-1", max), makeParams("conn-1"));
+      expect(authorizeAgentConnection).toHaveBeenCalledWith(max, "conn-1");
+    });
+
     it("refuses to serve credentials when no agent identifies itself", async () => {
       const res = await GET(makeRequest("conn-1", null), makeParams("conn-1"));
 
