@@ -187,7 +187,7 @@ If you need to roll back after an upgrade:
 
 The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint files to; those live on the `pinchy-kb-artifacts` volume. When the version you upgraded to converts those files differently, it keeps the older PDFs until it has converted again every file a knowledge-base agent can search, and only then deletes them. Roll back before that and nothing is lost. Roll back after it, and the older version still finds every such file in the search, but a citation of one that hasn't changed since won't open its preview, because the PDF it looks for is gone; the original file downloads as usual. If you want previews to survive a rollback, back up that volume alongside the database, the way [Backup & recovery](/guides/hardening/#backup--recovery) describes for the other volumes, and restore it with the database.
 
-## Upgrading from v0.9.1 to %%PINCHY_VERSION%%
+## Upgrading from v0.9.1 to v0.10.0
 
 ### Breaking changes
 
@@ -278,7 +278,7 @@ The standard flow applies:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=v0.10.0/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
@@ -341,7 +341,7 @@ It takes effect the first time you start with the new compose file, so nothing c
 
 ```bash
 cd /opt/pinchy
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.10.0/docker-compose.yml -o docker-compose.yml
 ```
 
 **If you already have a value in `.env`, that switches the key your audit trail is signed with.** Entries written before the switch keep their old signature, and they're neither lost nor damaged: Pinchy still holds the previous key in the `pinchy-secrets` volume, so integrity verification reports those rows as signed with an earlier secret instead of flagging them as tampered. The hash chain is unaffected either way — it links each row to its predecessor's stored signature, whichever key produced it.
