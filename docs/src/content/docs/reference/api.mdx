@@ -395,7 +395,7 @@ Whether retrying the caller's last failed run in this conversation could duplica
 | ------------- | --------- | ---------------------------------------------------------------------- |
 | `sideEffects` | `boolean` | `true` when the failed run had already executed at least one tool call |
 
-The chat asks this when you press Retry, not when the run failed — see [Retrying after the agent already acted](/guides/retry-messages/#retrying-after-the-agent-already-acted). The time window comes from the stored run, never from the request, so this cannot be used to query an agent's tool history.
+The chat asks this when you press Retry, not when the run failed — see [Retrying after the agent already acted](/guides/retry-messages/#retrying-after-the-agent-already-acted). The time window comes from the stored run, never from the request, and only tool calls made on the caller's behalf count — on a shared agent, another member's activity in the same window never turns the answer to `true`. So this cannot be used to query an agent's tool history.
 
 ### `GET /api/agents/:agentId/uploads/:filename`
 

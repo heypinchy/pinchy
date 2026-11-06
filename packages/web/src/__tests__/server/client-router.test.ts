@@ -413,8 +413,10 @@ describe("ClientRouter", () => {
       const runStartedAt = (entry as { runStartedAt: Date }).runStartedAt;
       expect(runStartedAt).toBeInstanceOf(Date);
       // The same bound `agentRanToolSince` was asked with, so re-deriving later
-      // covers the same run rather than a wider or narrower slice of history.
-      expect(mockAgentRanToolSince).toHaveBeenLastCalledWith("agent-1", runStartedAt);
+      // covers the same run rather than a wider or narrower slice of history —
+      // and about this user's tools only, never a shared agent's other members
+      // (#1274).
+      expect(mockAgentRanToolSince).toHaveBeenLastCalledWith("agent-1", "user-1", runStartedAt);
       // Starts before the run and not in the future — a window that opens after
       // the first tool call would miss exactly what it exists to find.
       expect(runStartedAt.getTime()).toBeLessThanOrEqual(before);
