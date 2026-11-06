@@ -248,9 +248,9 @@ export const ANSWER_LANGUAGE_RULE =
 /** The note added to this turn's message when its language could be named. */
 export function turnLanguageNote(language: string): string {
   return (
-    `(This message is in ${language}. Write your whole reply in ${language} unless it asks for ` +
-    "another language, even if the documents, your name, your instructions or earlier messages " +
-    "are in another language.)"
+    `(This message is in ${language}. Write your whole reply in ${language} unless the user has ` +
+    "asked for another language, even if the documents, your name, your instructions or earlier " +
+    "messages are in another language.)"
   );
 }
 
@@ -369,6 +369,12 @@ const plugin = {
     // prefix changed. The only one Pinchy offers, Claude Haiku 5.5, runs with
     // thinking off on the pinned OpenClaw version, and a test fails when that
     // version changes so the question gets asked again.
+    //
+    // It also costs prompt caching: a cache entry written over a message with
+    // its note no longer matches when that message is replayed without it, so
+    // the conversation history is re-sent uncached on every turn. Putting the
+    // session's language in the fixed rule instead keeps the cache, and
+    // measured 88 % instead of 94-98 %. The note won on correctness.
     //
     // Measured (German-named agent, German sources, Haiku 5.5): the tool
     // result alone ~80 % right, with the rule and the note 94 %.

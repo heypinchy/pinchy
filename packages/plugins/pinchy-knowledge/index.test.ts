@@ -789,9 +789,9 @@ describe("answer language (#1296)", () => {
       { agentId: "agent-1", sessionKey: "s1" }
     ) as { appendContext?: string };
     expect(result.appendContext).toBe(
-      "(This message is in Polish. Write your whole reply in Polish unless it asks for another " +
-        "language, even if the documents, your name, your instructions or earlier messages are in " +
-        "another language.)"
+      "(This message is in Polish. Write your whole reply in Polish unless the user has asked for " +
+        "another language, even if the documents, your name, your instructions or earlier messages " +
+        "are in another language.)"
     );
   });
 
