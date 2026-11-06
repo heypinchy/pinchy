@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeDetail } from "@/lib/audit-sanitize";
+import { boundAgentIdForAudit, sanitizeDetail } from "@/lib/audit-sanitize";
 
 describe("sanitizeDetail", () => {
   describe("Date serialization", () => {
@@ -378,5 +378,27 @@ describe("sanitizeDetail", () => {
       const result = sanitizeDetail(input) as any;
       expect(result.result).toBe("APP_NAME=pinchy\nDEBUG=true\nPORT=3000");
     });
+  });
+});
+
+describe("boundAgentIdForAudit", () => {
+  it("leaves legitimate ids untouched, including OpenClaw's own", () => {
+    for (const id of ["main", "unknown-agent", "agent_1", "3f2b8c1e-aaaa-4bbb-8ccc-0123456789ab"]) {
+      expect(boundAgentIdForAudit(id)).toBe(id);
+    }
+  });
+
+  it("caps the length at 128 characters", () => {
+    expect(boundAgentIdForAudit("a".repeat(5000))).toHaveLength(128);
+  });
+
+  it("replaces characters outside [A-Za-z0-9_-]", () => {
+    expect(boundAgentIdForAudit("a b:c\nd/../é<script>")).toBe(
+      "a_b_c_d_.._é_script_".replace(/[^A-Za-z0-9_-]/g, "_")
+    );
+  });
+
+  it("never throws or returns an empty string", () => {
+    expect(boundAgentIdForAudit("")).toBe("unknown");
   });
 });

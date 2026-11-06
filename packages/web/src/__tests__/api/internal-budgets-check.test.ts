@@ -241,4 +241,21 @@ describe("POST /api/internal/budgets/check", () => {
       expect.objectContaining({ actorType: "user", actorId: "User-Abc" })
     );
   });
+
+  it("bounds a caller-supplied agentId in the audit row but still blocks and answers as before", async () => {
+    getExhaustedBlockingBudgetMock.mockResolvedValue({ ...agentBudget(), agent: null });
+    agentsFindFirst.mockResolvedValue(undefined);
+    const hostile = `x${"y".repeat(190)}<b>\n`;
+    const res = await POST(makeRequest({ agentId: hostile }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).blocked).toBe(true);
+    const entry = appendAuditLogMock.mock.calls[0][0];
+    expect(entry.actorId.length).toBeLessThanOrEqual(128);
+    expect(entry.resource.length).toBeLessThanOrEqual("agent:".length + 128);
+    expect(entry.detail.agent.id.length).toBeLessThanOrEqual(128);
+    expect(entry.detail.agent.name.length).toBeLessThanOrEqual(128);
+    expect(JSON.stringify(entry)).not.toMatch(/[<>\n]/);
+    // the budget lookup still sees the raw id
+    expect(getExhaustedBlockingBudgetMock).toHaveBeenCalledWith(hostile);
+  });
 });

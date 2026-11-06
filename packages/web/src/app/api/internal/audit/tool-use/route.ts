@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
-import { sanitizeDetail } from "@/lib/audit-sanitize";
+import { boundAgentIdForAudit, sanitizeDetail } from "@/lib/audit-sanitize";
 import { redactEmailToolParamsForAudit } from "@/lib/audit-tool-params";
 import { parseRequestBody } from "@/lib/api-validation";
 import { directSessionUserId } from "@/lib/session-key";
@@ -225,7 +225,8 @@ export async function POST(request: NextRequest) {
   const rawUserId = directSessionUserId(payload.sessionKey);
   const userId = rawUserId ? await canonicalizeUserId(rawUserId) : undefined;
   const actorType = userId ? "user" : "agent";
-  const actorId = userId ?? payload.agentId;
+  const auditAgentId = boundAgentIdForAudit(payload.agentId);
+  const actorId = userId ? boundAgentIdForAudit(userId) : auditAgentId;
 
   const sanitizedDetail = sanitizeDetail(detail);
 
@@ -241,7 +242,7 @@ export async function POST(request: NextRequest) {
       actorId,
       // Change 2: eventType becomes tool.<toolName>
       eventType: `tool.${payload.toolName}`,
-      resource: `agent:${payload.agentId}`,
+      resource: `agent:${auditAgentId}`,
       detail: sanitizedDetail,
       outcome,
       error,
