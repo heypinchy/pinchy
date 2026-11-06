@@ -2,7 +2,13 @@ import { mkdir, writeFile, access, chown } from "node:fs/promises";
 import { basename } from "node:path";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { MAX_ATTACHMENT_BYTES, truncateEmailBody } from "./email-adapter.js";
-import { deliveryMimeType, isServableDelivery } from "./delivery-mime.js";
+import {
+  deliveryMimeType,
+  extensionForServableMime,
+  isServableDelivery,
+  normalizeMimeType,
+  safeMimeLabel,
+} from "./delivery-mime.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 import { parseSingleRecipient } from "./recipient.js";
 import { refusingUnknownParams } from "./unknown-params.js";
@@ -65,10 +71,11 @@ const EXT_BY_MIME = new Map<string, string>([
 ]);
 
 function extensionForMimeType(mimeType: string | undefined): string {
-  if (!mimeType) return ".bin";
-  // Same normalization as deliveryMimeType: `text/csv; charset=utf-8` must
-  // name the file `.csv`, because the serving route types text by extension.
-  return EXT_BY_MIME.get(mimeType.split(";")[0].trim().toLowerCase()) ?? ".bin";
+  // Same normalization as deliveryMimeType, and every servable type gets the
+  // extension the serving route types it by: a nameless `text/csv; charset=…`
+  // or `application/json` saved as `.bin` would be offered and then refused.
+  const normalized = normalizeMimeType(mimeType);
+  return EXT_BY_MIME.get(normalized) ?? extensionForServableMime(normalized) ?? ".bin";
 }
 
 function humanReadableSize(bytes: number): string {
@@ -1043,7 +1050,7 @@ const plugin = {
                 const list = handleizedAttachments
                   .map(
                     (a) =>
-                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${a.mimeType}, size: ${humanReadableSize(a.size)}`
+                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${safeMimeLabel(a.mimeType)}, size: ${humanReadableSize(a.size)}`
                   )
                   .join("\n");
                 content.push({

@@ -61,6 +61,64 @@ export const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Non-canonical spellings mail clients send for servable types. Read as the
+ * canonical type, which is safe because the serving route never trusts the
+ * declared type: it sniffs binary content and types text by extension.
+ */
+export const MIME_ALIASES: Readonly<Record<string, string>> = {
+  "image/jpg": "image/jpeg",
+  "image/pjpeg": "image/jpeg",
+  "image/x-png": "image/png",
+  "application/x-pdf": "application/pdf",
+  "text/x-csv": "text/csv",
+  "application/csv": "text/csv",
+  "text/comma-separated-values": "text/csv",
+  "text/x-markdown": "text/markdown",
+  "application/x-yaml": "text/yaml",
+  "text/x-yaml": "text/yaml",
+};
+
+/**
+ * Servable type → the extension to name a nameless attachment with. Derived
+ * from MIME_BY_EXTENSION (first extension wins) so there is no second list:
+ * the serving route types text by extension, so a nameless CSV saved as
+ * `.bin` would be offered and then refused.
+ */
+const EXTENSION_BY_MIME: ReadonlyMap<string, string> = (() => {
+  const byMime = new Map<string, string>();
+  for (const [ext, mime] of Object.entries(MIME_BY_EXTENSION)) {
+    if (!byMime.has(mime)) byMime.set(mime, ext);
+  }
+  // The pre-standard vCard spelling is servable as itself, not an alias.
+  byMime.set("text/x-vcard", ".vcf");
+  return byMime;
+})();
+
+/** Lower-case, drop parameters, resolve aliases: `Image/JPG; x=y` → `image/jpeg`. */
+export function normalizeMimeType(declared: string | undefined): string {
+  const base = (declared ?? "").split(";")[0].trim().toLowerCase();
+  return MIME_ALIASES[base] ?? base;
+}
+
+/** The extension for a servable (normalized) type, if it has one. */
+export function extensionForServableMime(mimeType: string): string | undefined {
+  return EXTENSION_BY_MIME.get(mimeType);
+}
+
+// One `type/subtype` token (RFC 6838 restricted-name characters), bounded.
+const MIME_TOKEN_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
+
+/**
+ * The declared type, normalized, for text the model reads as the plugin's own
+ * words. The type is sender-controlled and unbounded; anything that is not a
+ * single well-formed token is shown as octet-stream instead.
+ */
+export function safeMimeLabel(declared: string | undefined): string {
+  const normalized = normalizeMimeType(declared);
+  return MIME_TOKEN_RE.test(normalized) ? normalized : "application/octet-stream";
+}
+
+/**
  * Declared types that say little about the content. Mail clients send them for
  * files they could not type: octet-stream for anything, and
  * `application/vnd.ms-excel` for a CSV (Windows associates `.csv` with Excel).
@@ -84,12 +142,12 @@ function extensionOf(filename: string): string {
 }
 
 /**
- * The type to declare for a saved attachment: the sender's type, lower-cased
- * and without parameters (`Text/CSV; charset=UTF-8` → `text/csv`), or — when
+ * The type to declare for a saved attachment: the sender's type, normalized
+ * (`Text/CSV; charset=UTF-8` → `text/csv`, `image/jpg` → `image/jpeg`), or — when
  * that type is a generic label — the type the extension names.
  */
 export function deliveryMimeType(declared: string | undefined, filename: string): string {
-  const normalized = (declared ?? "").split(";")[0].trim().toLowerCase();
+  const normalized = normalizeMimeType(declared);
   if (SERVABLE_DELIVERED_MIMES.has(normalized)) return normalized;
   if (GENERIC_LABELS.has(normalized)) {
     const fromExtension = MIME_BY_EXTENSION[extensionOf(filename)];

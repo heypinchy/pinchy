@@ -16,6 +16,7 @@ import { EXTENSION_TO_MIME } from "@/lib/attachment-mime";
 import {
   SERVABLE_DELIVERED_MIMES as PLUGIN_SERVABLE_MIMES,
   MIME_BY_EXTENSION,
+  MIME_ALIASES,
 } from "../../../../plugins/pinchy-email/delivery-mime";
 
 describe("pinchy-email delivery-mime drift guard", () => {
@@ -32,6 +33,12 @@ describe("pinchy-email delivery-mime drift guard", () => {
   it("maps extensions only to servable types", () => {
     for (const [ext, mime] of Object.entries(MIME_BY_EXTENSION)) {
       expect(SERVABLE_DELIVERED_MIMES.has(mime), `${ext} → ${mime}`).toBe(true);
+    }
+  });
+
+  it("resolves every alias to a servable type", () => {
+    for (const [alias, canonical] of Object.entries(MIME_ALIASES)) {
+      expect(SERVABLE_DELIVERED_MIMES.has(canonical), `${alias} → ${canonical}`).toBe(true);
     }
   });
 });
