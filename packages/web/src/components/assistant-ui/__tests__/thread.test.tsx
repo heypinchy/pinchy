@@ -461,9 +461,12 @@ describe("Thread first-index notice (#1280)", () => {
     const { AgentIdContext } = await import("@/components/chat");
     const { Thread } = await import("@/components/assistant-ui/thread");
 
+    // The notice sits in the footer beside the composer, which renders even
+    // while the messages are held back — so the message list (and the mock
+    // state it would need) stays out of this test.
     render(
       <AgentIdContext.Provider value="agent-1">
-        <Thread />
+        <Thread isReconcilingMessages />
       </AgentIdContext.Provider>
     );
 
