@@ -102,6 +102,19 @@ An IPv4 address is recorded exactly as it arrived. An **IPv6 address is recorded
 | `agent.instructions_changed` | A person edited the agent's Instructions (`AGENTS.md`) or Personality (`SOUL.md`)                                                                                                                                                                       |
 | `agent.model_unavailable`    | The agent's configured model returned an HTTP 5xx (server-side failure or discontinuation). One entry per `(agent, model)` per 5 minutes — repeated failures inside the window are aggregated to avoid log spam. Detail captures the upstream `ref` ID. |
 
+#### `agent.updated`
+
+Written when someone saves an agent's settings and something actually changed. `detail.changes` holds a `{ from, to }` pair for each field that moved: name, model, visibility, greeting, tagline, starter prompts, avatar, personality preset, allowed tools and plugin configuration. A change to the agent's groups adds `allowedGroups` with the groups `added` and `removed`, each as `{ id, name }`.
+
+Folder access is recorded without the folders. A folder name can name a person — `/data/hr/personnel/<name>` once you grant subfolders — and an audit entry can't be changed later, not even to erase someone's data. So in `changes.pluginConfig`, the file tools' settings show `allowedPathCount` and `writePathCount` in place of the two path lists, and any edit to the folders adds `folderAccess`:
+
+- `read`: `{ added, removed, count }` — how many readable folders were granted and taken away, and how many the agent has afterwards.
+- `write`: the same for writable folders.
+
+`folderAccess` is what shows that one folder was swapped for another: the count stays the same, so `changes.pluginConfig` doesn't move, but `added` and `removed` are both `1`. Reordering the same folders records nothing. To see which folders an agent has now, open its **Permissions** tab.
+
+A save whose settings were stored but couldn't be applied to the agent runtime is recorded with `outcome: failure` and `runtimeUpdate: { applied: false, error }`, with the same `changes`.
+
 #### `agent.memory_changed`
 
 OpenClaw maintains durable per-agent long-term memory in `~/.openclaw/agents/<agentId>/MEMORY.md` and `~/.openclaw/agents/<agentId>/memory/*.md`. Those files are reloaded into the agent's context at every session start, so they directly shape behavior in every future conversation. Memory is written in two ways:
