@@ -773,6 +773,32 @@ describe("AuditLogTable", () => {
     });
   });
 
+  it("mobile cards open their detail through a real button, not a button-role wrapper (#1300)", async () => {
+    // A card with role="button" that contains the actor/resource links is a
+    // nested interactive control (axe `nested-interactive`): screen readers
+    // flatten the links into the button's name and can't reach them.
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    const cards = document.querySelectorAll("[data-audit-card]");
+    expect(cards.length).toBeGreaterThan(0);
+    for (const card of cards) {
+      expect(card).not.toHaveAttribute("role");
+      expect(card).not.toHaveAttribute("tabindex");
+    }
+
+    const user = userEvent.setup();
+    const detailButtons = screen.getAllByRole("button", { name: "auth.login details" });
+    await user.click(detailButtons[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Entry Detail")).toBeInTheDocument();
+    });
+  });
+
   it("should render JSON detail with syntax highlighting tokens", async () => {
     const user = userEvent.setup();
     renderWithEntriesLoaded();

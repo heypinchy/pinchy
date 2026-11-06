@@ -411,7 +411,7 @@ export function ImapConnectStep({ onSuccess, onCancel, onBack }: ImapConnectStep
       ) : (
         <div className="space-y-4 rounded-md border p-3">
           {source === "guess" && (
-            <div className="flex items-start gap-2 text-sm text-amber-600 dark:text-amber-400">
+            <div className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>
                 We couldn&apos;t find your provider&apos;s settings, so these are a best guess —
