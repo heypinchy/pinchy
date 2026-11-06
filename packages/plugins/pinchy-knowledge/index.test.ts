@@ -795,6 +795,32 @@ describe("answer language (#1296)", () => {
     );
   });
 
+  it("adds the note only when the language changes, so follow-ups keep the prompt cache", async () => {
+    // The note isn't stored, so a turn that carried one replays without it and
+    // the cache written over it no longer matches. Noting only the first turn
+    // and real switches limits that to one miss per language change.
+    const { hook } = await registerWithHook();
+    const turn = (prompt: string) =>
+      hook({ prompt, messages: [] }, { agentId: "agent-1", sessionKey: "s1" }) as {
+        appendContext?: string;
+      };
+    expect(turn("Kto podpisał protokół odbioru?").appendContext).toMatch(/in Polish/);
+    expect(turn("Jaka jest maksymalna temperatura WT-450?").appendContext).toBeUndefined();
+    expect(turn("Wer hat das Protokoll unterschrieben?").appendContext).toMatch(/in German/);
+    expect(turn("Co ile godzin trzeba serwisować pompę P7?").appendContext).toMatch(/in Polish/);
+  });
+
+  it("notes each session's first turn on its own", async () => {
+    const { hook } = await registerWithHook();
+    const first = (sessionKey: string) =>
+      hook(
+        { prompt: "Kto podpisał protokół odbioru?", messages: [] },
+        { agentId: "agent-1", sessionKey }
+      ) as { appendContext?: string };
+    expect(first("a").appendContext).toMatch(/in Polish/);
+    expect(first("b").appendContext).toMatch(/in Polish/);
+  });
+
   it("adds no per-turn note when it can't tell the language", async () => {
     const { hook } = await registerWithHook();
     const result = hook(

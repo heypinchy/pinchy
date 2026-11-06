@@ -371,14 +371,16 @@ const plugin = {
     // version changes so the question gets asked again.
     //
     // It also costs prompt caching: a cache entry written over a message with
-    // its note no longer matches when that message is replayed without it, so
-    // the conversation history is re-sent uncached on every turn. Putting the
-    // session's language in the fixed rule instead keeps the cache, and
-    // measured 88 % instead of 94-98 %. The note won on correctness.
+    // its note no longer matches when that message is replayed without it. So
+    // the note goes only on the turn the language changes, one cache miss per
+    // switch instead of one per turn. (Putting the session's language in the
+    // fixed rule instead keeps the cache entirely, but measured 88 % against
+    // 94-98 % with the note.)
     //
     // Measured (German-named agent, German sources, Haiku 5.5): the tool
     // result alone ~80 % right, with the rule and the note 94 %.
     const askedQuestions = new Map<string, AskedQuestion>();
+    const notedLanguages = new Map<string, string>();
     api.on?.("before_prompt_build", (event, ctx) => {
       if (!ctx.agentId || !agentConfigs?.[ctx.agentId]) return undefined;
       const prompt = typeof event.prompt === "string" ? event.prompt : "";
@@ -394,9 +396,24 @@ const plugin = {
           }
         }
       }
+      // Only on the turn the language changes: the first turn of a session,
+      // and a real switch. Same-language follow-ups carry no note, so the
+      // history they replay stays byte-identical and keeps the prompt cache.
+      let note: string | undefined;
+      if (language && (!sessionKey || notedLanguages.get(sessionKey) !== language)) {
+        note = turnLanguageNote(language);
+        if (sessionKey) {
+          notedLanguages.delete(sessionKey);
+          notedLanguages.set(sessionKey, language);
+          if (notedLanguages.size > MAX_TRACKED_SESSIONS) {
+            const oldest = notedLanguages.keys().next().value;
+            if (oldest !== undefined) notedLanguages.delete(oldest);
+          }
+        }
+      }
       return {
         appendSystemContext: ANSWER_LANGUAGE_RULE,
-        ...(language ? { appendContext: turnLanguageNote(language) } : {}),
+        ...(note ? { appendContext: note } : {}),
       };
     });
 
