@@ -96,6 +96,7 @@ let capturedReindexProps: {
   agentId: string;
   allowedPathCount: number;
   hasUnsavedPathChanges?: boolean;
+  savedPathsKey?: string;
 } | null = null;
 
 vi.mock("@/components/knowledge-reindex-section", () => ({
@@ -103,6 +104,7 @@ vi.mock("@/components/knowledge-reindex-section", () => ({
     agentId: string;
     allowedPathCount: number;
     hasUnsavedPathChanges?: boolean;
+    savedPathsKey?: string;
   }) => {
     capturedReindexProps = props;
     return <div data-testid="knowledge-reindex-section" />;
@@ -263,7 +265,10 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
   });
 
-  it("should NOT show DirectoryPicker when no directories are provided", () => {
+  // With nothing mounted, the section used to drop the picker and leave an
+  // Index block saying "grant a directory" with nothing to grant. The empty
+  // state says where directories come from instead (#1305).
+  it("explains how to make directories available when none are mounted", () => {
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
@@ -274,7 +279,9 @@ describe("AgentSettingsPermissions", () => {
       />
     );
 
-    expect(screen.queryByText("Allowed Directories")).not.toBeInTheDocument();
+    expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
+    expect(screen.getByText(/mounted under/i)).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "docs" })).not.toBeInTheDocument();
   });
 
   it("should show DirectoryPicker when agent has allowed paths configured", () => {
@@ -353,7 +360,7 @@ describe("AgentSettingsPermissions", () => {
       expect.objectContaining({ allowedPaths: ["/data/docs"] }),
       false
     );
-    expect(capturedReindexProps).toMatchObject({ hasUnsavedPathChanges: false });
+    expect(screen.queryByText(/not saved yet/i)).not.toBeInTheDocument();
   });
 
   it("gates the reindex section on SAVED grants, not the unsaved picker selection", async () => {
@@ -368,20 +375,30 @@ describe("AgentSettingsPermissions", () => {
       />
     );
 
-    expect(capturedReindexProps).toMatchObject({
-      agentId: "agent-1",
-      allowedPathCount: 0,
-      hasUnsavedPathChanges: false,
-    });
+    expect(capturedReindexProps).toMatchObject({ agentId: "agent-1", allowedPathCount: 0 });
+    expect(screen.queryByText(/not saved yet/i)).not.toBeInTheDocument();
 
     // Tick a directory WITHOUT saving: the server still sees zero grants, so
-    // the reindex gate must not open — but the section learns about the dirt.
+    // the reindex gate must not open — and the picker says the change is
+    // not in effect yet, next to the checkbox that made it (#1305).
     await user.click(screen.getByRole("checkbox", { name: "docs" }));
 
+    // Reindex is held back until the change is saved, because it would run
+    // over the OLD folders — the product owner read the earlier "a reindex
+    // uses the saved grants" and could not tell what it meant.
     expect(capturedReindexProps).toMatchObject({
       allowedPathCount: 0,
       hasUnsavedPathChanges: true,
     });
+    const notice = screen.getByText(/not saved yet/i);
+    // Named, and in terms of what the agent will do, not of grants.
+    expect(notice).toHaveTextContent(/once you save, the agent starts reading docs/i);
+    expect(notice).toHaveTextContent(/next reindex/i);
+    // Between the folders and the Index block, not inside the latter.
+    const picker = screen.getByRole("group", { name: "Allowed Directories" });
+    const index = screen.getByTestId("knowledge-reindex-section");
+    expect(picker.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(notice.compareDocumentPosition(index) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("feeds the reindex section the saved grant count for an agent with saved paths", () => {
@@ -402,8 +419,9 @@ describe("AgentSettingsPermissions", () => {
 
     expect(capturedReindexProps).toMatchObject({
       allowedPathCount: 2,
-      hasUnsavedPathChanges: false,
+      savedPathsKey: "/data/docs|/data/reports",
     });
+    expect(screen.queryByText(/not saved yet/i)).not.toBeInTheDocument();
   });
 
   it("hides the reindex section for non-admins", () => {
@@ -418,6 +436,71 @@ describe("AgentSettingsPermissions", () => {
     );
 
     expect(screen.queryByTestId("knowledge-reindex-section")).not.toBeInTheDocument();
+  });
+
+  it("says which saved directory the agent stops reading, and that nothing is deleted", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs", "/data/reports"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "reports" }));
+
+    const notice = screen.getByText(/not saved yet/i);
+    expect(notice).toHaveTextContent(/the agent stops reading reports/i);
+    expect(notice).toHaveTextContent(/documents from folders you untick stay in the index/i);
+    expect(notice).not.toHaveTextContent(/starts reading/i);
+  });
+
+  it("names both directions when folders are added and removed in one change", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/reports"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "docs" }));
+    await user.click(screen.getByRole("checkbox", { name: "reports" }));
+
+    expect(screen.getByText(/not saved yet/i)).toHaveTextContent(
+      /once you save, the agent starts reading docs, and it stops reading reports\./i
+    );
+  });
+
+  // A non-admin has no Reindex button, so the notice must not point at one.
+  it("tells a non-admin about unsaved directory changes without mentioning reindexing", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={false}
+        onChange={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "docs" }));
+
+    const notice = screen.getByText(/not saved yet/i);
+    expect(notice).not.toHaveTextContent(/reindex/i);
   });
 
   describe("conditional integration sections", () => {
