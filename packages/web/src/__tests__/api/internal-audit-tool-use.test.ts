@@ -1065,4 +1065,49 @@ describe("POST /api/internal/audit/tool-use", () => {
       expect(params.path).toBe("/data/kb/report.md");
     });
   });
+
+  it("bounds a caller-supplied agentId in actorId and resource instead of rejecting the row", async () => {
+    const hostile = `x${"y".repeat(500)}<b>`;
+    const res = await POST(
+      makeRequest({ phase: "end", toolName: "browser", agentId: hostile, result: { ok: true } })
+    );
+    expect(res.status).toBe(200);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry.actorId.length).toBeLessThanOrEqual(128);
+    expect(entry.resource!.length).toBeLessThanOrEqual("agent:".length + 128);
+    expect(entry.actorId).not.toMatch(/[<>]/);
+  });
+
+  it("bounds an oversized user id parsed from the sessionKey", async () => {
+    const res = await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "browser",
+        agentId: "agent-1",
+        sessionKey: `agent:agent-1:direct:${"u".repeat(500)}`,
+        result: { ok: true },
+      })
+    );
+    expect(res.status).toBe(200);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry.actorId.length).toBeLessThanOrEqual(128);
+  });
+
+  it("leaves a user id the database resolved untouched, even outside the clamp's alphabet", async () => {
+    // DB-owned ids are what resolveActorId's pseudonym lookup matches on.
+    const dbId = "Legacy.User@Import-1";
+    mockUserLookup.mockResolvedValueOnce([{ id: dbId }]);
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "browser",
+        agentId: "agent-2",
+        sessionKey: `agent:agent-2:direct:${dbId.toLowerCase()}`,
+        result: { ok: true },
+      })
+    );
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ actorType: "user", actorId: dbId })
+    );
+  });
 });
