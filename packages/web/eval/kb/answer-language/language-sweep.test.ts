@@ -10,6 +10,7 @@ import {
   languageConditionFromEnv,
   assertConditionMatchesVariant,
   isWarmupEcho,
+  sameLanguageWarmupQuestion,
   pendingLanguageRuns,
   summarizeLanguageRuns,
   type LanguageRunRow,
@@ -241,5 +242,21 @@ describe("isWarmupEcho", () => {
   it("passes a new answer, and every answer when there was no warmup", () => {
     expect(isWarmupEcho("Pompa P7 …", "Der Druckverlust betrug 0,42 bar.")).toBe(false);
     expect(isWarmupEcho("Pompa P7 …", null)).toBe(false);
+  });
+});
+
+describe("sameLanguageWarmupQuestion", () => {
+  it("picks another question in the same language", () => {
+    const q = LANGUAGE_QUESTIONS.find((x) => x.id === "pl-temperature")!;
+    const warmup = sameLanguageWarmupQuestion(LANGUAGE_QUESTIONS, q);
+    const picked = LANGUAGE_QUESTIONS.find((x) => x.query === warmup);
+    expect(picked?.lang).toBe("pl");
+    expect(picked?.id).not.toBe("pl-temperature");
+  });
+
+  it("has a partner for every question in the set", () => {
+    for (const q of LANGUAGE_QUESTIONS) {
+      expect(sameLanguageWarmupQuestion(LANGUAGE_QUESTIONS, q), q.id).not.toBeNull();
+    }
   });
 });

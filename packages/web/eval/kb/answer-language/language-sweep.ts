@@ -82,6 +82,12 @@ export interface LanguageRunRow {
   /** Whether `GERMAN_WARMUP_QUESTION` was asked first in the same chat. */
   germanWarmup: boolean;
   /**
+   * Whether another question in the same language was asked first, in the
+   * same chat. Measures a follow-up turn, which the plugin's per-turn note
+   * skips when the language hasn't changed. Optional: older rows predate it.
+   */
+  sameLanguageWarmup?: boolean;
+  /**
    * The tools the agent called for this question, in order, from the audit
    * trail. Whether the answer came through knowledge_search or through a
    * direct file read decides which tool result the model read last.
@@ -155,6 +161,7 @@ export type LanguageVariant = Pick<
   | "germanIdentity"
   | "germanInstructions"
   | "germanWarmup"
+  | "sameLanguageWarmup"
 >;
 
 const VARIANT_KEYS: readonly (keyof LanguageVariant)[] = [
@@ -164,6 +171,7 @@ const VARIANT_KEYS: readonly (keyof LanguageVariant)[] = [
   "germanIdentity",
   "germanInstructions",
   "germanWarmup",
+  "sameLanguageWarmup",
 ];
 
 /**
@@ -262,4 +270,12 @@ export function summarizeLanguageRuns(rows: readonly LanguageRunRow[]): Language
       a.model.localeCompare(b.model) ||
       a.lang.localeCompare(b.lang)
   );
+}
+
+/** The question asked first for a same-language warmup: another one in `lang`. */
+export function sameLanguageWarmupQuestion(
+  questions: readonly { id: string; lang: string; query: string }[],
+  question: { id: string; lang: string }
+): string | null {
+  return questions.find((q) => q.lang === question.lang && q.id !== question.id)?.query ?? null;
 }

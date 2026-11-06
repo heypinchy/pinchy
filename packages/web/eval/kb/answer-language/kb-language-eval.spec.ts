@@ -53,6 +53,7 @@ import {
   GERMAN_WARMUP_QUESTION,
   assertConditionMatchesVariant,
   isWarmupEcho,
+  sameLanguageWarmupQuestion,
   LANGUAGE_SWEEP_LABEL,
   languageCandidatesFromEnv,
   languageConditionFromEnv,
@@ -243,6 +244,7 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
     const agentsMdLanguageSection = process.env.KB_LANG_EVAL_AGENTS_MD_SECTION === "1";
     const germanInstructions = process.env.KB_LANG_EVAL_GERMAN_INSTRUCTIONS === "1";
     const germanWarmup = process.env.KB_LANG_EVAL_GERMAN_WARMUP === "1";
+    const sameLanguageWarmup = process.env.KB_LANG_EVAL_SAME_LANGUAGE_WARMUP === "1";
     if (germanInstructions) {
       await appendAgentsMdSection(cookie, agentId, GERMAN_INSTRUCTIONS_SECTION);
     }
@@ -259,6 +261,7 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
       germanIdentity,
       germanInstructions,
       germanWarmup,
+      sameLanguageWarmup,
     });
     const pending = pendingLanguageRuns(
       existing,
@@ -294,6 +297,7 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
         germanIdentity,
         germanInstructions,
         germanWarmup,
+        sameLanguageWarmup,
         at: new Date().toISOString(),
       };
       try {
@@ -301,8 +305,13 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
         const chatId = randomUUID();
         let since = new Date().toISOString();
         let warmupAnswer: string | null = null;
-        if (germanWarmup) {
-          await dispatchAndScrape(page, agentId, GERMAN_WARMUP_QUESTION, {
+        const warmupQuestion = germanWarmup
+          ? GERMAN_WARMUP_QUESTION
+          : sameLanguageWarmup
+            ? sameLanguageWarmupQuestion(LANGUAGE_QUESTIONS, question)
+            : null;
+        if (warmupQuestion) {
+          await dispatchAndScrape(page, agentId, warmupQuestion, {
             chatId,
             idleTimeoutMs: 120_000,
           });
