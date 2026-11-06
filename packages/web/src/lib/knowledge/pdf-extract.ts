@@ -131,18 +131,12 @@ interface PageLine {
 }
 
 /**
- * Where one outline entry points. `top` is the reason a heading can be placed
- * WITHIN a page rather than at the top of it — see `OutlineEntry`.
- */
-type OutlineTarget = OutlineEntry;
-
-/**
  * The document's outline, grouped by the page each heading points at, in
  * document order. The flattening itself is shared with the citation viewer
  * (`lib/pdf/outline.ts`), which has to find these exact heading paths again.
  */
-async function readOutline(doc: PDFDocumentProxy): Promise<Map<number, OutlineTarget[]>> {
-  const byPage = new Map<number, OutlineTarget[]>();
+async function readOutline(doc: PDFDocumentProxy): Promise<Map<number, OutlineEntry[]>> {
+  const byPage = new Map<number, OutlineEntry[]>();
   for (const entry of await flattenOutline(doc)) {
     const targets = byPage.get(entry.page) ?? [];
     targets.push(entry);
@@ -161,7 +155,7 @@ async function readOutline(doc: PDFDocumentProxy): Promise<Map<number, OutlineTa
  * The y a destination carries is the document's own answer to the same
  * question.
  */
-function markHeadings(lines: PageLine[], targets: OutlineTarget[]): HeadingMark[] {
+function markHeadings(lines: PageLine[], targets: OutlineEntry[]): HeadingMark[] {
   const offsets: number[] = [];
   let offset = 0;
   for (const line of lines) {
