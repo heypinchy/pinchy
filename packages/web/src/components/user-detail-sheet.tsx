@@ -35,7 +35,7 @@ import type { UserListItem, UserGroup } from "@/lib/user-list";
 import type { UserRole } from "@/db/enums";
 import { apiPost, apiPut, apiPatch, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
 import type { UpdateUserInput, UpdateUserGroupsInput } from "@/lib/schemas/users";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
 
 interface UserDetailSheetProps {
@@ -77,7 +77,6 @@ export function UserDetailSheet({
   const [saving, setSaving] = useState(false);
   const [showDeactivateConfirm, setShowDeactivateConfirm] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
-  const { isCopied: isResetLinkCopied, copy: copyResetLink } = useCopyToClipboard();
 
   const isOwnAccount = user.id === currentUserId;
   const isDeactivated = user.status === "deactivated";
@@ -287,17 +286,18 @@ export function UserDetailSheet({
             </Button>
 
             {resetLink && (
-              <div className="rounded border bg-muted p-3">
-                <p className="text-sm font-medium mb-1">Reset link:</p>
-                <p className="text-sm break-all">{resetLink}</p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-2"
-                  onClick={() => copyResetLink(resetLink)}
-                >
-                  {isResetLinkCopied ? "Copied!" : "Copy"}
-                </Button>
+              <div className="space-y-1 rounded border p-3">
+                <p id="reset-link-label" className="text-sm font-medium">
+                  Reset link:
+                </p>
+                <CopyField
+                  value={resetLink}
+                  label="Reset link"
+                  labelledBy="reset-link-label"
+                  copyLabel="Copy link"
+                  share={{ title: "Pinchy password reset" }}
+                  autoFocus
+                />
               </div>
             )}
 

@@ -724,6 +724,8 @@ Use a persistent, dismissible inline banner (not an auto-expiring toast) for a p
 
 Do not mix inline errors and toast errors for the same action. Success confirmations should be toasts unless a multi-step flow intentionally shows a success screen.
 
+One exception: copying a value is confirmed in place, not with a toast. Every link or secret Pinchy hands out goes through `CopyField` (`packages/web/src/components/copy-field.tsx`), which turns the button into "Copied" for about two seconds and announces it through a polite live region. The confirmation belongs to the button the user just pressed, and an extra toast would make screen readers announce it twice. A copy the browser refuses is not a success either: `CopyField` selects the value and says to press Ctrl+C, so never toast "Copied" without checking the result of `useCopyToClipboard().copy`.
+
 ## Secret Handling
 
 Pick the secret-handling pattern based on who consumes the secret at runtime.

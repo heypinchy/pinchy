@@ -154,6 +154,10 @@ export class StreamPipe {
     // already-applied writes.
     let triggeringClientMessageId: string | undefined;
     const runStartedAt = new Date(Date.now() - 2000);
+    // When this turn was dispatched — the bound for which durable errors its
+    // success supersedes. No skew buffer, unlike `runStartedAt`: an error the
+    // user is retrying was recorded before they could press Retry.
+    const dispatchedAt = new Date();
     // Authoritative liveness: set when a terminal `liveness: failed` verdict has
     // been emitted (a real error chunk OR the silent-stream synthesis). Gates
     // the terminal `liveness: completed` so a failed run is never also reported
@@ -367,8 +371,9 @@ export class StreamPipe {
         //
         // Everything below then treats it as the clean end of turn it is. The
         // terminal `done` OpenClaw sends after the error still arrives and does
-        // the ordinary work: flush the buffered words, rotate the messageId,
-        // supersede any earlier durable error. So there is nothing to
+        // the ordinary work: flush the buffered words, rotate the messageId.
+        // (It supersedes no earlier durable error: a stopped run has not gone
+        // through — see the supersede after the loop.) So there is nothing to
         // synthesize here — only side effects to NOT produce.
         const userAbort = chunk.type === "error" && ownEntry()?.abortedByUser;
         if (chunk.type === "error" && !userAbort) {
@@ -391,23 +396,6 @@ export class StreamPipe {
         // turns that reach a `done` chunk count as completed sessions.
         if (chunk.type === "done") {
           sessionCache.add(sessionKey);
-          // A SUCCESSFUL turn's `done` supersedes the message's durable error.
-          // OpenClaw also emits a terminal `done` AFTER an `error` chunk to close
-          // the stream — superseding on that would immediately clear the error we
-          // just persisted, so the banner would never appear. `sawTerminalError`
-          // (set on any error chunk earlier in this stream) gates it out. Scoped
-          // to the triggering id so an unrelated later message succeeding never
-          // clears an unanswered error. Best-effort.
-          if (!sawTerminalError) {
-            try {
-              await supersedeChatSessionErrors({
-                sessionKey,
-                clientMessageId: triggeringClientMessageId,
-              });
-            } catch (err) {
-              console.error("Failed to supersede durable chat error:", err);
-            }
-          }
         }
 
         // Server-side error logging — unconditional. With the drain-always
@@ -779,6 +767,25 @@ export class StreamPipe {
       // genuine "no more frames" terminator the client keys its spinner off of.
       // Additive to the `complete` frame; the client switchover to liveness is a
       // later task.
+      // The run went through: it reached its natural end (the disconnect and
+      // watchdog paths returned above), said something, was not stopped, and
+      // carried no error. That supersedes the session's earlier durable errors
+      // — every one, not only the one this message raised: a later turn that
+      // went through is where the conversation stands, and a banner about an
+      // older failure left on top of it outlives every reload (#1301). Here,
+      // after the loop, and not on a `done` chunk: openclaw-node also emits
+      // `done` at every turn boundary INSIDE a run, and a run that says "one
+      // moment", calls a tool and then fails has not gone through. Bounded by
+      // this run's dispatch, so an older run still draining does not clear a
+      // newer one's error. Best-effort.
+      if (!sawTerminalError && sawText && !stoppedByUser) {
+        try {
+          await supersedeChatSessionErrors({ sessionKey, before: dispatchedAt });
+        } catch (err) {
+          console.error("Failed to supersede durable chat error:", err);
+        }
+      }
+
       if (!emittedFailedLiveness) {
         broadcastForRun(sessionKey, clientWs, {
           type: "liveness",

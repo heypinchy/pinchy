@@ -2,6 +2,13 @@ import { mkdir, writeFile, access, chown } from "node:fs/promises";
 import { basename } from "node:path";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { MAX_ATTACHMENT_BYTES, truncateEmailBody } from "./email-adapter.js";
+import {
+  deliveryMimeType,
+  extensionForServableMime,
+  isServableDelivery,
+  normalizeMimeType,
+  safeMimeLabel,
+} from "./delivery-mime.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 import { parseSingleRecipient } from "./recipient.js";
 import { refusingUnknownParams } from "./unknown-params.js";
@@ -64,8 +71,11 @@ const EXT_BY_MIME = new Map<string, string>([
 ]);
 
 function extensionForMimeType(mimeType: string | undefined): string {
-  if (!mimeType) return ".bin";
-  return EXT_BY_MIME.get(mimeType.toLowerCase()) ?? ".bin";
+  // Same normalization as deliveryMimeType, and every servable type gets the
+  // extension the serving route types it by: a nameless `text/csv; charset=…`
+  // or `application/json` saved as `.bin` would be offered and then refused.
+  const normalized = normalizeMimeType(mimeType);
+  return EXT_BY_MIME.get(normalized) ?? extensionForServableMime(normalized) ?? ".bin";
 }
 
 function humanReadableSize(bytes: number): string {
@@ -164,6 +174,26 @@ async function pickUniqueFilename(dir: string, filename: string): Promise<string
 
 interface PluginToolContext {
   agentId?: string;
+  sessionKey?: string;
+  messageChannel?: string;
+}
+
+/**
+ * Whether this run will end in Pinchy's web-chat artifact poll — the only
+ * place a saved file becomes a download chip (`deliverRunArtifacts` in
+ * packages/web/src/server/stream-pipe.ts). OpenClaw itself forwards a tool's
+ * `file` block to no channel: Telegram only receives `details.media`, which
+ * this plugin does not emit.
+ *
+ * Both halves are needed. A web-chat run is a gateway `agent` call with no
+ * channel, which OpenClaw resolves to "webchat" — but so is an automation
+ * inbox run (`agent:<id>:inbox:<ledgerId>`), which has no chat to show a chip
+ * in. A Telegram DM uses the same `:direct:` key shape, on channel "telegram".
+ * Anything OpenClaw did not report counts as "not web chat": claiming less
+ * than happened is the safe direction.
+ */
+function isWebChatRun(ctx: PluginToolContext | undefined): boolean {
+  return ctx?.messageChannel === "webchat" && /^agent:[^:]+:direct:/.test(ctx.sessionKey ?? "");
 }
 
 // A text block carries `text`; a delivery block (`type: "file"` / `"image"`)
@@ -1040,7 +1070,7 @@ const plugin = {
                 const list = handleizedAttachments
                   .map(
                     (a) =>
-                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${a.mimeType}, size: ${humanReadableSize(a.size)}`
+                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${safeMimeLabel(a.mimeType)}, size: ${humanReadableSize(a.size)}`
                   )
                   .join("\n");
                 content.push({
@@ -1307,6 +1337,7 @@ const plugin = {
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
         if (!agentId) return probeStub("email_get_attachment");
+        const offeredInChat = isWebChatRun(ctx);
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
         if (lacksGrant(config, "read")) return null;
@@ -1406,6 +1437,39 @@ const plugin = {
                 // Best-effort — see DELIVERY_UID/DELIVERY_GID comment above.
               }
 
+              // Say "delivered" only for what Pinchy will actually show as a
+              // chip: a type the chat can serve (delivery-mime.ts), in a run
+              // that ends in the web chat (isWebChatRun). The normalized type
+              // is also what the file block declares, so the web side decides
+              // on the same value this text was written from.
+              const mimeType = deliveryMimeType(attachment.mimeType, finalFilename);
+              const size = humanReadableSize(attachment.data.length);
+              const saved = `Saved to the workspace uploads directory as "${finalFilename}" (${size}). `;
+              let guidance: string;
+              if (!isServableDelivery(mimeType)) {
+                guidance =
+                  saved +
+                  // No ${mimeType} here: it is sender-controlled and unbounded, and
+                  // this sentence reads as the plugin's own instruction. The JSON
+                  // block above carries it, escaped.
+                  `This file type can't be offered as a download in chat, so do not ` +
+                  `tell the user it was delivered: it is saved in the agent's workspace. It can ` +
+                  `still be attached to an Odoo record via odoo_attach_file using this filename.`;
+              } else if (offeredInChat) {
+                guidance =
+                  saved +
+                  `Delivered to the user in chat as a downloadable file; also readable with the ` +
+                  `pdf tool (for PDFs) and attachable to an Odoo record via odoo_attach_file using ` +
+                  `this filename.`;
+              } else {
+                guidance =
+                  saved +
+                  `Files are offered as a download only in Pinchy's web chat, and this ` +
+                  `conversation is not one, so do not tell the user it was delivered: it is ` +
+                  `saved in the agent's workspace. It is readable with the pdf tool (for PDFs) ` +
+                  `and attachable to an Odoo record via odoo_attach_file using this filename.`;
+              }
+
               return {
                 content: [
                   {
@@ -1414,20 +1478,13 @@ const plugin = {
                       {
                         filename: finalFilename,
                         size: attachment.data.length,
-                        mimeType: attachment.mimeType,
+                        mimeType,
                       },
                       null,
                       2
                     ),
                   },
-                  {
-                    type: "text",
-                    text:
-                      `Saved to the workspace uploads directory as "${finalFilename}" ` +
-                      `(${humanReadableSize(attachment.data.length)}). Delivered to the user in chat as a ` +
-                      `downloadable file; also readable with the pdf tool (for PDFs) and attachable to an ` +
-                      `Odoo record via odoo_attach_file using this filename.`,
-                  },
+                  { type: "text", text: guidance },
                   // File delivery (#703): a native file content block lands in the
                   // session transcript, which Pinchy's client-router reads via
                   // OpenClaw's `artifacts.list` RPC after the run to record the
@@ -1435,7 +1492,7 @@ const plugin = {
                   {
                     type: "file",
                     filename: finalFilename,
-                    mimeType: attachment.mimeType,
+                    mimeType,
                   },
                 ],
               };

@@ -418,7 +418,7 @@ Summarize the caller's conversation with this agent so a long context stops degr
 
 ### `GET /api/agents/:agentId/active-error`
 
-The agent's current "paused" banner for the caller: the latest error that has not been superseded or dismissed, or `null`. Pass `?chatId=` to address one specific chat; omit it for the default per-user session. The session key embeds the caller's own id, so a user can only ever read their own errors.
+The agent's current "paused" banner for the caller: the latest error from the last 24 hours that has not been superseded (a later message in the conversation went through) or dismissed, or `null`. Pass `?chatId=` to address one specific chat; omit it for the default per-user session. The session key embeds the caller's own id, so a user can only ever read their own errors.
 
 ### `DELETE /api/agents/:agentId/active-error?id=<errorId>`
 
@@ -890,6 +890,44 @@ List directories available under `/data/` for agent configuration.
 ```
 
 Returns an empty array if `/data/` does not exist or contains no subdirectories. Hidden directories (starting with `.`) are excluded.
+
+These are the top-level mounts, as the `openclaw` container found them when it started. To grant a folder inside one, list its subfolders with [`GET /api/data-directories/children`](#get-apidata-directorieschildren).
+
+### `GET /api/data-directories/children`
+
+List the subfolders of one folder below a `/data/` mount, one level at a time. The directory picker calls this when you open a folder. **Admin only.**
+
+**Query parameters:**
+
+| Parameter | Description                                                                                |
+| --------- | ------------------------------------------------------------------------------------------ |
+| `path`    | The folder to list, URL-encoded — for example `/data/suppliers`. A trailing slash is fine. |
+
+**Response:**
+
+```json
+{
+  "directories": [
+    { "path": "/data/suppliers/food", "name": "food" },
+    { "path": "/data/suppliers/vet", "name": "vet" }
+  ],
+  "truncated": false
+}
+```
+
+| Field         | Description                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `directories` | The folder's direct subfolders, sorted by name. Files, hidden folders (starting with `.`) and operating-system folders such as `$RECYCLE.BIN` are left out, as is any symbolic link. |
+| `truncated`   | `true` when the folder holds more than 500 subfolders. Only the first 500 are returned.                                                                                              |
+
+The folder is read in the `pinchy` container, so a share mounted only on `openclaw` lists no subfolders. See [Why both services](/guides/mount-data-directories/#why-both-services).
+
+**Errors:**
+
+- `400` — `path` is missing, isn't under `/data/`, or is `/data/` itself (the mounts come from [`GET /api/data-directories`](#get-apidata-directories))
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — the folder doesn't exist, isn't a folder, can't be read, or is reached through a symbolic link
 
 ## Settings
 
