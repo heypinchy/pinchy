@@ -1,14 +1,11 @@
 import type { AgentPluginConfig } from "@/db/schema";
 
-/** How one folder-grant list moved: counts only, never the paths. */
-export type FolderGrantDiff = { added: number; removed: number; count: number };
-
-export type FolderAccessDiff = { read: FolderGrantDiff; write: FolderGrantDiff };
+/** How the agent's granted /data folders moved: counts only, never the paths. */
+export type FolderAccessDiff = { added: number; removed: number; count: number };
 
 /**
- * `pluginConfig` as an audit row may show it. Identical to the stored config
- * except that `pinchy-files` carries how many folders are granted instead of
- * which ones.
+ * `pluginConfig` as an audit row may show it: every plugin's settings, except
+ * that `pinchy-files` says how many folders are granted instead of which ones.
  */
 type PluginConfigAuditView = Record<string, unknown>;
 
@@ -28,13 +25,20 @@ export type PluginConfigAuditChange = {
  * grants, and `truncateDetail` then replaces the whole detail, losing what
  * changed.
  *
- * So the grant lists become counts in the from/to view, and the edit itself
+ * So `allowed_paths` becomes a count in the from/to view, and the edit itself
  * is recorded as added/removed counts (`folderAccess`). The diff is what makes
  * a swap visible: replacing one folder with another leaves the count — and
  * therefore the redacted from/to — unchanged.
  *
- * Every other plugin's config passes through untouched. Comparison is by
- * set, so reordering the same folders records nothing.
+ * A stored `write_paths` is left out altogether. It grants nothing —
+ * `build.ts` derives write access from the `pinchy_write` / `pinchy_memory`
+ * tool grants, which `changes.allowedTools` already records — and the
+ * Permissions tab drops it on save, so reporting it would record a revocation
+ * that never happened.
+ *
+ * Comparison is by set for folders and by canonical (key-sorted) JSON for the
+ * rest: jsonb hands keys back in its own order, and the same config must not
+ * read as a change.
  */
 export function pluginConfigAuditChange(
   from: AgentPluginConfig | null,
@@ -44,42 +48,50 @@ export function pluginConfigAuditChange(
 
   const fromView = auditView(from);
   const toView = auditView(to);
-  if (JSON.stringify(fromView) !== JSON.stringify(toView)) {
+  if (canonicalJson(fromView) !== canonicalJson(toView)) {
     result.change = { from: fromView, to: toView };
   }
 
-  const read = grantDiff(
+  const folders = grantDiff(
     from?.["pinchy-files"]?.allowed_paths,
     to?.["pinchy-files"]?.allowed_paths
   );
-  const write = grantDiff(from?.["pinchy-files"]?.write_paths, to?.["pinchy-files"]?.write_paths);
-  if (read.added + read.removed + write.added + write.removed > 0) {
-    result.folderAccess = { read, write };
-  }
+  if (folders.added + folders.removed > 0) result.folderAccess = folders;
 
   return result;
 }
 
+/**
+ * One entry per plugin key, so a key added to `AgentPluginConfig` fails to
+ * compile here until someone decides how it is logged — the alternative is
+ * whatever it carries landing on a signed row by default.
+ */
+const VIEW_BY_PLUGIN: {
+  [K in keyof Required<AgentPluginConfig>]: (value: NonNullable<AgentPluginConfig[K]>) => unknown;
+} = {
+  "pinchy-files": (files) => ({
+    allowedPathCount: new Set(files.allowed_paths ?? []).size,
+    ...(files.allowed_extensions !== undefined
+      ? { allowed_extensions: files.allowed_extensions }
+      : {}),
+  }),
+  // Tool, model and domain names — no personal data.
+  "pinchy-web": (web) => web,
+  "pinchy-approvals": (approvals) => approvals,
+};
+
 function auditView(config: AgentPluginConfig | null): PluginConfigAuditView | null {
   if (!config) return null;
-  const { "pinchy-files": files, ...rest } = config;
-  if (!files) return rest;
-  // Field by field, not a spread with the lists deleted: a field
-  // pinchy-files grows later (another path list) must be a decision to log,
-  // not something that lands on a signed row by default.
-  return {
-    "pinchy-files": {
-      allowedPathCount: new Set(files.allowed_paths ?? []).size,
-      writePathCount: new Set(files.write_paths ?? []).size,
-      ...(files.allowed_extensions !== undefined
-        ? { allowed_extensions: files.allowed_extensions }
-        : {}),
-    },
-    ...rest,
-  };
+  const view: PluginConfigAuditView = {};
+  for (const key of Object.keys(VIEW_BY_PLUGIN) as (keyof AgentPluginConfig)[]) {
+    const value = config[key];
+    if (value === undefined) continue;
+    view[key] = (VIEW_BY_PLUGIN[key] as (v: typeof value) => unknown)(value);
+  }
+  return view;
 }
 
-function grantDiff(before: string[] | undefined, after: string[] | undefined): FolderGrantDiff {
+function grantDiff(before: string[] | undefined, after: string[] | undefined): FolderAccessDiff {
   const old = new Set(before ?? []);
   const next = new Set(after ?? []);
   return {
@@ -87,4 +99,12 @@ function grantDiff(before: string[] | undefined, after: string[] | undefined): F
     removed: [...old].filter((p) => !next.has(p)).length,
     count: next.size,
   };
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : v
+  );
 }

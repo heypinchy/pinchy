@@ -585,7 +585,7 @@ Pinchy now remembers in each browser which person was signed in last. That way t
 
 #### Audit entries for agent changes no longer list folder paths
 
-When an admin changed which folders an agent can read or write, the `agent.updated` entry in the audit trail stored the agent's whole file configuration before and after, every folder path included. A path can name a person, and audit entries can't be changed later. Above about twenty folders, the entry also outgrew the size limit and was cut short, losing what had changed. The entry now records `allowedPathCount` and `writePathCount` in place of the path lists, plus a `folderAccess` field that says how many folders were added and removed. [Audit Trail → `agent.updated`](/concepts/audit-trail/#agentupdated) shows the shape. Entries written before the upgrade keep the paths they recorded. If a script of yours reads `changes.pluginConfig` from these entries, switch it to the counts.
+Whenever an agent's plugin configuration changed — its folders, web search settings or confirmation rules — the `agent.updated` entry in the audit trail stored the whole configuration before and after, every folder path included. A path can name a person, and audit entries can't be changed later. Above about twenty folders, the entry also outgrew the size limit and was cut short, losing what had changed. The entry now records `allowedPathCount` in place of the folder list, plus a `folderAccess` field that says how many folders were added and removed. [Audit Trail → `agent.updated`](/concepts/audit-trail/#agentupdated) shows the shape. Entries written before the upgrade keep the paths they recorded. If a script of yours reads `changes.pluginConfig` from these entries, switch it to the counts.
 
 ### Database migrations
 

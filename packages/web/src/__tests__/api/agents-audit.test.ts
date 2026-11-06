@@ -675,7 +675,11 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     };
     const newConfig = {
       "pinchy-files": {
-        allowed_paths: ["/data/hr", "/data/hr/personnel/Maria Musterfrau"],
+        allowed_paths: [
+          "/data/hr",
+          "/data/hr/personnel/Maria Musterfrau",
+          "/data/hr/personnel/Maria Musterfrau/reviews",
+        ],
         write_paths: ["/data/hr/personnel/Maria Musterfrau"],
       },
     };
@@ -720,14 +724,11 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
       detail: {
         changes: {
           pluginConfig: {
-            from: { "pinchy-files": { allowedPathCount: 2, writePathCount: 0 } },
-            to: { "pinchy-files": { allowedPathCount: 2, writePathCount: 1 } },
+            from: { "pinchy-files": { allowedPathCount: 2 } },
+            to: { "pinchy-files": { allowedPathCount: 3 } },
           },
         },
-        folderAccess: {
-          read: { added: 1, removed: 1, count: 2 },
-          write: { added: 1, removed: 0, count: 1 },
-        },
+        folderAccess: { added: 2, removed: 1, count: 3 },
       },
     });
   });
@@ -773,10 +774,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
         eventType: "agent.updated",
         detail: {
           changes: {},
-          folderAccess: {
-            read: { added: 1, removed: 1, count: 1 },
-            write: { added: 0, removed: 0, count: 0 },
-          },
+          folderAccess: { added: 1, removed: 1, count: 1 },
         },
       })
     );
