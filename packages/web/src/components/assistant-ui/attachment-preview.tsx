@@ -245,7 +245,13 @@ export const PdfDialog: FC<{
   // icons refuses to answer — so each names itself as soon as there is a
   // choice to make.
   const namesDownloads = documentDownloads.length > 1;
-  const highlightsPassage = Boolean(passage) && page !== null && page !== undefined;
+  // Where the drawn document opens: the cited page of a PDF, the cited slide
+  // of a presentation (slide N is page N of its converted PDF), or — for a Word
+  // citation — the page the viewer finds the cited heading on.
+  const body = passage?.body;
+  const startPage = page ?? (body && "slide" in body ? body.slide : null);
+  const startHeading = body && "heading" in body ? body.heading : undefined;
+  const highlightsPassage = Boolean(passage) && (startPage !== null || Boolean(startHeading));
   // The viewer below the header names the page itself, with the page count
   // and as the reader pages on; a second, static label would contradict it.
   const [showsOwnRenderer, setShowsOwnRenderer] = useState(highlightsPassage);
@@ -333,10 +339,11 @@ export const PdfDialog: FC<{
             </DialogClose>
           </div>
         </div>
-        {highlightsPassage && passage && page !== null && page !== undefined ? (
+        {highlightsPassage && passage ? (
           <CitationPdfViewer
             url={url}
-            page={page}
+            page={startPage}
+            heading={startHeading}
             passage={passage}
             onFallback={() => setShowsOwnRenderer(false)}
             fallback={browserViewer}

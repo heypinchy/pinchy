@@ -16,6 +16,7 @@ import { apiPost } from "@/lib/api-client";
 import { locatePassage } from "@/lib/knowledge/passage-match";
 import type { CitedPassageRequest } from "@/lib/schemas/knowledge-base";
 import { openPdf, type PdfHandle, type RenderedPdfPage } from "@/lib/pdf/browser-pdf";
+import { findSectionPage, sectionPages } from "@/lib/pdf/outline";
 
 export interface PassageLookup {
   url: string;
@@ -41,22 +42,36 @@ const FALLBACK_WIDTH = 800;
  *
  * The highlight stays on the cited page. Paging away is the reader reading on,
  * and the passage belongs to the page the citation named.
+ *
+ * A Word citation names a heading path instead of a page (Office addendum in
+ * plans/2026-11-06-kb-citation-passage-highlight-design.md). The page is then
+ * found here: the heading through the converted PDF's outline, the passage
+ * among that section's pages. A heading the outline does not have opens the
+ * browser's viewer — exactly what an Office citation opened before.
  */
 export const CitationPdfViewer: FC<{
   /** The document's viewer url; its `#page=` fragment, if any, is ignored. */
   url: string;
-  page: number;
+  /** The cited page — a PDF page, or a slide of a converted presentation. */
+  page: number | null;
+  /** A Word citation's heading path, joined with " > "; used when `page` is null. */
+  heading?: string;
   passage: PassageLookup | null;
   fallback: ReactNode;
   /** Told once when the viewer gives up and shows `fallback`. */
   onFallback?: () => void;
-}> = ({ url, page: citedPage, passage, fallback, onFallback }) => {
+}> = ({ url, page: givenPage, heading, passage, fallback, onFallback }) => {
   const documentUrl = url.split("#")[0];
   const [pdf, setPdf] = useState<PdfHandle | null>(null);
   const [failed, setFailed] = useState(false);
-  const [page, setPage] = useState(citedPage);
+  // Null while a Word section is still being found; then the page it is on.
+  const [citedPage, setCitedPage] = useState(givenPage);
+  const [page, setPage] = useState(givenPage);
   const [rendered, setRendered] = useState<{ page: number; result: RenderedPdfPage } | null>(null);
   const [passageText, setPassageText] = useState<string | null>(null);
+  // Whether the lookup has answered (or failed, or was never needed). A
+  // section is searched for its passage only once this is known.
+  const [passageSettled, setPassageSettled] = useState(!passage);
   const paneRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
@@ -92,8 +107,12 @@ export const CitationPdfViewer: FC<{
     if (!passage) return;
     let cancelled = false;
     apiPost<{ passage: { text: string } | null }>(passage.url, passage.body).then(
-      (res) => !cancelled && setPassageText(res.passage?.text ?? null),
-      () => {}
+      (res) => {
+        if (cancelled) return;
+        setPassageText(res.passage?.text ?? null);
+        setPassageSettled(true);
+      },
+      () => !cancelled && setPassageSettled(true)
     );
     return () => {
       cancelled = true;
@@ -102,8 +121,38 @@ export const CitationPdfViewer: FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [passage?.url, JSON.stringify(passage?.body)]);
 
+  // A Word citation: which page of the converted PDF holds the cited section,
+  // and within it the passage. Bounded by the section (`findSectionPage`), so a
+  // long document costs a few pages' text, not all of it. No such heading in
+  // the outline means there is no section to open at — the browser's viewer.
   useEffect(() => {
-    if (!pdf || !canvasRef.current) return;
+    if (citedPage !== null || !pdf) return;
+    // Nothing to open at: the browser's viewer, rather than a spinner forever.
+    if (!heading) return fail();
+    if (!passageSettled) return;
+    let cancelled = false;
+    pdf
+      .outline()
+      .then((entries) => {
+        const range = sectionPages(entries, heading, pdf.numPages);
+        if (!range) throw new Error("heading not in the outline");
+        return findSectionPage(pdf, range, passageText);
+      })
+      .then(
+        (found) => {
+          if (cancelled) return;
+          setCitedPage(found);
+          setPage(found);
+        },
+        () => !cancelled && fail()
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [citedPage, heading, pdf, passageSettled, passageText]);
+
+  useEffect(() => {
+    if (!pdf || page === null || !canvasRef.current) return;
     let cancelled = false;
     const width = paneRef.current?.clientWidth || FALLBACK_WIDTH;
     pdf.renderPage(page, canvasRef.current, width).then(
@@ -156,7 +205,7 @@ export const CitationPdfViewer: FC<{
       <div
         ref={paneRef}
         role="region"
-        aria-label={`Page ${page}`}
+        aria-label={page === null ? "Finding the cited section" : `Page ${page}`}
         tabIndex={0}
         className="min-h-0 flex-1 overflow-auto bg-muted/40 [scrollbar-gutter:stable] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
       >
@@ -212,21 +261,25 @@ export const CitationPdfViewer: FC<{
           size="icon"
           className="size-8"
           aria-label="Previous page"
-          disabled={page <= 1}
-          onClick={() => setPage((p) => p - 1)}
+          disabled={page === null || page <= 1}
+          onClick={() => setPage((p) => (p === null ? p : p - 1))}
         >
           <ChevronLeft className="size-4" />
         </Button>
         <span className="min-w-24 text-center text-muted-foreground text-xs" aria-live="polite">
-          {numPages === null ? `Page ${page}` : `Page ${page} of ${numPages}`}
+          {page === null
+            ? "Finding the cited section…"
+            : numPages === null
+              ? `Page ${page}`
+              : `Page ${page} of ${numPages}`}
         </span>
         <Button
           variant="ghost"
           size="icon"
           className="size-8"
           aria-label="Next page"
-          disabled={numPages === null || page >= numPages}
-          onClick={() => setPage((p) => p + 1)}
+          disabled={numPages === null || page === null || page >= numPages}
+          onClick={() => setPage((p) => (p === null ? p : p + 1))}
         >
           <ChevronRight className="size-4" />
         </Button>

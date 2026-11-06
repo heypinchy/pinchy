@@ -781,3 +781,127 @@ describe("buildPassageRequest", () => {
     expect(buildPassageRequest("https://example.com/a.pdf#page=4", "x")).toBeNull();
   });
 });
+
+/**
+ * An Office citation names a slide or a heading path rather than a page
+ * (`formatLocator`). The viewer needs it to find the cited passage in the
+ * converted PDF (#1268, Office addendum). Like the claim it rides on the link
+ * as a hast property, never in the href — the href a citation may have stays
+ * exactly the shape `WORKSPACE_FILE_HREF` already accepts.
+ */
+describe("the section an Office citation names", () => {
+  type Sectioned = Node & { data?: { hProperties?: Record<string, string> } };
+
+  function sections(tree: Node) {
+    const found: Array<{ url: string; slide?: string; heading?: string }> = [];
+    const walk = (node: Sectioned) => {
+      if (node.type === "link") {
+        found.push({
+          url: node.url ?? "",
+          slide: node.data?.hProperties?.dataCitedSlide,
+          heading: node.data?.hProperties?.dataCitedHeading,
+        });
+      }
+      (node.children ?? []).forEach((child) => walk(child as Sectioned));
+    };
+    walk(tree as Sectioned);
+    return found;
+  }
+
+  it("reads the slide a presentation citation names", () => {
+    for (const text of [
+      "- [1] sales/Pitch.pptx — slide 4",
+      "- [1] sales/Pitch.pptx (slide 4)",
+      "- [1] sales/Pitch.ppt, Folie 4",
+    ]) {
+      const [link] = sections(run(paragraph(text)));
+      expect(link.slide, text).toBe("4");
+      expect(link.heading, text).toBeUndefined();
+    }
+  });
+
+  it("reads the heading path a Word citation names", () => {
+    const [link] = sections(
+      run(paragraph("- [2] quality/Handbook.docx — § Quality > Incoming goods"))
+    );
+
+    expect(link.heading).toBe("Quality > Incoming goods");
+    expect(link.slide).toBeUndefined();
+  });
+
+  it("ends a heading at its closing parenthesis or a trailing full stop", () => {
+    const [inline] = sections(
+      run(paragraph("See quality/Handbook.doc (§ Safety > Zone B) for the rules."))
+    );
+    const [stopped] = sections(run(paragraph("- quality/Handbook.docx — § Safety.")));
+
+    expect(inline.heading).toBe("Safety > Zone B");
+    expect(stopped.heading).toBe("Safety");
+  });
+
+  it("leaves the href exactly as it was", () => {
+    const tree = run(paragraph("- [1] sales/Pitch.pptx — slide 4"));
+
+    expect(sections(tree)[0].url).toBe(buildSourceHref(AGENT, "sales/Pitch.pptx", null));
+  });
+
+  it("only honours a section on the format that has one", () => {
+    // A slide on a Word document or a heading on a deck names something the
+    // converted PDF does not have; a PDF has pages and needs neither.
+    for (const text of [
+      "- a/Handbook.docx — slide 4",
+      "- a/Pitch.pptx — § Quality",
+      "- a/Manual.pdf — slide 4",
+      "- a/Manual.pdf — § Quality",
+    ]) {
+      const [link] = sections(run(paragraph(text)));
+      expect(link.slide, text).toBeUndefined();
+      expect(link.heading, text).toBeUndefined();
+    }
+  });
+
+  it("attaches nothing when no section follows the path", () => {
+    const [link] = sections(run(paragraph("- a/Handbook.docx")));
+
+    expect(link).toEqual({ url: buildSourceHref(AGENT, "a/Handbook.docx", null) });
+  });
+});
+
+describe("buildPassageRequest for an Office citation", () => {
+  const deck = buildSourceHref(AGENT, "sales/Pitch.pptx", null);
+  const handbook = buildSourceHref(AGENT, "quality/Handbook.docx", null);
+
+  it("asks about the cited slide of a presentation", () => {
+    expect(buildPassageRequest(deck, "Margins grew.", { slide: "4" })).toEqual({
+      url: `/api/agents/${AGENT}/knowledge/passage`,
+      body: { path: "/data/sales/Pitch.pptx", slide: 4, claim: "Margins grew." },
+    });
+  });
+
+  it("asks about the cited heading of a Word document", () => {
+    expect(
+      buildPassageRequest(handbook, undefined, { heading: "Quality > Incoming goods" })
+    ).toEqual({
+      url: `/api/agents/${AGENT}/knowledge/passage`,
+      body: { path: "/data/quality/Handbook.docx", heading: "Quality > Incoming goods" },
+    });
+  });
+
+  it("asks nothing for a section the format does not have, or one it cannot read", () => {
+    expect(buildPassageRequest(handbook, "x", { slide: "4" })).toBeNull();
+    expect(buildPassageRequest(deck, "x", { heading: "Quality" })).toBeNull();
+    expect(buildPassageRequest(deck, "x", { slide: "0" })).toBeNull();
+    expect(buildPassageRequest(deck, "x", { slide: "4; drop" })).toBeNull();
+    expect(buildPassageRequest(handbook, "x", { heading: "   " })).toBeNull();
+    expect(buildPassageRequest(deck, "x", {})).toBeNull();
+  });
+
+  it("does not take a section on a PDF over its page", () => {
+    const pdf = buildSourceHref(AGENT, "quality/Wartung.pdf", { kind: "page", page: 4 });
+
+    expect(buildPassageRequest(pdf, undefined, { slide: "9", heading: "X" })?.body).toEqual({
+      path: "/data/quality/Wartung.pdf",
+      page: 4,
+    });
+  });
+});

@@ -59,7 +59,7 @@ describe("findCitedPassage", () => {
     await seedChunk(doc, "Andere Seite", { kind: "page", page: 5 }, oneHot(2));
     const deps = embedTo(9);
 
-    const passage = await findCitedPassage(ORG_ID, [PATH], 4, "four hours", deps);
+    const passage = await findCitedPassage(ORG_ID, [PATH], { page: 4 }, "four hours", deps);
 
     expect(passage).toEqual({ text: "Reaktionszeit vier Stunden" });
     expect(deps.embed).not.toHaveBeenCalled();
@@ -73,7 +73,7 @@ describe("findCitedPassage", () => {
     await seedChunk(doc, "Vergütung, Seite 9", { kind: "page", page: 9 }, oneHot(3));
     const deps = embedTo(2);
 
-    const passage = await findCitedPassage(ORG_ID, [PATH], 4, "The fee is 1,200 €", deps);
+    const passage = await findCitedPassage(ORG_ID, [PATH], { page: 4 }, "The fee is 1,200 €", deps);
 
     expect(passage).toEqual({ text: "Abschnitt Vergütung" });
     expect(deps.embed).toHaveBeenCalledWith(["The fee is 1,200 €"]);
@@ -86,8 +86,8 @@ describe("findCitedPassage", () => {
     await seedChunk(doc, "Zweiter Abschnitt", { kind: "page", page: 4 }, oneHot(2));
     const deps = embedTo(1);
 
-    expect(await findCitedPassage(ORG_ID, [PATH], 4, undefined, deps)).toBeNull();
-    expect(await findCitedPassage(ORG_ID, [PATH], 4, "a claim", null)).toBeNull();
+    expect(await findCitedPassage(ORG_ID, [PATH], { page: 4 }, undefined, deps)).toBeNull();
+    expect(await findCitedPassage(ORG_ID, [PATH], { page: 4 }, "a claim", null)).toBeNull();
     expect(deps.embed).not.toHaveBeenCalled();
   });
 
@@ -103,7 +103,7 @@ describe("findCitedPassage", () => {
     });
     const deps = embedTo(5);
 
-    expect(await findCitedPassage(ORG_ID, [PATH, alias], 4, undefined, deps)).toEqual({
+    expect(await findCitedPassage(ORG_ID, [PATH, alias], { page: 4 }, undefined, deps)).toEqual({
       text: "Gleicher Text",
     });
   });
@@ -113,7 +113,7 @@ describe("findCitedPassage", () => {
     await seedChunk(doc, "Seite eins", { kind: "page", page: 1 }, oneHot(1));
     await seedChunk(doc, "Kein Seitenanker", null, oneHot(1));
 
-    expect(await findCitedPassage(ORG_ID, [PATH], 2, "claim", embedTo(1))).toBeNull();
+    expect(await findCitedPassage(ORG_ID, [PATH], { page: 2 }, "claim", embedTo(1))).toBeNull();
   });
 
   it("never reads another path's or another org's passages", async () => {
@@ -126,7 +126,7 @@ describe("findCitedPassage", () => {
       orgId: "org-elsewhere",
     });
 
-    expect(await findCitedPassage(ORG_ID, [PATH], 4, "claim", embedTo(1))).toBeNull();
+    expect(await findCitedPassage(ORG_ID, [PATH], { page: 4 }, "claim", embedTo(1))).toBeNull();
   });
 
   it("ignores a chunk with no embedding when ranking", async () => {
@@ -134,8 +134,84 @@ describe("findCitedPassage", () => {
     await seedChunk(doc, "Ohne Vektor", { kind: "page", page: 4 }, null);
     await seedChunk(doc, "Mit Vektor", { kind: "page", page: 4 }, oneHot(1));
 
-    expect(await findCitedPassage(ORG_ID, [PATH], 4, "claim", embedTo(7))).toEqual({
+    expect(await findCitedPassage(ORG_ID, [PATH], { page: 4 }, "claim", embedTo(7))).toEqual({
       text: "Mit Vektor",
+    });
+  });
+
+  it("finds a presentation's passages by slide, not by page", async () => {
+    const DECK = "/data/sales/Pitch.pptx";
+    const doc = await seedDocument(DECK);
+    await seedChunk(doc, "Margen gestiegen", { kind: "slide", slide: 3 }, oneHot(1), {
+      sourcePath: DECK,
+    });
+    await seedChunk(doc, "Andere Folie", { kind: "slide", slide: 4 }, oneHot(2), {
+      sourcePath: DECK,
+    });
+
+    expect(await findCitedPassage(ORG_ID, [DECK], { slide: 3 }, "claim", embedTo(9))).toEqual({
+      text: "Margen gestiegen",
+    });
+    expect(await findCitedPassage(ORG_ID, [DECK], { page: 3 }, "claim", embedTo(9))).toBeNull();
+  });
+
+  describe("a Word heading", () => {
+    const HANDBOOK = "/data/quality/Handbuch.docx";
+    const at = (...headings: string[]): ChunkLocator => ({ kind: "heading", headings });
+    const seed = (doc: string, text: string, locator: ChunkLocator, axis: number) =>
+      seedChunk(doc, text, locator, oneHot(axis), { sourcePath: HANDBOOK });
+
+    it("ranks the section's passages by the claim", async () => {
+      const doc = await seedDocument(HANDBOOK);
+      await seed(doc, "Wareneingang: Sichtprüfung", at("Qualität", "Wareneingang"), 1);
+      await seed(doc, "Wareneingang: Prüfprotokoll", at("Qualität", "Wareneingang"), 2);
+      await seed(doc, "Prüfprotokoll Warenausgang", at("Qualität", "Warenausgang"), 3);
+
+      const passage = await findCitedPassage(
+        ORG_ID,
+        [HANDBOOK],
+        { heading: "Qualität > Wareneingang" },
+        "the inspection log",
+        embedTo(2)
+      );
+
+      expect(passage).toEqual({ text: "Wareneingang: Prüfprotokoll" });
+    });
+
+    it("matches the whole path, not a section that merely contains it", async () => {
+      // jsonb containment on arrays ignores order and accepts subsets, so
+      // "Qualität" would contain every chunk of "Qualität > Wareneingang".
+      const doc = await seedDocument(HANDBOOK);
+      await seed(doc, "Nur im Unterabschnitt", at("Qualität", "Wareneingang"), 1);
+      await seed(doc, "Umgekehrte Reihenfolge", at("Wareneingang", "Qualität"), 1);
+
+      expect(
+        await findCitedPassage(ORG_ID, [HANDBOOK], { heading: "Qualität" }, "x", embedTo(1))
+      ).toBeNull();
+      expect(
+        await findCitedPassage(
+          ORG_ID,
+          [HANDBOOK],
+          { heading: "Qualität > Wareneingang" },
+          undefined,
+          null
+        )
+      ).toEqual({ text: "Nur im Unterabschnitt" });
+    });
+
+    it("matches a title that itself contains the separator", async () => {
+      const doc = await seedDocument(HANDBOOK);
+      await seed(doc, "Temperatur", at("Lagerung", "Kühlware > 5 °C"), 1);
+
+      expect(
+        await findCitedPassage(
+          ORG_ID,
+          [HANDBOOK],
+          { heading: "Lagerung > Kühlware > 5 °C" },
+          undefined,
+          null
+        )
+      ).toEqual({ text: "Temperatur" });
     });
   });
 });
