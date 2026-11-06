@@ -810,6 +810,36 @@ describe("answer language (#1296)", () => {
     expect(turn("Co ile godzin trzeba serwisować pompę P7?").appendContext).toMatch(/in Polish/);
   });
 
+  it("notes the first turn again after a session reset, which keeps the session key", async () => {
+    // Pinchy's reset and Telegram's /new rotate the OpenClaw session in place:
+    // same sessionKey, new sessionId. The fresh session has no history in the
+    // user's language, so its first turn needs the note as much as any.
+    const { hook } = await registerWithHook();
+    const turn = (sessionId: string) =>
+      hook(
+        { prompt: "Kto podpisał protokół odbioru?", messages: [] },
+        { agentId: "agent-1", sessionKey: "k", sessionId }
+      ) as { appendContext?: string };
+    expect(turn("before-reset").appendContext).toMatch(/in Polish/);
+    expect(turn("before-reset").appendContext).toBeUndefined();
+    expect(turn("after-reset").appendContext).toMatch(/in Polish/);
+  });
+
+  it("gives a retried attempt of the same run the note again", async () => {
+    // OpenClaw runs before_prompt_build once per attempt. When the first
+    // attempt fails (context overflow, a rate limit) the one that answers
+    // must not lose the note because the first one already recorded it.
+    const { hook } = await registerWithHook();
+    const attempt = (runId: string) =>
+      hook(
+        { prompt: "Kto podpisał protokół odbioru?", messages: [] },
+        { agentId: "agent-1", sessionKey: "k", sessionId: "s", runId }
+      ) as { appendContext?: string };
+    expect(attempt("run-1").appendContext).toMatch(/in Polish/);
+    expect(attempt("run-1").appendContext).toMatch(/in Polish/);
+    expect(attempt("run-2").appendContext).toBeUndefined();
+  });
+
   it("notes each session's first turn on its own", async () => {
     const { hook } = await registerWithHook();
     const first = (sessionKey: string) =>

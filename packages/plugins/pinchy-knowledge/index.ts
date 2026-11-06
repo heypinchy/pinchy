@@ -41,6 +41,10 @@ function isTimeout(error: unknown): boolean {
 interface PluginToolContext {
   agentId?: string;
   sessionKey?: string;
+  /** Changes when a session is reset in place, while sessionKey stays. Hook context only. */
+  sessionId?: string;
+  /** One run can make several attempts; each fires before_prompt_build. Hook context only. */
+  runId?: string;
 }
 
 interface PromptBuildEvent {
@@ -380,7 +384,7 @@ const plugin = {
     // Measured (German-named agent, German sources, Haiku 5.5): the tool
     // result alone ~80 % right, with the rule and the note 94 %.
     const askedQuestions = new Map<string, AskedQuestion>();
-    const notedLanguages = new Map<string, string>();
+    const notedLanguages = new Map<string, { language: string; runId?: string }>();
     api.on?.("before_prompt_build", (event, ctx) => {
       if (!ctx.agentId || !agentConfigs?.[ctx.agentId]) return undefined;
       const prompt = typeof event.prompt === "string" ? event.prompt : "";
@@ -399,12 +403,20 @@ const plugin = {
       // Only on the turn the language changes: the first turn of a session,
       // and a real switch. Same-language follow-ups carry no note, so the
       // history they replay stays byte-identical and keeps the prompt cache.
+      //
+      // Tracked per sessionId, not sessionKey: a reset (web or Telegram /new)
+      // keeps the key and starts a session with no history, whose first turn
+      // needs the note. And a retried attempt of the same run gets it again,
+      // since OpenClaw fires this hook once per attempt.
       let note: string | undefined;
-      if (language && (!sessionKey || notedLanguages.get(sessionKey) !== language)) {
+      const noteKey = ctx.sessionId ?? sessionKey;
+      const noted = noteKey ? notedLanguages.get(noteKey) : undefined;
+      const sameRun = noted !== undefined && ctx.runId !== undefined && noted.runId === ctx.runId;
+      if (language && (!noted || noted.language !== language || sameRun)) {
         note = turnLanguageNote(language);
-        if (sessionKey) {
-          notedLanguages.delete(sessionKey);
-          notedLanguages.set(sessionKey, language);
+        if (noteKey) {
+          notedLanguages.delete(noteKey);
+          notedLanguages.set(noteKey, { language, runId: ctx.runId });
           if (notedLanguages.size > MAX_TRACKED_SESSIONS) {
             const oldest = notedLanguages.keys().next().value;
             if (oldest !== undefined) notedLanguages.delete(oldest);
