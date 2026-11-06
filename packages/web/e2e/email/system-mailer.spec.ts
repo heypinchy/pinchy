@@ -139,23 +139,25 @@ test.describe("System mailer — invitations arrive by email", () => {
     const link = extractInviteLink(source);
 
     // A fresh browser context: the invitee is not the signed-in admin.
-    const invitePage = await page.context().browser()!.newPage();
+    const inviteeContext = await page.context().browser()!.newContext();
     try {
+      const invitePage = await inviteeContext.newPage();
       await invitePage.goto(link);
+      // The emailed link opens THIS invite: the form names its address (#1265).
+      await expect(invitePage.getByLabel("Email", { exact: true })).toHaveValue(invitee, {
+        timeout: 10_000,
+      });
       await invitePage.getByLabel("Name").fill("Invited Person");
       await invitePage.getByLabel("Password", { exact: true }).fill("invitee-password-123");
-      await invitePage.getByLabel("Confirm password").fill("invitee-password-123");
       await invitePage.getByRole("button", { name: "Create account" }).click();
-      // Claiming also creates the invitee's personal agent and regenerates the
-      // OpenClaw config; with a real OpenClaw in this stack that can take well
-      // over the default 5s (CI run 42112256594 sat on "Creating account...").
-      await expect(invitePage.getByText("Account created!")).toBeVisible({ timeout: 30_000 });
+      // Claiming creates the account and its personal agent, regenerates the
+      // OpenClaw config and signs the invitee in. With a real OpenClaw in this
+      // stack that takes well over the default 5s (CI run 42112256594).
+      await expect(invitePage).not.toHaveURL(/\/(invite|login)(\/|$)/, { timeout: 30_000 });
+      const sessionRes = await invitePage.request.get("/api/auth/get-session");
+      expect((await sessionRes.json())?.user?.email).toBe(invitee);
     } finally {
-      await invitePage.close();
+      await inviteeContext.close();
     }
-
-    // The account exists: the invitee can sign in.
-    const inviteeCookie = await login(invitee, "invitee-password-123");
-    expect(inviteeCookie).toBeTruthy();
   });
 });
