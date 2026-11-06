@@ -9,10 +9,10 @@ The pinned version lives in `pinchy.yml` (the `$$cap_pinchy_version` variable)
 and is kept in lockstep with `.env.example` by `pnpm release` and the
 `scripts/lib/marketplace-version.test.mjs` drift guard.
 
-## Two deviations CapRover forces (and how we handle them)
+## Three deviations CapRover forces (and how we handle them)
 
-CapRover's one-click schema can't express two things Pinchy's production compose
-relies on. Both are documented here so the security trade-off is explicit, not
+CapRover's one-click schema can't express three things Pinchy's production compose
+relies on. All three are documented here so the security trade-off is explicit, not
 silent.
 
 1. **`openclaw-secrets` can't be a tmpfs.** In production it's a RAM-only volume
@@ -34,6 +34,17 @@ silent.
    crash-looping on first boot. `restart: unless-stopped` is only a backstop for
    the rare case where an already-set-up instance restarts before its database
    is ready. Expect a few seconds of connection-retry logs on first boot.
+
+3. **No `office-converter` service.** In production, Word and PowerPoint files
+   are converted to PDF in a sidecar with `network_mode: none` and no volume
+   but a hand-over spool, so a crafted document cannot reach the network or
+   read a secret. CapRover runs Docker Swarm services, which cannot be denied
+   a network, and the template mounts no `/data` corpus for the knowledge base
+   to index in the first place. So the service is left out rather than shipped
+   with a network: the Pinchy image never falls back to converting in its own
+   container, and an Office file reports "office converter is not reachable"
+   instead. Use the DigitalOcean image or the raw docker-compose for a
+   knowledge base over Office documents.
 
 `extra_hosts` (the `ollama.local` host-gateway mapping for a local Ollama) is
 also unsupported by CapRover's parser and is omitted — use a cloud model

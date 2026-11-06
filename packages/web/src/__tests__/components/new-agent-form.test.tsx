@@ -1269,3 +1269,66 @@ describe("NewAgentForm — background loads are cancelled, their failures surfac
     expect(seen.map((s) => s?.aborted)).toEqual(seen.map(() => true));
   });
 });
+
+// #1297: a web template on an instance without a search provider must say so
+// and link to the setup, without blocking creation (page fetch still works).
+describe("NewAgentForm — web template without a search provider", () => {
+  let fetchSpy: Mock<typeof fetch>;
+
+  function webTemplate(webSearchConfigured: boolean) {
+    return {
+      id: "market-monitor",
+      name: "Market & News Monitor",
+      description: "Watch the web",
+      requiresDirectories: false,
+      requiresOdooConnection: false,
+      requiresWeb: true,
+      webSearchConfigured,
+      defaultTagline: "Watches the web",
+      iconName: "Globe",
+    };
+  }
+
+  function stubTemplates(webSearchConfigured: boolean) {
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return jsonResponse({ templates: [...mockTemplates, webTemplate(webSearchConfigured)] });
+      }
+      return jsonResponse({}, { status: 400 });
+    });
+  }
+
+  beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("warns that web search is not set up, links to it, and still allows creating", async () => {
+    stubTemplates(false);
+    render(<NewAgentForm />);
+
+    await userEvent.click(await screen.findByText("Market & News Monitor"));
+
+    expect(await screen.findByText("Web search isn't set up")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /set up web search/i })).toHaveAttribute(
+      "href",
+      "/settings?tab=integrations"
+    );
+    expect(screen.getByText("Search the public web (not set up yet)")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/name/i), "Scout");
+    expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
+  });
+
+  it("shows no warning when a search provider is configured", async () => {
+    stubTemplates(true);
+    render(<NewAgentForm />);
+
+    await userEvent.click(await screen.findByText("Market & News Monitor"));
+
+    expect(await screen.findByText("Search the public web")).toBeInTheDocument();
+    expect(screen.queryByText("Web search isn't set up")).not.toBeInTheDocument();
+  });
+});

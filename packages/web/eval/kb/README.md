@@ -108,6 +108,48 @@ fallback (an unparseable reply counts _against_ groundedness, never for it).
 Both the LLM judge and the future sidecar satisfy the same `NliClient`
 interface (`nli.ts`), so swapping one for the other later touches no caller.
 
+### Cross-lingual answer sweep (`answer-language/`, #1296)
+
+A narrower Layer-3 sibling with no judge in the loop. Five invented,
+German-only PDFs (one of them an image-only scan the pipeline has to OCR;
+`answer-language/build-docs.ts` renders them from their Markdown sources) go
+through the stack's real ingest pipeline, and a
+Knowledge Base agent answers questions in Polish, Italian and English
+(`answer-language/questions.ts`). `gradeAnswerLanguage`
+(`src/lib/eval/kb/answer-language.ts`) reads which language each sentence of
+the answer is in, after removing the Sources list, quoted wording and
+citations. An answer passes only if it is in the question's language
+throughout, so one that switches to German mid-sentence fails.
+
+It exists because Claude Haiku 5.5 answered Polish questions in German when
+the passages were German. Its default candidates are Anthropic models for
+that reason, and it needs `ANTHROPIC_API_KEY` instead of an Ollama Cloud key:
+
+```bash
+ANTHROPIC_API_KEY=... KB_LANG_EVAL_CONDITION=after EVAL_N=3 pnpm -C packages/web kb-eval:language
+```
+
+A clean Knowledge Base agent does not reproduce the bug: Haiku 5.5 answers
+nearly every question in the right language. What does is the agent's
+**name**. With the staging agent's German name and tagline
+(`KB_LANG_EVAL_GERMAN_IDENTITY=1`), Haiku 5.5 answers over half of the Polish
+and Italian questions in German, and Sonnet 5 about a sixth of them plus most
+of the English ones; a German tagline with an English name makes no
+difference. Further knobs: `KB_LANG_EVAL_GERMAN_INSTRUCTIONS=1` (a German
+role section in AGENTS.md), `KB_LANG_EVAL_GERMAN_WARMUP=1` (a German question
+first, in the same chat) and `KB_LANG_EVAL_AGENTS_MD_SECTION=1` (the per-agent
+AGENTS.md workaround tried on staging, which measured no clear improvement).
+
+`KB_LANG_EVAL_CONDITION` labels the rows, so a before/after comparison can
+share one results file. One label is one variant: a resumed run refuses to add
+rows to a label whose existing rows were made with different knobs or a
+different plugin. Each row also lists the tools the answer used, read
+from the audit trail, because a direct file read or no search at all means the
+knowledge_search result was never the last thing the model read. Each row also records whether the OpenClaw container's `pinchy-knowledge`
+plugin carried the language reminder, and the sha256 of its `index.ts`, read
+from the container itself. The file on disk is what OpenClaw loads on its next
+start, so swap the plugin and restart the container before a run.
+
 ## The corpus decision
 
 CI only ever sees one corpus: a **synthetic, fully-invented, committed**

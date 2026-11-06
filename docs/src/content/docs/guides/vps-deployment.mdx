@@ -34,15 +34,16 @@ You also need:
 
 ## What gets deployed
 
-Pinchy runs as three Docker containers:
+Pinchy runs as four Docker containers:
 
-| Container    | Role                                                                                                  |
-| ------------ | ----------------------------------------------------------------------------------------------------- |
-| **pinchy**   | Web UI, REST API, and WebSocket bridge. This is what users interact with.                             |
-| **openclaw** | The AI agent runtime — manages agents, sessions, plugins, and model calls. Only reachable internally. |
-| **db**       | PostgreSQL 17 database. Stores users, agents, settings, and audit logs. Only reachable internally.    |
+| Container            | Role                                                                                                                               |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **pinchy**           | Web UI, REST API, and WebSocket bridge. This is what users interact with.                                                          |
+| **office-converter** | Converts Word and PowerPoint files to PDF for the knowledge base. No network at all; it talks to `pinchy` through a shared folder. |
+| **openclaw**         | The AI agent runtime — manages agents, sessions, plugins, and model calls. Only reachable internally.                              |
+| **db**               | PostgreSQL 17 database. Stores users, agents, settings, and audit logs. Only reachable internally.                                 |
 
-All three start together via Docker Compose. Only the `pinchy` container publishes a port; the other two communicate over an internal Docker network.
+All four start together via Docker Compose. Only the `pinchy` container publishes a port; `openclaw` and `db` communicate over an internal Docker network, and `office-converter` has no network to communicate over.
 
 ## Deploy Pinchy
 
@@ -146,7 +147,7 @@ All three start together via Docker Compose. Only the `pinchy` container publish
    docker compose ps
    ```
 
-   You should see three services — `pinchy`, `openclaw`, and `db` — all with status **Up** or **healthy**.
+   You should see four services — `pinchy`, `office-converter`, `openclaw`, and `db` — all with status **Up** or **healthy**.
 
    Check the Pinchy logs to make sure everything started correctly:
 
