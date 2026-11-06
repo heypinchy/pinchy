@@ -51,6 +51,8 @@ import {
   GERMAN_IDENTITY,
   GERMAN_INSTRUCTIONS_SECTION,
   GERMAN_WARMUP_QUESTION,
+  assertConditionMatchesVariant,
+  isWarmupEcho,
   LANGUAGE_SWEEP_LABEL,
   languageCandidatesFromEnv,
   languageConditionFromEnv,
@@ -79,6 +81,10 @@ function docker(args: string[]): string {
   return execFileSync("docker", args, { encoding: "utf8" });
 }
 
+function pluginSha(): string {
+  return docker(["exec", OPENCLAW_CONTAINER, "sha256sum", PLUGIN_SOURCE]).split(" ")[0] ?? "";
+}
+
 function pluginCarriesReminder(): boolean {
   return docker(["exec", OPENCLAW_CONTAINER, "cat", PLUGIN_SOURCE]).includes(REMINDER_MARKER);
 }
@@ -98,7 +104,7 @@ async function appendRow(row: LanguageRunRow): Promise<void> {
 
 async function seedAnthropicKey(dbUrl: string): Promise<void> {
   const key = process.env.ANTHROPIC_API_KEY?.trim();
-  if (!key) return; // an Ollama-only override needs none; a missing key shows as a dispatch failure
+  if (!key) return; // without a key, Anthropic dispatches fail and land as infra-error rows
   const { default: postgres } = await import("postgres");
   const sql = postgres(dbUrl);
   try {
@@ -227,6 +233,7 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
     // and an agent that can list the folder would read it instead of searching.
     docker(["exec", OPENCLAW_CONTAINER, "find", CORPUS_ROOT, "-name", "*.md", "-delete"]);
     const reminderInToolResult = pluginCarriesReminder();
+    const pluginStamp = pluginSha();
     console.log(
       `[kb-language] condition=${condition} reminderInToolResult=${String(reminderInToolResult)}`
     );
@@ -245,6 +252,14 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
     await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", cookie));
 
     const existing = await readRows();
+    assertConditionMatchesVariant(existing, condition, {
+      reminderInToolResult,
+      pluginSha: pluginStamp,
+      agentsMdLanguageSection,
+      germanIdentity,
+      germanInstructions,
+      germanWarmup,
+    });
     const pending = pendingLanguageRuns(
       existing,
       condition,
@@ -274,6 +289,7 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
         questionId,
         lang: question.lang,
         reminderInToolResult,
+        pluginSha: pluginStamp,
         agentsMdLanguageSection,
         germanIdentity,
         germanInstructions,
@@ -284,15 +300,20 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
         await loginViaUI(page, getAdminEmail(), getAdminPassword());
         const chatId = randomUUID();
         let since = new Date().toISOString();
+        let warmupAnswer: string | null = null;
         if (germanWarmup) {
           await dispatchAndScrape(page, agentId, GERMAN_WARMUP_QUESTION, {
             chatId,
             idleTimeoutMs: 120_000,
           });
+          warmupAnswer = await getRawAssistantMessage(page, agentId, chatId);
           since = new Date().toISOString();
         }
         await dispatchAndScrape(page, agentId, question.query, { chatId, idleTimeoutMs: 120_000 });
         const answer = await getRawAssistantMessage(page, agentId, chatId);
+        if (isWarmupEcho(answer, warmupAnswer)) {
+          throw new Error("captured the warmup's answer: the question's turn produced no text");
+        }
         const toolCalls = await toolCallsSince(cookie, agentId, since);
         const verdict = gradeAnswerLanguage(answer, question.lang);
         await appendRow({

@@ -8,6 +8,8 @@ import {
   DEFAULT_LANGUAGE_CANDIDATES,
   languageCandidatesFromEnv,
   languageConditionFromEnv,
+  assertConditionMatchesVariant,
+  isWarmupEcho,
   pendingLanguageRuns,
   summarizeLanguageRuns,
   type LanguageRunRow,
@@ -174,5 +176,70 @@ describe("the cross-lingual question set", () => {
       // rendered PDF is never indexed, and its questions would all abstain.
       expect(existsSync(file.replace(/\.md$/, ".pdf")), `${file} needs build-docs.ts`).toBe(true);
     }
+  });
+});
+
+describe("assertConditionMatchesVariant", () => {
+  const variant = {
+    reminderInToolResult: true,
+    pluginSha: undefined,
+    agentsMdLanguageSection: false,
+    germanIdentity: false,
+    germanInstructions: false,
+    germanWarmup: false,
+  };
+
+  it("accepts a condition whose rows were made with the same knobs", () => {
+    expect(() => assertConditionMatchesVariant([row({})], "after", variant)).not.toThrow();
+  });
+
+  it("refuses to resume a condition under different knobs", () => {
+    // Resume counts rows per condition, model and question only. Rerunning
+    // "after" with the German identity on would find nothing pending, run
+    // nothing, and print the first run's table as if the knob did nothing.
+    expect(() =>
+      assertConditionMatchesVariant([row({})], "after", { ...variant, germanIdentity: true })
+    ).toThrow(/germanIdentity/);
+  });
+
+  it("refuses to resume a condition against a different plugin", () => {
+    expect(() =>
+      assertConditionMatchesVariant([row({ pluginSha: "aaa" })], "after", {
+        ...variant,
+        pluginSha: "bbb",
+      })
+    ).toThrow(/pluginSha/);
+  });
+
+  it("accepts rows from before the plugin stamp existed", () => {
+    expect(() =>
+      assertConditionMatchesVariant([row({})], "after", { ...variant, pluginSha: "bbb" })
+    ).not.toThrow();
+  });
+
+  it("ignores rows of other conditions", () => {
+    expect(() =>
+      assertConditionMatchesVariant(
+        [row({ condition: "before", germanIdentity: true })],
+        "after",
+        variant
+      )
+    ).not.toThrow();
+  });
+});
+
+describe("isWarmupEcho", () => {
+  it("flags a captured answer that is the warmup's answer", () => {
+    // The capture walks back to the last turn with assistant text. When the
+    // question's turn has none, that is the German warmup answer, which would
+    // be graded as the failure the sweep measures.
+    expect(
+      isWarmupEcho("Der Druckverlust betrug 0,42 bar.", "Der Druckverlust betrug 0,42 bar.")
+    ).toBe(true);
+  });
+
+  it("passes a new answer, and every answer when there was no warmup", () => {
+    expect(isWarmupEcho("Pompa P7 …", "Der Druckverlust betrug 0,42 bar.")).toBe(false);
+    expect(isWarmupEcho("Pompa P7 …", null)).toBe(false);
   });
 });

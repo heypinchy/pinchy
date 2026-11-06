@@ -65,6 +65,12 @@ export interface LanguageRunRow {
    */
   reminderInToolResult: boolean;
   /**
+   * sha256 of the plugin's index.ts in the OpenClaw container. The boolean
+   * above only tells before from after; this tells one "after" from another.
+   * Optional because rows from the first sweeps predate it.
+   */
+  pluginSha?: string;
+  /**
    * Whether the agent's AGENTS.md carried `AGENTS_MD_LANGUAGE_SECTION`: the
    * per-agent workaround tried on staging, measured next to the plugin fix.
    */
@@ -138,6 +144,64 @@ export function languageConditionFromEnv(env: Record<string, string | undefined>
     throw new Error(`KB_LANG_EVAL_CONDITION must be a lowercase slug, got "${condition}".`);
   }
   return condition;
+}
+
+/** The knobs a run was made with. Rows of one condition must agree on all of them. */
+export type LanguageVariant = Pick<
+  LanguageRunRow,
+  | "reminderInToolResult"
+  | "pluginSha"
+  | "agentsMdLanguageSection"
+  | "germanIdentity"
+  | "germanInstructions"
+  | "germanWarmup"
+>;
+
+const VARIANT_KEYS: readonly (keyof LanguageVariant)[] = [
+  "reminderInToolResult",
+  "pluginSha",
+  "agentsMdLanguageSection",
+  "germanIdentity",
+  "germanInstructions",
+  "germanWarmup",
+];
+
+/**
+ * Refuses to add rows to `condition` under different knobs than its existing
+ * rows. Resume counts runs per condition, model and question, so a second run
+ * under the same label with a knob flipped would find nothing pending, run
+ * nothing, and print the first run's numbers as its own.
+ */
+export function assertConditionMatchesVariant(
+  existing: readonly LanguageRunRow[],
+  condition: string,
+  variant: LanguageVariant
+): void {
+  const earlier = existing.find((r) => r.condition === condition);
+  if (!earlier) return;
+  // A row from before the plugin stamp existed carries none; it can't
+  // contradict one, so only the knobs are compared for it.
+  const differing = VARIANT_KEYS.filter(
+    (key) =>
+      !(key === "pluginSha" && earlier.pluginSha === undefined) && earlier[key] !== variant[key]
+  );
+  if (differing.length > 0) {
+    throw new Error(
+      `Condition "${condition}" already has rows made with different settings ` +
+        `(${differing.map((k) => `${k}: ${String(earlier[k])} -> ${String(variant[k])}`).join(", ")}). ` +
+        "Pick a new KB_LANG_EVAL_CONDITION label for this variant."
+    );
+  }
+}
+
+/**
+ * Whether the captured answer is the warmup turn's answer. The capture walks
+ * back to the last turn with assistant text, so a question turn that produced
+ * none comes back as the German warmup answer, which would be graded as the
+ * very failure the sweep measures.
+ */
+export function isWarmupEcho(answer: string, warmupAnswer: string | null): boolean {
+  return warmupAnswer !== null && answer.trim() === warmupAnswer.trim();
 }
 
 /** Every (model, question) run still missing for `condition`, one entry per run. */
