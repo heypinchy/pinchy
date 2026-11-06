@@ -2162,10 +2162,10 @@ Approve or deny one of your own pending confirmations. The agent's tool call is 
 
 **Request body:**
 
-| Field      | Type   | Required | Description                                           |
-| ---------- | ------ | -------- | ----------------------------------------------------- |
-| `decision` | string | Yes      | `approve` or `deny`                                   |
-| `reason`   | string | No       | Why, up to 500 characters — recorded in the audit row |
+| Field      | Type   | Required | Description                                                                                                  |
+| ---------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------ |
+| `decision` | string | Yes      | `approve` or `deny`                                                                                          |
+| `reason`   | string | No       | Why, up to 500 characters — recorded in the audit row, with any email address replaced by `<email-redacted>` |
 
 **Response:**
 
