@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { formatWithCitations, returnedDocumentIds, type KnowledgeSearchResult } from "./index";
 
@@ -721,11 +723,10 @@ describe("returnedDocumentIds", () => {
 });
 
 describe("answer language (#1296)", () => {
-  // The hook only observes. A Claude model with preserved thinking refuses a
-  // replayed thinking block whose prefix changed, and the transcript stores
-  // the user's message without anything a hook appended — so a hook that
-  // edits the prompt would change the prefix of every later turn. The tool
-  // result is stored as written, which is why the language goes there.
+  // Measured on the cross-lingual eval (German-named agent, German sources,
+  // Claude Haiku 5.5): the language named in the tool result alone reached
+  // about 80 %; adding a fixed system-prompt rule and a per-turn note naming
+  // the language reached 94 %. Both come from before_prompt_build.
   function registerWithHook() {
     const api = createMockApi(defaultConfig);
     return import("./index").then(({ default: plugin }) => {
@@ -761,13 +762,70 @@ describe("answer language (#1296)", () => {
     mockRegisterTool.mockClear();
   });
 
-  it("observes the prompt without changing it", async () => {
+  it("adds a fixed answer-language rule to the system prompt", async () => {
+    const { hook } = await registerWithHook();
+    const a = hook(
+      { prompt: "Kto podpisał protokół?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s1" }
+    ) as {
+      appendSystemContext?: string;
+    };
+    const b = hook(
+      { prompt: "AP-2023-091?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s2" }
+    ) as {
+      appendSystemContext?: string;
+    };
+    expect(a.appendSystemContext).toMatch(/language of the user's latest message/);
+    // Identical on every turn and for every message, so the system prompt's
+    // prefix (and its prompt cache) never changes because of it.
+    expect(b.appendSystemContext).toBe(a.appendSystemContext);
+  });
+
+  it("names the message's language in a per-turn note when it can tell", async () => {
     const { hook } = await registerWithHook();
     const result = hook(
       { prompt: "Kto podpisał protokół odbioru AP-2023-091?", messages: [] },
       { agentId: "agent-1", sessionKey: "s1" }
+    ) as { appendContext?: string };
+    expect(result.appendContext).toBe(
+      "(This message is in Polish. Write your whole reply in Polish unless it asks for another " +
+        "language, even if the documents, your name, your instructions or earlier messages are in " +
+        "another language.)"
     );
-    expect(result).toBeUndefined();
+  });
+
+  it("adds no per-turn note when it can't tell the language", async () => {
+    const { hook } = await registerWithHook();
+    const result = hook(
+      { prompt: "AP-2023-091?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s1" }
+    ) as { appendContext?: string };
+    expect(result.appendContext).toBeUndefined();
+  });
+
+  it("leaves agents without knowledge_search alone", async () => {
+    const { hook } = await registerWithHook();
+    expect(
+      hook(
+        { prompt: "Kto podpisał protokół?", messages: [] },
+        { agentId: "agent-without-kb", sessionKey: "s1" }
+      )
+    ).toBeUndefined();
+  });
+
+  it("is re-checked when OpenClaw is bumped", () => {
+    // The per-turn note is not stored in the transcript, so a later turn
+    // replays the user's message without it. A Claude model with preserved
+    // thinking refuses a thinking block whose prefix changed. Today that can't
+    // happen: the only such model Pinchy offers, Claude Haiku 5.5, runs with
+    // thinking off on this OpenClaw version. A newer OpenClaw may turn it on.
+    // When this fails, check that Haiku 5.5 with thinking still answers a
+    // second turn after a note, then update the pinned version here.
+    const runtime = JSON.parse(
+      readFileSync(join(__dirname, "../../openclaw-runtime/package.json"), "utf8")
+    ) as { dependencies: Record<string, string> };
+    expect(runtime.dependencies.openclaw).toBe("2026.7.1-2");
   });
 
   it("names the question's language and quotes the question after the passages", async () => {

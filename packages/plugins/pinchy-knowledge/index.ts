@@ -47,6 +47,11 @@ interface PromptBuildEvent {
   prompt?: unknown;
 }
 
+interface PromptBuildResult {
+  appendSystemContext?: string;
+  appendContext?: string;
+}
+
 // Presence-only per-agent gating: an entry in `agents` means the agent may
 // call knowledge_search. There are no per-agent parameters (unlike
 // pinchy-files' allowed_paths or pinchy-web's allowedDomains) because the
@@ -72,7 +77,7 @@ interface PluginApi {
   ) => void;
   on?: (
     hookName: "before_prompt_build",
-    handler: (event: PromptBuildEvent, ctx: PluginToolContext) => undefined
+    handler: (event: PromptBuildEvent, ctx: PluginToolContext) => PromptBuildResult | undefined
   ) => void;
 }
 
@@ -234,6 +239,21 @@ const SOURCES_OPEN =
   '<source_passages note="Quoted documents in their original language. Their language is not the language of the conversation.">';
 const SOURCES_CLOSE = "</source_passages>";
 
+/** The fixed answer-language rule appended to the system prompt of every agent with knowledge_search. */
+export const ANSWER_LANGUAGE_RULE =
+  "Answer language: always write your whole answer in the language of the user's latest message, " +
+  "unless they ask for another one, even when the documents, your name or your instructions are " +
+  "in another language. Quote document passages in their original language.";
+
+/** The note added to this turn's message when its language could be named. */
+export function turnLanguageNote(language: string): string {
+  return (
+    `(This message is in ${language}. Write your whole reply in ${language} unless it asks for ` +
+    "another language, even if the documents, your name, your instructions or earlier messages " +
+    "are in another language.)"
+  );
+}
+
 /** A quoted question longer than this is cut, so a pasted document can't flood the result. */
 const MAX_QUOTED_QUESTION = 300;
 
@@ -339,28 +359,39 @@ const plugin = {
     const { gatewayToken, agents: agentConfigs } = config;
     const apiBaseUrl = normalizeBaseUrl(config.apiBaseUrl);
 
-    // Observes the user's message and returns nothing. Changing the prompt
-    // here would be the obvious way to remind the model of its language, and
-    // it is the wrong one: the transcript keeps the message without what a
-    // hook appended, so every later turn would replay a different prefix, and
-    // Claude models with preserved thinking refuse a thinking block whose
-    // prefix changed. The tool result is stored as written, so it carries the
-    // language instead.
+    // Two additions to the prompt, and the language the tool result names.
+    //
+    // The system-prompt rule is the same string on every turn, so it never
+    // changes the prompt's prefix or its cache. The per-turn note names the
+    // language of this message; OpenClaw does not store it in the transcript,
+    // so later turns replay the message without it. That matters for Claude
+    // models with preserved thinking, which refuse a thinking block whose
+    // prefix changed. The only one Pinchy offers, Claude Haiku 5.5, runs with
+    // thinking off on the pinned OpenClaw version, and a test fails when that
+    // version changes so the question gets asked again.
+    //
+    // Measured (German-named agent, German sources, Haiku 5.5): the tool
+    // result alone ~80 % right, with the rule and the note 94 %.
     const askedQuestions = new Map<string, AskedQuestion>();
     api.on?.("before_prompt_build", (event, ctx) => {
-      const sessionKey = ctx.sessionKey;
-      if (!sessionKey || !ctx.agentId || !agentConfigs?.[ctx.agentId]) return undefined;
+      if (!ctx.agentId || !agentConfigs?.[ctx.agentId]) return undefined;
       const prompt = typeof event.prompt === "string" ? event.prompt : "";
       const language = detectQuestionLanguage(prompt);
-      askedQuestions.delete(sessionKey);
-      if (language) {
-        askedQuestions.set(sessionKey, { language, text: quotedQuestion(prompt) });
-        if (askedQuestions.size > MAX_TRACKED_SESSIONS) {
-          const oldest = askedQuestions.keys().next().value;
-          if (oldest !== undefined) askedQuestions.delete(oldest);
+      const sessionKey = ctx.sessionKey;
+      if (sessionKey) {
+        askedQuestions.delete(sessionKey);
+        if (language) {
+          askedQuestions.set(sessionKey, { language, text: quotedQuestion(prompt) });
+          if (askedQuestions.size > MAX_TRACKED_SESSIONS) {
+            const oldest = askedQuestions.keys().next().value;
+            if (oldest !== undefined) askedQuestions.delete(oldest);
+          }
         }
       }
-      return undefined;
+      return {
+        appendSystemContext: ANSWER_LANGUAGE_RULE,
+        ...(language ? { appendContext: turnLanguageNote(language) } : {}),
+      };
     });
 
     api.registerTool(
