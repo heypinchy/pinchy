@@ -252,7 +252,12 @@ describe("Chat", () => {
       mockGetAgent.mockReturnValue(makeAgent({ allowedTools: ["knowledge_search"] }));
       render(<Chat agentId="agent-1" agentName="Sales Bot" />);
       await hoverSharedBadge();
-      expect((await screen.findAllByText(/doesn't keep memory/i)).length).toBeGreaterThan(0);
+      // Only memory is off: files in the shared workspace still persist, so the
+      // tooltip must not claim that nothing carries over.
+      expect(
+        (await screen.findAllByText(/doesn't keep memory of your conversations/i)).length
+      ).toBeGreaterThan(0);
+      expect(screen.queryByText(/nothing carries over/i)).not.toBeInTheDocument();
       expect(screen.queryByText(/team knowledge/i)).not.toBeInTheDocument();
     });
   });

@@ -299,7 +299,7 @@ export function Chat({
                                               ? "Your conversations are private and not shared with anyone."
                                               : keepsMemory
                                                 ? "Your conversations help build team knowledge that's available to all team members."
-                                                : "Your whole team can use this agent. It doesn't keep memory, so nothing carries over between conversations."}
+                                                : "Your whole team can use this agent, but it doesn't keep memory of your conversations."}
                                           </TooltipContent>
                                         </Tooltip>
                                       </TooltipProvider>
