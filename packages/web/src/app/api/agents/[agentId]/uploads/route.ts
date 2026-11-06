@@ -9,11 +9,17 @@ import {
 } from "@/lib/upload-validation";
 import { persistStagedUpload } from "@/lib/uploads";
 import { appendAuditLog } from "@/lib/audit";
+import { readBodyWithLimit } from "@/lib/read-body-limit";
 import { draftIdSchema } from "@/lib/schemas/uploads";
 import { db } from "@/db";
 import { uploadedFiles } from "@/db/schema";
 
 const MAX_BYTES = 15 * 1024 * 1024;
+// The multipart envelope (boundaries, part headers, the other form fields) adds
+// to the file's own bytes, so the request body may legitimately exceed MAX_BYTES
+// by a little. The per-file check below stays exact; this only bounds buffering.
+const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = MAX_BYTES + MULTIPART_OVERHEAD_BYTES;
 const STAGED_TTL_MS = 24 * 60 * 60 * 1000;
 
 type Params = { params: Promise<{ agentId: string }> };
@@ -37,10 +43,45 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
   }
   const draftId = parsedDraftId.data;
 
-  // Parse multipart form data.
+  const auditBase = {
+    actorType: "user" as const,
+    actorId: session.user.id!,
+    eventType: "file.upload.staged" as const,
+    resource: `agent:${agentId}`,
+  };
+
+  // Bound the body BEFORE parsing: req.formData() buffers everything, so an
+  // authenticated user could otherwise make the server hold an arbitrarily large
+  // body in memory. No filename exists yet, so the audit detail omits it.
+  const rejectOversizeBody = async () => {
+    await appendAuditLog({
+      ...auditBase,
+      detail: { reason: "oversize", agent: { id: agentId, name: agent.name } },
+      outcome: "failure",
+    });
+    return NextResponse.json({ error: "File exceeds maximum size of 15 MB" }, { status: 413 });
+  };
+
+  const declaredLength = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+    return rejectOversizeBody();
+  }
+
+  // Content-Length may be absent (chunked) or wrong; count the real bytes.
+  let bodyBytes: Uint8Array | null;
+  try {
+    bodyBytes = await readBodyWithLimit(req.body, MAX_BODY_BYTES);
+  } catch {
+    return NextResponse.json({ error: "Failed to parse multipart form data" }, { status: 400 });
+  }
+  if (bodyBytes === null) return rejectOversizeBody();
+
+  // Parse multipart form data from the bounded buffer.
   let formData: FormData;
   try {
-    formData = await req.formData();
+    formData = await new Response(bodyBytes as BodyInit, {
+      headers: { "content-type": req.headers.get("content-type") ?? "" },
+    }).formData();
   } catch {
     return NextResponse.json({ error: "Failed to parse multipart form data" }, { status: 400 });
   }
@@ -50,13 +91,6 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
     return NextResponse.json({ error: "Missing file field in form data" }, { status: 400 });
   }
   const file = fileField;
-
-  const auditBase = {
-    actorType: "user" as const,
-    actorId: session.user.id!,
-    eventType: "file.upload.staged" as const,
-    resource: `agent:${agentId}`,
-  };
 
   // Size check before reading buffer to save memory.
   if (file.size > MAX_BYTES) {

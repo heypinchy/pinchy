@@ -8,7 +8,7 @@ import {
   shouldEmitSilentStreamAudit,
 } from "@/server/model-unavailable-throttle";
 import type { SessionCache } from "@/server/session-cache";
-import type { ActiveRuns } from "@/server/active-runs";
+import type { ActiveRun, ActiveRuns } from "@/server/active-runs";
 import { followUpDepsFor, reAbortStartedRun } from "@/server/abort-runs";
 import { getErrorHint, presentProviderError, cannedProviderMessage } from "@/server/error-hints";
 import { classifyModelError } from "@/server/model-error-classifier";
@@ -33,6 +33,7 @@ import { db } from "@/db";
 import { agentDeliveredFiles } from "@/db/schema";
 import { SERVABLE_DELIVERED_MIMES } from "@/lib/serve-workspace-file";
 import { hashFileBytes, locateDeliveredFile } from "@/lib/delivered-file-location";
+import { createMediaDirectiveFilter } from "@/server/media-directive";
 import { and, eq } from "drizzle-orm";
 import { appendAuditLog, safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -51,6 +52,8 @@ const THINKING_HEARTBEAT_MS = 15_000;
 // Single source of truth so `sanitizeError` (client-router.ts) and this
 // thrown-failure sink agree.
 export const GENERIC_RUN_FAILURE_MESSAGE = "Something went wrong. Please try again.";
+
+const WS_OPEN = 1;
 
 export interface StreamPipeDeps {
   openclawClient: OpenClawClient;
@@ -114,8 +117,6 @@ export class StreamPipe {
   ): Promise<void> {
     const { openclawClient, userId, userRole, sessionCache, activeRuns, disconnectSignal } =
       this.deps;
-    const broadcastForRun = this.deps.broadcastForRun;
-
     let messageId = initialMessageId;
     // The id the most recent turn actually streamed into. `messageId` rotates to
     // a fresh id on each `done` (for the NEXT turn), so after the loop it no
@@ -128,6 +129,9 @@ export class StreamPipe {
     // could still grow into a SILENT_REPLY_TOKEN, then either flush or
     // suppress it when the turn ends.
     let textBuffer = "";
+    // Drops OpenClaw's `MEDIA:<path>` attachment lines from the reply (#1298);
+    // the chip from the artifacts poll below already stands for the file.
+    let mediaFilter = createMediaDirectiveFilter();
 
     // Safety net for issue #320: OpenClaw's embedded runner falls through to
     // `continue_normal` when `surface_error` fires with `params.timedOut`,
@@ -178,6 +182,49 @@ export class StreamPipe {
     // "stream errored and no one was watching" (= just clean up).
     let activeRunRegistered = false;
     let activeRunId: string | undefined;
+    // #1301: the session's registry entry can stop being this pipe's while the
+    // pipe still has work to do. The user stops this reply and sends the next
+    // message; the stopped stream ends at once, but the pipe goes on to its
+    // file delivery, and by the time it is back the next turn holds the entry —
+    // with the same tab among its listeners. Everything below that reads "the
+    // run" or broadcasts to its listeners must therefore mean THIS run.
+    const ownRunId = () => activeRunId ?? initialMessageId;
+    // The entry object itself, kept once seen: `markFirstChunk`/`switchRunId`
+    // mutate it in place, and it still answers for this run (`abortedByUser`,
+    // its listeners) after a newer turn replaced it.
+    let ownRun: ActiveRun | undefined =
+      activeRuns.get(sessionKey)?.runId === initialMessageId
+        ? activeRuns.get(sessionKey)
+        : undefined;
+    const ownEntry = (): ActiveRun | undefined => {
+      const current = activeRuns.get(sessionKey);
+      if (current && current.runId === ownRunId()) ownRun = current;
+      return ownRun;
+    };
+    // `broadcastForRun` reaches whichever run holds the session NOW. Once a
+    // newer turn does, a frame of this run's — a `complete`, a `liveness`
+    // verdict, an error — would end or fail that turn in every tab watching
+    // it. Those tabs are left alone; a tab still watching only this run (a
+    // second device) still hears how it ended.
+    // The same holds a step earlier, from the moment a tab sends the next
+    // message (`handedOverTo`), before that turn reaches the registry.
+    const broadcastForRun: StreamPipeDeps["broadcastForRun"] = (key, fallbackWs, data) => {
+      const current = activeRuns.get(key);
+      const superseded = current !== undefined && current.runId !== ownRunId();
+      const handedOverTo = ownEntry()?.handedOverTo;
+      if (!superseded && !handedOverTo?.size) {
+        this.deps.broadcastForRun(key, fallbackWs, data);
+        return;
+      }
+      const payload = JSON.stringify(data);
+      const watchers = new Set<WebSocket>(ownEntry()?.listeners ?? []);
+      watchers.add(fallbackWs);
+      for (const ws of watchers) {
+        if (superseded && current.listeners.has(ws)) continue;
+        if (handedOverTo?.has(ws)) continue;
+        if (ws.readyState === WS_OPEN) ws.send(payload);
+      }
+    };
     let sawTerminalError = false;
     // Tier 2b resume buffer: the assistant text emitted to clients for the
     // current `messageId` so far. Mirrored into the ActiveRun registry on every
@@ -254,6 +301,7 @@ export class StreamPipe {
           }
           activeRunRegistered = true;
           activeRunId = chunk.runId;
+          ownRun = activeRuns.get(sessionKey);
           // Stopped while still pending — by the stop button or by
           // deactivation. That abort named the session only, and if OpenClaw
           // had not accepted this run yet it stopped nothing; OpenClaw may
@@ -327,7 +375,7 @@ export class StreamPipe {
         // (It supersedes no earlier durable error: a stopped run has not gone
         // through — see the supersede after the loop.) So there is nothing to
         // synthesize here — only side effects to NOT produce.
-        const userAbort = chunk.type === "error" && activeRuns.get(sessionKey)?.abortedByUser;
+        const userAbort = chunk.type === "error" && ownEntry()?.abortedByUser;
         if (chunk.type === "error" && !userAbort) {
           sawTerminalError = true;
         }
@@ -431,9 +479,9 @@ export class StreamPipe {
             sawText = true;
             textBuffer = stripFinalEnvelope(textBuffer + chunk.text);
             const safeLen = safeEmitLength(textBuffer);
-            if (safeLen > 0) {
-              const emit = textBuffer.slice(0, safeLen);
-              textBuffer = textBuffer.slice(safeLen);
+            const emit = safeLen > 0 ? mediaFilter.push(textBuffer.slice(0, safeLen)) : "";
+            textBuffer = textBuffer.slice(safeLen);
+            if (emit) {
               // Accumulate then mirror into the registry in the SAME synchronous
               // block as the broadcast: a reconnect's atomic snapshot+addListener
               // means any chunk is either fully before the snapshot (counted in
@@ -521,12 +569,16 @@ export class StreamPipe {
             // Flush remaining buffer at end-of-turn. If the entire turn
             // resolved to the silent-reply sentinel, suppress it; otherwise
             // emit whatever text was held back.
-            if (textBuffer && textBuffer !== SILENT_REPLY_TOKEN) {
-              emittedContent += textBuffer;
+            const tail =
+              (textBuffer && textBuffer !== SILENT_REPLY_TOKEN
+                ? mediaFilter.push(textBuffer)
+                : "") + mediaFilter.flush();
+            if (tail) {
+              emittedContent += tail;
               activeRuns.setContent(sessionKey, emittedContent);
               broadcastForRun(sessionKey, clientWs, {
                 type: "chunk",
-                content: textBuffer,
+                content: tail,
                 messageId,
               });
             }
@@ -540,6 +592,7 @@ export class StreamPipe {
         // stores them in history).
         if (chunk.type === "done") {
           textBuffer = "";
+          mediaFilter = createMediaDirectiveFilter();
           // The completed turn is now in OpenClaw history; the next turn starts
           // with an empty resume buffer (updateMessageId clears the registry's).
           emittedContent = "";
@@ -578,11 +631,7 @@ export class StreamPipe {
       // with a `done` of its own the moment the abort goes out, whether or not
       // OpenClaw stopped anything — nor when OpenClaw dropped the socket or the
       // watchdog tore the run down: neither says the run is over.
-      if (
-        !openclawDisconnected &&
-        !tornDownByWatchdog &&
-        activeRuns.get(sessionKey)?.abortedByUser !== true
-      ) {
+      if (!openclawDisconnected && !tornDownByWatchdog && ownEntry()?.abortedByUser !== true) {
         activeRuns.markStreamEnded(sessionKey, activeRunId ?? initialMessageId);
       }
 
@@ -630,7 +679,7 @@ export class StreamPipe {
       // nothing — except to the registry, which `handleAbort` marked when the
       // click came in. Both readings are kept: the local one still answers for a
       // run whose registry entry a rapid follow-up turn has already replaced.
-      const stoppedByUser = sawUserAbort || activeRuns.get(sessionKey)?.abortedByUser === true;
+      const stoppedByUser = sawUserAbort || ownEntry()?.abortedByUser === true;
       if (!sawText && !sawError && !stoppedByUser) {
         const providerError = "The model did not produce a response. It may have timed out.";
         // Durable banner: a silent timeout is also a "no response" the user
@@ -773,13 +822,14 @@ export class StreamPipe {
       // click would put the whole failure treatment back through the other
       // door. Read the registry rather than matching the message text: "was
       // aborted" is a string a provider is free to use for its own failures.
-      const abortedHere = activeRuns.get(sessionKey)?.abortedByUser === true;
+      const abortedHere = ownEntry()?.abortedByUser === true;
       if (!openclawDisconnected && !abortedHere) {
         sawTerminalError = true;
         await this.surfaceRunFailure({
           clientWs,
           agent,
           sessionKey,
+          broadcastForRun,
           messageId,
           providerError: err instanceof Error ? err.message : String(err),
           clientMessageId: triggeringClientMessageId,
@@ -814,7 +864,7 @@ export class StreamPipe {
       // removes the entry if it is still ours. Idempotent if the watchdog
       // already tore the run down. The snapshot keeps what the audit below
       // reads.
-      const run = activeRunRegistered ? activeRuns.get(sessionKey) : undefined;
+      const run = activeRunRegistered ? ownEntry() : undefined;
       activeRuns.deleteIfRunId(sessionKey, activeRunId ?? initialMessageId);
       if (heartbeatInterval !== null) {
         clearInterval(heartbeatInterval);
@@ -1146,7 +1196,7 @@ export class StreamPipe {
       // still be in flight right now — `false` here does not mean the run was
       // read-only (#1013). `runStartedAt` goes into the row so `resolveRetryGate`
       // can ask the same question again when the user reaches for Retry.
-      const sideEffects = await agentRanToolSince(args.agent.id, args.runStartedAt);
+      const sideEffects = await agentRanToolSince(args.agent.id, userId, args.runStartedAt);
       // EVERY failed run is recorded, because every failed run can be retried
       // and every retry needs the gate. Whether it also re-surfaces as a
       // "paused" banner is a separate question: a persistent problem with
@@ -1201,13 +1251,16 @@ export class StreamPipe {
     clientWs: WebSocket;
     agent: { id: string; name: string; model?: string | null };
     sessionKey: string;
+    /** The pipe's own, scoped to its run (#1301) — not the router's. */
+    broadcastForRun: StreamPipeDeps["broadcastForRun"];
     messageId: string;
     providerError: string;
     clientMessageId?: string;
     runId?: string;
     runStartedAt: Date;
   }): Promise<void> {
-    const { userRole, broadcastForRun } = this.deps;
+    const { userRole } = this.deps;
+    const { broadcastForRun } = args;
     const errorClass = classifyAgentError(args.providerError);
     // Server-side, unconditional: log + umbrella audit for EVERY thrown run
     // failure, even the ones we won't show the user below. This is the

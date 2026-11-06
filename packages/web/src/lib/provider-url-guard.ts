@@ -47,11 +47,16 @@
 //
 // The runtime chat traffic is fetched by OpenClaw (which ships its own SSRF
 // guard); this module covers Pinchy's own discover/validate probes and the
-// persisted value at save time.
+// persisted value at save time. The probes connect to the address the guard
+// classified (`resolveAllowedProviderTarget` + `pinnedFetch`), so a name that
+// answers differently the second time is never asked a second time. OpenClaw
+// resolves the stored base URL itself for every chat request, which Pinchy
+// cannot pin: a rebinding resolver keeps its window there.
 
 import { lookup as dnsLookup } from "dns/promises";
 import { isIP } from "net";
 import { classifyIpAddress } from "@/lib/integrations/url-validation";
+import { toPinnedTarget, type PinnedTarget } from "@/lib/pinned-connection";
 
 export type ProviderUrlBlockReason = "unsupported_scheme" | "blocked_address" | "private_address";
 
@@ -164,19 +169,68 @@ export function memoizeResolver(resolver: HostResolver = resolveHostAddresses): 
 }
 
 /**
+ * The name did not resolve (or resolved to nothing), so there is no address to
+ * classify — or to connect to. Not a {@link ProviderUrlBlockedError}: nothing
+ * was refused, and a route must not answer it as if something had been.
+ */
+export class ProviderUrlUnresolvableError extends Error {
+  constructor(message = "The provider's host name could not be resolved.") {
+    super(message);
+    this.name = "ProviderUrlUnresolvableError";
+  }
+}
+
+/**
  * Throw {@link ProviderUrlBlockedError} if `rawUrl` is not a safe target for a
  * server-side provider fetch. See the module header for the full posture.
  *
  * Fail-open on DNS resolution failure: a host that doesn't resolve can't be
  * classified, and blocking it would reject providers that are merely
- * temporarily unreachable — the subsequent fetch fails naturally instead. A
- * lookup that takes longer than {@link PROVIDER_DNS_LOOKUP_TIMEOUT_MS} counts
- * as a failure.
+ * temporarily unreachable. A lookup that takes longer than
+ * {@link PROVIDER_DNS_LOOKUP_TIMEOUT_MS} counts as a failure.
+ *
+ * For a check that only decides whether a value may be SAVED or EMITTED. A
+ * caller that goes on to connect must use {@link resolveAllowedProviderTarget}
+ * instead and pin the connection to its answer: checking here and then
+ * fetching by name resolves twice, and a hostile resolver can answer the two
+ * lookups differently (DNS rebinding) — or fail this one and answer the
+ * fetch's with 127.0.0.1.
  */
 export async function assertAllowedProviderUrl(
   rawUrl: string,
   resolver: HostResolver = resolveHostAddresses
 ): Promise<void> {
+  try {
+    await allowedProviderAddresses(rawUrl, resolver);
+  } catch (err) {
+    if (err instanceof ProviderUrlUnresolvableError) return; // fail open, see above
+    throw err;
+  }
+}
+
+/**
+ * The addresses a probe of `rawUrl` must connect to — the ones this guard
+ * just classified — or a throw: {@link ProviderUrlBlockedError} for a refused
+ * target, {@link ProviderUrlUnresolvableError} when the name has no answer.
+ *
+ * Unlike {@link assertAllowedProviderUrl} this does NOT fail open. There is
+ * only one lookup, and with no answer there is nothing to connect to: the
+ * request fails here instead of resolving the name a second time on its own.
+ * Every address is returned, since every one was checked — the connector can
+ * then still fall back from one to the next.
+ */
+export async function resolveAllowedProviderTarget(
+  rawUrl: string,
+  resolver: HostResolver = resolveHostAddresses
+): Promise<PinnedTarget> {
+  return toPinnedTarget(await allowedProviderAddresses(rawUrl, resolver));
+}
+
+/**
+ * Every address `rawUrl` reaches, each of which the deployment allows — at
+ * least one, or a throw (see {@link resolveAllowedProviderTarget}).
+ */
+async function allowedProviderAddresses(rawUrl: string, resolver: HostResolver): Promise<string[]> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -190,11 +244,12 @@ export async function assertAllowedProviderUrl(
 
   // An address literal is already the answer — classify it and never involve
   // DNS. Resolving it is what lost the IPv6 case: `dns.lookup("[::1]")`
-  // throws, and the fail-open below then waved it through.
+  // throws, and the fail-open in `assertAllowedProviderUrl` then waved it
+  // through.
   const literal = hostnameAsIpLiteral(url.hostname);
   if (literal !== null) {
     assertAddressesAllowed([literal]);
-    return;
+    return [literal];
   }
   if (url.hostname.startsWith("[")) {
     // Bracketed but not a parseable IPv6 address, so it is not a name either.
@@ -209,10 +264,12 @@ export async function assertAllowedProviderUrl(
   try {
     addresses = await resolver(url.hostname);
   } catch {
-    return; // unresolvable NAME — fail open (see doc-comment)
+    throw new ProviderUrlUnresolvableError();
   }
+  if (addresses.length === 0) throw new ProviderUrlUnresolvableError();
 
   assertAddressesAllowed(addresses);
+  return addresses;
 }
 
 /** Throw if any address in the set is one this deployment refuses to reach. */

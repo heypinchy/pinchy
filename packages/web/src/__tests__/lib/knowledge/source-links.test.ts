@@ -23,6 +23,7 @@ import {
   remarkSourceLinks,
   buildSourceHref,
   buildSourceDownloads,
+  buildSourceViewerUrl,
   parseSourceHref,
 } from "@/lib/knowledge/source-links";
 import { OFFICE_EXTENSIONS } from "@/lib/knowledge/office-formats";
@@ -136,6 +137,7 @@ describe("buildSourceDownloads", () => {
 
     expect(downloads).toHaveLength(1);
     expect(downloads[0].label).toBe("document.pdf");
+    expect(downloads[0].filename).toBe("document.pdf");
   });
 
   it("offers the original AND the converted PDF for an Office source", () => {
@@ -145,7 +147,24 @@ describe("buildSourceDownloads", () => {
     // convenience that sometimes saves them the conversion.
     const downloads = buildSourceDownloads(hrefFor("noack/QF_2012/Angebot.doc"))!;
 
-    expect(downloads.map((d) => d.label)).toEqual(["Angebot.doc", "Angebot.pdf"]);
+    expect(downloads.map((d) => d.filename)).toEqual(["Angebot.doc", "Angebot.pdf"]);
+  });
+
+  it("labels the pair by what each one IS, not by the document's name (#1268)", () => {
+    // Both entries carry the same name up to the extension, and the header
+    // truncates a label long before it reaches the extension — so two labels
+    // made of the filename read "Vorlage_Wartung…" twice. What tells them
+    // apart is the representation, which is what the label says now; the
+    // filename stays reachable as the entry's own field (tooltip, a11y name).
+    const downloads = buildSourceDownloads(hrefFor("noack/Vorlage_Wartung_Kundendienst.docx"))!;
+
+    expect(downloads.map((d) => d.label)).toEqual(["Original (.docx)", "PDF"]);
+  });
+
+  it("keeps the original's extension as written, so the label matches the file", () => {
+    const [original] = buildSourceDownloads(hrefFor("noack/Bericht.PPTX"))!;
+
+    expect(original.label).toBe("Original (.PPTX)");
   });
 
   it("names each representation explicitly, so the pair is not a coin flip", () => {
@@ -183,6 +202,50 @@ describe("buildSourceDownloads", () => {
   it("says nothing about a link that is not a citation", () => {
     expect(buildSourceDownloads("/some/other/link")).toBeNull();
     expect(buildSourceDownloads("https://evil.example/workspace-file?path=%2Fx.docx")).toBeNull();
+  });
+});
+
+describe("buildSourceViewerUrl", () => {
+  // The browser's own PDF viewer names a document after the LAST PATH SEGMENT
+  // of its url when the file carries no title of its own — and for every
+  // citation that segment was the route, so the viewer's toolbar announced
+  // "workspace-file" (#1268). The viewer url therefore ends in the name of
+  // the bytes it shows; `path` stays the only thing that decides WHICH bytes.
+
+  it("ends the path in the document's name and keeps query and page", () => {
+    const href = buildSourceHref(AGENT, "noack/PPR/Prüfbericht Nr. 5.pdf", {
+      kind: "page",
+      page: 44,
+    });
+
+    expect(buildSourceViewerUrl(href)).toBe(
+      "/api/agents/agent-1/workspace-file/Pr%C3%BCfbericht%20Nr.%205.pdf" +
+        "?path=%2Fdata%2Fnoack%2FPPR%2FPr%C3%BCfbericht%20Nr.%205.pdf#page=44"
+    );
+  });
+
+  it("names an Office source after the PDF the viewer is actually shown", () => {
+    // The bytes are the converted PDF. Naming the url `.docx` would title a
+    // PDF as a Word file, and a viewer that saves under the url's name would
+    // hand the reader a PDF called `.docx`.
+    const href = buildSourceHref(AGENT, "noack/Vorlage_Wartung.docx", null);
+    const url = new URL(buildSourceViewerUrl(href)!, "http://localhost");
+
+    expect(url.pathname).toBe("/api/agents/agent-1/workspace-file/Vorlage_Wartung.pdf");
+    expect(url.searchParams.get("path")).toBe("/data/noack/Vorlage_Wartung.docx");
+  });
+
+  it("encodes a name that would otherwise end the path segment early", () => {
+    const href = buildSourceHref(AGENT, "noack/Q&A #3?.pdf", null);
+    const url = new URL(buildSourceViewerUrl(href)!, "http://localhost");
+
+    expect(decodeURIComponent(url.pathname.split("/").pop()!)).toBe("Q&A #3?.pdf");
+    expect(url.hash).toBe("");
+  });
+
+  it("says nothing about a link that is not a citation", () => {
+    expect(buildSourceViewerUrl("/some/other/link")).toBeNull();
+    expect(buildSourceViewerUrl("https://evil.example/workspace-file?path=%2Fx.pdf")).toBeNull();
   });
 });
 

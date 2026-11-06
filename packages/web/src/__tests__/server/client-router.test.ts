@@ -413,8 +413,10 @@ describe("ClientRouter", () => {
       const runStartedAt = (entry as { runStartedAt: Date }).runStartedAt;
       expect(runStartedAt).toBeInstanceOf(Date);
       // The same bound `agentRanToolSince` was asked with, so re-deriving later
-      // covers the same run rather than a wider or narrower slice of history.
-      expect(mockAgentRanToolSince).toHaveBeenLastCalledWith("agent-1", runStartedAt);
+      // covers the same run rather than a wider or narrower slice of history —
+      // and about this user's tools only, never a shared agent's other members
+      // (#1274).
+      expect(mockAgentRanToolSince).toHaveBeenLastCalledWith("agent-1", "user-1", runStartedAt);
       // Starts before the run and not in the future — a window that opens after
       // the first tool call would miss exactly what it exists to find.
       expect(runStartedAt.getTime()).toBeLessThanOrEqual(before);
@@ -1199,6 +1201,33 @@ describe("ClientRouter", () => {
     const textChunks = messages.filter((m: any) => m.type === "chunk");
     const allText = textChunks.map((c: any) => c.content).join("");
     expect(allText).toBe("Right away! How can I help?");
+  });
+
+  it("strips OpenClaw's MEDIA: directive lines from streamed chunks (#1298)", async () => {
+    // The agent's system prompt tells it to name an attachment on its own
+    // `MEDIA:<path>` line. The chip already stands for the file, and the path
+    // is an internal container path the user must not see.
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "Here is smoke.csv.\nME" };
+      yield { type: "text" as const, text: "DIA:/root/.openclaw/workspaces/agent-1/workbench/" };
+      yield { type: "text" as const, text: "smoke.csv" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "hi",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const allText = messages
+      .filter((m: any) => m.type === "chunk")
+      .map((c: any) => c.content)
+      .join("");
+    expect(allText).toBe("Here is smoke.csv.\n");
   });
 
   it("should suppress NO_REPLY sentinel arriving as a single text chunk", async () => {
@@ -2319,6 +2348,63 @@ describe("ClientRouter", () => {
 
     const sent = clientWs.sent.map((s) => JSON.parse(s));
     expect(sent[0].messages[0].content).toBe("Right away! How can I help?");
+  });
+
+  it("strips MEDIA: directive lines from history assistant messages (#1298)", async () => {
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "assistant",
+          content:
+            "Here is smoke.csv.\nMEDIA:/root/.openclaw/workspaces/agent-1/workbench/smoke.csv",
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, {
+      type: "history",
+      agentId: "agent-1",
+    });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages[0].content).toBe("Here is smoke.csv.\n");
+  });
+
+  it("keeps a reply that was only a MEDIA: directive as the anchor of its delivered chip (#1298)", async () => {
+    // Stripping the directive empties the reply. Dropping it as empty would
+    // move the file chip onto an earlier answer (grants attach by timestamp);
+    // keep it while the chip is attached, then drop it if no chip landed.
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        { role: "user", content: "first", timestamp: 1000 },
+        { role: "assistant", content: "Earlier answer", timestamp: 2000 },
+        { role: "user", content: "make a csv", timestamp: 3000 },
+        { role: "assistant", content: "MEDIA:/root/.openclaw/x/smoke.csv", timestamp: 4000 },
+        { role: "user", content: "and another", timestamp: 5000 },
+        { role: "assistant", content: "MEDIA:/root/.openclaw/x/gone.csv", timestamp: 6000 },
+      ],
+    });
+    mockListVisionModels.mockResolvedValueOnce([
+      { filename: "smoke.csv", mimeType: "text/csv", createdAt: new Date(4500) },
+    ]);
+
+    await router.handleMessage(clientWs as any, {
+      type: "history",
+      agentId: "agent-1",
+    });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    const assistant = sent[0].messages.filter((m: any) => m.role === "assistant");
+    expect(assistant).toHaveLength(2);
+    expect(assistant[0]).toMatchObject({ content: "Earlier answer" });
+    expect(assistant[0].files).toBeUndefined();
+    expect(assistant[1]).toMatchObject({
+      content: "",
+      files: [{ filename: "smoke.csv", mimeType: "text/csv" }],
+    });
+    expect(JSON.stringify(sent[0].messages)).not.toContain("MEDIA:");
   });
 
   it("should strip timestamp prefix from user messages in history", async () => {

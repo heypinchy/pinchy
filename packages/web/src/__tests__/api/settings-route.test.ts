@@ -22,6 +22,12 @@ vi.mock("@/lib/settings", () => ({
   setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/settings-timezone", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/settings-timezone")>()),
+  getOrgTimezone: vi.fn().mockResolvedValue("UTC"),
+  setOrgTimezone: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
@@ -29,6 +35,7 @@ vi.mock("@/lib/audit", () => ({
 import { auth } from "@/lib/auth";
 import { getAllSettings } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
+import { getOrgTimezone, setOrgTimezone } from "@/lib/settings-timezone";
 import { after } from "next/server";
 
 describe("GET /api/settings", () => {
@@ -138,23 +145,31 @@ describe("POST /api/settings", () => {
     expect(body.error).toBe("Forbidden");
   });
 
-  it("saves setting when user is admin", async () => {
+  it.each([
+    "ollama_local_url",
+    "domain",
+    "enterprise_key",
+    "telegram_bot_token:abc",
+    "default_provider",
+    "anthropic_api_key",
+  ])("refuses %s — it has a dedicated route with its own validation and audit", async (key) => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
     } as any);
-
     const { setSetting } = await import("@/lib/settings");
 
     const request = new NextRequest("http://localhost/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "default_provider", value: "openai" }),
+      body: JSON.stringify({ key, value: "x" }),
     });
     const response = await POST(request);
-    expect(response.status).toBe(200);
 
-    expect(setSetting).toHaveBeenCalledWith("default_provider", "openai", false);
+    expect(response.status).toBe(400);
+    expect((await response.json()).details.fieldErrors.key).toBeDefined();
+    expect(setSetting).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
   it("refuses a member-access policy key — those go through /api/settings/governance", async () => {
@@ -174,7 +189,9 @@ describe("POST /api/settings", () => {
     const response = await POST(request);
 
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toMatch(/\/api\/settings\/governance/);
+    expect((await response.json()).details.fieldErrors.key.join(" ")).toMatch(
+      /\/api\/settings\/governance/
+    );
     expect(setSetting).not.toHaveBeenCalled();
   });
 
@@ -241,16 +258,37 @@ describe("POST /api/settings", () => {
       expires: "",
     } as any);
 
-    const { setSetting } = await import("@/lib/settings");
+    // The allowed key, so the 400 can only come from the missing value — with
+    // any other key the allow-list would answer first and this would prove
+    // nothing about `value`.
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "org.timezone" }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    expect(setOrgTimezone).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 on a non-string value for the allowed key", async () => {
+    // An array, not a number: `["Europe/Vienna"]` stringifies to a valid zone,
+    // so only the schema's string check stops it. A number would also fail
+    // the route's IANA check and pass with the type check removed.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
 
     const request = new NextRequest("http://localhost/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "some_key" }),
+      body: JSON.stringify({ key: "org.timezone", value: ["Europe/Vienna"] }),
     });
     const response = await POST(request);
     expect(response.status).toBe(400);
-    expect(setSetting).not.toHaveBeenCalled();
+    expect(setOrgTimezone).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
   it("returns 400 on malformed JSON", async () => {
@@ -270,48 +308,30 @@ describe("POST /api/settings", () => {
     expect(body.error).toBe("Invalid JSON body");
   });
 
-  it("flags api_key fields as encrypted", async () => {
+  it("schedules the timezone audit write via after() instead of fire-and-forget", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
     } as any);
-
-    const { setSetting } = await import("@/lib/settings");
+    vi.mocked(getOrgTimezone).mockResolvedValueOnce("UTC");
 
     const request = new NextRequest("http://localhost/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "anthropic_api_key", value: "sk-ant-..." }),
+      body: JSON.stringify({ key: "org.timezone", value: "Europe/Vienna" }),
     });
+
     const response = await POST(request);
     expect(response.status).toBe(200);
-    expect(setSetting).toHaveBeenCalledWith("anthropic_api_key", "sk-ant-...", true);
-  });
 
-  it("schedules the audit log write via after() instead of fire-and-forget", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "admin-1", role: "admin" },
-      expires: "",
-    } as any);
-
-    const request = new NextRequest("http://localhost/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "default_provider", value: "openai" }),
-    });
-
-    await POST(request);
-
-    // The route must use next/server's after() so the audit log call is
-    // properly scheduled and any errors flow through Next's error handler
-    // instead of being swallowed by .catch(() => {}).
+    expect(setOrgTimezone).toHaveBeenCalledWith("Europe/Vienna");
     expect(after).toHaveBeenCalledTimes(1);
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         actorType: "user",
         actorId: "admin-1",
-        eventType: "config.changed",
-        detail: { key: "default_provider" },
+        eventType: "settings.updated",
+        detail: { changes: { timezone: { from: "UTC", to: "Europe/Vienna" } } },
       })
     );
   });

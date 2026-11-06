@@ -15,6 +15,7 @@ import {
   resolveRetryGate,
   ACTIVE_ERROR_MAX_AGE_MS,
 } from "@/server/chat-session-errors";
+import { appendAuditLog } from "@/lib/audit";
 
 async function seedUser(overrides?: Partial<typeof users.$inferInsert>) {
   const [row] = await db
@@ -250,6 +251,31 @@ describe("resolveRetryGate (#1013)", () => {
     expect(await resolveRetryGate({ sessionKey, agentId: agent.id })).toBe(true);
   });
 
+  it("does not tell the caller that another member ran a tool on a shared agent (#1274)", async () => {
+    // The caller's own run did nothing; a colleague's run on the same shared
+    // agent booked something inside the caller's window. Answering `true`
+    // here would leak that activity to anyone who can poll the gate.
+    const caller = await seedUser({ role: "member" });
+    const colleague = await seedUser({ role: "member" });
+    const agent = await seedAgent(caller.id);
+    const sessionKey = `agent:${agent.id}:direct:${caller.id}`;
+
+    await recordChatSessionError({
+      ...base(caller, agent),
+      sideEffects: false,
+      runStartedAt: new Date(Date.now() - 5000),
+    });
+    await appendAuditLog({
+      actorType: "user",
+      actorId: colleague.id,
+      eventType: "tool.odoo_create",
+      resource: `agent:${agent.id}`,
+      outcome: "success",
+    });
+
+    expect(await resolveRetryGate({ sessionKey, agentId: agent.id })).toBe(false);
+  });
+
   it("never downgrades a stored true, even with no audit row in range", async () => {
     // Monotonic on purpose: the stored `true` was derived from a row that
     // existed. A later window that finds nothing (GC, a clock jump) must not
@@ -388,7 +414,7 @@ describe("agentRanToolSince", () => {
     const agent = await seedAgent(user.id);
     const cutoff = new Date(Date.now() - 1000);
 
-    expect(await agentRanToolSince(agent.id, cutoff)).toBe(false);
+    expect(await agentRanToolSince(agent.id, user.id, cutoff)).toBe(false);
 
     await db.insert(auditLog).values({
       actorType: "user",
@@ -399,10 +425,72 @@ describe("agentRanToolSince", () => {
       outcome: "success",
     });
 
-    expect(await agentRanToolSince(agent.id, cutoff)).toBe(true);
+    expect(await agentRanToolSince(agent.id, user.id, cutoff)).toBe(true);
     // A different agent doesn't match.
-    expect(await agentRanToolSince("other-agent", cutoff)).toBe(false);
+    expect(await agentRanToolSince("other-agent", user.id, cutoff)).toBe(false);
     // A cutoff in the future excludes the already-written row.
-    expect(await agentRanToolSince(agent.id, new Date(Date.now() + 60_000))).toBe(false);
+    expect(await agentRanToolSince(agent.id, user.id, new Date(Date.now() + 60_000))).toBe(false);
+  });
+
+  it("does not report ANOTHER user's tool on a shared agent (#1274)", async () => {
+    // A shared agent is one OpenClaw agent for every member. Counting the
+    // whole agent's tool rows let a member poll the retry gate and learn
+    // whether someone else had just run a tool.
+    const caller = await seedUser({ role: "member" });
+    const colleague = await seedUser({ role: "member" });
+    const agent = await seedAgent(caller.id);
+    const cutoff = new Date(Date.now() - 1000);
+
+    await appendAuditLog({
+      actorType: "user",
+      actorId: colleague.id,
+      eventType: "tool.odoo_create",
+      resource: `agent:${agent.id}`,
+      outcome: "success",
+    });
+
+    expect(await agentRanToolSince(agent.id, caller.id, cutoff)).toBe(false);
+    expect(await agentRanToolSince(agent.id, colleague.id, cutoff)).toBe(true);
+  });
+
+  it("finds the caller's own tool row as appendAuditLog really writes it (pseudonymized actor)", async () => {
+    // The write path replaces a user's id with their audit pseudonym, so a
+    // filter on the bare id would miss every real row — the dangerous
+    // direction for this gate, an unguarded Retry after a write.
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const cutoff = new Date(Date.now() - 1000);
+
+    await appendAuditLog({
+      actorType: "user",
+      actorId: user.id,
+      eventType: "tool.odoo_create",
+      resource: `agent:${agent.id}`,
+      outcome: "success",
+    });
+
+    const [row] = await db.select({ actorId: auditLog.actorId }).from(auditLog);
+    expect(row.actorId).not.toBe(user.id);
+    expect(await agentRanToolSince(agent.id, user.id, cutoff)).toBe(true);
+  });
+
+  it("finds a tool row whose actor kept OpenClaw's lowercased user id", async () => {
+    // The tool-use route maps OpenClaw's lowercased session-key user id back
+    // to users.id, and falls back to the lowercased id when that lookup fails.
+    // Such a row is still the caller's own write.
+    const user = await seedUser({ id: `Mixed-Case-${Math.random().toString(36).slice(2)}` });
+    const agent = await seedAgent(user.id);
+    const cutoff = new Date(Date.now() - 1000);
+
+    await db.insert(auditLog).values({
+      actorType: "user",
+      actorId: user.id.toLowerCase(),
+      eventType: "tool.odoo_create",
+      resource: `agent:${agent.id}`,
+      rowHmac: "test-hmac",
+      outcome: "success",
+    });
+
+    expect(await agentRanToolSince(agent.id, user.id, cutoff)).toBe(true);
   });
 });

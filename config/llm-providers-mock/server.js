@@ -23,8 +23,8 @@ function requireXApiKey(req, res) {
 
 function requireQueryKey(req, res) {
   // pi-ai's @google/genai SDK passes the key via header at chat time
-  // (x-goog-api-key); validateProviderKey uses ?key= query param. Accept
-  // both so the same handler covers the wizard probe and chat dispatch.
+  // (x-goog-api-key), and so do validateProviderKey and the model listing.
+  // The legacy ?key= query param is still accepted for older callers.
   if (req.query.key || req.headers["x-goog-api-key"]) return true;
   res.status(403).json({ error: { code: 403, message: "missing key" } });
   return false;
