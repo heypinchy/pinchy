@@ -33,6 +33,19 @@ vi.mock("@/db", () => ({
 
 global.fetch = vi.fn();
 
+// The custom-provider probe resolves its host once and connects to that answer
+// through `pinnedFetch`. Neither half is under test here: the name gets a
+// public answer without touching real DNS, and the pinned request goes to the
+// mocked global fetch like every other request in this file.
+vi.mock("dns/promises", () => {
+  const lookup = vi.fn(async () => [{ address: "93.184.216.34", family: 4 }]);
+  return { default: { lookup }, lookup };
+});
+vi.mock("@/lib/pinned-connection", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/pinned-connection")>()),
+  pinnedFetch: (url: string, init: RequestInit) => fetch(url, init),
+}));
+
 async function twoProviderModelInstances() {
   vi.resetModules();
   const a = await import("@/lib/provider-models");

@@ -2,7 +2,9 @@ import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
 import { connect as netConnect } from "node:net";
 import type { ImapTestInput } from "@/lib/schemas/imap";
-import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
+import { isIP } from "node:net";
+import { MailHostBlockedError, resolveAllowedMailHost } from "@/lib/integrations/mail-host-guard";
+import type { PinnedAddress } from "@/lib/pinned-connection";
 
 // Shared IMAP/SMTP probe logic used by BOTH:
 //   - the pre-create "Test Connection" route (packages/web/src/app/api/integrations/imap/test/route.ts)
@@ -145,25 +147,45 @@ function probeTcpPort(host: string, port: number, timeoutMs: number): Promise<bo
   });
 }
 
-// SECURITY: this connects ONLY to the already-provided, caller-supplied
-// smtpHost on a fixed, hardcoded port list — never to a host/port derived
-// from user-controlled input beyond what the caller already validated and
-// intended to probe. Do not widen this to accept arbitrary ports/hosts.
+// SECURITY: this connects ONLY to the caller-supplied smtpHost on a fixed,
+// hardcoded port list — never to a host/port derived from user-controlled
+// input beyond what the caller intended to probe. Do not widen this to accept
+// arbitrary ports/hosts.
 //
-// It is deliberately NOT guarded again here: its only caller runs it after the
-// SMTP leg failed with code "timeout"/"refused", and a host the SSRF guard
-// refuses fails with code "blocked" — so a blocked host never reaches this
-// scan. A new caller MUST call assertMailHostAllowed() first.
+// It runs the SSRF guard itself and scans the address the guard classified.
+// Its caller runs it after the SMTP leg already resolved the host, but that
+// was a separate lookup: a name that answers a public address for the leg and
+// an internal one now must not be scanned. A host the guard refuses, or that
+// does not resolve, reads as "nothing reachable" — the port hint is advice,
+// and there is no address to give it about.
 export async function probeSmtpPorts(
   host: string,
   ports: number[] = [465, 587, 25]
 ): Promise<SmtpPortProbe[]> {
+  let target: PinnedAddress;
+  try {
+    target = await resolveAllowedMailHost(host);
+  } catch {
+    return ports.map((port) => ({ port, reachable: false }));
+  }
   return Promise.all(
     ports.map(async (port) => ({
       port,
-      reachable: await probeTcpPort(host, port, SMTP_PORT_PROBE_TIMEOUT_MS),
+      reachable: await probeTcpPort(target.address, port, SMTP_PORT_PROBE_TIMEOUT_MS),
     }))
   );
+}
+
+/**
+ * Where a mail client must connect: the address the guard classified, with
+ * the name kept for TLS. imapflow and nodemailer both resolve `host` only
+ * when it is a name — given an IP they connect to it as-is — and use
+ * `servername` for SNI and certificate verification. So the certificate is
+ * still checked against the name the admin typed, and nothing is resolved a
+ * second time. An IP literal has no name to send (SNI forbids one).
+ */
+function pinnedMailTarget(host: string, target: PinnedAddress) {
+  return isIP(host) === 0 ? { host: target.address, servername: host } : { host: target.address };
 }
 
 // A single `security` field can't be simultaneously correct for IMAP
@@ -183,10 +205,10 @@ export function tlsModeForPort(
 }
 
 export async function testImapLogin(input: ImapTestInput): Promise<void> {
-  await assertMailHostAllowed(input.imapHost);
+  const target = await resolveAllowedMailHost(input.imapHost);
 
   const client = new ImapFlow({
-    host: input.imapHost,
+    ...pinnedMailTarget(input.imapHost, target),
     port: input.imapPort,
     secure: tlsModeForPort(input.imapPort, input.security).secure,
     auth: {
@@ -205,11 +227,11 @@ export async function testImapLogin(input: ImapTestInput): Promise<void> {
 }
 
 export async function testSmtpVerify(input: ImapTestInput): Promise<void> {
-  await assertMailHostAllowed(input.smtpHost);
+  const target = await resolveAllowedMailHost(input.smtpHost);
 
   const { secure, requireTLS } = tlsModeForPort(input.smtpPort, input.security);
   const transport = nodemailer.createTransport({
-    host: input.smtpHost,
+    ...pinnedMailTarget(input.smtpHost, target),
     port: input.smtpPort,
     secure,
     requireTLS,

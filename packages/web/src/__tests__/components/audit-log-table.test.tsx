@@ -690,6 +690,39 @@ describe("AuditLogTable", () => {
     });
   });
 
+  it("should show 'deleted' (not 'deactivated') for a deleted agent actor", async () => {
+    mockEventTypesThenEntries(undefined, {
+      entries: [
+        {
+          id: 12,
+          timestamp: "2026-02-21T10:00:00.000Z",
+          actorType: "agent",
+          actorId: "711ed709-agent",
+          actorName: "Old Archivist",
+          actorDeleted: true,
+          eventType: "retrieval.query",
+          resource: null,
+          resourceName: null,
+          resourceDeleted: false,
+          detail: {},
+          rowHmac: "hmac-agent-deleted",
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
+
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Old Archivist").length).toBeGreaterThan(0);
+    });
+    expect(screen.getAllByText("deleted").length).toBeGreaterThan(0);
+    expect(screen.queryByText("deactivated")).not.toBeInTheDocument();
+    expect(screen.queryByText(/711ed709/)).not.toBeInTheDocument();
+  });
+
   it("should show 'deleted' badge for deleted resource", async () => {
     const entriesWithDeletedResource = [
       {

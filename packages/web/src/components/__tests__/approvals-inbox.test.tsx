@@ -68,7 +68,7 @@ describe("ApprovalsInbox", () => {
     fetchPendingApprovals.mockResolvedValue({ approvals: [pending] });
     render(<ApprovalsInbox />);
     await screen.findByText(/Smithers needs your confirmation/i);
-    expect(screen.getByText(/odoo_write/)).toBeInTheDocument();
+    expect(screen.getByText(/Update records in Odoo/)).toBeInTheDocument();
     expect(screen.queryByText("recordId")).toBeNull();
     expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
 
@@ -250,7 +250,7 @@ describe("ApprovalsInbox", () => {
       await screen.findByText(/Agent 0 needs your confirmation/i);
 
       expect(screen.getAllByText(/needs your confirmation/i)).toHaveLength(20);
-      for (let i = 0; i < 20; i++) expect(screen.queryByText(`field${i}`)).toBeNull();
+      for (let i = 0; i < 20; i++) expect(screen.queryByText(`Field${i}`)).toBeNull();
       expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
       expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(20);
     });
@@ -261,8 +261,8 @@ describe("ApprovalsInbox", () => {
       await screen.findByText(/Agent 0 needs your confirmation/i);
       await review(0);
 
-      expect(screen.getByText("field0")).toBeInTheDocument();
-      for (let i = 1; i < 20; i++) expect(screen.queryByText(`field${i}`)).toBeNull();
+      expect(screen.getByText("Field0")).toBeInTheDocument();
+      for (let i = 1; i < 20; i++) expect(screen.queryByText(`Field${i}`)).toBeNull();
       expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
       expect(screen.getAllByRole("button", { name: /deny/i })).toHaveLength(1);
       expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(19);
@@ -276,8 +276,8 @@ describe("ApprovalsInbox", () => {
       await review(0);
 
       const approve = await review(4);
-      expect(screen.getByText("field5")).toBeInTheDocument();
-      expect(screen.queryByText("field0")).toBeNull();
+      expect(screen.getByText("Field5")).toBeInTheDocument();
+      expect(screen.queryByText("Field0")).toBeNull();
       expect(screen.getAllByRole("button", { name: /approve/i })).toHaveLength(1);
 
       fireEvent.click(approve);
@@ -295,8 +295,8 @@ describe("ApprovalsInbox", () => {
 
       await poll([newer, older]);
       await screen.findByText(/Agent 0 needs your confirmation/i);
-      expect(screen.getByText("field1")).toBeInTheDocument();
-      expect(screen.queryByText("field0")).toBeNull();
+      expect(screen.getByText("Field1")).toBeInTheDocument();
+      expect(screen.queryByText("Field0")).toBeNull();
       expect(screen.getByRole("button", { name: /approve/i })).toBe(approve);
       expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(1);
 
@@ -319,7 +319,7 @@ describe("ApprovalsInbox", () => {
       fireEvent.click(deny);
       await waitFor(() => expect(screen.queryByText(/Agent 0 needs/i)).toBeNull());
 
-      expect(screen.queryByText("field1")).toBeNull();
+      expect(screen.queryByText("Field1")).toBeNull();
       expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
       const reviews = screen.getAllByRole("button", { name: /review/i });
       expect(reviews).toHaveLength(19);
@@ -363,7 +363,7 @@ describe("ApprovalsInbox", () => {
 
       await poll([newer]);
       await waitFor(() => expect(screen.queryByText(/Agent 1 needs/i)).toBeNull());
-      expect(screen.queryByText("field0")).toBeNull();
+      expect(screen.queryByText("Field0")).toBeNull();
       expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
       expect(screen.getAllByRole("button", { name: /review/i })).toHaveLength(1);
     });
