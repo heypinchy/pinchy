@@ -53,3 +53,9 @@ it("returns 401 when no session", async () => {
   const res = await GET(mockReq(), {} as never);
   expect(res.status).toBe(401);
 });
+
+it("keys its browser cache to the session (#1286)", async () => {
+  const res = await GET(mockReq(), {} as never);
+  expect(res.headers.get("cache-control")).toBe("private, max-age=60");
+  expect(res.headers.get("vary")).toBe("Cookie");
+});

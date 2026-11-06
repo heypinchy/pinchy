@@ -1763,15 +1763,37 @@ describe("defaultStarterPrompts (per-agent starter prompts, #570)", () => {
   // chat (thread.tsx ThreadWelcome). Every role-specific template ships a
   // small, curated set so a brand-new user is never staring at an empty
   // composer — matching how Custom GPTs, Gemini Gems, and Copilot Studio all
-  // ship per-assistant conversation starters. `custom` is the deliberate
-  // exception: a blank agent has no role to suggest prompts for.
+  // ship per-assistant conversation starters. The deliberate exceptions, each
+  // with its reason, are listed in NO_STARTER_PROMPTS below.
   const MAX_PROMPTS = 4; // hard display ceiling; see research in PR #620
   const MAX_PROMPT_LENGTH = MAX_STARTER_PROMPT_LENGTH; // chips must stay on one or two short lines
 
-  it("every non-custom template ships 3-4 defaultStarterPrompts", () => {
+  // Templates that deliberately ship no starter prompts, with the reason.
+  const NO_STARTER_PROMPTS: Record<string, string> = {
+    custom: "blank agent, no role to suggest prompts for",
+    // A role template knows its domain; a knowledge base does not know its
+    // documents. Any default names a topic the corpus may not contain, in a
+    // language the organisation may not use (#1270). Admins add their own in
+    // the agent settings, General tab.
+    "knowledge-base": "content-agnostic: Pinchy cannot know what the documents cover",
+  };
+
+  it("every exemption from starter prompts names a registered template", () => {
+    const unknown = Object.keys(NO_STARTER_PROMPTS).filter((id) => !(id in AGENT_TEMPLATES));
+    expect(unknown).toEqual([]);
+  });
+
+  it("exempted templates ship no defaultStarterPrompts", () => {
+    const offenders = Object.keys(NO_STARTER_PROMPTS).filter(
+      (id) => AGENT_TEMPLATES[id]?.defaultStarterPrompts !== undefined
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("every other template ships 3-4 defaultStarterPrompts", () => {
     const offenders: Array<{ id: string; count: number }> = [];
     for (const [id, tpl] of Object.entries(AGENT_TEMPLATES)) {
-      if (id === "custom") continue;
+      if (id in NO_STARTER_PROMPTS) continue;
       const prompts = tpl.defaultStarterPrompts;
       if (!prompts || prompts.length < 3 || prompts.length > MAX_PROMPTS) {
         offenders.push({ id, count: prompts?.length ?? 0 });

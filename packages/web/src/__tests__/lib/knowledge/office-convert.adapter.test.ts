@@ -145,6 +145,20 @@ describe("runSoffice", () => {
       );
     });
 
+    it("pins macro execution off, as defence in depth", async () => {
+      // officecfg Common.xcs: Scripting/MacroSecurityLevel is an int (3 = very
+      // high), Scripting/DisableMacrosExecution a boolean that overrides it.
+      // Not chosen by canary: the default is already "high", this guards
+      // against a changed default or a distro/shared config.
+      const xcu = await profileAtStart();
+      expect(xcu).toContain(
+        `<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop></item>`
+      );
+      expect(xcu).toContain(
+        `<item oor:path="/org.openoffice.Office.Common/Security/Scripting"><prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop></item>`
+      );
+    });
+
     it("never updates links on load, and routes any network access to a dead proxy", async () => {
       const xcu = await profileAtStart();
       expect(xcu).toMatch(/oor:name="Link" oor:op="fuse"><value>2<\/value>/);

@@ -24,7 +24,7 @@ In the Pinchy sidebar, click the **+** button next to "Agents" to open the agent
 
 ## 3. Select the "Knowledge Base" template
 
-Choose **Knowledge Base** from the template options. This template gives the agent the `knowledge_search` tool — a search over your indexed documents that returns citable passages, not raw file access.
+Choose **Knowledge Base** from the template options. It's in the first group, **Knowledge & Compliance**, because it needs no integration — only a folder and a model that can read images and call tools. If your provider has no such model, the card is greyed out, as is every template except Custom Agent; see [Ollama setup](/guides/ollama-setup/#vision-templates). This template gives the agent the `knowledge_search` tool — a search over your indexed documents that returns citable passages, not raw file access.
 
 ## 4. Enter a name and create
 
@@ -201,7 +201,9 @@ The agent answers in the language you asked in, even if the source documents are
 
 Real document trees keep old material around — a quality binder full of expired certificates, a `Archive/` folder of superseded revisions. Answering a "what's our current certification?" question with a document that expired years ago isn't a small mistake; for a compliance question it's a dangerous one.
 
-So we treat archived folders as archived. When we index your documents, any file sitting under a folder named `OLD`, `Archive`, `Archived`, or `Archiv` (case doesn't matter) is marked archived and left out of everyday search. The document is still indexed — nothing is lost — it just doesn't compete with current material by default. Date and year folders like `2013/` or `Q3/` are **not** treated as archives: those are almost always live structure, not an archive. A file only counts as archived because of the folder it lives in, never because its own name contains one of those words.
+So we treat archived folders as archived. When we index your documents, any file sitting under a folder whose name contains one of the words `old`, `older`, `archive`, `archives`, `archived`, `expired`, `obsolete`, `Archiv`, `archiviert`, `alte`, `ältere` or `veraltet` is marked archived and left out of everyday search. Case doesn't matter, and the word can sit anywhere in the folder name, as long as it stands on its own: `OLD/`, `X_OLD/`, `Old certificates/`, `older versions/`, `OLD - don't use/`, `OLD2019/`, `Expired/` and `Alte Versionen/` all count. So does `xOLD/`, the run-together spelling of `X_OLD/`. A word that merely contains those letters doesn't: `Gold/`, `AccuScan Gold/`, `Folder/` and `Archivübersicht/` stay current. A change of case doesn't separate words, so `OldVersions/` stays current too. The other way round, a current folder that uses one of the words on its own — a supplier called `Old Mill Foods/` — is treated as archived. The document is still indexed — nothing is lost — it just doesn't compete with current material by default.
+
+Date and year folders like `2013/` or `Q3/` are **not** treated as archives: those are almost always live structure, not an archive. A file only counts as archived because of the folder it lives in, never because its own name contains one of those words. The German `alt` doesn't count either: in a folder name it means "alternative" just as often (`Logo alt/`). If your old material sits in a folder called `Alt/`, rename it to `Archiv/`.
 
 If you genuinely need to search the archive too — "find me the 2013 certificate" — that's still possible: the agent can opt into including archived documents for a specific search. Everyday questions just won't surface stale material on their own.
 
@@ -239,7 +241,7 @@ Every retrieval and every reindex is recorded in the [audit trail](/concepts/aud
 
 Beyond permissions, you can customize your Knowledge Base agent through its settings tabs:
 
-- **General** — Change the name, tagline, avatar, or model
+- **General** — Change the name, tagline, avatar, or model, and add **starter prompts**: the clickable suggestions shown in an empty chat. A Knowledge Base agent starts without any, because we can't know what your documents cover or which language your team works in. Add two or three questions your colleagues actually ask, in their language, and they'll see them the first time they open the chat.
 - **Personality** — Choose a personality preset (e.g. The Professor for a formal tone) or write custom personality instructions
 - **Instructions** — Edit the operating instructions that tell the agent how to cite documents and when to abstain
 

@@ -17,10 +17,10 @@ test.describe.serial("User invite flow", () => {
     await page.getByRole("button", { name: "Invite User" }).click();
 
     // Dialog appears
-    await expect(page.getByLabel("Email (optional)")).toBeVisible();
+    await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
 
     // Fill in email for a new user
-    await page.getByLabel("Email (optional)").fill("invitee@test.local");
+    await page.getByLabel("Email", { exact: true }).fill("invitee@test.local");
 
     // Submit
     await page.getByRole("button", { name: "Create Invite" }).click();

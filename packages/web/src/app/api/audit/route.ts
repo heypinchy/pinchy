@@ -3,7 +3,7 @@ import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { auditLog } from "@/db/schema";
 import { desc, and, count, sql, type SQL } from "drizzle-orm";
-import { apiKeyActorName } from "@/lib/api-key-identity";
+import { resolveActorDisplay } from "@/lib/audit-actor-display";
 import { buildAuditFilters, auditSelectWithJoins } from "@/lib/audit-query";
 
 /**
@@ -82,8 +82,7 @@ export async function GET(request: NextRequest) {
     timestamp: e.timestamp,
     actorType: e.actorType,
     actorId: e.actorId,
-    actorName: e.actorName ?? apiKeyActorName(e.actorType, e.detail),
-    actorDeleted: !!e.actorBanned,
+    ...resolveActorDisplay(e),
     eventType: e.eventType,
     resource: e.resource,
     resourceName: e.resourceAgentName ?? e.resourceUserName ?? null,

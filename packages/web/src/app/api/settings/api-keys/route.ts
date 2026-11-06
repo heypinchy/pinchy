@@ -1,11 +1,11 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
 import { desc, inArray } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { apiKeys, users } from "@/db/schema";
 import { parseRequestBody } from "@/lib/api-validation";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { createApiKeySchema } from "@/lib/schemas/api-keys";
 import { extractScopes, mapScopes, parsePermissions } from "@/lib/api-key-scopes";
 import { PINCHY_SERVICE_ACCOUNT_ID, parseCreator } from "@/lib/api-key-identity";
@@ -48,19 +48,22 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     },
   });
 
-  after(() =>
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "api_key.created",
-      resource: `api_key:${created.id}`,
-      // NEVER the plaintext key here — that's the whole point of one-time
-      // display. The audit trail records that a key was issued and with
-      // which scopes, not the secret itself.
-      detail: { id: created.id, name: created.name, scopes, expiresAt: created.expiresAt },
-      outcome: "success",
-    })
-  );
+  // The key already exists and the one-time plaintext below is the only
+  // chance the admin gets to see it, so a failed audit write must not fail
+  // this response. deferAuditLog runs after the response and, on failure,
+  // records `audit_log_write_failed` + bumps the counter instead of leaving
+  // an unhandled rejection.
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "api_key.created",
+    resource: `api_key:${created.id}`,
+    // NEVER the plaintext key here — that's the whole point of one-time
+    // display. The audit trail records that a key was issued and with
+    // which scopes, not the secret itself.
+    detail: { id: created.id, name: created.name, scopes, expiresAt: created.expiresAt },
+    outcome: "success",
+  });
 
   // One-time plaintext: created.key is the only response that will ever
   // carry the secret. Every subsequent read (GET below) returns it masked.

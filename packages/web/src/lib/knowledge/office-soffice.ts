@@ -131,6 +131,16 @@ export function killTree(child: ReturnType<typeof spawn>): void {
  *     fetch but not `file://`. Its job is the future: whatever LibreOffice
  *     learns to fetch next still has nowhere to go.
  *
+ * Macros are pinned off as well: `MacroSecurityLevel = 3` (very high: only
+ * macros from trusted file locations, and there are none) and
+ * `DisableMacrosExecution = true` (disables Basic, Beanshell, JavaScript and
+ * Python scripts outright; names and types as declared in officecfg
+ * `Common.xcs`). Unlike the link settings these were NOT chosen by canary:
+ * the shipped default is already level 2 (high, unsigned macros disabled), so
+ * there is no behaviour to measure against. They are pinned so that a changed
+ * default, or an override from a distro or a shared configuration, cannot
+ * quietly turn macro execution on for untrusted documents.
+ *
  * Two honest limits, both measured. This profile
  * does NOT stop LibreOffice's HTML import (an altChunk) or its SVG import from
  * reading `file://` references — and anything LibreOffice takes for SVG by its
@@ -162,6 +172,8 @@ const LOCKED_DOWN_PROFILE = `<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 ${[
   ["/org.openoffice.Office.Common/Security/Scripting", "BlockUntrustedRefererLinks", "true"],
+  ["/org.openoffice.Office.Common/Security/Scripting", "MacroSecurityLevel", "3"],
+  ["/org.openoffice.Office.Common/Security/Scripting", "DisableMacrosExecution", "true"],
   ["/org.openoffice.Office.Writer/Content/Update", "Link", "2"],
   ["/org.openoffice.Inet/Settings", "ooInetProxyType", "2"],
   ["/org.openoffice.Inet/Settings", "ooInetHTTPProxyName", "127.0.0.1"],

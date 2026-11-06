@@ -15,7 +15,7 @@ import { NextRequest } from "next/server";
 import { db } from "@/db";
 import { invites } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { createInvite } from "@/lib/invites";
+import { createInvite, INVITE_WITHOUT_EMAIL_ERROR } from "@/lib/invites";
 import { auth } from "@/lib/auth";
 import { GET } from "@/app/api/invite/[token]/route";
 
@@ -49,7 +49,10 @@ describe("GET /api/invite/[token] (integration)", () => {
     expect(await response.json()).toEqual({ type: "invite" });
   });
 
-  it("returns { type: 'invite' } for an open invite that has no email", async () => {
+  it("returns 410 for an invite that has no email (#1263)", async () => {
+    // Invites made before the email became required have none, and the
+    // account a claim creates needs one. Say so before the invitee fills in
+    // the form, instead of failing on submit.
     const adminId = await seedAdmin();
     const { token } = await createInvite({
       role: "member",
@@ -58,8 +61,8 @@ describe("GET /api/invite/[token] (integration)", () => {
     });
 
     const response = await GET(makeRequest(token), makeContext(token));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ type: "invite" });
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ error: INVITE_WITHOUT_EMAIL_ERROR });
   });
 
   it("returns { type: 'reset' } for a password-reset token of an existing user", async () => {
