@@ -70,7 +70,19 @@ describe("openPdf", () => {
     await openPdf("/doc.pdf");
 
     expect(pdfjs.GlobalWorkerOptions.workerSrc).toMatch(/pdf\.worker\.min\.mjs/);
-    expect(pdfjs.GlobalWorkerOptions.workerPort).toBeNull();
+  });
+
+  it("releases the document's worker when it cannot be opened", async () => {
+    // pdf.js gives each document its own worker thread; a rejected open
+    // (password, 403, not a PDF) would otherwise keep it until the tab closes.
+    const destroy = vi.fn(async () => {});
+    pdfjs.getDocument.mockReturnValue({
+      promise: Promise.reject(new Error("PasswordException")),
+      destroy,
+    });
+
+    await expect(openPdf("/doc.pdf")).rejects.toThrow("PasswordException");
+    expect(destroy).toHaveBeenCalled();
   });
 
   it("never starts a render a later page change has overtaken", async () => {

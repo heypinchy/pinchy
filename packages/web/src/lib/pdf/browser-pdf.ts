@@ -109,7 +109,15 @@ export async function openPdf(url: string): Promise<PdfHandle> {
     disableStream: true,
     disableAutoFetch: true,
   });
-  const doc = await task.promise;
+  let doc: Awaited<typeof task.promise>;
+  try {
+    doc = await task.promise;
+  } catch (err) {
+    // Each document has its own worker thread; a document that cannot be
+    // opened (password, 403, not a PDF) would otherwise keep it alive.
+    void task.destroy();
+    throw err;
+  }
   let current: RenderTask | null = null;
   // Which renderPage call is the latest. pdf.js throws when two renders share
   // a canvas, and `getPage` for a page not yet fetched is a network round

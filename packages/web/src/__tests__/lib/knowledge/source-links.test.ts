@@ -690,6 +690,23 @@ describe("the claim a citation supports", () => {
     }
   });
 
+  it("does not bind a Sources line's own number to the body above it", () => {
+    // Sources written as plain lines with no blank line before them stay in
+    // the body's paragraph; the next line's "[1]" is the entry, not a marker.
+    const tree = run(
+      answer(
+        p(
+          "Reaktionszeit vier Stunden [1]. Die Pauschale beträgt 1.200 Euro [2].\n" +
+            "[1] quality/a.pdf — p. 4\n[2] quality/b.pdf — p. 2"
+        )
+      )
+    );
+    expect(claims(tree).map((c) => c.claim)).toEqual([
+      "Reaktionszeit vier Stunden.",
+      "Die Pauschale beträgt 1.200 Euro.",
+    ]);
+  });
+
   it("reads a table row as one claim", () => {
     // The marker usually sits in a cell of its own, next to the cells it backs.
     const cell = (text: string): Node => ({

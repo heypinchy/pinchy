@@ -312,7 +312,9 @@ function splitSentences(text: string): Array<{ start: number; end: number }> {
 
     let end = i + 1;
     for (let k = end; ;) {
-      while (k < text.length && /\s/.test(text[k]) && k - end < 8) k++;
+      // Spaces and tabs only: a marker at the start of the NEXT line is a
+      // Sources entry's own number, not a citation of this sentence.
+      while (k < text.length && (text[k] === " " || text[k] === "\t") && k - end < 8) k++;
       MARKER_AT.lastIndex = k;
       if (!MARKER_AT.test(text)) break;
       end = k = MARKER_AT.lastIndex;
