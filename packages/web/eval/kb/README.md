@@ -132,19 +132,23 @@ ANTHROPIC_API_KEY=... KB_LANG_EVAL_CONDITION=after EVAL_N=3 pnpm -C packages/web
 A clean Knowledge Base agent does not reproduce the bug: Haiku 5.5 answers
 nearly every question in the right language. What does is the agent's
 **name**. With the staging agent's German name and tagline
-(`KB_LANG_EVAL_GERMAN_IDENTITY=1`), Haiku 5.5 and Sonnet 5 both answer a third
-or more of the Polish and Italian questions in German; the tagline alone makes
-no difference. Further knobs: `KB_LANG_EVAL_GERMAN_INSTRUCTIONS=1` (a German
+(`KB_LANG_EVAL_GERMAN_IDENTITY=1`), Haiku 5.5 answers over half of the Polish
+and Italian questions in German, and Sonnet 5 about a sixth of them plus most
+of the English ones; a German tagline with an English name makes no
+difference. Further knobs: `KB_LANG_EVAL_GERMAN_INSTRUCTIONS=1` (a German
 role section in AGENTS.md), `KB_LANG_EVAL_GERMAN_WARMUP=1` (a German question
 first, in the same chat) and `KB_LANG_EVAL_AGENTS_MD_SECTION=1` (the per-agent
-AGENTS.md workaround tried on staging, which measured no better than nothing).
+AGENTS.md workaround tried on staging, which measured no clear improvement).
 
 `KB_LANG_EVAL_CONDITION` labels the rows, so a before/after comparison can
-share one results file. Each row also lists the tools the answer used, read
+share one results file. One label is one variant: a resumed run refuses to add
+rows to a label whose existing rows were made with different knobs or a
+different plugin. Each row also lists the tools the answer used, read
 from the audit trail, because a direct file read or no search at all means the
-knowledge_search result was never the last thing the model read. Each row also records whether the OpenClaw container's
-`pinchy-knowledge` plugin really carried the language reminder, read from the
-container itself. A mislabelled run shows up in its own rows.
+knowledge_search result was never the last thing the model read. Each row also records whether the OpenClaw container's `pinchy-knowledge`
+plugin carried the language reminder, and the sha256 of its `index.ts`, read
+from the container itself. The file on disk is what OpenClaw loads on its next
+start, so swap the plugin and restart the container before a run.
 
 ## The corpus decision
 

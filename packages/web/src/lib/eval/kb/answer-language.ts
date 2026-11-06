@@ -57,7 +57,8 @@ const FUNCTION_WORDS: Record<AnswerLanguage, ReadonlySet<string>> = {
 const LANGUAGES = Object.keys(FUNCTION_WORDS) as AnswerLanguage[];
 
 /** A Sources heading in any of the four languages, to the end of the answer. */
-const SOURCES_HEADING = /^[\s*_#>-]*(sources|quellen|źródła|zrodla|fonti|fonte)\b[\s\S]*$/im;
+const SOURCES_HEADING =
+  /^[\s*_#>-]*(sources?|quellen?|źródł[oa]|zrodl[oa]|font[ie])(?![\p{L}])[\s\S]*$/imu;
 
 function stripNonAnswerText(answer: string): string {
   return answer

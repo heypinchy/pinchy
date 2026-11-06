@@ -54,6 +54,16 @@ describe("gradeAnswerLanguage", () => {
     expect(gradeAnswerLanguage(answer, "pl")).toEqual({ passed: true, found: ["pl"] });
   });
 
+  it.each(["Źródło", "Source", "Quelle"])(
+    "drops a Sources list under the singular heading %s",
+    (heading) => {
+      const answer =
+        "Protokół został podpisany w imieniu zamawiającego przez inżyniera Hubera [1].\n\n" +
+        `**${heading}:**\n\n- [1] Abnahme/Abnahmeprotokoll.pdf — der Auftraggeber und die Unterschriften des Protokolls`;
+      expect(gradeAnswerLanguage(answer, "pl")).toEqual({ passed: true, found: ["pl"] });
+    }
+  );
+
   it("passes an Italian answer", () => {
     const answer =
       "Il protocollo di collaudo AP-2023-091 è stato firmato dall'Ing. Huber per il cliente [1]. " +
