@@ -1781,7 +1781,7 @@ Returns the decrypted credentials for a connection, auto-refreshing an expired O
 | Status | Meaning                                                                                                                                        |
 | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `200`  | Credentials returned                                                                                                                           |
-| `400`  | `agentId` missing                                                                                                                              |
+| `400`  | `agentId` missing, longer than 128 characters, or containing anything but letters, digits, `-` and `_` (no audit row: malformed, not denied)   |
 | `401`  | Gateway token missing or wrong; the plugins retry it for about 3.75 s before giving up                                                         |
 | `403`  | The agent is not granted this connection, the connection is still `pending`, or its stored Odoo URL / IMAP / SMTP host fails the address check |
 | `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                |
