@@ -34,3 +34,10 @@ export function grantedDataPaths(pluginConfig: AgentPluginConfig | null | undefi
 export function ungrantablePaths(pluginConfig: AgentPluginConfig | null | undefined): unknown[] {
   return storedPaths(pluginConfig).filter((p) => !isPathUnderDataRoot(p));
 }
+
+/**
+ * The audit actor of the boot cleanup (`stripUngrantablePaths`), so its rows
+ * read apart from other `system` writers. Kept here, in an import-free module,
+ * so the audit trail's label map can name it without pulling in the database.
+ */
+export const ALLOWED_PATHS_CLEANUP_ACTOR = "allowed-paths-cleanup";

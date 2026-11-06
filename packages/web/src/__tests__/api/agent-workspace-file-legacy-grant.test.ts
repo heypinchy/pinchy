@@ -41,6 +41,7 @@ vi.mock("@/lib/audit-deferred", () => ({ deferAuditLog: vi.fn() }));
 
 // The stored list, unfiltered — see the header for why.
 vi.mock("@/lib/agent-granted-paths", () => ({
+  ALLOWED_PATHS_CLEANUP_ACTOR: "allowed-paths-cleanup",
   grantedDataPaths: (config: { "pinchy-files"?: { allowed_paths?: string[] } } | null) =>
     config?.["pinchy-files"]?.allowed_paths ?? [],
 }));

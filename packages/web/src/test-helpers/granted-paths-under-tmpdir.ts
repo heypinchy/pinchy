@@ -33,3 +33,5 @@ export function grantedDataPaths(pluginConfig: AgentPluginConfig | null | undefi
 export function ungrantablePaths(pluginConfig: AgentPluginConfig | null | undefined): unknown[] {
   return stored(pluginConfig).filter((p) => !under(p));
 }
+
+export const ALLOWED_PATHS_CLEANUP_ACTOR = "allowed-paths-cleanup";

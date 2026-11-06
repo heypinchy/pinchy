@@ -27,10 +27,11 @@ import { db } from "@/db";
 import { agents, type AgentPluginConfig } from "@/db/schema";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
-import { grantedDataPaths, ungrantablePaths } from "@/lib/agent-granted-paths";
-
-/** The audit actor of this cleanup, so its rows read apart from other `system` writers. */
-export const CLEANUP_ACTOR = "allowed-paths-cleanup";
+import {
+  ALLOWED_PATHS_CLEANUP_ACTOR,
+  grantedDataPaths,
+  ungrantablePaths,
+} from "@/lib/agent-granted-paths";
 
 /** Returns the number of agent rows rewritten. */
 export async function stripUngrantablePaths(): Promise<number> {
@@ -71,7 +72,7 @@ export async function stripUngrantablePaths(): Promise<number> {
 
     const entry: AuditLogEntry = {
       actorType: "system",
-      actorId: CLEANUP_ACTOR,
+      actorId: ALLOWED_PATHS_CLEANUP_ACTOR,
       eventType: "agent.updated",
       resource: `agent:${row.id}`,
       detail: {
