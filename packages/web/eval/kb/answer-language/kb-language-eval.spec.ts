@@ -245,6 +245,12 @@ test.describe("KB cross-lingual answer sweep (#1296)", () => {
     const germanInstructions = process.env.KB_LANG_EVAL_GERMAN_INSTRUCTIONS === "1";
     const germanWarmup = process.env.KB_LANG_EVAL_GERMAN_WARMUP === "1";
     const sameLanguageWarmup = process.env.KB_LANG_EVAL_SAME_LANGUAGE_WARMUP === "1";
+    if (germanWarmup && sameLanguageWarmup) {
+      throw new Error(
+        "Set one of KB_LANG_EVAL_GERMAN_WARMUP and KB_LANG_EVAL_SAME_LANGUAGE_WARMUP, not both: " +
+          "only one warmup runs, and the rows would claim both."
+      );
+    }
     if (germanInstructions) {
       await appendAgentsMdSection(cookie, agentId, GERMAN_INSTRUCTIONS_SECTION);
     }

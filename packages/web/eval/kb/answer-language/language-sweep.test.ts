@@ -188,6 +188,7 @@ describe("assertConditionMatchesVariant", () => {
     germanIdentity: false,
     germanInstructions: false,
     germanWarmup: false,
+    sameLanguageWarmup: false,
   };
 
   it("accepts a condition whose rows were made with the same knobs", () => {
@@ -210,6 +211,17 @@ describe("assertConditionMatchesVariant", () => {
         pluginSha: "bbb",
       })
     ).toThrow(/pluginSha/);
+  });
+
+  it("reads a row from before the same-language knob as having it off", () => {
+    const old = row({});
+    delete (old as Partial<LanguageRunRow>).sameLanguageWarmup;
+    expect(() =>
+      assertConditionMatchesVariant([old], "after", { ...variant, sameLanguageWarmup: false })
+    ).not.toThrow();
+    expect(() =>
+      assertConditionMatchesVariant([old], "after", { ...variant, sameLanguageWarmup: true })
+    ).toThrow(/sameLanguageWarmup/);
   });
 
   it("accepts rows from before the plugin stamp existed", () => {
