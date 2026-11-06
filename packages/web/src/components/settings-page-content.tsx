@@ -16,6 +16,7 @@ import { SettingsApiKeys } from "@/components/settings-api-keys";
 import { SettingsIntegrations } from "@/components/settings-integrations";
 
 import { SettingsLicense } from "@/components/settings-license";
+import type { AgentRef } from "@/lib/schemas/agents";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
 import { TimezoneSettings } from "@/components/timezone-settings";
@@ -70,10 +71,12 @@ const TAB_LABELS: Record<SettingsTab, string> = {
 export function SettingsPageContent({
   isAdmin,
   initialLicense,
+  initialAdminOnlyAgents,
   oauthError,
 }: {
   isAdmin: boolean;
   initialLicense?: LicenseInfo;
+  initialAdminOnlyAgents?: AgentRef[];
   oauthError?: string;
 }) {
   const { data: session } = authClient.useSession();
@@ -362,6 +365,7 @@ export function SettingsPageContent({
                 <SettingsLicense
                   onEnterpriseActivated={handleEnterpriseActivated}
                   initialLicense={initialLicense}
+                  initialAdminOnlyAgents={initialAdminOnlyAgents}
                 />
               </TabsContent>
             )}

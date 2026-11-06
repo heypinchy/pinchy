@@ -108,6 +108,9 @@ describe("GET /api/enterprise/status", () => {
     expect(body.state).toBe("community");
     expect(body.paidUntil).toBeNull();
     expect(body.hasGatedConfig).toBe(false);
+    // The state decides what counts: on community the restricted default is
+    // not configuration (#1278).
+    expect(hasGatedConfig).toHaveBeenCalledWith("community");
   });
 
   it("reports state=paid with paidUntil for a valid paid key", async () => {
@@ -185,6 +188,7 @@ describe("GET /api/enterprise/status", () => {
     expect(body.paidUntil).toBe(paidUntilAt.toISOString());
     expect(body.expiresAt).toBe(expiresAt.toISOString());
     expect(body.hasGatedConfig).toBe(true);
+    expect(hasGatedConfig).toHaveBeenCalledWith("expired");
   });
 
   it("does not query gated config for non-admins (only the escape hatch needs it)", async () => {
