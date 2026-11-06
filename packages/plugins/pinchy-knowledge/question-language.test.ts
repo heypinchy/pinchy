@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { detectQuestionLanguage } from "./question-language";
+import { detectQuestionLanguage, sharedOpeners } from "./question-language";
 
 describe("detectQuestionLanguage", () => {
   it.each([
@@ -89,5 +89,36 @@ describe("detectQuestionLanguage", () => {
     ["Summarize the acceptance protocol", "English"],
   ])("names a request that opens with an imperative: %j", (question, expected) => {
     expect(detectQuestionLanguage(question)).toBe(expected);
+  });
+
+  it.each([
+    ["Was the trial run successful?", "German"],
+    ["Was the WT-450 tested?", "German"],
+    ["Wie is verantwoordelijk?", "German"],
+    ["Wie veel kost de overnachting?", "German"],
+    ["Quanto custa a hospedagem em Viena?", "Italian"],
+    ["Quanto tempo dura a garantia?", "Italian"],
+    ["Mostra o relatório de manutenção", "Italian"],
+    ["Explica o processo de aceitação", "Spanish"],
+    ["Comment on the acceptance report", "French"],
+  ])("doesn't let an opening word another language shares decide %j", (question, wrong) => {
+    expect(detectQuestionLanguage(question)).not.toBe(wrong);
+  });
+
+  it("uses no opening word that is also a word or opening word of another language", () => {
+    // Same rule as for function words: a shared word says nothing about which
+    // language the message is in, and here it would be weighted double.
+    const shared = sharedOpeners();
+    expect(shared).toEqual([]);
+  });
+
+  it("reads a Telegram caption past OpenClaw's media lines", () => {
+    // For a photo with a caption, OpenClaw's prompt is a "[media attached: …]"
+    // line and an English hint about sending images, then the caption.
+    const prompt =
+      "[media attached: /root/.openclaw/media/inbound/abc.jpg (image/jpeg)]\n" +
+      "To send an image back, use the message tool with structured media fields such as media, mediaUrl, path, or filePath. Keep caption in the text body.\n" +
+      "Opisz ten dokument";
+    expect(detectQuestionLanguage(prompt)).toBe("Polish");
   });
 });

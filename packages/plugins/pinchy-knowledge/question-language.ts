@@ -42,7 +42,7 @@ const LANGUAGES: readonly LanguageSignal[] = [
   {
     name: "German",
     openers: words(
-      "was wie wer wann wo warum welche welcher welches gibt kannst bitte fasse erkläre erklär zeige zeig nenne beschreibe vergleiche finde"
+      "wer wann wo warum welche welcher welches gibt kannst bitte fasse erkläre erklär zeige zeig nenne beschreibe vergleiche finde"
     ),
     words: words(
       "der die das und ist wer wie wann wo warum welche welcher welches hat haben war " +
@@ -64,7 +64,7 @@ const LANGUAGES: readonly LanguageSignal[] = [
   {
     name: "French",
     openers: words(
-      "qui quel quelle quels quelles comment où pourquoi combien résume résumez explique expliquez montre montrez décris"
+      "qui quel quelle quels quelles où pourquoi combien résume résumez expliquez montre montrez décris"
     ),
     words: words(
       "le les du est qui quel quelle quels quelles pendant pour avec une un et dans sur où"
@@ -73,9 +73,7 @@ const LANGUAGES: readonly LanguageSignal[] = [
   },
   {
     name: "Italian",
-    openers: words(
-      "chi quale quali quanto quante quanti come dove perché cosa ogni riassumi spiega mostra elenca trova descrivi"
-    ),
+    openers: words("chi quale quali dove perché cosa ogni riassumi spiega elenca trova descrivi"),
     words: words(
       "il lo gli di del della dei delle che è chi ogni quante quanto quale quali sono " +
         "nel nella per non va ha"
@@ -84,7 +82,7 @@ const LANGUAGES: readonly LanguageSignal[] = [
   {
     name: "Spanish",
     openers: words(
-      "quién quiénes qué cuál cuáles cómo dónde cuándo cuánto cuántos explica muestra enumera"
+      "quién quiénes qué cuál cuáles cómo dónde cuándo cuánto cuántos muestra enumera"
     ),
     words: words("el los las quién qué cuál cuándo cómo es son por para una y se firmó"),
     letters: /[¿¡ñ]/i,
@@ -113,7 +111,7 @@ const LANGUAGES: readonly LanguageSignal[] = [
   },
   {
     name: "Portuguese",
-    openers: words("quem qual onde porque resuma explique mostre descreva"),
+    openers: words("quem qual onde porque resuma mostre descreva"),
     words: words("quem qual quando foi são com uma não da dos das"),
     letters: /[ãõ]/i,
   },
@@ -125,8 +123,22 @@ const LANGUAGES: readonly LanguageSignal[] = [
  * it reads as English and outvotes a short question in any other language.
  */
 export function questionText(prompt: string): string {
-  return prompt.replace(/<pinchy:attachments>[\s\S]*?<\/pinchy:attachments>/g, " ").trim();
+  return prompt
+    .replace(/<pinchy:attachments>[\s\S]*?<\/pinchy:attachments>/g, " ")
+    .replace(MEDIA_LINE, " ")
+    .replace(REPLY_MEDIA_HINT, " ")
+    .trim();
 }
+
+/**
+ * What OpenClaw puts before a channel message's caption when media is
+ * attached (a Telegram photo, say): a "[media attached: …]" line per file and
+ * an English hint about sending images back. Both are English and would
+ * outvote a short caption in any other language.
+ */
+const MEDIA_LINE = /\[media attached(?:\s+\d+\/\d+)?:[^\]]*\]/gi;
+const REPLY_MEDIA_HINT =
+  "To send an image back, use the message tool with structured media fields such as media, mediaUrl, path, or filePath. Keep caption in the text body.";
 
 /** Quoted wording is the documents' language, not the asker's. */
 function stripQuoted(text: string): string {
@@ -155,4 +167,22 @@ export function detectQuestionLanguage(text: string): string | null {
   const [first, second] = scores;
   if (!first || first.score < 2 || first.score === second?.score) return null;
   return first.name;
+}
+
+/**
+ * Opening words that another language in the list also uses, as a word or as
+ * an opening word. Must stay empty: a shared opener would be weighted double
+ * while saying nothing about the language. Exported for its test.
+ */
+export function sharedOpeners(): string[] {
+  const shared: string[] = [];
+  for (const lang of LANGUAGES) {
+    for (const opener of lang.openers) {
+      const other = LANGUAGES.find(
+        (o) => o !== lang && (o.words.has(opener) || o.openers.has(opener))
+      );
+      if (other) shared.push(`${lang.name}:${opener} (also ${other.name})`);
+    }
+  }
+  return shared;
 }
