@@ -528,11 +528,23 @@ describe("kb index scheduler", () => {
   // full walk of every knowledge base.
   describe("on the night the clock goes back", () => {
     it.each([
-      ["Europe/Vienna", "02:30", "2026-10-25T00:00:00Z", "2026-10-25T02:00:00Z"],
-      ["America/New_York", "01:30", "2026-11-01T04:00:00Z", "2026-11-01T07:00:00Z"],
+      [
+        "Europe/Vienna",
+        "02:30",
+        "2026-10-25T00:00:00Z",
+        "2026-10-25T02:00:00Z",
+        "2026-10-25T00:30:00.000Z",
+      ],
+      [
+        "America/New_York",
+        "01:30",
+        "2026-11-01T04:00:00Z",
+        "2026-11-01T07:00:00Z",
+        "2026-11-01T05:30:00.000Z",
+      ],
     ])(
       "runs once in %s for a %s slot inside the repeated hour",
-      async (timezone, time, from, to) => {
+      async (timezone, time, from, to, firstOccurrence) => {
         await setSetting("org.timezone", timezone);
         await saveIndexSchedule({ enabled: true, time });
         await makeAgent("Handbook");
@@ -545,6 +557,8 @@ describe("kb index scheduler", () => {
         }
 
         expect(await jobs()).toHaveLength(1);
+        // The first occurrence, the one isSlotDue promises — not the repeat.
+        expect((await getIndexScheduleState()).lastSweep?.startedAt).toBe(firstOccurrence);
       }
     );
   });

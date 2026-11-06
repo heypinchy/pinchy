@@ -139,6 +139,25 @@ describe("GET /api/settings/knowledge-index-schedule", () => {
     expect(body.nextRun).toEqual({ date: "2026-10-26", time: "02:30", day: "tomorrow" });
   });
 
+  // Tonight's 23:30 was taken in Tokyo; the org then moved to Vienna, where it
+  // is 17:00. The scheduler re-takes the slot on Vienna's clock and runs at
+  // 23:30 tonight, so the screen must not read Tokyo's slot as tonight's.
+  it("reports today after a timezone change, even though today's slot was taken in the old zone", async () => {
+    await saveIndexSchedule({ enabled: true, time: "23:30" });
+    await saveIndexScheduleState({
+      lastSlot: "2026-10-17",
+      schedule: { enabled: true, time: "23:30" },
+      timezone: "Asia/Tokyo",
+      sweep: null,
+      lastSweep: null,
+    });
+    vi.setSystemTime(new Date("2026-10-17T15:00:00Z"));
+
+    const body = await (await GET(new NextRequest(URL), ctx as never)).json();
+
+    expect(body.nextRun).toEqual({ date: "2026-10-17", time: "23:30", day: "today" });
+  });
+
   it("is admin-only", async () => {
     mockGetSession.mockResolvedValue(member);
     const res = await GET(new NextRequest(URL), ctx as never);
