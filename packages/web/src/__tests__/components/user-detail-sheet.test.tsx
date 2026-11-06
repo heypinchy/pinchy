@@ -441,10 +441,14 @@ describe("UserDetailSheet", () => {
       await user.click(screen.getByRole("button", { name: /reset password/i }));
 
       await screen.findByText(/reset-token-xyz/);
+      // Focus moves from Reset Password to the new link's Copy button, so a
+      // screen-reader user hears that the link appeared.
+      expect(screen.getByRole("button", { name: "Copy link" })).toHaveFocus();
+      expect(screen.getByRole("group", { name: "Reset link:" })).toBeInTheDocument();
 
-      await user.click(screen.getByRole("button", { name: "Copy" }));
+      await user.click(screen.getByRole("button", { name: "Copy link" }));
 
-      await screen.findByRole("button", { name: "Copied!" });
+      await screen.findByRole("button", { name: "Copied" });
       // The spy is what makes the success path deterministic, so assert the
       // reset link really reached the clipboard — otherwise the spy is
       // decoration and only the button label is under test.
@@ -554,8 +558,10 @@ describe("UserDetailSheet — reset with email delivery (#1309)", () => {
       await user.click(button);
       expect(screen.getByRole("button", { name: "Sending..." })).toBeDisabled();
       resolveReset(jsonResponse({ token: "rt", emailDelivery: { sent: true } }));
-      expect(await screen.findByRole("status")).toHaveTextContent(
-        "Reset link sent to max@example.com."
+      // CopyField has its own status region, so find the line by its text.
+      expect(await screen.findByText("Reset link sent to max@example.com.")).toHaveAttribute(
+        "role",
+        "status"
       );
     } finally {
       spy.mockRestore();

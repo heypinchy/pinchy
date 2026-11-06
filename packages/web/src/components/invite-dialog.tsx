@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
 import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
@@ -70,7 +70,6 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
   const inviteLink = created?.url ?? null;
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const { isCopied: copied, copy: copyInviteLink } = useCopyToClipboard();
   const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
   const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
@@ -159,25 +158,6 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     }
   }
 
-  const canShare =
-    typeof navigator !== "undefined" &&
-    typeof navigator.share === "function" &&
-    typeof navigator.canShare === "function";
-
-  async function handleShare() {
-    if (inviteLink && canShare) {
-      try {
-        await navigator.share({ title: "Pinchy Invite", url: inviteLink });
-      } catch {
-        // User cancelled share — ignore
-      }
-    }
-  }
-
-  function handleCopy() {
-    if (inviteLink) copyInviteLink(inviteLink);
-  }
-
   function handleOpenChange(nextOpen: boolean) {
     onOpenChange(nextOpen);
   }
@@ -214,7 +194,13 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
               </p>
             )}
             <p className="text-sm font-medium">Invite link created:</p>
-            <p className="text-sm break-all bg-muted p-2 rounded">{inviteLink}</p>
+            <CopyField
+              value={inviteLink}
+              label="Invite link"
+              copyLabel="Copy link"
+              share={{ title: "Pinchy invite" }}
+              autoFocus
+            />
             {/* Without email delivery (#1309), an email field reads as if
                 Pinchy mails the invite. It doesn't — the admin delivers the
                 link (#1265). With a mailer, the status line above says what
@@ -230,11 +216,6 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
                 <p>The link works once and expires on {formatExpiry(created.expiresAt)}.</p>
               )}
             </div>
-            {canShare ? (
-              <Button onClick={handleShare}>Share</Button>
-            ) : (
-              <Button onClick={handleCopy}>{copied ? "Copied!" : "Copy"}</Button>
-            )}
           </div>
         ) : (
           <Form {...form}>

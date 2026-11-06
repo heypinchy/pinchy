@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 
-import { directSessionKey, directSessionUserId, inboxSessionKey } from "@/lib/session-key";
+import {
+  directSessionChatId,
+  directSessionKey,
+  directSessionUserId,
+  inboxSessionKey,
+} from "@/lib/session-key";
 
 describe("directSessionKey", () => {
   it("builds the legacy per-user direct key", () => {
@@ -41,5 +46,20 @@ describe("directSessionUserId", () => {
     expect(directSessionUserId("agent:a:telegram:direct:999")).toBeUndefined();
     expect(directSessionUserId(inboxSessionKey("a", "l"))).toBeUndefined();
     expect(directSessionUserId(undefined)).toBeUndefined();
+  });
+});
+
+describe("directSessionChatId", () => {
+  it("is null for the default chat", () => {
+    expect(directSessionChatId("agent:a:direct:user-9")).toBeNull();
+  });
+
+  it("names the chat of a per-chat session (#508)", () => {
+    expect(directSessionChatId(directSessionKey("a", "user-9", "chat-2"))).toBe("chat-2");
+  });
+
+  it("is undefined for a key that is not a direct session", () => {
+    expect(directSessionChatId("agent:a:inbox:ledger-1")).toBeUndefined();
+    expect(directSessionChatId(undefined)).toBeUndefined();
   });
 });

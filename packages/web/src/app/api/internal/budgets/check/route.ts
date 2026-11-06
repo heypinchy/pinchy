@@ -5,6 +5,7 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { budgetCheckSchema, type BudgetCheckInput } from "@/lib/schemas/budgets";
 import { budgetExhaustedMessage, getExhaustedBlockingBudget } from "@/lib/budgets";
 import { appendAuditLog } from "@/lib/audit";
+import { boundIdForAudit } from "@/lib/audit-sanitize";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { db } from "@/db";
 import { agents, channelLinks } from "@/db/schema";
@@ -43,13 +44,17 @@ export async function POST(request: NextRequest) {
     resolveActor(input).catch(() => agentActor(input.agentId)),
   ]);
 
+  // An unknown agent's "name" is its raw id (see findAgentRef): bound it too.
+  const auditAgentName =
+    agentRef.name === input.agentId ? boundIdForAudit(agentRef.name) : agentRef.name;
+
   const auditEntry = {
     ...actor,
     eventType: "chat.policy_refused" as const,
-    resource: `agent:${agentRef.id}`,
+    resource: `agent:${boundIdForAudit(agentRef.id)}`,
     detail: {
       reason: "budget_exhausted",
-      agent: { id: agentRef.id, name: agentRef.name },
+      agent: { id: boundIdForAudit(agentRef.id), name: auditAgentName },
       budget: { id: budget.id, period: budget.period },
       ...(input.channel ? { channel: input.channel } : {}),
       ...(input.trigger ? { trigger: input.trigger } : {}),
@@ -73,7 +78,7 @@ export async function POST(request: NextRequest) {
 type Actor = { actorType: "user" | "agent"; actorId: string };
 
 function agentActor(agentId: string): Actor {
-  return { actorType: "agent", actorId: agentId };
+  return { actorType: "agent", actorId: boundIdForAudit(agentId) };
 }
 
 /** The agent's name for the sentence and the audit snapshot; its id if unknown. */

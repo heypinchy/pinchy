@@ -48,7 +48,7 @@ import type {
   ResetPasswordInput,
 } from "@/lib/schemas/users";
 import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
 
 interface UserDetailSheetProps {
@@ -106,7 +106,6 @@ export function UserDetailSheet({
       cancelled = true;
     };
   }, [open]);
-  const { isCopied: isResetLinkCopied, copy: copyResetLink } = useCopyToClipboard();
 
   const isOwnAccount = user.id === currentUserId;
   const isDeactivated = user.status === "deactivated";
@@ -347,17 +346,18 @@ export function UserDetailSheet({
             )}
 
             {resetLink && (
-              <div className="rounded border bg-muted p-3">
-                <p className="text-sm font-medium mb-1">Reset link:</p>
-                <p className="text-sm break-all">{resetLink}</p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-2"
-                  onClick={() => copyResetLink(resetLink)}
-                >
-                  {isResetLinkCopied ? "Copied!" : "Copy"}
-                </Button>
+              <div className="space-y-1 rounded border p-3">
+                <p id="reset-link-label" className="text-sm font-medium">
+                  Reset link:
+                </p>
+                <CopyField
+                  value={resetLink}
+                  label="Reset link"
+                  labelledBy="reset-link-label"
+                  copyLabel="Copy link"
+                  share={{ title: "Pinchy password reset" }}
+                  autoFocus
+                />
               </div>
             )}
 
