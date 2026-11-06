@@ -1,6 +1,17 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
-import { readFileSync, writeFileSync, existsSync, openSync, fstatSync, closeSync } from "fs";
-import { join } from "path";
+import {
+  readFileSync,
+  existsSync,
+  openSync,
+  fstatSync,
+  closeSync,
+  writeSync,
+  fsyncSync,
+  linkSync,
+  unlinkSync,
+  readdirSync,
+} from "fs";
+import { basename, dirname, join } from "path";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
@@ -24,6 +35,22 @@ function secretPaths(name: string) {
  */
 const fileSecretCache = new Map<string, { mtimeMs: number; secret: Buffer }>();
 
+function isHexKey(value: string): boolean {
+  return value.length === 64 && /^[0-9a-fA-F]+$/.test(value);
+}
+
+/**
+ * True when the secret's variable is set but is not a valid key, so
+ * {@link getSecretSource} ignores it and falls through to the key file. An
+ * empty variable is not ignored, it is unset: docker-compose.yml passes
+ * `${VAR:-}`, so every install that never set it sees an empty string.
+ * Returns a boolean so the value never leaves this module.
+ */
+export function isSecretEnvIgnored(name: string): boolean {
+  const envKey = process.env[name.toUpperCase()];
+  return !!envKey && !isHexKey(envKey);
+}
+
 /**
  * Resolve the provenance of a secret WITHOUT creating it. Mirrors the
  * priority order of getOrCreateSecret below — keep both in sync by having
@@ -31,7 +58,7 @@ const fileSecretCache = new Map<string, { mtimeMs: number; secret: Buffer }>();
  */
 export function getSecretSource(name: string): SecretSource {
   const envKey = process.env[name.toUpperCase()];
-  if (envKey && envKey.length === 64 && /^[0-9a-fA-F]+$/.test(envKey)) {
+  if (envKey && isHexKey(envKey)) {
     return "envvar";
   }
   if (existsSync(secretPaths(name).keyFilePath)) {
@@ -94,7 +121,9 @@ function readSecretFile(keyFilePath: string): Buffer {
  *
  * The limitation is real and documented: this covers env-over-file. An operator
  * who OVERWRITES the file has destroyed the old key, and nothing can bring back
- * the ability to verify rows signed under it.
+ * the ability to verify rows signed under it. An install that only ever had the
+ * variable gets the file from persistEnvSecretToKeyFile at startup, so its old
+ * value is here too when the variable changes.
  */
 export function getPreviousSecret(name: string): Buffer | null {
   if (getSecretSource(name) !== "envvar") return null;
@@ -117,9 +146,337 @@ export function getPreviousSecret(name: string): Buffer | null {
   return fileSecret.equals(active) ? null : fileSecret;
 }
 
+/** What {@link persistEnvSecretToKeyFile} did. Never carries the key. */
+export type EnvSecretPersistOutcome =
+  /** `dir` is the key directory the file went to (ENCRYPTION_KEY_DIR). */
+  | { status: "written"; dir: string }
+  | { status: "file-exists" }
+  | { status: "file-invalid" }
+  | { status: "file-unreadable"; code: string }
+  | { status: "not-envvar" }
+  | { status: "failed"; reason: string };
+
+/**
+ * What `link` fails with on a volume that has no hard links: exFAT and vfat
+ * (ENOTSUP on macOS, EPERM on Linux), and some FUSE and SMB mounts (ENOSYS,
+ * EOPNOTSUPP, or EXDEV from a mount that maps each file to its own device).
+ * EPERM is otherwise what Linux's protected_hardlinks returns for a file the
+ * caller does not own, which cannot happen here: the temp file is our own.
+ */
+const NO_HARD_LINK_CODES = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "ENOSYS", "EXDEV"]);
+
+/**
+ * Write all of `data`, then fsync. `write` may return having written only part
+ * of the buffer; ignoring the count would leave a key file holding the first
+ * few characters of a key the process is already using in full. A write that
+ * makes no progress at all is an error, never a loop.
+ */
+function writeAllAndSync(fd: number, path: string, data: string): void {
+  const bytes = Buffer.from(data);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = writeSync(fd, bytes, offset, bytes.length - offset);
+    if (!(written > 0)) {
+      throw Object.assign(new Error(`EIO: write made no progress, write '${path}'`), {
+        code: "EIO",
+      });
+    }
+    offset += written;
+  }
+  fsyncSync(fd);
+}
+
+/**
+ * Make a new name in `dir` durable. The file's own fsync covers its bytes,
+ * not the directory entry: until the directory is fsynced, a power cut can
+ * lose the key file while the process has already used the key it holds.
+ *
+ * Best effort, and only ever called once the key file already has its name.
+ * Any error here (EACCES on a directory the process may write but not read,
+ * EISDIR/EINVAL/EPERM/ENOTSUP/ENOSYS on Windows and some FUSE, SMB and NFS
+ * mounts) leaves the key file in place and readable; reporting it as a failed
+ * write would throw away a key that is already on disk. A plain
+ * writeFileSync, which this replaced, never fsynced the directory either.
+ */
+function fsyncDirectory(dir: string): void {
+  let fd: number;
+  try {
+    fd = openSync(dir, "r");
+  } catch {
+    return;
+  }
+  try {
+    fsyncSync(fd);
+  } catch {
+    // See above: the name is already there, only its durability is not.
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // Nothing to recover; the descriptor is gone either way.
+    }
+  }
+}
+
+/**
+ * Write a key to its key file without ever leaving a partial file or replacing
+ * an existing one: written and fsynced to a temporary file in the same
+ * directory, then hard-linked to the final name. `link` fails with EEXIST
+ * instead of replacing, so a file that appeared in between (another process,
+ * another instance on a shared volume) is never touched, and a full disk or a
+ * crash mid-write leaves at most a temp file, never a 0-byte key file that
+ * every later read would trip over.
+ *
+ * A volume without hard links (see {@link NO_HARD_LINK_CODES}) gets
+ * {@link createKeyFileDirectly} instead: still never replacing, and still no
+ * partial file on a failed write, but a crash mid-write there can leave one.
+ * Before the link, a plain write worked on such a volume, so the stricter
+ * write must not be what stops Pinchy from starting there.
+ *
+ * Returns "exists" when another file got there first. Throws on any other
+ * error; fs errors name the code and the path, never the content.
+ */
+function writeKeyFileExclusive(keyFilePath: string, keyHex: string): "written" | "exists" {
+  const tmpPath = `${keyFilePath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  const fd = openSync(tmpPath, "wx", 0o600);
+  try {
+    try {
+      writeAllAndSync(fd, tmpPath, keyHex);
+    } finally {
+      closeSync(fd);
+    }
+    try {
+      linkSync(tmpPath, keyFilePath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") return "exists";
+      if (code && NO_HARD_LINK_CODES.has(code)) return createKeyFileDirectly(keyFilePath, keyHex);
+      throw err;
+    }
+    fsyncDirectory(dirname(keyFilePath));
+    return "written";
+  } finally {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // Left for removeStaleKeyTempFiles on the next start.
+    }
+  }
+}
+
+/**
+ * The fallback for a volume without hard links: create the key file itself,
+ * exclusively ("wx" fails with EEXIST instead of replacing), then write and
+ * fsync. A failed write removes the file it just created, which is ours
+ * because the exclusive create succeeded, so a full disk still leaves no empty
+ * key file behind.
+ */
+function createKeyFileDirectly(keyFilePath: string, keyHex: string): "written" | "exists" {
+  let fd: number;
+  try {
+    fd = openSync(keyFilePath, "wx", 0o600);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return "exists";
+    throw err;
+  }
+  try {
+    try {
+      writeAllAndSync(fd, keyFilePath, keyHex);
+    } finally {
+      closeSync(fd);
+    }
+  } catch (err) {
+    try {
+      unlinkSync(keyFilePath);
+    } catch {
+      // Nothing more to do; the write error below is the one worth reporting.
+    }
+    throw err;
+  }
+  fsyncDirectory(dirname(keyFilePath));
+  return "written";
+}
+
+// `<pid>.<8 hex>`, the middle of the temp names writeKeyFileExclusive creates.
+const TEMP_SUFFIX = /^\d+\.[0-9a-f]{8}$/;
+
+/**
+ * Remove the temp files a crash between writing and unlinking left next to a
+ * key file. Each one holds a copy of the key, and nothing else would ever
+ * clean it up. Only names of exactly the form writeKeyFileExclusive creates,
+ * only in the key file's own directory.
+ *
+ * Called by {@link persistEnvSecretToKeyFile} at startup, and by
+ * {@link getOrCreateSecret} the first time a process uses each key file, so
+ * the temp files of every key it generates are cleaned up, the encryption key
+ * included, not only the audit key startup persists. An instance writing a key
+ * at that very moment on a shared volume could lose its in-flight temp file to
+ * this; its write then fails and is reported, and the other instance's write
+ * still lands.
+ */
+function removeStaleKeyTempFiles(keyFilePath: string): void {
+  const dir = dirname(keyFilePath);
+  const prefix = `${basename(keyFilePath)}.`;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return; // No directory, nothing to clean; the write reports the real problem.
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(".tmp")) continue;
+    if (!TEMP_SUFFIX.test(entry.slice(prefix.length, -".tmp".length))) continue;
+    try {
+      unlinkSync(join(dir, entry));
+    } catch {
+      // Best effort: a file we cannot remove is no worse than before.
+    }
+  }
+}
+
+/**
+ * Key files getOrCreateSecret has already looked for stale temp files next
+ * to, in this process. It sits on the hot path of every encrypt, decrypt and
+ * audit append, and only a crash leaves those files, so once is enough.
+ */
+const keyFilesCleaned = new Set<string>();
+
+function removeStaleKeyTempFilesOnce(keyFilePath: string): void {
+  if (keyFilesCleaned.has(keyFilePath)) return;
+  keyFilesCleaned.add(keyFilePath);
+  removeStaleKeyTempFiles(keyFilePath);
+}
+
+/**
+ * An existing key file: a key we can read, a file that is not a key, or one
+ * we cannot read at all. The last two are different problems with different
+ * fixes. A file we cannot read (a root-owned restore, a directory in its
+ * place) may hold exactly the earlier key that verifies what it signed;
+ * calling it invalid would send the operator to move a good key aside.
+ */
+function existingKeyFileOutcome(keyFilePath: string): EnvSecretPersistOutcome {
+  try {
+    readSecretFile(keyFilePath);
+    return { status: "file-exists" };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // readSecretFile's format error carries no code; every fs error does.
+    if (typeof code === "string") return { status: "file-unreadable", code };
+    return { status: "file-invalid" };
+  }
+}
+
+/**
+ * When the environment variable is the active secret and no key file exists,
+ * write the variable's value to the key file.
+ *
+ * Why: the earlier key Pinchy verifies against is always the key FILE
+ * ({@link getPreviousSecret}). An install that set the variable from day one
+ * never had that file, so switching the variable to a new value left every
+ * entry signed with the old one verifying under no key at all, and the only
+ * defence was a manual step in the docs. With the file written at startup,
+ * the old value is already in place as the earlier key when the variable
+ * changes. Safe by construction instead of by procedure.
+ *
+ * Never overwrites: an existing file is either the same key or the earlier
+ * one, and the earlier one is the only thing that can verify the entries
+ * signed with it. Even a corrupt file is left for the operator to look at,
+ * but reported as "file-invalid": it is not a key anything can verify
+ * against, so the current value is not saved, and saying nothing would read
+ * exactly like a healthy file. A file that cannot be read at all is reported
+ * as "file-unreadable" with the error code, for the same reason, and because
+ * it may still be a good key.
+ *
+ * Written through {@link writeKeyFileExclusive}, after removing temp files an
+ * earlier crash left behind.
+ *
+ * Never throws: a failed write is reported, and the caller logs it and starts
+ * anyway.
+ */
+export function persistEnvSecretToKeyFile(name: string): EnvSecretPersistOutcome {
+  const { keyFileDir, keyFilePath } = secretPaths(name);
+  removeStaleKeyTempFilesOnce(keyFilePath);
+
+  if (getSecretSource(name) !== "envvar") return { status: "not-envvar" };
+  if (existsSync(keyFilePath)) return existingKeyFileOutcome(keyFilePath);
+
+  // Same format as the file getOrCreateSecret generates: lowercase hex, no
+  // trailing newline.
+  const key = Buffer.from(process.env[name.toUpperCase()]!, "hex").toString("hex");
+  try {
+    return writeKeyFileExclusive(keyFilePath, key) === "written"
+      ? { status: "written", dir: keyFileDir }
+      : existingKeyFileOutcome(keyFilePath);
+  } catch (err) {
+    // fs errors name the code and the path, never the content written.
+    return { status: "failed", reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Why a set variable is not a valid key. Never carries the value. */
+export type IgnoredSecretReason = "0x-prefix" | "not-hex" | "length";
+
+/**
+ * What startup will find for one secret, for the `check-keys` command an
+ * operator runs before starting a restored install. Never carries a key.
+ *
+ * `same` and `different` compare the file with the variable, so they only
+ * appear while the variable is in effect; `different` is exactly what makes
+ * {@link getPreviousSecret} return the file as the earlier key. With the
+ * variable unset or ignored, a readable key file is just `key`: Pinchy uses it
+ * and has no earlier key.
+ */
+export interface SecretInspection {
+  variable:
+    { status: "unset" } | { status: "valid" } | { status: "ignored"; reason: IgnoredSecretReason };
+  file:
+    | { status: "missing" }
+    | { status: "unreadable"; code: string }
+    | { status: "invalid" }
+    | { status: "key" }
+    | { status: "same" }
+    | { status: "different" };
+}
+
+function ignoredReason(value: string): IgnoredSecretReason {
+  if (/^0x/i.test(value)) return "0x-prefix";
+  if (/[^0-9a-fA-F]/.test(value)) return "not-hex";
+  return "length";
+}
+
+/**
+ * Inspect a secret through the same functions startup uses, without creating
+ * or changing anything: {@link getSecretSource} and {@link isSecretEnvIgnored}
+ * for the variable, the startup read for the file, {@link getPreviousSecret}
+ * for "differs".
+ */
+export function inspectSecret(name: string): SecretInspection {
+  const envKey = process.env[name.toUpperCase()];
+  const variable: SecretInspection["variable"] = isSecretEnvIgnored(name)
+    ? { status: "ignored", reason: ignoredReason(envKey!) }
+    : getSecretSource(name) === "envvar"
+      ? { status: "valid" }
+      : { status: "unset" };
+
+  const { keyFilePath } = secretPaths(name);
+  if (!existsSync(keyFilePath)) return { variable, file: { status: "missing" } };
+
+  const outcome = existingKeyFileOutcome(keyFilePath);
+  if (outcome.status === "file-unreadable") {
+    return { variable, file: { status: "unreadable", code: outcome.code } };
+  }
+  if (outcome.status === "file-invalid") return { variable, file: { status: "invalid" } };
+  if (variable.status !== "valid") return { variable, file: { status: "key" } };
+  return {
+    variable,
+    file: { status: getPreviousSecret(name) === null ? "same" : "different" },
+  };
+}
+
 export function getOrCreateSecret(name: string): Buffer {
   const envVarName = name.toUpperCase();
   const { keyFileDir, keyFilePath } = secretPaths(name);
+  removeStaleKeyTempFilesOnce(keyFilePath);
 
   switch (getSecretSource(name)) {
     case "envvar":
@@ -132,7 +489,11 @@ export function getOrCreateSecret(name: string): Buffer {
       // Auto-generate and persist
       if (existsSync(keyFileDir)) {
         const newKey = randomBytes(32).toString("hex");
-        writeFileSync(keyFilePath, newKey, { mode: 0o600 });
+        // Another process may have generated the key first; then that one is
+        // the key, and replacing it would orphan whatever it already signed.
+        if (writeKeyFileExclusive(keyFilePath, newKey) === "exists") {
+          return readSecretFile(keyFilePath);
+        }
         return Buffer.from(newKey, "hex");
       }
       throw new Error(

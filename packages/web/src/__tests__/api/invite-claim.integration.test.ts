@@ -5,7 +5,7 @@
 // invites/users/userGroups schemas, or Better Auth's signUpEmail integration
 // worked end-to-end. This suite exercises all of them against a freshly
 // migrated Postgres test database (provisioned by global-setup.ts) and
-// truncated between cases (setup.ts).
+// emptied between cases by the integration reset.
 //
 // What stays mocked, and why:
 //   - @/lib/personal-agent.seedPersonalAgent — touches the real filesystem
@@ -19,6 +19,27 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
+
+// The account-creation audit row is written through deferAuditLog (next's
+// after()), which throws outside a request scope. Run the callback inline
+// and collect its promise so a test can await the write before reading the
+// audit table.
+const pendingAfter: Promise<unknown>[] = [];
+async function flushAfter(): Promise<void> {
+  while (pendingAfter.length > 0) {
+    await Promise.allSettled(pendingAfter.splice(0));
+  }
+}
+vi.mock("next/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/server")>();
+  return {
+    ...actual,
+    after: vi.fn((fn: () => void | Promise<void>) => {
+      const result = fn();
+      if (result instanceof Promise) pendingAfter.push(result);
+    }),
+  };
+});
 
 vi.mock("@/lib/personal-agent", () => ({
   seedPersonalAgent: vi.fn().mockResolvedValue({ id: "fake-agent-id" }),
@@ -51,7 +72,7 @@ vi.mock("@/lib/invites", async (importOriginal) => {
 
 import { db } from "@/db";
 import { invites, users, userGroups, groups, inviteGroups, sessions, auditLog } from "@/db/schema";
-import { createInvite, claimInvite } from "@/lib/invites";
+import { createInvite, claimInvite, INVITE_WITHOUT_EMAIL_ERROR } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { auth } from "@/lib/auth";
@@ -241,6 +262,185 @@ describe("POST /api/invite/claim (integration)", () => {
     expect(newAdmin?.role).toBe("admin");
     // seedPersonalAgent receives isAdmin=true so Smithers gets the org-context tool.
     expect(seedPersonalAgent).toHaveBeenCalledWith(newAdmin!.id, true);
+  });
+
+  // ── Audit: account creation ─────────────────────────────────────────
+
+  it("writes a user.created audit row for the account a claimed invite creates", async () => {
+    // Before this row existed, an account's only trace in the audit trail was
+    // the inviter's `user.invited` — nothing recorded that the invite became
+    // an account, or which one. Actor is the new user (pseudonymized on the
+    // actorId column); their raw id and email stay out of `detail`.
+    const adminId = await seedAdmin();
+    const invite = await createInvite({
+      email: "audited@test.local",
+      role: "admin",
+      type: "invite",
+      createdBy: adminId,
+    });
+
+    const response = await POST(
+      makeRequest({ token: invite.token, name: "Audited User", password: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(201);
+    await flushAfter();
+
+    const user = await db.query.users.findFirst({ where: eq(users.email, "audited@test.local") });
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorType: "user",
+      actorId: user!.auditPseudonym,
+      outcome: "success",
+    });
+    expect(rows[0].detail).toEqual({
+      name: "Audited User",
+      role: "admin",
+      via: "invite",
+      invite: { id: invite.id },
+    });
+    const serialized = JSON.stringify(rows[0]);
+    expect(serialized).not.toContain("audited@test.local");
+    expect(serialized).not.toContain(user!.id);
+  });
+
+  it("refuses an invite without an email and records the failed claim (#1263)", async () => {
+    // Invites created before the email became required have none. Better
+    // Auth cannot create an account without one, so the claim used to fail
+    // with a bare 500 and leave no trace in the audit trail.
+    const adminId = await seedAdmin();
+    const invite = await createInvite({ role: "member", type: "invite", createdBy: adminId });
+
+    const response = await POST(
+      makeRequest({ token: invite.token, name: "No Mail", password: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ error: INVITE_WITHOUT_EMAIL_ERROR });
+    await flushAfter();
+
+    const created = await db.query.users.findFirst({ where: eq(users.name, "No Mail") });
+    expect(created).toBeUndefined();
+    const row = await db.query.invites.findFirst({ where: eq(invites.id, invite.id) });
+    expect(row?.claimedAt).toBeNull();
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorType: "system",
+      actorId: "invite-claim",
+      outcome: "failure",
+    });
+    expect(rows[0].detail).toEqual({
+      name: "No Mail",
+      role: "member",
+      via: "invite",
+      invite: { id: invite.id },
+      reason: "invite_has_no_email",
+    });
+  });
+
+  it("keeps the failure row whole when the claim carries a very long name (#1263)", async () => {
+    // The name comes from whoever holds the link. Uncapped, it can push the
+    // detail past the audit size limit, which replaces the whole detail with
+    // a summary and drops the invite id and the reason.
+    const adminId = await seedAdmin();
+    const invite = await createInvite({ role: "member", type: "invite", createdBy: adminId });
+
+    const response = await POST(
+      makeRequest({ token: invite.token, name: "x".repeat(5000), password: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(410);
+    await flushAfter();
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].detail).toMatchObject({
+      invite: { id: invite.id },
+      reason: "invite_has_no_email",
+    });
+  });
+
+  it.each([
+    ["an emoji split by the length cap", "x".repeat(199) + "\u{1F600}"],
+    ["a lone surrogate in the body", "Broken \uD83D name"],
+    ["a NUL character", "Nul\u0000name"],
+  ])("still writes the failure row for a name with %s (#1263)", async (_label, name) => {
+    // Postgres jsonb refuses a lone UTF-16 surrogate and NUL. A name carrying
+    // either would make the audit write throw, and the failed claim would
+    // again leave no trace.
+    const adminId = await seedAdmin();
+    const invite = await createInvite({ role: "member", type: "invite", createdBy: adminId });
+
+    const response = await POST(
+      makeRequest({ token: invite.token, name, password: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(410);
+    await flushAfter();
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].detail).toMatchObject({ reason: "invite_has_no_email" });
+  });
+
+  it("records a failure row when Better Auth refuses the sign-up (#1263)", async () => {
+    // An account already holds the invite's email, so signUpEmail rejects.
+    // The invite must stay usable and the attempt must be on the record.
+    const adminId = await seedAdmin();
+    await auth.api.signUpEmail({
+      body: { name: "Taken", email: "taken@test.local", password: "originalpassword1" },
+    });
+    const invite = await createInvite({
+      email: "taken@test.local",
+      role: "member",
+      type: "invite",
+      createdBy: adminId,
+    });
+
+    const response = await POST(
+      makeRequest({ token: invite.token, name: "Second Taker", password: "Br1ghtNova!2" })
+    );
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Failed to create account" });
+    await flushAfter();
+
+    const row = await db.query.invites.findFirst({ where: eq(invites.id, invite.id) });
+    expect(row?.claimedAt).toBeNull();
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorType: "system",
+      actorId: "invite-claim",
+      outcome: "failure",
+    });
+    expect(rows[0].detail).toEqual({
+      name: "Second Taker",
+      role: "member",
+      via: "invite",
+      invite: { id: invite.id },
+      reason: "sign_up_failed",
+    });
+    expect(JSON.stringify(rows[0])).not.toContain("taken@test.local");
+  });
+
+  it("writes no user.created row for a password-reset claim", async () => {
+    const adminId = await seedAdmin();
+    await auth.api.signUpEmail({
+      body: { name: "Resetter", email: "resetter@test.local", password: "originalpassword1" },
+    });
+    const { token } = await createInvite({
+      email: "resetter@test.local",
+      role: "member",
+      type: "reset",
+      createdBy: adminId,
+    });
+
+    const response = await POST(makeRequest({ token, password: "newpassword456" }));
+    expect(response.status).toBe(200);
+    await flushAfter();
+
+    const rows = await db.select().from(auditLog).where(eq(auditLog.eventType, "user.created"));
+    expect(rows).toHaveLength(0);
   });
 
   // ── Group assignment on claim ───────────────────────────────────────

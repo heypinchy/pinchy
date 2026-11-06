@@ -52,7 +52,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
 4.  **Choose a size**
 
-    Under **Droplet Type**, keep **Basic** (Shared CPU). Under **CPU options**, **Regular** (SSD) is fine. Pick the **$24/mo** plan (4 GB RAM, 2 CPUs).
+    Under **Droplet Type**, keep **Basic** (Shared CPU). Under **CPU options**, **Regular** (SSD) is fine. Pick the **$24/mo** plan (4 GB RAM, 2 CPUs). Pinchy's default memory limits add up to about 5 GB, so on this plan lower them in `.env` as [Sizing your host](/guides/customizing-deployment/#sizing-your-host) describes — or pick an 8 GB plan to run the defaults.
 
     <Aside type="tip">
       For teams with more than 5 users or heavy agent workloads, consider the

@@ -1,7 +1,7 @@
-import { OdooClient } from "odoo-node";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { probeBraveApiKey } from "@/lib/integrations/brave-probe";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { describeOdooAuthenticateFailure } from "@/lib/integrations/odoo-error";
 import {
   testImapLogin,
   testSmtpVerify,
@@ -10,6 +10,8 @@ import {
 } from "@/lib/integrations/imap-probe";
 import { imapTestSchema } from "@/lib/schemas/imap";
 import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
+import { checkStoredDestination } from "@/lib/integrations/stored-destination";
+import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
 
 /**
  * Verify that credentials work for the given integration type.
@@ -17,11 +19,17 @@ import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-bas
  * On success may return `freshCredentials` — values resolved during the probe
  * that the caller should persist (e.g. Odoo's `uid` after a `login` change).
  *
- * On failure, `transient` distinguishes a genuine auth problem (bad/expired
- * credentials — the connection needs a reconnect) from a temporary provider
- * hiccup (5xx, 429, network error — the credentials are still fine, retry
- * later). Callers must not flip a connection to `auth_failed` on a transient
- * result.
+ * On failure, `transient: true` means "this failure is not evidence against
+ * the credentials": callers must not flip the connection to `auth_failed`,
+ * because re-entering the login or key would not fix it. Despite the name,
+ * not every such failure goes away on retry. It covers a provider hiccup
+ * (5xx, 429, network error), a destination the SSRF guard refuses, an Odoo
+ * URL that never gave an Odoo answer (a redirect, a proxy error, a network
+ * failure, a non-JSON-RPC body; see `isOdooAuthFailure`), and — for Odoo — a
+ * login that worked followed by a schema probe that failed for any reason but
+ * an access denial, including an Odoo user without read access to any synced
+ * model. `reason` says which. Without `transient`, the credentials themselves
+ * were refused and the connection needs a reconnect.
  */
 export type ProbeResult =
   | { success: true; freshCredentials?: Record<string, unknown> }
@@ -35,6 +43,15 @@ export async function probeIntegrationCredentials(
     const parsed = odooCredentialsSchema.safeParse(credentials);
     if (!parsed.success) return { success: false, reason: "Invalid credentials format" };
 
+    // The URL may come from the database rather than the request (a PATCH
+    // that only changes the API key merges it with the stored URL), so it is
+    // checked here, before authenticate sends the key to it. The imap branch
+    // gets the same from testImapLogin/testSmtpVerify, which run the guard.
+    const destination = await checkStoredDestination("odoo", credentials);
+    if (!destination.allowed) {
+      return { success: false, transient: true, reason: destination.message };
+    }
+
     // Re-authenticate so we (a) verify the login/apiKey actually work and
     // (b) refresh the stored uid in case the login changed. Without this
     // step, a wrong login or apiKey would surface as the opaque "Could not
@@ -42,22 +59,23 @@ export async function probeIntegrationCredentials(
     // the probe runs with a stale uid against the new key.
     let uid: number;
     try {
-      uid = await OdooClient.authenticate({
+      uid = await authenticateOdoo({
         url: parsed.data.url,
         db: parsed.data.db,
         login: parsed.data.login,
         apiKey: parsed.data.apiKey,
       });
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      return {
-        success: false,
-        reason: `Authentication failed. Please verify your login and API key. (${detail})`,
-      };
+      return describeOdooAuthenticateFailure(err);
     }
 
     const result = await fetchOdooSchema({ ...parsed.data, uid });
-    if (!result.success) return { success: false, reason: result.error };
+    // Only an access denial says something about these credentials; any other
+    // schema failure (every model refused alike by a proxy, Odoo unreachable)
+    // must not flag the connection auth_failed.
+    if (!result.success) {
+      return { success: false, reason: result.error, transient: !result.isAuthError };
+    }
     return { success: true, freshCredentials: { uid } };
   }
 

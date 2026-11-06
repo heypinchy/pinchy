@@ -17,6 +17,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "@/db";
+import { readFromSupersededArtifact } from "./office-format-upgrade";
 import { buildPathFilter } from "./path-filter";
 
 import type { ChunkLocator } from "./locator";
@@ -115,7 +116,14 @@ export async function retrieve(
   const queryVectorLiteral = JSON.stringify(queryVector);
   const pathFilter = buildPathFilter(allowedPaths, sql`c.source_path`);
   const statusFilter = opts.includeArchived ? sql`` : sql`AND d.status = 'active'`;
-  const baseFilter = sql`c.org_id = ${orgId} ${statusFilter} AND (${pathFilter})`;
+  // An Office document whose chunks came from an artifact of an earlier
+  // format answers nothing until it is converted again: the rules changed
+  // because of what such an artifact may hold (office-format-upgrade.ts).
+  const supersededFilter = sql`AND NOT ${readFromSupersededArtifact(
+    sql`d.source_path`,
+    sql`d.artifact_format_version`
+  )}`;
+  const baseFilter = sql`c.org_id = ${orgId} ${statusFilter} ${supersededFilter} AND (${pathFilter})`;
 
   return db.transaction(async (tx) => {
     // Filtered HNSW recall for the vector arm's index scan: without this,

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { verifyIntegrity } from "@/lib/audit";
+import { isActiveKeySeenBefore, verifyIntegrity } from "@/lib/audit";
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -22,7 +22,18 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid 'toId'" }, { status: 400 });
   }
 
-  const result = await verifyIntegrity(fromId, toId);
+  // The previous signing key is only valid for the rows before the key change,
+  // and a range that starts later can't see those rows. It takes its key
+  // context from the row in front of it, as the background sweep does from its
+  // checkpoint; otherwise `?fromId=` past the change would accept rows re-signed
+  // with the old key as pre-change history. Only a run from the first row
+  // establishes where the key really changed.
+  const result =
+    fromId === undefined
+      ? await verifyIntegrity(fromId, toId)
+      : await verifyIntegrity(fromId, toId, {
+          seedActiveKeySeen: await isActiveKeySeenBefore(fromId),
+        });
 
   return NextResponse.json(result);
 }

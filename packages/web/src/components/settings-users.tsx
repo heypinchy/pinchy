@@ -17,18 +17,118 @@ import { InviteDialog } from "@/components/invite-dialog";
 import { SeatLimitDialog } from "@/components/seat-limit-dialog";
 import { UserDetailSheet } from "@/components/user-detail-sheet";
 import { StatusBadge } from "@/components/status-badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import { ShieldAlert, X } from "lucide-react";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
 import { SALES_MAILTO, CALENDLY_URL } from "@/lib/conversion-links";
 import { apiPost, apiDelete, errorMessage } from "@/lib/api-client";
-import type { InviteUserInput } from "@/lib/schemas/users";
+import type { AcknowledgeUserOriginInput, InviteUserInput } from "@/lib/schemas/users";
 
 interface SettingsUsersProps {
   currentUserId: string;
   refreshKey?: number;
+}
+
+/**
+ * Accounts neither the setup wizard nor a claimed invite created — in
+ * practice, self-registered through the sign-up endpoint earlier releases left
+ * open (GET /api/users flags them, lib/user-provenance.ts decides). Persistent
+ * and actionable, so an inline banner rather than a toast (AGENTS.md "Error And
+ * Notification UI"); dismissing it hides it for this visit only, because the
+ * accounts are still there until someone deactivates them.
+ */
+function UnknownOriginBanner({
+  accounts,
+  onReview,
+  onMarkKnown,
+  onDismiss,
+}: {
+  accounts: (UserListItem & { kind: "user" })[];
+  onReview: (account: UserListItem & { kind: "user" }) => void;
+  onMarkKnown: (account: UserListItem & { kind: "user" }) => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <section
+      aria-labelledby="unknown-origin-title"
+      className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0">
+          <ShieldAlert className="h-5 w-5 shrink-0 text-amber-600" aria-hidden="true" />
+          <div className="space-y-2 min-w-0">
+            <h2 id="unknown-origin-title" className="text-sm font-medium">
+              {accounts.length === 1
+                ? "1 account nobody invited"
+                : `${accounts.length} accounts nobody invited`}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Every account comes from the setup wizard or a claimed invite, and{" "}
+              {accounts.length === 1 ? "this one doesn't" : "these don't"}. Earlier versions of
+              Pinchy let anyone who could reach it sign up on their own. If you don&apos;t recognise
+              an account here, review it and deactivate it. If you do, mark it as known.
+            </p>
+            <ul className="space-y-1">
+              {accounts.map((account) => (
+                <li
+                  key={account.id}
+                  className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+                >
+                  <span className="font-medium truncate max-w-[200px]" title={account.name}>
+                    {account.name}
+                  </span>
+                  <span
+                    className="text-muted-foreground truncate max-w-[260px]"
+                    title={account.email}
+                  >
+                    {account.email}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Review ${account.name}`}
+                    onClick={() => onReview(account)}
+                  >
+                    Review
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Mark ${account.name} as known`}
+                    onClick={() => onMarkKnown(account)}
+                  >
+                    Mark as known
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Dismiss"
+          className="shrink-0"
+          onClick={onDismiss}
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      </div>
+    </section>
+  );
 }
 
 function GroupBadges({ groups }: { groups: UserGroup[] }) {
@@ -82,11 +182,20 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [inviteOpen, setInviteOpen] = useState(false);
   const [seatLimitOpen, setSeatLimitOpen] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
-  const { isCopied: isResetLinkCopied, copy: copyResetLink } = useCopyToClipboard();
   const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
   const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
   const [isEnterprise, setIsEnterprise] = useState(false);
   const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
+  const [unknownOriginDismissed, setUnknownOriginDismissed] = useState(false);
+  // "Mark as known" cannot be undone — the acknowledgement is an audit row and
+  // nothing withdraws it — so it asks first, like Deactivate does.
+  const [confirmKnown, setConfirmKnown] = useState<(UserListItem & { kind: "user" }) | null>(null);
+
+  // Already-deactivated accounts need no action, so they stay out of the banner.
+  const unknownOriginAccounts = items.filter(
+    (i): i is UserListItem & { kind: "user" } =>
+      i.kind === "user" && i.unknownOrigin && i.status === "active"
+  );
 
   const pressure = seatInfo ? evaluateSeatPressure(seatInfo.seatsUsed, seatInfo.maxUsers) : null;
   const showCounter = seatInfo !== null && seatInfo.maxUsers > 0;
@@ -148,10 +257,30 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     });
   }
 
+  async function handleMarkKnown(account: UserListItem & { kind: "user" }) {
+    // Recorded in the audit trail as user.origin_acknowledged; the provenance
+    // check reads that row, so the account leaves the banner on the refetch.
+    try {
+      await apiPost<{ success: true }, AcknowledgeUserOriginInput>(
+        `/api/users/${account.id}/acknowledge-origin`,
+        {}
+      );
+      toast.success(`Marked ${account.name} as known`);
+    } catch (e) {
+      toast.error(errorMessage(e, "Couldn't mark the account as known. Please try again."));
+    }
+    fetchUsers();
+  }
+
   async function handleResend(item: UserListItem & { kind: "invite" }) {
     // Resend = revoke the old invite, then create a fresh one. Report which of
     // the two steps failed so the admin knows whether the old invite is still
     // live (revoke failed) or simply no replacement was issued (create failed).
+    //
+    // Only offered for invites that have an email: one created before the
+    // email became required gets Revoke instead (#1263).
+    const email = item.email;
+    if (!email) return; // unreachable: such a row shows Revoke; narrows the type
     try {
       await apiDelete(`/api/users/invites/${item.id}`);
     } catch (e) {
@@ -161,7 +290,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     }
     try {
       const data = await apiPost<{ token: string }, InviteUserInput>("/api/users/invite", {
-        email: item.email || undefined,
+        email,
         role: item.role,
       });
       setResetLink(buildInviteUrl(window.location.origin, data.token));
@@ -177,6 +306,37 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
 
   return (
     <div className="space-y-6">
+      {unknownOriginAccounts.length > 0 && !unknownOriginDismissed && (
+        <UnknownOriginBanner
+          accounts={unknownOriginAccounts}
+          onReview={setSelectedUser}
+          onMarkKnown={setConfirmKnown}
+          onDismiss={() => setUnknownOriginDismissed(true)}
+        />
+      )}
+      <AlertDialog open={!!confirmKnown} onOpenChange={(open) => !open && setConfirmKnown(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Mark {confirmKnown?.name} as known?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmKnown?.name} leaves this check for good — there&apos;s no way to put an
+              account back on the list. The audit trail records that you vouched for it. Only do
+              this if you know where the account came from.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmKnown) void handleMarkKnown(confirmKnown);
+                setConfirmKnown(null);
+              }}
+            >
+              Mark as known
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Users</CardTitle>
@@ -196,17 +356,18 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         </CardHeader>
         <CardContent>
           {resetLink && (
-            <div className="mb-4 rounded border bg-muted p-3">
-              <p className="text-sm font-medium mb-1">Invite link:</p>
-              <p className="text-sm break-all">{resetLink}</p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-2"
-                onClick={() => copyResetLink(resetLink)}
-              >
-                {isResetLinkCopied ? "Copied!" : "Copy"}
-              </Button>
+            <div className="mb-4 space-y-1 rounded border p-3">
+              <p id="resent-invite-link-label" className="text-sm font-medium">
+                Invite link:
+              </p>
+              <CopyField
+                value={resetLink}
+                label="Invite link"
+                labelledBy="resent-invite-link-label"
+                copyLabel="Copy link"
+                share={{ title: "Pinchy invite" }}
+                autoFocus
+              />
             </div>
           )}
 
@@ -264,12 +425,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
                   {item.kind === "user" ? item.email : item.email || "\u2014"}
                 </div>
                 <div className="flex gap-2">
-                  {item.kind === "invite" && item.status === "pending" && (
+                  {item.kind === "invite" && (item.status === "pending" || !item.email) && (
                     <Button variant="outline" size="sm" onClick={() => handleRevoke(item.id)}>
                       Revoke
                     </Button>
                   )}
-                  {item.kind === "invite" && item.status === "expired" && (
+                  {item.kind === "invite" && item.status === "expired" && item.email && (
                     <Button variant="outline" size="sm" onClick={() => handleResend(item)}>
                       Resend
                     </Button>
@@ -321,12 +482,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
                       <StatusBadge status={item.status} />
                     </TableCell>
                     <TableCell className="space-x-2">
-                      {item.kind === "invite" && item.status === "pending" && (
+                      {item.kind === "invite" && (item.status === "pending" || !item.email) && (
                         <Button variant="outline" size="sm" onClick={() => handleRevoke(item.id)}>
                           Revoke
                         </Button>
                       )}
-                      {item.kind === "invite" && item.status === "expired" && (
+                      {item.kind === "invite" && item.status === "expired" && item.email && (
                         <Button variant="outline" size="sm" onClick={() => handleResend(item)}>
                           Resend
                         </Button>

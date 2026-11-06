@@ -3,7 +3,7 @@
 // The unit test in agent-telegram-channel.test.ts mocks `@/db` entirely, so it
 // only proves "db.delete was called" — not that the right rows actually
 // disappear. This test hits a real PostgreSQL (provisioned by global-setup.ts,
-// truncated between tests by setup.ts) to verify the Gap 3 (#476) hardening
+// emptied between tests by the integration reset) to verify the Gap 3 (#476) hardening
 // for real:
 //
 //   - When the last Telegram bot in the instance is disconnected, ALL

@@ -15,7 +15,7 @@ import { Aside } from "@astrojs/starlight/components";
 
 - A 64-bit x86 (amd64) host — Pinchy's Docker images are built for `linux/amd64` only. Arm64 hosts (Hetzner's CAX line, Raspberry Pi, Apple Silicon servers) are not yet supported: `docker compose pull` fails with `no matching manifest for linux/arm64/v8 in the manifest list entries`. We're tracking Arm64 images in [#1081](https://github.com/heypinchy/pinchy/issues/1081).
 - Docker Engine 20.10+ and Docker Compose v2+
-- 4 GB RAM minimum (for Pinchy + OpenClaw + PostgreSQL)
+- 8 GB RAM recommended for Pinchy, the Office converter, OpenClaw and PostgreSQL with their default memory limits (about 5 GB together). 4 GB works with lower limits — see [Sizing your host](/guides/customizing-deployment/#sizing-your-host)
 - An LLM provider: API key (Anthropic, OpenAI, Google, Ollama Cloud), a [local Ollama instance](/guides/ollama-setup/), or [any OpenAI-compatible endpoint](/guides/llm-providers/#openai-compatible-providers)
 
 <Aside type="tip">
@@ -37,15 +37,16 @@ docker compose pull && docker compose up -d
 
 ### Services
 
-The `docker-compose.yml` defines three services:
+The `docker-compose.yml` defines four services:
 
-| Service    | Image                           | Port             | Purpose                             |
-| ---------- | ------------------------------- | ---------------- | ----------------------------------- |
-| `pinchy`   | Custom (Next.js)                | 7777 (exposed)   | Web UI, API, WebSocket bridge       |
-| `openclaw` | Custom (Node.js)                | 18789 (internal) | AI agent runtime                    |
-| `db`       | `pgvector/pgvector:pg17-trixie` | 5432 (internal)  | Database (PostgreSQL 17 + pgvector) |
+| Service            | Image                           | Port              | Purpose                                                   |
+| ------------------ | ------------------------------- | ----------------- | --------------------------------------------------------- |
+| `pinchy`           | Custom (Next.js)                | 7777 (exposed)    | Web UI, API, WebSocket bridge                             |
+| `office-converter` | Same image as `pinchy`          | none (no network) | Converts Word and PowerPoint files for the knowledge base |
+| `openclaw`         | Custom (Node.js)                | 18789 (internal)  | AI agent runtime                                          |
+| `db`               | `pgvector/pgvector:pg17-trixie` | 5432 (internal)   | Database (PostgreSQL 17 + pgvector)                       |
 
-Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reachable within the Docker network.
+Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reachable within the Docker network. The Office converter has no network at all — it talks to Pinchy through a shared folder, because it opens files that anyone with write access to a mounted folder can put there.
 
 ### Environment variables
 
@@ -77,7 +78,7 @@ PINCHY_ENTERPRISE_KEY=
 
 **`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 
-**`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. Pin it on a fresh install if you want to hold the key yourself, and always when several Pinchy instances share one database — they need the same key to agree on signatures. Setting it on an install that has already been running swaps the key; see [Environment Variables](/reference/environment-variables/#secrets) for what happens to entries signed before the swap.
+**`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. Pin it on a fresh install if you want to hold the key yourself, and always when several Pinchy instances share one database — they need the same key to agree on signatures. Setting it on an install that has already been running switches the key: follow [Switching the key](/concepts/audit-trail-verification/#switching-the-key).
 
 **`PINCHY_ENTERPRISE_KEY`** — License key for enterprise features (Groups, agent access control, basic RBAC — granular RBAC with custom roles is planned, [#527](https://github.com/heypinchy/pinchy/issues/527)). Optional — can also be entered via **Settings → License** in the UI. See [Enterprise Setup](/guides/enterprise-setup/) for details.
 
@@ -85,17 +86,18 @@ PINCHY_ENTERPRISE_KEY=
 
 Docker volumes ensure data survives container restarts:
 
-| Volume                | Mounted at                                                                      | Purpose                                                                                          |
-| --------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `pgdata`              | `/var/lib/postgresql/data`                                                      | PostgreSQL data                                                                                  |
-| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                       | Shared OpenClaw configuration                                                                    |
-| `pinchy-data`         | `/data` (OpenClaw)                                                              | Agent-accessible files (Knowledge Base documents)                                                |
-| `pinchy-workspaces`   | `/root/.openclaw/workspaces` (OpenClaw), `/openclaw-config/workspaces` (Pinchy) | Agent workspaces (SOUL.md, AGENTS.md, `uploads/`, `workbench/`)                                  |
-| `pinchy-secrets`      | `/app/secrets` (Pinchy)                                                         | Auto-generated encryption and HMAC keys                                                          |
-| `openclaw-secrets`    | `/openclaw-secrets` (both)                                                      | **tmpfs** — runtime-only SecretRef bundle. Cleared on container restart and rebuilt from the DB. |
-| `pinchy-pdf-cache`    | `/var/cache/pinchy-files` (Pinchy)                                              | Cached PDF-text extractions so repeated reads of the same upload skip re-parsing                 |
-| `pinchy-kb-artifacts` | `/var/cache/pinchy-kb-artifacts` (Pinchy)                                       | Converted Office-document PDFs. Safe to delete — every artifact is re-derived from its source.   |
-| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw)        | Pinchy plugins for OpenClaw                                                                      |
+| Volume                | Mounted at                                                                      | Purpose                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `pgdata`              | `/var/lib/postgresql/data`                                                      | PostgreSQL data                                                                                      |
+| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                       | Shared OpenClaw configuration                                                                        |
+| `pinchy-data`         | `/data` (OpenClaw)                                                              | Agent-accessible files (Knowledge Base documents)                                                    |
+| `pinchy-workspaces`   | `/root/.openclaw/workspaces` (OpenClaw), `/openclaw-config/workspaces` (Pinchy) | Agent workspaces (SOUL.md, AGENTS.md, `uploads/`, `workbench/`)                                      |
+| `pinchy-secrets`      | `/app/secrets` (Pinchy)                                                         | Auto-generated encryption and HMAC keys                                                              |
+| `openclaw-secrets`    | `/openclaw-secrets` (both)                                                      | **tmpfs** — runtime-only SecretRef bundle. Cleared on container restart and rebuilt from the DB.     |
+| `pinchy-pdf-cache`    | `/var/cache/pinchy-files` (Pinchy)                                              | Cached PDF-text extractions so repeated reads of the same upload skip re-parsing                     |
+| `pinchy-kb-artifacts` | `/var/cache/pinchy-kb-artifacts` (Pinchy)                                       | Converted Office-document PDFs. Safe to delete — every artifact is re-derived from its source.       |
+| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw)        | Pinchy plugins for OpenClaw                                                                          |
+| `pinchy-office-spool` | `/var/spool/pinchy-office` (Pinchy, Office converter)                           | Hand-over folder for Office conversion. Only holds documents while they convert; nothing to back up. |
 
 ### Port configuration
 

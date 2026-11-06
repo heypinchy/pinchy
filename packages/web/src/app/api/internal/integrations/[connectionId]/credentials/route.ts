@@ -1,10 +1,15 @@
 // audit-exempt: internal endpoint called by OpenClaw plugin, not a user-facing
 // action. A successful fetch is deliberately not audited — plugins re-fetch on
 // every cache miss, so a row per success would be pure volume. A DENIED fetch
-// is audited (#987): that one is a security event, and it is rare.
+// is audited (#987): that one is a security event, and it is rare. So is a
+// fetch refused because the stored destination fails the SSRF guard.
 import { NextRequest, NextResponse } from "next/server";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { authorizeAgentConnection } from "@/lib/integrations/authorize-agent-connection";
+import {
+  checkStoredDestination,
+  StoredDestinationRefusedError,
+} from "@/lib/integrations/stored-destination";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import {
   resolveConnectionCredentials,
@@ -13,6 +18,14 @@ import {
   CredentialsDecryptError,
   OAuthSettingsMissingError,
 } from "@/lib/integrations/resolve-credentials";
+
+// Agent ids are `crypto.randomUUID()` (db/schema.ts), but the route accepts any
+// conservative id rather than only UUIDs so an unusual legacy id is not locked
+// out. The point is the bound: `agentId` comes from the query string and is
+// written into audit rows as `actorId` (a text column that `truncateDetail`
+// does not cover) and into `detail`, so an unbounded value mints oversized rows.
+const MAX_AGENT_ID_LENGTH = 128;
+const AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 export async function GET(
   request: NextRequest,
@@ -37,6 +50,17 @@ export async function GET(
   if (!agentId) {
     return NextResponse.json(
       { error: "agentId is required — the calling plugin must identify its agent" },
+      { status: 400 }
+    );
+  }
+
+  // Malformed input, not a denial: no audit row, or the oversized value would
+  // land in the trail anyway.
+  if (agentId.length > MAX_AGENT_ID_LENGTH || !AGENT_ID_PATTERN.test(agentId)) {
+    return NextResponse.json(
+      {
+        error: "agentId is malformed — expected at most 128 characters of letters, digits, - or _",
+      },
       { status: 400 }
     );
   }
@@ -77,6 +101,46 @@ export async function GET(
   // here we map its typed failures back to the HTTP contract the plugins expect.
   try {
     const resolved = await resolveConnectionCredentials(connectionId);
+
+    // The destination was validated when the connection was saved, and the
+    // plugin connects to whatever it is handed here — so re-check it under the
+    // rules as they are now (an upgrade may have tightened them, an operator
+    // may have removed ALLOW_PRIVATE_URLS). Every plugin fetch passes through
+    // this route, which makes it the choke point. See stored-destination.ts.
+    const destination = await checkStoredDestination(resolved.type, resolved.credentials);
+    if (!destination.allowed) {
+      // Deferred for the same reason as the grant denial above: an audit write
+      // that fails must not turn a correct refusal into a 500 the plugin
+      // retries. The refused address stays out of the row — a mail host can be
+      // a person's own domain — and `field` is enough to find it.
+      deferAuditLog({
+        actorType: "agent",
+        actorId: agentId,
+        eventType: "integration.credentials_denied",
+        resource: `integration:${connectionId}`,
+        outcome: "failure",
+        detail: {
+          agent: { id: agentId, name: access.agent?.name ?? agentId },
+          connection: { id: connectionId },
+          reason: "destination-blocked",
+          field: destination.field,
+        },
+      });
+      // 403, never 401: the plugins read a 401 from this route as Pinchy
+      // briefly unable to read the gateway token and retry it for several
+      // seconds, which would only delay this final refusal. The body reaches
+      // the agent's tool error, so it carries the guard's message, which
+      // names the fix.
+      return NextResponse.json(
+        {
+          error:
+            new StoredDestinationRefusedError(destination.field, destination.message).message +
+            " An admin can change the address under Settings → Integrations.",
+        },
+        { status: 403 }
+      );
+    }
+
     return NextResponse.json(resolved);
   } catch (err) {
     if (err instanceof ConnectionNotFoundError) {

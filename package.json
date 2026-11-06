@@ -9,6 +9,7 @@
     "test": "pnpm --filter @pinchy/web test",
     "test:related": "node scripts/test-related.mjs",
     "test:plugins": "pnpm --fail-if-no-match --filter \"./packages/plugins/*\" test",
+    "test:libreoffice": "pnpm --filter @pinchy/web test:libreoffice",
     "test:scripts": "node --test scripts/lib/*.test.mjs docs/scripts/*.test.mjs config/telegram-mock/__tests__/*.test.mjs config/__tests__/*.test.mjs",
     "worktree:env": "node scripts/worktree-env.mjs",
     "format": "prettier --write .",
@@ -33,7 +34,8 @@
   "devDependencies": {
     "husky": "^9.1.7",
     "lint-staged": "^17.2.0",
-    "prettier": "^3.9.6"
+    "prettier": "^3.9.6",
+    "yaml": "^2.9.0"
   },
   "pnpm": {
     "overrides": {
@@ -58,20 +60,20 @@
       "@typescript-eslint/eslint-plugin@>=8.0.0 <8.58.2": ">=8.58.2",
       "@typescript-eslint/typescript-estree@>=8.0.0 <8.58.2": ">=8.58.2",
       "postcss@<8.5.23": ">=8.5.23",
-      "fast-uri@<3.1.4": ">=3.1.4",
-      "ajv>fast-uri@<4.1.5": ">=4.1.5 <5",
+      "fast-uri@<3.1.9": ">=3.1.9 <4",
+      "openclaw>zod@<4.6.6": ">=4.6.6 <5",
       "ip-address@>=10.0.0 <10.7.1": ">=10.7.1 <11",
       "protobufjs@<7.5.8": ">=7.5.8 <8",
       "protobufjs@>=8.0.0 <8.6.6": ">=8.6.6 <9",
       "ws@>=8.0.0 <8.20.1": ">=8.20.1",
-      "qs@<6.16.0": ">=6.16.0 <7",
+      "qs@<6.16.1": ">=6.16.1 <7",
       "uuid@8.3.2": ">=11.1.1",
       "js-yaml@>=4.0.0 <4.3.2": ">=4.3.2 <5",
-      "body-parser@>=2.0.0 <2.3.0": ">=2.3.0 <3",
+      "body-parser@>=2.0.0 <2.4.0": ">=2.4.0 <3",
       "@babel/core@>=7.0.0 <7.29.6": ">=7.29.6",
       "tar@>=7.0.0 <7.5.21": ">=7.5.21",
       "sharp@<0.35.5": ">=0.35.5 <0.36",
-      "@hono/node-server@<2.0.5": ">=2.0.5",
+      "@hono/node-server@<2.1.3": ">=2.1.3 <3",
       "nanoid@>=3.0.0 <3.3.17": ">=3.3.17 <4",
       "@xmldom/xmldom@<0.8.15": ">=0.8.15 <0.9",
       "browserslist@<4.28.7": ">=4.28.7 <5",

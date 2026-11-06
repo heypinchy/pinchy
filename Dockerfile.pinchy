@@ -100,7 +100,17 @@ COPY packages/plugins/pinchy-files/openclaw.plugin.json packages/plugins/pinchy-
 # `tsx` resolves them again as a LIVE require at runtime, on the index worker's
 # path. The runtime stage inherits them through its `COPY --from=build
 # /app/packages/plugins`. Pinned by scripts/lib/prepush-build-gate.test.mjs.
-COPY packages/plugins/pinchy-files/pdf-scan-rule.ts packages/plugins/pinchy-files/pdf-vision-api.ts packages/plugins/pinchy-files/
+#
+# The zip guard (#424) rides the same COPY: the Office preflight checks an
+# archive's declared AND real sizes with it, and hands exceljs, mammoth and
+# LibreOffice only the copy it verified. It imports
+# Node built-ins only (`node:path`, `node:zlib`).
+COPY packages/plugins/pinchy-files/pdf-scan-rule.ts packages/plugins/pinchy-files/pdf-vision-api.ts packages/plugins/pinchy-files/docx-zip-guard.ts packages/plugins/pinchy-files/
+# The IP-address classifier the admin-facing SSRF guards (url-validation.ts,
+# mail-host-guard.ts) SHARE with the web_fetch tool, so the two cannot drift
+# apart. Import-free, canonical copy in the plugin for the same reason as above;
+# see packages/plugins/pinchy-web/ip-address.ts.
+COPY packages/plugins/pinchy-web/ip-address.ts packages/plugins/pinchy-web/
 COPY packages/plugins/pinchy-context/openclaw.plugin.json packages/plugins/pinchy-context/
 COPY packages/plugins/pinchy-audit/openclaw.plugin.json packages/plugins/pinchy-audit/
 COPY packages/plugins/pinchy-transcript/openclaw.plugin.json packages/plugins/pinchy-transcript/
@@ -193,6 +203,13 @@ RUN corepack enable
 #     formats. An oracle derived from LibreOffice would agree with LibreOffice
 #     about text it dropped and verify nothing.
 # `--no-install-recommends` matters here: the recommends pull in a JRE.
+#
+# The web process never runs it. This image is ALSO the `office-converter`
+# service (docker-compose.yml) — no network, no secrets, no volume but the
+# spool — and that container is the only place LibreOffice opens a file.
+# KB_OFFICE_SPOOL_DIR below is what sends the web process there. One image
+# instead of two means nothing extra to build, publish, pull, or mirror into
+# an air-gapped install; the binary on disk is inert in the web container.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        libreoffice-writer libreoffice-impress fonts-liberation catdoc \
@@ -204,6 +221,13 @@ EXPOSE 7777
 
 ENV PORT=7777
 ENV NODE_ENV=production
+
+# Office-to-PDF conversion happens in the office-converter sidecar, never in
+# this process. The spool is the volume both containers mount at this path;
+# the converter listens on a Unix socket inside it. There is deliberately no
+# fallback to converting in-process when the sidecar is missing
+# (lib/knowledge/office-convert.ts → defaultConverter).
+ENV KB_OFFICE_SPOOL_DIR=/var/spool/pinchy-office
 
 # Workspace manifests + patches: pnpm reads these to resolve workspace scripts
 # (`pnpm start`, `pnpm db:migrate`) and the patched-dependency map at runtime.
@@ -281,13 +305,25 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:7777/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
 # Create non-root user (entrypoint drops privileges after fixing volume permissions)
-RUN groupadd -r -g 999 pinchy && useradd -r -u 999 -g pinchy -d /app pinchy
+# — and the office-converter's own user, in the same group. Its own uid so the
+# directories the web process stages a batch in stay the web process's: the
+# converter reads and writes there only where the group may (see below and
+# lib/knowledge/office-converter-sidecar.ts).
+RUN groupadd -r -g 999 pinchy && useradd -r -u 999 -g pinchy -d /app pinchy \
+    && useradd -r -u 998 -g pinchy -d /nonexistent -M -s /usr/sbin/nologin pinchy-office
 # /var/cache/pinchy-kb-artifacts is the converted-Office-PDF store (#936). It
 # is a named volume in docker-compose.yml precisely so nothing is ever written
 # next to the original: /data is mounted read-only and the docs state that as a
 # product promise. Mirrors the openclaw container's pinchy-pdf-cache.
-RUN mkdir -p /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts \
-    && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts
+# /var/spool/pinchy-office is the hand-over to the office-converter sidecar,
+# owned by the web process. Group-writable so the converter (pinchy-office, in
+# group pinchy) can create its socket there; sticky so it cannot rename or
+# remove the web process's batches. A fresh named volume copies this
+# directory's ownership and mode; entrypoint.sh repairs a volume that already
+# exists or was created some other way.
+RUN mkdir -p /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts /var/spool/pinchy-office \
+    && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces /var/cache/pinchy-kb-artifacts /var/spool/pinchy-office \
+    && chmod 1770 /var/spool/pinchy-office
 
 COPY entrypoint.sh /entrypoint.sh
 # Plugin-source sync helper the entrypoint runs on every boot. Extracted from

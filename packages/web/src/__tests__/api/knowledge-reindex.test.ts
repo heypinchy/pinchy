@@ -52,7 +52,7 @@ const scheduleStatus = {
   enabled: true,
   time: "02:00",
   timezone: "Europe/Vienna",
-  nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+  nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow", at: "2026-10-17T00:00:00.000Z" },
   currentSweep: null,
   lastSweep: null,
 };
@@ -99,6 +99,7 @@ function makeJob(overrides: Partial<KbIndexJob> = {}): KbIndexJob {
     processedBytes: 0,
     counts: null,
     error: null,
+    artifactFormatVersion: null,
     createdAt: new Date("2026-07-17T10:00:00Z"),
     startedAt: null,
     finishedAt: null,
@@ -407,7 +408,12 @@ describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
       enabled: true,
       time: "02:00",
       timezone: "Europe/Vienna",
-      nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+      nextRun: {
+        date: "2026-10-17",
+        time: "02:00",
+        day: "tomorrow",
+        at: "2026-10-17T00:00:00.000Z",
+      },
       included: true,
     });
   });

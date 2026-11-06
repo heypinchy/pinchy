@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 
 // Request schemas for the generic "OpenAI-compatible" provider write paths
 // (#894). Single source of truth, imported by BOTH the route handlers
@@ -46,6 +47,8 @@ export const modelDefinitionSchema = z.object({
  */
 const providerBaseUrlSchema = z
   .string()
+  // Longer than any real endpoint; also bounds what a refusal can put into an audit row.
+  .max(2048, "The URL is too long — 2048 characters at most.")
   .url()
   .refine((u) => /^https?:\/\//i.test(u), {
     message: "The base URL must start with http:// or https://.",
@@ -102,3 +105,22 @@ export type UpsertOpenAiCompatibleProviderInput = z.infer<
 >;
 export type DiscoverInput = z.infer<typeof discoverSchema>;
 export type DeleteOpenAiCompatibleInput = z.infer<typeof deleteOpenAiCompatibleSchema>;
+
+/** A row of `GET /api/settings/providers/openai-compatible`. */
+export interface OpenAiCompatibleProviderRow {
+  id: string;
+  slug: string;
+  displayName: string;
+  baseUrl: string;
+  models: OpenClawModelDefinition[];
+  /** Last 4 characters of the API key. The key itself never leaves the server. */
+  keyHint: string;
+  /**
+   * Why the SSRF guard now refuses the saved base URL, or `null` when the
+   * provider is in use. A refused provider stays in the runtime config, but
+   * pointed at `REFUSED_BASE_URL` and without its key
+   * (openai-compatible-stored-url.ts), so its agents fail until the URL
+   * changes. Never names the address.
+   */
+  refusedReason: string | null;
+}

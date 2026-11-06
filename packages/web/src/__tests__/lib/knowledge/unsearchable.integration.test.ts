@@ -16,6 +16,7 @@ import { expect, it } from "vitest";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
+import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 
 const ORG_ID = "org-kb-unsearchable-test";
@@ -33,10 +34,13 @@ async function seedUnsearchable(
 }
 
 /** Inserts a kb_documents row WITH one chunk — a document that answers questions. */
-async function seedReadable(sourcePath: string): Promise<void> {
+async function seedReadable(
+  sourcePath: string,
+  artifactFormatVersion: number | null = null
+): Promise<void> {
   const [doc] = await db
     .insert(kbDocuments)
-    .values({ orgId: ORG_ID, contentHash: `hash-${sourcePath}`, sourcePath })
+    .values({ orgId: ORG_ID, contentHash: `hash-${sourcePath}`, sourcePath, artifactFormatVersion })
     .returning();
   await db.insert(kbChunks).values({
     documentId: doc.id,
@@ -144,7 +148,11 @@ it("returns nothing when the agent is granted no directories", async () => {
 
   const result = await listUnsearchableDocuments(ORG_ID, []);
 
-  expect(result).toEqual({ documents: [], total: 0 });
+  expect(result).toEqual({
+    documents: [],
+    total: 0,
+    totals: { no_text: 0, awaiting_conversion: 0 },
+  });
 });
 
 it("never crosses the org boundary", async () => {
@@ -197,9 +205,9 @@ it("orders active documents before archived ones, then by path", async () => {
   const result = await listUnsearchableDocuments(ORG_ID, ["/data/certs"]);
 
   expect(result.documents).toEqual([
-    { sourcePath: "/data/certs/AFNOR.pdf", status: "active" },
-    { sourcePath: "/data/certs/NordVal.pdf", status: "active" },
-    { sourcePath: "/data/certs/OLD/Expired ISO.pdf", status: "archived" },
+    { sourcePath: "/data/certs/AFNOR.pdf", status: "active", reason: "no_text" },
+    { sourcePath: "/data/certs/NordVal.pdf", status: "active", reason: "no_text" },
+    { sourcePath: "/data/certs/OLD/Expired ISO.pdf", status: "archived", reason: "no_text" },
   ]);
 });
 
@@ -215,4 +223,42 @@ it("caps the returned list but reports the true total", async () => {
 
   expect(paths(result)).toEqual(["/data/certs/Scan 1.pdf", "/data/certs/Scan 2.pdf"]);
   expect(result.total).toBe(5);
+});
+
+// Search leaves out an Office document whose chunks were read from an artifact
+// of an earlier format until it is converted again (retrieve.ts). It HAS
+// chunks, so "no chunk" alone would list it nowhere: neither found by a search
+// nor named as a document that cannot be — the silent gap this list closes.
+it("lists an Office document search leaves out until it is converted again, and says so", async () => {
+  await seedReadable("/data/offers/Angebot.docx");
+  await seedReadable("/data/offers/Current.pptx", OFFICE_ARTIFACT_FORMAT_VERSION);
+  await seedReadable("/data/offers/Handbook.pdf");
+  await seedUnsearchable("/data/offers/Scan.pdf");
+
+  const result = await listUnsearchableDocuments(ORG_ID, ["/data/offers"]);
+
+  expect(result.documents).toEqual([
+    { sourcePath: "/data/offers/Angebot.docx", status: "active", reason: "awaiting_conversion" },
+    { sourcePath: "/data/offers/Scan.pdf", status: "active", reason: "no_text" },
+  ]);
+  expect(result.total).toBe(2);
+});
+
+// The two reasons call for different words — one is a scan nothing can read
+// yet, the other a file with text that is about to be converted again — so a
+// surface has to be able to count each. Counted over the whole scope, like
+// `total`: a page that happens to hold only scans must not report zero files
+// waiting to be converted.
+it("counts each reason over the whole scope, not over the returned page", async () => {
+  for (const n of [1, 2, 3]) {
+    await seedUnsearchable(`/data/mixed/A scan ${n}.pdf`);
+  }
+  await seedReadable("/data/mixed/Z offer.docx");
+  await seedReadable("/data/mixed/Z deck.pptx");
+
+  const result = await listUnsearchableDocuments(ORG_ID, ["/data/mixed"], { limit: 2 });
+
+  expect(paths(result)).toEqual(["/data/mixed/A scan 1.pdf", "/data/mixed/A scan 2.pdf"]);
+  expect(result.total).toBe(5);
+  expect(result.totals).toEqual({ no_text: 3, awaiting_conversion: 2 });
 });

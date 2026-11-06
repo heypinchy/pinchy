@@ -1,4 +1,5 @@
 import type { WebSocket } from "ws";
+import type { AbortRequest } from "@/server/abort-runs";
 
 /**
  * A server-side record of an in-flight chat run.
@@ -102,6 +103,62 @@ export interface ActiveRun {
    * entry, which is exactly the lifetime this flag should have.
    */
   abortedByUser: boolean;
+  /**
+   * Did an abort of this run actually stop it? `abortedByUser` only says one
+   * was asked for. The RPC can throw, or OpenClaw can answer `aborted: false`
+   * (it was not running the run yet, or no longer), and then the reply may
+   * still finish. An abort by session can also answer `aborted: true` for a
+   * DIFFERENT run on the session. Set to true once OpenClaw confirms it
+   * stopped this run, by its runId — and a row says so (`abort-runs.ts`);
+   * never set back. Read through `abortTookEffect`, not directly: the answer
+   * may still be on its way when the stream ends.
+   */
+  abortConfirmed?: boolean;
+  /**
+   * Every runId an answer to an abort sent for this run said it stopped. An
+   * abort by session names them all, whoever's they are; this run is among
+   * them only if its own runId is.
+   */
+  abortStoppedRunIds?: Set<string>;
+  /**
+   * An abort by session was confirmed by a gateway that did not say which runs
+   * it stopped (no `runIds` — older builds). Taken at its word, as before.
+   */
+  abortStoppedUnnamed?: boolean;
+  /**
+   * OpenClaw ended this run's stream itself: the reply is over. Set by the
+   * stream pipe when the stream ends other than by an abort, while the entry
+   * may still be registered (the post-run file delivery runs before the pipe
+   * lets go of it). A stop now finds nothing running.
+   */
+  streamEnded?: boolean;
+  /**
+   * Sockets that started a newer turn on this session while this run was still
+   * registered (#1301). The newer turn reaches the registry only after the
+   * router's awaits (agent, licence, budget, connection); from the moment the
+   * message arrives, though, that tab is on the new turn, and a frame ending
+   * this run (`complete`, a `liveness` verdict) would end that one instead. So
+   * none of this run's frames reach these sockets, until the new turn is over
+   * (refused or ended) or the tab re-attaches to this run through history.
+   */
+  handedOverTo?: Set<WebSocket>;
+  /** Settles once every abort sent for this run so far has been answered. */
+  abortSettled?: Promise<void>;
+  /**
+   * Who stopped this run and why — the actor and reason of the follow-up
+   * `chat.run_aborted` rows, which are written long after the request that
+   * stopped it has returned. Set by the first stop.
+   */
+  abortRequest?: AbortRequest;
+  /**
+   * The follow-ups of an abort that stopped nothing (`abort-runs.ts`
+   * `pursueAbort`), detached from the stream: settles once every follow-up
+   * started so far has ended. At most one per runId — one turn has more than
+   * one when the dispatch-race retry sent it again (`switchRunId`).
+   */
+  abortFollowUp?: Promise<void>;
+  /** The runIds a follow-up was started for (`abortFollowUp`). */
+  abortFollowUpRunIds?: Set<string>;
   listeners: Set<WebSocket>;
 }
 
@@ -219,6 +276,30 @@ export class ActiveRuns {
     run.lastChunkAt = when;
     run.runId = runId;
     return true;
+  }
+
+  /**
+   * The turn's reply is now running under `toRunId`: the dispatch-race retry
+   * (`chat-dispatch-retry.ts`) sent it again after OpenClaw failed the attempt
+   * the run was reconciled to, and OpenClaw runs each attempt under its own
+   * runId. Swapped only while the entry is still this turn's (`fromRunId`) —
+   * a newer turn that replaced it keeps its own. Returns the run when it
+   * switched it.
+   */
+  switchRunId(sessionKey: string, fromRunId: string, toRunId: string): ActiveRun | undefined {
+    const run = this.runs.get(sessionKey);
+    if (!run || run.runId !== fromRunId) return undefined;
+    run.runId = toRunId;
+    return run;
+  }
+
+  /**
+   * OpenClaw ended the stream of the run identified by `runId` (see
+   * `streamEnded`). Marked only while the entry is still that run's.
+   */
+  markStreamEnded(sessionKey: string, runId: string): void {
+    const run = this.runs.get(sessionKey);
+    if (run && run.runId === runId) run.streamEnded = true;
   }
 
   /**

@@ -45,14 +45,14 @@
  * it, but its IDENTITY stays the original: the row and every chunk carry the
  * source path, because the artifact is not a file the reader has.
  */
-import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 
 import { and, count, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
+import { errorLine, LOG_PATH_MAX, LOG_REASON_MAX, oneLine } from "@/lib/log-line";
 
 import {
   DEFAULT_ALLOWED_EXTENSIONS,
@@ -63,21 +63,31 @@ import {
 } from "./exclude-globs";
 import { isArchivedPath, statusForPath } from "./archive-paths";
 import { buildPathFilter } from "./path-filter";
+import { recordUnsupportedFiles, unsupportedFileType } from "./unsupported-files";
 import { chunkPages } from "./chunk";
 import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
 import { collectHeadingSections, headingLocatorAt } from "./heading-sections";
 import {
   isOfficeFile,
+  OfficeFileRejectedError,
   isPresentationFile,
   isSpreadsheetFile,
   isWordFile,
   OFFICE_CONVERT_BATCH_SIZE,
 } from "./office-formats";
 import type { ChunkLocator } from "./locator";
+import { OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
 import type { IngestPage, IngestResult } from "./types";
+import {
+  copyVerifiedSource,
+  hashVerifiedSource,
+  SourceRefusedError,
+  type SourceRefusal,
+  type VerifiedCopy,
+} from "./verified-source";
 
 // IngestPage/IngestResult live in ./types (a runtime-free module) because
 // db/schema.ts persists IngestResult as a jsonb column and cannot import from
@@ -135,6 +145,14 @@ export interface IngestDeps {
    * one without, and the blank scans it reads would be read again every run.
    */
   ocrModel: string | null;
+  /**
+   * Where the run puts the private copies its readers open (verified-source.ts
+   * `copyVerifiedSource`). Prod: the artifact volume's `staging/`
+   * (`stagingDirOf()`), which the index worker clears at start — so a copy a
+   * killed run left behind does not outlive it, as it would in the
+   * container's `/tmp` on the writable layer.
+   */
+  stagingDir: string;
 }
 
 export interface IngestOptions {
@@ -187,6 +205,15 @@ export interface IngestOptions {
   keepEmptiedFolders?: boolean;
   /** Called once per folder below a root whose documents `keepEmptiedFolders` kept. */
   onKeptFolder?: (folder: string) => void;
+  /**
+   * Called for every file the run refused to read because its path no longer
+   * led to a regular file inside its folder — swapped for a link, reached
+   * through a folder swapped for one, or no longer a regular file
+   * (verified-source.ts). A file merely saved again since discovery is read.
+   * The file is ALSO counted `failed`, and its indexed version is kept; this
+   * only says why, so the caller can count refusals apart from broken files.
+   */
+  onRefusedFile?: (absPath: string, refusal: SourceRefusal) => void;
 }
 
 export interface IngestProgress {
@@ -225,27 +252,54 @@ export interface IngestProgress {
   counts: IngestResult;
 }
 
-/** Applies the per-file eligibility rules (skip-hidden + A/B denylist + extension allowlist) to a basename. */
-function isEligibleFile(name: string, allowedExtensions: readonly string[]): boolean {
-  if (isHiddenSegment(name)) return false;
-  if (isDenylistedFileName(name)) return false;
-  return isAllowedExtension(name, allowedExtensions);
+/**
+ * What discovery makes of a basename: a document to ingest, a file whose type
+ * the indexer cannot read (#1267), or something that was never a document — a
+ * hidden file, an OS or temp artifact (exclude-globs.ts).
+ *
+ * The middle answer is the one that used to vanish. It is a file somebody put
+ * on the share for a reason, so it is counted and listed; the last answer is
+ * noise, and listing it would bury the scans an admin has to convert.
+ */
+function classifyFile(
+  name: string,
+  allowedExtensions: readonly string[]
+): "eligible" | "unsupported" | "ignored" {
+  if (isHiddenSegment(name)) return "ignored";
+  if (isDenylistedFileName(name)) return "ignored";
+  return isAllowedExtension(name, allowedExtensions) ? "eligible" : "unsupported";
+}
+
+/** One root as discovery found it: the files to ingest, and the ones it cannot (path → type). */
+interface RootListing {
+  files: Map<string, DiscoveredFile>;
+  unsupported: Map<string, string>;
 }
 
 /**
- * Bytes on disk, or 0 when the size cannot be read.
+ * One file as discovery found it: its weight for progress, and the REAL path
+ * every later read opens (verified-source.ts) — the root's real path plus the
+ * names walked below it.
+ */
+interface DiscoveredFile {
+  bytes: number;
+  realPath: string;
+}
+
+/**
+ * Describes a listed file by an `lstat`, so a link is described as itself and
+ * never as whatever it points at.
  *
  * Discovery must not fail over a single file: one that vanished between the
- * readdir and this stat stays in the queue and is counted `failed` at read time,
- * exactly as before. It simply carries no weight, which is the honest thing to
- * do about a size we do not know — unlike dropping the file, which would make
- * the removal pass believe it is gone.
+ * readdir and this lstat stays in the queue with no weight, and is counted
+ * `failed` at read time, exactly as before. Dropping it instead would make the
+ * removal pass believe it is gone.
  */
-async function fileSize(absPath: string): Promise<number> {
+async function describeFile(realPath: string): Promise<DiscoveredFile> {
   try {
-    return (await stat(absPath)).size;
+    return { bytes: (await lstat(realPath)).size, realPath };
   } catch {
-    return 0;
+    return { bytes: 0, realPath };
   }
 }
 
@@ -259,25 +313,31 @@ async function fileSize(absPath: string): Promise<number> {
  */
 async function walkDir(
   dir: string,
-  allowedExtensions: readonly string[]
-): Promise<Map<string, number>> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const files = new Map<string, number>();
+  realDir: string,
+  allowedExtensions: readonly string[],
+  listing: RootListing
+): Promise<void> {
+  const entries = await readdir(realDir, { withFileTypes: true });
 
   for (const entry of entries) {
     if (isHiddenSegment(entry.name)) continue;
     const absPath = join(dir, entry.name);
+    const realPath = join(realDir, entry.name);
 
+    // A symlink is neither: `Dirent` describes the link itself, so a link to a
+    // file or to a folder is skipped here, and never followed.
     if (entry.isDirectory()) {
       if (isDenylistedDirName(entry.name)) continue;
-      for (const [path, size] of await walkDir(absPath, allowedExtensions)) files.set(path, size);
+      await walkDir(absPath, realPath, allowedExtensions, listing);
     } else if (entry.isFile()) {
-      if (isEligibleFile(entry.name, allowedExtensions))
-        files.set(absPath, await fileSize(absPath));
+      // No stat for an unsupported file: nothing reads it, and on a network
+      // share an lstat per file is a round trip per file.
+      const kind = classifyFile(entry.name, allowedExtensions);
+      if (kind === "eligible") listing.files.set(absPath, await describeFile(realPath));
+      else if (kind === "unsupported")
+        listing.unsupported.set(absPath, unsupportedFileType(entry.name));
     }
   }
-
-  return files;
 }
 
 /**
@@ -301,24 +361,33 @@ async function walkDir(
 async function discoverFiles(
   rootDir: string,
   allowedExtensions: readonly string[]
-): Promise<Map<string, number> | null> {
+): Promise<RootListing | null> {
+  // The ROOT may be a link — it is the admin's grant, and a share mounted
+  // elsewhere is a normal way to set one up — so it is resolved once, here.
+  // Everything below it is walked by real path and never through a link.
+  let realRoot;
   let rootStat;
   try {
-    rootStat = await stat(rootDir);
+    realRoot = await realpath(rootDir);
+    rootStat = await stat(realRoot);
   } catch {
     return null;
   }
 
+  const listing: RootListing = { files: new Map(), unsupported: new Map() };
   if (rootStat.isFile()) {
-    return isEligibleFile(basename(rootDir), allowedExtensions)
-      ? new Map([[rootDir, rootStat.size]])
-      : new Map();
+    const name = basename(rootDir);
+    const kind = classifyFile(name, allowedExtensions);
+    if (kind === "eligible") listing.files.set(rootDir, await describeFile(realRoot));
+    else if (kind === "unsupported") listing.unsupported.set(rootDir, unsupportedFileType(name));
+    return listing;
   }
   // A socket, device, or dangling symlink: readable, and holds no documents.
-  if (!rootStat.isDirectory()) return new Map();
+  if (!rootStat.isDirectory()) return listing;
 
   try {
-    return await walkDir(rootDir, allowedExtensions);
+    await walkDir(rootDir, realRoot, allowedExtensions, listing);
+    return listing;
   } catch {
     // The root vanished or turned unreadable mid-walk. Same reasoning as
     // above: a partial listing must not be mistaken for the whole truth.
@@ -426,6 +495,22 @@ interface ExtractedDocument {
   reader: "pdf" | "sheets" | "converter";
 }
 
+/**
+ * The artifact format version a document's chunks are read from: the current
+ * one for an Office document the converter turns into a PDF, none for every
+ * other format.
+ *
+ * Recorded on the row (`kb_documents.artifact_format_version`) and compared on
+ * every run, because the artifact store alone cannot carry a change of rules
+ * to an unchanged document: its hash matches, it has chunks, and it never asks
+ * the store for anything. A row whose version is not this one is converted and
+ * read again — its chunks, and the artifact a citation opens, then both come
+ * from the current rules.
+ */
+function artifactFormatVersionFor(absPath: string): number | null {
+  return isOfficeFile(absPath) ? OFFICE_ARTIFACT_FORMAT_VERSION : null;
+}
+
 /** The fields every page-shaped extraction derives from its pages alike. */
 function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text" | "incomplete"> {
   return {
@@ -454,19 +539,35 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
  * Every document in a batch is answered by that batch, including when the
  * converter rejects outright. One event, one answer: an unanswered document
  * would come back for a slice of its own.
+ *
+ * The converter is handed private copies, never paths on the share — the
+ * asking document's own, and one streamed here for each other document in the
+ * batch through the same checks as every other source read
+ * (`copyVerifiedSource`). A document that cannot be copied that way is left
+ * out of the batch and NOT answered: its own turn reads it again, and books
+ * the refusal or the failure then, once. Each copy goes with its path on the
+ * share (`displayPath`), so what the converter logs and answers names the file
+ * an admin can find, not the copy.
+ *
+ * Each answer is kept with the hash of the copy it was converted from, and is
+ * given only to a turn asking with that same hash. A batch mate's own turn
+ * takes a fresh copy, and a save in between would otherwise pair the new
+ * bytes' hash with the old bytes' artifact: chunks from the old version that
+ * no later run re-reads, and a viewer that hashes the file it opens and finds
+ * no artifact for it. A mismatch converts the asking document's own copy.
  */
 function officeArtifacts(
-  queue: readonly { absPath: string }[],
+  queue: readonly { absPath: string; realPath: string }[],
   deps: IngestDeps,
   batchSize = OFFICE_CONVERT_BATCH_SIZE
 ): ResolveArtifact {
-  const pending = queue.map((file) => file.absPath).filter(isOfficeFile);
-  const positionOf = new Map(pending.map((absPath, i) => [absPath, i]));
-  const done = new Map<string, ConversionOutcome>();
+  const pending = queue.filter((file) => isOfficeFile(file.absPath));
+  const positionOf = new Map(pending.map((file, i) => [file.absPath, i]));
+  const done = new Map<string, { hash: string; outcome: ConversionOutcome }>();
 
-  return async (absPath, contentHash) => {
+  return async (absPath, contentHash, copyPath) => {
     const known = done.get(absPath);
-    if (known) return known;
+    if (known?.hash === contentHash) return known.outcome;
 
     const start = positionOf.get(absPath);
     if (start === undefined) {
@@ -478,30 +579,42 @@ function officeArtifacts(
     // The batch begins at the document that ASKED, not at the head of the
     // queue. Everything before it was either converted already or skipped as
     // unchanged — and a skipped document never asks, so converting it ahead of
-    // time is work this run throws away. It is not free work either: the
-    // converter hashes every source it is handed, a full read each, even for a
-    // cache hit.
-    const batch: string[] = [];
-    for (let i = start; i < pending.length && batch.length < batchSize; i++) {
-      if (!done.has(pending[i])) batch.push(pending[i]);
-    }
+    // time is work this run throws away. It is not free work either: every
+    // document in a batch is read in full and copied before the converter sees
+    // it, even one the artifact store already holds.
+    const batch: { path: string; hash: string }[] = [{ path: absPath, hash: contentHash }];
+    const sources: OfficeSource[] = [{ absPath: copyPath, contentHash, displayPath: absPath }];
+    const copies: VerifiedCopy[] = [];
 
     try {
-      const outcomes = await deps.convertOffice(
-        batch.map((path) =>
-          // Only the asking document's hash is known: the ingest has read
-          // exactly that file so far. The converter hashes the rest itself.
-          path === absPath && contentHash ? { absPath: path, contentHash } : { absPath: path }
-        )
-      );
-      batch.forEach((path, i) => {
+      for (let i = start + 1; i < pending.length && batch.length < batchSize; i++) {
+        const mate = pending[i];
+        if (done.has(mate.absPath)) continue;
+        let copy;
+        try {
+          copy = await copyVerifiedSource(mate.realPath, mate.absPath, deps.stagingDir);
+        } catch {
+          // Refused, unreadable, or no room for the copy. Not answered: see
+          // the doc comment above.
+          continue;
+        }
+        copies.push(copy);
+        batch.push({ path: mate.absPath, hash: copy.hash });
+        sources.push({ absPath: copy.path, contentHash: copy.hash, displayPath: mate.absPath });
+      }
+
+      const outcomes = await deps.convertOffice(sources);
+      batch.forEach(({ path, hash }, i) => {
         if (outcomes[i]) {
-          done.set(path, outcomes[i]);
+          done.set(path, { hash, outcome: outcomes[i] });
         } else {
           // The converter returned fewer outcomes than it was given sources,
           // which is a broken contract rather than a statement about this
           // document. Retryable, so it must not be recorded as unreadable.
-          done.set(path, unavailable(path, "converter returned no outcome for this document"));
+          done.set(path, {
+            hash,
+            outcome: unavailable(path, "converter returned no outcome for this document"),
+          });
         }
       });
     } catch (err) {
@@ -514,11 +627,18 @@ function officeArtifacts(
       // same thing. Every one of them stays retryable, so no row is written
       // and nothing is branded unreadable (#936).
       const reason = `converter did not answer: ${err instanceof Error ? err.message : String(err)}`;
-      for (const path of batch) done.set(path, unavailable(path, reason));
+      for (const { path, hash } of batch) {
+        done.set(path, { hash, outcome: unavailable(path, reason) });
+      }
+    } finally {
+      // The artifact is in the store by now; the copies it was made from are
+      // not needed past this batch. The asking document's copy is its caller's.
+      await Promise.all(copies.map((copy) => copy.dispose()));
     }
 
     return (
-      done.get(absPath) ?? unavailable(absPath, "converter returned no outcome for this document")
+      done.get(absPath)?.outcome ??
+      unavailable(absPath, "converter returned no outcome for this document")
     );
   };
 }
@@ -531,9 +651,28 @@ function unavailable(sourcePath: string, reason: string): ConversionOutcome {
 /**
  * Resolves the converted PDF for one Office source. `contentHash` is the sha256
  * the caller has already computed for its own idempotency check — the artifact
- * key, passed on so the converter need not read the file a second time.
+ * key, passed on so the converter need not read the file a second time — and
+ * `copyPath` the private copy of exactly those bytes, which is what the
+ * converter reads.
  */
-type ResolveArtifact = (absPath: string, contentHash?: string) => Promise<ConversionOutcome>;
+type ResolveArtifact = (
+  absPath: string,
+  contentHash: string,
+  copyPath: string
+) => Promise<ConversionOutcome>;
+
+/**
+ * The server log's line for a file refused before anything was indexed from
+ * it. The path is whatever name the file was given on the share, newlines
+ * included, and a reason can quote the file or the file system — so neither is
+ * printed as it stands: one refusal is one bounded line, and cannot pass for
+ * another.
+ */
+function logRefusal(absPath: string, verdict: string, reason: string): void {
+  console.warn(
+    `[kb-ingest] ${oneLine(absPath, LOG_PATH_MAX)}: ${verdict} — ${oneLine(reason, LOG_REASON_MAX)}`
+  );
+}
 
 /**
  * Reads one file into chunks with locators, dispatching on its extension.
@@ -548,19 +687,37 @@ type ResolveArtifact = (absPath: string, contentHash?: string) => Promise<Conver
  *   Word          the converted PDF's outline, heading path — never a page,
  *                 which the renderer decides and the reader's Word disagrees
  *                 with
+ *
+ * `absPath` is the document's identity and decides the dispatch; `copyPath`
+ * is what the readers open — a private copy of the verified bytes, so none of
+ * them is ever handed a path on the share.
  */
 async function extractDocument(
   absPath: string,
+  copyPath: string,
   deps: IngestDeps,
   resolveArtifact: ResolveArtifact,
   contentHash: string
 ): Promise<ExtractedDocument> {
   if (isOfficeFile(absPath)) {
-    return extractOfficeDocument(absPath, deps, resolveArtifact, contentHash);
+    return extractOfficeDocument(absPath, copyPath, deps, resolveArtifact, contentHash);
   }
 
   if (isSpreadsheetFile(absPath)) {
-    const extraction = await deps.extractXlsx(absPath);
+    const extraction = await deps.extractXlsx(copyPath).catch((err: unknown) => {
+      if (!(err instanceof OfficeFileRejectedError)) throw err;
+      // Refused unread: too large to load (a compressed bomb is the case that
+      // matters), or not the workbook its name says (a broken archive, a
+      // number format exceljs would choke on). That is a verdict on THIS file,
+      // and a final one — retrying reads the same bytes — so it becomes a row
+      // with no chunks, which is exactly how the unreadable list
+      // (unsearchable.ts) finds it, with its reason in the server log.
+      logRefusal(absPath, "not read", err.message);
+      return null;
+    });
+    if (extraction === null) {
+      return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "sheets" };
+    }
     return {
       chunks: extraction.chunks.map(({ text, sheet, startRow, endRow }) => ({
         text,
@@ -573,7 +730,7 @@ async function extractDocument(
     };
   }
 
-  const pages = await deps.extractPdf(absPath);
+  const pages = await deps.extractPdf(copyPath);
   return {
     chunks: chunkPages(pages).map((chunk) => ({
       text: chunk.text,
@@ -603,11 +760,12 @@ async function extractDocument(
  */
 async function extractOfficeDocument(
   absPath: string,
+  copyPath: string,
   deps: IngestDeps,
   resolveArtifact: ResolveArtifact,
   contentHash: string
 ): Promise<ExtractedDocument> {
-  const outcome = await resolveArtifact(absPath, contentHash);
+  const outcome = await resolveArtifact(absPath, contentHash, copyPath);
 
   if (outcome.status === "infrastructure") {
     // The converter never got to judge this document (out of memory, timed
@@ -627,6 +785,14 @@ async function extractOfficeDocument(
     // the document — a source briefly unreadable on a network share,
     // LibreOffice exiting without a PDF — so it is retried a few runs before
     // it is taken as final.
+    //
+    // The unreadable list never says why, and the admin-facing counts must not
+    // name paths, so this is the only place an operator learns which document
+    // was refused and for what — logged on every run that refuses it, not only
+    // the last. The reason holds no document text, but it can quote names read
+    // from the file and the file's own path, so `logRefusal` keeps it to one
+    // line.
+    logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
     return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
   }
 
@@ -758,7 +924,11 @@ function ocrSetup(deps: IngestDeps): string {
 }
 
 /** What a read leaves on its document row (`kb_documents`). */
-type ExtractionRecord = { emptyExtractionBy: string | null; incompleteReads: number };
+type ExtractionRecord = {
+  emptyExtractionBy: string | null;
+  incompleteReads: number;
+  artifactFormatVersion: number | null;
+};
 
 /**
  * What to record about a read, given how many reads before it in a row did
@@ -771,6 +941,7 @@ type ExtractionRecord = { emptyExtractionBy: string | null; incompleteReads: num
  * it is still rebuilt.
  */
 function extractionRecord(
+  absPath: string,
   extracted: ExtractedDocument,
   deps: IngestDeps,
   previousIncompleteReads: number
@@ -782,6 +953,7 @@ function extractionRecord(
     emptyExtractionBy:
       extracted.chunks.length === 0 && settled ? `${EXTRACTION_VERSION}|${reader}` : null,
     incompleteReads,
+    artifactFormatVersion: artifactFormatVersionFor(absPath),
   };
 }
 
@@ -813,15 +985,38 @@ function couldReadDifferently(recorded: string, deps: IngestDeps): boolean {
 async function ingestFile(
   orgId: string,
   absPath: string,
+  realPath: string,
   deps: IngestDeps,
   resolveArtifact: ResolveArtifact,
   onChunkProgress?: ChunkProgressCallback
 ): Promise<FileOutcome> {
-  const { buffer, fileStat } = await fileStep(absPath, async () => ({
-    buffer: await readFile(absPath),
-    fileStat: await stat(absPath),
-  }));
-  const contentHash = createHash("sha256").update(buffer).digest("hex");
+  // Every read goes through a verified open (verified-source.ts), and none
+  // holds the file whole: a whole-file buffer here stayed alive across every
+  // await below — through an Office file's conversion and the embedding.
+  //
+  // First the hash, streamed, which is all an unchanged file costs. Only a
+  // file that must be read is then streamed into a private copy, the one path
+  // the extractors are handed — verified again, so a link swapped in between
+  // the two is refused too. A row's hash always names the bytes that were
+  // actually read: should the file have changed between hash and copy, the
+  // COPY's hash and mtime are stored, through the replace path below.
+  const { hash: contentHash } = await fileStep(absPath, () => hashVerifiedSource(realPath));
+  const extract = () =>
+    fileStep(absPath, async () => {
+      const copy = await copyVerifiedSource(realPath, absPath, deps.stagingDir);
+      try {
+        const extracted = await extractDocument(
+          absPath,
+          copy.path,
+          deps,
+          resolveArtifact,
+          copy.hash
+        );
+        return { extracted, contentHash: copy.hash, mtime: copy.mtime };
+      } finally {
+        await copy.dispose();
+      }
+    });
 
   const [existing] = await db
     .select()
@@ -829,6 +1024,8 @@ async function ingestFile(
     .where(and(eq(kbDocuments.orgId, orgId), eq(kbDocuments.sourcePath, absPath)))
     .limit(1);
 
+  // Set when a rebuild in place read bytes other than the ones it hashed.
+  let reread: Awaited<ReturnType<typeof extract>> | undefined;
   if (existing && existing.contentHash === contentHash) {
     // Self-healing status: the status is a pure function of the path
     // (archive-paths.ts), so a stored value can only disagree after a rule
@@ -839,11 +1036,18 @@ async function ingestFile(
       await db.update(kbDocuments).set({ status }).where(eq(kbDocuments.id, existing.id));
     }
 
+    // Chunks read from an artifact the current conversion rules did not make
+    // are owed a new read, whatever else is on record: the rules changed
+    // because of what such an artifact may hold.
+    const current = existing.artifactFormatVersion === artifactFormatVersionFor(absPath);
+    // Retries already spent were spent under the earlier rules.
+    const previousIncompleteReads = current ? existing.incompleteReads : 0;
+
     // A read that did not finish is owed another one, chunks or not: a scan
     // with a typed cover sheet has chunks of its own even when every vision
     // call behind it failed.
     const retryOwed =
-      existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS;
+      !current || (existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS);
 
     // A file with no text at all: the last read found nothing. Reading it
     // again with the same setup would find the same nothing — and under the
@@ -869,43 +1073,55 @@ async function ingestFile(
     // Robustness case: a document row survives with zero chunks and no
     // empty read on record (a prior ingest crashed after the document insert
     // but before chunk writes, an operator hand-deleted kb_chunks rows, or
-    // the row predates the record), or its last read is owed a retry. The
+    // the row predates the record), or its last read is owed a retry — which
+    // a read from an earlier artifact format always is. The
     // content hash still matches the file on disk, so a naive "hash matches ->
     // skip" would leave this document unsearchable while silently reporting
     // success. We read it again instead and rebuild its chunks in place (same
     // id, no duplicate row).
-    const extracted = await fileStep(absPath, () =>
-      extractDocument(absPath, deps, resolveArtifact, contentHash)
-    );
-    // A retry that fails worse than the read before it must not cost the text
-    // that read found: an outage that returned keeps what is stored.
-    const keepStored =
-      storedChunks > 0 && extracted.incomplete && extracted.chunks.length < storedChunks;
-    const record = extractionRecord(extracted, deps, existing.incompleteReads);
-    const written = await writeChunks(
-      existing.id,
-      orgId,
-      absPath,
-      keepStored ? [] : extracted.chunks,
-      deps,
-      onChunkProgress,
-      {
-        // A document that keeps its chunks is not an empty one.
-        record: keepStored ? { ...record, emptyExtractionBy: null } : record,
-        replaceStored: storedChunks > 0 && !keepStored,
-      }
-    );
-    if (keepStored) return "skipped";
-    return written > 0 ? "indexed" : "unsearchable";
+    const read = await extract();
+    // Unless the file was saved between the hash and the copy: then the reader
+    // was handed NEW bytes, and rebuilding in place would file their text
+    // under the old hash — which a revert matches, so every later run would
+    // skip the document with text no longer on disk. New bytes are a change
+    // like any other, and take the replace path below with what was read.
+    if (read.contentHash !== contentHash) {
+      reread = read;
+    } else {
+      const { extracted } = read;
+      // A retry that fails worse than the read before it must not cost the text
+      // that read found: an outage that returned keeps what is stored. Never
+      // chunks from an earlier artifact format, though — what the current rules
+      // refuse must not stay searchable through what the earlier ones made.
+      const keepStored =
+        current &&
+        storedChunks > 0 &&
+        extracted.incomplete &&
+        extracted.chunks.length < storedChunks;
+      const record = extractionRecord(absPath, extracted, deps, previousIncompleteReads);
+      const written = await writeChunks(
+        existing.id,
+        orgId,
+        absPath,
+        keepStored ? [] : extracted.chunks,
+        deps,
+        onChunkProgress,
+        {
+          // A document that keeps its chunks is not an empty one.
+          record: keepStored ? { ...record, emptyExtractionBy: null } : record,
+          replaceStored: storedChunks > 0 && !keepStored,
+        }
+      );
+      if (keepStored) return "skipped";
+      return written > 0 ? "indexed" : "unsearchable";
+    }
   }
 
   // Extract BEFORE deleting the old version: a file that changed into
   // something unparseable throws here and stays a `failed` update, with the
   // last good document and its chunks still searchable. Deleting first would
   // turn that same failure into silent data loss on a success response.
-  const extracted = await fileStep(absPath, () =>
-    extractDocument(absPath, deps, resolveArtifact, contentHash)
-  );
+  const { extracted, contentHash: readHash, mtime } = reread ?? (await extract());
 
   if (existing) {
     // Content changed since the last ingest: replace wholesale. Deleting
@@ -918,18 +1134,18 @@ async function ingestFile(
     .insert(kbDocuments)
     .values({
       orgId,
-      contentHash,
+      contentHash: readHash,
       sourcePath: absPath,
       status: statusForPath(absPath),
       pageCount: extracted.pageCount,
-      mtime: fileStat.mtime,
+      mtime,
       lang: detectLang(extracted.text),
       // Written with the row rather than after the chunks: an empty read is
       // only ever recorded when there are NO chunks to write, so there is no
       // window in which a crash could leave it claiming a read that did not
       // finish. A crash before the chunks leaves a row the zero-chunk branch
       // rebuilds.
-      ...extractionRecord(extracted, deps, 0),
+      ...extractionRecord(absPath, extracted, deps, 0),
     })
     .returning();
 
@@ -963,7 +1179,7 @@ async function ingestFile(
 async function removeVanishedDocuments(
   orgId: string,
   rootDir: string,
-  discovered: ReadonlyMap<string, number>,
+  discovered: ReadonlyMap<string, DiscoveredFile>,
   emptyFolders: EmptyFolderCheck | null
 ): Promise<number> {
   const existingForOrg = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, orgId));
@@ -1072,13 +1288,18 @@ export async function ingestPaths(
   // no files to ingest AND no removal pass, because we have no evidence about
   // what is under it. See discoverFiles for why that distinction is not
   // pedantry.
-  const perRoot: Array<{ rootDir: string; discovered: Map<string, number> }> = [];
+  const perRoot: Array<{
+    rootDir: string;
+    discovered: Map<string, DiscoveredFile>;
+    unsupported: Map<string, string>;
+  }> = [];
   for (const rootDir of rootDirs) {
-    const discovered = await discoverFiles(rootDir, allowedExtensions);
-    if (discovered === null) {
+    const listing = await discoverFiles(rootDir, allowedExtensions);
+    if (listing === null) {
       opts.onSkippedRoot?.(rootDir, "unreadable");
       continue;
     }
+    const discovered = listing.files;
     if (
       opts.keepEmptiedFolders &&
       discovered.size === 0 &&
@@ -1087,21 +1308,24 @@ export async function ingestPaths(
       opts.onSkippedRoot?.(rootDir, "emptied");
       continue;
     }
-    perRoot.push({ rootDir, discovered });
+    perRoot.push({ rootDir, discovered, unsupported: listing.unsupported });
   }
+
+  // Counted once however many overlapping roots found a file, like `total`.
+  const unsupported = new Set(perRoot.flatMap((root) => [...root.unsupported.keys()])).size;
 
   // Deduplicated across roots, but ordered so each file is ingested while its
   // first root is being processed — the order only matters for readability of
   // the progress stream, not for correctness. Deduplication covers the byte
   // total too: a file granted under both /data and /data/hr is one unit of
   // work and must be weighed once, or the run would stop short of its total.
-  const queue: Array<{ absPath: string; bytes: number }> = [];
+  const queue: Array<{ absPath: string } & DiscoveredFile> = [];
   const seen = new Set<string>();
   for (const { discovered } of perRoot) {
-    for (const [absPath, bytes] of discovered) {
+    for (const [absPath, file] of discovered) {
       if (seen.has(absPath)) continue;
       seen.add(absPath);
-      queue.push({ absPath, bytes });
+      queue.push({ absPath, ...file });
     }
   }
 
@@ -1121,7 +1345,7 @@ export async function ingestPaths(
   let archived = 0;
   const total = queue.length;
   const totalBytes = queue.reduce((sum, file) => sum + file.bytes, 0);
-  const snapshot = (): IngestResult => ({ ...tally, removed, failed, archived });
+  const snapshot = (): IngestResult => ({ ...tally, removed, failed, archived, unsupported });
 
   /** `inFlightBytes` is the part of the CURRENT file already embedded — see the callback below. */
   const report = (inFlightBytes = 0) =>
@@ -1138,11 +1362,12 @@ export async function ingestPaths(
   // cannot tell a slow run from a dead one.
   await report();
 
-  for (const { absPath, bytes } of queue) {
+  for (const { absPath, bytes, realPath } of queue) {
     try {
       const outcome = await ingestFile(
         orgId,
         absPath,
+        realPath,
         deps,
         resolveArtifact,
         (embedded, chunkTotal) =>
@@ -1166,7 +1391,12 @@ export async function ingestPaths(
       if (!(err instanceof FileIngestError)) throw err;
       // The admin-facing counts must not name paths (audit PII rule), so this
       // server log is the only place that says WHICH file failed and why.
-      console.error(`[kb-ingest] ${err.message}`, err.cause);
+      // The message names the file, and the cause — a file-system error, a
+      // reader's — quotes it in its message and stack, so both go through the
+      // same escaping as a refusal: a newline in a file name cannot write a
+      // line of its own.
+      console.error(`[kb-ingest] ${oneLine(err.message, LOG_PATH_MAX + 32)}`, errorLine(err.cause));
+      if (err.cause instanceof SourceRefusedError) opts.onRefusedFile?.(absPath, err.cause.refusal);
       failed++;
     }
     processed++;
@@ -1181,7 +1411,16 @@ export async function ingestPaths(
   // look at each folder once and report it once. An emptied ROOT counts here
   // too: /data/hr was skipped as a root, and /data's pass must not delete what
   // was under it either.
-  const emptyFolders = opts.keepEmptiedFolders ? emptyFolderCheck(opts.onKeptFolder) : null;
+  //
+  // The folders it keeps are collected as well: the list of unsupported files
+  // follows the same rule as the documents, below.
+  const keptFolders: string[] = [];
+  const emptyFolders = opts.keepEmptiedFolders
+    ? emptyFolderCheck((folder) => {
+        keptFolders.push(folder);
+        opts.onKeptFolder?.(folder);
+      })
+    : null;
   const skippedEmptiedRoots = new Set(
     rootDirs.filter((root) => !perRoot.some((kept) => kept.rootDir === root))
   );
@@ -1197,6 +1436,17 @@ export async function ingestPaths(
       }
     );
   }
+
+  // Last, beside the removal pass and for the same reason: it says what is on
+  // the share NOW, so it is written only by a run that got to the end. A run
+  // that died halfway leaves the previous list in place rather than half a new
+  // one. A folder the run left as it was keeps its rows — a share that failed
+  // to mount is no evidence that its files are gone.
+  await recordUnsupportedFiles(
+    orgId,
+    perRoot.map(({ rootDir, unsupported: files }) => ({ rootDir, files })),
+    [...skippedEmptiedRoots, ...keptFolders]
+  );
 
   return snapshot();
 }

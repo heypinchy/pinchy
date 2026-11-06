@@ -15,13 +15,27 @@
 // the custom server (which also triggers regenerates) can load SEPARATE module
 // instances — same reason as server/openclaw-client.ts.
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   trackConfigPushStarted,
   trackConfigPushSettled,
   getPendingConfigPushCount,
   nextConfigPushGeneration,
   getCurrentConfigPushGeneration,
+  noteRegenerateCall,
+  takeRegenerateRunIsFollowUpOnly,
+  recordWrittenSecrets,
+  writtenSecretsShape,
+  noteUndeliveredConfigChange,
+  undeliveredConfigChange,
+  settleUndeliveredConfigChange,
+  noteFullRegenerateDelivered,
+  fullRegenerateDeliveredSince,
+  noteFileOnlyDelivery,
+  settleFileOnlyDelivery,
+  scheduleFileOnlyFollowUp,
+  FILE_ONLY_FOLLOW_UP_DELAY_MS,
+  FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS,
   _resetConfigPushState,
 } from "@/lib/openclaw-config/push-state";
 
@@ -43,18 +57,18 @@ describe("config push pending-state tracker", () => {
   });
 
   it("counts started pushes and settles them back to zero", () => {
-    trackConfigPushStarted();
+    trackConfigPushStarted(1);
     expect(getPendingConfigPushCount()).toBe(1);
-    trackConfigPushStarted();
+    trackConfigPushStarted(2);
     expect(getPendingConfigPushCount()).toBe(2);
-    trackConfigPushSettled();
+    trackConfigPushSettled(1);
     expect(getPendingConfigPushCount()).toBe(1);
-    trackConfigPushSettled();
+    trackConfigPushSettled(2);
     expect(getPendingConfigPushCount()).toBe(0);
   });
 
   it("floors at zero on a spurious extra settle (never goes negative)", () => {
-    trackConfigPushSettled();
+    trackConfigPushSettled(1);
     expect(getPendingConfigPushCount()).toBe(0);
   });
 
@@ -63,7 +77,7 @@ describe("config push pending-state tracker", () => {
     // own module instance of push-state. A plain module-level variable would
     // give the health route a counter the server's pushes never touch. Pin the
     // contract: the state lives under a well-known globalThis key.
-    trackConfigPushStarted();
+    trackConfigPushStarted(1);
     const state = (globalThis as Record<string, unknown>).__pinchyConfigPushState as {
       pending: number;
     };
@@ -123,9 +137,221 @@ describe("config push pending-state tracker", () => {
     (globalThis as Record<string, unknown>).__pinchyConfigPushState = { generation: 4 };
 
     expect(getPendingConfigPushCount()).toBe(0);
-    trackConfigPushStarted();
-    trackConfigPushSettled();
+    trackConfigPushStarted(4);
+    trackConfigPushSettled(4);
     expect(getPendingConfigPushCount()).toBe(0);
     expect(getCurrentConfigPushGeneration()).toBe(4);
+  });
+});
+
+// regenerateOpenClawConfig is serialized: calls made while a run is in flight
+// share the next run (regenerate-queue.ts). A stranded provider deletion's
+// follow-up regenerate must not queue a follow-up of its own (no loop) — but a
+// real change that shares a run with it keeps its right to one.
+describe("which regenerate run counts as a shrink follow-up", () => {
+  beforeEach(() => {
+    _resetConfigPushState();
+  });
+
+  it("is a follow-up only when every call it serves is one", () => {
+    noteRegenerateCall({ shrinkFollowUp: true });
+    expect(takeRegenerateRunIsFollowUpOnly()).toBe(true);
+
+    noteRegenerateCall({ shrinkFollowUp: true });
+    noteRegenerateCall({ shrinkFollowUp: false });
+    noteRegenerateCall({ shrinkFollowUp: true });
+    expect(takeRegenerateRunIsFollowUpOnly()).toBe(false);
+  });
+
+  it("starts every run from scratch, and a run no call recorded is no follow-up", () => {
+    noteRegenerateCall({ shrinkFollowUp: false });
+    expect(takeRegenerateRunIsFollowUpOnly()).toBe(false);
+    noteRegenerateCall({ shrinkFollowUp: true });
+    expect(takeRegenerateRunIsFollowUpOnly()).toBe(true);
+    expect(takeRegenerateRunIsFollowUpOnly()).toBe(false);
+  });
+});
+
+// The push's file fallback asks whether OpenClaw would resolve a payload's
+// SecretRefs against the secrets.json Pinchy last wrote — a file Pinchy cannot
+// read back in production. So the regenerate records what it wrote, process-
+// wide (the push can run in another module instance), as a shape: which
+// pointers resolve, never a value.
+describe("the recorded secrets shape", () => {
+  beforeEach(() => _resetConfigPushState());
+
+  it("keeps which pointers resolve, and no secret value", () => {
+    expect(writtenSecretsShape()).toBeUndefined();
+    recordWrittenSecrets({
+      gateway: { token: "gw-secret" },
+      providers: { anthropic: { apiKey: "sk-ant-secret" } },
+    });
+    expect(writtenSecretsShape()).toEqual({
+      gateway: { token: "" },
+      providers: { anthropic: { apiKey: "" } },
+    });
+    expect(JSON.stringify(globalThis.__pinchyConfigPushState)).not.toMatch(/secret/);
+  });
+});
+
+// A config change a push could not deliver while OpenClaw was unreachable is
+// owed to OpenClaw's next connect (regenerateOnConnect). Only a full
+// regenerate that STARTED after the push gave up has read the state that push
+// carried, so only such a one settles the debt when its config reaches
+// OpenClaw — the same start-order rule cancelShrinkResume follows.
+describe("a config change Pinchy could not deliver", () => {
+  beforeEach(() => _resetConfigPushState());
+
+  it("is owed until a regenerate that started after it lands", () => {
+    expect(undeliveredConfigChange()).toBe(false);
+    noteUndeliveredConfigChange(5);
+    expect(undeliveredConfigChange()).toBe(true);
+
+    settleUndeliveredConfigChange(4);
+    settleUndeliveredConfigChange(5);
+    expect(undeliveredConfigChange(), "a regenerate that started before it").toBe(true);
+
+    settleUndeliveredConfigChange(6);
+    expect(undeliveredConfigChange()).toBe(false);
+  });
+
+  it("stands for the newest change that gave up", () => {
+    noteUndeliveredConfigChange(7);
+    noteUndeliveredConfigChange(3);
+    settleUndeliveredConfigChange(6);
+    expect(undeliveredConfigChange()).toBe(true);
+    settleUndeliveredConfigChange(8);
+    expect(undeliveredConfigChange()).toBe(false);
+  });
+
+  it("is settled by a delivered regenerate, which a push that started before it no longer owes", () => {
+    noteUndeliveredConfigChange(5);
+    noteFullRegenerateDelivered(7);
+    expect(undeliveredConfigChange()).toBe(false);
+    // A push that started before the delivered regenerate and gives up only
+    // now: that regenerate read the state it carried.
+    expect(fullRegenerateDeliveredSince(6)).toBe(true);
+    // One that started after it carries something that regenerate never saw.
+    expect(fullRegenerateDeliveredSince(7)).toBe(false);
+    expect(fullRegenerateDeliveredSince(8)).toBe(false);
+    // An older regenerate delivering later does not move the line back.
+    noteFullRegenerateDelivered(3);
+    expect(fullRegenerateDeliveredSince(6)).toBe(true);
+  });
+
+  it("is shared by every module instance in the process", async () => {
+    // The push that gives up can run in a route bundle; the connected handler
+    // that pays the debt runs in the custom server's instance.
+    noteUndeliveredConfigChange(2);
+    vi.resetModules();
+    const other = await import("@/lib/openclaw-config/push-state");
+    expect(other.undeliveredConfigChange()).toBe(true);
+    other.settleUndeliveredConfigChange(3);
+    expect(undeliveredConfigChange()).toBe(false);
+  });
+});
+
+// A file-only delivery with no reconnect coming — the rate-limit fallback while
+// OpenClaw stays connected — has nothing else to deliver it: the follow-up
+// regenerate is what does (noteFileOnlyDelivery in push-state.ts).
+describe("the follow-up regenerate for a file-only delivery", () => {
+  beforeEach(() => {
+    _resetConfigPushState();
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("regenerates one rate-limit window after the fallback", () => {
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS - 1);
+    expect(regenerate).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps at most one pending, however many fallbacks schedule one", () => {
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 2);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("is cancelled once an apply lands", () => {
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+    settleFileOnlyDelivery();
+
+    expect(vi.getTimerCount(), "the timer itself is cleared").toBe(0);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 2);
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it("re-arms itself when a follow-up delivers nothing and schedules nothing", () => {
+    // The follow-up's push can end without an apply and without a fallback
+    // (a refused write, a regenerate that bails out): the chain must not end
+    // there while the delivery is still pending.
+    noteFileOnlyDelivery();
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 2);
+    expect(regenerate).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits while the newest push is still in flight, which settles it itself", () => {
+    noteFileOnlyDelivery();
+    const generation = nextConfigPushGeneration();
+    trackConfigPushStarted(generation);
+    const regenerate = vi.fn();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS * 3);
+    expect(regenerate).not.toHaveBeenCalled();
+
+    trackConfigPushSettled(generation);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("backs off between follow-ups but never stops while a delivery is pending", () => {
+    // Each follow-up that is rate-limited again falls back and schedules the
+    // next. A cap would strand the next, unrelated change exactly as before;
+    // a backoff keeps the cost to a few refused applies per window.
+    noteFileOnlyDelivery();
+    const fired: number[] = [];
+    const regenerate = vi.fn(() => {
+      fired.push(Date.now());
+      scheduleFileOnlyFollowUp(regenerate);
+    });
+    const start = Date.now();
+    scheduleFileOnlyFollowUp(regenerate);
+
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS * 4);
+    const gaps = fired.map((t, i) => t - (i === 0 ? start : fired[i - 1]));
+    expect(gaps.slice(0, 4)).toEqual([
+      FILE_ONLY_FOLLOW_UP_DELAY_MS,
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 2,
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 4,
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 8,
+    ]);
+    expect(Math.max(...gaps)).toBe(FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS);
+    expect(gaps.at(-1)).toBe(FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS);
+
+    // A landed apply ends the episode; the next fallback starts at one window.
+    settleFileOnlyDelivery();
+    noteFileOnlyDelivery();
+    const next = vi.fn();
+    scheduleFileOnlyFollowUp(next);
+    vi.advanceTimersByTime(FILE_ONLY_FOLLOW_UP_DELAY_MS);
+    expect(next).toHaveBeenCalledTimes(1);
   });
 });

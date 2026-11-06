@@ -8,11 +8,25 @@ import {
   configsAreEquivalentUpToOpenClawMetadata,
 } from "./normalize";
 import { CONFIG_PATH } from "./paths";
+import { parseSizeDropRejection, planShrinkPush, utf8Bytes } from "./size-drop";
+import { unresolvedSecretRefs } from "./keyless-bridge";
+import { clearLastGoodBound, guardFileWrite, UnderReadSideLineError } from "./last-good-bound";
 import {
   trackConfigPushStarted,
   trackConfigPushSettled,
   nextConfigPushGeneration,
   getCurrentConfigPushGeneration,
+  scheduleShrinkResume,
+  nextRegenerateSequence,
+  writtenSecretsShape,
+  noteUndeliveredConfigChange,
+  noteFullRegenerateDelivered,
+  fullRegenerateDeliveredSince,
+  noteFileOnlyDelivery,
+  scheduleFileOnlyFollowUp,
+  cancelFileOnlyFollowUp,
+  fileOnlyDeliveryPending,
+  settleFileOnlyDelivery,
 } from "./push-state";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
@@ -33,6 +47,10 @@ export function writeConfigAtomic(content: string) {
   // Defense-in-depth: never let a plaintext secret land in openclaw.json.
   // Judged against what is already on disk — see readSecretBaseline.
   assertNoPlaintextSecrets(JSON.parse(content), readSecretBaseline);
+  // Never under half of what OpenClaw may still hold as last-known-good: its
+  // next start would restore `.bak` over the file (last-good-bound.ts).
+  // Throws UnderReadSideLineError, leaving the file as it is.
+  guardFileWrite(readCurrentContent(), content);
   const tmpPath = CONFIG_PATH + ".tmp";
   // Mode 0o666: Pinchy and OpenClaw both need read/write access. OpenClaw
   // rewrites the file as root:0600 on every internal SIGUSR1 restart and
@@ -43,6 +61,15 @@ export function writeConfigAtomic(content: string) {
   // because the volume itself is namespaced inside Docker; not exposed.)
   writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o666 });
   renameSync(tmpPath, CONFIG_PATH);
+}
+
+/** openclaw.json as it is now, or undefined when it is missing or stays unreadable. */
+function readCurrentContent(): string | undefined {
+  try {
+    return readConfigContent();
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -76,12 +103,7 @@ function readSecretBaseline(): Record<string, unknown> | undefined {
 }
 
 export function readExistingConfig(): Record<string, unknown> {
-  // Retry briefly on EACCES. OpenClaw rewrites openclaw.json as root:0600 on
-  // every internal SIGUSR1 restart; start-openclaw.sh's 3s chmod loop opens
-  // it back up to 0666, but Pinchy (uid 999) can hit a small window where
-  // the file is unreadable.
-  //
-  // Two outcomes after this loop:
+  // Two outcomes besides a parsed config:
   //   - ENOENT or parse error: returns {} (file genuinely missing or invalid
   //     — callers treat as cold-start).
   //   - Persistent EACCES: THROWS so callers can distinguish "file doesn't
@@ -92,20 +114,37 @@ export function readExistingConfig(): Record<string, unknown> {
   //     OC fields) and emitting a thin payload that triggers the inotify
   //     cascade documented in #314. Targeted writes already throw on
   //     empty `existing.gateway.mode`; this just surfaces the same race
-  //     loudly one layer up. 5 × 100ms covers two chmod-loop ticks worst case.
+  //     loudly one layer up.
+  const content = readConfigContent();
+  if (content === undefined) return {};
+  try {
+    return JSON.parse(content);
+  } catch {
+    // A parse failure is a bug we can't paper over here.
+    return {};
+  }
+}
+
+/**
+ * openclaw.json as it is on disk, or undefined when there is none.
+ *
+ * Retries briefly on EACCES. OpenClaw rewrites openclaw.json as root:0600 on
+ * every internal SIGUSR1 restart; start-openclaw.sh's chmod loop opens it back
+ * up to 0666, but Pinchy (uid 999) can hit a small window where the file is
+ * unreadable. 5 × 100ms covers two chmod-loop ticks worst case. A persistent
+ * EACCES THROWS: an unreadable file is not a missing one, and a caller that
+ * took it for one would judge its write against nothing. Any other read error
+ * counts as "no file", as it always has (ENOENT on a cold start).
+ */
+export function readConfigContent(): string | undefined {
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      return JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+      return readFileSync(CONFIG_PATH, "utf-8");
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code !== "EACCES") {
-        // ENOENT (file not yet written) is a normal cold-start case; other
-        // errors (parse failures, etc.) are bugs we can't paper over here.
-        return {};
-      }
+      if ((err as NodeJS.ErrnoException)?.code !== "EACCES") return undefined;
       if (attempt === 4) {
         console.warn(
-          "[openclaw-config] readExistingConfig: persistent EACCES on",
+          "[openclaw-config] persistent EACCES on",
           CONFIG_PATH,
           "— propagating to caller (must skip-and-retry the regenerate)"
         );
@@ -119,7 +158,7 @@ export function readExistingConfig(): Record<string, unknown> {
     }
   }
   // Unreachable — every branch of the loop either returns or throws.
-  throw new Error("[openclaw-config] readExistingConfig: unreachable");
+  throw new Error("[openclaw-config] readConfigContent: unreachable");
 }
 
 // Monotonically-increasing counter that lets each pushConfigInBackground call
@@ -232,6 +271,59 @@ const WS_DISCONNECTED_ERROR_FRAGMENT = "Not connected to OpenClaw Gateway";
 const NOT_CONNECTED_MAX_WAIT_MS = 60_000;
 const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 
+// OpenClaw's config writer refuses any write under half of the current
+// openclaw.json (`size-drop:OLD->NEW`), and config.apply exposes no way to lift
+// that. A shrink regenerateOpenClawConfig has already judged deliberate — a
+// deleted provider, e.g. a 40-model OpenAI-compatible one (see size-drop.ts) —
+// is delivered in steps that each stay above OpenClaw's threshold: the first
+// refusal calibrates Pinchy's byte count against OpenClaw's, then every step
+// re-adds just enough of the deleted providers' content OpenClaw still has to
+// clear floor(OLD * 0.5). A provider the target keeps is never stepped: its
+// shrink — a failed or partial discovery read — is judged in full. Each accepted step is an
+// ordinary OpenClaw-owned write, so OpenClaw promotes it to last-known-good
+// like any other and its own clobber detection stays fully in force.
+//
+// A refused shrink is NEVER forced in through a file write. That bypasses
+// OpenClaw's guard, and OpenClaw's read path undoes it anyway: the next start
+// (or any unpinned config load) sees the file under half of last-known-good and
+// restores `.bak` (`size-drop-vs-last-good`). When no step can explain the
+// shrink — it is not a provider deletion: the stale-payload shape of #314, or a
+// kept provider's catalogue collapsing — the push is dropped loudly; the next regenerate starts from current state.
+//
+// The shrink is known in one of two ways. regenerateOpenClawConfig says so up
+// front (`expectsProviderShrink`) when its own guard discounted a deleted
+// provider and the payload is still under half the file (UTF-8 bytes, with
+// headroom: expectsSizeDropRefusal) — which matters because OpenClaw checks its
+// control-plane rate limit BEFORE its size check: a push that is rate-limited,
+// or cannot reach OpenClaw, never hears the refusal, and its fallback used to
+// write the shrunken file past OpenClaw's guard. Otherwise the first size-drop
+// refusal tells us. Either way no file is written for the rest of the push —
+// not by the fallback, and not by the no-client path at boot either.
+//
+// A delivery that stops short of its target leaves OpenClaw on the old config
+// or on an intermediate step that still carries the deleted provider as a
+// stub. That happens when the push is superseded before it finishes — a
+// partial writer (updateTelegramChannelConfig) reads the on-disk file, changes
+// one block and pushes that — when it is dropped for a transient reason (rate
+// limit, retries exhausted, OpenClaw unreachable), or when it is dropped after
+// OpenClaw accepted at least one step. All of these hand off to one follow-up
+// full regenerate (`resumeStrandedShrink`, debounced process-wide in
+// push-state.ts), which steps on from wherever OpenClaw stands; a full
+// regenerate that STARTED after the stranded one and reaches OpenClaw in the
+// meantime cancels it (one that started before read the provider rows before
+// the delete, and cancels nothing). If the follow-up is stranded as well, the
+// regenerate OpenClaw's next connect runs takes over (noteUndeliveredConfig-
+// Change in push-state.ts). A drop because
+// the shrink is not a provider deletion (or a calibration that keeps missing)
+// queues nothing before a step has landed: OpenClaw is unchanged, and the same
+// regenerate would only be refused again.
+//
+// Halving per step, 8 steps cover a 256x shrink; 3 refusals bound a
+// calibration that keeps missing (it should never need a second). The step
+// budget is checked before a step is applied, never after.
+const MAX_SHRINK_STEPS = 8;
+const MAX_SIZE_DROP_REFUSALS = 3;
+
 /**
  * Options for {@link pushConfigInBackground}.
  *
@@ -251,20 +343,266 @@ const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
  */
 export interface PushConfigOptions {
   onChangeApplied?: () => void;
+  /**
+   * The payload is a full regenerate — the whole target config — rather than a
+   * partial writer's edit of the on-disk file. When one reaches OpenClaw it
+   * cancels a queued follow-up for a stranded shrink (see MAX_SHRINK_STEPS),
+   * provided it started after the regenerate that stranded (`regenerateSeq`).
+   */
+  fullRegenerate?: boolean;
+  /**
+   * The regenerate's start sequence (`nextRegenerateSequence()`, claimed
+   * before it read any state). Orders full regenerates by what they can have
+   * seen rather than by when they were pushed. Defaults to a fresh sequence
+   * claimed when the push starts.
+   */
+  regenerateSeq?: number;
+  /**
+   * The payload deletes a provider and is under half of the current file, so
+   * OpenClaw will refuse it as a size drop. Set by regenerateOpenClawConfig
+   * from its own guard. Turns the file-write fallback off from the first
+   * attempt, before any refusal (see MAX_SHRINK_STEPS).
+   */
+  expectsProviderShrink?: boolean;
+  /**
+   * The payload finishes a provider handover, whatever its size: it deletes a
+   * provider, or gives a re-keyed one its new entry (keyless-bridge.ts). A
+   * newer push that supersedes it — before or during its apply — then hands
+   * off to `resumeStrandedShrink` even when OpenClaw would have taken the
+   * change in one write: a targeted writer's copy of the file still lists the
+   * provider as a key-less stub, and nothing else would finish the handover
+   * before the next config change.
+   */
+  handsOverProvider?: boolean;
+  /**
+   * Runs (once, debounced) when this push's provider handover stops short of
+   * its target: superseded, dropped for a transient reason, or dropped after a
+   * step landed (see MAX_SHRINK_STEPS). build.ts passes a
+   * follow-up regenerate here — and passes none from that follow-up, so it
+   * cannot recurse.
+   */
+  resumeStrandedShrink?: () => void;
+}
+
+/**
+ * How OpenClaw 2026.7.1's config.apply words a refusal of the config itself —
+ * the refusals known to be permanent, read from its dist:
+ * - "invalid config": schema issues (`summarizeConfigValidationIssues` →
+ *   "invalid config: …"), an unresolvable SecretRef ("invalid config: active
+ *   SecretRef resolution failed …"), the bare fallback, and — by the same
+ *   substring — "invalid config.apply params: …";
+ * - "Config write rejected": `replaceConfigFile` refusing the write (e.g.
+ *   `gateway-mode-removed`), which also leaves an openclaw.json.rejected.<ts>
+ *   file behind on every attempt;
+ * - "is not valid as real data": `restoreRedactedValues` meeting a redaction
+ *   sentinel with no original value.
+ * The same payload would be refused again, so such a fallback queues no
+ * follow-up. Anything else — a timeout, a stale hash past its retries, a
+ * disconnect, a rate limit, a refusal not listed here — is retried by the
+ * follow-up at up to every 10 min on purpose: a wasted regenerate costs less
+ * than a stranded agent.
+ */
+const CONFIG_REFUSED_ERROR_FRAGMENTS = [
+  "invalid config",
+  "Config write rejected",
+  "is not valid as real data",
+];
+
+/**
+ * The follow-up regenerate a file-only delivery schedules (push-state.ts).
+ * Imported lazily: build.ts imports this module.
+ */
+function regenerateForFileOnlyDelivery(): void {
+  import("./build")
+    .then((build) => build.regenerateOpenClawConfig())
+    .catch((err: unknown) => {
+      console.error(
+        "[openclaw-config] follow-up regenerate for a file-only delivery failed:",
+        err instanceof Error ? err.message : String(err)
+      );
+    });
 }
 
 export function pushConfigInBackground(newContent: string, options: PushConfigOptions = {}): void {
-  const { onChangeApplied } = options;
+  const { onChangeApplied, resumeStrandedShrink } = options;
   const generation = nextConfigPushGeneration();
+  const regenerateSeq = options.regenerateSeq ?? nextRegenerateSequence();
 
   // Make the in-flight push observable (health endpoint `configPushesPending`,
   // consumed by the E2E stability gates): a rate-limited apply can park this
   // coroutine 33–53 s, during which the change is NOT in OC's runtime while
   // everything else looks healthy. `.finally` below settles on EVERY terminal
   // exit — applied, no-op skip, superseded, or file-write fallback.
-  trackConfigPushStarted();
+  trackConfigPushStarted(generation);
 
   void (async () => {
+    // Brief retry across transient WS disconnects. Beyond ~3.5 s the WS is
+    // probably down due to the cold-start cascade, and inotify will catch
+    // up; no point keeping a background coroutine alive longer.
+    // EXCEPTION: for "Not connected" specifically we extend the wait via
+    // notConnectedWaitMs below, since 3.5 s is shorter than any normal OC
+    // restart and the resulting writeConfigAtomic races OC's startup auth.
+    const backoffsMs = [100, 250, 500, 1000, 2000];
+    let staleHashAttempts = 0;
+    let notConnectedWaitMs = 0;
+    let rateLimitAttempts = 0;
+    // Holds the OC-supplemented payload from the most recent successful
+    // config.get(). Used when inotify file-write is the fallback so we
+    // write content WITH meta and OC-managed fields — raw `newContent`
+    // (no meta) triggers OC's missing-meta-before-write anomaly which can
+    // prevent plugins (e.g. pinchy-docs) from loading correctly.
+    let lastSupplemented: string | undefined;
+    // Shrink-in-steps state (see MAX_SHRINK_STEPS). `shrink` is set by the first
+    // size-drop refusal: OpenClaw's baseline for the NEXT write, and OpenClaw's
+    // byte count minus Pinchy's for the same payload.
+    let shrink: { ocBaselineBytes: number; offset: number } | undefined;
+    let shrinkSteps = 0;
+    let sizeDropRefusals = 0;
+    let lastOcConfig: Record<string, unknown> | undefined;
+    let lastSent: string | undefined;
+    let lastSizeDrop = "";
+    const shrinkKnown = () => options.expectsProviderShrink === true || shrink !== undefined;
+    // Hand a shrink that stopped short of its target to one follow-up full
+    // regenerate (see MAX_SHRINK_STEPS) — and, should that one be stranded
+    // too, to the regenerate OpenClaw's next connect runs
+    // (noteUndeliveredConfigChange). The follow-up passes no follow-up of its
+    // own, so for it the connect is the only one.
+    //
+    // Nothing is handed off once a full regenerate that started after this
+    // push has reached OpenClaw — a push parked in a rate-limit wait can
+    // notice it was superseded long after that one landed. That regenerate
+    // read the state this push carried, so nothing is owed: a debt recorded
+    // now would outlive the delivery it is about (the follow-up finds its
+    // target in place and pushes nothing), and every later reconnect would
+    // regenerate.
+    const resumeShrink = (why: string) => {
+      if (fullRegenerateDeliveredSince(regenerateSeq)) return;
+      noteUndeliveredConfigChange(regenerateSeq);
+      if (!resumeStrandedShrink) return;
+      console.warn(
+        `[openclaw-config] push gen=${String(generation)}: provider deletion stopped after ${String(shrinkSteps)} step(s) (${why}); queueing a follow-up regenerate to finish it`
+      );
+      scheduleShrinkResume(resumeStrandedShrink, regenerateSeq);
+    };
+    // `transient`: the drop says nothing about the payload (rate limit,
+    // retries, OpenClaw unreachable) — the deletion still has to land, so a
+    // follow-up is queued even if no step did. Otherwise only once a step
+    // landed: OpenClaw then sits on a stub nothing else would finish.
+    const dropShrink = (why: string, { transient }: { transient: boolean }) => {
+      const what = lastSizeDrop
+        ? `OpenClaw refused this config as a size drop (${lastSizeDrop})`
+        : `this config deletes a provider and is under half of openclaw.json`;
+      console.error(
+        `[openclaw-config] push gen=${String(generation)}: ${what} and ${why}. ` +
+          `NOT writing openclaw.json directly — that would bypass OpenClaw's clobber guard, and OpenClaw restores .bak over it on its next start. ` +
+          `Only a deleted provider is delivered in steps; anything else is the #311/#314 stale-payload shape.`
+      );
+      if (transient || shrinkSteps > 0) resumeShrink(why);
+    };
+    // Superseded before a provider handover finished — a shrink, or any other
+    // push that deletes a provider or re-keys one (`handsOverProvider`).
+    // Queued even when a full regenerate supersedes: that one cancels the
+    // follow-up only once it has reached OpenClaw, and a partial writer can
+    // still supersede it first.
+    const onSuperseded = () => {
+      if (shrinkKnown() || options.handsOverProvider === true) {
+        resumeShrink("superseded before it finished");
+      }
+    };
+    // The target reached OpenClaw (applied, written, or already in place). A
+    // full regenerate that started after a stranded one makes that one's
+    // queued follow-up moot (cancelShrinkResume checks the start order), and
+    // likewise pays a change owed to OpenClaw's next connect (settleUndelivered-
+    // ConfigChange), and keeps an older push that gives up later from owing it
+    // again (noteFullRegenerateDelivered) — but only while this is the newest
+    // push. A newer one that started while this one's apply was in flight is
+    // superseding it all the same: it may carry other content — a targeted
+    // writer's copy of the file from before this push landed, a deleted
+    // provider's stub included — and lands on top, exactly as if it had
+    // started before this apply.
+    const targetReached = () => {
+      if (generation !== getCurrentConfigPushGeneration()) {
+        onSuperseded();
+        return;
+      }
+      if (!options.fullRegenerate) return;
+      noteFullRegenerateDelivered(regenerateSeq);
+    };
+    // config.apply landed the target in OpenClaw's RUNTIME, not just in
+    // openclaw.json. As the newest push, that settles a file-only delivery
+    // (noteFileOnlyDelivery): an older push's fallback is superseded by this
+    // one, which carries the same change. Only an apply: the no-op guard
+    // below compares against config.get, which reads the file.
+    const runtimeReached = () => {
+      if (generation === getCurrentConfigPushGeneration()) settleFileOnlyDelivery();
+      targetReached();
+    };
+    // A payload that names a key secrets.json no longer holds — captured
+    // before a regenerate took the key out (a targeted writer's copy of the
+    // pre-bridge file, an older regenerate's payload) — is one OpenClaw refuses
+    // over config.apply, and could neither start on nor accept a copy of as its
+    // file. Judged against the bundle Pinchy last wrote, never by reading
+    // secrets.json (recordWrittenSecrets in push-state.ts); before Pinchy wrote one, nothing is
+    // refused. The regenerate that removed the key delivers its own config.
+    const namesRemovedKey = (content: string): boolean => {
+      const shape = writtenSecretsShape();
+      let dangling: string[] = [];
+      try {
+        dangling = shape ? unresolvedSecretRefs(JSON.parse(content), shape) : [];
+      } catch {
+        // Unparseable: writeConfigAtomic's own parse rejects it.
+      }
+      if (dangling.length === 0) return false;
+      console.error(
+        `[openclaw-config] push gen=${String(generation)}: NOT writing openclaw.json — the payload names ${dangling.join(", ")}, which secrets.json no longer holds. ` +
+          `OpenClaw could neither start on that file nor accept a copy of it; the regenerate that removed the key delivers the current config.`
+      );
+      return true;
+    };
+    // writeConfigAtomic refuses a file under half of what OpenClaw may still
+    // hold as last-known-good (last-good-bound.ts): its next start would
+    // restore `.bak` over it. The file stays as it is, and config.apply
+    // delivers the change once OpenClaw is up: every push that gets here —
+    // a targeted writer's too, which queues no follow-up — records that
+    // OpenClaw's next connect owes a full regenerate (noteUndelivered-
+    // ConfigChange), which rebuilds the change from the database. A
+    // regenerate's push also queues its follow-up, for an OpenClaw that is up
+    // but refused this push's applies (rate limit, retries) and so has no
+    // reconnect coming.
+    const writeFile = (content: string): boolean => {
+      try {
+        writeConfigAtomic(content);
+        return true;
+      } catch (err) {
+        if (!(err instanceof UnderReadSideLineError)) throw err;
+        console.error(`[openclaw-config] push gen=${String(generation)}: ${err.message}`);
+        noteUndeliveredConfigChange(regenerateSeq);
+        if (resumeStrandedShrink) scheduleShrinkResume(resumeStrandedShrink, regenerateSeq);
+        return false;
+      }
+    };
+    // A file-write fallback for a shrink would land the target past OpenClaw's
+    // guard (see MAX_SHRINK_STEPS) — refuse it instead.
+    // `transient`: the apply failed for a reason that passes — anything but
+    // OpenClaw refusing the config itself (CONFIG_REFUSED_ERROR_FRAGMENTS). A
+    // transient fallback queues a follow-up; a refusal leaves the file
+    // unconfirmed and ends any running follow-up chain, because a retry would
+    // be refused the same way.
+    const writeFallback = (content: string, { transient }: { transient: boolean }): boolean => {
+      if (shrinkKnown()) {
+        dropShrink("could not be delivered over config.apply", { transient: true });
+        return false;
+      }
+      if (namesRemovedKey(content)) return false;
+      if (!writeFile(content)) return false;
+      noteFileOnlyDelivery();
+      // Every fallback but a refusal gets one: a disconnect is delivered on the
+      // reconnect too, but a rate limit or a timeout while OpenClaw stays
+      // connected has nothing else coming.
+      if (transient) scheduleFileOnlyFollowUp(regenerateForFileOnlyDelivery);
+      else cancelFileOnlyFollowUp();
+      return true;
+    };
     let client;
     try {
       client = getOpenClawClient();
@@ -272,13 +610,29 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       client = undefined;
     }
     if (!client) {
-      // No WS client — write directly to file so inotify picks up the change.
-      // This path runs synchronously (no await before writeConfigAtomic), so the
-      // file is on disk before regenerateOpenClawConfig() returns to its caller.
+      // No WS client (boot: bootInits regenerates before the client exists) —
+      // write directly to file so inotify picks up the change. This path runs
+      // synchronously (no await before writeConfigAtomic), so the file is on
+      // disk before regenerateOpenClawConfig() returns to its caller.
+      //
+      // Not for a provider-deletion shrink: that write bypasses OpenClaw's
+      // guard like any other fallback, and OpenClaw's startup read restores
+      // last-known-good / `.bak` over a file under half of it. The file stays
+      // what regenerate left there — the key-less bridge (keyless-bridge.ts),
+      // which OpenClaw starts on — and the regenerate on first connect
+      // delivers the deletion in steps. Nor for any other payload under half
+      // of what OpenClaw may still hold as last-known-good, which is not
+      // necessarily the file on disk (writeFile, above).
+      if (shrinkKnown()) {
+        dropShrink("Pinchy has no OpenClaw client yet", { transient: true });
+        return;
+      }
+      if (namesRemovedKey(newContent)) return;
       console.log(
         `[openclaw-config] push gen=${String(generation)}: no WS client → file write (inotify; reload may lag)`
       );
-      writeConfigAtomic(newContent);
+      if (!writeFile(newContent)) return;
+      targetReached();
       onChangeApplied?.();
       return;
     }
@@ -301,22 +655,6 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // it (#884).
     assertNoPlaintextSecrets(JSON.parse(newContent), readSecretBaseline);
 
-    // Brief retry across transient WS disconnects. Beyond ~3.5 s the WS is
-    // probably down due to the cold-start cascade, and inotify will catch
-    // up; no point keeping a background coroutine alive longer.
-    // EXCEPTION: for "Not connected" specifically we extend the wait via
-    // notConnectedWaitMs below, since 3.5 s is shorter than any normal OC
-    // restart and the resulting writeConfigAtomic races OC's startup auth.
-    const backoffsMs = [100, 250, 500, 1000, 2000];
-    let staleHashAttempts = 0;
-    let notConnectedWaitMs = 0;
-    let rateLimitAttempts = 0;
-    // Holds the OC-supplemented payload from the most recent successful
-    // config.get(). Used when inotify file-write is the fallback so we
-    // write content WITH meta and OC-managed fields — raw `newContent`
-    // (no meta) triggers OC's missing-meta-before-write anomaly which can
-    // prevent plugins (e.g. pinchy-docs) from loading correctly.
-    let lastSupplemented: string | undefined;
     for (let i = 0; i < backoffsMs.length; i++) {
       // Check before each attempt — a newer pushConfigInBackground call
       // may have started while we were sleeping.
@@ -324,19 +662,27 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         console.log(
           `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(getCurrentConfigPushGeneration())}) before attempt ${String(i)}`
         );
+        onSuperseded();
         return;
       }
       try {
         const current = (await client.config.get()) as {
           hash: string;
           config?: Record<string, unknown>;
+          parsed?: Record<string, unknown> | null;
         };
+        // A shrink step re-adds provider content from OpenClaw's FILE as
+        // authored (`parsed`), never from the runtime `config`: that one is
+        // materialized (every model gains cost/contextWindow/… defaults), and
+        // the file is what OpenClaw's size-drop baseline measures.
+        lastOcConfig = current.parsed ?? current.config;
 
         // Newer call started while we were awaiting config.get()
         if (generation !== getCurrentConfigPushGeneration()) {
           console.log(
             `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(getCurrentConfigPushGeneration())}) during config.get`
           );
+          onSuperseded();
           return;
         }
 
@@ -387,7 +733,28 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // which is what config.apply actually sends, and which might be
         // identical to OC's runtime even when raw newContent isn't. Compare
         // here to skip the wasted slot.
-        if (current.config) {
+        //
+        // Not while a file-only delivery is pending (noteFileOnlyDelivery):
+        // `current.config` is what config.get reads — openclaw.json, the very
+        // file a push just wrote and the running OpenClaw may never have
+        // loaded. It names the change already, so the guard would skip the
+        // one apply that can deliver it.
+        //
+        // What that apply costs, read from the pinned OpenClaw 2026.7.1 dist
+        // (gateway/server-methods/config.ts → config-*.js): the handler takes
+        // `changedPaths = diffConfigPaths(<file snapshot>, payload)` and
+        // decides a restart with resolveConfigRestartRequirement on exactly
+        // those paths. A payload equal to the file has none, so
+        // buildGatewayReloadPlan([]) is a no-op plan and no SIGUSR1 restart is
+        // scheduled. (What is sent is the supplemented payload: a field the
+        // supplementing adds or changes is a changed path, judged by OpenClaw's
+        // restart rules like any other.) The write then reaches OpenClaw's reload watcher, which
+        // compares against its runtime and applies what the runtime lacks —
+        // the undelivered change itself, under its own reload rules (CI run
+        // 41906476538's late apply: `hot reload applied (hooks, plugins,
+        // models)`, no restart). The handler also responds before it queues
+        // any follow-up, so a landed apply is seen and settles the delivery.
+        if (current.config && !fileOnlyDeliveryPending()) {
           const supplementedConfig = JSON.parse(supplemented) as Record<string, unknown>;
           if (
             configsAreEquivalentUpToOpenClawMetadata(
@@ -398,20 +765,55 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             console.log(
               `[openclaw-config] push gen=${String(generation)}: no-op skip (supplemented payload ≡ OC runtime)`
             );
+            targetReached();
             return;
           }
         }
 
         lastSupplemented = supplemented;
-        await client.config.apply(supplemented, current.hash, {
+        let payload = supplemented;
+        let isShrinkStep = false;
+        if (shrink) {
+          const plan = planShrinkPush({ target: supplemented, ocConfig: lastOcConfig, ...shrink });
+          if (!plan) {
+            dropShrink("the shrink is not a provider deletion", { transient: false });
+            return;
+          }
+          if (plan.isStep && shrinkSteps >= MAX_SHRINK_STEPS) {
+            dropShrink(`${String(MAX_SHRINK_STEPS)} steps did not reach the target`, {
+              transient: false,
+            });
+            return;
+          }
+          payload = plan.payload;
+          isShrinkStep = plan.isStep;
+        }
+        lastSent = payload;
+        await client.config.apply(payload, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
+        // OpenClaw is running and promotes its own write to last-known-good.
+        clearLastGoodBound();
+        if (isShrinkStep && shrink) {
+          shrinkSteps++;
+          shrink.ocBaselineBytes = utf8Bytes(payload) + shrink.offset;
+          // Progress, not a failure: a step that landed must not count against
+          // the budgets meant for an apply that keeps failing. OpenClaw's
+          // rate limit (~3 applies per window) is smaller than a 10x shrink.
+          rateLimitAttempts = 0;
+          console.log(
+            `[openclaw-config] push gen=${String(generation)}: provider-deletion step ${String(shrinkSteps)} applied (~${String(shrink.ocBaselineBytes)} bytes)`
+          );
+          i--;
+          continue;
+        }
         // config.apply's inner writeConfigFile persists the config to disk.
         // A newer call's payload will overwrite via its own config.apply or
         // writeConfigAtomic fallback.
         console.log(
           `[openclaw-config] push gen=${String(generation)}: applied via WS config.apply (in-process, synchronous runtime refresh)${rateLimitAttempts > 0 ? ` after ${String(rateLimitAttempts)} rate-limit wait(s)` : ""}`
         );
+        runtimeReached();
         onChangeApplied?.();
         return;
       } catch (err) {
@@ -435,7 +837,37 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             `[openclaw-config] push gen=${String(generation)}: superseded by newer push (gen=${String(getCurrentConfigPushGeneration())}) during attempt ${String(i)} — skipping fallback write:`,
             message
           );
+          onSuperseded();
           return;
+        }
+
+        // Size-drop: OpenClaw refused the write as a >50% shrink of its current
+        // file. Never retried as-is and never forced in through the file (see
+        // MAX_SHRINK_STEPS): calibrate, then deliver in steps on the next pass
+        // — or drop the push if no step can explain the shrink.
+        const sizeDrop = parseSizeDropRejection(message);
+        if (sizeDrop) {
+          sizeDropRefusals++;
+          lastSizeDrop = `size-drop:${String(sizeDrop.fromBytes)}->${String(sizeDrop.toBytes)}`;
+          if (!lastSent || sizeDropRefusals > MAX_SIZE_DROP_REFUSALS) {
+            dropShrink(`was refused ${String(sizeDropRefusals)} times`, { transient: false });
+            return;
+          }
+          if (!lastOcConfig) {
+            dropShrink("OpenClaw's current config is unavailable to step from", {
+              transient: false,
+            });
+            return;
+          }
+          shrink = {
+            ocBaselineBytes: sizeDrop.fromBytes,
+            offset: sizeDrop.toBytes - utf8Bytes(lastSent),
+          };
+          console.warn(
+            `[openclaw-config] push gen=${String(generation)}: config.apply refused a size drop (${String(sizeDrop.fromBytes)}->${String(sizeDrop.toBytes)} bytes); delivering the provider deletion in steps`
+          );
+          i--;
+          continue;
         }
 
         // Rate-limit handling: OC 5.3 rejects apply calls over the budget with
@@ -469,8 +901,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             `[openclaw-config] push gen=${String(generation)}: config.apply rate-limited past retry budget; writing file for inotify fallback (reload may lag):`,
             message
           );
-          writeConfigAtomic(lastSupplemented ?? supplementPayloadWithFileFields(newContent));
-          onChangeApplied?.();
+          const fallback = lastSupplemented ?? supplementPayloadWithFileFields(newContent);
+          if (writeFallback(fallback, { transient: true })) {
+            targetReached();
+            onChangeApplied?.();
+          }
           return;
         }
 
@@ -509,15 +944,22 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           );
           // All retries exhausted — fall back to file write so inotify picks up
           // the change. Same meta-preservation logic as the rate-limit path above.
-          writeConfigAtomic(lastSupplemented ?? supplementPayloadWithFileFields(newContent));
-          onChangeApplied?.();
+          const fallback = lastSupplemented ?? supplementPayloadWithFileFields(newContent);
+          if (
+            writeFallback(fallback, {
+              transient: !CONFIG_REFUSED_ERROR_FRAGMENTS.some((f) => message.includes(f)),
+            })
+          ) {
+            targetReached();
+            onChangeApplied?.();
+          }
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, backoffsMs[i]));
       }
     }
   })()
-    .finally(trackConfigPushSettled)
+    .finally(() => trackConfigPushSettled(generation))
     .catch((err: unknown) => {
       // Terminal safety net. Everything inside the retry loop already handles
       // its own errors, but the pre-loop section does not: the plaintext guard

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -212,7 +212,9 @@ vi.mock("@/server/attachment-pipeline", async (importOriginal) => {
 
 import { ClientRouter } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
+import { ActiveRuns } from "@/server/active-runs";
 import { CHAT_HISTORY_OVERSIZED_PLACEHOLDER } from "@/lib/openclaw-history";
+import { getUserSocketRegistry, ACCOUNT_DEACTIVATED_CLOSE_CODE } from "@/server/user-sockets";
 
 function createMockClientWs() {
   const sent: string[] = [];
@@ -294,7 +296,10 @@ describe("ClientRouter", () => {
     mockSessionsHistory.mockResolvedValue({ messages: [] });
     // Default: the agent is present in OC's runtime agents.list, so the
     // dispatch-race readiness gate confirms readiness on the first poll.
-    mockAgentsList.mockResolvedValue({ defaultId: "agent-1", agents: [{ id: "agent-1" }] });
+    mockAgentsList.mockResolvedValue({
+      defaultId: "agent-1",
+      agents: [{ id: "agent-1", name: "Smithers" }],
+    });
   });
 
   describe("computeSessionKey", () => {
@@ -408,8 +413,10 @@ describe("ClientRouter", () => {
       const runStartedAt = (entry as { runStartedAt: Date }).runStartedAt;
       expect(runStartedAt).toBeInstanceOf(Date);
       // The same bound `agentRanToolSince` was asked with, so re-deriving later
-      // covers the same run rather than a wider or narrower slice of history.
-      expect(mockAgentRanToolSince).toHaveBeenLastCalledWith("agent-1", runStartedAt);
+      // covers the same run rather than a wider or narrower slice of history —
+      // and about this user's tools only, never a shared agent's other members
+      // (#1274).
+      expect(mockAgentRanToolSince).toHaveBeenLastCalledWith("agent-1", "user-1", runStartedAt);
       // Starts before the run and not in the future — a window that opens after
       // the first tool call would miss exactly what it exists to find.
       expect(runStartedAt.getTime()).toBeLessThanOrEqual(before);
@@ -480,7 +487,7 @@ describe("ClientRouter", () => {
       expect((entry as { providerError: string }).providerError).not.toContain("10.1.2.3");
     });
 
-    it("supersedes the triggering message's durable error once its run succeeds", async () => {
+    it("supersedes the session's earlier durable errors once a run succeeds", async () => {
       async function* stream() {
         yield {
           type: "userMessagePersisted" as const,
@@ -501,9 +508,11 @@ describe("ClientRouter", () => {
         clientMessageId: "cm-3",
       });
 
+      // Every error recorded before this success, not only the one this
+      // message raised: a later turn that went through answers them all (#1301).
       expect(mockSupersedeChatSessionErrors).toHaveBeenCalledWith({
         sessionKey: "agent:agent-1:direct:user-1",
-        clientMessageId: "cm-3",
+        before: expect.any(Date),
       });
       expect(mockRecordChatSessionError).not.toHaveBeenCalled();
     });
@@ -533,6 +542,62 @@ describe("ClientRouter", () => {
       });
 
       expect(mockRecordChatSessionError).toHaveBeenCalledTimes(1);
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+
+    it("does NOT supersede on a turn boundary inside a run that then fails", async () => {
+      // openclaw-node emits `done` between the turns of one run ("one moment",
+      // a tool, then the reply). The run has not gone through until it ends.
+      async function* stream() {
+        yield { type: "text" as const, text: "One moment", runId: "r1" };
+        yield { type: "done" as const, text: "", runId: "r1" };
+        yield { type: "error" as const, text: "Rate limit reached", runId: "r1" };
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-mid",
+      });
+
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+
+    it("does NOT supersede when the run throws after it said something", async () => {
+      async function* stream() {
+        yield { type: "text" as const, text: "Working on it", runId: "r1" };
+        throw new Error("FailoverError: upstream exploded");
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-throw",
+      });
+
+      expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
+    });
+
+    it("does NOT supersede on a turn that said nothing", async () => {
+      // A silent run is a failure of its own (the silent-stream banner), not a
+      // message that went through.
+      async function* stream() {
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValue(stream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "x",
+        agentId: "agent-1",
+        clientMessageId: "cm-silent",
+      });
+
       expect(mockSupersedeChatSessionErrors).not.toHaveBeenCalled();
     });
   });
@@ -1138,6 +1203,33 @@ describe("ClientRouter", () => {
     expect(allText).toBe("Right away! How can I help?");
   });
 
+  it("strips OpenClaw's MEDIA: directive lines from streamed chunks (#1298)", async () => {
+    // The agent's system prompt tells it to name an attachment on its own
+    // `MEDIA:<path>` line. The chip already stands for the file, and the path
+    // is an internal container path the user must not see.
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "Here is smoke.csv.\nME" };
+      yield { type: "text" as const, text: "DIA:/root/.openclaw/workspaces/agent-1/workbench/" };
+      yield { type: "text" as const, text: "smoke.csv" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "hi",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const allText = messages
+      .filter((m: any) => m.type === "chunk")
+      .map((c: any) => c.content)
+      .join("");
+    expect(allText).toBe("Here is smoke.csv.\n");
+  });
+
   it("should suppress NO_REPLY sentinel arriving as a single text chunk", async () => {
     const clientWs = createMockClientWs();
     async function* fakeStream() {
@@ -1533,6 +1625,57 @@ describe("ClientRouter", () => {
       expect(after).toBeGreaterThan(before);
 
       resolveHang();
+      await handlePromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not re-dispatch while agents.list lists the agent only from disk", async () => {
+    // CI run 41569393728: right after a gateway restart OpenClaw's runtime
+    // agents.list is empty, so its `agents.list` RPC reports every agent
+    // directory on disk — without a `name` — while the dispatch handler rejects
+    // the id. Reading those raw ids as "ready" re-dispatched ~4,800 times in
+    // 19 s. The gate must wait until the response comes from the configured list.
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      async function* raceError() {
+        yield {
+          type: "error" as const,
+          text: 'invalid agent params: unknown agent id "agent-1"',
+          runId: "r0",
+        };
+      }
+      async function* success() {
+        yield { type: "done" as const, text: "", runId: "r1" };
+      }
+      mockChat.mockReturnValueOnce(raceError()).mockReturnValue(success());
+      mockAgentsList.mockResolvedValue({
+        defaultId: "main",
+        agents: [{ id: "main" }, { id: "agent-1" }],
+      });
+
+      const handlePromise = router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(2_000);
+      // Gate is polling, nothing re-dispatched yet.
+      expect(mockAgentsList.mock.calls.length).toBeGreaterThan(1);
+      expect(mockChat).toHaveBeenCalledTimes(1);
+
+      // The agents apply: the entry now comes from the configured list.
+      mockAgentsList.mockResolvedValue({
+        defaultId: "agent-1",
+        agents: [{ id: "agent-1", name: "Smithers" }],
+      });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(mockChat).toHaveBeenCalledTimes(2);
+
       await handlePromise;
     } finally {
       vi.useRealTimers();
@@ -2207,6 +2350,63 @@ describe("ClientRouter", () => {
     expect(sent[0].messages[0].content).toBe("Right away! How can I help?");
   });
 
+  it("strips MEDIA: directive lines from history assistant messages (#1298)", async () => {
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "assistant",
+          content:
+            "Here is smoke.csv.\nMEDIA:/root/.openclaw/workspaces/agent-1/workbench/smoke.csv",
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, {
+      type: "history",
+      agentId: "agent-1",
+    });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages[0].content).toBe("Here is smoke.csv.\n");
+  });
+
+  it("keeps a reply that was only a MEDIA: directive as the anchor of its delivered chip (#1298)", async () => {
+    // Stripping the directive empties the reply. Dropping it as empty would
+    // move the file chip onto an earlier answer (grants attach by timestamp);
+    // keep it while the chip is attached, then drop it if no chip landed.
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        { role: "user", content: "first", timestamp: 1000 },
+        { role: "assistant", content: "Earlier answer", timestamp: 2000 },
+        { role: "user", content: "make a csv", timestamp: 3000 },
+        { role: "assistant", content: "MEDIA:/root/.openclaw/x/smoke.csv", timestamp: 4000 },
+        { role: "user", content: "and another", timestamp: 5000 },
+        { role: "assistant", content: "MEDIA:/root/.openclaw/x/gone.csv", timestamp: 6000 },
+      ],
+    });
+    mockListVisionModels.mockResolvedValueOnce([
+      { filename: "smoke.csv", mimeType: "text/csv", createdAt: new Date(4500) },
+    ]);
+
+    await router.handleMessage(clientWs as any, {
+      type: "history",
+      agentId: "agent-1",
+    });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    const assistant = sent[0].messages.filter((m: any) => m.role === "assistant");
+    expect(assistant).toHaveLength(2);
+    expect(assistant[0]).toMatchObject({ content: "Earlier answer" });
+    expect(assistant[0].files).toBeUndefined();
+    expect(assistant[1]).toMatchObject({
+      content: "",
+      files: [{ filename: "smoke.csv", mimeType: "text/csv" }],
+    });
+    expect(JSON.stringify(sent[0].messages)).not.toContain("MEDIA:");
+  });
+
   it("should strip timestamp prefix from user messages in history", async () => {
     const clientWs = createMockClientWs();
     mockSessionsHistory.mockResolvedValue({
@@ -2858,6 +3058,104 @@ describe("ClientRouter", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("a user deactivated while their chat was open", () => {
+    // DELETE /api/users/:id closes the user's sockets (user-sockets.ts), but a
+    // frame already in flight on a closing socket still reaches the router.
+    // It must not reach the agent: no lookup, no OpenClaw call, no tool run.
+    beforeEach(() => getUserSocketRegistry().revoke("user-1"));
+    afterEach(() => getUserSocketRegistry().restore("user-1"));
+
+    it.each(["message", "history", "abort"] as const)(
+      "refuses its %s frame and closes the socket",
+      async (type) => {
+        const clientWs = createMockClientWs();
+
+        await router.handleMessage(
+          clientWs as any,
+          {
+            type,
+            content: "Run the payroll export",
+            agentId: "agent-1",
+          } as any
+        );
+
+        expect(mockChat).not.toHaveBeenCalled();
+        expect(mockSessionsHistory).not.toHaveBeenCalled();
+        expect(mockFindFirst).not.toHaveBeenCalled();
+        expect(clientWs.sent.map((s) => JSON.parse(s))).toEqual([
+          {
+            type: "error",
+            code: "policy_account_deactivated",
+            message: "Your account has been deactivated.",
+          },
+        ]);
+        expect(clientWs.close).toHaveBeenCalledWith(
+          ACCOUNT_DEACTIVATED_CLOSE_CODE,
+          "Account deactivated"
+        );
+      }
+    );
+
+    it("does not start a run when the deactivation lands while the message is being prepared", async () => {
+      // The top-of-handleMessage check passes, then the router awaits a
+      // string of lookups before it registers the run. A deactivation in
+      // that window finds no run to abort (abortRunsOfUser snapshots the
+      // registry), so the router itself must notice before it registers.
+      getUserSocketRegistry().restore("user-1");
+      const activeRuns = new ActiveRuns();
+      const parked = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        sessionCache,
+        activeRuns
+      );
+      let releaseUserLookup!: (row: unknown) => void;
+      mockUserFindFirst.mockImplementationOnce(
+        () => new Promise((resolve) => (releaseUserLookup = resolve))
+      );
+      mockChat.mockImplementation(async function* () {
+        yield { type: "text", text: "Exported." };
+        yield { type: "done" };
+      });
+      const clientWs = createMockClientWs();
+
+      const handling = parked.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Run the payroll export",
+        agentId: "agent-1",
+      });
+      await vi.waitFor(() => expect(mockUserFindFirst).toHaveBeenCalled());
+
+      // What DELETE /api/users/:id does, in the same tick: revoke, then abort
+      // whatever is registered — nothing is yet.
+      getUserSocketRegistry().revoke("user-1");
+      releaseUserLookup({ id: "user-1", context: null });
+      await handling;
+
+      expect(mockChat).not.toHaveBeenCalled();
+      expect(activeRuns.size()).toBe(0);
+      expect(clientWs.sent.map((s) => JSON.parse(s))).toContainEqual({
+        type: "error",
+        code: "policy_account_deactivated",
+        message: "Your account has been deactivated.",
+      });
+      expect(clientWs.close).toHaveBeenCalledWith(
+        ACCOUNT_DEACTIVATED_CLOSE_CODE,
+        "Account deactivated"
+      );
+    });
+
+    it("serves a different, active user as before", async () => {
+      const other = new ClientRouter(mockOpenClawClient as any, "user-2", "member", sessionCache);
+      const clientWs = createMockClientWs();
+
+      await other.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" } as any);
+
+      expect(mockFindFirst).toHaveBeenCalled();
     });
   });
 

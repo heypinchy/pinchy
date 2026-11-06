@@ -98,7 +98,7 @@ For the full setup walkthrough, see [Connect Email](/guides/connect-email/).
 
 ## Web Search (Brave)
 
-Web Search is the simplest integration — a single API key connects Pinchy to the Brave Search API, giving agents the ability to search the web and fetch pages.
+Web Search is the simplest integration — a single API key connects Pinchy to the Brave Search API, giving agents the ability to search the web. Fetching a page needs no key, so agents created from a web template can read pages even before a key is added.
 
 Unlike Odoo, Web Search has no multi-step sync or schema discovery. You enter your API key, Pinchy validates it, and the connection is ready. From there, you enable web search tools per agent in the Permissions tab.
 
@@ -180,7 +180,7 @@ Pinchy detects permanent authentication failures — an expired API key, a revok
 - The integration card on **Settings → Integrations** changes from a green checkmark to a red warning, with the failure reason from the upstream service.
 - The **Settings** entry in the sidebar shows a red `!` badge when one or more integrations need attention. Opening Settings from that badge takes you straight to the **Integrations** tab — which carries its own error dot — so you land on the failing connection instead of hunting for it.
 
-To recover, open the integration's `…` menu and choose **Edit credentials** (or click **Reconnect** on the failed card). Update the affected field — for example, paste in a new API key. Non-secret fields stay pre-filled; secret fields are empty by default and left unchanged if you leave them blank. Pinchy validates the new credentials against the upstream service before saving, and clears the failed state on success. The connection keeps the same ID, so any agent permissions stay attached automatically.
+To recover, open the integration's `…` menu and choose **Edit credentials** (or click **Reconnect** on the failed card). Update the affected field — for example, paste in a new API key. Non-secret fields stay pre-filled; secret fields are empty by default and left unchanged if you leave them blank — unless you change where they go. A new Odoo URL or database, or a new mail server, port or security setting, needs the API key or password typed again: Pinchy never sends a stored secret to a destination you did not enter it for. Pinchy validates the new credentials against the upstream service before saving, and clears the failed state on success. The connection keeps the same ID, so any agent permissions stay attached automatically.
 
 :::note
 Pinchy only marks an integration as failed on **permanent** errors — responses like `401 Unauthorized` or `403 Forbidden`. Transient network errors and rate-limit responses (5xx, 429) are retried and do not surface as a failed state.

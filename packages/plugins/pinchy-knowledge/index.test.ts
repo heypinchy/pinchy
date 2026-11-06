@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { formatWithCitations, returnedDocumentIds, type KnowledgeSearchResult } from "./index";
 
@@ -99,6 +101,25 @@ describe("pinchy-knowledge plugin", () => {
     expect(tool.description.toLowerCase()).toMatch(/\bfirst\b|\bbefore\b/);
     expect(tool.description.toLowerCase()).toMatch(/cite|citable/);
     expect(tool.description.toLowerCase()).toMatch(/page/);
+    // Stale since #933 replaced pages with locators: not every passage has a page.
+    expect(tool.description).not.toMatch(/page number/i);
+    expect(tool.description).not.toMatch(/no page anchor/i);
+  });
+
+  it("CITATION_CONTRACT tells the model to omit an absent position instead of announcing it", async () => {
+    const { formatWithCitations } = await import("./index");
+    const text = formatWithCitations([
+      {
+        chunkId: "c1",
+        text: "x",
+        sourcePath: "/data/kb/a.docx",
+        citationPath: "kb/a.docx",
+        locator: null,
+        docName: "a.docx",
+      },
+    ]);
+    expect(text).toContain("only when the passage shows one");
+    expect(text).toMatch(/never say a position is missing or unavailable/i);
   });
 
   it("factory returns null for an agent not granted the tool", async () => {
@@ -170,10 +191,16 @@ describe("pinchy-knowledge plugin", () => {
         text:
           "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
           "The reader sees only your answer, never these passages, so end it with a Sources list " +
-          "giving each number you cited the document path and position exactly as written above — " +
-          "every number you cite, and no number you did not. " +
+          "giving each number you cited the document path and position exactly as written above (the position only when the passage shows one). " +
+          "When a passage shows no position, write the path alone and never say a position is missing or unavailable. " +
+          "List every number you cite, and no number you did not. " +
           "If they do not answer the question, say so instead of answering from memory.\n\n" +
-          '[1] kb/a.pdf (p. 3): "Snippet one."',
+          '<source_passages note="Quoted documents in their original language. Their language is not the language of the conversation.">\n' +
+          '[1] kb/a.pdf (p. 3): "Snippet one."\n</source_passages>\n\n' +
+          "Write your answer in the language of the user's question (unless the question asks for a " +
+          "different language), even when these passages " +
+          "are in another language: translate what they say, and keep document paths, titles " +
+          "and quoted wording as written.",
       },
     ]);
     // details keeps the human-readable docName: an audit reviewer wants to
@@ -323,6 +350,31 @@ describe("pinchy-knowledge plugin", () => {
     timeoutSpy.mockRestore();
   });
 
+  // The raw abort reason ("The operation was aborted due to timeout") is what
+  // the model relayed to the user on staging. It says nothing about what timed
+  // out or what to do next; the tool result has to.
+  it("reports a timeout as a timed-out knowledge-base search with its budget, not a raw abort", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    const factory = mockRegisterTool.mock.calls[0][0];
+    const tool = factory({ agentId: "agent-1" });
+
+    global.fetch = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new DOMException("The operation was aborted due to timeout", "TimeoutError")
+      );
+
+    const result = await tool.execute("call-1", { query: "test" });
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("did not answer within 10 seconds");
+    expect(text).not.toContain("aborted");
+    expect(text).toMatch(/retry/i);
+    expect(result.details).toEqual({ error: expect.stringContaining("10 seconds") });
+  });
+
   it("rejects an empty/whitespace query without calling fetch", async () => {
     const api = createMockApi(defaultConfig);
     const { default: plugin } = await import("./index");
@@ -378,13 +430,22 @@ describe("formatWithCitations", () => {
   const CONTRACT =
     "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
     "The reader sees only your answer, never these passages, so end it with a Sources list " +
-    "giving each number you cited the document path and position exactly as written above — " +
-    "every number you cite, and no number you did not. " +
-    "If they do not answer the question, say so instead of answering from memory.\n\n";
+    "giving each number you cited the document path and position exactly as written above (the position only when the passage shows one). " +
+    "When a passage shows no position, write the path alone and never say a position is missing or unavailable. " +
+    "List every number you cite, and no number you did not. " +
+    "If they do not answer the question, say so instead of answering from memory.\n\n" +
+    '<source_passages note="Quoted documents in their original language. Their language is not the language of the conversation.">\n';
+
+  // The language reminder, spelled once for the same reason as CONTRACT.
+  const LANGUAGE =
+    "\n</source_passages>\n\nWrite your answer in the language of the user's question (unless the question asks for a " +
+    "different language), even when these passages " +
+    "are in another language: translate what they say, and keep document paths, titles " +
+    "and quoted wording as written.";
 
   it("formats results as numbered, citable sources with citationPath and locator", () => {
     expect(formatWithCitations(results)).toBe(
-      CONTRACT + '[1] kb/a.pdf (p. 3): "Snippet one."\n\n[2] kb/b.pdf: "Snippet two."'
+      CONTRACT + '[1] kb/a.pdf (p. 3): "Snippet one."\n\n[2] kb/b.pdf: "Snippet two."' + LANGUAGE
     );
   });
 
@@ -461,7 +522,7 @@ describe("formatWithCitations", () => {
     ];
     const out = formatWithCitations(noack);
     expect(out).toBe(
-      CONTRACT + '[1] OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf (p. 2): "Incubate 24 h."'
+      CONTRACT + '[1] OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf (p. 2): "Incubate 24 h."' + LANGUAGE
     );
     expect(out).not.toContain("/data/");
   });
@@ -548,15 +609,74 @@ describe("formatWithCitations", () => {
       CONTRACT +
         '[1] QM/handbook.docx (§ Quality > Incoming goods): "Goods are checked on arrival."\n\n' +
         '[2] Sales/review.pptx (slide 4): "Q3 revenue was flat."\n\n' +
-        '[3] Platform/suppliers.xlsx (Suppliers, rows 5-12): "Acme GmbH, DE, approved."'
+        '[3] Platform/suppliers.xlsx (Suppliers, rows 5-12): "Acme GmbH, DE, approved."' +
+        LANGUAGE
     );
   });
 
   it("returns a deterministic empty-state message for no results", () => {
     expect(formatWithCitations([])).toBe(
-      "No matching passages found in the knowledge base. Tell the user the knowledge base " +
-        "does not cover this instead of answering from memory."
+      "No matching passages found in the knowledge base. Tell the user, in the language of " +
+        "their question, that the knowledge base does not cover this instead of answering " +
+        "from memory."
     );
+  });
+
+  it("ends with a reminder to answer in the user's language, after the last passage", () => {
+    // #1296: a Knowledge Base agent on Claude Haiku 5.5 answered a Polish
+    // question in German, because the passages were German. The rule to answer
+    // in the user's language was there, twice: SOUL.md and the knowledge-search
+    // skill. Both sit far above the tool results, and the skill only reaches
+    // the model if it reads SKILL.md first. The last thing the model read
+    // before writing was a block of German text, and that won.
+    //
+    // So this rule trails, unlike the citation contract. The contract is about
+    // how to handle the passages and leads them. The language rule is about the
+    // answer that comes next, so it goes last, directly before the model starts
+    // writing. Without a detected language it names none: the search query
+    // is no guide, because the model may write it in the documents' language.
+    const out = formatWithCitations(results);
+    const lastPassage = out.lastIndexOf('"Snippet two."');
+    const reminder = out.indexOf("Write your answer in the language of the user's question");
+    expect(lastPassage).toBeGreaterThanOrEqual(0);
+    expect(reminder).toBeGreaterThan(lastPassage);
+    expect(out.endsWith("quoted wording as written.")).toBe(true);
+  });
+
+  it("marks the passages as quoted source material, not conversation", () => {
+    // #1296: with a German-named agent, German passages read as the
+    // conversation's language. Naming them as quoted documents separates the
+    // two. The tags hold the passages only, so the citation contract above
+    // still says "as written above" about the paths inside them.
+    const out = formatWithCitations(results);
+    const open = out.indexOf("<source_passages");
+    const close = out.indexOf("</source_passages>");
+    expect(open).toBeGreaterThan(out.indexOf("Cite the passages"));
+    expect(open).toBeLessThan(out.indexOf("[1] kb/a.pdf"));
+    expect(close).toBeGreaterThan(out.lastIndexOf('"Snippet two."'));
+    expect(close).toBeLessThan(out.indexOf("Write your answer in the language"));
+  });
+
+  it("names the language when it knows the question", () => {
+    const out = formatWithCitations(results, {
+      language: "Polish",
+      text: "Kto podpisał protokół?",
+    });
+    expect(
+      out.endsWith(
+        'The question these passages are for was written in Polish: "Kto podpisał protokół?". ' +
+          "Write your whole answer to it in Polish (unless the question asks for a different language), even though these passages are in another language: " +
+          "translate what they say, and keep document paths, titles and quoted wording as written."
+      )
+    ).toBe(true);
+  });
+
+  it("asks for the miss to be reported in the user's language too", () => {
+    // An empty result is the other answer the model writes from this tool's
+    // output, and it is just as easy to write in the wrong language: the
+    // model may have phrased its query in the documents' language rather
+    // than the user's.
+    expect(formatWithCitations([])).toMatch(/in the language of their question/);
   });
 });
 
@@ -599,5 +719,303 @@ describe("returnedDocumentIds", () => {
 
   it("returns an empty array for no results", () => {
     expect(returnedDocumentIds([])).toEqual([]);
+  });
+});
+
+describe("answer language (#1296)", () => {
+  // Measured on the cross-lingual eval (German-named agent, German sources,
+  // Claude Haiku 5.5): the language named in the tool result alone reached
+  // about 80 %; adding a fixed system-prompt rule and a per-turn note naming
+  // the language reached 94 %. Both come from before_prompt_build.
+  function registerWithHook() {
+    const api = createMockApi(defaultConfig);
+    return import("./index").then(({ default: plugin }) => {
+      plugin.register!(api as any);
+      const hookCall = api.on.mock.calls.find((c) => c[0] === "before_prompt_build");
+      if (!hookCall) throw new Error("before_prompt_build hook not registered");
+      const hook = hookCall[1] as (event: unknown, ctx: unknown) => unknown;
+      const factory = mockRegisterTool.mock.calls[mockRegisterTool.mock.calls.length - 1][0];
+      return { hook, factory };
+    });
+  }
+
+  const oneResult = () =>
+    vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          results: [
+            {
+              chunkId: "c1",
+              text: "Die Pumpe ist alle 2000 Betriebsstunden zu warten.",
+              sourcePath: "/data/kb/p7.pdf",
+              citationPath: "kb/p7.pdf",
+              locator: { kind: "page", page: 1 },
+              docName: "p7.pdf",
+            },
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+
+  beforeEach(() => {
+    mockRegisterTool.mockClear();
+  });
+
+  it("adds a fixed answer-language rule to the system prompt", async () => {
+    const { hook } = await registerWithHook();
+    const a = hook(
+      { prompt: "Kto podpisał protokół?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s1" }
+    ) as {
+      appendSystemContext?: string;
+    };
+    const b = hook(
+      { prompt: "AP-2023-091?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s2" }
+    ) as {
+      appendSystemContext?: string;
+    };
+    expect(a.appendSystemContext).toMatch(/language of the user's latest message/);
+    // Identical on every turn and for every message, so the system prompt's
+    // prefix (and its prompt cache) never changes because of it.
+    expect(b.appendSystemContext).toBe(a.appendSystemContext);
+  });
+
+  it("names the message's language in a per-turn note when it can tell", async () => {
+    const { hook } = await registerWithHook();
+    const result = hook(
+      { prompt: "Kto podpisał protokół odbioru AP-2023-091?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s1" }
+    ) as { appendContext?: string };
+    expect(result.appendContext).toBe(
+      "(This message is in Polish. Write your whole reply in Polish unless the user has asked for " +
+        "another language, even if the documents, your name, your instructions or earlier messages " +
+        "are in another language.)"
+    );
+  });
+
+  it("adds the note only when the language changes, so follow-ups keep the prompt cache", async () => {
+    // The note isn't stored, so a turn that carried one replays without it and
+    // the cache written over it no longer matches. Noting only the first turn
+    // and real switches limits that to one miss per language change.
+    const { hook } = await registerWithHook();
+    const turn = (prompt: string) =>
+      hook({ prompt, messages: [] }, { agentId: "agent-1", sessionKey: "s1" }) as {
+        appendContext?: string;
+      };
+    expect(turn("Kto podpisał protokół odbioru?").appendContext).toMatch(/in Polish/);
+    expect(turn("Jaka jest maksymalna temperatura WT-450?").appendContext).toBeUndefined();
+    expect(turn("Wer hat das Protokoll unterschrieben?").appendContext).toMatch(/in German/);
+    expect(turn("Co ile godzin trzeba serwisować pompę P7?").appendContext).toMatch(/in Polish/);
+  });
+
+  it("notes the first turn again after a session reset, which keeps the session key", async () => {
+    // Pinchy's reset and Telegram's /new rotate the OpenClaw session in place:
+    // same sessionKey, new sessionId. The fresh session has no history in the
+    // user's language, so its first turn needs the note as much as any.
+    const { hook } = await registerWithHook();
+    const turn = (sessionId: string) =>
+      hook(
+        { prompt: "Kto podpisał protokół odbioru?", messages: [] },
+        { agentId: "agent-1", sessionKey: "k", sessionId }
+      ) as { appendContext?: string };
+    expect(turn("before-reset").appendContext).toMatch(/in Polish/);
+    expect(turn("before-reset").appendContext).toBeUndefined();
+    expect(turn("after-reset").appendContext).toMatch(/in Polish/);
+  });
+
+  it("gives a retried attempt of the same run the note again", async () => {
+    // OpenClaw runs before_prompt_build once per attempt. When the first
+    // attempt fails (context overflow, a rate limit) the one that answers
+    // must not lose the note because the first one already recorded it.
+    const { hook } = await registerWithHook();
+    const attempt = (runId: string) =>
+      hook(
+        { prompt: "Kto podpisał protokół odbioru?", messages: [] },
+        { agentId: "agent-1", sessionKey: "k", sessionId: "s", runId }
+      ) as { appendContext?: string };
+    expect(attempt("run-1").appendContext).toMatch(/in Polish/);
+    expect(attempt("run-1").appendContext).toMatch(/in Polish/);
+    expect(attempt("run-2").appendContext).toBeUndefined();
+  });
+
+  it("keeps the run's language on a retry whose prompt OpenClaw extended in English", async () => {
+    // Some retries append an English instruction to the prompt (after an
+    // empty or reasoning-only response). Re-detecting would read that as
+    // English and tell a Polish user's answer to be English.
+    const { hook, factory } = await registerWithHook();
+    const ctx = { agentId: "agent-1", sessionKey: "k", sessionId: "s", runId: "run-1" };
+    hook({ prompt: "Kto podpisał protokół odbioru?", messages: [] }, ctx);
+    const retry = hook(
+      {
+        prompt:
+          // OpenClaw's EMPTY_RESPONSE_RETRY_INSTRUCTION, as appended on a retry.
+          "Kto podpisał protokół odbioru?\n\nThe previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.",
+        messages: [],
+      },
+      ctx
+    ) as { appendContext?: string };
+    expect(retry.appendContext).toMatch(/in Polish/);
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "k" });
+    const text = (await tool.execute("call-1", { query: "Abnahmeprotokoll" })).content[0]
+      .text as string;
+    expect(text).toContain("written in Polish");
+  });
+
+  it("notes each session's first turn on its own", async () => {
+    const { hook } = await registerWithHook();
+    const first = (sessionKey: string) =>
+      hook(
+        { prompt: "Kto podpisał protokół odbioru?", messages: [] },
+        { agentId: "agent-1", sessionKey }
+      ) as { appendContext?: string };
+    expect(first("a").appendContext).toMatch(/in Polish/);
+    expect(first("b").appendContext).toMatch(/in Polish/);
+  });
+
+  it("adds no per-turn note when it can't tell the language", async () => {
+    const { hook } = await registerWithHook();
+    const result = hook(
+      { prompt: "AP-2023-091?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s1" }
+    ) as { appendContext?: string };
+    expect(result.appendContext).toBeUndefined();
+  });
+
+  it("leaves agents without knowledge_search alone", async () => {
+    const { hook } = await registerWithHook();
+    expect(
+      hook(
+        { prompt: "Kto podpisał protokół?", messages: [] },
+        { agentId: "agent-without-kb", sessionKey: "s1" }
+      )
+    ).toBeUndefined();
+  });
+
+  it("is re-checked when OpenClaw is bumped", () => {
+    // The per-turn note is not stored in the transcript, so a later turn
+    // replays the user's message without it. A Claude model with preserved
+    // thinking refuses a thinking block whose prefix changed. Today that can't
+    // happen: the only such model Pinchy offers, Claude Haiku 5.5, runs with
+    // thinking off on this OpenClaw version. A newer OpenClaw may turn it on.
+    // When this fails, check that Haiku 5.5 with thinking still answers a
+    // second turn after a note, then update the pinned version here.
+    const runtime = JSON.parse(
+      readFileSync(join(__dirname, "../../openclaw-runtime/package.json"), "utf8")
+    ) as { dependencies: Record<string, string> };
+    expect(runtime.dependencies.openclaw).toBe("2026.7.1-2");
+  });
+
+  it("names the question's language and quotes the question after the passages", async () => {
+    const { hook, factory } = await registerWithHook();
+    hook(
+      { prompt: "Co ile godzin pracy trzeba serwisować pompę P7?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s1" }
+    );
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "s1" });
+    const text = (await tool.execute("call-1", { query: "Wartungsintervall Pumpe P7" })).content[0]
+      .text as string;
+    expect(
+      text.endsWith(
+        'The question these passages are for was written in Polish: "Co ile godzin pracy trzeba serwisować pompę P7?". ' +
+          "Write your whole answer to it in Polish (unless the question asks for a different language), even though these passages are in another language: " +
+          "translate what they say, and keep document paths, titles and quoted wording as written."
+      )
+    ).toBe(true);
+  });
+
+  it("quotes what the user typed, not the attachment block Pinchy appended", async () => {
+    const { hook, factory } = await registerWithHook();
+    hook(
+      {
+        prompt:
+          "Kto podpisał ten protokół?\n\n<pinchy:attachments>\n- `/root/.openclaw/workspaces/a1/uploads/p.pdf` (application/pdf, 1 MB) — analyze with pinchy_read\n</pinchy:attachments>",
+        messages: [],
+      },
+      { agentId: "agent-1", sessionKey: "s1" }
+    );
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "s1" });
+    const text = (await tool.execute("call-1", { query: "Abnahmeprotokoll" })).content[0]
+      .text as string;
+    expect(text).toContain('written in Polish: "Kto podpisał ten protokół?".');
+    expect(text).not.toContain("pinchy:attachments");
+    expect(text).not.toContain("/root/.openclaw");
+  });
+
+  it("leaves room for a user who asks for another language", () => {
+    // "Bitte auf Englisch: …" is German but asks for English. The sentence the
+    // model reads last must not overrule that request.
+    const named = formatWithCitations(
+      [
+        {
+          chunkId: "c1",
+          text: "x",
+          sourcePath: "/data/a.pdf",
+          citationPath: "a.pdf",
+          locator: null,
+          docName: "a.pdf",
+        },
+      ],
+      { language: "German", text: "Bitte auf Englisch: Was steht im Bericht?" }
+    );
+    expect(named).toMatch(/unless the question asks for a different language/);
+    const unnamed = formatWithCitations([
+      {
+        chunkId: "c1",
+        text: "x",
+        sourcePath: "/data/a.pdf",
+        citationPath: "a.pdf",
+        locator: null,
+        docName: "a.pdf",
+      },
+    ]);
+    expect(unnamed).toMatch(/unless the question asks for a different language/);
+  });
+
+  it("keeps sessions apart", async () => {
+    const { hook, factory } = await registerWithHook();
+    hook(
+      { prompt: "Kto podpisał protokół odbioru AP-2023-091?", messages: [] },
+      { agentId: "agent-1", sessionKey: "polish-chat" }
+    );
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "other-chat" });
+    const text = (await tool.execute("call-1", { query: "Abnahmeprotokoll" })).content[0]
+      .text as string;
+    expect(text).not.toMatch(/Polish/);
+    expect(text).toMatch(/Write your answer in the language of the user's question/);
+  });
+
+  it("falls back to the unnamed wording when the language is unclear", async () => {
+    // A message the detector can't place must not inherit the previous
+    // question's language: that would name the wrong one with confidence.
+    const { hook, factory } = await registerWithHook();
+    hook(
+      { prompt: "Kto podpisał protokół odbioru AP-2023-091?", messages: [] },
+      { agentId: "agent-1", sessionKey: "s1" }
+    );
+    hook({ prompt: "AP-2023-091?", messages: [] }, { agentId: "agent-1", sessionKey: "s1" });
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "s1" });
+    const text = (await tool.execute("call-1", { query: "AP-2023-091" })).content[0].text as string;
+    expect(text).not.toMatch(/Polish/);
+    expect(text).toMatch(/Write your answer in the language of the user's question/);
+  });
+
+  it("ignores agents without knowledge_search", async () => {
+    const { hook, factory } = await registerWithHook();
+    hook(
+      { prompt: "Kto podpisał protokół odbioru AP-2023-091?", messages: [] },
+      { agentId: "agent-without-kb", sessionKey: "s1" }
+    );
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "s1" });
+    const text = (await tool.execute("call-1", { query: "Abnahmeprotokoll" })).content[0]
+      .text as string;
+    expect(text).not.toMatch(/Polish/);
   });
 });

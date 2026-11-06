@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { onTestFinished, describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Mock } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -175,6 +175,30 @@ describe("NewAgentForm — URL history", () => {
       expect(mockPush).toHaveBeenCalledWith(expect.stringContaining("template=custom"));
     });
     expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  // #1280: picking a template far down the list only changes a search param,
+  // so Next keeps the AppShell scroller where it was. The form rendered into
+  // that offset with its heading scrolled up under the banner above it.
+  it("brings the top of the form into view when a template is picked", async () => {
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    onTestFinished(() => {
+      HTMLElement.prototype.scrollIntoView = original;
+    });
+    render(<NewAgentForm />);
+    await waitFor(() => {
+      expect(screen.getByText(/start from scratch/i)).toBeInTheDocument();
+    });
+    scrollIntoView.mockClear();
+
+    await userEvent.click(screen.getByText(/start from scratch/i));
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument());
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    const target = scrollIntoView.mock.contexts.at(-1) as Element;
+    expect(target.contains(screen.getByRole("heading", { level: 1 }))).toBe(true);
   });
 
   it("returns to template selector when searchParams lose the template parameter (browser Back)", async () => {
@@ -1243,5 +1267,68 @@ describe("NewAgentForm — background loads are cancelled, their failures surfac
     const seen = signals.get("/api/agents") ?? [];
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.map((s) => s?.aborted)).toEqual(seen.map(() => true));
+  });
+});
+
+// #1297: a web template on an instance without a search provider must say so
+// and link to the setup, without blocking creation (page fetch still works).
+describe("NewAgentForm — web template without a search provider", () => {
+  let fetchSpy: Mock<typeof fetch>;
+
+  function webTemplate(webSearchConfigured: boolean) {
+    return {
+      id: "market-monitor",
+      name: "Market & News Monitor",
+      description: "Watch the web",
+      requiresDirectories: false,
+      requiresOdooConnection: false,
+      requiresWeb: true,
+      webSearchConfigured,
+      defaultTagline: "Watches the web",
+      iconName: "Globe",
+    };
+  }
+
+  function stubTemplates(webSearchConfigured: boolean) {
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return jsonResponse({ templates: [...mockTemplates, webTemplate(webSearchConfigured)] });
+      }
+      return jsonResponse({}, { status: 400 });
+    });
+  }
+
+  beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("warns that web search is not set up, links to it, and still allows creating", async () => {
+    stubTemplates(false);
+    render(<NewAgentForm />);
+
+    await userEvent.click(await screen.findByText("Market & News Monitor"));
+
+    expect(await screen.findByText("Web search isn't set up")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /set up web search/i })).toHaveAttribute(
+      "href",
+      "/settings?tab=integrations"
+    );
+    expect(screen.getByText("Search the public web (not set up yet)")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/name/i), "Scout");
+    expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
+  });
+
+  it("shows no warning when a search provider is configured", async () => {
+    stubTemplates(true);
+    render(<NewAgentForm />);
+
+    await userEvent.click(await screen.findByText("Market & News Monitor"));
+
+    expect(await screen.findByText("Search the public web")).toBeInTheDocument();
+    expect(screen.queryByText("Web search isn't set up")).not.toBeInTheDocument();
   });
 });

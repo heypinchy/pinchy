@@ -27,6 +27,9 @@
  */
 import ExcelJS from "exceljs";
 
+import { OfficeFileRejectedError } from "./office-formats";
+import { readWorkbookBuffer } from "./office-preflight";
+
 /** A group of whole rows from ONE sheet, anchored on the sheet name and an inclusive row range. */
 export interface XlsxChunk {
   text: string;
@@ -59,8 +62,9 @@ export interface XlsxExtractOptions {
 }
 
 /**
- * This spreadsheet could not be read at all — not a zip, not a workbook, gone
- * from disk. Deliberately an exception rather than an empty result: a silent
+ * This spreadsheet could not be read at all — gone from disk, not permitted,
+ * or a workbook exceljs cannot open. A file the guard refuses for its size or
+ * content is an `OfficeFileRejectedError` instead. Deliberately an exception rather than an empty result: a silent
  * zero looks exactly like a successfully indexed empty document, and a
  * document nobody can read must never be booked as one nobody wrote anything
  * in.
@@ -68,7 +72,8 @@ export interface XlsxExtractOptions {
 export class XlsxExtractionError extends Error {
   constructor(
     readonly sourcePath: string,
-    reason: string,
+    /** Why, without the path — what the isolated reader carries back across the process boundary. */
+    readonly reason: string,
     options?: { cause?: unknown }
   ) {
     super(`Cannot read spreadsheet ${sourcePath}: ${reason}`, options);
@@ -134,12 +139,27 @@ function renderDate(value: Date): string {
  * Removes everything in a number-format section that is a literal rather than a
  * directive: quoted runs, backslash-escaped characters, and the bracketed
  * blocks Excel uses for colours and conditions.
+ *
+ * Three passes, each linear: quoted runs, then escapes, then brackets. The
+ * bracket pass is not the regex `/\[[^\]]*\]/g`, which re-scans to the end of
+ * the string from every unclosed `[`: quadratic on a format code read from the
+ * workbook — 400 000 of them held the web process for two minutes. An
+ * unclosed quote or bracket is kept, exactly as that regex keeps it.
  */
 function stripFormatLiterals(section: string): string {
-  return section
-    .replace(/"[^"]*"/g, "")
-    .replace(/\\./g, "")
-    .replace(/\[[^\]]*\]/g, "");
+  const withoutQuoted = section.replace(/"[^"]*"/g, "").replace(/\\./g, "");
+  let out = "";
+  let at = 0;
+  while (at < withoutQuoted.length) {
+    const open = withoutQuoted.indexOf("[", at);
+    if (open < 0) break;
+    const close = withoutQuoted.indexOf("]", open + 1);
+    // No `]` anywhere after this `[`, so none after any later one either.
+    if (close < 0) break;
+    out += withoutQuoted.slice(at, open);
+    at = close + 1;
+  }
+  return out + withoutQuoted.slice(at);
 }
 
 /**
@@ -323,6 +343,54 @@ function chunkSheet(sheet: SheetContent, targetChars: number): XlsxChunk[] {
 }
 
 /**
+ * Opens a workbook the way both entry points need it: vetted first, then parsed
+ * from the very bytes that were vetted.
+ *
+ * exceljs inflates every zip entry whole and builds the entire cell model, so a
+ * few hundred bytes declaring gigabytes can exhaust the heap of whatever
+ * process reads them. The central directory is read first (nothing is
+ * inflated); a workbook past the limits — one sheet part over 16 MiB among
+ * them — is refused with `OfficeFileRejectedError("too_large")` instead of
+ * letting the process find out the hard way, and one that is not a sound
+ * workbook archive, or declares what exceljs would choke on, with
+ * `OfficeFileRejectedError("unexpected_content")`.
+ * In production that process is a heap-capped child (`xlsx-isolated.ts`), not
+ * the web server: the cell model of an honest workbook inside these limits
+ * still costs ~20x its sheet XML.
+ *
+ * @throws OfficeFileRejectedError when the guard refuses the file.
+ * @throws XlsxExtractionError when it cannot be read (gone, not permitted) or
+ *   exceljs cannot open what the guard let through.
+ */
+async function openWorkbook(absPath: string): Promise<ExcelJS.Workbook> {
+  const unreadable = (cause: unknown) =>
+    new XlsxExtractionError(absPath, "the file could not be opened as a workbook", { cause });
+
+  let buffer: Buffer;
+  try {
+    buffer = await readWorkbookBuffer(absPath);
+  } catch (err) {
+    // A refusal is a verdict on these bytes — too large, or not the workbook
+    // its name says — and reading them again changes nothing, so it travels as
+    // one: ingest lists the file as unsearchable and leaves it alone until it
+    // changes. Anything else (gone, not permitted) says nothing about the
+    // content and stays unreadable, which ingest retries.
+    if (err instanceof OfficeFileRejectedError) throw err;
+    throw unreadable(err);
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  try {
+    // exceljs's typings name the older `Buffer` shape (no ArrayBufferLike
+    // generic); the value is a plain Node Buffer either way.
+    await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+  } catch (err) {
+    throw unreadable(err);
+  }
+  return workbook;
+}
+
+/**
  * Extracts row-wise chunks from the spreadsheet at `absPath`, anchored on sheet
  * name and row range.
  *
@@ -337,19 +405,13 @@ function chunkSheet(sheet: SheetContent, targetChars: number): XlsxChunk[] {
  * other unreadable file. That is the intended outcome: loud, with a reason.
  *
  * @throws XlsxExtractionError if the file cannot be read as a workbook.
+ * @throws OfficeFileRejectedError if the guard refuses it (see `openWorkbook`).
  */
 export async function extractXlsx(
   absPath: string,
   opts: XlsxExtractOptions = {}
 ): Promise<XlsxExtraction> {
-  const workbook = new ExcelJS.Workbook();
-  try {
-    await workbook.xlsx.readFile(absPath);
-  } catch (err) {
-    throw new XlsxExtractionError(absPath, "the file could not be opened as a workbook", {
-      cause: err,
-    });
-  }
+  const workbook = await openWorkbook(absPath);
 
   const targetChars = (opts.targetTokens ?? DEFAULT_TARGET_TOKENS) * CHARS_PER_TOKEN;
 
@@ -431,6 +493,7 @@ export const SHEET_RANGE_MAX_ROWS = 200;
  * the preview must not show what the index never read.
  *
  * @throws XlsxExtractionError if the file cannot be read as a workbook.
+ * @throws OfficeFileRejectedError if the guard refuses it (see `openWorkbook`).
  */
 export async function readSheetRange(
   absPath: string,
@@ -438,14 +501,7 @@ export async function readSheetRange(
   startRow: number,
   endRow: number
 ): Promise<SheetRange | null> {
-  const workbook = new ExcelJS.Workbook();
-  try {
-    await workbook.xlsx.readFile(absPath);
-  } catch (err) {
-    throw new XlsxExtractionError(absPath, "the file could not be opened as a workbook", {
-      cause: err,
-    });
-  }
+  const workbook = await openWorkbook(absPath);
 
   // Hidden sheets are skipped here exactly as they are during indexing, so a
   // citation naming one resolves to nothing rather than to content the index

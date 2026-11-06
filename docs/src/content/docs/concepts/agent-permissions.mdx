@@ -45,7 +45,7 @@ It is also the one tool whose reach is set entirely by something else: it search
 
 ### Web Search Tools
 
-Web search tools give the agent access to live web information via the Brave Search API. These require a Brave Search API key configured in Settings → Integrations.
+Web search tools give the agent access to live web information. **Search the web** goes through the Brave Search API and needs a Brave Search API key configured in Settings → Integrations. **Fetch web pages** needs no key. Without one, the Permissions tab only offers the Web Search section to agents that already hold a web tool, so agents get it through a web template such as the [Market & News Monitor](/guides/create-market-monitor-agent/). An agent granted search without a key gets a "web search is not configured" answer from the tool, which it passes on, and search starts working once an admin adds the key.
 
 | Tool                | What it does                                                          |
 | ------------------- | --------------------------------------------------------------------- |
@@ -89,7 +89,7 @@ For the full list of tabs in Agent Settings and who sees which, see [Agent Setti
 
 ### Configuring directory access
 
-The **Allowed Directories** picker appears in the Knowledge Base section of the Permissions tab. Select which directories under `/data/` this agent should be able to read — these are in addition to the agent's own workspace files.
+The **Allowed Directories** picker appears in the Knowledge Base section of the Permissions tab. Select which directories under `/data/` this agent should be able to read — these are in addition to the agent's own workspace files. A directory can be a mount or any folder inside one; granting a folder grants everything below it (see [Granting a subfolder](/guides/mount-data-directories/#granting-a-subfolder)).
 
 For example, if you mounted your HR policies at `/data/hr-policies`, select that directory to let the agent read those documents — and nothing else.
 
@@ -198,7 +198,7 @@ Pinchy does not rely on any single layer for security. Five layers work together
 2. **Allow-list enforcement** — only tools an admin explicitly enables are available to the agent
 3. **Runtime tool allow-list** — Pinchy emits an absolute `tools.allow` to OpenClaw, so built-ins Pinchy never surfaces (shell, raw file access, `cron`, gateway control, the native browser, …) are unreachable even if a plugin or future OpenClaw version would otherwise expose them
 4. **Plugin path validation** — the `pinchy-files` plugin checks every requested path against the agent's allowed directories
-5. **Symlink resolution** — paths are resolved to their real location before validation, preventing symlink-based escapes
+5. **Symlink resolution** — paths are resolved to their real location before validation, preventing symlink-based escapes. The file is then opened without following any link and checked to be the file at that location, so a link swapped in after the check is refused rather than followed
 
 If any one layer fails, the others still prevent unauthorized access.
 

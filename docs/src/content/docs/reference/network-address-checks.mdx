@@ -1,0 +1,65 @@
+---
+title: Network Address Checks
+description: Every IP range Pinchy treats as private or refuses outright, and what each outbound check does with it.
+---
+
+Pinchy makes requests from its own server: the **Fetch web pages** tool fetches a URL a model chose, and the Odoo, mail-server and OpenAI-compatible provider connections reach an address an admin typed. Each of those checks where a request would land before it's sent. They all read one address table, so an address is treated the same way everywhere. This page is that table.
+
+A hostname is resolved first, and **every** address it answers with is checked, so a name that points at an internal address is treated exactly like the address itself. A name that doesn't resolve is treated two ways. The Odoo, mail-server and provider checks let it through: no address means no connection, and the far more common cause is a typo, which the connection's own error names better than a security refusal would. **Fetch web pages** refuses it, for the URL it was given and for every redirect it follows, because it only ever connects to an address it has checked. A few requests Pinchy makes itself right after a check don't contact a name with no answer either, even though the check let it through: a provider's model discovery and key check, the mail **Test connection**, and listing Odoo databases. Each one connects to the addresses the check just looked up rather than looking the name up again, so with no answer there is nothing to connect to — the request fails as unreachable — and a DNS answer that changes in between (DNS rebinding) can't redirect it. Connections made by the agent runtime, and the other Odoo requests, look the name up again themselves.
+
+## What each check does
+
+| Address is…    | Fetch web pages | Odoo and mail servers                                                                        | OpenAI-compatible providers                                        |
+| -------------- | --------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Public         | Allowed         | Allowed                                                                                      | Allowed                                                            |
+| Private        | Refused         | Refused, unless you set `ALLOW_PRIVATE_URLS=1` (Odoo) or `ALLOW_PRIVATE_MAIL_HOSTS=1` (mail) | Allowed, unless you set `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1` |
+| Always refused | Refused         | Refused, whatever is set                                                                     | Refused, whatever is set                                           |
+
+The guides explain each switch: [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network), [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network), [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed) and [SSRF protection](/guides/web-search-setup/#ssrf-protection) for the **Fetch web pages** tool, which has no switch.
+
+## Private ranges
+
+Your own network: an on-premise Odoo, mail server or model endpoint can legitimately live here, which is why the admin-facing checks let you open these ranges.
+
+| Range                                           | What it is                                                                                                                                 | Treated as |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------- |
+| `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` | Private IPv4 networks (RFC 1918)                                                                                                           | Private    |
+| `100.64.0.0/10`                                 | Carrier-grade NAT, where every Tailscale node lives — except `100.100.100.200`, below                                                      | Private    |
+| `198.18.0.0/15`                                 | Benchmarking space that some networks number internal hosts from, and that fake-IP DNS tools such as Clash or Surge answer every name with | Private    |
+| `fc00::/7`                                      | IPv6 unique-local addresses — except the cloud metadata endpoints, below                                                                   | Private    |
+| `fec0::/10`                                     | IPv6 site-local, withdrawn but still routed inside many networks                                                                           | Private    |
+| `64:ff9b:1::/48`                                | Local-use NAT64: your own translator decides which IPv4 address it reaches                                                                 | Private    |
+
+## Always refused
+
+No Odoo, mail or model server lives here, so no switch opens these ranges.
+
+| Address or range                                                     | What it is                                                                                                                                       | Treated as     |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------- |
+| `127.0.0.0/8`, `::1`                                                 | Loopback: Pinchy's own container                                                                                                                 | Always refused |
+| `0.0.0.0/8`, `::`                                                    | Unspecified; `0.0.0.0` reaches the local host                                                                                                    | Always refused |
+| `169.254.0.0/16`, `fe80::/10`                                        | Link-local, including the cloud metadata endpoint `169.254.169.254`                                                                              | Always refused |
+| `100.100.100.200`                                                    | Alibaba Cloud instance metadata, inside carrier-grade NAT                                                                                        | Always refused |
+| `168.63.129.16`                                                      | Azure's WireServer: public-looking, but it only answers from inside an Azure VM and hands out its extension configuration, certificates included | Always refused |
+| `fd00:ec2::254`, `fd00:ec2::23`                                      | AWS instance metadata and the EKS Pod Identity Agent, inside unique-local space                                                                  | Always refused |
+| `fd20:ce::254`                                                       | Google Cloud metadata, inside unique-local space                                                                                                 | Always refused |
+| `fd00:c1::a9fe:a9fe`                                                 | Oracle Cloud metadata, inside unique-local space                                                                                                 | Always refused |
+| `192.0.0.0/24`                                                       | IETF protocol assignments                                                                                                                        | Always refused |
+| `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `2001:db8::/32` | Documentation ranges                                                                                                                             | Always refused |
+| `224.0.0.0/4`, `ff00::/8`                                            | Multicast                                                                                                                                        | Always refused |
+| `240.0.0.0/4`                                                        | Reserved for future use, including the broadcast address `255.255.255.255`                                                                       | Always refused |
+| `2001::/32`                                                          | Teredo: carries an IPv4 address, obscured, so it's refused rather than decoded                                                                   | Always refused |
+| `::ffff:0:0:0/96`                                                    | SIIT IPv4-translated addresses: refused rather than decoded                                                                                      | Always refused |
+
+## IPv6 forms that carry an IPv4 address
+
+These are read through: Pinchy takes out the IPv4 address and checks that one, so `::ffff:10.0.0.5` is private like `10.0.0.5`, and `64:ff9b::a9fe:a9fe` is refused like `169.254.169.254`.
+
+| Range           | What it is                             | Treated as              |
+| --------------- | -------------------------------------- | ----------------------- |
+| `::ffff:0:0/96` | IPv4-mapped addresses                  | The IPv4 address inside |
+| `::/96`         | IPv4-compatible addresses (deprecated) | The IPv4 address inside |
+| `64:ff9b::/96`  | NAT64 on the well-known prefix         | The IPv4 address inside |
+| `2002::/16`     | 6to4                                   | The IPv4 address inside |
+
+Every address not listed on this page is public.

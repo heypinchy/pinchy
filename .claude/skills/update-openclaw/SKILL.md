@@ -180,6 +180,11 @@ openclaw/openclaw --json state,closedAt`). But **"issue closed" is
    - `openclaw-runtime-closure.test.ts` fails if a root override now pushes a
      dependency of the new tree outside its declared major; bound the
      override rather than accepting it.
+   - A green scan does not cover what OpenClaw **inlines** into its `dist/`
+     (zod, protobufjs, semver, qs, …): overrides cannot reach those copies.
+     Re-check the open cases in `osv-scanner.toml`'s header (zod inlined at
+     4.4.3 as of 2026.7.1-2) against the new release's `dist/` and drop a
+     note once its inlined version is fixed.
    - Check `npm view openclaw@<target> engines.node` against `.nvmrc` —
      2026.9.x requires Node >=24.16, which means a repo-wide Node bump
      (`scripts/lib/node-version-pin.mjs`) before the OpenClaw bump.
@@ -209,6 +214,16 @@ openclaw/openclaw --json state,closedAt`). But **"issue closed" is
    Note: the hook test above proves the filter logic, not that OpenClaw still
    fires the hook. If the notes touched bootstrap/hook/session-key behavior,
    run the HOOK.md staging check before shipping.
+
+   **`pinchy-knowledge`'s language note pins the version too.** Its
+   `before_prompt_build` hook adds a per-turn note to the user's message,
+   which OpenClaw does not store, so later turns replay a different prefix
+   (#1296). That's safe only while Claude Haiku 5.5, the one preserved-thinking
+   model Pinchy offers, runs with thinking off. The test "is re-checked when
+   OpenClaw is bumped" in `packages/plugins/pinchy-knowledge/index.test.ts`
+   fails on a bump. Check on staging that a Haiku 5.5 KB agent with thinking
+   answers a second turn after a non-English first one, or drop the note,
+   before updating the pinned version in that test.
 
 7. **Don't commit automatically.** Report the diff (`git status --short`,
    `git diff --stat`) and let the user decide to commit/PR — this touches a

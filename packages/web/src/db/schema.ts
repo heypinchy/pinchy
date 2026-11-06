@@ -172,6 +172,10 @@ export const sessions = pgTable(
     expiresAt: timestamp("expires_at").notNull(),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
+    // Better Auth `admin` plugin column (impersonation). Pinchy never impersonates,
+    // so it stays NULL — but better-auth >=1.7 checks the Drizzle schema against
+    // what its plugins declare at first use and refuses to run with this missing.
+    impersonatedBy: text("impersonated_by"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -296,8 +300,9 @@ export const agents = pgTable(
     visibility: text("visibility").$type<AgentVisibility>().notNull().default("restricted"),
     greetingMessage: text("greeting_message").notNull(),
     tagline: text("tagline"),
-    // Per-agent starter prompts (#570): clickable suggestion chips shown in
-    // the empty chat to lower the entry barrier for role-specific agents.
+    // Per-agent starter prompts (#570): clickable suggestion chips shown below
+    // the greeting of a new conversation to lower the entry barrier for
+    // role-specific agents.
     // Empty array = no chips (the default).
     starterPrompts: jsonb("starter_prompts").$type<string[]>().notNull().default([]),
     avatarSeed: text("avatar_seed"),
@@ -1272,6 +1277,13 @@ export const kbDocuments = pgTable(
     // the next run — chunks or not — until a read finishes or the retries run
     // out (MAX_INCOMPLETE_READS in ingest.ts). 0 for a read that finished.
     incompleteReads: integer("incomplete_reads").notNull().default(0),
+    // For an Office document converted to PDF, the artifact format version
+    // (OFFICE_ARTIFACT_FORMAT_VERSION) its chunks were read from; null for
+    // every other format. An unchanged document whose version is not the
+    // current one — including null, on a row written before this was recorded
+    // — is converted and read again, so a change to the conversion rules
+    // reaches documents that never change (ingest.ts).
+    artifactFormatVersion: integer("artifact_format_version"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [
@@ -1285,6 +1297,31 @@ export const kbDocuments = pgTable(
     uniqueIndex("uq_kb_doc_org_path").on(t.orgId, t.sourcePath),
     index("idx_kb_doc_org_hash").on(t.orgId, t.contentHash),
   ]
+);
+
+// kb_unsupported_files is the list behind the "not supported" count (#1267):
+// files under a granted folder whose type the indexer cannot read (a `.tif`
+// scan, a legacy `.xls`, a `.txt`). They have no kb_documents row — ingest
+// never opens them — so without this table nothing in the database says they
+// exist, and a gap in the agent's answers reads as a model problem.
+//
+// Current state, not history: each run replaces the rows under the folders it
+// walked (unsupported-files.ts), so the table is as large as the share's
+// unsupported files and never grows by night. A row per file rather than a list
+// on the job or in the audit row, because a real share holds 100k+ such files —
+// far past the 2 KB audit `detail` budget — and the CSV export pages through
+// them by path.
+export const kbUnsupportedFiles = pgTable(
+  "kb_unsupported_files",
+  {
+    orgId: text("org_id").notNull(),
+    sourcePath: text("source_path").notNull(),
+    // The file's extension, lowercased, with its dot (".tif"); "" for a file
+    // with none. What the admin sorts the download by to see what to convert.
+    fileType: text("file_type").notNull(),
+    seenAt: timestamp("seen_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.sourcePath] })]
 );
 
 // kb_chunks denormalizes org_id and source_path from the parent document so
@@ -1380,6 +1417,13 @@ export const kbIndexJobs = pgTable(
     // only evidence of how far the run got.
     counts: jsonb("counts").$type<IngestResult>(),
     error: text("error"),
+    // The Office artifact format version (OFFICE_ARTIFACT_FORMAT_VERSION) the
+    // run converted under, written when it reaches a terminal state; null on a
+    // job that has not, and on every job finished before this was recorded. A
+    // run under earlier rules converted nothing under the current ones, so it
+    // does not excuse its folders from the run a format bump owes them
+    // (office-format-upgrade.ts).
+    artifactFormatVersion: integer("artifact_format_version"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     startedAt: timestamp("started_at"),
     finishedAt: timestamp("finished_at"),

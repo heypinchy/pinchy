@@ -9,14 +9,51 @@
  * of Pinchy's governance logic already lives.
  */
 
+import { detectQuestionLanguage, questionText } from "./question-language";
+import { refusingUnknownParams } from "./unknown-params";
 import { formatLocator, type ChunkLocator } from "./locator";
 
 // Bounds the call to Pinchy's own internal API against a hung container /
-// network blackhole.
+// network blackhole. A healthy search answers in well under a second, even
+// queued: query embeddings take 16-24 ms each on a 2-vCPU box, and one queued
+// behind a reindex waits for at most one ~1 s indexing chunk (the embedder is
+// one shared context with a FIFO evaluate lock — see embeddings.ts). Ten
+// seconds is an order of magnitude of headroom over that, not a budget a
+// healthy search is expected to approach.
 const FETCH_TIMEOUT_MS = 10_000;
+
+// What the model reads when the budget runs out. The raw abort reason ("The
+// operation was aborted due to timeout") is what an agent relayed to a user on
+// staging; it names neither what timed out nor what to do next.
+const TIMEOUT_MESSAGE =
+  `the knowledge base did not answer within ${FETCH_TIMEOUT_MS / 1000} seconds. ` +
+  "Retry the search once; if it times out again, tell the user the knowledge base " +
+  "is not responding right now.";
+
+function isTimeout(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: unknown }).name === "TimeoutError"
+  );
+}
 
 interface PluginToolContext {
   agentId?: string;
+  sessionKey?: string;
+  /** Changes when a session is reset in place, while sessionKey stays. Hook context only. */
+  sessionId?: string;
+  /** One run can make several attempts; each fires before_prompt_build. Hook context only. */
+  runId?: string;
+}
+
+interface PromptBuildEvent {
+  prompt?: unknown;
+}
+
+interface PromptBuildResult {
+  appendSystemContext?: string;
+  appendContext?: string;
 }
 
 // Presence-only per-agent gating: an entry in `agents` means the agent may
@@ -41,6 +78,10 @@ interface PluginApi {
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
     opts?: { name?: string }
+  ) => void;
+  on?: (
+    hookName: "before_prompt_build",
+    handler: (event: PromptBuildEvent, ctx: PluginToolContext) => PromptBuildResult | undefined
   ) => void;
 }
 
@@ -135,9 +176,102 @@ const CITATION_CONTRACT =
   // have pages. Asking for a page would make the model state something false of
   // a Word file, whose pagination is a rendering result rather than a property
   // of the document the reader opens (#933).
-  "giving each number you cited the document path and position exactly as written above — " +
-  "every number you cite, and no number you did not. " +
+  // A Word chunk with no outline heading has a null locator and is printed as
+  // its path alone. Demanding a position for every entry made the model fill
+  // the slot with "page number not available", so the position is conditional.
+  "giving each number you cited the document path and position exactly as written above (the position only when the passage shows one). " +
+  "When a passage shows no position, write the path alone and never say a position is missing or unavailable. " +
+  "List every number you cite, and no number you did not. " +
   "If they do not answer the question, say so instead of answering from memory.";
+
+/**
+ * Which language the answer is written in, stated after the passages (#1296).
+ *
+ * A Knowledge Base agent on Claude Haiku 5.5 answered Polish questions in
+ * German whenever the passages were German, although SOUL.md and the
+ * knowledge-search skill both say to answer in the user's language. Both
+ * sit far above the tool results, and the skill reaches the model only if it
+ * reads SKILL.md first. The last thing the model saw before writing was a
+ * block of German text, and that won.
+ *
+ * So this sentence trails, unlike CITATION_CONTRACT. The contract tells the
+ * model how to treat the passages and leads them. This one is about the answer
+ * that comes next, so it sits directly before the model starts writing.
+ *
+ * This is the wording used when the language could not be named: the hook saw
+ * no message for this session, or `detectQuestionLanguage` could not tell.
+ * The search query is no substitute, because the model often writes it in the
+ * documents' language rather than the user's.
+ */
+const ANSWER_LANGUAGE =
+  "Write your answer in the language of the user's question (unless the question asks for a " +
+  "different language), even when these passages " +
+  "are in another language: translate what they say, and keep document paths, titles " +
+  "and quoted wording as written.";
+
+/** The question a search was made for, as the before_prompt_build hook saw it. */
+export interface AskedQuestion {
+  language: string;
+  text: string;
+}
+
+/**
+ * The language rule with the language named and the question quoted (#1296).
+ *
+ * Measured, not guessed: with a German-named agent and German sources, Claude
+ * Haiku 5.5 and Sonnet 5 kept answering Polish questions in German when the
+ * rule only said "the language of the user's question". Naming the language
+ * moved them. The question is quoted so the sentence stays tied to it: this
+ * text is stored in the transcript, and a later turn in another language must
+ * read it as being about an earlier question, not as an order for its own.
+ */
+function namedAnswerLanguage({ language, text }: AskedQuestion): string {
+  return (
+    `The question these passages are for was written in ${language}: "${text}". ` +
+    `Write your whole answer to it in ${language} (unless the question asks for a different ` +
+    `language), even though these passages are in another ` +
+    "language: translate what they say, and keep document paths, titles and quoted wording as written."
+  );
+}
+
+/**
+ * The passages are wrapped as quoted source material. With a German-named
+ * agent, a block of German passages otherwise reads as the language of the
+ * conversation. The note says what they are; the tags mark where they end.
+ */
+const SOURCES_OPEN =
+  '<source_passages note="Quoted documents in their original language. Their language is not the language of the conversation.">';
+const SOURCES_CLOSE = "</source_passages>";
+
+/** The fixed answer-language rule appended to the system prompt of every agent with knowledge_search. */
+export const ANSWER_LANGUAGE_RULE =
+  "Answer language: always write your whole answer in the language of the user's latest message, " +
+  "unless they ask for another one, even when the documents, your name or your instructions are " +
+  "in another language. Quote document passages in their original language.";
+
+/** The note added to this turn's message when its language could be named. */
+export function turnLanguageNote(language: string): string {
+  return (
+    `(This message is in ${language}. Write your whole reply in ${language} unless the user has ` +
+    "asked for another language, even if the documents, your name, your instructions or earlier " +
+    "messages are in another language.)"
+  );
+}
+
+/** A quoted question longer than this is cut, so a pasted document can't flood the result. */
+const MAX_QUOTED_QUESTION = 300;
+
+/**
+ * The language and wording of the latest message per session, seen by the
+ * before_prompt_build hook and read by the tool call that follows. Bounded,
+ * oldest first out, because sessions are never told to us as finished.
+ */
+const MAX_TRACKED_SESSIONS = 1000;
+
+function quotedQuestion(prompt: string): string {
+  const text = questionText(prompt).replace(/\s+/g, " ").trim();
+  return text.length > MAX_QUOTED_QUESTION ? `${text.slice(0, MAX_QUOTED_QUESTION)}…` : text;
+}
 
 /**
  * The other half of grounding, and the half a template is least likely to
@@ -145,8 +279,9 @@ const CITATION_CONTRACT =
  * to fall back on training data.
  */
 const NO_RESULTS =
-  "No matching passages found in the knowledge base. Tell the user the knowledge base " +
-  "does not cover this instead of answering from memory.";
+  "No matching passages found in the knowledge base. Tell the user, in the language of " +
+  "their question, that the knowledge base does not cover this instead of answering " +
+  "from memory.";
 
 /**
  * Render retrieval results as a numbered, citable source list so the model
@@ -170,7 +305,10 @@ const NO_RESULTS =
  * result, so citing one would state something false of the document the reader
  * opens.
  */
-export function formatWithCitations(results: KnowledgeSearchResult[]): string {
+export function formatWithCitations(
+  results: KnowledgeSearchResult[],
+  question?: AskedQuestion
+): string {
   if (results.length === 0) {
     return NO_RESULTS;
   }
@@ -180,7 +318,8 @@ export function formatWithCitations(results: KnowledgeSearchResult[]): string {
       return `[${index + 1}] ${result.citationPath}${anchor}: "${result.text}"`;
     })
     .join("\n\n");
-  return `${CITATION_CONTRACT}\n\n${sources}`;
+  const language = question ? namedAnswerLanguage(question) : ANSWER_LANGUAGE;
+  return `${CITATION_CONTRACT}\n\n${SOURCES_OPEN}\n${sources}\n${SOURCES_CLOSE}\n\n${language}`;
 }
 
 function normalizeBaseUrl(url: string): string {
@@ -212,7 +351,9 @@ const plugin = {
     },
   },
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const config = api.pluginConfig;
     if (!config?.apiBaseUrl || !config?.gatewayToken) {
       api.logger?.warn?.("[pinchy-knowledge] plugin config is missing apiBaseUrl or gatewayToken");
@@ -221,6 +362,77 @@ const plugin = {
 
     const { gatewayToken, agents: agentConfigs } = config;
     const apiBaseUrl = normalizeBaseUrl(config.apiBaseUrl);
+
+    // Two additions to the prompt, and the language the tool result names.
+    //
+    // The system-prompt rule is the same string on every turn, so it never
+    // changes the prompt's prefix or its cache. The per-turn note names the
+    // language of this message; OpenClaw does not store it in the transcript,
+    // so later turns replay the message without it. That matters for Claude
+    // models with preserved thinking, which refuse a thinking block whose
+    // prefix changed. The only one Pinchy offers, Claude Haiku 5.5, runs with
+    // thinking off on the pinned OpenClaw version, and a test fails when that
+    // version changes so the question gets asked again.
+    //
+    // It also costs prompt caching: a cache entry written over a message with
+    // its note no longer matches when that message is replayed without it. So
+    // the note goes only on the turn the language changes, one cache miss per
+    // switch instead of one per turn. Measured on Haiku 5.5: first questions
+    // 47/48 with the note; same-language follow-ups, which carry none, 43/48.
+    // (Putting the session's language in the fixed rule instead keeps the
+    // cache entirely, and measured 42/48 on first questions.)
+    //
+    // Measured (German-named agent, German sources, Haiku 5.5): the tool
+    // result alone ~80 % right, with the rule and the note 94 %.
+    const askedQuestions = new Map<string, AskedQuestion>();
+    const notedLanguages = new Map<string, { language: string; runId?: string }>();
+    api.on?.("before_prompt_build", (event, ctx) => {
+      if (!ctx.agentId || !agentConfigs?.[ctx.agentId]) return undefined;
+      const prompt = typeof event.prompt === "string" ? event.prompt : "";
+      const sessionKey = ctx.sessionKey;
+      const noteKey = ctx.sessionId ?? sessionKey;
+      const noted = noteKey ? notedLanguages.get(noteKey) : undefined;
+      // A retry of the same run: OpenClaw may have appended an English
+      // instruction to the prompt ("The previous attempt did not produce a
+      // user-visible answer…"), so the language this run was asked in, and
+      // the question it quotes, are the ones the first attempt saw.
+      const sameRun = noted !== undefined && ctx.runId !== undefined && noted.runId === ctx.runId;
+      const language = sameRun ? noted.language : detectQuestionLanguage(prompt);
+      if (sessionKey && !sameRun) {
+        askedQuestions.delete(sessionKey);
+        if (language) {
+          askedQuestions.set(sessionKey, { language, text: quotedQuestion(prompt) });
+          if (askedQuestions.size > MAX_TRACKED_SESSIONS) {
+            const oldest = askedQuestions.keys().next().value;
+            if (oldest !== undefined) askedQuestions.delete(oldest);
+          }
+        }
+      }
+      // Only on the turn the language changes: the first turn of a session,
+      // and a real switch. Same-language follow-ups carry no note, so the
+      // history they replay stays byte-identical and keeps the prompt cache.
+      //
+      // Tracked per sessionId, not sessionKey: a reset (web or Telegram /new)
+      // keeps the key and starts a session with no history, whose first turn
+      // needs the note. And a retried attempt of the same run gets it again,
+      // since OpenClaw fires this hook once per attempt.
+      let note: string | undefined;
+      if (language && (!noted || noted.language !== language || sameRun)) {
+        note = turnLanguageNote(language);
+        if (noteKey) {
+          notedLanguages.delete(noteKey);
+          notedLanguages.set(noteKey, { language, runId: ctx.runId });
+          if (notedLanguages.size > MAX_TRACKED_SESSIONS) {
+            const oldest = notedLanguages.keys().next().value;
+            if (oldest !== undefined) notedLanguages.delete(oldest);
+          }
+        }
+      }
+      return {
+        appendSystemContext: ANSWER_LANGUAGE_RULE,
+        ...(note ? { appendContext: note } : {}),
+      };
+    });
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -232,7 +444,7 @@ const plugin = {
           name: "knowledge_search",
           label: "Search Knowledge Base",
           description:
-            "Search the organization's indexed documents for passages relevant to a question. Use this FIRST for any question about document content, before reaching for file tools: it returns numbered passages together with their document path and page number, which is what makes an answer citable. Reading a file directly gives you no page anchor, so anything found that way cannot be cited. Cite the returned numbers inline in your answer.",
+            "Search the organization's indexed documents for passages relevant to a question. Use this FIRST for any question about document content, before reaching for file tools: it returns numbered passages together with their document path and, where the document has one, a position (page, slide, section heading, rows), which is what makes an answer citable. Reading a file directly gives you no such anchor, so anything found that way cannot be cited. Cite the returned numbers inline in your answer.",
           parameters: {
             type: "object",
             properties: {
@@ -301,14 +513,26 @@ const plugin = {
               const results = Array.isArray(data.results) ? data.results : [];
 
               return {
-                content: [{ type: "text", text: formatWithCitations(results) }],
+                content: [
+                  {
+                    type: "text",
+                    text: formatWithCitations(
+                      results,
+                      ctx.sessionKey ? askedQuestions.get(ctx.sessionKey) : undefined
+                    ),
+                  },
+                ],
                 details: {
                   toolName: "knowledge_search",
                   returnedDocumentIds: returnedDocumentIds(results),
                 },
               };
             } catch (error) {
-              const message = error instanceof Error ? error.message : "Unknown error";
+              const message = isTimeout(error)
+                ? TIMEOUT_MESSAGE
+                : error instanceof Error
+                  ? error.message
+                  : "Unknown error";
               return {
                 isError: true,
                 content: [{ type: "text", text: `Knowledge base search failed: ${message}` }],

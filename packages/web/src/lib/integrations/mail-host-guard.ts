@@ -1,9 +1,7 @@
 import { lookup } from "node:dns/promises";
-import {
-  canonicalizeIpAddress,
-  classifyIpAddress,
-  type IpAddressClass,
-} from "@/lib/integrations/url-validation";
+import { isIP } from "node:net";
+import { classifyIpAddress, type IpAddressClass } from "@/lib/integrations/url-validation";
+import { toPinnedAddress, type PinnedAddress } from "@/lib/pinned-connection";
 
 /**
  * SSRF guard for the IMAP/SMTP probes.
@@ -23,17 +21,26 @@ import {
  * legitimate deployment:
  *
  *   - Always blocked: loopback, unspecified, link-local (which is where cloud
- *     metadata lives) and the EC2 IPv6 metadata address. No mail server lives
- *     there, so there is nothing to trade off.
+ *     metadata lives — the shared table files the EC2 IPv6 and Alibaba Cloud
+ *     metadata addresses there too, though they sit inside private ranges) and
+ *     the reserved ranges. No mail server lives there, so there is nothing to
+ *     trade off.
  *   - Blocked unless `ALLOW_PRIVATE_MAIL_HOSTS=1`: the private ranges. The
  *     opt-in is the operator's explicit statement that reaching their own
  *     network is intended.
  *
- * Caveat, same as the rest of the app's SSRF checks: this resolves once and the
- * mail library resolves again when it connects, so a DNS answer that changes
- * between the two (rebinding) is not covered. Closing that would mean pinning
- * the connection to the address we checked, which neither imapflow nor
- * nodemailer exposes.
+ * The probes connect to the address this guard classified
+ * (`resolveAllowedMailHost`): imapflow and nodemailer are handed the IP as
+ * `host` and the name as `servername`, which both use for SNI and certificate
+ * verification. Neither resolves an IP, so there is one lookup and a DNS
+ * answer that changes between check and connect (rebinding) has nothing to
+ * change. `assertMailHostAllowed` stays for callers that only check a value
+ * and connect to nothing.
+ *
+ * Not covered: pinchy-email, in the OpenClaw container, resolves the stored
+ * host itself for every real IMAP/SMTP session, and `stored-destination.ts`'s
+ * re-check at credential fetch is again check-then-someone-else-connects.
+ * Pinchy can pin only the sockets it opens.
  */
 
 export class MailHostBlockedError extends Error {
@@ -46,21 +53,6 @@ export class MailHostBlockedError extends Error {
 /** Resolves a host to its IP addresses. Injected in tests. */
 export type MailHostResolver = (host: string) => Promise<string[]>;
 
-// EC2's IPv6 instance-metadata endpoint. It sits inside fc00::/7, so the
-// private-range check already covers it — but only while the opt-in flag is
-// off, and reaching IMDS must not become collateral of an operator enabling
-// their on-premise mail server. Canonicalized so no alternate spelling of the
-// same address slips past the comparison.
-const ALWAYS_BLOCKED_ADDRESSES: ReadonlySet<string> = new Set(
-  ["fd00:ec2::254"].map((address) => {
-    const canonical = canonicalizeIpAddress(address);
-    // A typo in this list would canonicalize to null and silently stop
-    // blocking anything. Fail at import instead of shipping a dead entry.
-    if (canonical === null) throw new Error(`Not an IP address: ${address}`);
-    return canonical;
-  })
-);
-
 // Typed against IpAddressClass so a misspelt class is a compile error rather
 // than an entry that never matches — the failure mode of a security list is
 // that it silently lets things through.
@@ -68,10 +60,11 @@ const ALWAYS_BLOCKED_CLASSES: ReadonlySet<IpAddressClass> = new Set([
   "loopback",
   "unspecified",
   "link-local",
+  "reserved",
 ]);
 
 const INTERNAL_MESSAGE =
-  "Blocked: this host resolves to a loopback, link-local, or cloud-metadata address.";
+  "Blocked: this host resolves to a loopback, link-local, cloud-metadata or otherwise reserved address.";
 
 const PRIVATE_MESSAGE =
   "Blocked: this host resolves to a private network address. " +
@@ -89,6 +82,33 @@ function normalizeAddress(address: string): string {
     .toLowerCase();
 }
 
+// A DNS hostname (RFC 1123): dot-separated labels of letters, digits and
+// inner hyphens (and underscores, common on internal mail servers — the guard
+// resolves the exact string, so guard and client read the `_` the same way),
+// at most 63 characters each and 253 in all, with an optional
+// trailing dot for a fully-qualified name. An internationalised name is
+// accepted in its punycode form (`xn--…`), which is what DNS actually carries.
+const HOSTNAME =
+  /^(?=.{1,253}\.?$)[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*\.?$/i;
+
+/**
+ * Is `host` something every resolver reads the same way?
+ *
+ * imapflow and nodemailer hand the stored host to the resolver unchanged, so
+ * the guard has to resolve that same string — and the string must not be one
+ * that resolvers disagree on. The guard used to check a normalised copy
+ * (trimmed, brackets and anything after a `%` dropped): `a%b.attacker.test`
+ * was checked as `a`, `[a.attacker.test` as `a.attacker.test`. glibc and
+ * c-ares (our node:22-slim images) refuse the raw strings; musl, measured,
+ * queries them and connects to the answer. So: a hostname, or a bare IP
+ * literal. No brackets (neither client strips them), no zone ID (an interface
+ * on Pinchy's own host means nothing for a remote mail server), no raw Unicode
+ * (neither client converts it to punycode).
+ */
+function isPlainHost(host: string): boolean {
+  return HOSTNAME.test(host) || (/^[0-9a-f:.]+$/i.test(host) && isIP(host) !== 0);
+}
+
 /**
  * Throws `MailHostBlockedError` if `host` resolves to an address the probe must
  * not touch. Resolves silently otherwise.
@@ -102,32 +122,68 @@ export async function assertMailHostAllowed(
   host: string,
   resolver: MailHostResolver = resolveViaDns
 ): Promise<void> {
-  const normalizedHost = normalizeAddress(host.trim());
-  if (normalizedHost.length === 0) {
-    // The schemas already require a non-empty host, so this is a belt-and-
-    // suspenders guard for a future caller — say what is actually wrong rather
-    // than reusing the internal-address wording.
-    throw new MailHostBlockedError("Blocked: no mail server host was given.");
-  }
+  assertPlainHost(host);
 
   let addresses: string[];
   try {
-    addresses = await resolver(normalizedHost);
+    addresses = await resolver(host);
   } catch {
     return;
   }
 
+  assertAddressesAllowed(addresses);
+}
+
+/**
+ * The address a probe of `host` must open its socket to — the one this guard
+ * just classified — or a throw.
+ *
+ * For the callers that CONNECT. {@link assertMailHostAllowed} followed by a
+ * connect by name resolves twice, and a resolver can answer the two lookups
+ * differently (DNS rebinding): public for the check, 127.0.0.1 for the
+ * socket. Here there is one lookup and its answer is the destination.
+ *
+ * A lookup that fails is rethrown unchanged instead of passing: with one
+ * resolution there is no later connect to "fail naturally", and the original
+ * `ENOTFOUND` keeps the probe's "could not resolve the host" message for the
+ * typo case. When the name has several addresses every one was checked and
+ * the first is used: imapflow and nodemailer take a single `host`, so unlike
+ * `pinnedFetch` there is no lookup hook to hand the rest to. A mail host whose
+ * first address is down fails the test instead of falling back.
+ */
+export async function resolveAllowedMailHost(
+  host: string,
+  resolver: MailHostResolver = resolveViaDns
+): Promise<PinnedAddress> {
+  assertPlainHost(host);
+
+  // An address literal is its own answer; a resolver has nothing to add.
+  const addresses = isIP(host) !== 0 ? [host] : await resolver(host);
+  if (addresses.length === 0) {
+    throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
+  }
+
+  assertAddressesAllowed(addresses);
+  return toPinnedAddress(normalizeAddress(addresses[0]));
+}
+
+function assertPlainHost(host: string): void {
+  if (!isPlainHost(host)) {
+    throw new MailHostBlockedError(
+      "Blocked: enter the mail server as a plain host name or IP address, like imap.example.com, " +
+        "with no spaces, brackets, port or zone ID. An internationalised name goes in its xn-- form."
+    );
+  }
+}
+
+function assertAddressesAllowed(addresses: string[]): void {
   const allowPrivate = process.env.ALLOW_PRIVATE_MAIL_HOSTS === "1";
 
   for (const address of addresses) {
     const normalized = normalizeAddress(address);
     const addressClass = classifyIpAddress(normalized);
-    const canonical = canonicalizeIpAddress(normalized);
 
-    if (
-      (canonical !== null && ALWAYS_BLOCKED_ADDRESSES.has(canonical)) ||
-      (addressClass !== null && ALWAYS_BLOCKED_CLASSES.has(addressClass))
-    ) {
+    if (addressClass !== null && ALWAYS_BLOCKED_CLASSES.has(addressClass)) {
       throw new MailHostBlockedError(INTERNAL_MESSAGE);
     }
     if (addressClass === "private" && !allowPrivate) {

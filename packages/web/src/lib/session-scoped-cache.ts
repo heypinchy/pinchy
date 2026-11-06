@@ -1,0 +1,157 @@
+import { createHash } from "node:crypto";
+
+/**
+ * Headers for a response the browser may keep for `maxAgeSeconds`.
+ *
+ * The browser keys its HTTP cache by URL, not by who is signed in. Every
+ * cached response in Pinchy sits behind a session, so a bare private max-age
+ * serves one user's copy to whoever signs in next on the same browser, and
+ * the cached copy never reaches the server's access check (#1286).
+ * `Vary: Cookie` makes a different session cookie a cache miss.
+ *
+ * A lifetime is the exception: within one session the browser reuses its
+ * copy without asking, past a revoked grant. Access-checked content uses
+ * `sessionScopedRevalidateHeaders` instead, and only routes listed in
+ * MAY_SET_A_LIFETIME (`browser-cache-session-scope.test.ts`) may call this.
+ * That test also fails on a lifetime written by hand.
+ */
+export function sessionScopedCacheHeaders(maxAgeSeconds: number): {
+  "cache-control": string;
+  vary: string;
+} {
+  // Anything else is either invalid on the wire (NaN, a fraction, a negative)
+  // or keeps nothing (0, where `no-store` says what is meant), so a caller
+  // passing it has made a mistake worth failing on.
+  if (!Number.isInteger(maxAgeSeconds) || maxAgeSeconds <= 0) {
+    throw new Error(
+      `cache lifetime must be a positive whole number of seconds, got ${maxAgeSeconds}`
+    );
+  }
+  return {
+    "cache-control": `private, max-age=${maxAgeSeconds}`,
+    vary: "Cookie",
+  };
+}
+
+/**
+ * Headers for an access-checked document the browser may keep but must not
+ * reuse without asking first.
+ *
+ * A lifetime (`sessionScopedCacheHeaders`) lets the browser reuse its copy
+ * without contacting the server, so a reader whose access was revoked keeps
+ * reading the document until the copy expires: the agent's grant was
+ * removed, or the reader lost access to the agent, and the cached copy never
+ * reaches either check. `no-cache` keeps the copy but makes every reuse a
+ * conditional request, which the route answers only after its access check —
+ * with 304 and no body when the document is unchanged, so a large PDF is not
+ * sent again. `Vary: Cookie` keeps a copy from crossing sessions, as above.
+ */
+export function sessionScopedRevalidateHeaders(etag: string): {
+  "cache-control": string;
+  vary: string;
+  etag: string;
+} {
+  return { "cache-control": "private, no-cache", vary: "Cookie", etag };
+}
+
+/**
+ * A weak validator for one representation of a file on disk.
+ *
+ * Weak because these fields only make byte-identity likely, not certain (two
+ * writes within the same millisecond, same size). That is enough to answer "has
+ * this changed?" with a 304, and it is exactly why a range is never stitched
+ * onto a cached copy on the strength of it — see `rangeAllowedByIfRange`.
+ *
+ * ctime is in it because mtime alone can be carried over: `rsync -a
+ * --inplace` or `cp -p` replaces a document with a same-length correction
+ * and keeps size, mtime and inode, which would answer 304 for the old
+ * edition. No ordinary copy tool can set ctime on a local filesystem. Some
+ * network/FUSE mounts (sshfs, rclone) report mtime as ctime and synthesize
+ * inodes; there such an in-place edit can still look unchanged, and the
+ * reader keeps the old edition until the browser evicts it. That is
+ * staleness, not an access bypass: the access check runs either way.
+ * `variant` separates two representations of one document (an Office
+ * original and its converted PDF).
+ */
+export function weakFileEtag(
+  stat: { size: number; mtimeMs: number; ctimeMs: number; ino: number },
+  variant: string
+): string {
+  return weakEtag([stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino], variant);
+}
+
+/**
+ * A weak validator for a file in a content-addressed store, which this
+ * process touches on every read (the Office artifact store refreshes mtime
+ * for its LRU sweep, and that moves ctime too). Timestamps would therefore
+ * change on every request and no reuse would ever get a 304. The store path
+ * already names the content it holds, so path, size and inode identify it.
+ */
+export function weakStoredFileEtag(
+  stat: { size: number; ino: number },
+  storePath: string,
+  variant: string
+): string {
+  const pathKey = createHash("sha256").update(storePath).digest("hex").slice(0, 16);
+  return weakEtag([stat.size, stat.ino], `${pathKey}${variant}`);
+}
+
+function weakEtag(numbers: number[], tag: string): string {
+  const parts = numbers.map((n) => Math.trunc(n).toString(36));
+  return `W/"${parts.join("-")}-${tag.replace(/[^a-z0-9]/gi, "")}"`;
+}
+
+/**
+ * Bump when a header these document routes send changes for unchanged bytes
+ * in a way `servePosture`'s arguments do not show — `x-frame-options` (here
+ * or in next.config.ts), `x-content-type-options`, the disposition rules.
+ */
+export const SERVE_POSTURE_VERSION = 1;
+
+/**
+ * A short tag for HOW a document is served, to fold into its validator.
+ *
+ * A 304 carries no content-type or disposition, and browsers keep the headers
+ * they stored with their copy (Chrome ignores a content-type on a 304
+ * outright). A validator over the bytes alone would therefore keep a cached
+ * copy under the old headers forever once a release changes how such a file
+ * is served — an inline type made `attachment`, say. Pass every header value
+ * the route derives per request; the rest is covered by
+ * SERVE_POSTURE_VERSION.
+ */
+export function servePosture(...headerValues: string[]): string {
+  return createHash("sha256")
+    .update([SERVE_POSTURE_VERSION, ...headerValues].join("\n"))
+    .digest("hex")
+    .slice(0, 8);
+}
+
+/**
+ * Whether `If-None-Match` names this representation (RFC 9110 §13.1.2): weak
+ * comparison, a comma-separated list, or `*` for any current representation.
+ * Callers MUST evaluate this only after the access check — a match answers
+ * 304, which tells the browser to show what it already holds.
+ *
+ * Only If-None-Match and If-Range are honoured. If-Match and
+ * If-Unmodified-Since are not evaluated (no browser sends them on a GET), so
+ * such a request is answered as if they were absent, after the same access
+ * check.
+ */
+export function ifNoneMatchHits(header: string | null, etag: string): boolean {
+  if (!header) return false;
+  const opaque = (tag: string) => tag.trim().replace(/^W\//, "");
+  const ours = opaque(etag);
+  return header.split(",").some((tag) => tag.trim() === "*" || opaque(tag) === ours);
+}
+
+/**
+ * Whether a `Range` may be honoured given the request's `If-Range`
+ * (RFC 9110 §13.1.5). If-Range asks for the range only when the client's copy
+ * is the current one, and that needs a STRONG validator match. Every
+ * validator served here is weak, so a present If-Range never matches and the
+ * range is ignored: the full document is sent instead of splicing a range of
+ * a new edition onto a cached copy of the old one.
+ */
+export function rangeAllowedByIfRange(header: string | null): boolean {
+  return header === null;
+}

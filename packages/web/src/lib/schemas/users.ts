@@ -13,7 +13,9 @@ import { INVITE_ROLES } from "@/db/enums";
 
 /** `POST /api/users/invite` */
 export const inviteUserSchema = z.object({
-  email: z.string().email().optional(),
+  // Required: claiming the invite creates the account with this address, so
+  // an invite without one is a link that can never work (#1263).
+  email: z.string().trim().pipe(z.email()),
   role: z.enum(INVITE_ROLES),
   groupIds: z.array(z.string()).optional(),
 });
@@ -30,3 +32,11 @@ export const updateUserGroupsSchema = z.object({
   groupIds: z.array(z.string()),
 });
 export type UpdateUserGroupsInput = z.infer<typeof updateUserGroupsSchema>;
+
+/**
+ * `POST /api/users/[userId]/acknowledge-origin` — "Mark as known" on an account
+ * the provenance check flagged. Takes no fields; `strict()` so a client that
+ * starts sending one (a reason, say) gets a 400 instead of a silent drop.
+ */
+export const acknowledgeUserOriginSchema = z.object({}).strict();
+export type AcknowledgeUserOriginInput = z.infer<typeof acknowledgeUserOriginSchema>;

@@ -177,7 +177,7 @@ describe("Auth HTTP/HTTPS configuration", () => {
   });
 
   // #825. These assert the address Better Auth actually derives, through its
-  // own `getIp`, rather than that a config field is set — the config is only
+  // own `getIP`, rather than that a config field is set — the config is only
   // interesting because it decides which bucket a sign-in attempt lands in.
   describe("sign-in throttle bucketing", () => {
     // Restored, not just cleared up front: `@/lib/auth` reads the variable at
@@ -196,9 +196,9 @@ describe("Auth HTTP/HTTPS configuration", () => {
     });
 
     async function resolve(headers: Record<string, string>): Promise<string | null> {
-      const { getIp } = await import("@better-auth/core/utils/ip");
+      const { getIP } = await import("@better-auth/core/utils/ip");
       const mod = await import("@/lib/auth");
-      return getIp(new Headers(headers), mod.auth.options);
+      return getIP(new Headers(headers), mod.auth.options);
     }
 
     it("prefers the address the HTTP server already resolved", async () => {

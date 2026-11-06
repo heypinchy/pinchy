@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
           actorId: session.user.id!,
           eventType: "user.invite_blocked",
           detail: {
-            ...(email ? redactEmail(email) : {}),
+            ...redactEmail(email),
             role,
             reason: "seat_cap",
             seatsUsed: usage.used,
@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
       actorId: session.user.id!,
       eventType: "user.invited",
       detail: {
-        ...(email ? redactEmail(email) : {}),
+        ...redactEmail(email),
         role,
         ...(auditGroups.length > 0 ? { groups: auditGroups } : {}),
       },

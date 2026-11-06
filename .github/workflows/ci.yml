@@ -666,7 +666,11 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # ≥2× the slowest green run: up to 16.8 min on 2026-11-05 before the
+    # accessibility sweep (e2e/23-accessibility.spec.ts) joined; its first
+    # green run with the sweep took 9.6 min (run 42106485600). Room for the
+    # slow end of that spread plus the sweep, doubled.
+    timeout-minutes: 40
 
     services:
       postgres:
@@ -751,7 +755,9 @@ jobs:
       (needs.build-image.result == 'success' ||
        needs.build-image.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 2x the slowest green run (11m52 on #1293, including ~70s for
+    # reclaim-docker-disk), plus room for the fork path's two local builds.
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -766,13 +772,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -832,6 +840,20 @@ jobs:
             -v "$PWD/config/verify-memory-search.sh:/verify-memory-search.sh:ro" \
             --entrypoint bash \
             ghcr.io/heypinchy/pinchy-openclaw:latest /verify-memory-search.sh
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Office converter boundary canary (no network, no secrets)
+        # LibreOffice opens files anyone with write access to a mounted share
+        # can plant. The office-converter service is what takes its network
+        # and its secrets away; this drives the image under test through the
+        # service exactly as docker-compose.yml declares it, with every profile
+        # and preflight hardening switched OFF, and asserts a host listener
+        # hears nothing — next to a CONTROL run on a bridge network that does
+        # fetch. Needs only the image, not the stack.
+        run: pnpm -C packages/web exec vitest run src/__tests__/lib/knowledge/office-convert.sidecar.canary.test.ts
+        env:
+          KB_SIDECAR_CANARY_VERSION: latest
 
       - name: Start production stack
         run: docker compose up -d
@@ -1054,6 +1076,40 @@ jobs:
           fi
           echo "Clean startup verified (restarts=$RESTART_COUNT, connection_errors=$ERROR_COUNT)"
 
+      - name: Verify Office conversion goes through the sidecar, and only the sidecar
+        run: |
+          # The canary above proves the converter service has no network. This
+          # proves the shipped stack actually USES it: the web container stages
+          # a document in the shared spool and the sidecar converts it. Then,
+          # with the sidecar stopped, the same conversion must come back
+          # `infrastructure` — if the web container quietly converted on its
+          # own, LibreOffice would be back next to the secrets and nothing else
+          # would notice. Run as the pinchy user, like the web process: the
+          # converter (its own uid, pinchy's group) writes into the batch
+          # through the modes that user's batches carry.
+          wait_converter() {
+            for i in $(seq 1 30); do
+              [ "$(docker compose ps office-converter --format '{{.Health}}')" = "healthy" ] && return 0
+              sleep 2
+            done
+            echo "::error::office-converter did not become healthy"
+            docker compose ps
+            docker compose logs office-converter
+            return 1
+          }
+          check() {
+            docker compose exec -T --user pinchy pinchy \
+              node --import tsx scripts/check-office-converter.ts --expect "$1"
+          }
+          wait_converter
+          check converted || { docker compose logs office-converter; exit 1; }
+          docker compose stop office-converter
+          # The stopped converter leaves its socket, so the web side waits
+          # ~20 s for a restart before it books the batch.
+          check infrastructure
+          docker compose start office-converter
+          wait_converter
+
       - name: Verify plugins load + deps survive a pinchy-only restart (PR #275 regression)
         run: |
           # External-dep plugins' node_modules are installed ONLY by the
@@ -1191,6 +1247,15 @@ jobs:
         if: always()
         run: docker compose down -v
 
+      # The dev stack rebuilds both images from scratch (~16G); the production
+      # ones above are not inputs to that build and must not share the disk
+      # with it. AWS-hosted runners ran out of space here. On a fork PR
+      # the prod images were built here and their cache stays, so the dev
+      # OpenClaw build reuses it and only the dev Pinchy build adds new data.
+      - uses: ./.github/actions/reclaim-docker-disk
+        with:
+          min-free-gb: ${{ needs.build-image.result == 'skipped' && '12' || '22' }}
+
       - name: Start dev stack
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
         env:
@@ -1294,13 +1359,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1389,8 +1456,8 @@ jobs:
         run: |
           RUNNING=$(docker compose ps --format json | jq -rs '[.[] | select(.State == "running")] | length')
           echo "Running services: $RUNNING"
-          if [ "$RUNNING" -ne 3 ]; then
-            echo "::error::Expected 3 running services (pinchy, openclaw, db), got $RUNNING"
+          if [ "$RUNNING" -ne 4 ]; then
+            echo "::error::Expected 4 running services (pinchy, office-converter, openclaw, db), got $RUNNING"
             docker compose ps
             exit 1
           fi
@@ -1445,13 +1512,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1703,13 +1772,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1828,13 +1899,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -1955,13 +2028,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2087,13 +2162,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2242,13 +2319,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2384,13 +2463,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2579,13 +2660,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2748,13 +2831,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/docker-mirror
-
+      # Log in first: docker-mirror's docker.io fallback is authenticated
+      # only if the credentials are already in ~/.docker/config.json.
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to GHCR (skip on fork PRs)
         if: needs.build-image.result == 'success'
@@ -2855,6 +2940,78 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.eval.yml down -v
+
+  # The LibreOffice suites (`pnpm test:libreoffice`): the conversion adapter
+  # against a real binary, and the canaries proving an Office file on a share
+  # cannot make the converter fetch or draw a local file into the PDF. They
+  # need a real `soffice`, which no runner has — before this job they skipped
+  # in CI and had never run there at all. So they run INSIDE the Pinchy image
+  # this pipeline built, i.e. against the LibreOffice that ships (Debian's),
+  # with `--network none` (the canaries' listener is on loopback) and
+  # KB_REQUIRE_SOFFICE=1, so a missing binary fails instead of skipping.
+  # A 24 MiB tmpfs (KB_SMALL_VOLUME) is a staging volume too small for the
+  # scratch LibreOffice unpacks a large package into while loading it: a test
+  # cannot shrink a filesystem, and that case needs a real one.
+  #
+  # The runtime image carries production dependencies only, so vitest comes
+  # from the runner: dependencies are installed there and the checkout is
+  # mounted. Not a required check, and gated like every other non-required job
+  # (scripts/lib/ci-path-filter.mjs); scripts/lib/libreoffice-suite.test.mjs
+  # pins this wiring.
+  libreoffice:
+    name: LibreOffice conversion canaries
+    needs: [changes, build-image]
+    # See docker-smoke on why the changes gate is explicit rather than inferred
+    # from build-image being skipped.
+    if: >-
+      always() &&
+      needs.changes.outputs.code == 'true' &&
+      (needs.build-image.result == 'success' ||
+       needs.build-image.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Log in to GHCR (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull pre-built CI images (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: ./.github/actions/pull-ci-images
+        with:
+          pinchy-image: ${{ needs.build-image.outputs.pinchy-image }}
+          openclaw-image: ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Name the pulled image
+        if: needs.build-image.result == 'success'
+        env:
+          PINCHY_IMAGE: ${{ needs.build-image.outputs.pinchy-image }}
+        run: docker tag "$PINCHY_IMAGE" pinchy-libreoffice
+
+      - name: Build the Pinchy image locally (fork PR fallback)
+        if: needs.build-image.result == 'skipped'
+        run: docker build -t pinchy-libreoffice -f Dockerfile.pinchy .
+
+      - name: pnpm test:libreoffice inside the image
+        run: |
+          docker run --rm --network none \
+            -e CI=true -e KB_REQUIRE_SOFFICE=1 \
+            --tmpfs /kb-small-volume:size=24m -e KB_SMALL_VOLUME=/kb-small-volume \
+            -v "$GITHUB_WORKSPACE:/repo" -w /repo \
+            --entrypoint sh pinchy-libreoffice \
+            -c 'soffice --version && pnpm test:libreoffice'
 
   ollama-integration:
     name: Ollama integration tests

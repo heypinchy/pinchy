@@ -33,9 +33,57 @@
 // route push cannot supersede a server push and both reach `config.apply` —
 // the restart storm the generation guard exists to stop (#193).
 
+import type { SecretsBundle } from "@/lib/openclaw-secrets";
+
 interface ConfigPushState {
   pending: number;
   generation: number;
+  /** Pending follow-up regenerate for a stranded shrink (see scheduleShrinkResume). */
+  shrinkResume: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Start sequence of the newest full regenerate whose stranded shrink the
+   * pending follow-up stands for (see cancelShrinkResume).
+   */
+  shrinkResumeSeq: number;
+  /** Last start sequence handed out by nextRegenerateSequence. */
+  regenerateSeq: number;
+  /**
+   * Calls to regenerateOpenClawConfig not yet served by a run, and whether all
+   * of them were shrink follow-ups (see noteRegenerateCall).
+   */
+  unservedCalls: { followUpOnly: boolean } | undefined;
+  /** See recordWrittenSecrets. */
+  writtenSecretsShape: SecretsBundle | undefined;
+  /** See last-good-bound.ts. Undefined until this process loaded it. */
+  lastGoodBound: LastGoodBound | undefined;
+  /**
+   * Start sequence of the newest push that gave up on a change OpenClaw has to
+   * hear about, 0 when none (see noteUndeliveredConfigChange).
+   */
+  undeliveredSeq: number;
+  /**
+   * Start sequence of the newest full regenerate whose config reached
+   * OpenClaw, 0 before any (see noteFullRegenerateDelivered).
+   */
+  deliveredSeq: number;
+  /** See noteFileOnlyDelivery. */
+  fileOnlyDelivery: boolean;
+  /** Generations of the push coroutines in flight (see newestPushInFlight). */
+  inFlightGenerations: Set<number>;
+  /** Pending follow-up regenerate for a file-only delivery (scheduleFileOnlyFollowUp). */
+  fileOnlyFollowUp: ReturnType<typeof setTimeout> | undefined;
+  /** Follow-ups fired for the pending file-only delivery (sets the backoff). */
+  fileOnlyFollowUps: number;
+}
+
+/**
+ * The largest openclaw.json OpenClaw may still hold as last-known-good, in
+ * UTF-8 bytes, and what the Pinchy-owned file that survives a restart says
+ * (0: no such file). See last-good-bound.ts.
+ */
+export interface LastGoodBound {
+  bytes: number;
+  persistedBytes: number;
 }
 
 declare global {
@@ -58,17 +106,41 @@ function state(): ConfigPushState {
   // that can never arrive.
   const existing = globalThis.__pinchyConfigPushState as Partial<ConfigPushState> | undefined;
   if (!existing) {
-    globalThis.__pinchyConfigPushState = { pending: 0, generation: 0 };
+    globalThis.__pinchyConfigPushState = {
+      pending: 0,
+      generation: 0,
+      shrinkResume: undefined,
+      shrinkResumeSeq: 0,
+      regenerateSeq: 0,
+      unservedCalls: undefined,
+      writtenSecretsShape: undefined,
+      lastGoodBound: undefined,
+      undeliveredSeq: 0,
+      deliveredSeq: 0,
+      fileOnlyDelivery: false,
+      inFlightGenerations: new Set(),
+      fileOnlyFollowUp: undefined,
+      fileOnlyFollowUps: 0,
+    };
     return globalThis.__pinchyConfigPushState;
   }
   existing.pending ??= 0;
   existing.generation ??= 0;
+  existing.shrinkResumeSeq ??= 0;
+  existing.regenerateSeq ??= 0;
+  existing.undeliveredSeq ??= 0;
+  existing.deliveredSeq ??= 0;
+  existing.fileOnlyDelivery ??= false;
+  existing.inFlightGenerations ??= new Set();
+  existing.fileOnlyFollowUps ??= 0;
   return existing as ConfigPushState;
 }
 
 /** Record that a `pushConfigInBackground` coroutine has started. */
-export function trackConfigPushStarted(): void {
-  state().pending++;
+export function trackConfigPushStarted(generation: number): void {
+  const s = state();
+  s.pending++;
+  s.inFlightGenerations.add(generation);
 }
 
 /**
@@ -76,9 +148,23 @@ export function trackConfigPushStarted(): void {
  * superseded by a newer push, or file-write fallback. Floors at zero so a
  * spurious double-settle can never wedge the counter negative.
  */
-export function trackConfigPushSettled(): void {
+// `generation` is required so `.finally(trackConfigPushSettled)` cannot type-
+// check: called with no argument, it would leave the generation in the set,
+// and newestPushInFlight() would defer every reconnect to a push long gone.
+export function trackConfigPushSettled(generation: number): void {
   const s = state();
   s.pending = Math.max(0, s.pending - 1);
+  s.inFlightGenerations.delete(generation);
+}
+
+/**
+ * Whether the push holding the newest generation is still in flight. Unlike
+ * the pending count, a push a newer one superseded does not count: it returns
+ * without applying when it next wakes (see `getCurrentConfigPushGeneration`).
+ */
+export function newestPushInFlight(): boolean {
+  const s = state();
+  return s.inFlightGenerations.has(s.generation);
 }
 
 /** Number of push coroutines currently in flight (0 = config is settled). */
@@ -107,9 +193,369 @@ export function getCurrentConfigPushGeneration(): number {
   return state().generation;
 }
 
-/** Test-only: reset the pending counter between tests. Do not call in app code. */
+/**
+ * Claim a start sequence for a full regenerate, BEFORE it reads any state.
+ * Push order says when a regenerate's payload reached OpenClaw; this says what
+ * it can have seen. A regenerate that started before a provider row was
+ * deleted can still be pushing after the deletion's own regenerate — and its
+ * payload still contains the provider (see cancelShrinkResume).
+ */
+export function nextRegenerateSequence(): number {
+  return ++state().regenerateSeq;
+}
+
+/**
+ * Record a call to regenerateOpenClawConfig before it joins the regenerate
+ * queue (regenerate-queue.ts). Calls made while a run is in flight share the
+ * next run, which takes them all with takeRegenerateRunIsFollowUpOnly when it
+ * starts — synchronously, so no call is counted towards the wrong run.
+ */
+export function noteRegenerateCall({ shrinkFollowUp }: { shrinkFollowUp: boolean }): void {
+  const s = state();
+  s.unservedCalls = { followUpOnly: (s.unservedCalls?.followUpOnly ?? true) && shrinkFollowUp };
+}
+
+/**
+ * Called by a regenerate run as it starts: true only when every call it serves
+ * was a shrink follow-up. Then its push queues no follow-up of its own, so the
+ * hand-off cannot recurse; a real change that shares the run keeps its right to
+ * one.
+ */
+export function takeRegenerateRunIsFollowUpOnly(): boolean {
+  const s = state();
+  const followUpOnly = s.unservedCalls?.followUpOnly ?? false;
+  s.unservedCalls = undefined;
+  return followUpOnly;
+}
+
+/**
+ * Cancel a queued follow-up regenerate (see scheduleShrinkResume). Called when
+ * a full regenerate — the whole target config — has REACHED OpenClaw (applied,
+ * or already in place), which makes a stranded shrink moot.
+ *
+ * Only a regenerate that STARTED after the stranded one: it read state after
+ * the deletion, so its payload carries it. One that started earlier — a slow
+ * regenerate that read the provider rows before the delete — can still land
+ * later, and its payload puts the deleted provider back; it cancels nothing.
+ *
+ * Not when one merely starts: a full regenerate can still be superseded by a
+ * partial writer before it delivers anything, and a follow-up cancelled at its
+ * start would then be lost with OpenClaw still on the deleted provider's stub.
+ */
+export function cancelShrinkResume(deliveredBySeq: number): void {
+  const s = state();
+  if (deliveredBySeq <= s.shrinkResumeSeq) return;
+  clearShrinkResume(s);
+}
+
+function clearShrinkResume(s: ConfigPushState): void {
+  if (s.shrinkResume !== undefined) clearTimeout(s.shrinkResume);
+  s.shrinkResume = undefined;
+  s.shrinkResumeSeq = 0;
+}
+
+/** How long a stranded shrink waits before its follow-up regenerate runs. */
+export const SHRINK_RESUME_DELAY_MS = 2_000;
+/**
+ * While other pushes are still in flight the follow-up waits for them (a
+ * targeted write can sit out a 45 s rate-limit window), re-checking every
+ * SHRINK_RESUME_DELAY_MS — but at most this often, then it runs regardless.
+ */
+const SHRINK_RESUME_MAX_RECHECKS = 60;
+
+/**
+ * Queue one follow-up full regenerate for a provider deletion that stopped
+ * short of its target — superseded before it finished, or dropped for a
+ * transient reason (rate limit, retries exhausted, OpenClaw unreachable) or
+ * after OpenClaw had already accepted a step. OpenClaw then sits on the old
+ * config or on an intermediate one carrying the deleted provider's stub, and
+ * nothing else would finish the job before the next config change.
+ *
+ * Debounced and coalesced process-wide: one pending follow-up at most, the
+ * latest caller's `resume` wins, and a full regenerate that started after the
+ * stranded one and reaches OpenClaw in the meantime cancels it
+ * (cancelShrinkResume). It waits for pushes still in
+ * flight so it does not supersede them. Not recursive by itself: `resume` is a
+ * regenerate whose own push must not pass a `resume` of its own (build.ts).
+ */
+export function scheduleShrinkResume(resume: () => void, strandedSeq: number): void {
+  const s = state();
+  if (s.shrinkResume !== undefined) clearTimeout(s.shrinkResume);
+  // Coalesced: the follow-up stands for the newest stranded regenerate, so only
+  // a regenerate that started after that one may cancel it.
+  s.shrinkResumeSeq = Math.max(s.shrinkResumeSeq, strandedSeq);
+  let rechecks = 0;
+  const fire = () => {
+    if (getPendingConfigPushCount() > 0 && rechecks < SHRINK_RESUME_MAX_RECHECKS) {
+      rechecks++;
+      s.shrinkResume = setTimeout(fire, SHRINK_RESUME_DELAY_MS);
+      s.shrinkResume.unref?.();
+      return;
+    }
+    s.shrinkResume = undefined;
+    s.shrinkResumeSeq = 0;
+    resume();
+  };
+  s.shrinkResume = setTimeout(fire, SHRINK_RESUME_DELAY_MS);
+  s.shrinkResume.unref?.();
+}
+
+/**
+ * Record that a push gave up on a change OpenClaw has to hear about, because
+ * OpenClaw could not be reached: its file write fell under OpenClaw's
+ * read-side line (last-good-bound.ts), or its provider deletion could not
+ * reach a running OpenClaw. Nothing in the push resends it — a targeted
+ * writer's push queues no follow-up, and a follow-up regenerate none of its
+ * own — so OpenClaw's next connect owes a full regenerate
+ * (server/openclaw-connect-regenerate.ts), which rebuilds every change from
+ * the database.
+ *
+ * `seq` is the push's start sequence (`regenerateSeq` in write.ts): claimed
+ * after the change it carries was made. Coalesced like scheduleShrinkResume:
+ * the debt stands for the newest change that gave up.
+ *
+ * Process-wide only, not persisted: after a Pinchy restart the first connect
+ * regenerates anyway, which is everything this would have asked for.
+ */
+export function noteUndeliveredConfigChange(seq: number): void {
+  const s = state();
+  s.undeliveredSeq = Math.max(s.undeliveredSeq, seq);
+}
+
+/** Whether OpenClaw's next connect owes a regenerate (noteUndeliveredConfigChange). */
+export function undeliveredConfigChange(): boolean {
+  return state().undeliveredSeq !== 0;
+}
+
+/**
+ * A full regenerate's config reached OpenClaw (applied, written, or already
+ * in place). It settles the debt only when it STARTED after the newest push
+ * that gave up — only then did it read the state that push carried.
+ */
+export function settleUndeliveredConfigChange(deliveredBySeq: number): void {
+  const s = state();
+  if (deliveredBySeq > s.undeliveredSeq) s.undeliveredSeq = 0;
+}
+
+/**
+ * A full regenerate's config reached OpenClaw: pushed (applied, or already in
+ * OpenClaw's runtime), or found already in openclaw.json by the regenerate
+ * itself (build.ts). Cancels a follow-up and settles a debt that a regenerate
+ * started before this one left (cancelShrinkResume,
+ * settleUndeliveredConfigChange), and remembers the sequence so a push that
+ * started earlier and gives up only afterwards owes nothing
+ * (fullRegenerateDeliveredSince).
+ */
+export function noteFullRegenerateDelivered(seq: number): void {
+  const s = state();
+  s.deliveredSeq = Math.max(s.deliveredSeq, seq);
+  cancelShrinkResume(seq);
+  settleUndeliveredConfigChange(seq);
+}
+
+/**
+ * Whether a full regenerate that started after `seq` has reached OpenClaw
+ * (noteFullRegenerateDelivered). It read the state the push with sequence
+ * `seq` carried, so that push stopping short leaves nothing to resend.
+ */
+export function fullRegenerateDeliveredSince(seq: number): boolean {
+  return state().deliveredSeq > seq;
+}
+
+/**
+ * Record that a push over a WS client gave up on config.apply and wrote
+ * openclaw.json instead (the file fallbacks in write.ts). The file then holds
+ * the newest config, but nothing says OpenClaw's runtime does: OpenClaw may
+ * have been running all along, only not connected to Pinchy yet — and a
+ * running OpenClaw does not reliably reload a file Pinchy renames into place
+ * (#464). CI run 41906476538 is that shape: the setup wizard's push waited out
+ * OpenClaw's restart, wrote the file 0.3 s before Pinchy reconnected, and
+ * Smithers stayed out of the runtime.
+ *
+ * Until a config.apply lands (settleFileOnlyDelivery), openclaw.json is no
+ * proof of what OpenClaw runs: a regenerate that finds its target there still
+ * pushes it (build.ts), the push's no-op guard stands down — config.get reads
+ * that same file (write.ts) — and a reconnect regenerates
+ * (server/openclaw-connect-regenerate.ts).
+ *
+ * Every fallback except OpenClaw refusing the config itself gets a follow-up
+ * regenerate one rate-limit window later (scheduleFileOnlyFollowUp) — the one
+ * delivery there is when no reconnect is coming: the rate-limit retries ran
+ * out, or config.apply timed out, while OpenClaw stayed connected, the shapes
+ * a fresh install's first restarts can produce.
+ *
+ * Gap, stated rather than closed here: the no-client write at boot does not
+ * set this, so a Pinchy restart that changes openclaw.json while OpenClaw
+ * keeps running relies on OpenClaw reloading the file. Setting it would cost
+ * one config.apply (a rate-limit slot) on every boot that changed the file,
+ * also where OpenClaw then starts on that file anyway — a trade that needs
+ * its own evidence.
+ *
+ * Process-wide only, not persisted, and that is a second gap: a Pinchy restart
+ * drops a pending delivery, and the first connect's regenerate then takes an
+ * unchanged openclaw.json for the runtime again.
+ */
+export function noteFileOnlyDelivery(): void {
+  state().fileOnlyDelivery = true;
+}
+
+/** Whether openclaw.json may hold a config OpenClaw's runtime never loaded (noteFileOnlyDelivery). */
+export function fileOnlyDeliveryPending(): boolean {
+  return state().fileOnlyDelivery;
+}
+
+/**
+ * The newest push was applied over config.apply, so OpenClaw's runtime now
+ * holds everything the file does.
+ */
+export function settleFileOnlyDelivery(): void {
+  const s = state();
+  s.fileOnlyDelivery = false;
+  s.fileOnlyFollowUps = 0;
+  clearFileOnlyFollowUp(s);
+}
+
+/**
+ * Stop the follow-up chain, leaving the delivery pending: OpenClaw refused the
+ * config itself (write.ts), so a retry would be refused the same way. The next
+ * change, or a reconnect, still delivers what the file holds. Until one lands,
+ * every regenerate — an unchanged one too — and every reconnect pushes
+ * (config.get, its refused applies, a file rewrite — and for "Config write
+ * rejected" one more openclaw.json.rejected.<ts> file on OpenClaw's side per
+ * attempt) instead of taking the build.ts fast path; nothing schedules those,
+ * so it is bounded by them.
+ */
+export function cancelFileOnlyFollowUp(): void {
+  clearFileOnlyFollowUp(state());
+}
+
+function clearFileOnlyFollowUp(s: ConfigPushState): void {
+  if (s.fileOnlyFollowUp !== undefined) clearTimeout(s.fileOnlyFollowUp);
+  s.fileOnlyFollowUp = undefined;
+}
+
+/**
+ * How long a file-only delivery waits before its follow-up regenerate: one
+ * window of OpenClaw's control-plane write limit (3 per 60 s in the pinned
+ * OpenClaw, per e2e/shared/dispatch-probe.ts; write.ts's older notes say
+ * ~45 s for OC 5.3), so the apply it sends is not refused by the same limit
+ * that caused the fallback.
+ */
+export const FILE_ONLY_FOLLOW_UP_DELAY_MS = 60_000;
+/** While the newest push is in flight, the follow-up re-checks this often. */
+const FILE_ONLY_FOLLOW_UP_RECHECK_MS = 2_000;
+/**
+ * The longest a follow-up waits; each one fired doubles the wait up to this.
+ * The chain does not stop while a delivery is pending — a cap would strand the
+ * next change exactly like the bug it fixes. Each fire costs a full regenerate
+ * (database reads, secrets.json and auth-profile writes) and its push's
+ * config.get/config.apply attempts. A fallback after OpenClaw refused the
+ * config itself starts none and ends a running one (cancelFileOnlyFollowUp in
+ * write.ts); any other cause is one that passes. A landed apply resets the
+ * backoff (settleFileOnlyDelivery); until then it stays where it got to, so a
+ * later fallback in the same pending delivery waits that long too.
+ */
+export const FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS = 600_000;
+
+/**
+ * Queue one follow-up regenerate for a file-only delivery (noteFileOnlyDelivery).
+ * The flag makes that regenerate push past openclaw.json, and its landed apply
+ * settles the delivery.
+ *
+ * Coalesced process-wide: one pending at most, the latest caller's
+ * `regenerate` wins, and a new fallback restarts the wait. Cancelled when an
+ * apply lands, skipped when none is pending any more, and deferred while the
+ * newest push is in flight — that one settles the delivery itself, and a
+ * regenerate would only supersede it. Backs off per follow-up fired
+ * (FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS).
+ */
+export function scheduleFileOnlyFollowUp(regenerate: () => void): void {
+  const s = state();
+  const backoffMs = () =>
+    Math.min(
+      FILE_ONLY_FOLLOW_UP_DELAY_MS * 2 ** Math.min(s.fileOnlyFollowUps, 16),
+      FILE_ONLY_FOLLOW_UP_MAX_DELAY_MS
+    );
+  const arm = (delayMs: number) => {
+    clearFileOnlyFollowUp(s);
+    s.fileOnlyFollowUp = setTimeout(fire, delayMs);
+    s.fileOnlyFollowUp.unref?.();
+  };
+  const fire = () => {
+    s.fileOnlyFollowUp = undefined;
+    if (!s.fileOnlyDelivery) return;
+    if (newestPushInFlight()) {
+      arm(FILE_ONLY_FOLLOW_UP_RECHECK_MS);
+      return;
+    }
+    s.fileOnlyFollowUps++;
+    // The timer owns the chain: re-armed before the regenerate, so a push that
+    // ends without an apply AND without a fallback (a refused write, a
+    // regenerate that bails out) does not end it. A landed apply clears it, a
+    // fallback's own call replaces it.
+    arm(backoffMs());
+    regenerate();
+  };
+  arm(backoffMs());
+}
+
+/** `value` with every string replaced by "": which SecretRefs it resolves, and nothing else. */
+function shapeOf<T>(value: T): T {
+  if (typeof value === "string") return "" as T;
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, shapeOf(child)])
+  ) as T;
+}
+
+/**
+ * Record the bundle a regenerate just wrote to secrets.json — its shape only,
+ * every value replaced by "". It answers "would OpenClaw resolve this
+ * SecretRef?" for the push's file fallback (unresolvedSecretRefs in
+ * keyless-bridge.ts) without reading secrets.json, which Pinchy cannot read in
+ * production, and without keeping a secret in memory past the regenerate that
+ * built it. Here, on globalThis, because the regenerate that writes it and the
+ * push that reads it (a targeted writer's, say) can sit in different module
+ * instances.
+ */
+export function recordWrittenSecrets(bundle: SecretsBundle): void {
+  state().writtenSecretsShape = shapeOf(bundle);
+}
+
+/** The shape recordWrittenSecrets last recorded, or undefined before the first. */
+export function writtenSecretsShape(): SecretsBundle | undefined {
+  return state().writtenSecretsShape;
+}
+
+/** The bound last-good-bound.ts keeps, or undefined before this process loaded it. */
+export function lastGoodBound(): LastGoodBound | undefined {
+  return state().lastGoodBound;
+}
+
+/** Set by last-good-bound.ts only. */
+export function setLastGoodBound(bound: LastGoodBound): void {
+  state().lastGoodBound = bound;
+}
+
+/**
+ * Test-only: reset the pending counter, the recorded secrets shape, the
+ * last-known-good bound (reloaded from disk on next use), an undelivered
+ * change and the newest delivered regenerate, and drop a queued follow-up
+ * regenerate between tests. Do not call in app code.
+ */
 export function _resetConfigPushState(): void {
-  state().pending = 0;
+  const s = state();
+  s.pending = 0;
+  s.undeliveredSeq = 0;
+  s.deliveredSeq = 0;
+  s.fileOnlyDelivery = false;
+  s.fileOnlyFollowUps = 0;
+  clearFileOnlyFollowUp(s);
+  s.inFlightGenerations.clear();
+  s.unservedCalls = undefined;
+  s.writtenSecretsShape = undefined;
+  s.lastGoodBound = undefined;
+  clearShrinkResume(s);
 }
 
 // There is deliberately NO reset for `generation`. It is a cancellation token

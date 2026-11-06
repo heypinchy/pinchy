@@ -115,10 +115,12 @@ function highlightJson(json: string): string {
 }
 
 function ActorCell({
+  actorType,
   actorId,
   actorName,
   actorDeleted,
 }: {
+  actorType: string;
   actorId: string;
   actorName: string | null;
   actorDeleted: boolean;
@@ -130,7 +132,8 @@ function ActorCell({
       <span>
         {actorName}{" "}
         <Badge variant="outline" className="text-xs ml-1">
-          deactivated
+          {/* Users are deactivated (banned) and can come back; agents are deleted. */}
+          {actorType === "agent" ? "deleted" : "deactivated"}
         </Badge>
       </span>
     );
@@ -380,7 +383,7 @@ export function AuditLogTable() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <Select value={eventTypeFilter || "all"} onValueChange={handleEventTypeChange}>
-            <SelectTrigger aria-label="Event Type" className="w-[200px]">
+            <SelectTrigger aria-label="Event Type" className="w-full sm:w-[200px]">
               <SelectValue placeholder="All Events" />
             </SelectTrigger>
             <SelectContent>
@@ -394,7 +397,7 @@ export function AuditLogTable() {
           </Select>
 
           <Select value={statusFilter || "all"} onValueChange={handleStatusChange}>
-            <SelectTrigger aria-label="Status" className="w-[160px]">
+            <SelectTrigger aria-label="Status" className="w-full sm:w-[160px]">
               <SelectValue placeholder="All Statuses" />
             </SelectTrigger>
             <SelectContent>
@@ -404,6 +407,8 @@ export function AuditLogTable() {
             </SelectContent>
           </Select>
 
+          {/* Each date keeps its label but wraps on its own: as one row the
+              pair was ~400px and ran past a 375px screen (#1300). */}
           <div className="flex items-center gap-2">
             <label htmlFor="date-from" className="text-sm text-muted-foreground whitespace-nowrap">
               From
@@ -415,6 +420,8 @@ export function AuditLogTable() {
               onChange={handleDateFromChange}
               className="w-[160px]"
             />
+          </div>
+          <div className="flex items-center gap-2">
             <label htmlFor="date-to" className="text-sm text-muted-foreground whitespace-nowrap">
               To
             </label>
@@ -495,25 +502,35 @@ export function AuditLogTable() {
           {/* Mobile card-view */}
           <div className="block lg:hidden space-y-2">
             {entries.map((entry) => (
+              // The whole card stays a click target for the mouse, but it is
+              // not a button: it holds the actor/resource links, and a
+              // button-role wrapper around links is a nested interactive
+              // control (axe `nested-interactive`, #1300). Keyboard and
+              // screen-reader users open the detail through the badge button.
               <div
                 key={entry.id}
-                role="button"
-                tabIndex={0}
+                data-audit-card
                 className={`rounded border p-3 space-y-1 cursor-pointer hover:bg-muted/50 ${tamperedIds?.has(entry.id) ? "border-red-400 bg-red-50 dark:bg-red-950/20" : ""}`}
                 data-tampered={tamperedIds?.has(entry.id) ? "true" : undefined}
                 onClick={() => setSelectedEntry(entry)}
-                onKeyDown={(e) => {
-                  if (e.target !== e.currentTarget) return;
-                  if (e.key === " ") e.preventDefault();
-                }}
-                onKeyUp={(e) => {
-                  if (e.target !== e.currentTarget) return;
-                  if (e.key === "Enter" || e.key === " ") setSelectedEntry(entry);
-                }}
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="secondary">{entry.eventType}</Badge>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <button
+                      type="button"
+                      aria-label={`${entry.eventType} details`}
+                      className="flex min-w-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedEntry(entry);
+                      }}
+                    >
+                      {/* `block`, not the badge's inline-flex: an ellipsis only applies
+                          to a block box. */}
+                      <Badge variant="secondary" className="block max-w-full truncate">
+                        {entry.eventType}
+                      </Badge>
+                    </button>
                     <StatusCell outcome={entry.outcome} />
                   </div>
                   <span className="text-xs text-muted-foreground">
@@ -523,6 +540,7 @@ export function AuditLogTable() {
                 <div className="text-sm">
                   <span className="text-muted-foreground">Actor: </span>
                   <ActorCell
+                    actorType={entry.actorType}
                     actorId={entry.actorId}
                     actorName={entry.actorName}
                     actorDeleted={entry.actorDeleted}
@@ -575,6 +593,7 @@ export function AuditLogTable() {
                       <TableCell>{new Date(entry.timestamp).toLocaleString()}</TableCell>
                       <TableCell>
                         <ActorCell
+                          actorType={entry.actorType}
                           actorId={entry.actorId}
                           actorName={entry.actorName}
                           actorDeleted={entry.actorDeleted}
@@ -637,6 +656,7 @@ export function AuditLogTable() {
                 <p>
                   {selectedEntry.actorType}:{" "}
                   <ActorCell
+                    actorType={selectedEntry.actorType}
                     actorId={selectedEntry.actorId}
                     actorName={selectedEntry.actorName}
                     actorDeleted={selectedEntry.actorDeleted}

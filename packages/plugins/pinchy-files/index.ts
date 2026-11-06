@@ -20,6 +20,9 @@ import { reportUsage } from "./usage-reporter";
 import { resolveAgentInfo } from "./resolve-agent-info";
 import { generateFile, type GenerateFileFormat } from "./generate-file";
 import { normalizeDeliverableBasename } from "./deliverable-filename";
+import { assertPlainPath } from "./plain-path";
+import { refusingUnknownParams } from "./unknown-params";
+import { openVerified } from "./verified-open";
 
 // The Pinchy web process runs as uid/gid 999 in the container and must own a
 // generated file to serve it back to the user as a download (#703). Chowning
@@ -237,7 +240,9 @@ function getCache(): PdfCache {
 async function readPdf(
   realPath: string,
   stats: { size: number; mtimeMs: number },
-  visionConfig: VisionApiConfig | null
+  visionConfig: VisionApiConfig | null,
+  /** Reads the bytes from the descriptor `openVerified` checked — never the path again. */
+  readBytes: () => Promise<Buffer>
 ): Promise<{ content: ContentBlock[]; visionUsage: AggregatedVisionUsage }> {
   const pdfCache = getCache();
   const zeroUsage: AggregatedVisionUsage = { inputTokens: 0, outputTokens: 0 };
@@ -249,7 +254,7 @@ async function readPdf(
   }
 
   // Cache miss or mtime changed — read file and compute hash
-  const fileBuffer = await readFile(realPath);
+  const fileBuffer = await readBytes();
   const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
 
   // Slow path: check if content hash matches (mtime changed but content didn't)
@@ -300,7 +305,9 @@ const plugin = {
     },
   },
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     const agentConfigs = api.pluginConfig?.agents ?? {};
     const apiBaseUrl = api.pluginConfig?.apiBaseUrl;
     const gatewayToken = api.pluginConfig?.gatewayToken;
@@ -425,54 +432,64 @@ const plugin = {
 
               // PDF detection
               if (isPdf) {
-                const stats = statSync(realPath);
-                if (stats.size > MAX_PDF_FILE_SIZE) {
-                  return toolError(
-                    `File too large (${stats.size} bytes). Maximum: ${MAX_PDF_FILE_SIZE} bytes.`
-                  );
-                }
-
-                // Resolve agent name + model from OpenClaw config in one walk.
-                // The model drives vision API calls; the name makes rows on
-                // the Usage Dashboard readable (agentId alone is opaque).
-                let visionConfig: VisionApiConfig | null = null;
-                let resolvedAgentName: string | undefined;
-                if (modelAuth && loadConfig) {
-                  const cfg = loadConfig();
-                  const agentInfo = resolveAgentInfo(cfg, agentId);
-                  resolvedAgentName = agentInfo.name;
-                  // Prefer Pinchy's dedicated, live-resolved vision model; fall
-                  // back to the agent's own model only when none was emitted.
-                  const visionModel = visionModelOverride ?? agentInfo.model;
-                  if (visionModel) {
-                    visionConfig = createVisionConfig({
-                      modelAuth,
-                      cfg,
-                      model: visionModel,
-                    });
+                // Opened once, without following a link, and checked to be
+                // the file at realPath (verified-open.ts): the size gate, the
+                // cache key and the bytes all come from this descriptor, so a
+                // link swapped in after validateAccess is never read.
+                const { handle, stats } = await openVerified(realPath);
+                try {
+                  if (stats.size > MAX_PDF_FILE_SIZE) {
+                    return toolError(
+                      `File too large (${stats.size} bytes). Maximum: ${MAX_PDF_FILE_SIZE} bytes.`
+                    );
                   }
-                }
-                const pdfResult = await readPdf(realPath, stats, visionConfig);
 
-                // Fire-and-forget: report any vision API tokens to Pinchy's
-                // internal usage endpoint so they show up on the Usage
-                // Dashboard. We intentionally do not await — telemetry must
-                // never block or fail a PDF read.
-                if (apiBaseUrl && gatewayToken && visionConfig) {
-                  void reportUsage(
-                    {
-                      agentId,
-                      agentName: resolvedAgentName ?? agentId,
-                      sessionKey: "plugin:pinchy-files",
-                      model: visionConfig.model,
-                      inputTokens: pdfResult.visionUsage.inputTokens,
-                      outputTokens: pdfResult.visionUsage.outputTokens,
-                    },
-                    { apiBaseUrl, gatewayToken }
+                  // Resolve agent name + model from OpenClaw config in one walk.
+                  // The model drives vision API calls; the name makes rows on
+                  // the Usage Dashboard readable (agentId alone is opaque).
+                  let visionConfig: VisionApiConfig | null = null;
+                  let resolvedAgentName: string | undefined;
+                  if (modelAuth && loadConfig) {
+                    const cfg = loadConfig();
+                    const agentInfo = resolveAgentInfo(cfg, agentId);
+                    resolvedAgentName = agentInfo.name;
+                    // Prefer Pinchy's dedicated, live-resolved vision model; fall
+                    // back to the agent's own model only when none was emitted.
+                    const visionModel = visionModelOverride ?? agentInfo.model;
+                    if (visionModel) {
+                      visionConfig = createVisionConfig({
+                        modelAuth,
+                        cfg,
+                        model: visionModel,
+                      });
+                    }
+                  }
+                  const pdfResult = await readPdf(realPath, stats, visionConfig, () =>
+                    handle.readFile()
                   );
-                }
 
-                return { content: pdfResult.content };
+                  // Fire-and-forget: report any vision API tokens to Pinchy's
+                  // internal usage endpoint so they show up on the Usage
+                  // Dashboard. We intentionally do not await — telemetry must
+                  // never block or fail a PDF read.
+                  if (apiBaseUrl && gatewayToken && visionConfig) {
+                    void reportUsage(
+                      {
+                        agentId,
+                        agentName: resolvedAgentName ?? agentId,
+                        sessionKey: "plugin:pinchy-files",
+                        model: visionConfig.model,
+                        inputTokens: pdfResult.visionUsage.inputTokens,
+                        outputTokens: pdfResult.visionUsage.outputTokens,
+                      },
+                      { apiBaseUrl, gatewayToken }
+                    );
+                  }
+
+                  return { content: pdfResult.content };
+                } finally {
+                  await handle.close();
+                }
               }
 
               // Non-PDF (.docx, images, text): open the file once and read it
@@ -480,11 +497,12 @@ const plugin = {
               // SAME open handle. Binding the size check and the read to one fd
               // closes the time-of-check/time-of-use window (CodeQL
               // js/file-system-race): a file swapped after the check can no
-              // longer be read in its place.
-              const fh = await open(realPath, "r");
+              // longer be read in its place. And the open itself refuses to
+              // follow a link swapped in after validateAccess (verified-open.ts).
+              const { handle: fh, stats: opened } = await openVerified(realPath);
               let buffer: Buffer;
               try {
-                const { size } = await fh.stat();
+                const { size } = opened;
                 const sizeLimit = isDocx ? MAX_DOCX_FILE_SIZE : MAX_FILE_SIZE;
                 if (size > sizeLimit) {
                   return toolError(`File too large (${size} bytes). Maximum: ${sizeLimit} bytes.`);
@@ -543,34 +561,40 @@ const plugin = {
 
         const pathList = writePaths.join(", ");
 
+        const parameters = {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: `Full file path. Must be under: ${pathList}`,
+            },
+            content: {
+              type: "string",
+              description: "Full file content as a string.",
+            },
+            overwrite: {
+              type: "boolean",
+              description: "Set to true to replace an existing file. Default: false.",
+            },
+          },
+          required: ["path", "content"],
+          additionalProperties: false,
+        };
+
         return {
           name: "pinchy_write",
           label: "Write File",
           description: `Write content to a file. Fails if the file already exists — set overwrite=true to replace. Writable paths: ${pathList}`,
-          parameters: {
-            type: "object",
-            properties: {
-              path: {
-                type: "string",
-                description: `Full file path. Must be under: ${pathList}`,
-              },
-              content: {
-                type: "string",
-                description: "Full file content as a string.",
-              },
-              overwrite: {
-                type: "boolean",
-                description: "Set to true to replace an existing file. Default: false.",
-              },
-            },
-            required: ["path", "content"],
-          },
+          parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (typeof params.path !== "string") {
                 throw new Error("path must be a string");
               }
               const requestedPath = params.path;
+              // What the confirmation card showed must be the file that
+              // changes — refused before validateAccess resolves anything.
+              assertPlainPath(requestedPath, "path");
 
               if (typeof params.content !== "string") {
                 throw new Error("content must be a string");
@@ -738,28 +762,34 @@ const plugin = {
 
         const pathList = writePaths.join(", ");
 
+        const parameters = {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: `Full path of the file to delete. Must be under: ${pathList}`,
+            },
+          },
+          required: ["path"],
+          additionalProperties: false,
+        };
+
         return {
           name: "pinchy_delete",
           label: "Delete File",
           description:
             `Delete a file you no longer need. Only files you can write can be deleted: ${pathList}. ` +
             "Deletion is permanent — there is no undo.",
-          parameters: {
-            type: "object",
-            properties: {
-              path: {
-                type: "string",
-                description: `Full path of the file to delete. Must be under: ${pathList}`,
-              },
-            },
-            required: ["path"],
-          },
+          parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (typeof params.path !== "string") {
                 throw new Error("path must be a string");
               }
               const requestedPath = params.path;
+              // What the confirmation card showed must be the file that
+              // changes — refused before validateAccess resolves anything.
+              assertPlainPath(requestedPath, "path");
 
               const resolved = validateAccess(
                 { allowed_paths: config.allowed_paths, write_paths: writePaths },
@@ -856,6 +886,41 @@ const plugin = {
         });
         if (!workbench) return null;
 
+        const parameters = {
+          type: "object",
+          properties: {
+            format: {
+              type: "string",
+              enum: GENERATE_FILE_FORMATS,
+              description: "Output file format.",
+            },
+            filename: {
+              type: "string",
+              description:
+                "Base name for the generated file, WITHOUT extension (the extension is " +
+                "added automatically based on format). Must not contain path separators.",
+            },
+            title: {
+              type: "string",
+              description: "Optional title, used as the sheet name (xlsx) or heading (pdf).",
+            },
+            columns: {
+              type: "array",
+              items: { type: "string" },
+              description: "Column headers, in order.",
+            },
+            rows: {
+              type: "array",
+              items: { type: "array" },
+              description:
+                "Table rows. Each row is an array of cell values (string, number, boolean, " +
+                "or null) with one entry per column, in the same order as `columns`.",
+            },
+          },
+          required: ["format", "filename", "columns", "rows"],
+          additionalProperties: false,
+        };
+
         return {
           name: "pinchy_generate_file",
           label: "Generate File",
@@ -866,39 +931,7 @@ const plugin = {
             "single-sheet Excel workbook), pdf (a simple table report). Existing files are " +
             "never overwritten — on a name collision a numeric suffix is appended (e.g. " +
             "export-2.csv); the tool result reports the actual filename used.",
-          parameters: {
-            type: "object",
-            properties: {
-              format: {
-                type: "string",
-                enum: GENERATE_FILE_FORMATS,
-                description: "Output file format.",
-              },
-              filename: {
-                type: "string",
-                description:
-                  "Base name for the generated file, WITHOUT extension (the extension is " +
-                  "added automatically based on format). Must not contain path separators.",
-              },
-              title: {
-                type: "string",
-                description: "Optional title, used as the sheet name (xlsx) or heading (pdf).",
-              },
-              columns: {
-                type: "array",
-                items: { type: "string" },
-                description: "Column headers, in order.",
-              },
-              rows: {
-                type: "array",
-                items: { type: "array" },
-                description:
-                  "Table rows. Each row is an array of cell values (string, number, boolean, " +
-                  "or null) with one entry per column, in the same order as `columns`.",
-              },
-            },
-            required: ["format", "filename", "columns", "rows"],
-          },
+          parameters,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (
@@ -912,6 +945,12 @@ const plugin = {
               if (typeof params.filename !== "string" || params.filename.length === 0) {
                 throw new Error("filename must be a non-empty string");
               }
+              // Refused rather than normalized: the name approved on the
+              // confirmation card is the name written.
+              // Surrounding whitespace is the one exception: the name is
+              // trimmed below, so both spellings write the same file, and
+              // the card marks the spaces.
+              assertPlainPath(params.filename, "filename", { trimmedByTool: true });
               // Path confinement AND delivery-route alignment: the returned
               // basename is exactly what the file will be stored and granted
               // under (NFC, trimmed, no separators/traversal, no characters

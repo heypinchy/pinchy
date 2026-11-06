@@ -1,7 +1,7 @@
 /**
  * Real-DB integration tests for retrieve() (hybrid pgvector + FTS retrieval,
  * fused via Reciprocal Rank Fusion). Uses a real PostgreSQL test database
- * (provisioned by global-setup.ts, truncated between tests by setup.ts).
+ * (provisioned by global-setup.ts, emptied between tests by the integration reset).
  * kb_documents/kb_chunks rows are inserted DIRECTLY with hand-chosen
  * embeddinggemma-width embeddings and texts, so ranking is fully deterministic
  * without Ollama — the generated `tsv` column auto-populates from `chunk_text`
@@ -18,13 +18,14 @@
  * vector on axis 0 — closer than orthogonal, farther than identical.
  */
 import { eq } from "drizzle-orm";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
 import { EMBEDDING_DIMENSIONS } from "@/lib/knowledge/constants";
 import { retrieve, type RetrieveDeps } from "@/lib/knowledge/retrieve";
 import type { ChunkLocator } from "@/lib/knowledge/locator";
+import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
 
 const ORG_ID = "org-kb-retrieve-test";
 // Match the live column width so inserts don't fail the vector(N) check; a
@@ -61,6 +62,8 @@ interface SeedChunk {
   status?: "active" | "archived";
   /** Set to null to seed a chunk with no anchor at all, the way a format without a stable one would. */
   locator?: ChunkLocator | null;
+  /** `kb_documents.artifact_format_version`: null, as every row written before it was recorded has it, unless set. */
+  artifactFormatVersion?: number | null;
 }
 
 async function seedChunk(seed: SeedChunk): Promise<{ documentId: string; chunkId: string }> {
@@ -71,6 +74,7 @@ async function seedChunk(seed: SeedChunk): Promise<{ documentId: string; chunkId
       contentHash: `hash-${seed.sourcePath}`,
       sourcePath: seed.sourcePath,
       status: seed.status ?? "active",
+      artifactFormatVersion: seed.artifactFormatVersion ?? null,
     })
     .returning();
 
@@ -526,4 +530,72 @@ it("keeps byte-identical documents at different paths independently cap-counted 
   const ids = results.map((r) => r.chunkId);
   expect(ids).toContain(copyA.chunkId);
   expect(ids).toContain(copyB.chunkId);
+});
+
+describe("an Office document whose chunks came from an earlier artifact format", () => {
+  // AGENTS.md § "Test Migrations Against Pre-Existing Data". After a bump of
+  // OFFICE_ARTIFACT_FORMAT_VERSION the rows the upgrade finds were read from
+  // PDFs the earlier, weaker conversion made — which may hold text a planted
+  // document drew in from the server's disk. Until the document is converted
+  // again under the current rules, its old chunks must not answer a search.
+  const LEAKED = "root:x:0:0:root:/root:/bin/bash vacation policy";
+
+  it("leaves its chunks out of every search until it is converted again", async () => {
+    const unrecorded = await seedChunk({
+      sourcePath: "/data/Angebot.docx",
+      text: LEAKED,
+      embedding: oneHot(0),
+    });
+    const older = await seedChunk({
+      sourcePath: "/data/Folien.PPT",
+      text: LEAKED,
+      embedding: oneHot(0),
+      artifactFormatVersion: OFFICE_ARTIFACT_FORMAT_VERSION - 1,
+    });
+
+    const { deps } = fakeDeps();
+    const ids = (await retrieve(ORG_ID, ["/data"], "vacation policy", deps)).map((r) => r.chunkId);
+    const archiveToo = (
+      await retrieve(ORG_ID, ["/data"], "vacation policy", deps, { includeArchived: true })
+    ).map((r) => r.chunkId);
+
+    for (const hidden of [unrecorded.chunkId, older.chunkId]) {
+      expect(ids).not.toContain(hidden);
+      expect(archiveToo).not.toContain(hidden);
+    }
+  });
+
+  it("finds it again once its chunks come from the current format", async () => {
+    const current = await seedChunk({
+      sourcePath: "/data/Angebot.docx",
+      text: "The vacation policy allows unlimited PTO.",
+      embedding: oneHot(0),
+      artifactFormatVersion: OFFICE_ARTIFACT_FORMAT_VERSION,
+    });
+
+    const { deps } = fakeDeps();
+    const ids = (await retrieve(ORG_ID, ["/data"], "vacation policy", deps)).map((r) => r.chunkId);
+
+    expect(ids).toContain(current.chunkId);
+  });
+
+  it("leaves every other format alone, which records no artifact format at all", async () => {
+    // A PDF, a workbook, and names that only look like an Office document:
+    // a dotfile called `.doc` and an Office name with a further extension.
+    const others = await Promise.all(
+      ["/data/handbook.pdf", "/data/budget.xlsx", "/data/.doc", "/data/Angebot.docx.pdf"].map(
+        (sourcePath) =>
+          seedChunk({
+            sourcePath,
+            text: "The vacation policy allows unlimited PTO.",
+            embedding: oneHot(0),
+          })
+      )
+    );
+
+    const { deps } = fakeDeps();
+    const ids = (await retrieve(ORG_ID, ["/data"], "vacation policy", deps)).map((r) => r.chunkId);
+
+    for (const other of others) expect(ids).toContain(other.chunkId);
+  });
 });

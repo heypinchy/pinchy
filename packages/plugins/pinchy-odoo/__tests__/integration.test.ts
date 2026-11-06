@@ -369,6 +369,144 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
   });
 });
 
+describe("pinchy-odoo against a server that does not answer JSON-RPC", () => {
+  // The real odoo-node, the real transport, an answer that is not JSON-RPC:
+  // what an Odoo URL that points at the wrong host gets back. The body must not
+  // reach the model — it is whatever that host chose to say.
+  let answer: { status: number; contentType: string; body: string };
+  let notJsonRpc: Server;
+  const connectionId = "conn-not-json-rpc";
+
+  beforeAll(async () => {
+    notJsonRpc = createServer((_req, res) => {
+      res.writeHead(answer.status, { "Content-Type": answer.contentType });
+      res.end(answer.body);
+    });
+    await new Promise<void>((resolve) => notJsonRpc.listen(0, "127.0.0.1", resolve));
+    credentialsByConnectionId.set(connectionId, {
+      url: `http://127.0.0.1:${(notJsonRpc.address() as AddressInfo).port}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: "test-api-key",
+    });
+  });
+
+  afterAll(async () => {
+    credentialsByConnectionId.delete(connectionId);
+    await new Promise<void>((resolve, reject) =>
+      notJsonRpc.close((err) => (err ? reject(err) : resolve()))
+    );
+  });
+
+  it.each([
+    // What AWS's metadata service answers for /latest/meta-data/iam/security-credentials/.
+    ["a plain-text body", { status: 200, contentType: "text/plain", body: "my-ec2-role-name\n" }],
+    // JSON, but not a JSON-RPC envelope.
+    [
+      "a JSON body that is not JSON-RPC",
+      { status: 200, contentType: "application/json", body: '{"my-ec2-role-name":1}' },
+    ],
+    // A JSON-RPC envelope whose error has no `data`: odoo-node reads
+    // `error.data.message` off undefined and throws a TypeError.
+    [
+      "a JSON-RPC error without data",
+      {
+        status: 200,
+        contentType: "application/json",
+        body: '{"jsonrpc":"2.0","id":1,"error":{"my-ec2-role-name":1}}',
+      },
+    ],
+  ])("reports %s as not JSON-RPC without quoting it to the model", async (_label, served) => {
+    answer = served;
+    const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+    const result = await findTool(tools, "odoo_read", agentId).execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).not.toContain("my-ec2-role-name");
+    expect(text).toContain("not a JSON-RPC response");
+    expect(text).toContain("Settings → Integrations");
+    expect(JSON.stringify(result.details)).not.toContain("my-ec2-role-name");
+  });
+});
+
+describe("pinchy-odoo against an Odoo URL that redirects", () => {
+  // Pinchy validates the Odoo URL before saving it; a redirect would hand the
+  // request to an address nobody validated, and a 307/308 re-sends the POST
+  // body — the API key — along with it. The target stands in for loopback,
+  // link-local or a metadata service and records everything that reaches it.
+  const connectionId = "conn-redirecting";
+  const API_KEY = "redirect-test-api-key";
+  const SECRET = "SECRET-METADATA-TOKEN";
+  let status = 307;
+  const targetRequests: string[] = [];
+  let target: Server;
+  let redirecting: Server;
+
+  beforeAll(async () => {
+    target = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        targetRequests.push(`${req.method} ${req.url} ${body}`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: [] }));
+      });
+    });
+    await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
+    const targetOrigin = `http://127.0.0.1:${(target.address() as AddressInfo).port}`;
+    redirecting = createServer((_req, res) => {
+      res.writeHead(status, {
+        Location: `${targetOrigin}/latest/meta-data/`,
+        "Content-Type": "text/html",
+      });
+      res.end(`<html>${SECRET}</html>`);
+    });
+    await new Promise<void>((resolve) => redirecting.listen(0, "127.0.0.1", resolve));
+    credentialsByConnectionId.set(connectionId, {
+      url: `http://127.0.0.1:${(redirecting.address() as AddressInfo).port}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: API_KEY,
+    });
+  });
+
+  afterAll(async () => {
+    credentialsByConnectionId.delete(connectionId);
+    for (const server of [redirecting, target]) {
+      await new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve()))
+      );
+    }
+  });
+
+  it.each([302, 307, 308])(
+    "refuses a %i without a request to the target and tells the model why",
+    async (redirectStatus) => {
+      status = redirectStatus;
+      targetRequests.length = 0;
+      const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+      const result = await findTool(tools, "odoo_read", agentId).execute("call-1", {
+        model: "sale.order",
+        filters: [],
+      });
+
+      expect(targetRequests).toEqual([]);
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text;
+      expect(text).toMatch(/redirect/i);
+      expect(text).toContain(`HTTP ${redirectStatus}`);
+      expect(text).toContain("Settings → Integrations");
+      const everything = JSON.stringify(result);
+      expect(everything).not.toContain(SECRET);
+      expect(everything).not.toContain(API_KEY);
+    }
+  );
+});
+
 describe("pinchy-odoo mail.activity scheduling against real mock-odoo", () => {
   const activityAgentId = "agent-activity";
   const activityConnectionId = "conn-activity";

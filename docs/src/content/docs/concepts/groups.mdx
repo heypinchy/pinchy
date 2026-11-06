@@ -40,13 +40,25 @@ There are two visibility modes:
 
 ### Restricted (default)
 
-New agents are created with **Restricted** visibility. This means the agent is invisible to regular users until an admin explicitly publishes it. This is a safe default — you can configure and test an agent before anyone else sees it.
+New agents are created with **Restricted** visibility. With a license, this means the agent is invisible to regular users until an admin explicitly publishes it. This is a safe default — you can configure and test an agent before anyone else sees it.
 
-When you select **Restricted**, a group picker appears. You can optionally choose one or more groups — only members of those groups (and admins) will see the agent. If no groups are selected, only admins have access.
+When you select **Restricted**, a group picker appears. You can optionally choose one or more groups — only members of those groups (and admins) will see the agent. If no groups are selected, only admins have access, and the Access tab says so: _Only admins can use this agent until you pick at least one group._
 
 ![Agent access control — visibility mode and group assignment](/screenshots/agent-settings-access.png)
 
 For example, you might create an "HR Team" group and assign your HR Knowledge Base agent to it. Only HR team members and admins can see and chat with that agent.
+
+### Activating a license on an instance that already has agents
+
+On an instance that has never had a license (or whose key was removed), groups have no effect, so Pinchy shows every shared agent to everyone — even the ones stored as **Restricted**, which is every agent you created before. The moment you activate a license, Restricted is enforced: a Restricted agent with no group becomes **admins only**, and your members stop seeing it.
+
+Pinchy doesn't let that happen quietly. **Settings → License** lists those agents by name:
+
+- **Before you activate**, it shows the shared agents that have no group yet, so you know which ones members will lose.
+- **After you activate**, it shows the agents only admins can use. Each name links to that agent's Access tab, where you can pick groups.
+- **Make visible to everyone** sets all of the listed agents to **All users** in one step — what your members had before the license. Pinchy asks first and names every agent it will change. Each change is recorded in the audit trail as `agent.updated`.
+
+Pinchy never makes this change for you. Opening an agent to everyone is a decision about who sees what, so it stays yours, even when it only restores how things were.
 
 ### All users
 

@@ -23,7 +23,9 @@ import {
   remarkSourceLinks,
   buildSourceHref,
   buildSourceDownloads,
+  buildSourceViewerUrl,
   parseSourceHref,
+  buildPassageRequest,
 } from "@/lib/knowledge/source-links";
 import { OFFICE_EXTENSIONS } from "@/lib/knowledge/office-formats";
 
@@ -136,6 +138,7 @@ describe("buildSourceDownloads", () => {
 
     expect(downloads).toHaveLength(1);
     expect(downloads[0].label).toBe("document.pdf");
+    expect(downloads[0].filename).toBe("document.pdf");
   });
 
   it("offers the original AND the converted PDF for an Office source", () => {
@@ -145,7 +148,24 @@ describe("buildSourceDownloads", () => {
     // convenience that sometimes saves them the conversion.
     const downloads = buildSourceDownloads(hrefFor("noack/QF_2012/Angebot.doc"))!;
 
-    expect(downloads.map((d) => d.label)).toEqual(["Angebot.doc", "Angebot.pdf"]);
+    expect(downloads.map((d) => d.filename)).toEqual(["Angebot.doc", "Angebot.pdf"]);
+  });
+
+  it("labels the pair by what each one IS, not by the document's name (#1268)", () => {
+    // Both entries carry the same name up to the extension, and the header
+    // truncates a label long before it reaches the extension — so two labels
+    // made of the filename read "Vorlage_Wartung…" twice. What tells them
+    // apart is the representation, which is what the label says now; the
+    // filename stays reachable as the entry's own field (tooltip, a11y name).
+    const downloads = buildSourceDownloads(hrefFor("noack/Vorlage_Wartung_Kundendienst.docx"))!;
+
+    expect(downloads.map((d) => d.label)).toEqual(["Original (.docx)", "PDF"]);
+  });
+
+  it("keeps the original's extension as written, so the label matches the file", () => {
+    const [original] = buildSourceDownloads(hrefFor("noack/Bericht.PPTX"))!;
+
+    expect(original.label).toBe("Original (.PPTX)");
   });
 
   it("names each representation explicitly, so the pair is not a coin flip", () => {
@@ -183,6 +203,50 @@ describe("buildSourceDownloads", () => {
   it("says nothing about a link that is not a citation", () => {
     expect(buildSourceDownloads("/some/other/link")).toBeNull();
     expect(buildSourceDownloads("https://evil.example/workspace-file?path=%2Fx.docx")).toBeNull();
+  });
+});
+
+describe("buildSourceViewerUrl", () => {
+  // The browser's own PDF viewer names a document after the LAST PATH SEGMENT
+  // of its url when the file carries no title of its own — and for every
+  // citation that segment was the route, so the viewer's toolbar announced
+  // "workspace-file" (#1268). The viewer url therefore ends in the name of
+  // the bytes it shows; `path` stays the only thing that decides WHICH bytes.
+
+  it("ends the path in the document's name and keeps query and page", () => {
+    const href = buildSourceHref(AGENT, "noack/PPR/Prüfbericht Nr. 5.pdf", {
+      kind: "page",
+      page: 44,
+    });
+
+    expect(buildSourceViewerUrl(href)).toBe(
+      "/api/agents/agent-1/workspace-file/Pr%C3%BCfbericht%20Nr.%205.pdf" +
+        "?path=%2Fdata%2Fnoack%2FPPR%2FPr%C3%BCfbericht%20Nr.%205.pdf#page=44"
+    );
+  });
+
+  it("names an Office source after the PDF the viewer is actually shown", () => {
+    // The bytes are the converted PDF. Naming the url `.docx` would title a
+    // PDF as a Word file, and a viewer that saves under the url's name would
+    // hand the reader a PDF called `.docx`.
+    const href = buildSourceHref(AGENT, "noack/Vorlage_Wartung.docx", null);
+    const url = new URL(buildSourceViewerUrl(href)!, "http://localhost");
+
+    expect(url.pathname).toBe("/api/agents/agent-1/workspace-file/Vorlage_Wartung.pdf");
+    expect(url.searchParams.get("path")).toBe("/data/noack/Vorlage_Wartung.docx");
+  });
+
+  it("encodes a name that would otherwise end the path segment early", () => {
+    const href = buildSourceHref(AGENT, "noack/Q&A #3?.pdf", null);
+    const url = new URL(buildSourceViewerUrl(href)!, "http://localhost");
+
+    expect(decodeURIComponent(url.pathname.split("/").pop()!)).toBe("Q&A #3?.pdf");
+    expect(url.hash).toBe("");
+  });
+
+  it("says nothing about a link that is not a citation", () => {
+    expect(buildSourceViewerUrl("/some/other/link")).toBeNull();
+    expect(buildSourceViewerUrl("https://evil.example/workspace-file?path=%2Fx.pdf")).toBeNull();
   });
 });
 
@@ -500,5 +564,220 @@ describe("a locator only attaches to a document that can honour it", () => {
 
       expect(parseSourceHref(links(tree)[0].url)?.locator).toBeNull();
     }
+  });
+});
+
+/**
+ * The claim a citation supports, carried to the viewer so it can ask the index
+ * which passage on the cited page the answer drew on (#1268). It rides on the
+ * link as a hast property, never in the href: the href's shape is what the
+ * renderer trusts as a citation, and it must not widen.
+ */
+describe("the claim a citation supports", () => {
+  type Claimed = Node & { data?: { hProperties?: Record<string, string> } };
+
+  function claims(tree: Node): Array<{ text: string; claim: string | undefined }> {
+    const found: Array<{ text: string; claim: string | undefined }> = [];
+    const walk = (node: Claimed) => {
+      if (node.type === "link") {
+        found.push({
+          text: (node.children ?? []).map((c) => c.value ?? "").join(""),
+          claim: node.data?.hProperties?.dataCitedClaim,
+        });
+      }
+      (node.children ?? []).forEach((child) => walk(child as Claimed));
+    };
+    walk(tree as Claimed);
+    return found;
+  }
+
+  function answer(...blocks: Node[]): Node {
+    return { type: "root", children: blocks };
+  }
+  const p = (text: string): Node => ({
+    type: "paragraph",
+    children: [{ type: "text", value: text }],
+  });
+  const sources = (...entries: string[]): Node => ({
+    type: "list",
+    children: entries.map((entry) => ({ type: "listItem", children: [p(entry)] })),
+  });
+
+  it("gives a Sources entry the sentences that cite its number", () => {
+    const tree = run(
+      answer(
+        p(
+          "Der Auftragnehmer reagiert binnen vier Stunden [1]. Die Pauschale beträgt 1.200 € [2]. " +
+            "Nachts gilt die doppelte Frist [1]."
+        ),
+        sources("[1] quality/Wartung.pdf — p. 4", "[2] quality/Preise.pdf — p. 2")
+      )
+    );
+
+    expect(claims(tree)).toEqual([
+      {
+        text: "quality/Wartung.pdf",
+        claim: "Der Auftragnehmer reagiert binnen vier Stunden. Nachts gilt die doppelte Frist.",
+      },
+      { text: "quality/Preise.pdf", claim: "Die Pauschale beträgt 1.200 €." },
+    ]);
+  });
+
+  it("reads a number out of a combined citation", () => {
+    const tree = run(
+      answer(
+        p("Both clauses agree on the four-hour window [1, 3]. Unrelated [2]."),
+        sources("[3] quality/Wartung.pdf — p. 4")
+      )
+    );
+    expect(claims(tree)[0].claim).toBe("Both clauses agree on the four-hour window.");
+  });
+
+  it("gives an inline citation the sentence it stands in", () => {
+    const tree = run(
+      answer(p("Intro. The response time is four hours, see quality/Wartung.pdf, p. 4. Next."))
+    );
+    expect(claims(tree)[0].claim).toBe("The response time is four hours, see, p. 4.");
+  });
+
+  it("gives no claim when nothing in the answer cites the entry", () => {
+    const tree = run(
+      answer(p("No inline markers here."), sources("[4] quality/Wartung.pdf — p. 4"))
+    );
+    expect(claims(tree)[0].claim).toBeUndefined();
+  });
+
+  it("gives no claim to a Sources entry written without a number", () => {
+    // The line alone says nothing about which passage — it IS the reference.
+    const tree = run(answer(p("Four hours [1]."), sources("quality/Wartung.pdf — p. 4")));
+    expect(claims(tree)[0].claim).toBeUndefined();
+  });
+
+  it("caps the claim at three sentences", () => {
+    const many = Array.from(
+      { length: 6 },
+      (_, i) => `Sentence number ${i} says something [1].`
+    ).join(" ");
+    const tree = run(answer(p(many), sources("[1] quality/Wartung.pdf — p. 4")));
+    expect(claims(tree)[0].claim).toBe(
+      "Sentence number 0 says something. Sentence number 1 says something. Sentence number 2 says something."
+    );
+  });
+
+  it("caps the claim's length", () => {
+    const long = `${"Lorem ipsum dolor sit amet ".repeat(60)}[1].`;
+    const tree = run(answer(p(long), sources("[1] quality/Wartung.pdf — p. 4")));
+    expect(claims(tree)[0].claim!.length).toBeLessThanOrEqual(600);
+  });
+
+  it("binds a marker written after the full stop to the sentence before it", () => {
+    // "claim. [1]" is as common as "claim [1]." — the contract only says
+    // "next to the claim". Read the other way, source 1 would be given
+    // source 2's sentence: a confident highlight of the wrong passage.
+    for (const gap of [" ", ""]) {
+      const tree = run(
+        answer(
+          p(
+            `Der Auftragnehmer reagiert binnen vier Stunden.${gap}[1] Die Pauschale beträgt 1.200 Euro.${gap}[2]`
+          ),
+          sources("[1] quality/Wartung.pdf — p. 4", "[2] quality/Preise.pdf — p. 2")
+        )
+      );
+      expect(claims(tree).map((c) => c.claim)).toEqual([
+        "Der Auftragnehmer reagiert binnen vier Stunden.",
+        "Die Pauschale beträgt 1.200 Euro.",
+      ]);
+    }
+  });
+
+  it("does not bind a Sources line's own number to the body above it", () => {
+    // Sources written as plain lines with no blank line before them stay in
+    // the body's paragraph; the next line's "[1]" is the entry, not a marker.
+    const tree = run(
+      answer(
+        p(
+          "Reaktionszeit vier Stunden [1]. Die Pauschale beträgt 1.200 Euro [2].\n" +
+            "[1] quality/a.pdf — p. 4\n[2] quality/b.pdf — p. 2"
+        )
+      )
+    );
+    expect(claims(tree).map((c) => c.claim)).toEqual([
+      "Reaktionszeit vier Stunden.",
+      "Die Pauschale beträgt 1.200 Euro.",
+    ]);
+  });
+
+  it("reads a table row as one claim", () => {
+    // The marker usually sits in a cell of its own, next to the cells it backs.
+    const cell = (text: string): Node => ({
+      type: "tableCell",
+      children: [{ type: "text", value: text }],
+    });
+    const table: Node = {
+      type: "table",
+      children: [
+        { type: "tableRow", children: [cell("Reaktionszeit"), cell("vier Stunden"), cell("[1]")] },
+      ],
+    };
+    const tree = run(answer(table, sources("[1] quality/Wartung.pdf — p. 4")));
+    expect(claims(tree)[0].claim).toBe("Reaktionszeit vier Stunden");
+  });
+
+  it("falls back to the sentence when a numbered path stands inside its own claim", () => {
+    const tree = run(
+      answer(p("Der Auftragnehmer reagiert binnen vier Stunden [1]: quality/Wartung.pdf, S. 4."))
+    );
+    expect(claims(tree)[0].claim).toBe("Der Auftragnehmer reagiert binnen vier Stunden:, S. 4.");
+  });
+
+  it("stays fast on a long run of whitespace next to a citation", () => {
+    // Runs on every streamed chunk of model output about ingested documents.
+    const value = `[1]${" ".repeat(50_000)}x quality/Wartung.pdf — p. 4 and a claim [1]${" ".repeat(50_000)}.`;
+    const started = performance.now();
+    run(answer(p(value)));
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("leaves the href exactly as it was", () => {
+    const tree = run(answer(p("Four hours [1]."), sources("[1] quality/Wartung.pdf — p. 4")));
+    expect(links(tree)[0].url).toBe(
+      buildSourceHref(AGENT, "quality/Wartung.pdf", { kind: "page", page: 4 })
+    );
+  });
+});
+
+describe("buildPassageRequest", () => {
+  const pageHref = buildSourceHref(AGENT, "quality/Wartung.pdf", { kind: "page", page: 4 });
+
+  it("asks the agent's passage endpoint about the cited page of the cited file", () => {
+    expect(buildPassageRequest(pageHref, "Four hours.")).toEqual({
+      url: `/api/agents/${AGENT}/knowledge/passage`,
+      body: { path: "/data/quality/Wartung.pdf", page: 4, claim: "Four hours." },
+    });
+  });
+
+  it("leaves the claim out when there is none", () => {
+    expect(buildPassageRequest(pageHref, undefined)?.body).toEqual({
+      path: "/data/quality/Wartung.pdf",
+      page: 4,
+    });
+  });
+
+  it("asks nothing for a citation without a page", () => {
+    // No page, no candidates to choose between: the viewer opens the
+    // document as it always has.
+    expect(
+      buildPassageRequest(buildSourceHref(AGENT, "quality/Wartung.pdf", null), "x")
+    ).toBeNull();
+  });
+
+  it("asks nothing for an Office document", () => {
+    // Its passages are anchored on headings, not pages of the converted PDF.
+    const href = buildSourceHref(AGENT, "quality/Vorlage.docx", { kind: "page", page: 2 });
+    expect(buildPassageRequest(href, "x")).toBeNull();
+  });
+
+  it("asks nothing for something that is not a citation", () => {
+    expect(buildPassageRequest("https://example.com/a.pdf#page=4", "x")).toBeNull();
   });
 });

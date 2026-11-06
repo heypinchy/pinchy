@@ -34,7 +34,6 @@ vi.mock("fs", async (importOriginal) => {
 vi.mock("@/lib/openai-compatible-providers", () => ({
   listOpenAiCompatibleProviders: vi.fn().mockResolvedValue([]),
   listProvidersWithApiKeys: vi.fn().mockResolvedValue([]),
-  getDecryptedApiKey: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@/db", () => ({
@@ -343,13 +342,16 @@ describe("pinchy-web config generation", () => {
     expect(agents["plain-agent"]).toBeUndefined();
   });
 
-  it("skips pinchy-web plugin when no web-search connection exists", async () => {
+  // #1297: pinchy_web_fetch needs no provider, so a web agent on an instance
+  // without Brave must still load the plugin. Search stays registered and
+  // answers "not configured", which the agent can relay to the user.
+  it("loads pinchy-web without a connectionId when no web-search connection exists", async () => {
     const agentsData = [
       {
         id: "ws-agent",
         name: "Web Agent",
         model: "anthropic/claude-haiku-4-5-20251001",
-        allowedTools: ["pinchy_web_search"],
+        allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
         pluginConfig: {},
         createdAt: new Date(),
       },
@@ -373,7 +375,16 @@ describe("pinchy-web config generation", () => {
     const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
-    expect(config.plugins?.entries?.["pinchy-web"]).toBeUndefined();
+    const entry = config.plugins?.entries?.["pinchy-web"];
+    expect(entry).toBeDefined();
+    expect(entry.enabled).toBe(true);
+    expect(config.plugins.allow).toContain("pinchy-web");
+    expect(entry.config).not.toHaveProperty("connectionId");
+    expect(entry.config.apiBaseUrl).toBeTruthy();
+    expect(entry.config.agents["ws-agent"].tools).toEqual([
+      "pinchy_web_search",
+      "pinchy_web_fetch",
+    ]);
   });
 
   it("does not decrypt web-search credentials at config-write time (#209)", async () => {

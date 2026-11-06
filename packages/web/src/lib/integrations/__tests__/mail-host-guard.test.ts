@@ -1,5 +1,10 @@
+import { isIP } from "node:net";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { assertMailHostAllowed, MailHostBlockedError } from "../mail-host-guard";
+import {
+  assertMailHostAllowed,
+  MailHostBlockedError,
+  resolveAllowedMailHost,
+} from "../mail-host-guard";
 
 // Every test injects its own resolver, so no test in this file ever touches
 // real DNS — the guard's decision table is what's under test, not getaddrinfo.
@@ -23,10 +28,29 @@ describe("assertMailHostAllowed", () => {
       ["AWS/GCP/Azure IMDS", "169.254.169.254"],
       ["IPv6 IMDS", "fd00:ec2::254"],
       ["IPv6 IMDS, expanded", "fd00:ec2:0:0:0:0:0:254"],
+      ["EKS Pod Identity Agent, IPv6", "fd00:ec2::23"],
+      ["GCP metadata, IPv6", "fd20:ce::254"],
+      ["GCP metadata, IPv6 expanded", "fd20:00ce:0000:0000:0000:0000:0000:0254"],
+      ["OCI metadata, IPv6", "fd00:c1::a9fe:a9fe"],
+      ["OCI metadata, IPv6 with dotted tail", "fd00:c1::169.254.169.254"],
       ["IPv6 link-local", "fe80::1"],
       ["IPv6 link-local, upper half of fe80::/10", "feb0::1"],
       ["IPv4-mapped IPv6 loopback", "::ffff:127.0.0.1"],
       ["IPv4-compatible IPv6 loopback", "::7f00:1"],
+      ["Alibaba Cloud metadata", "100.100.100.200"],
+      ["IPv4-mapped Alibaba Cloud metadata", "::ffff:100.100.100.200"],
+      ["Azure WireServer", "168.63.129.16"],
+      ["IPv4-mapped Azure WireServer", "::ffff:168.63.129.16"],
+      ["NAT64-wrapped IMDS", "64:ff9b::a9fe:a9fe"],
+      ["TEST-NET-3", "203.0.113.50"],
+      ["reserved 240.0.0.0/4", "240.0.0.1"],
+      ["IPv4 multicast", "224.0.0.1"],
+      ["limited broadcast", "255.255.255.255"],
+      ["IPv6 multicast", "ff02::1"],
+      // `ollama.local` on OrbStack: its `host-gateway` answer sits inside
+      // 0.0.0.0/8, so a mail host pointed at the Docker host that way is refused
+      // whatever is set. (Docker on Linux answers 172.17.0.1 — private, below.)
+      ["OrbStack host-gateway (ollama.local)", "0.250.250.254"],
     ];
 
     it.each(alwaysBlocked)("blocks a host resolving to %s (%s)", async (_label, address) => {
@@ -65,6 +89,23 @@ describe("assertMailHostAllowed", () => {
       ["172.16.0.0/12 upper bound", "172.31.255.255"],
       ["192.168.0.0/16", "192.168.1.10"],
       ["IPv6 unique-local", "fd12:3456:789a::1"],
+      // CGNAT is where Tailscale puts every node: an on-premise mail server
+      // reached over a tailnet is a legitimate deployment, so it is opt-in
+      // like RFC-1918 rather than blocked outright.
+      ["CGNAT 100.64.0.0/10 (Tailscale)", "100.64.0.1"],
+      ["IPv4-mapped CGNAT", "::ffff:100.64.0.1"],
+      // 198.18.0.0/15 (benchmarking) moved here from the always-blocked list:
+      // operators number internal networks from it and fake-IP DNS
+      // (Clash/Mihomo/Surge) answers with it, so an on-premise mail server
+      // can genuinely resolve there.
+      ["benchmarking 198.18.0.0/15", "198.18.0.1"],
+      ["benchmarking 198.18.0.0/15, top", "198.19.255.254"],
+      // Local-use NAT64 (RFC 8215): an IPv6-only network's own translator, so
+      // the mail server behind it is an ordinary internal host.
+      ["local-use NAT64 64:ff9b:1::/48", "64:ff9b:1::a00:5"],
+      // `ollama.local` as Docker on Linux answers it through the compose
+      // `host-gateway` mapping, which Pinchy now carries like OpenClaw does.
+      ["Linux host-gateway (ollama.local)", "172.17.0.1"],
     ];
 
     it.each(privateAddresses)("blocks %s (%s) by default", async (_label, address) => {
@@ -93,7 +134,7 @@ describe("assertMailHostAllowed", () => {
 
   describe("public hosts", () => {
     it.each([
-      ["IPv4", "203.0.113.50"],
+      ["IPv4", "93.184.216.34"],
       ["IPv4 just outside 172.16.0.0/12", "172.32.0.1"],
       ["IPv6", "2606:4700:4700::1111"],
     ])("allows a host resolving to a public %s (%s)", async (_label, address) => {
@@ -109,13 +150,13 @@ describe("assertMailHostAllowed", () => {
       // address alongside an internal one; the connect() picks whichever the
       // OS prefers, so one bad answer has to fail the whole host.
       await expect(
-        assertMailHostAllowed("mail.evil.test", resolvesTo("203.0.113.50", "127.0.0.1"))
+        assertMailHostAllowed("mail.evil.test", resolvesTo("93.184.216.34", "127.0.0.1"))
       ).rejects.toThrow(MailHostBlockedError);
     });
 
     it("allows when every resolved address is public", async () => {
       await expect(
-        assertMailHostAllowed("imap.example.com", resolvesTo("203.0.113.50", "198.51.100.7"))
+        assertMailHostAllowed("imap.example.com", resolvesTo("93.184.216.34", "8.8.8.8"))
       ).resolves.toBeUndefined();
     });
   });
@@ -142,24 +183,159 @@ describe("assertMailHostAllowed", () => {
 
   describe("host input handling", () => {
     it("rejects an empty host without resolving", async () => {
-      const resolver = vi.fn(resolvesTo("203.0.113.50"));
+      const resolver = vi.fn(resolvesTo("93.184.216.34"));
 
       await expect(assertMailHostAllowed("   ", resolver)).rejects.toThrow(MailHostBlockedError);
       expect(resolver).not.toHaveBeenCalled();
     });
 
-    it("strips brackets from an IPv6 literal before resolving", async () => {
-      const resolver = vi.fn(resolvesTo("2606:4700:4700::1111"));
+    // The guard used to check a NORMALISED host — trimmed, brackets and
+    // everything after a `%` dropped — while imapflow/nodemailer connect to the
+    // host exactly as stored. `a%b.attacker.test` was checked as `a`
+    // (unresolvable → let through), `[a.attacker.test` as `a.attacker.test`,
+    // and the client then handed the raw string to a resolver. Measured: glibc
+    // and c-ares (our node:22-slim images) refuse such names, musl sends the
+    // query and connects to the answer — so the check was only as good as the
+    // libc. Now the host must already be something every resolver reads the
+    // same way, and it is resolved verbatim.
+    it.each([
+      ["a leading bracket", "[a.attacker.test"],
+      ["a trailing bracket", "a.attacker.test]"],
+      // Neither imapflow nor nodemailer strips brackets: `[::1]` reaches the
+      // resolver as a name, never as an address.
+      ["a bracketed IPv6 literal", "[2606:4700:4700::1111]"],
+      ["a bracketed IPv6 loopback literal", "[::1]"],
+      ["leading whitespace", " a.attacker.test"],
+      ["trailing whitespace", "imap.example.com "],
+      ["a % in a name whose prefix does not resolve", "a%b.attacker.test"],
+      ["a % after a public name", "mail.example.com%x"],
+      ["an IPv6 link-local literal with a zone ID", "fe80::1%eth0"],
+      ["a bracketed literal with a zone ID", "[fe80::1%25eth0]"],
+      ["a space inside the name", "a b.attacker.test"],
+      // Raw Unicode: the clients pass it to the resolver unconverted (no IDNA),
+      // so what it reaches depends on the libc. The punycode form is accepted.
+      ["a raw Unicode (IDN) name", "mail.bücher.example"],
+      ["an empty label", "mail..example.com"],
+      ["a label starting with a hyphen", "-mail.example.com"],
+      ["a leading dot", ".mail.example.com"],
+      ["a URL instead of a host", "imaps://mail.example.com"],
+      ["a host with a port", "mail.example.com:993"],
+    ])("refuses %s (%j) without resolving it", async (_label, host) => {
+      const resolver = vi.fn(resolvesTo("93.184.216.34"));
 
-      await assertMailHostAllowed("[2606:4700:4700::1111]", resolver);
-
-      expect(resolver).toHaveBeenCalledWith("2606:4700:4700::1111");
+      await expect(assertMailHostAllowed(host, resolver)).rejects.toThrow(MailHostBlockedError);
+      expect(resolver).not.toHaveBeenCalled();
     });
 
-    it("blocks a bracketed IPv6 loopback literal", async () => {
-      await expect(assertMailHostAllowed("[::1]", resolvesTo("::1"))).rejects.toThrow(
-        MailHostBlockedError
+    it.each([
+      ["a hostname", "imap.example.com"],
+      ["a fully-qualified name with a trailing dot", "mail.example.com."],
+      ["an upper-case name", "IMAP.Example.COM"],
+      ["a single-label on-premise name", "mailserver"],
+      ["a punycode (IDN) name", "mail.xn--bcher-kva.example"],
+      // Common on internal mail servers. The guard resolves this exact string,
+      // so whatever a resolver makes of the `_`, guard and client make the same.
+      ["an underscore inside a label", "mail_srv.corp.example"],
+      ["an IPv4 literal", "93.184.216.34"],
+      ["an IPv6 literal", "2606:4700:4700::1111"],
+    ])("resolves %s (%s) exactly as given", async (_label, host) => {
+      const resolver = vi.fn(resolvesTo("93.184.216.34"));
+
+      await expect(assertMailHostAllowed(host, resolver)).resolves.toBeUndefined();
+      expect(resolver).toHaveBeenCalledWith(host);
+    });
+
+    it("refuses a malformed host even with ALLOW_PRIVATE_MAIL_HOSTS=1, and says what is wrong", async () => {
+      vi.stubEnv("ALLOW_PRIVATE_MAIL_HOSTS", "1");
+
+      const error = await assertMailHostAllowed("a%b.attacker.test", resolvesTo()).catch(
+        (e: unknown) => e
       );
+
+      expect(error).toBeInstanceOf(MailHostBlockedError);
+      expect((error as Error).message).toMatch(/plain host name or IP address/);
+      expect((error as Error).message).not.toContain("ALLOW_PRIVATE_MAIL_HOSTS");
     });
+
+    it("offers only examples the guard itself accepts", async () => {
+      // The refusal tells an admin what to type instead. An example from a
+      // range the guard refuses whatever is set (192.0.2.0/24 and 2001:db8::/32
+      // are documentation space, `reserved`) would send them from one refusal
+      // straight into the next. An IP literal resolves to itself; a name is
+      // given a public address, so only its spelling is under test.
+      const error = await assertMailHostAllowed("a%b.attacker.test", resolvesTo()).catch(
+        (e: unknown) => e
+      );
+      const message = (error as Error).message;
+      const examples = (message.match(/[0-9A-Za-z][0-9A-Za-z.:-]*[0-9A-Za-z]/g) ?? []).filter(
+        (token) => isIP(token) !== 0 || /^[a-z0-9.-]+\.[a-z]+$/i.test(token)
+      );
+      expect(examples.length).toBeGreaterThan(0);
+
+      for (const example of examples) {
+        const resolver = async (host: string) => [isIP(host) !== 0 ? host : "93.184.216.34"];
+        await expect(assertMailHostAllowed(example, resolver), example).resolves.toBeUndefined();
+      }
+    });
+  });
+});
+
+describe("resolveAllowedMailHost", () => {
+  // The variant the probes use: it returns the address it classified so the
+  // socket can be opened to exactly that address, and a lookup that fails is
+  // the probe's failure — not a pass that lets the mail library look again.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns the address it classified", async () => {
+    await expect(
+      resolveAllowedMailHost("imap.example.com", resolvesTo("93.184.216.34"))
+    ).resolves.toEqual({ address: "93.184.216.34", family: 4 });
+  });
+
+  it("returns an IPv6 answer with its family", async () => {
+    await expect(
+      resolveAllowedMailHost("imap.example.com", resolvesTo("2606:2800:220:1::1"))
+    ).resolves.toEqual({ address: "2606:2800:220:1::1", family: 6 });
+  });
+
+  it("still refuses what the assertion refuses", async () => {
+    await expect(
+      resolveAllowedMailHost("imap.example.com", resolvesTo("93.184.216.34", "127.0.0.1"))
+    ).rejects.toThrow(MailHostBlockedError);
+    await expect(
+      resolveAllowedMailHost("imap.example.com", resolvesTo("10.0.0.5"))
+    ).rejects.toThrow(MailHostBlockedError);
+    await expect(
+      resolveAllowedMailHost("[imap.example.com", resolvesTo("93.184.216.34"))
+    ).rejects.toThrow(MailHostBlockedError);
+  });
+
+  it("allows a private address with ALLOW_PRIVATE_MAIL_HOSTS=1", async () => {
+    vi.stubEnv("ALLOW_PRIVATE_MAIL_HOSTS", "1");
+
+    await expect(
+      resolveAllowedMailHost("mail.corp.internal", resolvesTo("10.0.0.5"))
+    ).resolves.toEqual({ address: "10.0.0.5", family: 4 });
+  });
+
+  it("passes a lookup failure through as the probe's own failure", async () => {
+    // Rethrown unchanged, so the probe still reports "could not resolve the
+    // host" — the typo case — rather than a security error.
+    const failure = Object.assign(new Error("getaddrinfo ENOTFOUND imap.example.com"), {
+      code: "ENOTFOUND",
+    });
+    const failing = async () => {
+      throw failure;
+    };
+
+    await expect(resolveAllowedMailHost("imap.example.com", failing)).rejects.toBe(failure);
+  });
+
+  it("treats an empty answer as a host that does not resolve", async () => {
+    await expect(resolveAllowedMailHost("imap.example.com", resolvesTo())).rejects.toThrow(
+      /ENOTFOUND/
+    );
   });
 });

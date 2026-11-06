@@ -5,10 +5,10 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { gateCheckSchema } from "@/lib/schemas/approvals";
 import { decideGate } from "@/lib/approvals/service";
 import { computeArgsDigest } from "@/lib/approvals/digest";
-import { summarizeArgs } from "@/lib/approvals/summary";
-import { buildApprovalPrompt } from "@/lib/approvals/prompt";
+import { describeRefusal, summarizeCall, type SummaryLimit } from "@/lib/approvals/summary";
+import { approvalPromptFor } from "@/lib/approvals/prompt";
 import { resolveConfirmation, toolIsConfigured } from "@/lib/approvals/policy";
-import { collectCallModels } from "@/lib/approvals/call-models";
+import { collectCallModels, makeRefResolver } from "@/lib/approvals/call-models";
 import { readPluginSecret } from "@/lib/plugin-secrets-source";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
@@ -64,7 +64,8 @@ export async function POST(request: NextRequest) {
   // not only per tool (#1133). Only reached for a tool the policy mentions —
   // reading the ref key is a second settings query, and the answer for almost
   // every tool call is already decided above.
-  const resources = collectCallModels(params, await readPluginSecret(REF_TOKEN_KEY));
+  const refKey = await readPluginSecret(REF_TOKEN_KEY);
+  const resources = collectCallModels(params, refKey);
   if (resolveConfirmation(agent.pluginConfig, toolName, resources) === "allow") {
     return NextResponse.json({ decision: "allow" });
   }
@@ -90,6 +91,61 @@ export async function POST(request: NextRequest) {
   }
 
   const argsDigest = computeArgsDigest(params);
+  const refRecord = makeRefResolver(refKey);
+  const call = summarizeCall(params, { refRecord });
+  const { summary: argsSummary, exceeded } = call;
+  const requesterName = async () => {
+    const [requester] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, requesterId))
+      .limit(1);
+    return requester?.name ?? null;
+  };
+
+  // Fail closed on a call the card or the prompt cannot show in full. The
+  // summary marks what it left out, but a person who approves "1 more field not
+  // shown" still approves that field — the digest binds the whole call, and the
+  // whole call runs. So no confirmation is opened at all: there is nothing to
+  // approve. The bounds in `summary.ts` are sized for ordinary work; only an
+  // oversized call lands here. No pending row exists, so no grant can ever
+  // clear this digest. The model is told which bound the call crossed, and to
+  // split it only where that can help.
+  const refuse = async (limit: SummaryLimit) => {
+    const entry: AuditLogEntry = {
+      actorType: "agent",
+      actorId: agentId,
+      eventType: "approval.refused",
+      resource: `agent:${agentId}`,
+      detail: {
+        agent: { id: agentId, name: agent?.name ?? null },
+        // Name only: `detail` is immutable, so a users.id here is out of reach
+        // of crypto-erasure (#824).
+        requester: { name: await requesterName() },
+        toolName,
+        argsDigest,
+        reason: "too-large-to-show",
+        exceeded: limit.kind,
+      },
+      outcome: "failure",
+    };
+    try {
+      await appendAuditLog(entry);
+    } catch (err) {
+      recordAuditFailure(err, entry);
+    }
+    return NextResponse.json({ decision: "block", reason: describeRefusal(limit) });
+  };
+  if (exceeded) return refuse(exceeded);
+
+  // The wording every approval surface shows, and where "allow" runs the tool
+  // as surely as the card's Approve does. Built before anything is opened: a
+  // call whose hosts it cannot all name is refused here (`approvalPromptFor`).
+  // From the summary above: summarized again, a large call would cost the
+  // server's one event loop twice.
+  const approval = approvalPromptFor(toolName, call, resources);
+  if ("exceeded" in approval) return refuse(approval.exceeded);
+
   const result = await decideGate({
     agentId,
     requesterId,
@@ -97,16 +153,11 @@ export async function POST(request: NextRequest) {
     toolName,
     toolCallId,
     argsDigest,
-    argsSummary: summarizeArgs(params),
+    argsSummary,
   });
 
   // Audit a fresh request once (not on retries) and every consume.
   if (result.created || result.decision === "allow") {
-    const [requester] = await db
-      .select({ name: users.name })
-      .from(users)
-      .where(eq(users.id, requesterId))
-      .limit(1);
     const entry: AuditLogEntry = {
       actorType: "agent",
       actorId: agentId,
@@ -115,7 +166,7 @@ export async function POST(request: NextRequest) {
       detail: {
         request: { id: result.requestId },
         agent: { id: agentId, name: agent?.name ?? null },
-        requester: { id: requesterId, name: requester?.name ?? null },
+        requester: { name: await requesterName() },
         toolName,
         argsDigest,
       },
@@ -175,6 +226,6 @@ export async function POST(request: NextRequest) {
     //
     // The plugin keys on the presence of this field to decide whether to pause
     // the run, so it is absent from every non-blocking answer.
-    approval: buildApprovalPrompt(toolName, params, resources),
+    approval,
   });
 }

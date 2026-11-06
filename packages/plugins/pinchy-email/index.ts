@@ -2,7 +2,16 @@ import { mkdir, writeFile, access, chown } from "node:fs/promises";
 import { basename } from "node:path";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { MAX_ATTACHMENT_BYTES, truncateEmailBody } from "./email-adapter.js";
+import {
+  deliveryMimeType,
+  extensionForServableMime,
+  isServableDelivery,
+  normalizeMimeType,
+  safeMimeLabel,
+} from "./delivery-mime.js";
 import { checkPermission, type Permissions } from "./permissions.js";
+import { parseSingleRecipient } from "./recipient.js";
+import { refusingUnknownParams } from "./unknown-params.js";
 import {
   putHandle,
   putAttachmentHandle,
@@ -62,8 +71,11 @@ const EXT_BY_MIME = new Map<string, string>([
 ]);
 
 function extensionForMimeType(mimeType: string | undefined): string {
-  if (!mimeType) return ".bin";
-  return EXT_BY_MIME.get(mimeType.toLowerCase()) ?? ".bin";
+  // Same normalization as deliveryMimeType, and every servable type gets the
+  // extension the serving route types it by: a nameless `text/csv; charset=…`
+  // or `application/json` saved as `.bin` would be offered and then refused.
+  const normalized = normalizeMimeType(mimeType);
+  return EXT_BY_MIME.get(normalized) ?? extensionForServableMime(normalized) ?? ".bin";
 }
 
 function humanReadableSize(bytes: number): string {
@@ -162,6 +174,26 @@ async function pickUniqueFilename(dir: string, filename: string): Promise<string
 
 interface PluginToolContext {
   agentId?: string;
+  sessionKey?: string;
+  messageChannel?: string;
+}
+
+/**
+ * Whether this run will end in Pinchy's web-chat artifact poll — the only
+ * place a saved file becomes a download chip (`deliverRunArtifacts` in
+ * packages/web/src/server/stream-pipe.ts). OpenClaw itself forwards a tool's
+ * `file` block to no channel: Telegram only receives `details.media`, which
+ * this plugin does not emit.
+ *
+ * Both halves are needed. A web-chat run is a gateway `agent` call with no
+ * channel, which OpenClaw resolves to "webchat" — but so is an automation
+ * inbox run (`agent:<id>:inbox:<ledgerId>`), which has no chat to show a chip
+ * in. A Telegram DM uses the same `:direct:` key shape, on channel "telegram".
+ * Anything OpenClaw did not report counts as "not web chat": claiming less
+ * than happened is the safe direction.
+ */
+function isWebChatRun(ctx: PluginToolContext | undefined): boolean {
+  return ctx?.messageChannel === "webchat" && /^agent:[^:]+:direct:/.test(ctx.sessionKey ?? "");
 }
 
 // A text block carries `text`; a delivery block (`type: "file"` / `"image"`)
@@ -390,6 +422,34 @@ function emailWriteAuditDetails(params: Record<string, unknown>): {
     bodyBytes: Buffer.byteLength(typeof params.body === "string" ? params.body : "", "utf8"),
   };
 }
+
+/**
+ * The parameters of email_send and email_draft — one object, shared by both
+ * tools. Every tool is registered through `refusingUnknownParams`, which
+ * declares `additionalProperties: false` and refuses an undeclared key at the
+ * tool's own edge, against this same schema.
+ */
+const EMAIL_WRITE_PARAMETERS = {
+  type: "object",
+  properties: {
+    to: {
+      type: "string",
+      description:
+        "Exactly one recipient email address. For several recipients, call the tool once per recipient.",
+    },
+    subject: { type: "string", description: "Email subject line" },
+    body: {
+      type: "string",
+      description: "Email body text (plain text)",
+    },
+    replyTo: {
+      type: "string",
+      description: "Message ID to reply to (optional). Sets In-Reply-To header.",
+    },
+  },
+  required: ["to", "subject", "body"],
+  additionalProperties: false,
+};
 
 /**
  * Merge curated email audit details into an error result so the audit route
@@ -638,19 +698,16 @@ async function fetchCredentials(
   connectionId: string,
   agentId: string
 ): Promise<{ type: string; credentials: EmailCredentials }> {
-  const data = (await requestCredentials({
+  const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
     connectionId,
     agentId,
     label: "email",
-  })) as {
-    type?: unknown;
-    credentials?: unknown;
-  };
+  });
   if (!data.type || typeof data.type !== "string") {
     throw new Error(
-      `pinchy-email: credentials API returned no type field (got ${JSON.stringify((data as { type?: unknown }).type)})`
+      `pinchy-email: credentials API returned no type field (got ${JSON.stringify(data.type)})`
     );
   }
   // IMAP connections carry host/port/username/password credentials with no
@@ -671,7 +728,9 @@ const plugin = {
   name: "Pinchy Email",
   description: "Email integration (Gmail, Microsoft 365, and IMAP) with per-agent permissions.",
 
-  register(api: PluginApi) {
+  register(pluginApi: PluginApi) {
+    // Every tool refuses a parameter it does not declare (unknown-params.ts).
+    const api = refusingUnknownParams(pluginApi);
     // Capture agentConfigs at register() time. OpenClaw calls register() with a
     // fully-populated api.pluginConfig; the reference may be reset after the call
     // returns, so factories must not read api.pluginConfig?.agents dynamically —
@@ -875,6 +934,9 @@ const plugin = {
         try {
           return await fn(trackMutations(fresh, MUTATING_ADAPTER_METHODS, markMutated));
         } catch (retryErr) {
+          // Only an auth error says the fresh credentials are bad; a 5xx or a
+          // validation error on the retry must not flag a healthy connection.
+          if (!isAuthError(retryErr)) throw retryErr;
           return reportAndRethrow(config.connectionId, retryErr);
         }
       }
@@ -1008,7 +1070,7 @@ const plugin = {
                 const list = handleizedAttachments
                   .map(
                     (a) =>
-                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${a.mimeType}, size: ${humanReadableSize(a.size)}`
+                      `- id: ${a.id}, filename: ${a.filename}, mimeType: ${safeMimeLabel(a.mimeType)}, size: ${humanReadableSize(a.size)}`
                   )
                   .join("\n");
                 content.push({
@@ -1042,7 +1104,7 @@ const plugin = {
           name: "email_search",
           label: "Email Search",
           description:
-            "Search emails using structured DSL fields. All fields are optional — combine them to narrow results. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
+            "Search emails using structured DSL fields. All fields are optional — combine them to narrow results. There is no `query` parameter: use `text` for a free-text match, and `from`, `to`, `subject`, `unread`, `sinceDays`, `folder` and `limit` to filter. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
           parameters: {
             type: "object",
             properties: {
@@ -1089,29 +1151,6 @@ const plugin = {
                 return withEmailSearchAuditDetails(permissionDenied("read"), params);
               }
 
-              // email_search used to take a raw Gmail-style `query` string.
-              // It was replaced by the structured DSL fields below, but the
-              // JSON schema doesn't declare additionalProperties:false and
-              // nothing else in the handler catches a caller still passing
-              // `query` — the value would silently be dropped and the
-              // adapter would throw a generic "search requires at least one
-              // filter field" that never mentions `query`. Guard for it here
-              // so the model gets an error it can act on. If `query` and
-              // valid DSL fields are both present, treat it as ambiguous
-              // intent and reject rather than guess.
-              if (typeof params.query === "string" && params.query.length > 0) {
-                return withEmailSearchAuditDetails(
-                  errorResult(
-                    new Error(
-                      "The `query` parameter was removed. email_search now uses structured " +
-                        "fields instead of a raw query string: from, to, subject, unread, " +
-                        "sinceDays, folder, limit. Re-issue the call using those fields."
-                    )
-                  ),
-                  params
-                );
-              }
-
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.search({
                   from: params.from as string | undefined,
@@ -1155,26 +1194,19 @@ const plugin = {
           label: "Email Draft",
           description:
             "Create a draft email. The draft is saved but NOT sent. Use replyTo to create a reply to an existing message.",
-          parameters: {
-            type: "object",
-            properties: {
-              to: { type: "string", description: "Recipient email address" },
-              subject: { type: "string", description: "Email subject line" },
-              body: {
-                type: "string",
-                description: "Email body text (plain text)",
-              },
-              replyTo: {
-                type: "string",
-                description: "Message ID to reply to (optional). Sets In-Reply-To header.",
-              },
-            },
-            required: ["to", "subject", "body"],
-          },
+          parameters: EMAIL_WRITE_PARAMETERS,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "draft")) {
                 return withEmailAuditDetails(permissionDenied("draft"), params);
+              }
+
+              // One address per call: a string is parsed as an address LIST by
+              // the mail libraries, so a comma-smuggled second recipient would
+              // be delivered to without the approver ever seeing it.
+              const recipient = parseSingleRecipient(params.to);
+              if (!recipient.ok) {
+                return withEmailAuditDetails(toolError(recipient.error), params);
               }
 
               let replyTo: string | undefined = params.replyTo as string | undefined;
@@ -1186,7 +1218,7 @@ const plugin = {
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.draft({
-                  to: params.to as string,
+                  to: recipient.address,
                   subject: params.subject as string,
                   body: params.body as string,
                   replyTo,
@@ -1235,26 +1267,19 @@ const plugin = {
           label: "Email Send",
           description:
             "Send an email immediately. WARNING: This sends the email right away — it cannot be undone. Use email_draft if you want to review before sending. Use replyTo to reply to an existing message.",
-          parameters: {
-            type: "object",
-            properties: {
-              to: { type: "string", description: "Recipient email address" },
-              subject: { type: "string", description: "Email subject line" },
-              body: {
-                type: "string",
-                description: "Email body text (plain text)",
-              },
-              replyTo: {
-                type: "string",
-                description: "Message ID to reply to (optional). Sets In-Reply-To header.",
-              },
-            },
-            required: ["to", "subject", "body"],
-          },
+          parameters: EMAIL_WRITE_PARAMETERS,
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               if (!checkPermission(config.permissions, "email", "send")) {
                 return withEmailAuditDetails(permissionDenied("send"), params);
+              }
+
+              // One address per call: a string is parsed as an address LIST by
+              // the mail libraries, so a comma-smuggled second recipient would
+              // be delivered to without the approver ever seeing it.
+              const recipient = parseSingleRecipient(params.to);
+              if (!recipient.ok) {
+                return withEmailAuditDetails(toolError(recipient.error), params);
               }
 
               let replyTo: string | undefined = params.replyTo as string | undefined;
@@ -1266,7 +1291,7 @@ const plugin = {
 
               const result = await withAuthRetry(agentId, config, (adapter) =>
                 adapter.send({
-                  to: params.to as string,
+                  to: recipient.address,
                   subject: params.subject as string,
                   body: params.body as string,
                   replyTo,
@@ -1312,6 +1337,7 @@ const plugin = {
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
         if (!agentId) return probeStub("email_get_attachment");
+        const offeredInChat = isWebChatRun(ctx);
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
         if (lacksGrant(config, "read")) return null;
@@ -1411,6 +1437,39 @@ const plugin = {
                 // Best-effort — see DELIVERY_UID/DELIVERY_GID comment above.
               }
 
+              // Say "delivered" only for what Pinchy will actually show as a
+              // chip: a type the chat can serve (delivery-mime.ts), in a run
+              // that ends in the web chat (isWebChatRun). The normalized type
+              // is also what the file block declares, so the web side decides
+              // on the same value this text was written from.
+              const mimeType = deliveryMimeType(attachment.mimeType, finalFilename);
+              const size = humanReadableSize(attachment.data.length);
+              const saved = `Saved to the workspace uploads directory as "${finalFilename}" (${size}). `;
+              let guidance: string;
+              if (!isServableDelivery(mimeType)) {
+                guidance =
+                  saved +
+                  // No ${mimeType} here: it is sender-controlled and unbounded, and
+                  // this sentence reads as the plugin's own instruction. The JSON
+                  // block above carries it, escaped.
+                  `This file type can't be offered as a download in chat, so do not ` +
+                  `tell the user it was delivered: it is saved in the agent's workspace. It can ` +
+                  `still be attached to an Odoo record via odoo_attach_file using this filename.`;
+              } else if (offeredInChat) {
+                guidance =
+                  saved +
+                  `Delivered to the user in chat as a downloadable file; also readable with the ` +
+                  `pdf tool (for PDFs) and attachable to an Odoo record via odoo_attach_file using ` +
+                  `this filename.`;
+              } else {
+                guidance =
+                  saved +
+                  `Files are offered as a download only in Pinchy's web chat, and this ` +
+                  `conversation is not one, so do not tell the user it was delivered: it is ` +
+                  `saved in the agent's workspace. It is readable with the pdf tool (for PDFs) ` +
+                  `and attachable to an Odoo record via odoo_attach_file using this filename.`;
+              }
+
               return {
                 content: [
                   {
@@ -1419,20 +1478,13 @@ const plugin = {
                       {
                         filename: finalFilename,
                         size: attachment.data.length,
-                        mimeType: attachment.mimeType,
+                        mimeType,
                       },
                       null,
                       2
                     ),
                   },
-                  {
-                    type: "text",
-                    text:
-                      `Saved to the workspace uploads directory as "${finalFilename}" ` +
-                      `(${humanReadableSize(attachment.data.length)}). Delivered to the user in chat as a ` +
-                      `downloadable file; also readable with the pdf tool (for PDFs) and attachable to an ` +
-                      `Odoo record via odoo_attach_file using this filename.`,
-                  },
+                  { type: "text", text: guidance },
                   // File delivery (#703): a native file content block lands in the
                   // session transcript, which Pinchy's client-router reads via
                   // OpenClaw's `artifacts.list` RPC after the run to record the
@@ -1440,7 +1492,7 @@ const plugin = {
                   {
                     type: "file",
                     filename: finalFilename,
-                    mimeType: attachment.mimeType,
+                    mimeType,
                   },
                 ],
               };

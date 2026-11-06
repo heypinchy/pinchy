@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
 import { KnowledgeIndexScheduleSettings } from "@/components/knowledge-index-schedule-settings";
 import { apiGet, apiPut, ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
+import { holdResults } from "@/test-helpers/hold-results";
 
 vi.mock("@/lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api-client")>();
@@ -26,7 +27,7 @@ const status = {
   enabled: true,
   time: "02:00",
   timezone: "Europe/Vienna",
-  nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+  nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow", at: "2026-10-17T00:00:00.000Z" },
   currentSweep: null,
   lastSweep: null,
 };
@@ -67,7 +68,7 @@ describe("KnowledgeIndexScheduleSettings", () => {
     mockPut.mockResolvedValue({
       ...status,
       time: "23:30",
-      nextRun: { date: "2026-10-16", time: "23:30", day: "today" },
+      nextRun: { date: "2026-10-16", time: "23:30", day: "today", at: "2026-10-16T21:30:00.000Z" },
     });
     render(<KnowledgeIndexScheduleSettings />);
     const time = await screen.findByLabelText(/time/i);
@@ -165,11 +166,15 @@ describe("KnowledgeIndexScheduleSettings", () => {
   });
 
   it("stays out of the way if the status cannot be read", async () => {
-    mockGet.mockRejectedValue(new Error("network down"));
+    // A swallowed rejection commits nothing, so there is no render to wait
+    // for: the release itself is the signal.
+    const read = holdResults();
+    mockGet.mockImplementation(() => read.rejectWith(new Error("network down")));
 
     const { container } = render(<KnowledgeIndexScheduleSettings />);
 
-    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+    expect(mockGet).toHaveBeenCalled();
+    await read.release();
     expect(container).toBeEmptyDOMElement();
   });
 });

@@ -58,9 +58,10 @@ export async function setInstancePolicy(policy: InstancePolicy): Promise<void> {
 }
 
 /**
- * Whether a settings key belongs to this module. The generic
- * `POST /api/settings` refuses these: written there, a switch would skip the
- * from/to audit diff and the OpenClaw/Telegram refresh its own route performs.
+ * Whether a settings key belongs to this module. `POST /api/settings` only
+ * accepts `org.timezone`, so these can't be written there: a switch written
+ * outside its own route would skip the from/to audit diff and the
+ * OpenClaw/Telegram refresh.
  */
 export function isPolicyKey(key: string): boolean {
   return key.startsWith(POLICY_PREFIX);

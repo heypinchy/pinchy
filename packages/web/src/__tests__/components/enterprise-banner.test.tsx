@@ -8,6 +8,7 @@ const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
 import { EnterpriseBanner } from "@/components/enterprise-banner";
+import { holdResults } from "@/test-helpers/hold-results";
 
 const DAY = 86400000;
 
@@ -31,10 +32,31 @@ function mockStatusResponse(data: object) {
   return { ok: true, json: async () => data } as Response;
 }
 
+/**
+ * Render the banner against a mocked status response and wait until React
+ * has COMMITTED the render that consumed it.
+ *
+ * Waiting for `fetch` to have been called is not that signal: the mount
+ * effect calls fetch synchronously inside render()'s act(), so such a wait
+ * returns at once. The response -> setLicense -> render chain is then left
+ * racing waitFor's trailing setTimeout(0) against React's Scheduler
+ * macrotask; on a CPU-starved worker the Scheduler loses and the assertions
+ * read an empty <div />.
+ *
+ * Nor is "any update commit": a mount-time state update added to the
+ * component later would satisfy it before the status arrived and bring the
+ * race back. The wait is tied to the data: `json()` holds the body until the
+ * test releases it inside act(), which returns only once everything the body
+ * caused is committed. That serves both kinds of test here: the positive ones
+ * could wait on the banner itself, but the negative ones commit `null`, so
+ * there is no DOM change to wait for, and without this wait "renders nothing"
+ * passes before the status has arrived.
+ */
 async function renderWithStatus(data: object) {
-  mockFetch.mockResolvedValue(mockStatusResponse(data));
+  const load = holdResults();
+  mockFetch.mockResolvedValue({ ok: true, json: () => load.resolveWith(data) } as Response);
   render(<EnterpriseBanner isAdmin={true} />);
-  await waitFor(() => expect(mockFetch).toHaveBeenCalled());
+  await load.release();
 }
 
 describe("EnterpriseBanner", () => {
@@ -92,6 +114,25 @@ describe("EnterpriseBanner", () => {
     const banner = screen.getByRole("alert");
     expect(banner).toHaveTextContent("Trial: 7 days remaining.");
     expect(banner.className).toContain("bg-amber");
+  });
+
+  it("keeps the warn tone readable: dark text on amber, not white (#1300)", async () => {
+    // White on amber-500 is ~2.1:1 — far below WCAG AA's 4.5:1.
+    await renderWithStatus(statusJson({ state: "trial", type: "trial", daysRemaining: 7 }));
+    const banner = screen.getByRole("alert");
+    expect(banner.className).not.toContain("text-white");
+    expect(banner.className).toContain("text-amber-950");
+  });
+
+  it("shows only the primary link on a phone so the bar stays one line (#1300)", async () => {
+    // jsdom has no layout, so this pins the mechanism: every link after the
+    // first is desktop-only. Two links plus the message wrapped to two lines
+    // (~55px) at 375px.
+    await renderWithStatus(statusJson({ state: "trial", type: "trial", daysRemaining: 23 }));
+    const buy = screen.getByRole("link", { name: /buy pinchy pro/i });
+    const compare = screen.getByRole("link", { name: /compare plans/i });
+    expect(buy.parentElement).not.toHaveClass("hidden");
+    expect(compare.parentElement).toHaveClass("hidden", "sm:inline");
   });
 
   it("uses the singular for one remaining day", async () => {

@@ -71,9 +71,12 @@ function TemplateCard({
   return card;
 }
 
+function hasNoConnection(templates: TemplateItem[]): boolean {
+  return templates.some((t) => t.unavailableReason === "no-connection");
+}
+
 function UnavailableTriggerText({ templates }: { templates: TemplateItem[] }) {
-  const hasNoConnection = templates.some((t) => t.unavailableReason === "no-connection");
-  if (hasNoConnection) {
+  if (hasNoConnection(templates)) {
     let phrase: string;
     if (templates.some((t) => t.requiresEmailConnection)) {
       phrase = "templates available with an email connection";
@@ -86,10 +89,7 @@ function UnavailableTriggerText({ templates }: { templates: TemplateItem[] }) {
     }
     return (
       <>
-        {templates.length} {phrase} ·{" "}
-        <Link href="/settings?tab=integrations" className="underline hover:text-foreground">
-          Set up connection →
-        </Link>
+        {templates.length} {phrase}
       </>
     );
   }
@@ -117,10 +117,26 @@ export function TemplateSelector({ templates, onSelect }: TemplateSelectorProps)
             )}
             {unavailable.length > 0 && (
               <Collapsible>
-                <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mt-3 cursor-pointer">
-                  <ChevronRight className="size-4" />
-                  <UnavailableTriggerText templates={unavailable} />
-                </CollapsibleTrigger>
+                {/* The setup link sits beside the trigger, never inside it: a
+                    link inside a <button> is a nested interactive control
+                    (axe `nested-interactive`, #1300). */}
+                <div className="mt-3 flex flex-wrap items-center gap-x-1 text-sm text-muted-foreground">
+                  <CollapsibleTrigger className="flex items-center gap-1 hover:text-foreground cursor-pointer">
+                    <ChevronRight className="size-4" />
+                    <UnavailableTriggerText templates={unavailable} />
+                  </CollapsibleTrigger>
+                  {hasNoConnection(unavailable) && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <Link
+                        href="/settings?tab=integrations"
+                        className="underline hover:text-foreground"
+                      >
+                        Set up connection →
+                      </Link>
+                    </>
+                  )}
+                </div>
                 <CollapsibleContent>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-3">
                     {unavailable.map((template) => (

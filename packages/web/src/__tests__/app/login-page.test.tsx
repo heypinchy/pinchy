@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
-import LoginPage from "@/app/login/page";
+import LoginPage from "@/app/login/login-form";
 import { SIGN_IN_RATE_LIMIT_WINDOW_SECONDS } from "@/lib/auth-rate-limit";
 
 const mockSignInEmail = vi.fn();
@@ -14,6 +14,11 @@ vi.mock("@/lib/auth-client", () => ({
       email: (...args: unknown[]) => mockSignInEmail(...args),
     },
   },
+}));
+
+const { mockEnterAccount } = vi.hoisted(() => ({ mockEnterAccount: vi.fn() }));
+vi.mock("@/lib/account-switch", () => ({
+  enterAccount: (...args: unknown[]) => mockEnterAccount(...args),
 }));
 
 const mockPush = vi.fn();
@@ -138,9 +143,9 @@ describe("Login Page", () => {
     });
   });
 
-  it("should redirect to / on successful login", async () => {
+  it("should enter the signed-in account at / on successful login", async () => {
     const user = userEvent.setup();
-    mockSignInEmail.mockResolvedValue({ error: null });
+    mockSignInEmail.mockResolvedValue({ data: { user: { id: "user-1" } }, error: null });
 
     render(<LoginPage />);
 
@@ -149,13 +154,16 @@ describe("Login Page", () => {
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith("/");
+      // A full load through enterAccount, never a client-side push: the
+      // previous person's in-memory state must not survive into this session.
+      expect(mockEnterAccount).toHaveBeenCalledWith("user-1", "/");
+      expect(mockPush).not.toHaveBeenCalled();
     });
   });
 
   it("should redirect to a safe returnTo destination on successful login", async () => {
     const user = userEvent.setup();
-    mockSignInEmail.mockResolvedValue({ error: null });
+    mockSignInEmail.mockResolvedValue({ data: { user: { id: "user-1" } }, error: null });
     mockSearchParamsGet.mockImplementation((key: string) =>
       key === "returnTo" ? "/share?share_id=abc" : null
     );
@@ -167,13 +175,13 @@ describe("Login Page", () => {
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith("/share?share_id=abc");
+      expect(mockEnterAccount).toHaveBeenCalledWith("user-1", "/share?share_id=abc");
     });
   });
 
   it("should fall back to / when returnTo is an unsafe, open-redirect-shaped value", async () => {
     const user = userEvent.setup();
-    mockSignInEmail.mockResolvedValue({ error: null });
+    mockSignInEmail.mockResolvedValue({ data: { user: { id: "user-1" } }, error: null });
     mockSearchParamsGet.mockImplementation((key: string) =>
       key === "returnTo" ? "//evil.com" : null
     );
@@ -185,7 +193,10 @@ describe("Login Page", () => {
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith("/");
+      // A full load through enterAccount, never a client-side push: the
+      // previous person's in-memory state must not survive into this session.
+      expect(mockEnterAccount).toHaveBeenCalledWith("user-1", "/");
+      expect(mockPush).not.toHaveBeenCalled();
     });
   });
 
