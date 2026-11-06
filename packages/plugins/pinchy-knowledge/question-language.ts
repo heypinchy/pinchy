@@ -27,22 +27,35 @@ function words(list: string): ReadonlySet<string> {
 interface LanguageSignal {
   name: string;
   words: ReadonlySet<string>;
-  /** Letters no other language in this list uses. Any of them adds 2, next to a function word. */
+  /**
+   * Words a question or request opens with: question words and imperatives.
+   * The opening word is the asker's own, while a German document title in an
+   * English question brings German articles and prepositions with it, so a
+   * match here adds 2.
+   */
+  openers: ReadonlySet<string>;
+  /** Letters no other language in this list uses. Any of them adds 2, next to a word hit. */
   letters?: RegExp;
 }
 
 const LANGUAGES: readonly LanguageSignal[] = [
   {
     name: "German",
+    openers: words(
+      "was wie wer wann wo warum welche welcher welches gibt kannst bitte fasse erkläre erklär zeige zeig nenne beschreibe vergleiche finde"
+    ),
     words: words(
       "der die das und ist wer wie wann wo warum welche welcher welches hat haben war " +
         "wurde wurden mit von den dem des im ein eine einer für auf nicht zu zur zum bei nach " +
-        "steht gibt sind kann können bitte mir ich uns unser unsere dieser diese dieses über wird"
+        "steht gibt sind kann können bitte mir unser unsere dieser diese dieses über wird"
     ),
     letters: /[äß]/i,
   },
   {
     name: "English",
+    openers: words(
+      "what which who how when where why does can could please summarize summarise explain show list find give tell compare"
+    ),
     words: words(
       "the is what which who how when where why of and for with by from that this " +
         "during are does did has have it signed"
@@ -50,6 +63,9 @@ const LANGUAGES: readonly LanguageSignal[] = [
   },
   {
     name: "French",
+    openers: words(
+      "qui quel quelle quels quelles comment où pourquoi combien résume résumez explique expliquez montre montrez décris"
+    ),
     words: words(
       "le les du est qui quel quelle quels quelles pendant pour avec une un et dans sur où"
     ),
@@ -57,6 +73,9 @@ const LANGUAGES: readonly LanguageSignal[] = [
   },
   {
     name: "Italian",
+    openers: words(
+      "chi quale quali quanto quante quanti come dove perché cosa ogni riassumi spiega mostra elenca trova descrivi"
+    ),
     words: words(
       "il lo gli di del della dei delle che è chi ogni quante quanto quale quali sono " +
         "nel nella per non va ha"
@@ -64,11 +83,17 @@ const LANGUAGES: readonly LanguageSignal[] = [
   },
   {
     name: "Spanish",
+    openers: words(
+      "quién quiénes qué cuál cuáles cómo dónde cuándo cuánto cuántos explica muestra enumera"
+    ),
     words: words("el los las quién qué cuál cuándo cómo es son por para una y se firmó"),
     letters: /[¿¡ñ]/i,
   },
   {
     name: "Polish",
+    openers: words(
+      "kto jaka jaki jakie jakiego jakiej czy ile gdzie kiedy dlaczego opisz podaj wymień proszę pokaż streść wyjaśnij porównaj znajdź"
+    ),
     words: words(
       "kto jaka jaki jakie jakiego jakiej czy ile gdzie kiedy jest są się nie w dla " +
         "podczas przez który która które oraz należy trzeba tym"
@@ -77,15 +102,18 @@ const LANGUAGES: readonly LanguageSignal[] = [
   },
   {
     name: "Dutch",
+    openers: words("wat welke wanneer waar hoe waarom vat toon geef beschrijf"),
     words: words("het een wie wat welke wanneer waar hoe van voor met op heeft hebben was"),
   },
   {
     name: "Czech",
+    openers: words("kdo kde kdy proč kolik shrň vysvětli ukaž popiš"),
     words: words("kdo kde kdy je jsou pro který která které podepsal v"),
     letters: /[ěřůťď]/i,
   },
   {
     name: "Portuguese",
+    openers: words("quem qual onde porque resuma explique mostre descreva"),
     words: words("quem qual quando foi são com uma não da dos das"),
     letters: /[ãõ]/i,
   },
@@ -112,12 +140,16 @@ function stripQuoted(text: string): string {
 export function detectQuestionLanguage(text: string): string | null {
   const stripped = stripQuoted(questionText(text));
   const tokens = stripped.toLowerCase().match(/\p{L}+/gu) ?? [];
+  const opener = tokens[0];
+  // Capitalised words are blanked before the letter check: in a question about
+  // German documents the ä and ß sit in nouns, titles and names
+  // ("Qualitätshandbuch", "Łukasz"), not in the asker's own words.
+  const lowercaseOnly = stripped.replace(/(?<!\p{L})\p{Lu}\p{L}*/gu, " ");
   const scores = LANGUAGES.map((lang) => {
-    const wordHits = tokens.filter((t) => lang.words.has(t)).length;
-    // A letter counts only alongside a function word of the same language:
-    // on its own it is as likely to come from a document title or a name
-    // ("Summarize the Qualitätshandbuch", "Łukasz") as from the question.
-    const letterBonus = wordHits > 0 && lang.letters?.test(stripped) ? 2 : 0;
+    const wordHits =
+      tokens.filter((t) => lang.words.has(t)).length +
+      (opener !== undefined && lang.openers.has(opener) ? 2 : 0);
+    const letterBonus = wordHits > 0 && lang.letters?.test(lowercaseOnly) ? 2 : 0;
     return { name: lang.name, score: wordHits + letterBonus };
   }).sort((a, b) => b.score - a.score);
   const [first, second] = scores;

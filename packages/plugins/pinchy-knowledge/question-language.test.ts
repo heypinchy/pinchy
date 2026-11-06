@@ -69,4 +69,25 @@ describe("detectQuestionLanguage", () => {
     expect(detectQuestionLanguage(`Was steht in dieser Datei zur Wartung?${block}`)).toBe("German");
     expect(detectQuestionLanguage(`Kto podpisał ten protokół?${block}`)).toBe("Polish");
   });
+
+  it.each([
+    "Explain the Richtlinie zur Gefährdungsbeurteilung",
+    "Summarize the Handbuch für Qualität",
+    "Summarize Bericht über die Prüfung",
+  ])("doesn't read a German title with its own function words as German: %j", (question) => {
+    // Titles bring their prepositions and articles with them. The question's
+    // opening word is the asker's, so it weighs more than words inside a title.
+    expect(detectQuestionLanguage(question)).not.toBe("German");
+  });
+
+  it.each([
+    ["Opisz procedurę odbioru", "Polish"],
+    ["Podaj wymagania dotyczące pompy P7", "Polish"],
+    ["Proszę o podsumowanie protokołu odbioru", "Polish"],
+    ["Fasse das Prüfprotokoll zusammen", "German"],
+    ["Riassumi il verbale di collaudo", "Italian"],
+    ["Summarize the acceptance protocol", "English"],
+  ])("names a request that opens with an imperative: %j", (question, expected) => {
+    expect(detectQuestionLanguage(question)).toBe(expected);
+  });
 });
