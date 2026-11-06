@@ -46,6 +46,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import ts from "typescript";
+import { relativeReExports } from "@/test-helpers/route-reexports";
 
 const AGENT_ID_DIR = resolve(__dirname, "../../app/api/agents/[agentId]");
 const APP_DIR = resolve(__dirname, "../../app");
@@ -117,14 +118,24 @@ interface Handler {
  * subtree searched, so `withAdmin(async (…) => { … })` is covered by it.
  */
 function extractHandlers(file: string): Handler[] {
-  const source = ts.createSourceFile(
-    file,
-    readFileSync(file, "utf8"),
-    ts.ScriptTarget.Latest,
-    true
-  );
+  const text = readFileSync(file, "utf8");
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const routePath = routeFileToPath(file);
   const handlers: Handler[] = [];
+
+  // `export { GET } from "../route"` (the citation viewer's named url, #1268)
+  // serves another file's handler under this url. It is gated exactly as well
+  // as that handler — and skipping it would leave this url unchecked while the
+  // floor below still passed.
+  for (const { target, names } of relativeReExports(file, text)) {
+    const targetHandlers = extractHandlers(target);
+    for (const { local, exported } of names) {
+      if (!HTTP_METHODS.has(exported)) continue;
+      const handler = targetHandlers.find((h) => h.id.startsWith(`${local} `));
+      if (!handler) throw new Error(`${file} re-exports ${local}, which ${target} does not define`);
+      handlers.push({ id: `${exported} ${routePath}`, gated: handler.gated });
+    }
+  }
 
   const isExported = (node: ts.Node) =>
     ts.canHaveModifiers(node) &&
@@ -164,6 +175,12 @@ describe("every /api/agents/[agentId]/ handler gates on the caller's view of the
   // broken walk can be mistaken for compliance.
   it("finds the route handlers it is supposed to check", () => {
     expect(handlers.length).toBeGreaterThanOrEqual(15);
+  });
+
+  it("checks a handler re-exported under a url of its own", () => {
+    expect(handlers.map((handler) => handler.id)).toContain(
+      "GET /api/agents/[agentId]/workspace-file/[name]"
+    );
   });
 
   it("gates every handler through getAgentWithAccess", () => {

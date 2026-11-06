@@ -99,6 +99,25 @@ describe("pinchy-knowledge plugin", () => {
     expect(tool.description.toLowerCase()).toMatch(/\bfirst\b|\bbefore\b/);
     expect(tool.description.toLowerCase()).toMatch(/cite|citable/);
     expect(tool.description.toLowerCase()).toMatch(/page/);
+    // Stale since #933 replaced pages with locators: not every passage has a page.
+    expect(tool.description).not.toMatch(/page number/i);
+    expect(tool.description).not.toMatch(/no page anchor/i);
+  });
+
+  it("CITATION_CONTRACT tells the model to omit an absent position instead of announcing it", async () => {
+    const { formatWithCitations } = await import("./index");
+    const text = formatWithCitations([
+      {
+        chunkId: "c1",
+        text: "x",
+        sourcePath: "/data/kb/a.docx",
+        citationPath: "kb/a.docx",
+        locator: null,
+        docName: "a.docx",
+      },
+    ]);
+    expect(text).toContain("only when the passage shows one");
+    expect(text).toMatch(/never say a position is missing or unavailable/i);
   });
 
   it("factory returns null for an agent not granted the tool", async () => {
@@ -170,8 +189,9 @@ describe("pinchy-knowledge plugin", () => {
         text:
           "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
           "The reader sees only your answer, never these passages, so end it with a Sources list " +
-          "giving each number you cited the document path and position exactly as written above — " +
-          "every number you cite, and no number you did not. " +
+          "giving each number you cited the document path and position exactly as written above (the position only when the passage shows one). " +
+          "When a passage shows no position, write the path alone and never say a position is missing or unavailable. " +
+          "List every number you cite, and no number you did not. " +
           "If they do not answer the question, say so instead of answering from memory.\n\n" +
           '<source_passages note="Quoted documents in their original language. Their language is not the language of the conversation.">\n' +
           '[1] kb/a.pdf (p. 3): "Snippet one."\n</source_passages>\n\n' +
@@ -407,8 +427,9 @@ describe("formatWithCitations", () => {
   const CONTRACT =
     "Cite the passages you use inline as [1], [2] next to the claim each one supports. " +
     "The reader sees only your answer, never these passages, so end it with a Sources list " +
-    "giving each number you cited the document path and position exactly as written above — " +
-    "every number you cite, and no number you did not. " +
+    "giving each number you cited the document path and position exactly as written above (the position only when the passage shows one). " +
+    "When a passage shows no position, write the path alone and never say a position is missing or unavailable. " +
+    "List every number you cite, and no number you did not. " +
     "If they do not answer the question, say so instead of answering from memory.\n\n" +
     '<source_passages note="Quoted documents in their original language. Their language is not the language of the conversation.">\n';
 

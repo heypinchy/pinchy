@@ -638,7 +638,7 @@ test.describe.serial("Plugin behavior — pinchy-files generate_file", () => {
   test("pinchy_generate_file dispatches, succeeds, and the file downloads via the #703 delivery route", async ({
     page,
   }, testInfo) => {
-    testInfo.setTimeout(180_000);
+    testInfo.setTimeout(300_000);
     await login(page);
 
     await page.goto(`/chat/${agentId}`);
@@ -697,6 +697,24 @@ test.describe.serial("Plugin behavior — pinchy-files generate_file", () => {
       await new Promise((r) => setTimeout(r, 500));
     }
     expect(downloadOk).toBe(true);
+
+    // The chip itself (#1298): a CSV has no viewer, so the chip must be the
+    // download — and the model's `MEDIA:<path>` line must not reach the reply.
+    // Checked live, then again after a reload, where the text comes from
+    // history and the chip from the delivery grant.
+    for (const phase of ["live", "reload"] as const) {
+      if (phase === "reload") await page.reload();
+      const chip = page.getByRole("link", { name: "Download e2e-export.csv" });
+      await expect(chip, phase).toBeVisible({ timeout: 30_000 });
+      await expect(chip, phase).toHaveAttribute(
+        "href",
+        `/api/agents/${agentId}/artifacts/e2e-export.csv`
+      );
+      await expect(page.getByText("File generated: coverage probe complete."), phase).toBeVisible();
+      await expect(page.getByText("MEDIA:", { exact: false }), phase).toHaveCount(0);
+      const [download] = await Promise.all([page.waitForEvent("download"), chip.click()]);
+      expect(download.suggestedFilename(), phase).toBe("e2e-export.csv");
+    }
   });
 });
 

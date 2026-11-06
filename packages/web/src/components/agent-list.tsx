@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { getAgentAvatarSvg } from "@/lib/avatar";
 import { prefetchChatList } from "@/lib/chat-list-cache";
+import { sortAgents } from "@/lib/sort-agents";
 
 export interface Agent {
   id: string;
@@ -12,6 +13,8 @@ export interface Agent {
   tagline: string | null;
   starterPrompts: string[];
   avatarSeed: string | null;
+  /** Granted tool ids; `pinchy_memory` means the agent keeps memory. */
+  allowedTools?: string[];
 }
 
 interface AgentListProps {
@@ -20,13 +23,7 @@ interface AgentListProps {
   onAgentClick?: () => void;
 }
 
-export function sortAgents(agents: Agent[]): Agent[] {
-  return [...agents].sort((a, b) => {
-    if (a.isPersonal && !b.isPersonal) return -1;
-    if (!a.isPersonal && b.isPersonal) return 1;
-    return a.name.localeCompare(b.name);
-  });
-}
+export { sortAgents };
 
 export function AgentList({ agents, currentPath, onAgentClick }: AgentListProps) {
   const sortedAgents = sortAgents(agents);

@@ -336,7 +336,7 @@ describe("audit: POST /api/setup/provider", () => {
   });
 });
 
-// ── config.changed: POST /api/settings ───────────────────────────────────
+// ── POST /api/settings refuses keys with their own route ───────────────────────────────────
 
 describe("audit: POST /api/settings", () => {
   let POST: typeof import("@/app/api/settings/route").POST;
@@ -349,7 +349,7 @@ describe("audit: POST /api/settings", () => {
     POST = mod.POST;
   });
 
-  it("logs config.changed audit event on successful settings update", async () => {
+  it("writes no audit row and no setting for a key outside the allow-list", async () => {
     const request = new NextRequest("http://localhost/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -357,14 +357,7 @@ describe("audit: POST /api/settings", () => {
     });
 
     const response = await POST(request);
-    expect(response.status).toBe(200);
-
-    expect(appendAuditLog).toHaveBeenCalledWith({
-      actorType: "user",
-      actorId: "admin-1",
-      eventType: "config.changed",
-      outcome: "success",
-      detail: { key: "default_provider" },
-    });
+    expect(response.status).toBe(400);
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 });
