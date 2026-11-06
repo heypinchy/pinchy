@@ -377,9 +377,10 @@ const plugin = {
     // It also costs prompt caching: a cache entry written over a message with
     // its note no longer matches when that message is replayed without it. So
     // the note goes only on the turn the language changes, one cache miss per
-    // switch instead of one per turn. (Putting the session's language in the
-    // fixed rule instead keeps the cache entirely, but measured 88 % against
-    // 94-98 % with the note.)
+    // switch instead of one per turn. Measured on Haiku 5.5: first questions
+    // 47/48 with the note; same-language follow-ups, which carry none, 43/48.
+    // (Putting the session's language in the fixed rule instead keeps the
+    // cache entirely, and measured 42/48 on first questions.)
     //
     // Measured (German-named agent, German sources, Haiku 5.5): the tool
     // result alone ~80 % right, with the rule and the note 94 %.
