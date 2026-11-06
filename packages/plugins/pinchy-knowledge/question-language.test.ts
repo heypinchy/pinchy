@@ -130,6 +130,9 @@ describe("detectQuestionLanguage", () => {
     "Come si cambia l'olio della pompa P7?",
     "Quanti giorni dura la garanzia?",
   ])("names an Italian question that opens with come/quanti: %j", (question) => {
+    // Accepted trade-off: an English imperative opening with "Come" ("Come
+    // back to …") now reads as Italian. That is rare in a knowledge base and
+    // "Come …?" is Italian's most common how-question.
     expect(detectQuestionLanguage(question)).toBe("Italian");
   });
 

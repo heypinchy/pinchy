@@ -389,9 +389,16 @@ const plugin = {
     api.on?.("before_prompt_build", (event, ctx) => {
       if (!ctx.agentId || !agentConfigs?.[ctx.agentId]) return undefined;
       const prompt = typeof event.prompt === "string" ? event.prompt : "";
-      const language = detectQuestionLanguage(prompt);
       const sessionKey = ctx.sessionKey;
-      if (sessionKey) {
+      const noteKey = ctx.sessionId ?? sessionKey;
+      const noted = noteKey ? notedLanguages.get(noteKey) : undefined;
+      // A retry of the same run: OpenClaw may have appended an English
+      // instruction to the prompt ("The previous attempt did not produce a
+      // user-visible answer…"), so the language this run was asked in, and
+      // the question it quotes, are the ones the first attempt saw.
+      const sameRun = noted !== undefined && ctx.runId !== undefined && noted.runId === ctx.runId;
+      const language = sameRun ? noted.language : detectQuestionLanguage(prompt);
+      if (sessionKey && !sameRun) {
         askedQuestions.delete(sessionKey);
         if (language) {
           askedQuestions.set(sessionKey, { language, text: quotedQuestion(prompt) });
@@ -410,9 +417,6 @@ const plugin = {
       // needs the note. And a retried attempt of the same run gets it again,
       // since OpenClaw fires this hook once per attempt.
       let note: string | undefined;
-      const noteKey = ctx.sessionId ?? sessionKey;
-      const noted = noteKey ? notedLanguages.get(noteKey) : undefined;
-      const sameRun = noted !== undefined && ctx.runId !== undefined && noted.runId === ctx.runId;
       if (language && (!noted || noted.language !== language || sameRun)) {
         note = turnLanguageNote(language);
         if (noteKey) {

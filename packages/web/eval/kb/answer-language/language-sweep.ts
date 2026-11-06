@@ -187,10 +187,8 @@ export function assertConditionMatchesVariant(
 ): void {
   const earlier = existing.find((r) => r.condition === condition);
   if (!earlier) return;
-  // A row from before the plugin stamp existed carries none; it can't
-  // contradict one, so only the knobs are compared for it.
-  // A row from before a field existed: no plugin stamp can't contradict one,
-  // and no sameLanguageWarmup means the knob didn't exist, so it was off.
+  // Rows from before a field existed: a missing plugin stamp is not compared,
+  // and a missing sameLanguageWarmup means the knob was off.
   const value = (r: LanguageVariant, key: keyof LanguageVariant) =>
     key === "sameLanguageWarmup" ? (r.sameLanguageWarmup ?? false) : r[key];
   const differing = VARIANT_KEYS.filter(

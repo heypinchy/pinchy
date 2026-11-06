@@ -840,6 +840,30 @@ describe("answer language (#1296)", () => {
     expect(attempt("run-2").appendContext).toBeUndefined();
   });
 
+  it("keeps the run's language on a retry whose prompt OpenClaw extended in English", async () => {
+    // Some retries append an English instruction to the prompt (after an
+    // empty or reasoning-only response). Re-detecting would read that as
+    // English and tell a Polish user's answer to be English.
+    const { hook, factory } = await registerWithHook();
+    const ctx = { agentId: "agent-1", sessionKey: "k", sessionId: "s", runId: "run-1" };
+    hook({ prompt: "Kto podpisał protokół odbioru?", messages: [] }, ctx);
+    const retry = hook(
+      {
+        prompt:
+          // OpenClaw's EMPTY_RESPONSE_RETRY_INSTRUCTION, as appended on a retry.
+          "Kto podpisał protokół odbioru?\n\nThe previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.",
+        messages: [],
+      },
+      ctx
+    ) as { appendContext?: string };
+    expect(retry.appendContext).toMatch(/in Polish/);
+    global.fetch = oneResult();
+    const tool = factory({ agentId: "agent-1", sessionKey: "k" });
+    const text = (await tool.execute("call-1", { query: "Abnahmeprotokoll" })).content[0]
+      .text as string;
+    expect(text).toContain("written in Polish");
+  });
+
   it("notes each session's first turn on its own", async () => {
     const { hook } = await registerWithHook();
     const first = (sessionKey: string) =>
