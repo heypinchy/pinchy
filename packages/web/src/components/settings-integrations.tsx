@@ -294,7 +294,7 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
         <CardContent>
           {connections.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8">
-              <Plug className="h-12 w-12 text-muted-foreground/50 mb-4" />
+              <Plug className="h-12 w-12 text-muted-foreground mb-4" />
               <p className="text-muted-foreground">No integrations configured yet.</p>
               <Button variant="outline" className="mt-4" onClick={() => setShowAddDialog(true)}>
                 Add your first integration

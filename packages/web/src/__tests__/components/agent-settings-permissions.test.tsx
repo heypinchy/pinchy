@@ -180,6 +180,35 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByLabelText("Create files")).toBeInTheDocument();
   });
 
+  it("offers subfolder browsing only with the admin flag (#1269)", () => {
+    // The subfolder listing route is admin-only. The settings page renders
+    // this tab for admins only today; the flag keeps the chevrons off should
+    // that ever change, since without it they could only ever answer 403.
+    const { rerender } = render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.getAllByRole("button", { name: /^Show subfolders of / }).length).toBe(
+      defaultDirectories.length
+    );
+
+    rerender(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={false}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.queryByRole("button", { name: /^Show subfolders of / })).not.toBeInTheDocument();
+  });
+
   it("keeps the memory toggle out of the Knowledge Base section", () => {
     // Memory is not a knowledge-base concern. It appeared under that heading
     // only because this component dumped every non-integration powerful tool
@@ -459,6 +488,36 @@ describe("AgentSettingsPermissions", () => {
     expect(notice).toHaveTextContent(/the agent stops reading reports/i);
     expect(notice).toHaveTextContent(/documents from folders you untick stay in the index/i);
     expect(notice).not.toHaveTextContent(/starts reading/i);
+  });
+
+  it("doesn't say the agent stops reading a subfolder its new parent grant covers (#1269)", async () => {
+    // Ticking a folder folds the grants below it into one: the stored list
+    // loses "/data/docs/2026/", but the agent still reads it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ directories: [], truncated: false })))
+    );
+    const user = userEvent.setup();
+    render(
+      <AgentSettingsPermissions
+        agent={{
+          ...defaultAgent,
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/2026/"] } },
+        }}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "docs" }));
+
+    const notice = screen.getByText(/not saved yet/i);
+    expect(notice).toHaveTextContent(/the agent starts reading docs\./i);
+    expect(notice).not.toHaveTextContent(/stops reading/i);
+    expect(notice).not.toHaveTextContent(/untick/i);
+    vi.unstubAllGlobals();
   });
 
   it("names both directions when folders are added and removed in one change", async () => {

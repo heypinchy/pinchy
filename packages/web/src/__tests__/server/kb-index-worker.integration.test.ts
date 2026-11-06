@@ -131,6 +131,7 @@ describe("kb index worker", () => {
       unsearchable: 0,
       failed: 0,
       archived: 0,
+      unsupported: 0,
     });
     expect(job?.finishedAt).toBeInstanceOf(Date);
 
