@@ -66,7 +66,9 @@ const EXT_BY_MIME = new Map<string, string>([
 
 function extensionForMimeType(mimeType: string | undefined): string {
   if (!mimeType) return ".bin";
-  return EXT_BY_MIME.get(mimeType.toLowerCase()) ?? ".bin";
+  // Same normalization as deliveryMimeType: `text/csv; charset=utf-8` must
+  // name the file `.csv`, because the serving route types text by extension.
+  return EXT_BY_MIME.get(mimeType.split(";")[0].trim().toLowerCase()) ?? ".bin";
 }
 
 function humanReadableSize(bytes: number): string {
@@ -1419,7 +1421,10 @@ const plugin = {
                   `pdf tool (for PDFs) and attachable to an Odoo record via odoo_attach_file using ` +
                   `this filename.`
                 : `Saved to the workspace uploads directory as "${finalFilename}" (${size}). ` +
-                  `This file type (${mimeType}) can't be offered as a download in chat, so do not ` +
+                  // No ${mimeType} here: it is sender-controlled and unbounded, and
+                  // this sentence reads as the plugin's own instruction. The JSON
+                  // block above carries it, escaped.
+                  `This file type can't be offered as a download in chat, so do not ` +
                   `tell the user it was delivered: it is saved in the agent's workspace. It can ` +
                   `still be attached to an Odoo record via odoo_attach_file using this filename.`;
 
