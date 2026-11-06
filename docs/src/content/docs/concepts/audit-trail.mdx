@@ -112,7 +112,7 @@ Folder access is recorded without the folders. A folder name can name a person â
 
 Whether an agent may write files isn't a folder setting: it comes from the **Create files** and **Memory** tools (`pinchy_write`, `pinchy_memory`), so a change to it shows up in `changes.allowedTools`.
 
-A save whose settings were stored but couldn't be applied to the agent runtime is recorded with `outcome: failure` and `runtimeUpdate: { applied: false, error }`, with the same `changes`, `folderAccess` and `allowedGroups` the success entry would have carried.
+A save whose settings were stored but couldn't be applied to the agent runtime is recorded with `outcome: failure` and `runtimeUpdate: { applied: false, error }`, with the same `changes` and `folderAccess`, and `allowedGroups` when the group change was applied.
 
 #### `agent.memory_changed`
 
