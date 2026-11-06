@@ -104,7 +104,7 @@ An IPv4 address is recorded exactly as it arrived. An **IPv6 address is recorded
 
 #### `agent.updated`
 
-Written when someone saves an agent's settings and something actually changed. `detail.changes` holds a `{ from, to }` pair for each field that moved: name, model, visibility, greeting, tagline, starter prompts, avatar, personality preset, allowed tools and plugin configuration. A change to the agent's groups adds `allowedGroups` with the groups `added` and `removed`, each as `{ id, name }`.
+Mostly written when someone saves an agent's settings and something actually changed. (**Make visible to everyone** in Settings → License — see [Groups](/concepts/groups/#activating-a-license-on-an-instance-that-already-has-agents) — writes one per agent it opens, with a single `visibility` change, and Pinchy writes one as `system` when it upgrades an agent's shipped `SOUL.md`, recording hashes only.) For a settings save, `detail.changes` holds a `{ from, to }` pair for each field that moved: name, model, visibility, greeting, tagline, starter prompts, avatar, personality preset, allowed tools and plugin configuration. A change to the agent's groups adds `allowedGroups` with the groups `added` and `removed`, each as `{ id, name }`.
 
 Folder access is recorded without the folders. A folder name can name a person — `/data/hr/personnel/<name>` once you grant subfolders — and an audit entry can't be changed later, not even to erase someone's data. So in `changes.pluginConfig`, the file tools' settings show `allowedPathCount` and `writePathCount` in place of the two path lists, and any edit to the folders adds `folderAccess`:
 
