@@ -13,8 +13,18 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { TriangleAlert, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { PendingApproval } from "@/lib/approvals/client";
+import {
+  describeIntent,
+  fieldLabels,
+  isTable,
+  rowsLayout,
+  type Intent,
+  type PhrasePart,
+  type Section,
+} from "@/lib/approvals/intent";
 import {
   FULL_VIEW_KEYS,
   displayScalar,
@@ -337,51 +347,382 @@ function Empty({ list }: { list: boolean }) {
  * to a count — the person approving has to see what will run. Non-string
  * values print as their literal (`false`, `1`, `null`), so a string "false"
  * (shown `"false"`) cannot pass for the boolean.
+ *
+ * `human` labels an object's fields in words (`fieldLabels`), at any depth.
  */
-function ArgValue({ value }: { value: unknown }) {
+function ArgValue({ value, human = false }: { value: unknown; human?: boolean }) {
   if (typeof value === "string") return <StoredText value={value} />;
   const node = readNode(value);
   if (node === "unreadable") return <Unreadable />;
   if (node) return <NodeValue node={node} />;
   if (Array.isArray(value)) {
     if (value.length === 0) return <Empty list />;
+    // A list of rows — `pinchy_generate_file`'s `rows`, say — reads as a
+    // table. As nested bullets each row began with two bullets and no
+    // boundary between one row and the next.
+    if (isTable(value)) return <DataTable columns={[]} rows={value} label="List of rows" />;
+    // A list inside a list is drawn as a block set off by a rule, without a
+    // bullet of its own: bullet beside bullet read "• • 0" and gave no sign
+    // where one inner list ended and the next began.
     return (
       <ul className="list-disc space-y-0.5 pl-4">
-        {value.map((item, index) => (
-          <li key={index}>
-            <ArgValue value={item} />
-          </li>
-        ))}
+        {value.map((item, index) =>
+          Array.isArray(item) && item.length > 0 ? (
+            <li key={index} className="-ml-4 list-none border-l-2 pl-1">
+              <ArgValue value={item} human={human} />
+            </li>
+          ) : (
+            <li key={index}>
+              <ArgValue value={item} human={human} />
+            </li>
+          )
+        )}
       </ul>
     );
   }
   if (value !== null && typeof value === "object") {
-    return <ArgFields fields={value as Record<string, unknown>} />;
+    return <ArgFields fields={value as Record<string, unknown>} human={human} />;
   }
   return <span className="font-mono">{displayScalar(value)}</span>;
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * Rows drawn cell for cell, every cell by `ArgValue`, so a cell is drawn
+ * exactly as the same value is anywhere else on the card. Only a rectangular
+ * list reaches here (`isTable`): every cell drawn is a value the summary
+ * charged, and none is padding.
+ *
+ * Every value stays whole and in view, at the corner's 320px too, and every
+ * row is drawn — the preview box scrolls — since a row left to "Show
+ * technical details" would be approved unseen. `rowsLayout` decides how,
+ * from the values alone: a table sized to its content while it fits, else
+ * one block per row. A table scrolling sideways hid the columns past the edge
+ * with nothing saying so, and a fixed-width one broke "1240.5" into "124" /
+ * "0.5".
+ */
+function DataTable({
+  columns,
+  rows,
+  label,
+}: {
+  columns: unknown[];
+  rows: unknown[][];
+  label: string;
+}) {
+  const width = rows[0]?.length ?? 0;
+  const size = `${plural(width, "column")} · ${plural(rows.length, "row")}`;
+  const layout = rowsLayout(columns, rows);
+  if (layout.kind === "table") {
+    return (
+      <table className="w-full border-collapse text-left text-sm">
+        <caption className="caption-top pb-1 text-left text-xs text-muted-foreground">
+          <span className="sr-only">{label}, </span>
+          {size}
+        </caption>
+        {columns.length > 0 && (
+          <thead>
+            <tr>
+              {columns.map((column, index) => (
+                <th
+                  key={index}
+                  scope="col"
+                  className="border-b px-2 py-1 align-bottom font-medium first:pl-0"
+                >
+                  <ArgValue value={column} />
+                </th>
+              ))}
+            </tr>
+          </thead>
+        )}
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex} className="border-b last:border-b-0">
+              {row.map((cell, index) => (
+                <td key={index} className="px-2 py-1 align-top first:pl-0">
+                  <ArgValue value={cell} />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+  // Named in every block while that is cheap to draw; past that, once, in a
+  // legend, and each block says "Column N" (Pinchy's words: a column name is
+  // a value, drawn like one).
+  const named = columns.length > 0 && layout.repeatLabels;
+  const heading = (index: number) =>
+    named ? <ArgValue value={columns[index]} /> : `Column ${index + 1}`;
+  return (
+    <div>
+      <p className="text-xs text-muted-foreground">{size}</p>
+      {columns.length > 0 && !named && (
+        <dl className="mt-1 space-y-0.5 rounded border bg-background/60 p-1.5">
+          {columns.map((column, index) => (
+            <div key={index} className="flex gap-2">
+              <dt className="w-2/5 shrink-0 text-xs text-muted-foreground">Column {index + 1}</dt>
+              <dd className="min-w-0 break-words">
+                <ArgValue value={column} />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {/* role="list": WebKit drops list semantics from an unstyled list. */}
+      <ol role="list" aria-label={label} className="mt-1 space-y-1">
+        {rows.map((row, rowIndex) => (
+          <li key={rowIndex} className="rounded border bg-background/60 p-1.5">
+            <p className="text-xs font-medium text-muted-foreground">Row {rowIndex + 1}</p>
+            <dl className="space-y-0.5">
+              {row.map((cell, index) => (
+                <div key={index} className="flex gap-2">
+                  <dt className="w-2/5 shrink-0 break-words text-xs text-muted-foreground">
+                    {heading(index)}
+                  </dt>
+                  <dd className="min-w-0 break-words">
+                    <ArgValue value={cell} />
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
 }
 
 /**
  * Who a call reaches and where it lands come first. The summary renders them
  * first too, but Postgres stores a jsonb object with its keys re-sorted, so
  * that order does not survive the round trip — it is restored here.
+ *
+ * `human` writes each field name in words where it reads as words
+ * (`fieldLabels`); a name that is quoted, unusual, or that would read like
+ * another field's or a label in `taken` stays as the summary wrote it, drawn
+ * in code type.
  */
-function ArgFields({ fields }: { fields: Record<string, unknown> }) {
+function ArgFields({
+  fields,
+  human = false,
+  taken,
+}: {
+  fields: Record<string, unknown>;
+  human?: boolean;
+  /** Labels already on the card, which a field named in words must not read as. */
+  taken?: readonly string[];
+}) {
   const entries = Object.entries(fields).sort(
     ([a], [b]) => Number(FULL_VIEW_KEYS.has(b)) - Number(FULL_VIEW_KEYS.has(a))
   );
   if (entries.length === 0) return <Empty list={false} />;
+  const labels = human
+    ? fieldLabels(
+        entries.map(([key]) => key),
+        taken
+      )
+    : null;
   return (
     <dl className="space-y-1">
-      {entries.map(([key, value]) => (
-        <div key={key}>
-          <dt className="font-mono text-xs text-muted-foreground">{key}</dt>
-          <dd className="ml-3">
-            <ArgValue value={value} />
-          </dd>
-        </div>
-      ))}
+      {entries.map(([key, value]) => {
+        const label = labels?.get(key) ?? { text: key, raw: true };
+        return (
+          <div key={key}>
+            <dt
+              className={
+                label.raw
+                  ? "font-mono text-xs text-muted-foreground"
+                  : "text-xs text-muted-foreground"
+              }
+            >
+              {label.text}
+            </dt>
+            <dd className="ml-3">
+              <ArgValue value={value} human={human} />
+            </dd>
+          </div>
+        );
+      })}
     </dl>
+  );
+}
+
+/** A value the headline repeats, set apart from the words around it. */
+function Chip({ children }: { children: ReactNode }) {
+  return <span className="rounded bg-muted px-1 font-medium">{children}</span>;
+}
+
+/** An Odoo model: its name in words where the catalogue knows it, and the model itself. */
+function ModelName({
+  model,
+  value,
+  inSection = false,
+}: {
+  model: string | null;
+  value: unknown;
+  inSection?: boolean;
+}) {
+  if (model === null) {
+    // In the preview the value has a row of its own; a chip there, on the
+    // muted box, would all but vanish.
+    return inSection ? <ArgValue value={value} /> : <Chip>{<ArgValue value={value} />}</Chip>;
+  }
+  return (
+    <>
+      <span className="font-medium">{model}</span>{" "}
+      <span className="text-muted-foreground">
+        (<span className="font-mono">{<ArgValue value={value} />}</span>)
+      </span>
+    </>
+  );
+}
+
+function Headline({ parts }: { parts: PhrasePart[] }) {
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (typeof part === "string") return <Fragment key={index}>{part}</Fragment>;
+        if ("code" in part) {
+          return (
+            <span key={index} className="font-mono">
+              {part.code}
+            </span>
+          );
+        }
+        if ("model" in part) return <ModelName key={index} model={part.model} value={part.value} />;
+        return (
+          <Chip key={index}>
+            <ArgValue value={part.value} />
+          </Chip>
+        );
+      })}
+    </>
+  );
+}
+
+function SectionValue({ section }: { section: Section }) {
+  if ("table" in section) {
+    return (
+      <DataTable columns={section.table.columns} rows={section.table.rows} label={section.label} />
+    );
+  }
+  if ("model" in section) {
+    return <ModelName model={section.model} value={section.value} inSection />;
+  }
+  return <ArgValue value={section.value} human={section.fields} />;
+}
+
+/**
+ * What the call does, then every value it carries: the sections the intent
+ * draws (`describeIntent`), and every other field after them, in words.
+ * Nothing is behind a disclosure here — "Technical details" repeats the call
+ * with its raw names, it holds nothing this does not show.
+ */
+function CallBody({ intent, summary }: { intent: Intent; summary: Record<string, unknown> }) {
+  const rest = Object.fromEntries(
+    Object.entries(summary).filter(([key]) => !intent.shown.has(key))
+  );
+  const hasRest = Object.keys(rest).length > 0;
+  if (intent.sections.length === 0 && !hasRest) return null;
+  return (
+    // A scroll box the keyboard can reach: Safari does not focus one by itself.
+    <div
+      role="region"
+      aria-label="What will be sent to the tool"
+      tabIndex={0}
+      className="mt-2 max-h-64 space-y-2 overflow-y-auto rounded-md bg-muted/50 p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+    >
+      {intent.sections.length > 0 && (
+        <dl className="space-y-1">
+          {intent.sections.map((section, index) => (
+            <div key={index}>
+              <dt className="text-xs text-muted-foreground">{section.label}</dt>
+              <dd className="ml-3">
+                <SectionValue section={section} />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {hasRest && intent.sections.length > 0 && (
+        <p className="text-xs font-medium text-muted-foreground">Also included</p>
+      )}
+      {hasRest && (
+        <ArgFields fields={rest} human taken={intent.sections.map((section) => section.label)} />
+      )}
+    </div>
+  );
+}
+
+/** The call as the tool receives it: its id, and every argument under its own name. */
+function TechnicalDetails({
+  toolName,
+  summary,
+}: {
+  toolName: string;
+  summary: Record<string, unknown> | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const hasArgs = summary !== null && Object.keys(summary).length > 0;
+  return (
+    <div className="mt-2">
+      <Button
+        type="button"
+        variant="link"
+        size="sm"
+        className="h-auto p-0 text-xs"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen(!open)}
+      >
+        {open ? "Hide technical details" : "Show technical details"}
+      </Button>
+      <div id={id} hidden={!open}>
+        {open && (
+          <div
+            role="region"
+            aria-label="Technical details"
+            tabIndex={0}
+            className="mt-1 max-h-64 overflow-y-auto rounded-md border p-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          >
+            <p className="text-xs text-muted-foreground">
+              Tool <span className="font-mono">{toolName}</span>
+              {hasArgs ? ", called with:" : ", called without arguments"}
+            </p>
+            {hasArgs && (
+              <div className="mt-1">
+                <ArgFields fields={summary} />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function IntentNote({ note }: { note: NonNullable<Intent["note"]> }) {
+  const Icon = note.tone === "warning" ? TriangleAlert : Info;
+  return (
+    <p
+      className={
+        note.tone === "warning"
+          ? "mt-1 flex items-start gap-1 text-xs text-amber-700 dark:text-amber-400"
+          : "mt-1 flex items-start gap-1 text-xs text-muted-foreground"
+      }
+    >
+      <Icon aria-hidden="true" className="mt-px size-3.5 shrink-0" />
+      <span>
+        {note.tone === "warning" && <span className="sr-only">Warning: </span>}
+        {note.text}
+      </span>
+    </p>
   );
 }
 
@@ -468,17 +809,18 @@ export function ApprovalCard({
   // open card moving from the corner into its thread when they navigate there.
   const [reviewed, setReviewed] = useState(false);
   if (!open) {
+    // What the call does, in words and without any value: a closed card draws
+    // none of the arguments.
+    const { action } = describeIntent(approval.toolName, null);
     return (
       <div className="rounded-lg border bg-background p-3 shadow-lg">
         <p className="text-sm font-medium">{approval.agentName} needs your confirmation</p>
         <div className="mt-1 flex items-center justify-between gap-2">
-          <p className="text-sm text-muted-foreground">
-            Run <span className="font-mono">{approval.toolName}</span>
-          </p>
+          <p className="text-sm text-muted-foreground">{action}</p>
           <Button
             size="sm"
             variant="outline"
-            aria-label={`Review the request to run ${approval.toolName} for ${approval.agentName}`}
+            aria-label={`Review the request from ${approval.agentName}: ${action}`}
             aria-expanded={false}
             aria-controls={detailsId}
             data-approval-review=""
@@ -528,7 +870,8 @@ function OpenCard({
   detailsId: string;
   takeFocus: boolean;
 }) {
-  const hasArgs = approval.argsSummary && Object.keys(approval.argsSummary).length > 0;
+  const summary = approval.argsSummary;
+  const intent = describeIntent(approval.toolName, summary);
   const card = useRef<HTMLDivElement>(null);
   const details = useRef<HTMLDivElement>(null);
   const buttons = useRef<HTMLDivElement>(null);
@@ -603,19 +946,16 @@ function OpenCard({
         ref={details}
         id={detailsId}
         role="group"
-        aria-label={`Request to run ${approval.toolName} for ${approval.agentName}`}
+        aria-label={`Request from ${approval.agentName}: ${intent.action}`}
         tabIndex={-1}
         className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       >
-        <p className="mt-1 text-sm text-muted-foreground">
-          Run <span className="font-mono">{approval.toolName}</span>
-          {hasArgs ? " with:" : "?"}
+        <p className="mt-1 text-sm">
+          <Headline parts={intent.headline} />
         </p>
-        {hasArgs ? (
-          <div className="mt-2 max-h-64 overflow-y-auto rounded-md bg-muted/50 p-2 text-sm">
-            <ArgFields fields={approval.argsSummary as Record<string, unknown>} />
-          </div>
-        ) : null}
+        {intent.note && <IntentNote note={intent.note} />}
+        {summary && <CallBody intent={intent} summary={summary} />}
+        <TechnicalDetails toolName={approval.toolName} summary={summary} />
       </div>
       <div className="mt-3 flex items-center justify-end gap-2">
         <p

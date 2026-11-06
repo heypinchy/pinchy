@@ -123,6 +123,14 @@ describe("X-Frame-Options as a given URL actually receives it", () => {
     ).resolves.toBe("SAMEORIGIN");
   });
 
+  it("relaxes to SAMEORIGIN for the named url the citation viewer actually opens (#1268)", () => {
+    // The viewer opens `…/workspace-file/<name>?path=…` so the browser's PDF
+    // viewer titles the document by its name. Same blank pane without this.
+    return expect(
+      resolveHeader("/api/agents/agent-1/workspace-file/Vorlage_Wartung.pdf", "X-Frame-Options")
+    ).resolves.toBe("SAMEORIGIN");
+  });
+
   it("relaxes no route beyond the file-serving ones", async () => {
     // The list is the spec — deliberately exhaustive, so widening the
     // relaxation to a route that renders HTML is a failing test, not a review
@@ -137,6 +145,7 @@ describe("X-Frame-Options as a given URL actually receives it", () => {
       "/api/agents/:agentId/artifacts/:filename",
       "/api/agents/:agentId/uploads/:filename",
       "/api/agents/:agentId/workspace-file",
+      "/api/agents/:agentId/workspace-file/:name",
     ]);
   });
 });
