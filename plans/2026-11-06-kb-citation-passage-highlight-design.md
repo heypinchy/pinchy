@@ -210,8 +210,8 @@ Same gates, same order, same `audit-exempt` reasoning.
   indexing, model misspelled it) → the browser's `<embed>`, exactly as today.
   Found → open at the section's first page at once, without waiting for the
   passage lookup: with several candidates the lookup embeds the claim, which
-  takes seconds on a cold embedding model, and the first review round found a
-  Word citation stuck on a spinner that long. Once the passage arrives, scan
+  takes seconds on a cold embedding model, and waiting for it left a Word
+  citation on a spinner for that long. Once the passage arrives, scan
   the section's pages for it and move the highlight to the page that holds it;
   the reader moves with it only if they are still on the section's first page.
   No passage, or not found within the cap → stay at the section's first page.
