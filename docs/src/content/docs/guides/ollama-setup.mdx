@@ -195,12 +195,7 @@ Some templates require specific capabilities that not all models support. If you
 
 ### Vision templates
 
-The following templates analyze documents and images and require a model with vision support:
-
-- **Contract Analyzer** — reads and summarizes contract clauses
-- **Resume Screener** — extracts structured data from uploaded CVs
-- **Proposal Comparator** — compares multiple document uploads side by side
-- **Compliance Checker** — audits documents against policy requirements
+Every template except **Custom Agent** reads documents, attachments or images, so it requires a model with vision support: **Knowledge Base**, the document templates (**Contract Analyzer**, **Resume Screener**, **Proposal Comparator**, **Compliance Checker**, **Onboarding Guide**), **Market & News Monitor**, the email templates and every Odoo template.
 
 To enable these templates, pull a vision-capable model:
 

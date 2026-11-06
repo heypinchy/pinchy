@@ -14,10 +14,10 @@ export const metadata: Metadata = {
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string; error?: string }>;
+  searchParams: Promise<{ error?: string }>;
 }) {
   const hdrs = await headers();
-  const [{ tab, error }, session, licenseStatus] = await Promise.all([
+  const [{ error }, session, licenseStatus] = await Promise.all([
     searchParams,
     getSession({ headers: hdrs }),
     getLicenseStatus(),
@@ -28,7 +28,6 @@ export default async function SettingsPage({
   const gatedConfig = isAdmin && !isLicenseActive(state) ? await hasGatedConfig() : false;
   return (
     <SettingsPageContent
-      initialTab={tab}
       oauthError={error}
       isAdmin={isAdmin}
       initialLicense={

@@ -27,9 +27,16 @@ test.describe.serial("User invite flow", () => {
 
     // After success, an invite link is displayed in the dialog
     await expect(page.getByText(/\/invite\//)).toBeVisible({ timeout: 5000 });
+    // ...with the reminder that Pinchy doesn't deliver it, and its expiry (#1265).
+    await expect(
+      page.getByText(
+        "Pinchy doesn't email this link. Copy it and send it to invitee@test.local yourself."
+      )
+    ).toBeVisible();
+    await expect(page.getByText(/The link works once and expires on /)).toBeVisible();
   });
 
-  test("invitee claims the invite and lands on success screen", async ({ page, browser }) => {
+  test("invitee claims the invite and is signed in right away", async ({ page, browser }) => {
     // Use API to create a fresh invite and retrieve the plaintext token
     await loginAsAdmin(page);
     const inviteRes = await page.context().request.post("/api/users/invite", {
@@ -44,22 +51,28 @@ test.describe.serial("User invite flow", () => {
     const inviteePage = await freshContext.newPage();
     await inviteePage.goto(`/invite/${token}`);
 
-    // Claim form is shown
-    await expect(inviteePage.getByText("You've been invited to Pinchy")).toBeVisible({
+    // Claim form is shown, naming the inviter and the sign-in address (#1265)
+    await expect(inviteePage.getByText(/invited you to Pinchy$/)).toBeVisible({
       timeout: 10000,
     });
+    await expect(inviteePage.getByLabel("Email", { exact: true })).toHaveValue(
+      "invitee2@test.local"
+    );
+    await expect(inviteePage.getByLabel("Confirm password")).toHaveCount(0);
 
     // Fill in the claim form
     await inviteePage.getByLabel("Name").fill("Invitee Two");
     await inviteePage.getByLabel("Password", { exact: true }).fill("Inv1tee-Password!");
-    await inviteePage.getByLabel("Confirm password").fill("Inv1tee-Password!");
 
     // Submit
     await inviteePage.getByRole("button", { name: "Create account" }).click();
 
-    // On success the page shows the account-created confirmation
-    await expect(inviteePage.getByText("Account created!")).toBeVisible({ timeout: 10000 });
-    await expect(inviteePage.getByRole("button", { name: "Continue to sign in" })).toBeVisible();
+    // The page signs the new account in and leaves for the app — no second
+    // trip through /login.
+    await expect(inviteePage).not.toHaveURL(/\/(invite|login)(\/|$)/, { timeout: 15000 });
+    const sessionRes = await inviteePage.request.get("/api/auth/get-session");
+    expect(sessionRes.ok()).toBeTruthy();
+    expect((await sessionRes.json())?.user?.email).toBe("invitee2@test.local");
 
     await freshContext.close();
   });
@@ -90,7 +103,7 @@ test.describe.serial("User invite flow", () => {
       timeout: 10000,
     });
     await expect(inviteePage.getByText(/invalid|expired|revoked|not found/i)).toBeVisible();
-    await expect(inviteePage.getByText("You've been invited to Pinchy")).toHaveCount(0);
+    await expect(inviteePage.getByText(/invited (you )?to Pinchy/)).toHaveCount(0);
     await expect(inviteePage.getByLabel("Name")).toHaveCount(0);
 
     await freshContext.close();
@@ -128,7 +141,7 @@ test.describe.serial("User invite flow", () => {
 
     // Reset-specific UI — NOT the invite copy.
     await expect(resetPage.getByText("Reset your Pinchy password")).toBeVisible({ timeout: 10000 });
-    await expect(resetPage.getByText("You've been invited to Pinchy")).toHaveCount(0);
+    await expect(resetPage.getByText(/invited (you )?to Pinchy/)).toHaveCount(0);
     await expect(resetPage.getByText("Set a new password for your account.")).toBeVisible();
 
     // No name field is offered during a reset.
@@ -137,10 +150,13 @@ test.describe.serial("User invite flow", () => {
     // Set a new password and submit.
     const newPassword = "R3setN3w-Password!";
     await resetPage.getByLabel("Password", { exact: true }).fill(newPassword);
-    await resetPage.getByLabel("Confirm password").fill(newPassword);
     await resetPage.getByRole("button", { name: "Reset password" }).click();
 
-    await expect(resetPage.getByText("Password reset!")).toBeVisible({ timeout: 10000 });
+    // Signed in with the new password and taken into the app.
+    await expect(resetPage).not.toHaveURL(/\/(invite|login)(\/|$)/, { timeout: 15000 });
+    const resetSessionRes = await resetPage.request.get("/api/auth/get-session");
+    expect(resetSessionRes.ok()).toBeTruthy();
+    expect((await resetSessionRes.json())?.user?.email).toBe(email);
     await freshContext.close();
 
     // The display name was NOT overwritten by the reset.
