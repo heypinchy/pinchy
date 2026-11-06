@@ -197,7 +197,7 @@ The knowledge base no longer embeds through Ollama. The embedding model now runs
 
 The two models produce vectors that cannot be compared, and Postgres cannot change a vector column's width in place, so the old embeddings can be neither kept nor converted. Migration `0056` clears `kb_documents` and `kb_chunks` and recreates the index column at the new width. **Your documents are not touched** — those tables are derived entirely from the files on disk, and the files stay where they are.
 
-So after upgrading, a Knowledge Base agent finds nothing until it has been reindexed. The [nightly reindex](#knowledge-bases-now-keep-themselves-current) does that on its own the first night after the upgrade; to have it back sooner, open the agent's **Permissions** tab, and in the **Knowledge Base** section click **Reindex now**. Either way that first run is a full index, and on a large corpus it can last well into the next working day — while it runs, **Reindex now** for any agent answers that a run is already in progress. The run reports its progress inline. How long it takes depends mostly on the CPU the `pinchy` container gets — [CPU when the knowledge base embeds](/guides/customizing-deployment/#cpu-when-the-knowledge-base-embeds) says how Pinchy uses it and how to give it more. If you never set up a Knowledge Base agent, there is nothing to do — the tables were already empty.
+So after upgrading, a Knowledge Base agent finds nothing until it has been reindexed. Pinchy starts that run on its own as soon as it is up — one agent after another, as each agent's [first index](#a-new-knowledge-base-agent-indexes-its-folders-on-its-own) — and each agent's chat shows how far it has got. That first run is a full index, and on a large corpus it can last well into the next working day — while it runs, **Reindex now** for any agent answers that a run is already in progress. The run reports its progress inline. How long it takes depends mostly on the CPU the `pinchy` container gets — [CPU when the knowledge base embeds](/guides/customizing-deployment/#cpu-when-the-knowledge-base-embeds) says how Pinchy uses it and how to give it more. If you never set up a Knowledge Base agent, there is nothing to do — the tables were already empty.
 
 The `ollama pull bge-m3` step from the v0.9.0 notes no longer applies. If nothing else on your machine uses that model, you can remove it.
 
@@ -469,6 +469,12 @@ Indexing always skipped symbolic links when it listed a folder, but the reads af
 
 Every read now refuses a link and checks that the file is still a regular file at the place the run listed it; opening a cited document and an agent reading a file directly get the same check. Nothing to configure. A refused file counts as `failed` for that run, keeps any version indexed before, and is counted as `refusedFiles` on the reindex entry in the audit trail. A document saved during a run is read normally. [Links inside a mounted folder](/guides/mount-data-directories/#links-inside-a-mounted-folder) has the details.
 
+#### A new Knowledge Base agent indexes its folders on its own
+
+Creating a Knowledge Base agent, or granting an existing one a folder, used to index nothing: the agent answered "nothing found" until someone clicked **Reindex now** or the nightly run got to it. Now granting a folder nothing has indexed yet queues its first index straight away — after the run that's already going, if there is one — and the agent's chat shows how far it has got until it's done. See [Index the documents](/guides/create-knowledge-base-agent/#6-index-the-documents).
+
+One thing happens at the upgrade itself: every agent that has the `knowledge_search` permission and a granted folder gets its first index when Pinchy starts, one after another. Its folders are empty after the upgrade (see [the breaking change above](#knowledge-base-agents-need-one-reindex-after-upgrading)), so a run before this release no longer counts as having indexed them; Pinchy tells those runs apart by the conversion rules they recorded, which no run before this release did. This is the run you'd otherwise start by hand or wait for until the night. The runs are audited as reindexes with `trigger: "initial"`, requested by `kb-index-worker`.
+
 #### Knowledge bases now keep themselves current
 
 Until now a knowledge base was as current as its last **Reindex now**: a document dropped into the folder stayed unsearchable until an admin remembered to click. Pinchy now reindexes every knowledge-base agent **once a night, at 02:00 in your organization timezone**, so new, changed and deleted documents are reflected the next morning without anyone doing anything. Only what changed is extracted and embedded again; the rest of the run is reading each file once to see whether it did.
@@ -589,7 +595,7 @@ Pinchy now remembers in each browser which person was signed in last. That way t
 
 ### Database migrations
 
-The migrations `0056`–`0080` run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
+The migrations `0056`–`0081` run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
 
 - `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder and clears the two Knowledge Base tables.
 - `0057` — backfills `kb_documents.status` so documents ingested before the archive rule existed are classified by it too.
@@ -613,6 +619,7 @@ The migrations `0056`–`0080` run automatically on startup — no manual steps.
 - `0078` — `upgrade` as a third `trigger` on `kb_index_jobs`, for the reindex Pinchy starts on its own after such a change.
 - `0079` — `artifact_format_version` on `kb_index_jobs`: the version of those rules a run converted under, so a run from before the upgrade doesn't count as one that already converted a folder's files under the new rules. Jobs that predate it carry nothing, and count as runs under earlier rules.
 - `0080` — `kb_unsupported_files`, the list of files a run found but can't index, behind the new **Download the list** in the Index section. It starts empty and fills on each agent's next run.
+- `0081` — `initial` as a fourth `trigger` on `kb_index_jobs`, for the first index Pinchy starts when an agent is granted a folder nothing has indexed yet.
 
 ## Upgrading from v0.9.0 to v0.9.1
 

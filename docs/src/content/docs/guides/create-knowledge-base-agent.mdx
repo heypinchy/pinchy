@@ -28,9 +28,9 @@ Choose **Knowledge Base** from the template options. It's in the first group, **
 
 ## 4. Enter a name and create
 
-Give your agent a descriptive name, for example "HR Policy Assistant" or "Engineering Docs". You can also add an optional tagline like "Answers questions about company HR policies". Then click **Create**.
+Give your agent a descriptive name, for example "HR Policy Assistant" or "Engineering Docs". You can also add an optional tagline like "Answers questions about company HR policies". Select the directories under `/data/` that hold the documents this agent should search, then click **Create**.
 
-The agent is created with an auto-generated avatar and you are taken to its chat page. The Knowledge Base template pre-fills operating instructions (AGENTS.md) with the agent's role, and attaches the [`knowledge-search` skill](/explanation/skills-and-templates/), which carries the cite-then-answer workflow. But the agent doesn't know which documents to search yet — you scope that in the Permissions tab, then index those documents.
+The agent is created with an auto-generated avatar and you are taken to its chat page. The Knowledge Base template pre-fills operating instructions (AGENTS.md) with the agent's role, and attaches the [`knowledge-search` skill](/explanation/skills-and-templates/), which carries the cite-then-answer workflow. Pinchy starts indexing the directories you selected straight away, and the chat tells you how far it has got (see [step 6](#6-index-the-documents)).
 
 Citing isn't left to the skill alone either. `knowledge_search` states the contract in its own results — cite the passages you used, list them with path and position (where the document has one) so a reader can check them, and say so when they don't answer the question — so an agent cites its sources even if you rewrite the instructions or build an agent without this template.
 
@@ -42,7 +42,7 @@ Delete that list and keep the paths above it, or create the agent fresh. Tool de
 
 ## 5. Configure directory access
 
-Open the agent's settings by clicking the gear icon, then select the **Permissions** tab.
+The directories you picked when creating the agent live in its settings, where you can change them later. Open the agent's settings by clicking the gear icon, then select the **Permissions** tab.
 
 ![Permissions tab with safe tools and directory picker](/screenshots/agent-settings-permissions.png)
 
@@ -52,7 +52,11 @@ Click **Save** to apply the permissions. Until you do, a note under the picker s
 
 ## 6. Index the documents
 
-Granting a directory doesn't index it on the spot — the first index takes long enough that you'll want to start it yourself rather than wait for the [nightly reindex](#keeping-the-index-current) to get to it. The simplest way is right where you granted the directories: in the agent's **Permissions** tab, the **Knowledge Base** section has an **Index** block. Its first line tells you where the index stands at a glance:
+You don't have to start the first index. Creating the agent queues it for the directories you selected, and saving the **Permissions** tab queues it for any directory you add there — only for directories nothing has indexed yet, so saving the tab again, or granting a folder another agent already uses, queues nothing. One run happens at a time across your whole Pinchy (see below), so if another run is going, the first index waits for it and starts once the slot is free. Nobody has to come back and press anything. Like every reindex it's in the [audit trail](/concepts/audit-trail/), with `trigger: "initial"` and the admin whose grant started it — or `kb-index-worker` when Pinchy queued it itself, for instance after another run was in the way, or for an agent created over the API.
+
+Until the first index has finished, the agent can't find anything in its documents. So its chat says so, right above the message box: "Reading this agent's documents for the first time — 120 of 505 done", or, while another run holds the slot, that indexing waits for it. When you add a folder to an agent that already has indexed ones, the notice talks about the newly added folders only: the agent keeps answering from the others meanwhile. If another agent's first index is already reading the same folder, the chat shows that run's progress — the documents arrive with it. Everyone who can open the chat sees it, not just admins, and it goes away once the run is done. Only the first index shows up there: a later run leaves the agent answering from the index it already has, so the chat stays quiet.
+
+The run itself shows in the agent's **Permissions** tab, where the **Knowledge Base** section has an **Index** block. Its first line tells you where the index stands at a glance:
 
 | Status              | What it means                                                                                                                                                                                                                                            |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -65,9 +69,9 @@ Granting a directory doesn't index it on the spot — the first index takes long
 | **Checking**        | Pinchy is loading the status.                                                                                                                                                                                                                            |
 | **Unknown**         | Pinchy couldn't load the status. **Try again** asks once more.                                                                                                                                                                                           |
 
-Beside it, the status says when the last run finished, in your own time, and what it found — say, "13 documents checked, 2 new or changed". When a run you're watching completes, a short confirmation pops up too; a run that fails says so in the block itself. Click **Reindex now** and the block shows the run inline — discovery, a live progress bar, how long the run has been going, an estimate of how much longer, and the last run's outcome — so you never have to leave the page or read a log. The estimate is deliberately shy: it appears only once the run has produced enough readings to support one, and it disappears again if progress stalls. On a real corpus a single large document can dominate the work, so a countdown that always shows a number would mislead more than it helps.
+Beside it, the status says when the last run finished, in your own time, and what it found — say, "13 documents checked, 2 new or changed". When a run you're watching completes, a short confirmation pops up too; a run that fails says so in the block itself. **Reindex now** starts a run yourself — to pick up documents added today rather than tonight, say — and the block shows any run inline — discovery, a live progress bar, how long the run has been going, an estimate of how much longer, and the last run's outcome — so you never have to leave the page or read a log. The estimate is deliberately shy: it appears only once the run has produced enough readings to support one, and it disappears again if progress stalls. On a real corpus a single large document can dominate the work, so a countdown that always shows a number would mislead more than it helps.
 
-The same action is available over the API:
+Reindex now is available over the API too:
 
 ```bash
 curl -X POST -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/knowledge/reindex"
@@ -75,7 +79,7 @@ curl -X POST -b session_cookie "https://pinchy.example.com/api/agents/<agentId>/
 
 This reads the agent's granted folders, extracts text from each PDF and reads the cells of each Excel workbook, splits the result into overlapping chunks, embeds every chunk with a bundled local model (`embeddinggemma`), and stores the result in Pinchy's own Postgres database (using `pgvector`) so it can be searched later.
 
-Indexing is idempotent — unchanged files are skipped on the next run, changed files are re-indexed, and files removed from disk are dropped from the index. After this first run you don't have to come back: Pinchy reindexes the agent [every night](#keeping-the-index-current), so new files, edits and deletions are picked up on their own.
+Indexing is idempotent — unchanged files are skipped on the next run, changed files are re-indexed, and files removed from disk are dropped from the index. After the first run you don't have to come back: Pinchy reindexes the agent [every night](#keeping-the-index-current), so new files, edits and deletions are picked up on their own.
 
 The request comes back immediately with a job to watch:
 
@@ -235,7 +239,7 @@ What the knowledge base does is deliberately narrow:
 
 - **PDFs**, **Excel workbooks** (`.xlsx`, `.xlsm`), **Word documents** (`.doc`, `.docx`) and **slide decks** (`.ppt`, `.pptx`) are indexed and searchable via `knowledge_search`. Older `.xls` workbooks, plain text and Markdown are not; the **Index** section counts them and offers the list as a download (see [Files Pinchy can't read](#files-pinchy-cant-read)). The two sides also do not line up in the other direction: pointed at a file directly, the agent's file tools read Markdown and plain text the index never takes, and cannot open the legacy `.doc` the index reads fine. [Supported file types](/guides/mount-data-directories/#supported-file-types) has the full split.
 - **Scanned PDFs are indexed by sending their pages to a vision model**, the same one that reads a scan when you open it in chat. That is the one step of indexing that transmits document content to your model provider, and it applies to every scanned page in the corpus rather than only the ones somebody asks about. [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider) states the data flow, how to turn it off, and why an air-gapped instance cannot use it yet.
-- Indexing runs in the background and reports its progress in the app. You start the first run (step 6); after that the [nightly reindex](#keeping-the-index-current) keeps the index current. Nothing watches the folder in between, so a document added at 10:00 is searchable the next morning, or straight away if you click **Reindex now**.
+- Indexing runs in the background and reports its progress in the app. The first run starts on its own when you grant a directory (step 6); after that the [nightly reindex](#keeping-the-index-current) keeps the index current. Nothing watches the folder in between, so a document added at 10:00 is searchable the next morning, or straight away if you click **Reindex now**.
 
 ### Documents that can't be searched
 
@@ -275,7 +279,7 @@ To add organization-specific context like team structure or terminology, go to *
 
 ## Changing permissions later
 
-You can update an agent's permissions at any time by returning to the **Permissions** tab. Add or remove directories and click **Save**. The next nightly run indexes a newly granted folder; click **Reindex now** if the agent should search it today.
+You can update an agent's permissions at any time by returning to the **Permissions** tab. Add or remove directories and click **Save**. A directory nothing has indexed yet gets its first index as soon as you save, exactly as on creation; one another agent's run has already gone through is searchable straight away, and one another agent's first index is still reading becomes searchable when that run finishes. Giving an agent that already has directories the `knowledge_search` permission counts as granting them.
 
 ## How it works
 

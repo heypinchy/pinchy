@@ -22,7 +22,7 @@
  */
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
@@ -45,7 +45,15 @@ import {
 } from "@/lib/knowledge/office-format-upgrade";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
+  agentsOwedFirstIndex,
+  anyAgentSearchesTheIndex,
+  loadRunPaths,
+  queueFirstIndex,
+} from "@/lib/knowledge/first-index";
+import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
+import {
   claimNextIndexJob,
+  findActiveIndexJob,
   finishIndexJob,
   recordIndexJobProgress,
   requeueOrphanedIndexJobs,
@@ -435,6 +443,7 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
     // second org exists.
     for (;;) {
       await queueOwedReconversion();
+      await queueOwedFirstIndex();
       if (!(await runNextIndexJob(opts))) break;
       // A finished run may have converted the last document an earlier
       // format's directory was kept for.
@@ -469,6 +478,68 @@ async function queueOwedReconversion(): Promise<void> {
       "[kb-index-worker] could not queue the reconversion of Office documents:",
       errorLine(err)
     );
+  }
+}
+
+/**
+ * How long the first-index look pauses after it failed — a database problem,
+ * which asking again every ten seconds would only log ten times as often.
+ */
+const FIRST_INDEX_RETRY_MS = 5 * 60 * 1000;
+
+// When the first-index look last failed; null while it works.
+let _firstIndexFailedAt: number | null = null;
+
+/**
+ * Queues the first index of an agent granted a folder nothing has indexed yet
+ * (#1280), if the instance's one job slot is free.
+ *
+ * The route that granted the folder queues it already; this is for the grant
+ * that found the slot taken — by a nightly run, an admin's, or another
+ * agent's first index — and for one the route never got to (a restart in
+ * between). The folder being unindexed IS the record, so nothing is kept in
+ * memory and nothing is lost to a restart. Asked on every tick the slot is
+ * free, not hourly like the reconversion: a new agent answers "nothing found"
+ * until it has run. An idle look is three reads — the active job, the agents,
+ * and the distinct folders the runs went through (a handful of rows however
+ * many nights are recorded) — plus a document probe only for a folder no run
+ * has gone through.
+ */
+async function queueOwedFirstIndex(): Promise<void> {
+  if (_firstIndexFailedAt !== null && Date.now() - _firstIndexFailedAt < FIRST_INDEX_RETRY_MS) {
+    return;
+  }
+  // Without the bundled embedding model every run could only fail, so there
+  // is nothing to queue and nothing worth reading every tick to find out.
+  if (!kbEmbedderAvailable()) return;
+  try {
+    if (await findActiveIndexJob(DEFAULT_ORG_ID)) return;
+    // No agent searches the index: nothing can be owed, and the run folders
+    // need not be read on every idle tick to find that out.
+    if (!(await anyAgentSearchesTheIndex())) return;
+    const runs = await loadRunPaths();
+    for (const agentId of await agentsOwedFirstIndex(runs)) {
+      const outcome = await queueFirstIndex(
+        agentId,
+        { actorType: "system", actorId: KB_INDEX_WORKER_ACTOR },
+        recordAudit,
+        runs
+      );
+      if (outcome.status !== "skipped") return;
+    }
+    _firstIndexFailedAt = null;
+  } catch (err) {
+    _firstIndexFailedAt = Date.now();
+    console.warn("[kb-index-worker] could not queue a first index:", errorLine(err));
+  }
+}
+
+/** Writes an audit row outside any request — the AGENTS.md non-request pattern. */
+async function recordAudit(entry: AuditLogEntry): Promise<void> {
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
   }
 }
 
@@ -573,5 +644,6 @@ export function _resetKbIndexWorkerForTest(): void {
   _orphansRequeued = false;
   _reconversionsOwed = [];
   _reconversionLookedAt = null;
+  _firstIndexFailedAt = null;
   _runInFlight = false;
 }
