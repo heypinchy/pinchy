@@ -2,6 +2,7 @@ import { mkdir, writeFile, access, chown } from "node:fs/promises";
 import { basename } from "node:path";
 import type { EmailAdapter, EmailSummary, Folder } from "./email-adapter.js";
 import { MAX_ATTACHMENT_BYTES, truncateEmailBody } from "./email-adapter.js";
+import { deliveryMimeType, isServableDelivery } from "./delivery-mime.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 import { parseSingleRecipient } from "./recipient.js";
 import { refusingUnknownParams } from "./unknown-params.js";
@@ -1406,6 +1407,22 @@ const plugin = {
                 // Best-effort — see DELIVERY_UID/DELIVERY_GID comment above.
               }
 
+              // Say "delivered" only for what Pinchy will actually show as a
+              // chip — see delivery-mime.ts. The normalized type is also what
+              // the file block declares, so the web side decides on the same
+              // value this text was written from.
+              const mimeType = deliveryMimeType(attachment.mimeType, finalFilename);
+              const size = humanReadableSize(attachment.data.length);
+              const guidance = isServableDelivery(mimeType)
+                ? `Saved to the workspace uploads directory as "${finalFilename}" (${size}). ` +
+                  `Delivered to the user in chat as a downloadable file; also readable with the ` +
+                  `pdf tool (for PDFs) and attachable to an Odoo record via odoo_attach_file using ` +
+                  `this filename.`
+                : `Saved to the workspace uploads directory as "${finalFilename}" (${size}). ` +
+                  `This file type (${mimeType}) can't be offered as a download in chat, so do not ` +
+                  `tell the user it was delivered: it is saved in the agent's workspace. It can ` +
+                  `still be attached to an Odoo record via odoo_attach_file using this filename.`;
+
               return {
                 content: [
                   {
@@ -1414,20 +1431,13 @@ const plugin = {
                       {
                         filename: finalFilename,
                         size: attachment.data.length,
-                        mimeType: attachment.mimeType,
+                        mimeType,
                       },
                       null,
                       2
                     ),
                   },
-                  {
-                    type: "text",
-                    text:
-                      `Saved to the workspace uploads directory as "${finalFilename}" ` +
-                      `(${humanReadableSize(attachment.data.length)}). Delivered to the user in chat as a ` +
-                      `downloadable file; also readable with the pdf tool (for PDFs) and attachable to an ` +
-                      `Odoo record via odoo_attach_file using this filename.`,
-                  },
+                  { type: "text", text: guidance },
                   // File delivery (#703): a native file content block lands in the
                   // session transcript, which Pinchy's client-router reads via
                   // OpenClaw's `artifacts.list` RPC after the run to record the
@@ -1435,7 +1445,7 @@ const plugin = {
                   {
                     type: "file",
                     filename: finalFilename,
-                    mimeType: attachment.mimeType,
+                    mimeType,
                   },
                 ],
               };

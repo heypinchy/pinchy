@@ -2268,6 +2268,62 @@ describe("email_get_attachment", () => {
     );
   });
 
+  // The web side only renders a chip for types its serving route can stream
+  // (SERVABLE_DELIVERED_MIMES). The tool result must say the same thing the
+  // chat will show, or the agent claims a delivery the user never sees.
+  async function guidanceFor(filename: string, mimeType: string) {
+    mockGetAttachment.mockResolvedValue({ filename, mimeType, data: Buffer.from("x") });
+    const tool = findTool(createApi(), "email_get_attachment", agentId)!;
+    const result = await tool.execute("call-1", { messageId: "msg-1", attachmentId: "att-1" });
+    const guidance = result.content
+      .filter((b) => b.type === "text")
+      .slice(1)
+      .map((b) => b.text)
+      .join("\n");
+    const file = result.content.find((b) => b.type === "file");
+    return { result, guidance, file };
+  }
+
+  it("says 'delivered in chat' for a type the chat can offer as a download", async () => {
+    const { guidance } = await guidanceFor("invoice.pdf", "application/pdf");
+    expect(guidance).toContain("Delivered to the user in chat");
+  });
+
+  it.each([
+    ["contract.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    ["legacy.xls", "application/vnd.ms-excel"],
+    ["bundle.zip", "application/zip"],
+    ["blob.bin", "application/octet-stream"],
+  ])(
+    "does not claim chat delivery for %s, which the chat cannot offer",
+    async (filename, mimeType) => {
+      const { result, guidance } = await guidanceFor(filename, mimeType);
+      expect(result.isError).toBeFalsy();
+      expect(guidance).not.toContain("Delivered to the user in chat");
+      expect(guidance).toContain("can't be offered as a download");
+      expect(guidance).toContain(filename);
+    }
+  );
+
+  it("normalizes a mislabelled CSV so the chat offers it and the result says so", async () => {
+    const { guidance, file, result } = await guidanceFor("Export.csv", "application/vnd.ms-excel");
+    expect(guidance).toContain("Delivered to the user in chat");
+    expect(file?.mimeType).toBe("text/csv");
+    expect(JSON.parse(result.content[0].text).mimeType).toBe("text/csv");
+  });
+
+  it("normalizes an xlsx sent as octet-stream, and the case of a declared type", async () => {
+    const xlsx = await guidanceFor("ledger.xlsx", "application/octet-stream");
+    expect(xlsx.file?.mimeType).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    expect(xlsx.guidance).toContain("Delivered to the user in chat");
+
+    const pdf = await guidanceFor("scan.pdf", "Application/PDF");
+    expect(pdf.file?.mimeType).toBe("application/pdf");
+    expect(pdf.guidance).toContain("Delivered to the user in chat");
+  });
+
   it("never includes attachment content/bytes in the tool result", async () => {
     const data = Buffer.from("super-secret-binary-content");
     mockGetAttachment.mockResolvedValue({
