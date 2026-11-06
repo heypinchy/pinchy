@@ -72,6 +72,16 @@ function stripNonAnswerText(answer: string): string {
     .replace(/[*_#]/g, " ");
 }
 
+/**
+ * Letters only one of these languages uses. They count in lowercase words
+ * only: capitalised ones are names and German nouns quoted into the answer
+ * ("Auftraggeber", "Łukasz"), not the language it is written in.
+ */
+const OWN_LETTERS: Partial<Record<AnswerLanguage, RegExp>> = {
+  de: /[äß]/,
+  pl: /[ąćęłńśźż]/,
+};
+
 function classify(sentence: string): AnswerLanguage | null {
   const words = sentence.toLowerCase().match(/[\p{L}]+/gu) ?? [];
   const hits = LANGUAGES.map((lang) => ({
@@ -79,8 +89,14 @@ function classify(sentence: string): AnswerLanguage | null {
     n: words.filter((w) => FUNCTION_WORDS[lang].has(w)).length,
   })).sort((a, b) => b.n - a.n);
   const [first, second] = hits;
-  if (!first || first.n < 2 || first.n === second?.n) return null;
-  return first.lang;
+  if (first && first.n >= 2 && first.n !== second?.n) return first.lang;
+  // Too few function words to decide (abbreviations like "nr" and "Ing." cut
+  // sentences short). A language's own letters decide only if that language
+  // also has a function word here, so a German noun dropped into a Polish
+  // sentence ("plattenwärmetauscher") can't claim it.
+  const lowercaseOnly = sentence.replace(/(?<!\p{L})\p{Lu}\p{L}*/gu, " ");
+  const byLetters = hits.filter((h) => h.n >= 1 && OWN_LETTERS[h.lang]?.test(lowercaseOnly));
+  return byLetters.length === 1 ? (byLetters[0]?.lang ?? null) : null;
 }
 
 /** The language of each classifiable sentence, in order, unclassified ones dropped. */

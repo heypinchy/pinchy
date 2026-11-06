@@ -64,6 +64,20 @@ describe("gradeAnswerLanguage", () => {
     }
   );
 
+  it("reads a Polish answer whose sentences carry few function words", () => {
+    // Captured from a Sonnet 5 run: Polish throughout, but abbreviations
+    // ("nr", "Ing.", "ds.") split it into fragments with at most one listed
+    // function word each. Polish-only letters in lowercase words decide it.
+    const answer =
+      "Protokół odbioru AP-2023-091 (dotyczący linii rozlewniczej nr 3, zlecenie nr 2022-4471, odbiór 2 maja 2023 w zakładzie Wels) podpisały dwie osoby:\n\n" +
+      "- **Ing. Thomas Huber** – w imieniu zamawiającego (Auftraggeber)\n" +
+      "- **Sabine Kern** – w imieniu wykonawcy (Auftragnehmer)\n\n" +
+      "Specjalista ds. bezpieczeństwa (Sicherheitsfachkraft) jedynie przyjął protokół do wiadomości, bez podpisu [1].\n\n" +
+      '> „Das Protokoll wurde für den Auftraggeber von Ing. Thomas Huber und für den Auftragnehmer von Sabine Kern unterzeichnet. Die Sicherheitsfachkraft hat das Protokoll zur Kenntnis genommen." [1]\n\n' +
+      "**Źródła:**\n[1] kb-language/Abnahme/Abnahmeprotokoll_Scan_AP-2023-091.pdf (s. 1)";
+    expect(gradeAnswerLanguage(answer, "pl")).toEqual({ passed: true, found: ["pl"] });
+  });
+
   it("passes an Italian answer", () => {
     const answer =
       "Il protocollo di collaudo AP-2023-091 è stato firmato dall'Ing. Huber per il cliente [1]. " +
