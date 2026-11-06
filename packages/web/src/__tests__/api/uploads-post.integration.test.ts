@@ -282,6 +282,120 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(row.outcome).toBe("failure");
     const detail = row.detail as Record<string, unknown>;
     expect(detail.reason).toBe("oversize");
+    // The per-file check answered, not the body-level one: only that path has
+    // parsed the part and knows its name. A body limit without the multipart
+    // allowance would refuse this request before parsing, with no filename.
+    expect(detail.filename).toBe("big.pdf");
+  });
+
+  it("accepts a file of exactly 15 MB — the body limit leaves room for the multipart framing", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+
+    const exact = Buffer.concat([
+      VALID_PDF,
+      Buffer.alloc(15 * 1024 * 1024 - VALID_PDF.length, 0x20),
+    ]);
+    expect(exact.length).toBe(15 * 1024 * 1024);
+    const file = new File([exact], "exact.pdf", { type: "application/pdf" });
+
+    const resp = await POST(makeRequest(agent.id, { file }), makeParams(agent.id));
+
+    expect(resp.status).toBe(201);
+  });
+
+  it("rejects a huge Content-Length with 413 and an audit row, without parsing the body", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+    // Both prototypes: the route parses through `new Response(bytes)`, so a
+    // spy on Request alone could only ever see the old `req.formData()` call.
+    const formDataSpy = vi.spyOn(Request.prototype, "formData");
+    const responseFormDataSpy = vi.spyOn(Response.prototype, "formData");
+
+    try {
+      const req = new NextRequest(`http://localhost/api/agents/${agent.id}/uploads`, {
+        method: "POST",
+        headers: {
+          "x-pinchy-draft-id": TEST_DRAFT_ID,
+          "content-type": "multipart/form-data; boundary=x",
+          "content-length": String(1024 * 1024 * 1024),
+        },
+        body: "--x--",
+      });
+      const resp = await POST(req, makeParams(agent.id));
+
+      expect(resp.status).toBe(413);
+      expect(formDataSpy).not.toHaveBeenCalled();
+      expect(responseFormDataSpy).not.toHaveBeenCalled();
+
+      const rows = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.actorId, user.auditPseudonym));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].eventType).toBe("file.upload.staged");
+      expect(rows[0].outcome).toBe("failure");
+      expect((rows[0].detail as Record<string, unknown>).reason).toBe("oversize");
+    } finally {
+      formDataSpy.mockRestore();
+      responseFormDataSpy.mockRestore();
+    }
+  });
+
+  it("rejects a chunked body over the limit (no Content-Length) with 413 and stops reading", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+    const formDataSpy = vi.spyOn(Request.prototype, "formData");
+
+    const chunk = new Uint8Array(1024 * 1024).fill(0x41);
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // Far past the limit, but finite: a reader that does not stop at the
+        // limit fails the `pulled` assertion instead of buffering until the
+        // worker runs out of memory.
+        pulled += 1;
+        if (pulled > 200) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+
+    try {
+      const req = new NextRequest(`http://localhost/api/agents/${agent.id}/uploads`, {
+        method: "POST",
+        headers: {
+          "x-pinchy-draft-id": TEST_DRAFT_ID,
+          "content-type": "multipart/form-data; boundary=x",
+        },
+        body: stream,
+        duplex: "half",
+      });
+      expect(req.headers.get("content-length")).toBeNull();
+
+      const resp = await POST(req, makeParams(agent.id));
+
+      expect(resp.status).toBe(413);
+      expect(formDataSpy).not.toHaveBeenCalled();
+      expect(pulled).toBeLessThan(40);
+
+      const rows = await db
+        .select()
+        .from(auditLog)
+        .where(eq(auditLog.actorId, user.auditPseudonym));
+      expect(rows).toHaveLength(1);
+      expect((rows[0].detail as Record<string, unknown>).reason).toBe("oversize");
+    } finally {
+      formDataSpy.mockRestore();
+    }
   });
 
   // ── MIME validation ────────────────────────────────────────────────────
