@@ -136,6 +136,8 @@ describe("generateFile xlsx", () => {
     ["' Q3 '", "Q3"],
     ["''", "Sheet1"],
     ["O'Brien", "O'Brien"],
+    // The 31-char cut itself exposes the quote, so stripping must come after the slice.
+    ["a".repeat(30) + "'x", "a".repeat(30)],
   ])("does not crash on the sheet title %j and uses %j", async (title, expected) => {
     const { buffer } = await generateFile({
       format: "xlsx",
