@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Sheet,
   SheetContent,
@@ -33,8 +33,21 @@ import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
 import type { UserListItem, UserGroup } from "@/lib/user-list";
 import type { UserRole } from "@/db/enums";
-import { apiPost, apiPut, apiPatch, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
-import type { UpdateUserInput, UpdateUserGroupsInput } from "@/lib/schemas/users";
+import {
+  apiGet,
+  apiPost,
+  apiPut,
+  apiPatch,
+  apiDelete,
+  ApiError,
+  errorMessage,
+} from "@/lib/api-client";
+import type {
+  UpdateUserInput,
+  UpdateUserGroupsInput,
+  ResetPasswordInput,
+} from "@/lib/schemas/users";
+import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
 import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
 
@@ -72,6 +85,27 @@ export function UserDetailSheet({
   const [saving, setSaving] = useState(false);
   const [showDeactivateConfirm, setShowDeactivateConfirm] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
+  // With a system mailer (#1309) the reset link is emailed to the user; the
+  // link is still shown either way.
+  const [mailConfigured, setMailConfigured] = useState(false);
+  const [resetDelivery, setResetDelivery] = useState<EmailDelivery | null>(null);
+  const [resetting, setResetting] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    apiGet<SystemMailStatus>("/api/settings/mail")
+      .then((s) => {
+        if (!cancelled) setMailConfigured(s.configured === true);
+      })
+      // Unknown means "don't promise an email": the link path always works.
+      .catch(() => {
+        if (!cancelled) setMailConfigured(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const isOwnAccount = user.id === currentUserId;
   const isDeactivated = user.status === "deactivated";
@@ -177,11 +211,20 @@ export function UserDetailSheet({
   }
 
   async function handleResetPassword() {
+    // With a mailer the request waits on SMTP; a second click would create
+    // a second token and send a second email.
+    setResetting(true);
     try {
-      const data = await apiPost<{ token: string }>(`/api/users/${user.id}/reset`, undefined);
+      const data = await apiPost<
+        { token: string; emailDelivery?: EmailDelivery },
+        ResetPasswordInput
+      >(`/api/users/${user.id}/reset`, mailConfigured ? { sendEmail: true } : {});
       setResetLink(buildInviteUrl(window.location.origin, data.token));
+      setResetDelivery(data.emailDelivery ?? null);
     } catch (e) {
       toast.error(errorMessage(e, "Failed to reset password"));
+    } finally {
+      setResetting(false);
     }
   }
 
@@ -276,9 +319,31 @@ export function UserDetailSheet({
 
           {/* Actions */}
           <div className="space-y-2">
-            <Button variant="outline" size="sm" className="w-full" onClick={handleResetPassword}>
-              Reset Password
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={handleResetPassword}
+              disabled={resetting}
+            >
+              {resetting && mailConfigured
+                ? "Sending..."
+                : mailConfigured
+                  ? "Email reset link"
+                  : "Reset Password"}
             </Button>
+
+            {resetDelivery?.sent === true && (
+              <p role="status" className="text-sm">
+                Reset link sent to {user.email}.
+              </p>
+            )}
+            {resetDelivery?.sent === false && (
+              <p role="alert" className="text-sm text-destructive">
+                We couldn&apos;t send the email ({resetDelivery.error}). Copy the link below and
+                send it yourself.
+              </p>
+            )}
 
             {resetLink && (
               <div className="space-y-1 rounded border p-3">

@@ -18,8 +18,18 @@ export const inviteUserSchema = z.object({
   email: z.string().trim().pipe(z.email()),
   role: z.enum(INVITE_ROLES),
   groupIds: z.array(z.string()).optional(),
+  // Email the invitation through the system mailer (#1309). Ignored-safe: the
+  // invite is created either way, and the link comes back in the response.
+  sendEmail: z.boolean().optional(),
 });
 export type InviteUserInput = z.infer<typeof inviteUserSchema>;
+
+/**
+ * `POST /api/users/[userId]/reset`. The body is optional (the route predates
+ * it), so this is parsed with `parseOptionalRequestBody`.
+ */
+export const resetPasswordSchema = z.object({ sendEmail: z.boolean().optional() }).strict();
+export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 
 /** `PATCH /api/users/[userId]` — role change only. */
 export const updateUserSchema = z.object({
