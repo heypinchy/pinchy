@@ -236,6 +236,10 @@ If you created an agent or changed a setting while OpenClaw was restarting or ra
 
 Pinchy now remembers in each browser which person was signed in last. That way the next person on a shared computer never sees what the last one left behind: unsent drafts, attachments staged but not sent, files shared into the installed app but not sent, the last chat opened for each agent (#1286). After the upgrade, no browser has that record yet. So the first page load after the upgrade clears those things once. Only shares from the last 10 minutes are kept. Ask people to send any half-written message before you upgrade.
 
+#### Audit entries for agent changes no longer list folder paths
+
+Whenever an agent's plugin configuration changed — its folders, web search settings or confirmation rules — the `agent.updated` entry in the audit trail stored the whole configuration before and after, every folder path included. A path can name a person, and audit entries can't be changed later. Above about twenty folders, the entry also outgrew the size limit and was cut short, losing what had changed. The entry now records `allowedPathCount` in place of the folder list, plus a `folderAccess` field that says how many folders were added and removed. [Audit Trail → `agent.updated`](/concepts/audit-trail/#agentupdated) shows the shape. Entries written before the upgrade keep the paths they recorded. If a script of yours reads `changes.pluginConfig` from these entries, switch it to the counts.
+
 ### Database migrations
 
 The migration `0080` runs automatically on startup — no manual steps. It is additive.

@@ -18,11 +18,13 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { validateAgentModel } from "@/lib/agent-model-validation";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { updateAgentSchema } from "@/lib/schemas/agents";
+import { pluginConfigAuditChange, type FolderAccessDiff } from "@/lib/agent-plugin-config-audit";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
 /** What an `agent.updated` row carries, success or failure. */
 type AgentUpdateDetail = UpdateDetail & {
+  folderAccess?: FolderAccessDiff;
   allowedGroups?: {
     added: { id: string; name: string }[];
     removed: { id: string; name: string }[];
@@ -188,13 +190,19 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
       changes.starterPrompts = { from: oldPrompts, to: data.starterPrompts };
     }
   }
+  // Never the raw config: folder grants can name a person, and this row is
+  // immutable. See pluginConfigAuditChange for the shape.
+  let folderAccess: FolderAccessDiff | undefined;
   if (data.pluginConfig !== undefined) {
-    const oldConfig = existingAgent.pluginConfig ?? null;
-    const newConfig = data.pluginConfig ?? null;
-    if (JSON.stringify(oldConfig) !== JSON.stringify(newConfig)) {
-      changes.pluginConfig = { from: oldConfig, to: newConfig };
-    }
+    const audited = pluginConfigAuditChange(
+      existingAgent.pluginConfig ?? null,
+      data.pluginConfig ?? null
+    );
+    if (audited.change) changes.pluginConfig = audited.change;
+    folderAccess = audited.folderAccess;
   }
+  const baseDetail: AgentUpdateDetail = { changes, ...(folderAccess ? { folderAccess } : {}) };
+  const hasBaseChange = Object.keys(changes).length > 0 || folderAccess !== undefined;
 
   // updateAgent writes the row and THEN calls regenerateOpenClawConfig(); the
   // two are not in a transaction. Letting the throw escape hands Next.js a 500
@@ -255,7 +263,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
   } catch (err) {
     if (err instanceof AgentRuntimeUpdateError) {
-      return runtimeUpdateFailed(err, Object.keys(changes).length > 0 ? { changes } : null);
+      return runtimeUpdateFailed(err, hasBaseChange ? baseDetail : null);
     }
 
     const cause = err instanceof Error ? err.message : String(err);
@@ -294,7 +302,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   }
 
   // Build audit detail with group diffs
-  const auditDetail: AgentUpdateDetail = { changes };
+  const auditDetail: AgentUpdateDetail = { ...baseDetail };
 
   if (body.groupIds !== undefined && session.user.role === "admin") {
     const newIds = body.groupIds;
@@ -317,7 +325,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     }
   }
 
-  const hasAuditableChange = Object.keys(changes).length > 0 || Boolean(auditDetail.allowedGroups);
+  const hasAuditableChange = hasBaseChange || Boolean(auditDetail.allowedGroups);
 
   // Recalculate Telegram allow-from stores when visibility or groups change.
   // Above the push, where it has always run: the rows it mirrors are already

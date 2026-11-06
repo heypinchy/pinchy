@@ -253,6 +253,44 @@ describe("PATCH /api/agents/[agentId] — config regeneration failure (#1095)", 
     );
   });
 
+  it("keeps a folder swap on the failure row — and still no path", async () => {
+    // A swap redacts to identical from/to, so `changes` is empty and the edit
+    // lives in `folderAccess` alone. The failure row must carry it too, or a
+    // permission change that DID persist is recorded as nothing at all.
+    adminSession();
+    mockAgent({
+      id: "agent-1",
+      name: "Penny",
+      model: "old",
+      isPersonal: false,
+      ownerId: null,
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr/alice"] } },
+    });
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
+
+    const req = new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr/bob"] } },
+      }),
+      headers: { "Content-Type": "application/json" },
+    });
+    await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
+    await flushAfter();
+
+    const rows = vi
+      .mocked(appendAuditLog)
+      .mock.calls.map(([entry]) => entry)
+      .filter((entry) => entry.eventType === "agent.updated");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].outcome).toBe("failure");
+    expect(rows[0].detail).toMatchObject({
+      changes: {},
+      folderAccess: { added: 1, removed: 1, count: 1 },
+    });
+    expect(JSON.stringify(rows[0].detail)).not.toContain("/data");
+  });
+
   it("caps the cause, so a long one cannot evict the diff from the row", async () => {
     // appendAuditLog runs truncateDetail, and truncateDetail does NOT trim the
     // offending field — it replaces the whole detail object with a summary
@@ -405,6 +443,38 @@ describe("PATCH /api/agents/[agentId] — the permission-change config push", ()
       changes: { allowedTools: { to: ["email_read"] } },
       runtimeUpdate: { applied: false },
     });
+  });
+
+  it("keeps a folder swap on the failure row of this push too", async () => {
+    // The second push site reads `auditDetail`, not `baseDetail`. Rebuilding
+    // it as `{ changes }` — its shape before folder grants were redacted —
+    // would drop the swap from exactly this failure row.
+    adminSession();
+    mockAgent({
+      ...EXISTING,
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr/alice"] } },
+    });
+    const next = { "pinchy-files": { allowed_paths: ["/data/hr/bob"] } };
+    vi.mocked(updateAgent).mockResolvedValueOnce({ ...EXISTING, pluginConfig: next } as never);
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(eaccesOnToolsFile());
+
+    const req = new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ pluginConfig: next }),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
+    await flushAfter();
+
+    expect(res.status).toBe(500);
+    const rows = vi
+      .mocked(appendAuditLog)
+      .mock.calls.map(([entry]) => entry)
+      .filter((entry) => entry.eventType === "agent.updated");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].outcome).toBe("failure");
+    expect(rows[0].detail).toMatchObject({ folderAccess: { added: 1, removed: 1, count: 1 } });
+    expect(JSON.stringify(rows[0].detail)).not.toContain("/data");
   });
 
   it("still recalculates the Telegram allow-stores", async () => {
