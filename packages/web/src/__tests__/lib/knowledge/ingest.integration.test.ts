@@ -46,6 +46,7 @@ import {
 import { chmod } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { makeKbSourceRoot } from "@/test-helpers/kb-source-root";
 import { format } from "node:util";
 import { and, eq } from "drizzle-orm";
 import ExcelJS from "exceljs";
@@ -115,7 +116,7 @@ let tmpRoot: string;
 let stagingDir: string;
 
 beforeEach(() => {
-  tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-test-"));
+  tmpRoot = makeKbSourceRoot("pinchy-kb-ingest-test-");
   stagingDir = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-staging-"));
 });
 
@@ -389,7 +390,7 @@ it("removes the document and its chunks when the source file disappears from dis
 });
 
 it("does not touch documents indexed from a different root directory for the same org", async () => {
-  const otherRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-other-"));
+  const otherRoot = makeKbSourceRoot("pinchy-kb-ingest-other-");
   try {
     const otherPdfPath = join(otherRoot, "other.pdf");
     writeFileSync(otherPdfPath, "other-root-bytes");

@@ -11,7 +11,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -20,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { tmpdir } from "node:os";
+import { makeKbSourceRoot } from "@/test-helpers/kb-source-root";
 import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/db";
@@ -47,7 +46,7 @@ const ORG_ID = "org-kb-worker-test";
 let tmpRoot: string;
 
 beforeEach(async () => {
-  tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-worker-test-"));
+  tmpRoot = makeKbSourceRoot("pinchy-kb-worker-test-");
   await db.delete(kbIndexJobs);
   _resetKbIndexWorkerForTest();
   mockKbEmbedderAvailable.mockReturnValue(true);
