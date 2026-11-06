@@ -21,6 +21,7 @@ import { getOrgTimezone } from "@/lib/settings-timezone";
 import {
   localClock,
   nextIndexRun,
+  sameIndexSchedule,
   parseIndexSchedule,
   type IndexSchedule,
   type IndexScheduleStatus,
@@ -129,10 +130,17 @@ export async function getIndexScheduleStatus(now: Date = new Date()): Promise<In
     getOrgTimezone(),
     getIndexScheduleState(),
   ]);
+  // The last slot only speaks for the schedule and zone it was taken under.
+  // After a change the scheduler re-takes it against the new setting, so a
+  // time moved to later today still runs today.
+  const lastSlot =
+    sameIndexSchedule(state.schedule, schedule) && state.timezone === timezone
+      ? state.lastSlot
+      : null;
   return {
     ...schedule,
     timezone,
-    nextRun: nextIndexRun(localClock(now, timezone), schedule),
+    nextRun: nextIndexRun(localClock(now, timezone), schedule, timezone, lastSlot),
     currentSweep: state.sweep
       ? {
           slot: state.sweep.slot,

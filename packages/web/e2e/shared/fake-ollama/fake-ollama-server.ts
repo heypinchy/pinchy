@@ -316,7 +316,11 @@ const WORKSPACE_DELETE_RESPONSE = "File deleted: coverage probe complete.";
 // under the agent's workbench and hands it back to the user as a download via
 // the #703 delivery path. The probe args below render a 1-row CSV.
 const GENERATE_FILE_TRIGGER = "E2E_GENERATE_FILE_TOOL";
-const GENERATE_FILE_RESPONSE = "File generated: coverage probe complete.";
+// The second line is what a real model writes after handing over a file:
+// OpenClaw's system prompt asks for a `MEDIA:<path>` line per attachment. The
+// chat must not show it (#1298) — the spec asserts that, live and on reload.
+const GENERATE_FILE_RESPONSE =
+  "File generated: coverage probe complete.\nMEDIA:/root/.openclaw/workspaces/e2e/workbench/e2e-export.csv";
 // An uploaded PDF must be analyzed via pinchy_read (pinchy-files' own PDF
 // subsystem), NOT OpenClaw's built-in `pdf` tool — which fails "Unknown model"
 // because it resolves only against the per-agent catalog (v0.5.8 finding).

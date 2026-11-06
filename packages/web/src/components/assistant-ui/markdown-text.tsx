@@ -22,6 +22,8 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import {
   remarkSourceLinks,
   buildSourceDownloads,
+  buildSourceViewerUrl,
+  buildPassageRequest,
   parseSourceHref,
 } from "@/lib/knowledge/source-links";
 import { isSpreadsheetFile } from "@/lib/knowledge/office-formats";
@@ -157,7 +159,12 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  a: function Anchor({ className, href, children, ...props }) {
+  a: function Anchor({ className, href, children, ...linkProps }) {
+    // Set by remarkSourceLinks on a citation it built, never by markdown a
+    // model can write; read here and kept off the rendered anchor.
+    const { "data-cited-claim": citedClaim, ...props } = linkProps as typeof linkProps & {
+      "data-cited-claim"?: string;
+    };
     const linkClasses = cn(
       "aui-md-a text-primary-accent underline underline-offset-2 hover:text-primary-accent/80",
       className
@@ -195,11 +202,17 @@ const defaultComponents = memoizeMarkdownComponents({
         // what the reader is shown and what they can take away can never
         // describe two different documents. For an Office source that is the
         // original next to its converted PDF (#939).
+        // The viewer opens the same document under a url ending in its name,
+        // which is what the browser's PDF viewer titles it by (#1268).
         <PdfDialog
-          url={href}
+          url={buildSourceViewerUrl(href) ?? href}
           title={source.path}
           page={source.locator?.kind === "page" ? source.locator.page : null}
           downloads={buildSourceDownloads(href) ?? undefined}
+          // Which passage on the page the answer drew on, asked of the index
+          // with the answer's own claim (#1268). Null for a citation without a
+          // page, which keeps the browser's viewer.
+          passage={buildPassageRequest(href, citedClaim)}
         >
           <button type="button" className={cn(linkClasses, "cursor-pointer text-left")}>
             {children}

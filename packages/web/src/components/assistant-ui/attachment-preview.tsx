@@ -13,6 +13,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { imageInputNote } from "@/lib/attachment-capability";
+import {
+  CitationPdfViewer,
+  type PassageLookup,
+} from "@/components/assistant-ui/citation-pdf-viewer";
 
 import { useModelCapabilities } from "@/hooks/use-model-capabilities";
 
@@ -84,7 +88,9 @@ function buildFileUrl(agentId: string, filename: string, source: "uploads" | "ar
  * - `application/pdf` → small `<embed>` thumbnail; click opens a modal with
  *   the browser's native PDF viewer at full size.
  * - `image/*` → inline `<img>`; click opens a modal with the full image.
- * - anything else (or missing agentId / filename) → a plain chip.
+ * - anything else → a chip that downloads the file (#1298): a CSV or XLSX
+ *   has no viewer here, and taking it away is what it was delivered for.
+ * - missing agentId / filename → a plain chip, since there is no URL to build.
  */
 export const AttachmentPreview: FC = () => {
   const { mimeType, filename } = useMessagePartFile();
@@ -121,11 +127,18 @@ export const AttachmentPreview: FC = () => {
     if (readiness === "probing") return <Probing filename={filename} />;
     return <ImagePreview url={url!} filename={filename} warning={capabilityWarning} />;
   }
-  return <Chip filename={filename} mimeType={mimeType} warning={capabilityWarning} />;
+  return (
+    <Chip
+      filename={filename}
+      mimeType={mimeType}
+      warning={capabilityWarning}
+      href={buildFileUrl(agentId, filename, fileSource)}
+    />
+  );
 };
 
 const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
-  <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">{message}</p>
+  <p className="mt-1 text-xs text-amber-700 dark:text-amber-500">{message}</p>
 );
 
 /**
@@ -134,7 +147,21 @@ const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
  * Office file is converted, the same dialog offers the original beside its
  * converted PDF, and that has to be a datum rather than a redesign of the row.
  */
-export type DocumentDownload = { label: string; url: string };
+export type DocumentDownload = {
+  label: string;
+  url: string;
+  /**
+   * The name the file lands under, when the label is not it — "PDF" names a
+   * representation, `Angebot.pdf` names the file. Shown on hover and carried
+   * in the accessible name, so a screen reader hears which file it is taking.
+   */
+  filename?: string;
+};
+
+/** "Download PDF: Angebot.pdf" — starts with the visible label (WCAG 2.5.3). */
+function downloadAccessibleName({ label, filename }: DocumentDownload): string {
+  return filename && filename !== label ? `Download ${label}: ${filename}` : `Download ${label}`;
+}
 
 /**
  * The url the same document is fetched from when the reader wants to keep it.
@@ -170,8 +197,8 @@ function downloadUrlFor(url: string): string {
  *
  * So our chrome occupies a row ABOVE the viewer and the viewer gets everything
  * below it, edge to edge. Nothing overlaps, nothing needs tinting, and the row
- * earns its height: it names the document (the browser's title bar shows the
- * route segment, "workspace-file", which tells a reader nothing) and it offers
+ * earns its height: it names the document in our own words, whatever the
+ * browser's viewer makes of the url or the file's metadata, and it offers
  * a full tab — the only thing that works on iOS Safari, where an embedded PDF
  * renders blank whatever we do.
  *
@@ -194,10 +221,18 @@ export const PdfDialog: FC<{
    * representation of the same document passes them all.
    */
   downloads?: DocumentDownload[];
+  /**
+   * The cited passage to find on `page`, for a knowledge-base citation (#1268).
+   * With one, the page is drawn by our own renderer, which can highlight it;
+   * without one — an attachment, a citation without a page — the browser's
+   * viewer shows the document as before. The renderer falls back to that same
+   * viewer on any failure.
+   */
+  passage?: PassageLookup | null;
   children: ReactNode;
   /** Test-only escape hatch; the dialog is trigger-driven in the app. */
   defaultOpen?: boolean;
-}> = ({ url, title, page, downloads, children, defaultOpen }) => {
+}> = ({ url, title, page, downloads, passage, children, defaultOpen }) => {
   // `title` is a filename for an attachment and a full path for a citation.
   // Show the leaf either way and keep the rest in the tooltip: a corpus has
   // same-named files in different folders, so the path has to stay reachable,
@@ -210,9 +245,28 @@ export const PdfDialog: FC<{
   // icons refuses to answer — so each names itself as soon as there is a
   // choice to make.
   const namesDownloads = documentDownloads.length > 1;
+  const highlightsPassage = Boolean(passage) && page !== null && page !== undefined;
+  // The viewer below the header names the page itself, with the page count
+  // and as the reader pages on; a second, static label would contradict it.
+  const [showsOwnRenderer, setShowsOwnRenderer] = useState(highlightsPassage);
+
+  /*
+    Remounted per open (the dialog unmounts its content when closed), which
+    is what makes `#page=N` in the url actually land: a PDF viewer honours
+    the fragment on load, not on a later fragment change.
+    `min-h-0` lets this shrink inside the flex column — without it the
+    embed keeps its intrinsic height and pushes the header off-screen.
+   */
+  const browserViewer = (
+    <embed src={url} type="application/pdf" className="block min-h-0 w-full flex-1" />
+  );
 
   return (
-    <Dialog defaultOpen={defaultOpen}>
+    <Dialog
+      defaultOpen={defaultOpen}
+      // Each open tries the renderer afresh: a fallback was about that open.
+      onOpenChange={(open) => open && setShowsOwnRenderer(highlightsPassage)}
+    >
       <DialogTrigger asChild>{children}</DialogTrigger>
       <DialogContent
         // Taller and wider than a default dialog because a page of A4 at a
@@ -229,7 +283,7 @@ export const PdfDialog: FC<{
           <DialogTitle className="truncate font-medium text-sm" title={title}>
             {filename}
           </DialogTitle>
-          {page !== null && page !== undefined && (
+          {page !== null && page !== undefined && !showsOwnRenderer && (
             <span className="shrink-0 text-muted-foreground text-xs">Page {page}</span>
           )}
           {/*
@@ -256,7 +310,12 @@ export const PdfDialog: FC<{
                   on purpose, so a Content-Disposition filename — the one that
                   carries umlauts intact — still wins.
                  */}
-                <a href={download.url} download aria-label={`Download ${download.label}`}>
+                <a
+                  href={download.url}
+                  download
+                  aria-label={downloadAccessibleName(download)}
+                  title={download.filename ?? download.label}
+                >
                   <Download className="size-4" />
                   {namesDownloads && <span className="max-w-32 truncate">{download.label}</span>}
                 </a>
@@ -274,14 +333,17 @@ export const PdfDialog: FC<{
             </DialogClose>
           </div>
         </div>
-        {/*
-          Remounted per open (the dialog unmounts its content when closed), which
-          is what makes `#page=N` in the url actually land: a PDF viewer honours
-          the fragment on load, not on a later fragment change.
-          `min-h-0` lets this shrink inside the flex column — without it the
-          embed keeps its intrinsic height and pushes the header off-screen.
-         */}
-        <embed src={url} type="application/pdf" className="block min-h-0 w-full flex-1" />
+        {highlightsPassage && passage && page !== null && page !== undefined ? (
+          <CitationPdfViewer
+            url={url}
+            page={page}
+            passage={passage}
+            onFallback={() => setShowsOwnRenderer(false)}
+            fallback={browserViewer}
+          />
+        ) : (
+          browserViewer
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -359,20 +421,37 @@ const Probing: FC<{ filename: string }> = ({ filename }) => (
   </div>
 );
 
-const Chip: FC<{ filename: string | undefined; mimeType: string; warning?: string | null }> = ({
-  filename,
-  mimeType,
-  warning,
-}) => {
+const Chip: FC<{
+  filename: string | undefined;
+  mimeType: string;
+  warning?: string | null;
+  /** Where the file downloads from; without it the chip only names the file. */
+  href?: string;
+}> = ({ filename, mimeType, warning, href }) => {
   const label = filename ?? (mimeType === "application/pdf" ? "PDF document" : "File");
+  const className = `my-1 flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2${warning ? " border-amber-500/60" : ""}`;
   return (
     <div>
-      <div
-        className={`my-1 flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2${warning ? " border-amber-500/60" : ""}`}
-      >
-        <FileText className="size-5 shrink-0 text-muted-foreground" />
-        <span className="truncate text-sm">{label}</span>
-      </div>
+      {href ? (
+        // `download` because the routes serve `inline`: without it a CSV opens
+        // as text in the tab. Left without a value so the Content-Disposition
+        // filename, which carries umlauts intact, still names the saved file.
+        <a
+          href={href}
+          download
+          aria-label={`Download ${label}`}
+          className={`${className} max-w-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+        >
+          <FileText className="size-5 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm">{label}</span>
+          <Download className="ml-auto size-4 shrink-0 text-muted-foreground" />
+        </a>
+      ) : (
+        <div className={className}>
+          <FileText className="size-5 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm">{label}</span>
+        </div>
+      )}
       {warning && <CapabilityWarning message={warning} />}
     </div>
   );

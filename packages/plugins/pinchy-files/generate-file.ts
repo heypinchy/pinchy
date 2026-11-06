@@ -89,7 +89,10 @@ function csvField(value: CellValue): string {
 }
 
 function renderCsv(columns: string[], rows: CellValue[][]): Buffer {
-  const lines = [columns.join(","), ...rows.map((row) => row.map(csvField).join(","))];
+  const lines = [
+    columns.map(csvField).join(","),
+    ...rows.map((row) => row.map(csvField).join(",")),
+  ];
   return Buffer.from(CSV_BOM + lines.join("\r\n") + "\r\n", "utf-8");
 }
 
@@ -111,8 +114,11 @@ function sanitizeSheetName(title: string | undefined): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, XLSX_SHEET_NAME_MAX_LENGTH)
-    .trim();
-  return sanitized || "Sheet1";
+    // ExcelJS throws when the first or last character is a single quote.
+    .replace(/^['\s]+|['\s]+$/g, "");
+  // "History" is reserved (ExcelJS matches it exactly, Excel case-insensitively).
+  if (!sanitized || sanitized.toLowerCase() === "history") return "Sheet1";
+  return sanitized;
 }
 
 async function renderXlsx(

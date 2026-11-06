@@ -690,6 +690,39 @@ describe("AuditLogTable", () => {
     });
   });
 
+  it("should show 'deleted' (not 'deactivated') for a deleted agent actor", async () => {
+    mockEventTypesThenEntries(undefined, {
+      entries: [
+        {
+          id: 12,
+          timestamp: "2026-02-21T10:00:00.000Z",
+          actorType: "agent",
+          actorId: "711ed709-agent",
+          actorName: "Old Archivist",
+          actorDeleted: true,
+          eventType: "retrieval.query",
+          resource: null,
+          resourceName: null,
+          resourceDeleted: false,
+          detail: {},
+          rowHmac: "hmac-agent-deleted",
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
+
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Old Archivist").length).toBeGreaterThan(0);
+    });
+    expect(screen.getAllByText("deleted").length).toBeGreaterThan(0);
+    expect(screen.queryByText("deactivated")).not.toBeInTheDocument();
+    expect(screen.queryByText(/711ed709/)).not.toBeInTheDocument();
+  });
+
   it("should show 'deleted' badge for deleted resource", async () => {
     const entriesWithDeletedResource = [
       {
@@ -734,6 +767,32 @@ describe("AuditLogTable", () => {
     // rows[0] is the header; rows[1] is the first data row
     const firstDataRow = rows[1];
     fireEvent.keyUp(firstDataRow, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(screen.getByText("Entry Detail")).toBeInTheDocument();
+    });
+  });
+
+  it("mobile cards open their detail through a real button, not a button-role wrapper (#1300)", async () => {
+    // A card with role="button" that contains the actor/resource links is a
+    // nested interactive control (axe `nested-interactive`): screen readers
+    // flatten the links into the button's name and can't reach them.
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    const cards = document.querySelectorAll("[data-audit-card]");
+    expect(cards.length).toBeGreaterThan(0);
+    for (const card of cards) {
+      expect(card).not.toHaveAttribute("role");
+      expect(card).not.toHaveAttribute("tabindex");
+    }
+
+    const user = userEvent.setup();
+    const detailButtons = screen.getAllByRole("button", { name: "auth.login details" });
+    await user.click(detailButtons[0]);
 
     await waitFor(() => {
       expect(screen.getByText("Entry Detail")).toBeInTheDocument();

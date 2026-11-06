@@ -6328,7 +6328,8 @@ describe("pinchy-web config", () => {
     expect(config.plugins.allow).toContain("pinchy-web");
   });
 
-  it("should not include pinchy-web when no web-search connection exists", async () => {
+  // #1297: page fetch needs no provider, so the plugin loads without one.
+  it("includes pinchy-web without a connectionId when no web-search connection exists", async () => {
     const agentsData = [
       {
         id: "web-agent",
@@ -6362,7 +6363,9 @@ describe("pinchy-web config", () => {
     const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
-    expect(config.plugins.entries["pinchy-web"]).toBeUndefined();
+    expect(config.plugins.entries["pinchy-web"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-web"].config).not.toHaveProperty("connectionId");
+    expect(config.plugins.allow).toContain("pinchy-web");
   });
 
   it("should not include pinchy-web when connection exists but no agent has web tools", async () => {

@@ -42,6 +42,11 @@ services:
       # artifact is re-derivable from its source, keyed by content hash and
       # converter format version.
       - pinchy-kb-artifacts:/var/cache/pinchy-kb-artifacts
+      # Hand-over to the office-converter service below: a batch is staged
+      # here and the converter is asked over a Unix socket in the same volume.
+      # Same path in both containers (Dockerfile.pinchy sets
+      # KB_OFFICE_SPOOL_DIR to it), so nothing needs translating.
+      - pinchy-office-spool:/var/spool/pinchy-office
     extra_hosts:
       # The same mapping as the openclaw service below, and it has to stay that
       # way: Pinchy resolves a saved Odoo URL or mail host to check it before
@@ -68,6 +73,56 @@ services:
     # Resource limits (#263) — overridable via env for larger deployments.
     mem_limit: ${PINCHY_MEM_LIMIT:-1g}
     cpus: ${PINCHY_CPUS:-1.5}
+
+  # Converts Word and PowerPoint files to PDF for the knowledge base. The only
+  # process that opens an Office file with LibreOffice — and those files come
+  # from shares anyone with write access can plant one on. So it gets nothing:
+  # no network (only `lo` exists, no route to the Docker network, the host or
+  # the internet), no environment, no volume but the spool, a read-only root
+  # filesystem and no capabilities. A crafted document that gets LibreOffice
+  # past every profile setting still has nowhere to send a request and no
+  # secret to read. Same image as `pinchy`, so there is nothing extra to pull
+  # or mirror; the entrypoint is what makes it the converter. Office documents
+  # stay unconverted (retryable, not "unreadable") while it is not running.
+  office-converter:
+    image: ghcr.io/heypinchy/pinchy:${PINCHY_VERSION:?set PINCHY_VERSION in .env (e.g. PINCHY_VERSION=v0.5.0)}
+    entrypoint: ["node", "--import", "tsx", "src/server/office-converter.ts"]
+    working_dir: /app/packages/web
+    network_mode: none
+    # Reaps the grandchildren a timed-out conversion leaves (soffice forks
+    # soffice.bin); node as PID 1 would keep them as zombies.
+    init: true
+    # Its own user (pinchy-office), in pinchy's group: it reads what the web
+    # process staged and writes only the output and its profile, never
+    # anything it did not create (Dockerfile.pinchy, entrypoint.sh).
+    user: "998:999"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    volumes:
+      - pinchy-office-spool:/var/spool/pinchy-office
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get({socketPath:'/var/spool/pinchy-office/converter.sock',path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Its own ceiling, so a large conversion squeezes this container rather
+    # than the web process and the embedder.
+    mem_limit: ${OFFICE_CONVERTER_MEM_LIMIT:-1g}
+    cpus: ${OFFICE_CONVERTER_CPUS:-1}
 
   openclaw:
     image: ghcr.io/heypinchy/pinchy-openclaw:${PINCHY_VERSION:?set PINCHY_VERSION in .env (e.g. PINCHY_VERSION=v0.5.0)}
@@ -154,6 +209,7 @@ volumes:
   openclaw-extensions:
   pinchy-pdf-cache:
   pinchy-kb-artifacts:
+  pinchy-office-spool:
   openclaw-secrets:
     driver: local
     driver_opts:

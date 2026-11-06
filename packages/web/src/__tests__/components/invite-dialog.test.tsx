@@ -121,7 +121,59 @@ describe("InviteDialog", () => {
       expect(screen.getByText("http://localhost:7777/invite/invite-token-abc")).toBeInTheDocument();
     });
 
-    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    // The form that had focus is gone; focus lands on the new link's Copy
+    // button so a screen-reader user hears that the link is there.
+    expect(screen.getByRole("button", { name: "Copy link" })).toHaveFocus();
+  });
+
+  it("says Pinchy does not send the email and who to send the link to (#1265)", async () => {
+    const user = userEvent.setup();
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(
+        jsonResponse({
+          token: "invite-token-abc",
+          email: "stored@example.com",
+          expiresAt: "2026-11-12T14:30:00.000Z",
+        })
+      )
+    );
+
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
+    await user.click(screen.getByRole("button", { name: "Create Invite" }));
+
+    expect(
+      await screen.findByText(
+        "Pinchy doesn't email this link. Copy it and send it to ada@example.com yourself."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("shows when the link expires", async () => {
+    const user = userEvent.setup();
+    const expiresAt = "2026-11-12T14:30:00.000Z";
+    fetchSpy.mockImplementation(
+      mockFetchForInvite(jsonResponse({ token: "invite-token-abc", email: null, expiresAt }))
+    );
+
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
+    await user.click(screen.getByRole("button", { name: "Create Invite" }));
+
+    // Rendered in the admin's own time zone: the expiry is a moment, and the
+    // admin reads it against their own clock.
+    const expected = new Date(expiresAt).toLocaleString("en-US", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    expect(
+      // ...followed by the zone name: the admin may pass the deadline on to
+      // someone in another time zone.
+      await screen.findByText((text) => {
+        const prefix = `The link works once and expires on ${expected} `;
+        return text.startsWith(prefix) && /^\S+\.$/.test(text.slice(prefix.length));
+      })
+    ).toBeInTheDocument();
   });
 
   it("should show error message on API failure", async () => {
@@ -228,7 +280,7 @@ describe("InviteDialog", () => {
     expect(global.fetch).not.toHaveBeenCalledWith("/api/users/invite", expect.anything());
   });
 
-  it("should show Share button when Web Share API is available", async () => {
+  it("offers Share beside Copy link when the Web Share API is available", async () => {
     const user = userEvent.setup();
 
     // Mock navigator.share as available
@@ -255,12 +307,15 @@ describe("InviteDialog", () => {
       expect(screen.getByText("http://localhost:7777/invite/share-token")).toBeInTheDocument();
     });
 
+    // Share is a secondary action beside Copy, never a replacement for it:
+    // on desktop Safari it opens the OS share sheet, where copying is buried.
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Share" }));
 
     expect(shareMock).toHaveBeenCalledWith({
-      title: "Pinchy Invite",
+      title: "Pinchy invite",
       url: "http://localhost:7777/invite/share-token",
     });
 
@@ -271,7 +326,7 @@ describe("InviteDialog", () => {
     delete navigator.canShare;
   });
 
-  it("should show Copy button when Web Share API is not available", async () => {
+  it("offers only Copy link when the Web Share API is not available", async () => {
     const user = userEvent.setup();
 
     // Ensure navigator.share is NOT available
@@ -290,7 +345,7 @@ describe("InviteDialog", () => {
       expect(screen.getByText("http://localhost:7777/invite/copy-token")).toBeInTheDocument();
     });
 
-    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Share" })).not.toBeInTheDocument();
 
     // Restore

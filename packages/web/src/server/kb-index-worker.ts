@@ -32,6 +32,7 @@ import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 import { extractXlsxIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
+import { clearSpoolBatches } from "@/lib/knowledge/office-converter-sidecar";
 import {
   clearStagedBatches,
   OFFICE_ARTIFACT_FORMAT_VERSION,
@@ -412,7 +413,12 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
       // or read of ours exists yet. Housekeeping, so a failure is logged and
       // the queue still runs.
       try {
-        const cleared = await clearStagedBatches(opts.artifactDir);
+        // With the office-converter sidecar, Office batches are staged in its
+        // spool instead (office-converter-sidecar.ts): same premise, same act.
+        const spoolDir = process.env.KB_OFFICE_SPOOL_DIR;
+        const cleared =
+          (await clearStagedBatches(opts.artifactDir)) +
+          (spoolDir ? await clearSpoolBatches(spoolDir) : 0);
         if (cleared > 0) {
           console.log(
             `[kb-index-worker] cleared ${cleared} staged batch(es) and source copies left by an interrupted run`

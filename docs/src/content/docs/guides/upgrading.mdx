@@ -272,15 +272,26 @@ A call to a Pinchy tool that carries a field the tool doesn't take is now refuse
 
 Two calls change for agents you already run. `email_search` now refuses an empty `query` too — v0.9.1 refused only a non-empty one, with a message naming the filters to use. And `odoo_delete` refuses `ids` (see [above](#deleting-in-odoo-now-requires-reading-the-record-first)). Both tool descriptions now say what to use instead, so an agent doesn't need the error to find out.
 
+#### `POST /api/settings` only accepts `org.timezone`
+
+The endpoint used to store any key you sent it, which let an admin write provider, domain-lock, enterprise-key or Telegram settings around the routes that own them — skipping their validation, side effects and audit entry. It now accepts `org.timezone` and answers every other key with `400`. The Settings UI only ever sent the timezone, so nothing changes there. If a script of yours posted other keys here, use the dedicated endpoint instead; the [API reference](/reference/api/) lists them.
+
 ### Upgrade notes
 
-The standard flow applies:
+This release adds a service to `docker-compose.yml` — the [Office converter](#word-and-powerpoint-files-are-converted-in-a-container-of-their-own) — so fetch the new file along with the version bump. Three things to check first:
+
+- The new file also passes `AUDIT_HMAC_SECRET` from `.env` into Pinchy. If you pinned a value there, read [that note](#audit_hmac_secret-in-env-now-actually-does-something) before you restart.
+- The new file also maps `ollama.local` to the Docker host for the Pinchy container, so the address checks resolve it like any other name. If an Odoo, mail server or provider is saved under that name, see [Some saved addresses are refused until you act](#some-saved-addresses-are-refused-until-you-act).
+- Fetching the file replaces it. If you edited `docker-compose.yml` itself, move those changes into a `docker-compose.override.yml` first — see [Customizing your deployment](/guides/customizing-deployment/).
 
 ```bash
 cd /opt/pinchy
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
+
+If you keep local changes in a `docker-compose.override.yml`, they carry over as usual.
 
 #### Security: open self-registration is closed — review your user list
 
@@ -337,12 +348,7 @@ Nothing changes for your existing agents on upgrade — no tool is gated until y
 
 Pinchy has always read this variable, but the `docker-compose.yml` we ship never passed it into the container — so if you pinned it the way the hardening guide describes, it had no effect and Pinchy kept signing with the key it generated into the `pinchy-secrets` volume. It's forwarded now.
 
-It takes effect the first time you start with the new compose file, so nothing changes until you re-fetch it:
-
-```bash
-cd /opt/pinchy
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
-```
+It takes effect the first time you start with the new compose file, which this release's [upgrade notes](#upgrade-notes) have you fetch.
 
 **If you already have a value in `.env`, that switches the key your audit trail is signed with.** Entries written before the switch keep their old signature, and they're neither lost nor damaged: Pinchy still holds the previous key in the `pinchy-secrets` volume, so integrity verification reports those rows as signed with an earlier secret instead of flagging them as tampered. The hash chain is unaffected either way — it links each row to its predecessor's stored signature, whichever key produced it.
 
@@ -383,6 +389,10 @@ The **Fetch web pages** tool has no such switch and never did: an agent cannot f
 
 The base-URL check for **OpenAI-compatible providers** kept a third list, and now reads the same table. Endpoints on your LAN or tailnet (and in `198.18.0.0/15`) still work out of the box; what changed is that the metadata endpoints above, the reserved ranges, a NAT64 or 6to4 address that carries one of those, and Teredo and SIIT addresses are refused, as `169.254.169.254` already was. If you set `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1`, the ranges that count as private now — `198.18.0.0/15`, `fec0::/10`, `64:ff9b:1::/48` and a NAT64 or 6to4 address that wraps a private IPv4 address — are refused along with the rest of your network. See [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed).
 
+#### Web agents can fetch pages without a search provider
+
+Agents created from a web template, such as the Market & News Monitor, used to get no web tools at all on an instance without a Brave Search API key: the tools were granted, but the plugin behind them never loaded, and nothing said so. They now load either way. **Fetch web pages** works without a key, and **Search the web** answers that web search isn't configured until an admin adds one in **Settings → Integrations**. The create form and the agent's **Web Search** section say when search isn't set up. Nothing to do on upgrade; existing web agents gain page fetching on their own.
+
 #### `ALLOW_PRIVATE_URLS` opens your private network, and nothing else
 
 `ALLOW_PRIVATE_URLS` used to switch the Odoo address check off entirely, so an install that set it also let an Odoo connection point at `localhost`, the cloud metadata services or anything else on the Pinchy host. Now it works like `ALLOW_PRIVATE_MAIL_HOSTS`: private ranges (including Tailscale and `198.18.0.0/15`) open up; loopback, `0.0.0.0/8`, link-local, the metadata endpoints listed above and the reserved ranges stay refused whatever you set. If your Odoo connection pointed at `localhost`, `127.0.0.1`, `::1`, a link-local address or anything in `0.0.0.0/8` — OrbStack's `host.docker.internal` included — it stops working on upgrade, because the saved address is checked again when it's used. Point it at the Odoo host's network address or container name instead, and enter the API key again with it: Pinchy never sends a stored key to a new address. One thing the switch does open, because it's private like any LAN host: the other containers on the Pinchy stack's Docker network, such as the agent runtime (`openclaw`) and the database (`db`), reachable by service name. Set it only if your Odoo really lives on your own network.
@@ -397,8 +407,8 @@ The same now goes for a saved **OpenAI-compatible provider**. Its base URL is ch
 
 Two gaps remain, and we'd rather say so.
 
-- **DNS rebinding.** The check resolves the hostname, and the Odoo or mail client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool pins the address it checked; the Odoo and mail clients don't yet.
-- **A name the two containers resolve differently.** Pinchy runs the check in its own container; the Odoo and mail tools connect from the agent runtime's (`openclaw`). Our `docker-compose.yml` used to map `ollama.local` — the Docker host — in the runtime's container only, so for Pinchy that name didn't resolve, the check let it through, and an Odoo URL on `ollama.local` reached the Docker host. The compose file for this release maps it in both containers, so it's checked as the Docker host's address like any other. Re-fetch the compose file as [described above](#audit_hmac_secret-in-env-now-actually-does-something) to pick that up, and if you've added `extra_hosts` entries of your own to the `openclaw` service, add them to `pinchy` too.
+- **DNS rebinding.** The check resolves the hostname, and the Odoo or mail client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool pins the address it checked, and so, from this release, do the requests Pinchy makes itself right after a check: the mail **Test connection**, listing Odoo databases, and an OpenAI-compatible provider's model discovery and key check. Those also no longer contact a name that doesn't resolve. Everything else still looks the name up again: the agent's Odoo and mail tools, the agent runtime's requests to a provider, and Pinchy's other Odoo requests (testing credentials, previewing and syncing the schema).
+- **A name the two containers resolve differently.** Pinchy runs the check in its own container; the Odoo and mail tools connect from the agent runtime's (`openclaw`). Our `docker-compose.yml` used to map `ollama.local` — the Docker host — in the runtime's container only, so for Pinchy that name didn't resolve, the check let it through, and an Odoo URL on `ollama.local` reached the Docker host. The compose file for this release maps it in both containers, so it's checked as the Docker host's address like any other. The [upgrade notes](#upgrade-notes) fetch that compose file; if you've added `extra_hosts` entries of your own to the `openclaw` service, add them to `pinchy` too.
 
 #### An Odoo URL that redirects now fails instead of being followed
 
@@ -445,15 +455,23 @@ Connecting an OpenAI-compatible endpoint lost a step as well: Pinchy asks your e
 
 Your existing providers, keys and default carry over untouched.
 
-#### Indexing no longer follows links inside Office files
+#### Indexing doesn't follow links inside Office files
 
-Anyone who can write to a mounted folder can put a Word, PowerPoint or Excel file there, and indexing opens it inside Pinchy's container — which has a network and can read the agent workspaces. A crafted `.docx` can point at a URL (a request from inside your Docker network) or at a file on the server, and a converter left to its defaults fetches the one and draws the other into the converted PDF, which every reader of the agent can open. So indexing now converts a `.docx` or `.pptx` from a checked copy, with its external links and the parts that are risky to hand to the converter removed. It refuses a file whose content isn't the format its name claims, and it runs LibreOffice with settings that switch off fetching links. The older `.doc` and `.ppt` formats can't be rewritten, and an RTF file named `.doc` only has its pictures, embedded objects and field codes removed; those files rely on LibreOffice's settings, which don't stop every way a picture embedded in them can read a file on the server. Who can write to the folders you mount is still the strongest protection.
+Anyone who can write to a mounted folder can put a Word, PowerPoint or Excel file there, and indexing opens it. A crafted `.docx` can point at a URL (a request from inside your Docker network) or at a file on the server, and a converter left to its defaults fetches the one and draws the other into the converted PDF, which every reader of the agent can open. So indexing converts a `.docx` or `.pptx` from a checked copy, with its external links and the parts that are risky to hand to the converter removed. It refuses a file whose content isn't the format its name claims, and it runs LibreOffice with settings that switch off fetching links. The older `.doc` and `.ppt` formats can't be rewritten, and an RTF file named `.doc` only has its pictures, embedded objects and field codes removed; those files rely on LibreOffice's settings, which don't stop every way a picture embedded in them can read a file. What such a picture can still reach is limited by where the conversion runs: see [Word and PowerPoint files are converted in a container of their own](#word-and-powerpoint-files-are-converted-in-a-container-of-their-own).
 
 What you may notice: a Word or PowerPoint file that linked a picture, a template or a hyperlink target on another machine converts without them — the text is indexed, the linked picture isn't drawn, a hyperlink keeps its text but not its destination, and an embedded object shows as its preview picture. A Windows metafile picture (`.emf`, `.wmf`) is drawn from its own plain drawing, words included, without anything it carries inside it; one drawn only in EMF+ comes out blank, and one we can't read unambiguously isn't drawn. A chunk of another format embedded for the converter to import is removed: the rest of the document is indexed, the chunk isn't, and the server log names the file. Files that are too big to open safely (a Word or PowerPoint file over 200 MB, a workbook over 100 MB, any Office file that unpacks to far more than it weighs, or to more than it says it will, a Word or PowerPoint file with a single part of text over 64 MB, a workbook with a single sheet over 16 MB — about 40,000 rows of ten columns, which a large export can reach — and a workbook with a single picture over 32 MB), workbooks with a number format no spreadsheet application writes, RTF files named `.doc` whose structure we can't read unambiguously, and files that aren't what their extension says (an HTML page named `.doc`) are listed as `unsearchable` instead of being opened, and the server log says which and why. Workbooks are read in a separate process with its own memory and time limit, so one that needs more memory than that is listed the same way rather than taking Pinchy down. One that runs out of time, or whose reader the system stops because the server ran short of memory, counts as `failed` for that run instead and is read again on the next, and whatever was indexed from an earlier version of it stays searchable. Word and PowerPoint files are checked and copied for the converter in the same kind of process, under the same rules, so a large deck never sits in Pinchy's own memory. A Word or PowerPoint file put together in a way no Office application writes — a part whose name has `.` or `..` in its path, or a link whose attributes carry a namespace prefix — is listed as `unsearchable` too, because the converter and our checks could read it two different ways. [Supported file types](/guides/mount-data-directories/#supported-file-types) has the numbers. Coming from v0.9.1, every Word and PowerPoint file is converted under these rules from the start: v0.9.1 indexed PDFs only, and the upgrade empties the index anyway (see the breaking change above). Nothing to configure.
 
 #### Agents read Word documents in a separate process
 
 When an agent opens a `.docx` directly, the text is now extracted in a separate process with its own memory and time limit (384 MB, two minutes). Reading a Word document can take many times its own size in memory, and a crafted file only a few kilobytes big could make it take more than the agent runtime has — taking every agent down with it. Now such a file is answered with an error that says it needs more memory than reading may use, and everything else keeps running. Ordinary documents read exactly as before, up to about 8 MB of text and formatting — some 500 pages the way Word writes them; a longer one is answered with an error. A `.docx` put together in a way no Office application writes, as above, is refused the same way it is by indexing. Nothing to configure.
+
+#### Word and PowerPoint files are converted in a container of their own
+
+Word documents and slide decks are converted to PDF in a service of their own, `office-converter`, not in the `pinchy` container: it has no network and none of Pinchy's secrets. Its only network interface is its own loopback, so there is no route to your Docker network, your host or the internet, and of your data it sees only a hand-over folder where Pinchy puts the copies to convert — no configuration, no secrets, no mounted documents. It runs as a user of its own: it can read those copies and write the converted PDFs back, but not change or remove anything Pinchy put there. If a conversion ever leaves a process running in it, the converter restarts itself and its documents are converted again one at a time; a document that does it on its own counts as `failed` in that reindex report and is tried again on the next one. The safeguards in the note above stay in place. This is what still holds if a file ever gets past them: there is nowhere to send a request and nothing to read.
+
+There is nothing extra to pull: the converter runs from the same image as `pinchy`. It gets its own memory ceiling, `OFFICE_CONVERTER_MEM_LIMIT` (default `1g`), so a large conversion doesn't compete with the web app — see [Memory when the knowledge base indexes Office documents](/guides/customizing-deployment/#memory-when-the-knowledge-base-indexes-office-documents).
+
+It needs the new `docker-compose.yml` from the [upgrade notes](#upgrade-notes). Without it, Pinchy does not fall back to converting on its own: Word and PowerPoint files are counted `failed` in the reindex report, keep whatever they had in the index, and the server log says `office converter is not reachable`. Fetch the file, run `docker compose up -d`, and the next reindex picks them up.
 
 #### Documents in archive folders drop out of everyday answers
 
@@ -478,6 +496,10 @@ Three things worth knowing before the first night:
 - **New scans are sent to your vision model during the night they arrive**, exactly as a manual reindex would send them, and recorded the same way in the audit trail and the Usage Dashboard. `PINCHY_KB_OCR=off` stops that for nightly runs too.
 
 [Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current) has the details, including how a missed night is caught up.
+
+#### Files the knowledge base can't read are counted and listed
+
+A `.tif` scan, an old `.xls` or a `.txt` on a share used to vanish without a trace: no document, no counter, nothing to look up. A run now counts them as `N not supported` in the agent's **Index** section, and **Download the list** gives you a CSV with each one's path and type, so you can convert them or tell users what the agent can't see. Nothing to configure. The count and the list appear after each agent's next run. For an agent with knowledge search, the nightly run is enough; any other agent needs **Reindex now**. [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read) has the details.
 
 #### Stopping a reply keeps what it already said
 
@@ -581,7 +603,7 @@ Pinchy now remembers in each browser which person was signed in last. That way t
 
 ### Database migrations
 
-The migrations `0056`–`0079` run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
+The migrations `0056`–`0080` run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
 
 - `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder and clears the two Knowledge Base tables.
 - `0057` — backfills `kb_documents.status` so documents ingested before the archive rule existed are classified by it too.
@@ -604,6 +626,7 @@ The migrations `0056`–`0079` run automatically on startup — no manual steps.
 - `0077` — `artifact_format_version` on `kb_documents`: which version of the rules for converting Word and PowerPoint files a document's indexed text comes from, so a later change to those rules knows which documents to convert again.
 - `0078` — `upgrade` as a third `trigger` on `kb_index_jobs`, for the reindex Pinchy starts on its own after such a change.
 - `0079` — `artifact_format_version` on `kb_index_jobs`: the version of those rules a run converted under, so a run from before the upgrade doesn't count as one that already converted a folder's files under the new rules. Jobs that predate it carry nothing, and count as runs under earlier rules.
+- `0080` — `kb_unsupported_files`, the list of files a run found but can't index, behind the new **Download the list** in the Index section. It starts empty and fills on each agent's next run.
 
 ## Upgrading from v0.9.0 to v0.9.1
 

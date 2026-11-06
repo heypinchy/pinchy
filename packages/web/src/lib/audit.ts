@@ -65,12 +65,21 @@ export type DeleteDetail = { name: string; [key: string]: unknown };
  * stays logged — reading a file in chunks must not be a way to read it
  * unobserved — and this flag is what lets an analyst count documents rather
  * than chunks.
+ *
+ * `revalidated` marks a 304: the browser reused the copy it held, after the
+ * access check allowed it. No bytes left; `partial` says whether a range of
+ * the document would have been served (a Range under If-Range, or one past
+ * the end, would not), so a chunked re-read counts as one view.
+ * `representation` says which form of the document was asked for and
+ * checked — on a 304, nothing was sent.
  */
 export type SourceAccessDetail = {
   agent: EntityRef;
   document: { name: string };
   reason?: string;
   partial?: boolean;
+  revalidated?: true;
+  representation?: "original" | "converted" | "rows";
 };
 
 export type MembershipDetail = {
@@ -506,13 +515,20 @@ export type AuditLogEntry =
         | "approval.denied"
         | "approval.consumed"
         | "approval.expired";
+      //
+      // People are named, never identified by users.id: `detail` is stored
+      // verbatim and crypto-erasure cannot reach an id in it (#824, #1273). On
+      // a decision the approver is the row's (pseudonymized) actor; on the
+      // agent- and system-written rows the name is all there is. `resource`
+      // names the request, but the sweep reaps that row after 30 days.
       detail: {
         request: { id: string };
         agent: { id: string; name: string | null };
-        requester: { id: string; name: string | null };
-        approver?: { id: string; name: string | null };
+        requester: { name: string | null };
+        approver?: { name: string | null };
         toolName: string;
         argsDigest: string;
+        /** The person's own words, with any address scrubbed (`scrubEmails`). */
         reason?: string;
         /**
          * Whether the decision reached the tool call OpenClaw parked for it
@@ -545,7 +561,7 @@ export type AuditLogEntry =
       eventType: "approval.refused";
       detail: {
         agent: { id: string; name: string | null };
-        requester: { id: string; name: string | null };
+        requester: { name: string | null };
         toolName: string;
         argsDigest: string;
         reason: "too-large-to-show";
@@ -839,6 +855,12 @@ export type AuditLogEntry =
             claimedMime: string;
             reason: string;
             agent: EntityRef;
+          }
+        | {
+            // failure: request body exceeded the size bound before it was
+            // parsed, so there is no filename or claimed MIME to record
+            reason: "oversize";
+            agent: EntityRef;
           };
     })
   | (AuditLogBase & {
@@ -1008,6 +1030,8 @@ export type AuditLogEntry =
         unsearchable?: number;
         failed?: number;
         archived?: number;
+        // Files under the run's folders whose type the indexer cannot read (#1267). The count only: the list lives in kb_unsupported_files.
+        unsupported?: number;
         ocr?: { model: string; documents: number; pages: number; skippedPages: number };
         unavailableFolders?: number;
         // Files refused because their path no longer led to a regular file in the folder (a swapped link); also in `failed`.

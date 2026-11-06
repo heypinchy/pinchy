@@ -102,8 +102,9 @@ export function classifySynthesisedError(reason: SynthesisedErrorReason): AgentE
  *      banner names (which model died + how to change it; check the provider
  *      config). This is the surface AGENTS.md's error-UI guidance prescribes for
  *      a "permanent, actionable error". The banner is dismissible and is
- *      auto-superseded on the next successful turn (see supersedeChatSessionErrors
- *      in client-router), so it can't linger past the fix — the earlier
+ *      auto-superseded on the next successful turn of the session (see
+ *      supersedeChatSessionErrors, called from stream-pipe), so it can't linger
+ *      past the fix — the earlier
  *      "sticky annoyance" concern only holds for a permanent NON-actionable
  *      error, which is exactly the `unknown` bucket kept out below.
  *

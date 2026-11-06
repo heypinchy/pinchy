@@ -34,7 +34,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { apiGet, apiPost, apiDelete, errorMessage, extractFieldErrors } from "@/lib/api-client";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { CopyField } from "@/components/copy-field";
 import { API_KEY_SCOPES, type ApiKeyScope } from "@/lib/api-key-scopes";
 import type { CreateApiKeyInput } from "@/lib/schemas/api-keys";
 
@@ -108,7 +108,6 @@ export function SettingsApiKeys() {
   // masked `start`), never persisted, never re-fetched — cleared the moment
   // the modal closes (see the Dialog's onOpenChange below).
   const [newKey, setNewKey] = useState<CreatedApiKey | null>(null);
-  const { isCopied, copy } = useCopyToClipboard();
 
   // Form state
   const [formName, setFormName] = useState("");
@@ -210,10 +209,6 @@ export function SettingsApiKeys() {
     } catch (e) {
       toast.error(errorMessage(e, "Failed to revoke API key"));
     }
-  }
-
-  async function handleCopy() {
-    if (newKey) await copy(newKey.key);
   }
 
   if (loading) {
@@ -424,8 +419,7 @@ export function SettingsApiKeys() {
           </DialogHeader>
           {newKey && (
             <div className="space-y-4">
-              <p className="break-all rounded bg-muted p-2 font-mono text-sm">{newKey.key}</p>
-              <Button onClick={handleCopy}>{isCopied ? "Copied!" : "Copy"}</Button>
+              <CopyField value={newKey.key} label="API key" copyLabel="Copy key" monospace />
             </div>
           )}
           <div className="flex justify-end">

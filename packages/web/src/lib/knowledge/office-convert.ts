@@ -58,8 +58,22 @@
  * text), NOT a guarantee.
  */
 import { spawn } from "node:child_process";
-import type { StatsFs } from "node:fs";
-import { mkdir, open, rm, stat, statfs, symlink, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, createWriteStream, type StatsFs } from "node:fs";
+import {
+  chmod,
+  copyFile,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readlink,
+  rm,
+  stat,
+  statfs,
+  symlink,
+  unlink,
+} from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import { basename, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -76,6 +90,15 @@ import {
 } from "./office-formats";
 import type { StagedSource } from "./office-preflight";
 import { extractPdfPages } from "./pdf-extract";
+import { sidecarConverter } from "./office-converter-sidecar";
+import {
+  childEnv,
+  killTree,
+  runSoffice,
+  type ConverterResult,
+  type ConverterRun,
+  type RunConverter,
+} from "./office-soffice";
 import {
   countDocxWordsIsolated,
   SheetReaderStoppedError,
@@ -90,6 +113,8 @@ import {
  * `office-artifacts.ts`.
  */
 export { OFFICE_EXTENSIONS, isOfficeFile, hashFileContents };
+export { runSoffice };
+export type { ConverterResult, ConverterRun, RunConverter };
 
 /**
  * Tolerance of the lower-bound word check. 10 % is head-room for tokenisation
@@ -259,31 +284,6 @@ export interface ConversionOutcome {
   reason?: string;
 }
 
-export interface ConverterRun {
-  /** Absolute paths of the staged inputs, in order. Their basenames are `<index>.<ext>`. */
-  inputs: string[];
-  /** Where the converter must write `<index>.pdf`. */
-  outDir: string;
-  /** A private LibreOffice profile, so concurrent runs never fight over one user installation. */
-  profileDir: string;
-  /**
-   * The converter's scratch space (`TMPDIR`), inside the batch — on the volume
-   * the free-space check asks, and removed with the batch.
-   */
-  tmpDir: string;
-  timeoutMs: number;
-}
-
-export interface ConverterResult {
-  code: number | null;
-  signal: NodeJS.Signals | null;
-  stderr: string;
-  /** True when WE killed it for taking too long — infrastructure, but not memory. */
-  timedOut?: boolean;
-}
-
-export type RunConverter = (run: ConverterRun) => Promise<ConverterResult>;
-
 export interface ConvertProgress {
   /** Documents whose conversion is behind us — including the ones that failed. */
   processed: number;
@@ -304,6 +304,18 @@ export type PrepareSource = (absPath: string, staged: string) => Promise<StagedS
 export interface ConvertOptions {
   store?: OfficeArtifactStore;
   runConverter?: RunConverter;
+  /**
+   * Where a batch is staged. The converter's business, not the store's: the
+   * sidecar can only see its spool. Defaults to the one that belongs to the
+   * default converter (see `defaultConverter`).
+   */
+  createStagingDir?: () => Promise<string>;
+  /**
+   * How a batch is removed again. Defaults to the converter's own when the
+   * staging is the default one, and to a recursive delete when a caller
+   * stages somewhere of its own.
+   */
+  removeStagingDir?: (dir: string) => Promise<void>;
   /**
    * Defaults to the real preflight (./office-preflight.ts), run in the reader
    * child (`stageOfficeSourceIsolated`): this process never holds the file.
@@ -349,7 +361,13 @@ export async function convertOfficeFiles(
   if (sources.length === 0) return [];
 
   const store = options.store ?? getOfficeArtifactStore();
-  const runConverter = options.runConverter ?? runSoffice;
+  const converter = defaultConverter(store);
+  const runConverter = options.runConverter ?? converter.runConverter;
+  const createStagingDir = options.createStagingDir ?? converter.createStagingDir;
+  const removeStagingDir =
+    options.removeStagingDir ??
+    (options.createStagingDir ? removeTree : converter.removeStagingDir);
+  const discardScratch = options.createStagingDir ? removeTree : converter.discardScratch;
   const prepareSource = options.prepareSource ?? defaultPrepareSource;
   const countPdfWords = options.countPdfWords ?? defaultCountPdfWords;
   const countSourceWords =
@@ -410,6 +428,9 @@ export async function convertOfficeFiles(
     const results = await convertBatch(batch, {
       store,
       runConverter,
+      createStagingDir,
+      removeStagingDir,
+      discardScratch,
       prepareSource,
       countPdfWords,
       countSourceWords,
@@ -437,9 +458,48 @@ export async function convertOfficeFiles(
   return outcomes;
 }
 
+/**
+ * Who converts, decided per call so a test can switch it.
+ *
+ * `KB_OFFICE_SPOOL_DIR` set — and Dockerfile.pinchy sets it, so every
+ * production image does — means the office-converter sidecar: a container with
+ * no network and no secrets (./office-converter-sidecar.ts). There is
+ * deliberately NO fallback to converting in this process when the sidecar is
+ * missing: that fallback would be exactly the capability the sidecar exists to
+ * remove. A missing sidecar is an `infrastructure` outcome, retryable, with a
+ * reason that says what to start.
+ *
+ * Unset — a developer machine running `pnpm dev`, the tests — means
+ * LibreOffice in this process, staged inside the store.
+ */
+function defaultConverter(store: OfficeArtifactStore): {
+  runConverter: RunConverter;
+  createStagingDir: () => Promise<string>;
+  removeStagingDir: (dir: string) => Promise<void>;
+  discardScratch: (tmpDir: string) => Promise<void>;
+} {
+  const spoolDir = process.env.KB_OFFICE_SPOOL_DIR;
+  if (spoolDir) return sidecarConverter(spoolDir);
+  return {
+    runConverter: runSoffice,
+    createStagingDir: () => store.createStagingDir(),
+    // In-process, everything in the batch is this process's own.
+    removeStagingDir: removeTree,
+    discardScratch: removeTree,
+  };
+}
+
+function removeTree(dir: string): Promise<void> {
+  return rm(dir, { recursive: true, force: true });
+}
+
 interface BatchDeps {
   store: OfficeArtifactStore;
   runConverter: RunConverter;
+  createStagingDir: () => Promise<string>;
+  removeStagingDir: (dir: string) => Promise<void>;
+  /** Frees a killed run's scratch space; the sidecar's converter frees its own. */
+  discardScratch: (tmpDir: string) => Promise<void>;
   prepareSource: PrepareSource;
   countPdfWords: (absPath: string) => Promise<number>;
   countSourceWords: (absPath: string, displayPath: string) => Promise<number | null>;
@@ -468,16 +528,18 @@ const defaultPrepareSource: PrepareSource = (absPath, staged) =>
 async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<ConversionOutcome[]> {
   let stagingDir: string;
   try {
-    stagingDir = await deps.store.createStagingDir();
+    stagingDir = await deps.createStagingDir();
   } catch (err) {
-    // A full or unwritable artifact volume is a squeeze on the machine, not a
-    // verdict on these documents — and it must arrive as a retryable outcome
-    // rather than an exception that also throws away the batches that already
-    // succeeded.
+    // A full or unwritable staging volume (the artifact store's, or the
+    // sidecar's spool) is a squeeze on the machine, not a verdict on these
+    // documents — and it must arrive as a retryable outcome rather than an
+    // exception that also throws away the batches that already succeeded.
     return batch.map((item) =>
-      infrastructureFailure(item.absPath, `artifact store unavailable: ${reasonOf(err)}`)
+      infrastructureFailure(item.absPath, `staging area unavailable: ${reasonOf(err)}`)
     );
   }
+  /** Batches of a document's own run (see `runIsolatingKills`), removed with this one. */
+  const ownBatches: string[] = [];
 
   const inDir = join(stagingDir, "in");
   const outDir = join(stagingDir, "out");
@@ -545,9 +607,9 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
     }
 
     if (inputs.size > 0) {
-      let runs: Map<number, ConverterResult>;
+      let runs: Map<number, DocumentRun>;
       try {
-        runs = await runIsolatingKills(inputs, { stagingDir, outDir, profileDir, tmpDir }, deps);
+        runs = await runIsolatingKills(inputs, { outDir, profileDir, tmpDir }, deps, ownBatches);
       } catch (err) {
         // The converter could not be started at all (a missing binary, a
         // permission problem). Nothing here says anything about the documents.
@@ -558,11 +620,23 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         );
       }
 
-      for (const [i, result] of runs) {
+      for (const [i, run] of runs) {
+        if ("error" in run) {
+          // This document's own run could not be had — refused, or the
+          // converter went away under it. About that run, not its batch-mates.
+          outcomes[i] = infrastructureFailure(
+            batch[i].absPath,
+            `converter did not run: ${run.error}`
+          );
+          continue;
+        }
+        const { result } = run;
         if (!wasKilled(result)) continue;
-        const reason = result.timedOut
-          ? "converter exceeded its time budget"
-          : "converter was killed — out of memory (see PINCHY_MEM_LIMIT)";
+        const reason = result.leftovers
+          ? "the converter left a process running after this document — it restarts"
+          : result.timedOut
+            ? "converter exceeded its time budget"
+            : "converter was killed — out of memory (see OFFICE_CONVERTER_MEM_LIMIT)";
         outcomes[i] = infrastructureFailure(batch[i].absPath, reason);
       }
 
@@ -571,13 +645,14 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
       for (const [i, item] of batch.entries()) {
         if (outcomes[i]) continue;
         const stagedSource = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
-        const producedPdf = join(outDir, `${i}.pdf`);
+        const run = runs.get(i) as RunAnswer;
+        const producedPdf = join(run.outDir, `${i}.pdf`);
         const outcome = await collectOne(
           { ...item, contentHash: keys[i] },
           stagedSource,
           producedPdf,
           deps,
-          runs.get(i)!.stderr
+          run.result.stderr
         );
         // Every document verdict collectOne gives is drawn from the PDF — and
         // both the PDF and LibreOffice's scratch land on the artifact volume
@@ -598,7 +673,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
                 unpacked[i]
               ))
             : null;
-        const storeLine = volumeFault ? failedStoreLine(runs.get(i)!.stderr, producedPdf) : null;
+        const storeLine = volumeFault ? failedStoreLine(run.result.stderr, producedPdf) : null;
         outcomes[i] = volumeFault
           ? infrastructureFailure(
               item.absPath,
@@ -610,9 +685,27 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
 
     return outcomes;
   } finally {
-    await rm(stagingDir, { recursive: true, force: true });
+    // The converter owns what it wrote into a batch. Should it leave
+    // something this process cannot (or, in the spool, will not) remove,
+    // that costs a leftover, not the batch's results.
+    for (const dir of [...ownBatches, stagingDir]) {
+      await deps.removeStagingDir(dir).catch((err: unknown) => {
+        console.warn(
+          `[kb-office] could not remove the staged batch ${oneLine(dir, LOG_PATH_MAX)}: ${oneLine(reasonOf(err), LOG_REASON_MAX)}`
+        );
+      });
+    }
   }
 }
+
+/** The run that speaks for one document, and where it wrote. */
+interface RunAnswer {
+  result: ConverterResult;
+  outDir: string;
+}
+
+/** That, or why a document's own run could not be had at all. */
+type DocumentRun = RunAnswer | { error: string };
 
 /**
  * Runs the converter over a batch's staged inputs and answers, per batch
@@ -632,15 +725,24 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
  * `batchTimeoutMs(1)`, never a retry loop. One that dies alone is answered by
  * that kill — infrastructure, retried on the next reindex like any other kill,
  * because a document the container is too small for is the machine's to fix
- * (see `ConversionStatus`). Each run of its own gets a fresh profile and
- * scratch space: the killed process left its own behind mid-write, and the
- * PDFs it may have half written are removed before they could be collected.
+ * (see `ConversionStatus`).
+ *
+ * Each run of its own is a batch of its own: a fresh staging directory from
+ * `createStagingDir`, holding the document's staged copy again, with a fresh
+ * profile, scratch space and output directory. So nothing the killed process
+ * left behind — its profile mid-write, its scratch, a half-written PDF — is
+ * reused or collected, and nothing of it has to be removed first. With the
+ * sidecar that is also the only shape the converter accepts (it derives every
+ * path from the batch), and the converter cleans up what it wrote; the
+ * directories are removed with the batch, in `convertBatch`, the way any
+ * batch is.
  */
 async function runIsolatingKills(
   inputs: ReadonlyMap<number, string>,
-  dirs: { stagingDir: string; outDir: string; profileDir: string; tmpDir: string },
-  deps: BatchDeps
-): Promise<Map<number, ConverterResult>> {
+  dirs: { outDir: string; profileDir: string; tmpDir: string },
+  deps: BatchDeps,
+  ownBatches: string[]
+): Promise<Map<number, DocumentRun>> {
   const batchRun = await deps.runConverter({
     inputs: [...inputs.values()],
     outDir: dirs.outDir,
@@ -648,39 +750,76 @@ async function runIsolatingKills(
     tmpDir: dirs.tmpDir,
     timeoutMs: batchTimeoutMs(inputs.size),
   });
-  const runs = new Map<number, ConverterResult>();
+  const runs = new Map<number, DocumentRun>();
   if (!wasKilled(batchRun) || inputs.size === 1) {
-    for (const i of inputs.keys()) runs.set(i, batchRun);
+    for (const i of inputs.keys()) runs.set(i, { result: batchRun, outDir: dirs.outDir });
     return runs;
   }
 
-  // What the dead process held on the volume — its scratch, and whatever
-  // PDFs it got to, the last one possibly half written — goes first.
-  await rm(dirs.tmpDir, { recursive: true, force: true });
-  for (const i of inputs.keys()) await rm(join(dirs.outDir, `${i}.pdf`), { force: true });
+  // What the dead process wrote — PDFs it got to, the last one possibly half
+  // written, and its scratch — is on the volume the runs below and the
+  // free-space check use; it goes first. Unlinked by name: nothing here
+  // walks into a directory the converter made.
+  for (const i of inputs.keys()) {
+    await unlink(join(dirs.outDir, `${i}.pdf`)).catch(() => {});
+  }
+  await deps.discardScratch(dirs.tmpDir).catch(() => {});
 
   for (const [i, staged] of inputs) {
-    const own = join(dirs.stagingDir, `alone-${i}`);
-    const profileDir = join(own, "profile");
-    const tmpDir = join(own, "tmp");
-    await mkdir(profileDir, { recursive: true });
-    await mkdir(tmpDir, { recursive: true });
     try {
-      runs.set(
-        i,
-        await deps.runConverter({
-          inputs: [staged],
-          outDir: dirs.outDir,
-          profileDir,
-          tmpDir,
-          timeoutMs: batchTimeoutMs(1),
-        })
-      );
-    } finally {
-      await rm(own, { recursive: true, force: true });
+      runs.set(i, await runAlone(staged, deps, ownBatches));
+    } catch (err) {
+      runs.set(i, { error: reasonOf(err) });
     }
   }
   return runs;
+}
+
+/** One document's run of its own, in a batch of its own (see `runIsolatingKills`). */
+async function runAlone(staged: string, deps: BatchDeps, ownBatches: string[]): Promise<RunAnswer> {
+  const own = await deps.createStagingDir();
+  ownBatches.push(own);
+  const ownDirs = {
+    inDir: join(own, "in"),
+    outDir: join(own, "out"),
+    profileDir: join(own, "profile"),
+    tmpDir: join(own, "tmp"),
+  };
+  for (const dir of Object.values(ownDirs)) await mkdir(dir, { recursive: true });
+  const ownStaged = join(ownDirs.inDir, basename(staged));
+  await restage(staged, ownStaged);
+  return {
+    result: await deps.runConverter({
+      inputs: [ownStaged],
+      outDir: ownDirs.outDir,
+      profileDir: ownDirs.profileDir,
+      tmpDir: ownDirs.tmpDir,
+      timeoutMs: batchTimeoutMs(1),
+    }),
+    outDir: ownDirs.outDir,
+  };
+}
+
+/**
+ * Gives a document's run of its own the copy that was staged for the batch:
+ * a copy by a hard link to it — the same checked bytes, the same `0640`
+ * file this process owns, and nothing written twice (a killed batch is the
+ * large one, and a second copy of each of its files would double what it
+ * holds on the volume) — and a link, what the tests that fake the converter
+ * stage, as a link to the same file. A volume that takes no hard link gets
+ * a copy, exclusive and `0640` like the first.
+ */
+async function restage(staged: string, dest: string): Promise<void> {
+  if ((await lstat(staged)).isSymbolicLink()) {
+    await symlink(await readlink(staged), dest);
+    return;
+  }
+  try {
+    await link(staged, dest);
+  } catch {
+    await copyFile(staged, dest, fsConstants.COPYFILE_EXCL);
+    await chmod(dest, 0o640);
+  }
 }
 
 /**
@@ -694,13 +833,82 @@ async function collectOne(
   deps: BatchDeps,
   stderr: string
 ): Promise<ConversionOutcome> {
-  const info = await stat(producedPdf).catch(() => null);
-  if (!info?.isFile() || info.size === 0) {
-    // THE failure the exit code hides. stderr is the only place LibreOffice
-    // says anything, so carry a trimmed copy for the operator log.
-    return documentFailure(item.absPath, `no artifact produced${summarise(stderr)}`);
+  let privateDir: string;
+  try {
+    privateDir = await deps.store.createStagingDir();
+  } catch (err) {
+    return infrastructureFailure(item.absPath, `artifact store unavailable: ${reasonOf(err)}`);
   }
+  try {
+    let taken: Awaited<ReturnType<typeof takeOutput>>;
+    try {
+      taken = await takeOutput(producedPdf, join(privateDir, "converted.pdf"));
+    } catch (err) {
+      // About this output, not the document: retry it rather than brand it
+      // unreadable, and keep the rest of the batch.
+      return infrastructureFailure(
+        item.absPath,
+        `could not read the converter's output: ${reasonOf(err)}`
+      );
+    }
+    if (taken === "missing") {
+      // THE failure the exit code hides. stderr is the only place LibreOffice
+      // says anything, so carry a trimmed copy for the operator log.
+      return documentFailure(item.absPath, `no artifact produced${summarise(stderr)}`);
+    }
+    if (taken === "not-a-file") {
+      return documentFailure(item.absPath, "converter output is not a regular file");
+    }
+    return await verifyAndCommit(item, stagedSource, taken, deps);
+  } finally {
+    await rm(privateDir, { recursive: true, force: true });
+  }
+}
 
+/**
+ * Copies the converter's output into a directory only this process writes,
+ * and hands back that copy. The output directory is shared with the
+ * converter, so its entry is opened without following links and without
+ * waiting (a FIFO would block a plain open until something writes to it), and
+ * taken only if it is a non-empty regular file; everything after this reads
+ * the copy.
+ */
+async function takeOutput(
+  producedPdf: string,
+  privatePath: string
+): Promise<string | "missing" | "not-a-file"> {
+  let handle;
+  try {
+    handle = await open(
+      producedPdf,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK
+    );
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return "missing";
+    if (code === "ELOOP") return "not-a-file";
+    throw err;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) return "not-a-file";
+    if (info.size === 0) return "missing";
+    await pipeline(
+      handle.createReadStream({ autoClose: false }),
+      createWriteStream(privatePath, { flags: "wx" })
+    );
+    return privatePath;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function verifyAndCommit(
+  item: WorkItem,
+  stagedSource: string,
+  producedPdf: string,
+  deps: BatchDeps
+): Promise<ConversionOutcome> {
   let pdfWords: number;
   try {
     pdfWords = await deps.countPdfWords(producedPdf);
@@ -790,7 +998,7 @@ function failedStoreLine(stderr: string, producedPdf: string): string | null {
 async function probeWritable(dir: string): Promise<string | null> {
   const probe = join(dir, ".write-probe");
   try {
-    const handle = await open(probe, "wx");
+    const handle = await open(probe, "wx", 0o600);
     try {
       await handle.write(Buffer.alloc(4096));
       await handle.sync();
@@ -850,7 +1058,14 @@ function outputVolumeFault(
  * timeout.
  */
 function wasKilled(result: ConverterResult): boolean {
-  return result.timedOut === true || result.code === 137 || result.signal === "SIGKILL";
+  return (
+    result.timedOut === true ||
+    result.code === 137 ||
+    result.signal === "SIGKILL" ||
+    // Not a kill, but the same verdict on the run: it says nothing reliable
+    // about any of its documents (office-converter-sidecar.ts).
+    result.leftovers === true
+  );
 }
 
 function documentFailure(sourcePath: string, reason: string): ConversionOutcome {
@@ -902,212 +1117,8 @@ function summarise(stderr: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Production adapters
+// Production adapters (the converter itself lives in ./office-soffice.ts)
 // ---------------------------------------------------------------------------
-
-/**
- * stderr we keep. LibreOffice repeats itself per file; a huge batch must not
- * build a huge string. But the per-file `impl_store … failed` line is what an
- * operator is shown for a PDF the full volume did not take (`failedStoreLine`
- * — the volume decides, the line only says what LibreOffice saw), so the cap
- * must hold a whole batch of them: at staging-path lengths a failed file
- * costs ~450 bytes (its `convert` line and its error), 20 of them ~9 KB.
- */
-const MAX_STDERR_BYTES = 32 * 1024;
-
-/**
- * What a converter subprocess inherits from us — an allow-list, not a copy of
- * `process.env`.
- *
- * Both subprocesses in this module parse documents the corpus owner did not
- * write, in formats (legacy `.doc`/`.ppt`) with a long history of
- * memory-safety bugs. Neither has any use for `DATABASE_URL`,
- * `ENCRYPTION_KEY` or `BETTER_AUTH_SECRET`, so neither gets them. Verified
- * against the real binary: `PATH` plus `HOME` is enough to convert, with the
- * Central/Eastern European diacritics the corpus is full of intact; the rest
- * are locale and timezone, which change how a document RENDERS and so are
- * passed through when the operator set them.
- */
-const INHERITED_ENV = ["PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ"] as const;
-
-function childEnv(home: string, tmpDir?: string): NodeJS.ProcessEnv {
-  // NODE_ENV carries no secret and is what every child process here already
-  // sees; it is listed explicitly because Next.js declares it non-optional.
-  const env: NodeJS.ProcessEnv = { NODE_ENV: process.env.NODE_ENV, HOME: home };
-  if (tmpDir !== undefined) env.TMPDIR = tmpDir;
-  for (const key of INHERITED_ENV) {
-    const value = process.env[key];
-    if (value !== undefined) env[key] = value;
-  }
-  return env;
-}
-
-/**
- * SIGKILLs a child AND everything it forked.
- *
- * `spawn` is given `detached: true` so the child leads its own process group,
- * and this kills the group. That is not belt-and-braces: `soffice` execs
- * `oosplash`, which **forks** `soffice.bin` — so killing the process we
- * spawned leaves the real converter running, still holding the memory the
- * timeout was meant to reclaim and still writing into a staging directory we
- * are about to delete. Verified in the runtime image, both directions: killing
- * the pid orphans `soffice.bin`, killing the group reaps it.
- */
-function killTree(child: ReturnType<typeof spawn>): void {
-  try {
-    if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
-  } catch {
-    // The group is already gone, or the platform has no process groups.
-    child.kill("SIGKILL");
-  }
-}
-
-/**
- * The user-installation settings every conversion runs with, written as
- * `registrymodifications.xcu` into a profile that has never been used.
- *
- * The documents are untrusted, and LibreOffice, left to its defaults, will
- * fetch a linked picture over HTTP (an SSRF from a container that has a
- * network) and embed a `file://` one into the PDF (a local-file read that is
- * then served to every reader of the knowledge base). Each setting here was
- * chosen by CANARY — a crafted document, a local listener, the real binary —
- * not by its name (office-convert.libreoffice.test.ts keeps those canaries):
- *
- *   - `BlockUntrustedRefererLinks` stopped BOTH the http fetch and the
- *     `file://` embed on its own, for Word, PowerPoint, an HTML file posing as
- *     `.doc`, and flat ODF. It is the load-bearing line.
- *   - `Link = 2` (never update links on load) is the same intent, by the
- *     documented knob; on its own it did NOT stop the fetch.
- *   - A manual proxy at a closed port (nothing exempted) stopped the http
- *     fetch but not `file://`. Its job is the future: whatever LibreOffice
- *     learns to fetch next still has nowhere to go.
- *
- * Two honest limits, both measured. This profile
- * does NOT stop LibreOffice's HTML import (an altChunk) or its SVG import from
- * reading `file://` references — and anything LibreOffice takes for SVG by its
- * bytes goes through that import, whatever the document called it: a picture,
- * a font, an RTF `\pict`, a picture inside an EMF+ record. For OOXML and RTF,
- * `office-preflight.ts` is a second layer — defence in depth with known
- * limits, not a guarantee: it cuts altChunks, pictures that reach outside
- * themselves (and every record of a metafile that can carry another) and
- * everything else not on its allow-list, and refuses what it cannot read
- * unambiguously. Each of those answers a vector found by canary; the next way
- * LibreOffice draws something by its bytes is a gap until it is found. For
- * the legacy binary formats (`.doc`, `.ppt`), which the preflight cannot
- * rewrite, this profile is the ONLY layer, and an SVG embedded in one still
- * reads a local file (the canary pins that gap). Isolating the converter
- * itself — no network, no view of the workspaces — is what closes the family;
- * that is separate work (branch feat/kb-office-convert-sidecar). The canary
- * says, vector by vector, which layers hold alone.
- *
- * The last setting is not about links: it pins LibreOffice's Temp path to
- * `$(temp)`, which is `TMPDIR` (see `runSoffice`). That is the default on
- * Linux, but a macOS build defaults to the profile's own `temp` directory
- * (measured, LibreOffice 26.2), so the scratch space would follow the build
- * rather than the batch's `tmpDir`.
- */
-const LOCKED_DOWN_PROFILE = `<?xml version="1.0" encoding="UTF-8"?>
-<oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-${[
-  ["/org.openoffice.Office.Common/Security/Scripting", "BlockUntrustedRefererLinks", "true"],
-  ["/org.openoffice.Office.Writer/Content/Update", "Link", "2"],
-  ["/org.openoffice.Inet/Settings", "ooInetProxyType", "2"],
-  ["/org.openoffice.Inet/Settings", "ooInetHTTPProxyName", "127.0.0.1"],
-  ["/org.openoffice.Inet/Settings", "ooInetHTTPProxyPort", "9"],
-  ["/org.openoffice.Inet/Settings", "ooInetHTTPSProxyName", "127.0.0.1"],
-  ["/org.openoffice.Inet/Settings", "ooInetHTTPSProxyPort", "9"],
-  ["/org.openoffice.Inet/Settings", "ooInetNoProxy", ""],
-  [
-    "/org.openoffice.Office.Paths/Paths/org.openoffice.Office.Paths:NamedPath['Temp']",
-    "WritePath",
-    "$(temp)",
-  ],
-]
-  .map(
-    ([path, name, value]) =>
-      `<item oor:path="${path}"><prop oor:name="${name}" oor:op="fuse"><value>${value}</value></prop></item>`
-  )
-  .join("\n")}
-</oor:items>
-`;
-
-async function writeLockedDownProfile(profileDir: string): Promise<void> {
-  const userDir = join(profileDir, "user");
-  await mkdir(userDir, { recursive: true });
-  await writeFile(join(userDir, "registrymodifications.xcu"), LOCKED_DOWN_PROFILE);
-}
-
-/**
- * The real converter: ONE `soffice` per batch.
- *
- * `-env:UserInstallation` (and a matching HOME) gives the process a private
- * profile inside the staging directory. Without it LibreOffice shares one user
- * installation, and a second instance — a concurrent reindex, or a leftover
- * process — refuses to start or silently reuses the other's state.
- *
- * `TMPDIR` puts its scratch space there too. LibreOffice unpacks a package
- * into it while loading — about the unpacked size — and left to itself uses
- * the container's /tmp, a volume no check here looks at: a load that runs out
- * of room there exits 0 with `source file could not be loaded`, which is what
- * an unreadable document says. In the batch it is on the volume
- * `outputVolumeFault` asks. Verified against the runtime image's
- * LibreOffice 7.4: with a 20 MiB /tmp and TMPDIR on a roomy volume, a
- * document needing 26 MB of scratch converts and /tmp stays empty. LibreOffice
- * finds TMPDIR through its Temp path setting, which the profile pins.
- *
- * The binary is resolved per call rather than at import so a test can point at
- * a stub: without that, everything below is only reachable on a machine with a
- * 422 MB LibreOffice installed, which is no machine CI runs on.
- */
-export const runSoffice: RunConverter = async (run) => {
-  // Before the process exists, and a failure here is a failure to convert: a
-  // converter that cannot be locked down must not run at all.
-  await writeLockedDownProfile(run.profileDir);
-  return spawnSoffice(run);
-};
-
-const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, tmpDir, timeoutMs }) =>
-  new Promise<ConverterResult>((resolve, reject) => {
-    const child = spawn(
-      process.env.KB_SOFFICE_BIN || "soffice",
-      [
-        "--headless",
-        "--norestore",
-        "--nolockcheck",
-        "--nodefault",
-        "--nofirststartwizard",
-        `-env:UserInstallation=file://${profileDir}`,
-        "--convert-to",
-        "pdf",
-        "--outdir",
-        outDir,
-        ...inputs,
-      ],
-      { stdio: ["ignore", "ignore", "pipe"], env: childEnv(profileDir, tmpDir), detached: true }
-    );
-
-    let stderr = "";
-    let timedOut = false;
-    child.stderr.on("data", (chunk: Buffer) => {
-      if (stderr.length < MAX_STDERR_BYTES) {
-        stderr = (stderr + chunk.toString("utf8")).slice(0, MAX_STDERR_BYTES);
-      }
-    });
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killTree(child);
-    }, timeoutMs);
-
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      resolve({ code, signal, stderr, timedOut });
-    });
-  });
 
 /** Words in the converted PDF, via the same pdfjs text layer the indexer reads. */
 async function defaultCountPdfWords(absPath: string): Promise<number> {
