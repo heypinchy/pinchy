@@ -30,7 +30,20 @@ test.describe("Insecure-mode banner", () => {
     await seedProviderConfig();
     await loginAsAdmin(page);
 
+    // The Security tab renders nothing until its client-side GET of
+    // /api/settings/domain answers, and against the dev server the first such
+    // request JIT-compiles that route — which can outlast a 5s assertion
+    // timeout (merge-queue flake, 2026-11-05). Wait on the response itself,
+    // registered before navigation so it cannot be missed; once it is in, the
+    // render is one state update away and the default timeout is ample.
+    // No own timeout: the test's budget bounds the wait, so a slow compile
+    // still fails, and fails naming this response rather than a missing text.
+    const domainStatus = page.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/api/settings/domain" && r.request().method() === "GET"
+    );
     await page.goto("/settings?tab=security");
+    const domainResponse = await domainStatus;
+    expect(domainResponse.status(), await domainResponse.text()).toBe(200);
 
     // Precondition, asserted rather than assumed: this instance has no domain
     // locked, so `isInsecureMode()` is true and the banner is genuinely

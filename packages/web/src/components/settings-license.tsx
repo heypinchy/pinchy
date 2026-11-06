@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,31 +17,62 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { apiPut, apiDelete, errorMessage } from "@/lib/api-client";
+import { apiPut, apiDelete, apiGet, errorMessage } from "@/lib/api-client";
 import type { SetLicenseKeyInput } from "@/lib/schemas/enterprise";
 import type { LicenseInfo } from "@/lib/enterprise";
 import { useLicenseStatus } from "@/hooks/use-license-status";
 import { PRICING_URL, PORTAL_URL, conversionLink } from "@/lib/conversion-links";
 import { formatLicenseDate } from "@/lib/format-date";
+import { AdminOnlyAgentsNotice } from "@/components/admin-only-agents-notice";
+import type { AgentRef } from "@/lib/schemas/agents";
 
 interface SettingsLicenseProps {
   onEnterpriseActivated?: () => void;
   initialLicense?: LicenseInfo | null;
+  /** Shared agents that are Restricted with no group (#1278), read by the page. */
+  initialAdminOnlyAgents?: AgentRef[];
 }
 
-export function SettingsLicense({ onEnterpriseActivated, initialLicense }: SettingsLicenseProps) {
+export function SettingsLicense({
+  onEnterpriseActivated,
+  initialLicense,
+  initialAdminOnlyAgents,
+}: SettingsLicenseProps) {
   // null = unknown (not loaded yet, or the status fetch keeps failing): stay
   // in the loading state rather than render "No active license key".
   const { license, refetch: fetchStatus } = useLicenseStatus({
     initial: initialLicense ?? null,
     notifyOnFailure: true,
   });
+  const [adminOnlyAgents, setAdminOnlyAgents] = useState<AgentRef[]>(initialAdminOnlyAgents ?? []);
   const [keyInput, setKeyInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showInput, setShowInput] = useState(false);
   const [confirmRemoveGated, setConfirmRemoveGated] = useState(false);
   const [removingGated, setRemovingGated] = useState(false);
+
+  // Read on activation and after the bulk action, not on mount: the page
+  // hands in the first list, and the license card stays one status request.
+  const fetchAdminOnlyAgents = useCallback(async () => {
+    try {
+      const data = await apiGet<{ agents: AgentRef[] }>("/api/agents/admin-only");
+      setAdminOnlyAgents(Array.isArray(data.agents) ? data.agents : []);
+    } catch {
+      // The notice is advisory; a failed read leaves the last known list.
+    }
+  }, []);
+
+  // Drop what the server confirmed it changed first, so a failed re-read
+  // cannot leave agents listed that members can already see.
+  const handleAgentsOpened = useCallback(
+    async (opened: AgentRef[]) => {
+      const openedIds = new Set(opened.map((a) => a.id));
+      setAdminOnlyAgents((prev) => prev.filter((a) => !openedIds.has(a.id)));
+      await fetchAdminOnlyAgents();
+    },
+    [fetchAdminOnlyAgents]
+  );
 
   const handleRemoveGatedConfig = async () => {
     setRemovingGated(true);
@@ -50,6 +81,7 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
         "/api/enterprise/gated-config"
       );
       setConfirmRemoveGated(false);
+      void fetchAdminOnlyAgents();
       toast(
         `Removed ${result.groupsRemoved} group${result.groupsRemoved !== 1 ? "s" : ""} and reset ${result.agentsReset} agent${result.agentsReset !== 1 ? "s" : ""} to community semantics.`
       );
@@ -74,6 +106,9 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
       setShowInput(false);
       window.dispatchEvent(new Event("license-updated"));
       if (data.enterprise) {
+        // The moment a key turns on, Restricted-with-no-group starts meaning
+        // "admins only". Show which agents that just hid from members.
+        await fetchAdminOnlyAgents();
         onEnterpriseActivated?.();
       }
     } catch (e) {
@@ -122,8 +157,8 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
             ) : (
               license.expiresAt && (
                 <p className="text-sm">
-                  Expires: {formatLicenseDate(license.expiresAt)} ({license.daysRemaining} days
-                  remaining)
+                  Expires: {formatLicenseDate(license.expiresAt)} ({license.daysRemaining} day
+                  {license.daysRemaining === 1 ? "" : "s"} remaining)
                 </p>
               )
             )}
@@ -144,6 +179,11 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
                 Seats: {license.seatsUsed} / {license.maxUsers} used
               </p>
             )}
+            <AdminOnlyAgentsNotice
+              agents={adminOnlyAgents}
+              licenseActive
+              onOpened={handleAgentsOpened}
+            />
             {license.managedByEnv && (
               <p className="text-sm text-muted-foreground">
                 Managed via <code className="bg-muted px-1 rounded">PINCHY_ENTERPRISE_KEY</code>{" "}
@@ -199,12 +239,21 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
           </div>
         )}
 
+        {license?.state === "community" && (
+          <AdminOnlyAgentsNotice
+            agents={adminOnlyAgents}
+            licenseActive={false}
+            onOpened={handleAgentsOpened}
+          />
+        )}
+
         {!license?.enterprise && license?.hasGatedConfig && (
           <div className="space-y-2 rounded-lg border bg-muted/50 p-4">
             <p className="text-sm font-medium">License-gated configuration</p>
             <p className="text-sm text-muted-foreground">
-              Groups and agent visibility restrictions stay enforced without a license. To return
-              this instance to community semantics, you can remove them.
+              {license?.state === "community"
+                ? "Groups from an earlier license are still here. Without a license they have no effect — every shared agent is visible to everyone. Removing them also sets every Restricted agent to All users, so those agents stay visible to everyone if you activate a license again."
+                : "Groups and agent visibility restrictions stay enforced without a license. To return this instance to community semantics, you can remove them."}
             </p>
             <Button variant="outline" size="sm" onClick={() => setConfirmRemoveGated(true)}>
               Remove all license-gated configuration

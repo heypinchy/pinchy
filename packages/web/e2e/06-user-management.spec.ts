@@ -9,8 +9,8 @@ test.describe("User management", () => {
 
   test("admin can navigate to settings and see users section", async ({ page }) => {
     // Deep-link straight to the Users tab instead of clicking it. The app
-    // renders the active tab from the `?tab=` param during SSR (see
-    // `useTabParam`'s `initialTab`), so the Users panel is active on first
+    // renders the active tab from the `?tab=` param during SSR (`useTabParam`
+    // reads it through `useSearchParams`), so the Users panel is active on first
     // paint. Clicking the tab trigger before hydration silently drops the
     // switch — the panel never activates and the (fetch-gated) Invite User
     // button never appears within the budget. That lost-click race, stacked on
@@ -33,10 +33,10 @@ test.describe("User management", () => {
     await page.getByRole("button", { name: "Invite User" }).click();
 
     // Dialog appears — check for the email input which is unique to the dialog
-    await expect(page.getByLabel("Email (optional)")).toBeVisible();
+    await expect(page.getByLabel("Email", { exact: true })).toBeVisible();
 
-    // Fill email (optional)
-    await page.getByLabel("Email (optional)").fill("newuser@test.com");
+    // Fill email
+    await page.getByLabel("Email", { exact: true }).fill("newuser@test.com");
 
     // Submit
     await page.getByRole("button", { name: "Create Invite" }).click();

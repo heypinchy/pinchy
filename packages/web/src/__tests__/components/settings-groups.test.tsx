@@ -81,6 +81,23 @@ describe("SettingsGroups", () => {
     expect(tableView.getByText("1")).toBeInTheDocument();
   });
 
+  it("gives the Members and Actions headers room of their own (#1278)", async () => {
+    // A 10% column with a nowrap header ran "Members" into "Actions"
+    // ("MembersActions"); fixed widths instead squeezed Description to nothing
+    // on a narrow card. jsdom does no layout, so this pins the shape that
+    // cannot overflow: no share-based widths, Description absorbs the slack.
+    mockFetch();
+    render(<SettingsGroups />);
+
+    const table = await screen.findByRole("table");
+    expect(table).not.toHaveClass("table-fixed");
+    for (const header of within(table).getAllByRole("columnheader")) {
+      expect(header.className).not.toMatch(/\bw-\[\d+%\]/);
+    }
+    expect(within(table).getByRole("columnheader", { name: "Description" })).toHaveClass("w-full");
+    expect(within(table).getByRole("columnheader", { name: "Actions" })).toHaveClass("text-right");
+  });
+
   it("should show create dialog on button click", async () => {
     const user = userEvent.setup();
     mockFetch();

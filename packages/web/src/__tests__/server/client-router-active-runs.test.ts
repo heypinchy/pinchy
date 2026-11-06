@@ -1280,6 +1280,219 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
       expect(gw.aborts).toEqual([]);
     });
 
+    describe("a history re-pull right after the user stopped a reply (#1301)", () => {
+      // Stopping a reply clears the client's running flag, which re-opens its
+      // history catch-up: the poke for the aborted partial, or a window focus,
+      // re-pulls history while the stopped run is still registered (its pipe
+      // is still asking OpenClaw for the run's files). The re-pull asks
+      // `agent.wait` about that run, and OpenClaw answers a stopped run with
+      // `status: "error"` and `stopReason: "rpc"`. That must never reach the
+      // chat as a failure: not on the stopped turn, and not on the turn the
+      // user sent next, which is still running.
+
+      /** Hold every `method` request until `release()`. */
+      function holdRequest(method: string) {
+        let release!: () => void;
+        const held = new Promise<void>((res) => (release = res));
+        let reached = false;
+        const request = client.request.bind(client);
+        (client as unknown as { request: typeof client.request }).request = (async (
+          m: string,
+          params?: unknown
+        ) => {
+          if (m === method) {
+            reached = true;
+            await held;
+          }
+          return request(m as never, params as never);
+        }) as never;
+        return { reached: () => reached, release };
+      }
+
+      function failedVerdicts(ws: MockWs) {
+        return ws.sent
+          .map((f) => JSON.parse(f) as Record<string, unknown>)
+          .filter((f) => f.type === "liveness" && f.state === "failed");
+      }
+
+      /** A started reply on `ws`, stopped by the user, still registered. */
+      async function stoppedReply(r: ClientRouter) {
+        const artifacts = holdArtifacts();
+        const t0 = await send(r, 0);
+        gw.accept(t0.gwRun.runId);
+        gw.emitText(t0.gwRun.runId, "Booking the first invoice");
+        await vi.waitFor(() =>
+          expect(t0.ws.sent.some((f) => f.includes("Booking the first invoice"))).toBe(true)
+        );
+        await r.handleMessage(t0.ws, { type: "abort", agentId: "agent-1" } as never);
+        await vi.waitFor(() => expect(t0.gwRun.state).toBe("aborted"));
+        await vi.waitFor(() => expect(artifacts.polling()).toBe(true));
+        expect(activeRuns.get(sessionKey)?.runId).toBe(t0.gwRun.runId);
+        return { ...t0, artifacts };
+      }
+
+      it("does not report the stopped reply as failed", async () => {
+        const r = router();
+        const t0 = await stoppedReply(r);
+
+        await r.handleMessage(t0.ws, { type: "history", agentId: "agent-1" });
+        t0.artifacts.release();
+        await t0.handling;
+
+        expect(failedVerdicts(t0.ws)).toEqual([]);
+        expect(t0.ws.sent.some((f) => f.includes('"rpc"'))).toBe(false);
+      });
+
+      /** Every frame `ws` received from index `from` on. */
+      function framesSince(ws: MockWs, from: number) {
+        return ws.sent.slice(from).map((f) => JSON.parse(f) as Record<string, unknown>);
+      }
+
+      /**
+       * The user sends the next message while a history re-pull is under way;
+       * resolves once that turn is streaming.
+       */
+      async function nextTurnDuringRepull(r: ClientRouter, ws: MockWs) {
+        const history = holdRequest("chat.history");
+        const repull = r.handleMessage(ws, { type: "history", agentId: "agent-1" });
+        await vi.waitFor(() => expect(history.reached()).toBe(true));
+        const handling = r.handleMessage(ws, {
+          type: "message",
+          content: "Actually, just list them",
+          agentId: "agent-1",
+        });
+        await vi.waitFor(() => expect(gw.runAt(1)).toBeDefined());
+        const gwRun = gw.runAt(1)!;
+        gw.accept(gwRun.runId);
+        gw.emitText(gwRun.runId, "Here they are");
+        await vi.waitFor(() => expect(ws.sent.some((f) => f.includes("Here they are"))).toBe(true));
+        return { history, repull, handling, gwRun };
+      }
+
+      it("sends the next turn no verdict about the stopped reply", async () => {
+        const r = router();
+        const t0 = await stoppedReply(r);
+        const t1 = await nextTurnDuringRepull(r, t0.ws);
+
+        // The re-pull now asks about the stopped reply, while the next one runs.
+        const from = t0.ws.sent.length;
+        t1.history.release();
+        await t1.repull;
+        // Not even `completed`: it would end the turn that is still running.
+        expect(framesSince(t0.ws, from).filter((f) => f.type === "liveness")).toEqual([]);
+
+        t0.artifacts.release();
+        await t0.handling;
+        gw.finish(t1.gwRun.runId);
+        await t1.handling;
+        expect(failedVerdicts(t0.ws)).toEqual([]);
+        expect(t0.ws.sent.some((f) => f.includes('"rpc"'))).toBe(false);
+      });
+
+      it("does not end the next turn when the stopped reply's pipe winds down", async () => {
+        const r = router();
+        const t0 = await stoppedReply(r);
+        const t1 = await nextTurnDuringRepull(r, t0.ws);
+        t1.history.release();
+        await t1.repull;
+
+        // The stopped reply's file delivery returns while the next turn runs.
+        const from = t0.ws.sent.length;
+        t0.artifacts.release();
+        await t0.handling;
+        const terminal = (f: Record<string, unknown>) =>
+          f.type === "complete" || f.type === "liveness" || f.type === "error";
+        expect(framesSince(t0.ws, from).filter(terminal)).toEqual([]);
+
+        // The next turn still ends on its own `complete`.
+        gw.finish(t1.gwRun.runId);
+        await t1.handling;
+        expect(framesSince(t0.ws, from).filter((f) => f.type === "complete")).toHaveLength(1);
+      });
+
+      it("does not fail the next turn when the reply was stopped before its first word", async () => {
+        const artifacts = holdArtifacts();
+        const r = router();
+        const t0 = await send(r, 0);
+        gw.accept(t0.gwRun.runId, { silent: true });
+        await r.handleMessage(t0.ws, { type: "abort", agentId: "agent-1" } as never);
+        await vi.waitFor(() => expect(artifacts.polling()).toBe(true));
+
+        const t1 = await nextTurnDuringRepull(r, t0.ws);
+        t1.history.release();
+        await t1.repull;
+        const from = t0.ws.sent.length;
+        artifacts.release();
+        await t0.handling;
+
+        // A stop with no words is still a stop, not "the model did not produce
+        // a response" — even once the next turn holds the session.
+        expect(
+          framesSince(t0.ws, from).filter((f) => f.type === "error" || f.type === "liveness")
+        ).toEqual([]);
+        gw.finish(t1.gwRun.runId);
+        await t1.handling;
+        expect(failedVerdicts(t0.ws)).toEqual([]);
+        // …and nothing behind the tab's back either: no "did not produce a
+        // response" on the trail for a run the user stopped.
+        expect(auditRows("chat.agent_error")).toEqual([]);
+      });
+
+      it("does not end the next message's turn before it reaches the registry", async () => {
+        const r = router();
+        const t0 = await stoppedReply(r);
+
+        // The next message is still in the router's awaits (here: the agent
+        // lookup) when the stopped reply's file delivery returns.
+        let lookedUp!: () => void;
+        const lookup = new Promise<void>((res) => (lookedUp = res));
+        mockFindFirst.mockImplementationOnce(async () => {
+          await lookup;
+          return defaultAgent;
+        });
+        const from = t0.ws.sent.length;
+        const nextTurn = r.handleMessage(t0.ws, {
+          type: "message",
+          content: "Actually, just list them",
+          agentId: "agent-1",
+        });
+        t0.artifacts.release();
+        await t0.handling;
+        const terminal = (f: Record<string, unknown>) =>
+          f.type === "complete" || f.type === "liveness";
+        expect(framesSince(t0.ws, from).filter(terminal)).toEqual([]);
+
+        lookedUp();
+        await vi.waitFor(() => expect(gw.runAt(1)).toBeDefined());
+        gw.accept(gw.runAt(1)!.runId);
+        gw.emitText(gw.runAt(1)!.runId, "Here they are");
+        gw.finish(gw.runAt(1)!.runId);
+        await nextTurn;
+        expect(framesSince(t0.ws, from).filter((f) => f.type === "complete")).toHaveLength(1);
+      });
+
+      it("still tells a second device watching only the stopped reply that it ended", async () => {
+        const r = router();
+        const t0 = await stoppedReply(r);
+        // A second device re-attached to the stopped reply before the next turn.
+        const other = createMockWs();
+        await r.handleMessage(other, { type: "history", agentId: "agent-1" });
+        const t1 = await nextTurnDuringRepull(r, t0.ws);
+        t1.history.release();
+        await t1.repull;
+
+        const fromTab = t0.ws.sent.length;
+        const fromOther = other.sent.length;
+        t0.artifacts.release();
+        await t0.handling;
+
+        expect(framesSince(t0.ws, fromTab).filter((f) => f.type === "complete")).toEqual([]);
+        expect(framesSince(other, fromOther).filter((f) => f.type === "complete")).toHaveLength(1);
+        gw.finish(t1.gwRun.runId);
+        await t1.handling;
+      });
+    });
+
     describe("after the dispatch-race retry sent it again", () => {
       // OpenClaw accepted the first attempt and failed it resolving the model
       // ("Unknown model" — the provider block had not applied yet), so the

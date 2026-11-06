@@ -5,6 +5,7 @@ import { getLicenseStatus, isKeyFromEnv } from "@/lib/enterprise";
 import { deriveLicenseState, isLicenseActive } from "@/lib/license-state";
 import { getSeatUsage } from "@/lib/seat-usage";
 import { hasGatedConfig } from "@/lib/gated-config";
+import { listAdminOnlyAgents } from "@/lib/admin-only-agents";
 import { SettingsPageContent } from "@/components/settings-page-content";
 
 export const metadata: Metadata = {
@@ -14,10 +15,10 @@ export const metadata: Metadata = {
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string; error?: string }>;
+  searchParams: Promise<{ error?: string }>;
 }) {
   const hdrs = await headers();
-  const [{ tab, error }, session, licenseStatus] = await Promise.all([
+  const [{ error }, session, licenseStatus] = await Promise.all([
     searchParams,
     getSession({ headers: hdrs }),
     getLicenseStatus(),
@@ -25,10 +26,13 @@ export default async function SettingsPage({
   const isAdmin = session?.user?.role === "admin";
   const usage = isAdmin ? await getSeatUsage(licenseStatus) : null;
   const state = deriveLicenseState(licenseStatus, new Date());
-  const gatedConfig = isAdmin && !isLicenseActive(state) ? await hasGatedConfig() : false;
+  const gatedConfig = isAdmin && !isLicenseActive(state) ? await hasGatedConfig(state) : false;
+  // Read where the license card shows it: under an active license (agents
+  // members can't see now) and on community (agents they'll lose on activation).
+  const adminOnlyAgents =
+    isAdmin && (isLicenseActive(state) || state === "community") ? await listAdminOnlyAgents() : [];
   return (
     <SettingsPageContent
-      initialTab={tab}
       oauthError={error}
       isAdmin={isAdmin}
       initialLicense={
@@ -48,6 +52,7 @@ export default async function SettingsPage({
             }
           : undefined
       }
+      initialAdminOnlyAgents={adminOnlyAgents}
     />
   );
 }

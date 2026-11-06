@@ -133,11 +133,23 @@ export function extractRouteHandlers(files) {
     // (`export const { POST, GET } = toNextJsHandler(auth)` in the Better Auth
     // catch-all). Missing the second one would silently drop a route from the
     // set the guard checks — the exact blindness this file exists to remove.
+    //
+    // A third: a route that serves another route's handler under a url of its
+    // own (`export { GET } from "../route"`, the citation viewer's named url,
+    // #1268). Only the exported NAME counts, so `HEAD as GET` is a GET and
+    // `GET as Other` is not.
     const destructured = [
       ...source.matchAll(/^export\s+const\s+\{([^}]*)\}\s*=/gm),
+      ...source.matchAll(/^export\s+\{([^}]*)\}\s*from\s/gm),
     ]
       .flatMap((m) => m[1].split(","))
-      .map((s) => s.trim());
+      .map((s) =>
+        s
+          .trim()
+          .split(/\s+as\s+/)
+          .pop()
+          .trim(),
+      );
     const methods = HTTP_METHODS.filter(
       (m) =>
         new RegExp(

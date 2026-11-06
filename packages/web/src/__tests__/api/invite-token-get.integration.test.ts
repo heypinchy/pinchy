@@ -13,9 +13,9 @@ import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";
 
 import { db } from "@/db";
-import { invites } from "@/db/schema";
+import { invites, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { createInvite } from "@/lib/invites";
+import { createInvite, INVITE_WITHOUT_EMAIL_ERROR } from "@/lib/invites";
 import { auth } from "@/lib/auth";
 import { GET } from "@/app/api/invite/[token]/route";
 
@@ -35,7 +35,7 @@ async function seedAdmin() {
 }
 
 describe("GET /api/invite/[token] (integration)", () => {
-  it("returns { type: 'invite' } for a fresh invite token", async () => {
+  it("returns the type, the sign-in email and the inviter's name for a fresh invite", async () => {
     const adminId = await seedAdmin();
     const { token } = await createInvite({
       email: "newcomer@test.local",
@@ -46,10 +46,17 @@ describe("GET /api/invite/[token] (integration)", () => {
 
     const response = await GET(makeRequest(token), makeContext(token));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ type: "invite" });
+    expect(await response.json()).toEqual({
+      type: "invite",
+      email: "newcomer@test.local",
+      invitedBy: "Admin",
+    });
   });
 
-  it("returns { type: 'invite' } for an open invite that has no email", async () => {
+  it("returns 410 for an invite that has no email (#1263)", async () => {
+    // Invites made before the email became required have none, and the
+    // account a claim creates needs one. Say so before the invitee fills in
+    // the form, instead of failing on submit.
     const adminId = await seedAdmin();
     const { token } = await createInvite({
       role: "member",
@@ -58,8 +65,8 @@ describe("GET /api/invite/[token] (integration)", () => {
     });
 
     const response = await GET(makeRequest(token), makeContext(token));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ type: "invite" });
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ error: INVITE_WITHOUT_EMAIL_ERROR });
   });
 
   it("returns { type: 'reset' } for a password-reset token of an existing user", async () => {
@@ -76,7 +83,42 @@ describe("GET /api/invite/[token] (integration)", () => {
 
     const response = await GET(makeRequest(token), makeContext(token));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ type: "reset" });
+    // The reset page shows which account the new password is for. No
+    // inviter: a reset is the admin acting on an existing account, not an
+    // introduction to an organisation.
+    expect(await response.json()).toEqual({
+      type: "reset",
+      email: "existing@test.local",
+      invitedBy: null,
+    });
+  });
+
+  it("doesn't name an inviter who has since been deactivated", async () => {
+    const adminId = await seedAdmin();
+    const { token } = await createInvite({
+      email: "newcomer@test.local",
+      role: "member",
+      type: "invite",
+      createdBy: adminId,
+    });
+    await db.update(users).set({ banned: true }).where(eq(users.id, adminId));
+
+    const response = await GET(makeRequest(token), makeContext(token));
+    expect(response.status).toBe(200);
+    expect((await response.json()).invitedBy).toBeNull();
+  });
+
+  it("never returns the inviter's email address, only their display name", async () => {
+    const adminId = await seedAdmin();
+    const { token } = await createInvite({
+      email: "newcomer@test.local",
+      role: "member",
+      type: "invite",
+      createdBy: adminId,
+    });
+
+    const response = await GET(makeRequest(token), makeContext(token));
+    expect(JSON.stringify(await response.json())).not.toContain("admin@test.local");
   });
 
   it("returns 410 for an unknown token", async () => {

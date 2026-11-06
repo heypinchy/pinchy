@@ -338,13 +338,14 @@ describe("SettingsUsers", () => {
 
     vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ token: "invite-token-abc" }));
 
+    await user.type(screen.getByLabelText("Email"), "new@example.com");
     await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: "", role: "member" }),
+        body: JSON.stringify({ email: "new@example.com", role: "member" }),
       });
     });
 
@@ -380,6 +381,7 @@ describe("SettingsUsers", () => {
       await waitFor(() => expect(screen.getByLabelText("Role")).toBeInTheDocument());
 
       vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse({ token: "invite-token-abc" }));
+      await user.type(screen.getByLabelText("Email"), "new@example.com");
       await user.click(screen.getByRole("button", { name: "Create Invite" }));
 
       await waitFor(() =>
@@ -828,6 +830,35 @@ describe("SettingsUsers", () => {
           screen.getByText("http://localhost:7777/invite/resend-token-xyz")
         ).toBeInTheDocument();
       });
+    });
+
+    it("offers Revoke, not Resend, for an expired invite that has no email (#1263)", async () => {
+      // Invites made before the email became required have none, and a new
+      // invite needs one, so Resend cannot work. Revoke is the one action left;
+      // without it the row would sit in the list for good.
+      const user = userEvent.setup();
+      const noEmailExpired = { ...expiredInvite, email: null };
+      mockFetchForUsers(mockUsers, [noEmailExpired]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("table")).toBeInTheDocument();
+      });
+
+      // The mobile cards and the desktop table are both rendered (CSS picks
+      // one), and each carries its own copy of the button condition.
+      expect(screen.queryAllByRole("button", { name: "Resend" })).toHaveLength(0);
+      expect(screen.getAllByRole("button", { name: "Revoke" })).toHaveLength(2);
+
+      const table = screen.getByRole("table");
+      await user.click(within(table).getByRole("button", { name: "Revoke" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/users/invites/inv-2", {
+          method: "DELETE",
+        });
+      });
+      expect(global.fetch).not.toHaveBeenCalledWith("/api/users/invite", expect.anything());
     });
 
     // The test above only proves the link is *rendered*. Its Copy button is a

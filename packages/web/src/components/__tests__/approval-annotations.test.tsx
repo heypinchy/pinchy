@@ -612,7 +612,8 @@ describe("the card draws exactly what the summary counts", () => {
       1 + 10 + (1 + 15 + 2 + 5 * ASTRAL_COST),
       [flag, 5],
     ],
-    ["a field name", () => ({ ["q".repeat(50)]: null }), 1 + 50 + (1 + 4), ["q", 50]],
+    // Drawn in words, "Qqq…": the same 50 letters, the first one capital.
+    ["a field name", () => ({ ["q".repeat(50)]: null }), 1 + 50 + (1 + 4), ["q", 49]],
     [
       "a host note",
       () => ({ site: "https://%71%71%71%71.at/" }),

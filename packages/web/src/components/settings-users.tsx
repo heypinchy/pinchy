@@ -278,6 +278,11 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     // Resend = revoke the old invite, then create a fresh one. Report which of
     // the two steps failed so the admin knows whether the old invite is still
     // live (revoke failed) or simply no replacement was issued (create failed).
+    //
+    // Only offered for invites that have an email: one created before the
+    // email became required gets Revoke instead (#1263).
+    const email = item.email;
+    if (!email) return; // unreachable: such a row shows Revoke; narrows the type
     try {
       await apiDelete(`/api/users/invites/${item.id}`);
     } catch (e) {
@@ -287,7 +292,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     }
     try {
       const data = await apiPost<{ token: string }, InviteUserInput>("/api/users/invite", {
-        email: item.email || undefined,
+        email,
         role: item.role,
       });
       setResetLink(buildInviteUrl(window.location.origin, data.token));
@@ -421,12 +426,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
                   {item.kind === "user" ? item.email : item.email || "\u2014"}
                 </div>
                 <div className="flex gap-2">
-                  {item.kind === "invite" && item.status === "pending" && (
+                  {item.kind === "invite" && (item.status === "pending" || !item.email) && (
                     <Button variant="outline" size="sm" onClick={() => handleRevoke(item.id)}>
                       Revoke
                     </Button>
                   )}
-                  {item.kind === "invite" && item.status === "expired" && (
+                  {item.kind === "invite" && item.status === "expired" && item.email && (
                     <Button variant="outline" size="sm" onClick={() => handleResend(item)}>
                       Resend
                     </Button>
@@ -478,12 +483,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
                       <StatusBadge status={item.status} />
                     </TableCell>
                     <TableCell className="space-x-2">
-                      {item.kind === "invite" && item.status === "pending" && (
+                      {item.kind === "invite" && (item.status === "pending" || !item.email) && (
                         <Button variant="outline" size="sm" onClick={() => handleRevoke(item.id)}>
                           Revoke
                         </Button>
                       )}
-                      {item.kind === "invite" && item.status === "expired" && (
+                      {item.kind === "invite" && item.status === "expired" && item.email && (
                         <Button variant="outline" size="sm" onClick={() => handleResend(item)}>
                           Resend
                         </Button>

@@ -362,29 +362,36 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
 
               {/* Desktop table */}
               <div className="hidden lg:block">
-                <Table className="table-fixed">
+                {/* Auto layout: Members and Actions keep their natural width
+                    (headers and cells don't wrap), Description takes the rest
+                    and truncates. Percentage and fixed widths both broke on a
+                    narrow card — "Members" ran into "Actions", or Description
+                    shrank to nothing. */}
+                <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-[25%]">Name</TableHead>
-                      <TableHead className="w-[40%]">Description</TableHead>
-                      <TableHead className="w-[10%]">Members</TableHead>
-                      <TableHead className="w-[25%]">Actions</TableHead>
+                      <TableHead>Name</TableHead>
+                      <TableHead className="w-full">Description</TableHead>
+                      <TableHead>Members</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {groups.map((group) => (
                       <TableRow key={group.id}>
-                        <TableCell className="font-medium truncate" title={group.name}>
-                          {group.name}
+                        <TableCell className="font-medium">
+                          <div className="max-w-48 truncate" title={group.name}>
+                            {group.name}
+                          </div>
                         </TableCell>
                         <TableCell
-                          className="text-muted-foreground truncate"
+                          className="text-muted-foreground w-full max-w-0 truncate"
                           title={group.description || undefined}
                         >
                           {group.description || "\u2014"}
                         </TableCell>
                         <TableCell>{group.memberCount}</TableCell>
-                        <TableCell className="space-x-2">
+                        <TableCell className="space-x-2 text-right">
                           <Button variant="outline" size="sm" onClick={() => openEditDialog(group)}>
                             Edit
                           </Button>

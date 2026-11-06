@@ -157,8 +157,12 @@ const CITATION_CONTRACT =
   // have pages. Asking for a page would make the model state something false of
   // a Word file, whose pagination is a rendering result rather than a property
   // of the document the reader opens (#933).
-  "giving each number you cited the document path and position exactly as written above — " +
-  "every number you cite, and no number you did not. " +
+  // A Word chunk with no outline heading has a null locator and is printed as
+  // its path alone. Demanding a position for every entry made the model fill
+  // the slot with "page number not available", so the position is conditional.
+  "giving each number you cited the document path and position exactly as written above (the position only when the passage shows one). " +
+  "When a passage shows no position, write the path alone and never say a position is missing or unavailable. " +
+  "List every number you cite, and no number you did not. " +
   "If they do not answer the question, say so instead of answering from memory.";
 
 /**
@@ -256,7 +260,7 @@ const plugin = {
           name: "knowledge_search",
           label: "Search Knowledge Base",
           description:
-            "Search the organization's indexed documents for passages relevant to a question. Use this FIRST for any question about document content, before reaching for file tools: it returns numbered passages together with their document path and page number, which is what makes an answer citable. Reading a file directly gives you no page anchor, so anything found that way cannot be cited. Cite the returned numbers inline in your answer.",
+            "Search the organization's indexed documents for passages relevant to a question. Use this FIRST for any question about document content, before reaching for file tools: it returns numbered passages together with their document path and, where the document has one, a position (page, slide, section heading, rows), which is what makes an answer citable. Reading a file directly gives you no such anchor, so anything found that way cannot be cited. Cite the returned numbers inline in your answer.",
           parameters: {
             type: "object",
             properties: {

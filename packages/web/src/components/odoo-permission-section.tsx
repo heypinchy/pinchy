@@ -32,7 +32,7 @@ import {
 import type { OdooAccessLevel } from "@/lib/tool-registry";
 import type { ConfirmMap } from "@/lib/approvals/policy";
 import { cellStateFor, applyCellState } from "@/lib/approvals/matrix-cell";
-import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
+import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-model-catalog";
 
 const OPERATIONS: readonly Operation[] = ["read", "create", "write", "delete"];
 

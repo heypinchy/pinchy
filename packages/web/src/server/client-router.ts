@@ -22,6 +22,7 @@ import { buildMemoryPromptBlock } from "@/lib/memory-prompt";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { ActiveRuns, type ActiveRun } from "@/server/active-runs";
+import { stripMediaDirectives } from "@/server/media-directive";
 import { NEVER_DISCONNECTS, type DisconnectSignal } from "@/server/openclaw-disconnect-signal";
 import type { SessionPokeBridge } from "@/server/session-poke-bridge";
 import {
@@ -77,6 +78,14 @@ const CONNECTION_TIMEOUT_MS = 10_000;
 // outlives the window — that's already the "responding" verdict. A throw is an
 // infra hiccup, which we deliberately do NOT turn into a `failed` verdict.
 const RECONNECT_LIVENESS_TIMEOUT_MS = 5_000;
+
+// What a reconnect `failed` verdict says. `agentWait` carries no text meant
+// for a user — its `stopReason` is a code — so the verdict carries this.
+export const RUN_ENDED_WITHOUT_RESPONSE = "The agent run ended without a response.";
+
+// The `agentWait` stop reasons that mean "stopped", not "failed". `restart`
+// (the gateway restarted under the run) is deliberately not one of them.
+const STOP_REASONS: ReadonlySet<string> = new Set(["rpc", "stop", "aborted"]);
 
 type RetryReason = "orphan" | "partial_stream_failure" | "send_failure";
 const ALLOWED_RETRY_REASONS: ReadonlySet<string> = new Set([
@@ -309,6 +318,32 @@ export class ClientRouter {
       return;
     }
 
+    // A new message moves this tab onto a new turn now, before any await below.
+    // Whatever run still holds the session (a reply just stopped, still winding
+    // down) must stop reaching this tab from here on — its `complete` would end
+    // the new turn instead (#1301). Marked before the agent and access checks
+    // on purpose: the key embeds this user's own id, so the only entry it can
+    // touch is one of their own runs.
+    let prior: ActiveRun | undefined;
+    if (message.type === "message") {
+      const chat = chatIdSchema.safeParse(message.chatId);
+      const chatId = message.chatId === undefined ? undefined : chat.success ? chat.data : null;
+      if (chatId !== null) {
+        prior = this.activeRuns.get(this.computeSessionKey(message.agentId, chatId));
+        if (prior) (prior.handedOverTo ??= new Set()).add(clientWs);
+      }
+    }
+    try {
+      await this.routeMessage(clientWs, message);
+    } finally {
+      // The new turn is over: refused before it started (budget, a paused
+      // agent, no gateway…) or run to its end. Either way this tab is no
+      // longer on it, and must hear the earlier run again if it still goes.
+      prior?.handedOverTo?.delete(clientWs);
+    }
+  }
+
+  private async routeMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
     // Look up agent and check access
     const agent = await db.query.agents.findFirst({
       where: eq(agents.id, message.agentId),
@@ -867,6 +902,8 @@ export class ClientRouter {
     const activeRun = this.activeRuns.get(sessionKey);
     if (activeRun) {
       this.activeRuns.addListener(sessionKey, clientWs);
+      // Re-attaching to the run is asking for its frames again (#1301).
+      activeRun.handedOverTo?.delete(clientWs);
     }
 
     // Multi-device live-sync (Lane B): this socket now EXCLUSIVELY views this
@@ -953,6 +990,17 @@ export class ClientRouter {
           // Strip protocol tags from assistant responses
           content = content.replace(/<\/?final>/g, "");
 
+          // OpenClaw's `MEDIA:<path>` attachment lines (#1298) — the delivered
+          // chip stands for the file. A reply that was nothing BUT a directive
+          // is kept for now, empty: it is the turn its chip belongs to, and
+          // dropping it would move the chip onto an earlier answer.
+          let mediaOnly = false;
+          if (msg.role === "assistant") {
+            const stripped = stripMediaDirectives(content);
+            mediaOnly = stripped !== content && stripped.trim() === "";
+            content = stripped;
+          }
+
           // Match the placeholder both bare and behind OpenClaw's optional
           // leading `[timestamp]` prefix (which it stamps on user messages —
           // see the timestamp-strip below). Without the second form, a
@@ -997,6 +1045,7 @@ export class ClientRouter {
             content,
             files,
             oversized: isOversizedPlaceholder,
+            mediaOnly,
             rawContent:
               typeof msg.content === "string"
                 ? msg.content
@@ -1017,13 +1066,14 @@ export class ClientRouter {
         // is stripped — dropping them here would silently delete the user's
         // own upload from history. The chip's `files` metadata is the carrier
         // of meaning in that case, so it must be enough on its own.
-        .filter((msg) => msg.content || (msg.files && msg.files.length > 0))
+        .filter((msg) => msg.content || msg.mediaOnly || (msg.files && msg.files.length > 0))
         .filter((msg) => !(msg.role === "user" && msg.rawContent.startsWith(QUEUED_RETRY_PREFIX)))
-        .map(({ role, content, files, timestamp, oversized }) => ({
+        .map(({ role, content, files, timestamp, oversized, mediaOnly }) => ({
           role,
           content,
           files,
           timestamp,
+          mediaOnly,
           ...(oversized ? { oversized: true as const } : {}),
         }));
 
@@ -1070,13 +1120,25 @@ export class ClientRouter {
         .from(agentDeliveredFiles)
         .where(eq(agentDeliveredFiles.sessionKey, sessionKey));
 
-      return attachDeliveredFilesToHistory(
-        withUploadIds,
-        grants.map((g) => ({
-          filename: g.filename,
-          mimeType: g.mimeType,
-          createdAt: g.createdAt.getTime(),
-        }))
+      return (
+        attachDeliveredFilesToHistory(
+          withUploadIds,
+          grants.map((g) => ({
+            filename: g.filename,
+            mimeType: g.mimeType,
+            createdAt: g.createdAt.getTime(),
+          }))
+        )
+          // A directive-only reply that got no chip (the grant is gone) has
+          // nothing left to show.
+          .filter((msg) => !msg.mediaOnly || (msg.files && msg.files.length > 0))
+          .map(({ role, content, files, timestamp, oversized }) => ({
+            role,
+            content,
+            files,
+            timestamp,
+            ...(oversized ? { oversized } : {}),
+          }))
       );
     };
 
@@ -1235,7 +1297,11 @@ export class ClientRouter {
    *     paused / blocked) → `responding` (keep the UI on "responding"; NEVER
    *     fail a run that is still going).
    *   - `livenessState: "abandoned"`, or `status: "error"` → `failed` with a
-   *     reason from `stopReason` (or a generic fallback).
+   *     readable reason — never `stopReason`, which is a code.
+   *   - a stop (the user's, or a cancellation `stopReason`) → `completed`:
+   *     OpenClaw reports a stopped run as `status: "error"` too.
+   *   - the session moved on to another run (or the run's pipe finished)
+   *     while `agentWait` was in flight → no verdict at all (#1301).
    *
    * Infra hiccups (a thrown `agentWait`) are deliberately NOT turned into a
    * `failed` verdict — we log and skip, letting the existing flow continue.
@@ -1260,20 +1326,41 @@ export class ClientRouter {
       return;
     }
 
+    // The verdict is about `runId`, and `broadcastForRun` reaches whichever run
+    // holds the session NOW. The `agentWait` above (and the history fetch
+    // before it) gave the session time to move on: the user stopped this run
+    // and sent the next message, so the listeners are that newer turn's. A
+    // verdict about the stopped run would end the turn that is still running
+    // (#1301). And once the run's pipe has finished, its own terminal frames
+    // already reached this socket, which joined the run's listeners at the
+    // start of `handleHistory`.
+    const current = this.activeRuns.get(sessionKey);
+    if (!current || current.runId !== runId) return;
+
     const abandoned = result.livenessState === "abandoned";
     const ended = result.status === "ok" || result.endedAt !== undefined;
+    // OpenClaw answers a stopped run like a failed one — `status: "error"` —
+    // and only `stopReason` says it was a stop: `rpc` for `chat.abort` and
+    // `stop` for a stop command (OpenClaw's `isCancellationStopReason`),
+    // `aborted` for any other abort of the run's signal (`isAbortedAgentStopReason`
+    // — not only the user's; none of them is a failure to show).
+    // A run the user stopped ended the way they asked; the stop click already
+    // showed it as a clean end of turn.
+    const stopped = current.abortedByUser || STOP_REASONS.has(result.stopReason ?? "");
 
-    if (result.status === "error" || abandoned) {
-      this.broadcastForRun(sessionKey, clientWs, {
+    if (!stopped && (result.status === "error" || abandoned)) {
+      this.broadcastVerdict(current, sessionKey, clientWs, {
         type: "liveness",
         state: "failed",
-        reason: result.stopReason ?? "the agent run ended without a response",
+        // Never `stopReason`: it is a machine code ("rpc", "timeout"), not
+        // something to show a user.
+        reason: RUN_ENDED_WITHOUT_RESPONSE,
       });
       return;
     }
 
     if (ended) {
-      this.broadcastForRun(sessionKey, clientWs, {
+      this.broadcastVerdict(current, sessionKey, clientWs, {
         type: "liveness",
         state: "completed",
       });
@@ -1283,10 +1370,33 @@ export class ClientRouter {
     // Still alive (pending/timeout with a non-terminal livenessState, or no
     // terminal signal at all). Keep the UI on "responding" — never fail a run
     // that is still going.
-    this.broadcastForRun(sessionKey, clientWs, {
+    this.broadcastVerdict(current, sessionKey, clientWs, {
       type: "liveness",
       state: "responding",
     });
+  }
+
+  /**
+   * `broadcastForRun`, minus the sockets that already sent the next message
+   * (`handedOverTo`): the verdict is about this run, and those tabs are on a
+   * turn that has not reached the registry yet (#1301). Everyone else still
+   * watching the run — a second device — hears it.
+   */
+  private broadcastVerdict(
+    run: ActiveRun,
+    sessionKey: string,
+    clientWs: WebSocket,
+    data: Record<string, unknown>
+  ): void {
+    const skip = run.handedOverTo;
+    if (!skip?.size) {
+      this.broadcastForRun(sessionKey, clientWs, data);
+      return;
+    }
+    const payload = JSON.stringify(data);
+    for (const ws of new Set([...run.listeners, clientWs])) {
+      if (!skip.has(ws) && ws.readyState === WS_OPEN) ws.send(payload);
+    }
   }
 
   // Delegates to StreamPipe (pinchy#1073 step 1 of the ClientRouter

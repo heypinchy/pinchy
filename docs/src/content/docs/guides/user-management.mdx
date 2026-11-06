@@ -23,18 +23,17 @@ Only admins can invite new users. Here is how:
 1. Go to **Settings → Users**.
 2. Click the **Invite User** button in the top right.
 3. Fill out the invite form:
-   - **Email** (optional) — Pre-fills the email for the new user's account. If left empty, the invite link can be used by anyone.
+   - **Email** — The new user's account is created with this address, and they sign in with it.
    - **Role** — Choose **Member** or **Admin**.
    - **Groups** <Badge text="Enterprise" variant="note" /> — If you have an active enterprise license and have created groups, you can assign the new user to one or more groups during invitation. See [Groups](/concepts/groups/) for details.
 4. Click **Create Invite**.
-5. Copy the generated invite link and share it with the user.
+5. Copy the generated invite link and send it to the user yourself — by email, chat, or however your team talks. Pinchy doesn't email the link, so it only reaches them through you. Below the link, the dialog shows when it expires, with your time zone.
 
 On devices that support it, a **Share** button appears instead of Copy, letting you send the link directly via your operating system's share sheet.
 
 <Aside type="tip">
-  The email field is optional. If you leave it empty, anyone with the link can
-  claim the invite. If you enter an email, the new account is created with that
-  address.
+  Anyone who has the link can claim the invite, and the account they create gets
+  the email you entered. Share the link only with the person you invited.
 </Aside>
 
 <Aside type="note">
@@ -57,11 +56,10 @@ On devices that support it, a **Share** button appears instead of Copy, letting 
 
 When a new user opens the invite link, they see the account creation page:
 
-1. The page shows the heading "You've been invited to Pinchy".
-2. The user enters their **name** and chooses a **password**. Passwords must be at least 12 characters, contain at least one letter and one digit, and must not be on the breach-list of common passwords.
-3. After clicking **Create account**, a success message confirms the account was created.
-4. The user clicks **Continue to sign in** and logs in with their email and password.
-5. After their first login, Smithers (the onboarding agent) greets them with a short interview to learn about the user and set up their personal context.
+1. The heading names the admin who sent the invite — for example "Ada Lovelace invited you to Pinchy" — so a link from someone they may not expect is easy to place. If that admin has since been deactivated, the page says "You've been invited to Pinchy" instead. At the top of the form, a read-only **Email** field shows the address the account signs in with. It comes from the invite and can't be changed here.
+2. The user enters their **name** and chooses a **password**. The rule is shown under the field: at least 12 characters, with a letter and a number. Passwords on the breach-list of common passwords are rejected too. There is no second "confirm password" field — the eye icon shows the password to check it.
+3. After clicking **Create account**, Pinchy signs them in straight away and opens the app. If that sign-in doesn't go through (for example, because of too many recent sign-in attempts), the page confirms the account was created, repeats the email address to sign in with, and offers **Continue to sign in**.
+4. Smithers (the onboarding agent) greets them with a short interview to learn about the user and set up their personal context.
 
 <Aside type="note">
   If the invite link is invalid or expired, the user sees an error message. Ask
@@ -115,15 +113,15 @@ If a user forgets their password, an admin can generate a reset link:
 1. Click on the user in the user list.
 2. In the detail panel, click **Reset Password**.
 3. A reset link appears. Copy it and share it with the user.
-4. The user opens the link, enters a new password, and regains access.
+4. The user opens the link, enters a new password, and is signed in with it. If the account is deactivated, the password is still reset, but the page says the account can't sign in and to contact an administrator.
 
-The reset page is dedicated to recovery: it reads **"Reset your Pinchy password"** and asks only for a new password and confirmation. Unlike the invite page, it does **not** ask for a display name, so a reset can never change the user's existing name.
+The reset page is dedicated to recovery: it reads **"Reset your Pinchy password"**, shows the email address the account signs in with, and asks only for a new password. Unlike the invite page, it does **not** ask for a display name, so a reset can never change the user's existing name.
 
 Reset links follow the same rules as invite tokens: valid for 7 days, single-use.
 
 When a reset completes:
 
-- The user's existing sessions are **revoked** in the same database transaction as the password update. Any browser or device that was logged in with the old password must sign in again with the new one. This guards against the case where the password was reset because the previous one might be compromised.
+- The user's existing sessions are **revoked** in the same database transaction as the password update. Any browser or device that was logged in with the old password must sign in again with the new one; the reset page itself signs in with the new password right after the reset. This guards against the case where the password was reset because the previous one might be compromised.
 - An `auth.password_reset_completed` entry is written to the audit log with `outcome: success`, the target user, and the invite id. See [Audit trail › Authentication](/concepts/audit-trail/#authentication).
 - If any part of the reset fails (database error, etc.), the whole flow rolls back: the user keeps their old password and the reset link stays usable. A matching `outcome: failure` audit entry is written.
 
@@ -178,7 +176,7 @@ The check can also miss one: a self-registered account that an admin promoted re
 Pending and expired invites appear in the user list alongside active users:
 
 - **Pending invites** show a Pending status badge and a **Revoke** button to cancel the invite.
-- **Expired invites** show an Expired status badge and a **Resend** button to generate a fresh invite link.
+- **Expired invites** show an Expired status badge and a **Resend** button to generate a fresh invite link. An expired invite without an email (created before v0.10) shows **Revoke** instead, since a fresh invite needs an email.
 
 ## Profile settings
 
@@ -203,6 +201,12 @@ If you enter the wrong current password repeatedly, Pinchy stops accepting attem
 ### Logging out
 
 Click the **Log out** button in the Session section to end your current session and return to the login page.
+
+Logging out also clears what Pinchy kept in this browser for you: unsent message drafts, attachments you staged but didn't send, anything you shared into the installed app but didn't send, and which chat you last had open for each agent. Other Pinchy tabs in the same browser reload, so none of them keeps showing your chats. Unsaved changes in those tabs, such as agent settings you were still editing, are discarded. On a shared computer, the next person who signs in starts clean.
+
+If your session expires instead, nothing is cleared until the next sign-in. When someone else signs in, Pinchy clears the same things first. When you sign back in yourself, your drafts are still there.
+
+One exception: if you share a file into the installed app while nobody is signed in, Pinchy opens the login page. It keeps that file for whoever signs in there within 10 minutes. Pinchy cannot tell who shared it, so on a shared computer, sign in right away or close the login page.
 
 ## Emergency admin password reset (CLI)
 
@@ -256,4 +260,4 @@ All user management actions are logged in the audit trail:
 | User deactivated             | `user.deleted`                  |
 | Password reset completed     | `auth.password_reset_completed` |
 
-Each admin action records which admin took it, and `user.created` records the new account itself as the actor — via the setup wizard or an invite. Entries record the affected user's name, and the before/after role or group diffs. We never store the affected user's email address in plaintext: deactivation events omit it entirely (GDPR Art. 17), and invite events store a keyed HMAC hash plus a short masked preview instead. Password resets also revoke the target user's active sessions in the same database transaction, so a partial failure rolls back the whole reset — the old password keeps working and the reset link stays usable. The audit row is written after that transaction commits, and a failed reset records its own `outcome: failure` entry. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.
+Each admin action records which admin took it, and `user.created` records the new account itself as the actor — via the setup wizard or an invite. A claim that fails to create the account is recorded too, with `system` as the actor. Entries record the affected user's name, and the before/after role or group diffs. We never store the affected user's email address in plaintext: deactivation events omit it entirely (GDPR Art. 17), and invite events store a keyed HMAC hash plus a short masked preview instead. Password resets also revoke the target user's active sessions in the same database transaction, so a partial failure rolls back the whole reset — the old password keeps working and the reset link stays usable. The audit row is written after that transaction commits, and a failed reset records its own `outcome: failure` entry. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.

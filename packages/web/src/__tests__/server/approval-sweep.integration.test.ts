@@ -76,12 +76,15 @@ describe("sweepApprovals", () => {
       sweepId: string;
       toolName: string;
       agent: { id: string; name: string | null };
-      requester: { id: string; name: string | null };
+      requester: { name: string | null };
     };
     expect(detail.sweepId).toBe(res.sweepId);
     expect(detail.toolName).toBe("odoo_write");
     expect(detail.agent).toEqual({ id: agent.id, name: "Smithers" });
-    expect(detail.requester).toEqual({ id: user.id, name: "Sweep User" });
+    // Name only: `detail` is immutable and crypto-erasure cannot reach a raw
+    // users.id in it (#824, #1273).
+    expect(detail.requester).toEqual({ name: "Sweep User" });
+    expect(JSON.stringify(detail)).not.toContain(user.id);
   });
 
   it("deletes settled rows past the retention window, one summary approval.gc audit row", async () => {

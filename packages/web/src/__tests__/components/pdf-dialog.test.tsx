@@ -213,8 +213,34 @@ describe("PdfDialog — taking the document", () => {
       </PdfDialog>
     );
 
-    expect(screen.getByRole("link", { name: "Download Angebot.doc" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Download Angebot.pdf" })).toBeInTheDocument();
+    const original = screen.getByRole("link", { name: "Download Original (.doc): Angebot.doc" });
+    const converted = screen.getByRole("link", { name: "Download PDF: Angebot.pdf" });
+    expect(original).toHaveTextContent("Original (.doc)");
+    expect(converted).toHaveTextContent("PDF");
+  });
+
+  it("tells the two downloads apart at a glance, and names the file on hover (#1268)", () => {
+    // Labelled by filename, both read "Vorlage_Wartung…" once the header
+    // truncated them. The visible label says which representation each is;
+    // the tooltip still says which file lands in the downloads folder.
+    const href = buildSourceHref("a1", "noack/Vorlage_Wartung_Kundendienst_2026.docx", null);
+    render(
+      <PdfDialog
+        url={href}
+        title="noack/Vorlage_Wartung_Kundendienst_2026.docx"
+        downloads={buildSourceDownloads(href)!}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    const links = screen.getAllByRole("link", { name: /^download/i });
+    expect(links.map((link) => link.textContent)).toEqual(["Original (.docx)", "PDF"]);
+    expect(links.map((link) => link.getAttribute("title"))).toEqual([
+      "Vorlage_Wartung_Kundendienst_2026.docx",
+      "Vorlage_Wartung_Kundendienst_2026.pdf",
+    ]);
   });
 
   it("keeps the controls on screen when the document name is too long for the row", () => {

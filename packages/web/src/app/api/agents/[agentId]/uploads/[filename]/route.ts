@@ -15,7 +15,7 @@ import { realpathWithinDir } from "@/lib/agent-file-access";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
-export const GET = withAuth<Params>(async (_req, { params }, session) => {
+export const GET = withAuth<Params>(async (req, { params }, session) => {
   const { agentId, filename: rawFilename } = await params;
 
   // Access check FIRST — same gate as the chat itself. The helper returns
@@ -76,5 +76,5 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
   // Uploads are capped at 15 MB at upload time, so the helper's in-memory read
   // is fine. It also refuses anything outside the MIME allowlist (a sneaked-in
   // .exe must never reach the browser as application/octet-stream).
-  return streamWorkspaceFile(realPath, safeName);
+  return streamWorkspaceFile(realPath, safeName, req);
 });

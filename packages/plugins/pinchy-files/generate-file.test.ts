@@ -91,6 +91,35 @@ describe("generateFile csv", () => {
   });
 });
 
+describe("generateFile csv header row", () => {
+  it("escapes header cells exactly like data cells", async () => {
+    const headers = ["=1+1", "@SUM(A1)", "a,b", 'say "hi"', "plain"];
+    const { buffer } = await generateFile({
+      format: "csv",
+      columns: headers,
+      rows: [headers],
+    });
+    const lines = buffer.toString("utf-8").replace(/^﻿/, "").split("\r\n");
+    expect(lines[0]).toBe(`'=1+1,'@SUM(A1),"a,b","say ""hi""",plain`);
+    expect(lines[0]).toBe(lines[1]);
+  });
+});
+
+describe("generateFile xlsx header row", () => {
+  it("stores a header starting with = as a plain string, not a formula", async () => {
+    const { buffer } = await generateFile({
+      format: "xlsx",
+      columns: ["=1+1"],
+      rows: [["x"]],
+    });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buffer as unknown as Parameters<typeof wb.xlsx.load>[0]);
+    const cell = wb.worksheets[0].getRow(1).getCell(1);
+    expect(cell.type).toBe(ExcelJS.ValueType.String);
+    expect(cell.value).toBe("=1+1");
+  });
+});
+
 describe("generateFile xlsx", () => {
   it("renders an xlsx with numeric cells preserved and a titled sheet", async () => {
     const { buffer, mimeType, ext } = await generateFile({
