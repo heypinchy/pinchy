@@ -839,6 +839,22 @@ describe("the section an Office citation names", () => {
     expect(stopped.heading).toBe("Safety");
   });
 
+  it("keeps parentheses inside a parenthesised heading", () => {
+    // `knowledge_search` prints the parenthesised form, and real headings
+    // carry their own: "Anhang A (normativ)", "Gewährleistung (§ 5)".
+    const [link] = sections(
+      run(paragraph("- [1] q/Handbuch.docx (§ Anhang A (normativ) > Prüfung)"))
+    );
+
+    expect(link.heading).toBe("Anhang A (normativ) > Prüfung");
+  });
+
+  it("ends an unparenthesised heading before the next citation on the line", () => {
+    const [first] = sections(run(paragraph("[1] q/a.docx — § Qualität; [2] q/b.pdf — p. 3")));
+
+    expect(first.heading).toBe("Qualität");
+  });
+
   it("leaves the href exactly as it was", () => {
     const tree = run(paragraph("- [1] sales/Pitch.pptx — slide 4"));
 

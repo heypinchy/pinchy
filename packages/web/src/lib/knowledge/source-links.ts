@@ -210,15 +210,24 @@ function trailingLocator(rest: string, isSpreadsheet: boolean): ChunkLocator | n
 }
 
 /** `— slide 4`, `(slide 4)`, `, Folie 4` — the slide hint that may follow a presentation path. */
-const TRAILING_SLIDE = /^\s*[—–\-,:]?\s*\(?\s*(?:slide|folie)\s*(\d{1,5})\b/i;
+const TRAILING_SLIDE = /^\s*(?:[—–\-,:]\s*)?(?:\(\s*)?(?:slide|folie)\s*(\d{1,5})\b/i;
 
 /**
- * `— § Quality > Incoming goods` / `(§ Safety > Zone B)` — the heading path
- * that may follow a Word path, in the shape `formatLocator` renders. A
- * parenthesised path ends at its parenthesis; an unparenthesised one runs to
- * the end of the line, because a heading may itself hold commas or dots.
+ * `(§ Safety > Zone B)` / `— § Quality > Incoming goods` — the heading path
+ * that may follow a Word path, in the shape `formatLocator` renders.
+ *
+ * The parenthesised form is the one `knowledge_search` prints, and it ends at
+ * ITS closing parenthesis, not the first one: real headings carry their own
+ * ("Anhang A (normativ)", "Gewährleistung (§ 5)"). One level of nesting is
+ * read. An unparenthesised path runs to the end of the line — a heading may
+ * hold commas or dots — but stops before a `;` or a `[n]` that starts the
+ * next citation on the same line.
+ *
+ * Every whitespace run is unambiguous, and the alternatives inside a heading
+ * start with different characters, so a long line cannot backtrack.
  */
-const TRAILING_HEADING = /^\s*[—–\-,:]?\s*(?:\(\s*§\s*([^)\n]+)\)|§\s*([^\n]+))/;
+const TRAILING_HEADING =
+  /^\s*(?:[—–\-,:]\s*)?(?:\(\s*§\s*((?:[^()\n]|\([^()\n]*\))+)\)|§\s*([^\n;[]+))/;
 
 /** Longest heading path carried to the viewer; the endpoint accepts more. */
 const MAX_CITED_HEADING_CHARS = 1000;
