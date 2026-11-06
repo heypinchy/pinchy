@@ -245,6 +245,137 @@ interface MdastNode {
   value?: string;
   url?: string;
   children?: MdastNode[];
+  data?: { hProperties?: Record<string, string> };
+}
+
+/**
+ * The claim a citation supports, for the viewer to find the cited PASSAGE on
+ * the cited page (#1268). The href says which page; a dense page holds two or
+ * three indexed passages, and the index can only say which one the answer drew
+ * on if it is told what the answer said. The claim is that: the sentences of
+ * the answer that cite the entry's number, or — for a path cited inline in
+ * prose — the sentence around it.
+ *
+ * Carried as a hast property on the link (`data-cited-claim`), never in the
+ * href, so `WORKSPACE_FILE_HREF` — the shape the renderer trusts — stays as
+ * narrow as it is. Markdown has no syntax for hast properties, so a model
+ * cannot write one; and the claim is only a ranking hint for our own endpoint,
+ * which re-checks the reader's access to the document whatever it says.
+ */
+const CLAIM_MAX_SENTENCES = 3;
+const CLAIM_MAX_CHARS = 600;
+
+/** Below this many letters a "claim" is the reference itself, not something it supports. */
+const CLAIM_MIN_LETTERS = 15;
+
+/**
+ * `[1]`, `[1, 3]` — the inline markers a sentence cites its sources with.
+ * Flat and bounded on purpose (no nested quantifier): this runs over every
+ * streamed chunk of model output. The numbers are read out of the match.
+ */
+const CITATION_MARKERS = /\[(\d[\d,\s]{0,30})\]/g;
+
+/** `[1] ` right before a path: the number of the Sources entry it belongs to. */
+const ENTRY_NUMBER_BEFORE_PATH = /\[(\d{1,3})\]\s*[:.\-–—]?\s*$/;
+
+/** Blocks whose inline text forms sentences. List items and quotes hold paragraphs. */
+const SENTENCE_BLOCKS = new Set(["paragraph", "heading", "tableCell"]);
+
+/**
+ * Sentence boundaries: after `.`, `!` or `?` and whitespace — but not after a
+ * one- or two-letter abbreviation. Without that exception the most common
+ * thing a citation trails, "p. 4" / "S. 4", would end the sentence in the
+ * middle of the reference.
+ */
+function splitSentences(text: string): Array<{ start: number; end: number }> {
+  const sentences: Array<{ start: number; end: number }> = [];
+  let start = 0;
+  const boundary = /[.!?]\s+/g;
+  for (let m = boundary.exec(text); m !== null; m = boundary.exec(text)) {
+    const before = text.slice(start, m.index);
+    if (m[0][0] === "." && /(?:^|[\s(])\p{L}{1,2}$/u.test(before)) continue;
+    sentences.push({ start, end: m.index + 1 });
+    start = m.index + m[0].length;
+  }
+  if (start < text.length) sentences.push({ start, end: text.length });
+  return sentences;
+}
+
+/** The sentence as the claim: markers dropped, whitespace normalised. */
+function claimText(sentence: string): string {
+  return sentence
+    .replace(CITATION_MARKERS, "")
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function capClaim(sentences: string[]): string | undefined {
+  const joined = sentences.slice(0, CLAIM_MAX_SENTENCES).join(" ");
+  if ((joined.match(/\p{L}/gu)?.length ?? 0) < CLAIM_MIN_LETTERS) return undefined;
+  if (joined.length <= CLAIM_MAX_CHARS) return joined;
+  const cut = joined.slice(0, CLAIM_MAX_CHARS);
+  const lastSpace = cut.lastIndexOf(" ");
+  return lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
+}
+
+function inlineText(node: MdastNode): string {
+  if (node.type === "text" || node.type === "inlineCode") return node.value ?? "";
+  return (node.children ?? []).map(inlineText).join("");
+}
+
+/**
+ * Every sentence of the answer that cites a number, by number. Sentences that
+ * themselves name a document path are left out: those are Sources entries (or
+ * inline references), and a reference is not a claim about its own content.
+ */
+function claimsByNumber(tree: MdastNode): Map<number, string[]> {
+  const byNumber = new Map<number, string[]>();
+  const visit = (node: MdastNode) => {
+    if (SENTENCE_BLOCKS.has(node.type)) {
+      const text = inlineText(node);
+      for (const { start, end } of splitSentences(text)) {
+        const sentence = text.slice(start, end);
+        if (findSourcePaths(sentence).length > 0) continue;
+        const cited = new Set<number>();
+        for (const marker of sentence.matchAll(CITATION_MARKERS)) {
+          for (const n of marker[1].split(",")) {
+            if (/^\d{1,3}$/.test(n.trim())) cited.add(Number(n.trim()));
+          }
+        }
+        if (cited.size === 0) continue;
+        const claim = claimText(sentence);
+        for (const n of cited) byNumber.set(n, [...(byNumber.get(n) ?? []), claim]);
+      }
+      return;
+    }
+    (node.children ?? []).forEach(visit);
+  };
+  visit(tree);
+  return byNumber;
+}
+
+/**
+ * The claim for the path at `start..end` of `value`. `before` is the text
+ * between the previous path in this node and this one — where a Sources
+ * entry's `[N]` stands.
+ */
+function claimFor(
+  value: string,
+  start: number,
+  end: number,
+  before: string,
+  numbered: () => Map<number, string[]>
+): string | undefined {
+  const entry = ENTRY_NUMBER_BEFORE_PATH.exec(before);
+  if (entry) {
+    const sentences = numbered().get(Number(entry[1]));
+    return sentences ? capClaim(sentences) : undefined;
+  }
+  const sentence = splitSentences(value).find((s) => s.start <= start && end <= s.end);
+  if (!sentence) return undefined;
+  const text = value.slice(sentence.start, start) + value.slice(end, sentence.end);
+  return capClaim([claimText(text)]);
 }
 
 /**
@@ -348,6 +479,38 @@ export function buildSourceViewerUrl(href: string): string | null {
   return `${routePath}/${encodeURIComponent(shown)}${query}${fragment}`;
 }
 
+/**
+ * The request the citation viewer makes to find the cited passage on the cited
+ * page (#1268), or null when there is nothing to find: no page to look on, or
+ * a document whose passages are not anchored on pages.
+ *
+ * Office documents are the second case. They open as their converted PDF, but
+ * their passages are anchored on headings (a Word page break is a rendering
+ * result, #933), so no page of that PDF names a set of candidates.
+ *
+ * Built from the href rather than from separate props so the request can only
+ * ever ask about the document the viewer is showing. The agent comes from the
+ * href's own path segment, which `WORKSPACE_FILE_HREF` already confines to a
+ * same-origin `/api/agents/<id>/` url.
+ */
+export function buildPassageRequest(
+  href: string,
+  claim: string | undefined
+): { url: string; body: { path: string; page: number; claim?: string } } | null {
+  const source = parseSourceHref(href);
+  if (!source || source.locator?.kind !== "page" || isOfficeFile(source.path)) return null;
+
+  const agentSegment = href.slice("/api/agents/".length, href.indexOf("/workspace-file"));
+  return {
+    url: `/api/agents/${agentSegment}/knowledge/passage`,
+    body: {
+      path: fromCitationPath(source.path),
+      page: source.locator.page,
+      ...(claim ? { claim } : {}),
+    },
+  };
+}
+
 /** `[everything before "#", "#…" or ""]` — the fragment keeps its `#`. */
 function splitFragment(href: string): [string, string] {
   const hash = href.indexOf("#");
@@ -408,7 +571,11 @@ export function buildSourceDownloads(
  * matched, which lets the caller leave the original node untouched rather than
  * replace it with an equivalent copy.
  */
-function linkifyText(value: string, agentId: string): MdastNode[] | null {
+function linkifyText(
+  value: string,
+  agentId: string,
+  numbered: () => Map<number, string[]>
+): MdastNode[] | null {
   const matches = findSourcePaths(value);
   if (matches.length === 0) return null;
 
@@ -423,11 +590,14 @@ function linkifyText(value: string, agentId: string): MdastNode[] | null {
     // sees what is being cited, and the link merely opens there.
     const locator = trailingLocator(value.slice(end), isSpreadsheetFile(path));
 
+    const claim = claimFor(value, start, end, value.slice(cursor, start), numbered);
+
     if (start > cursor) parts.push({ type: "text", value: value.slice(cursor, start) });
     parts.push({
       type: "link",
       url: buildSourceHref(agentId, path, locator),
       children: [{ type: "text", value: path }],
+      ...(claim ? { data: { hProperties: { dataCitedClaim: claim } } } : {}),
     });
     cursor = end;
   }
@@ -444,6 +614,11 @@ function linkifyText(value: string, agentId: string): MdastNode[] | null {
  */
 export function remarkSourceLinks({ agentId }: { agentId: string }) {
   return (tree: MdastNode) => {
+    // Read before any text node is rewritten, and only once a citation needs
+    // it: most messages cite nothing, and this runs on every streamed chunk.
+    let numbered: Map<number, string[]> | null = null;
+    const claims = () => (numbered ??= claimsByNumber(tree));
+
     const visit = (node: MdastNode) => {
       // `link` is skipped so we never nest an anchor inside an anchor; `code`
       // and `inlineCode` because a path shown as code is being displayed, not
@@ -455,7 +630,7 @@ export function remarkSourceLinks({ agentId }: { agentId: string }) {
       let changed = false;
       for (const child of node.children) {
         if (child.type === "text" && child.value) {
-          const parts = linkifyText(child.value, agentId);
+          const parts = linkifyText(child.value, agentId, claims);
           if (parts) {
             rewritten.push(...parts);
             changed = true;

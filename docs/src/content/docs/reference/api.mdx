@@ -663,6 +663,34 @@ A change is recorded as a `settings.updated` audit entry with the old and new sc
 
 Runs a hybrid (vector + full-text) search over the requesting agent's indexed, granted documents and returns numbered, citable passages. The raw query is never persisted — only a one-way hash, since a knowledge-base question can itself carry PII.
 
+### `POST /api/agents/:agentId/knowledge/passage`
+
+Which indexed passage on a cited page an answer drew on — what the citation viewer asks before it highlights one. Read-only: it isn't audited itself, because it accompanies a document view that `workspace-file` already records as `knowledge.source_viewed`.
+
+It returns text from a document, so it refuses exactly what `workspace-file` refuses, and in the same order: an agent you can't use answers `404`, a path outside the agent's granted folders answers `403`, before the index is read.
+
+**Request body:**
+
+| Field   | Type   | Required | Description                                                                                                                                   |
+| ------- | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`  | string | Yes      | The document's full path — the `path` a citation link carries.                                                                                |
+| `page`  | number | Yes      | The cited page, from 1.                                                                                                                       |
+| `claim` | string | No       | The answer's sentences that cite the source, at most 2000 characters. Used only to choose between the passages on the page, and never stored. |
+
+**Response:**
+
+```json
+{
+  "passage": {
+    "text": "§ 4 Reaktionszeiten\nDer Auftragnehmer reagiert auf Störungen innerhalb von vier Stunden."
+  }
+}
+```
+
+`passage` is the indexed text of the passage, or `null` when there is none to show: the page holds no indexed text, or it holds several passages and nothing says which — no `claim`, or the embedding model isn't available. With several, the one nearest to `claim` in meaning wins, which also works when the answer is in a different language than the document.
+
+**Errors:** `400` invalid body, `401` not authenticated, `403` path outside the agent's granted folders, `404` agent not found or not accessible, or file not found, `502` the lookup failed.
+
 ### `GET /api/agents/:agentId/knowledge/unsearchable`
 
 **Which** documents the index holds but search can't reach. Two kinds: documents that produced no searchable text — the ones the `unsearchable` counter in the reindex status counts — and Word or PowerPoint files search leaves out until they have been converted again after an update, which that counter never counts. **Admin only.**
