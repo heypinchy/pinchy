@@ -1451,9 +1451,25 @@ Revoke a pending invite.
 
 ### `GET /api/invite/:token`
 
-What kind of flow this token opens, so the page can render the right form. **No authentication required.**
+What kind of flow this token opens, and what the page shows before the form. **No authentication required.**
 
-**Response:** `{ "type": "invite" }` for a new-user claim, `{ "type": "reset" }` for a password reset on an existing account. The distinction matters: the reset form deliberately has no name field, so resetting a password can't overwrite the user's display name.
+**Response:** `200 OK`
+
+```json
+{
+  "type": "invite",
+  "email": "bob@example.com",
+  "invitedBy": "Ada Lovelace"
+}
+```
+
+| Field       | Type           | Description                                                                                                                                                               |
+| ----------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`      | string         | `invite` for a new-user claim, `reset` for a password reset on an existing account. The reset form has no name field, so a reset can't overwrite the user's display name. |
+| `email`     | string         | The address the account signs in with                                                                                                                                     |
+| `invitedBy` | string \| null | Display name of the admin who created the invite. `null` on a reset, or if that admin has no name or has been deactivated                                                 |
+
+The token is the only credential here, so the response holds nothing its holder shouldn't see: their own sign-in address and the inviter's display name, never the inviter's email. An unknown, claimed or expired token gets only an error.
 
 **Errors:** an `error` message with `410` when the token is unknown, already claimed or expired, or the invite has no email address; `404` when a reset token's user no longer exists.
 
@@ -2190,10 +2206,10 @@ Approve or deny one of your own pending confirmations. The agent's tool call is 
 
 **Request body:**
 
-| Field      | Type   | Required | Description                                           |
-| ---------- | ------ | -------- | ----------------------------------------------------- |
-| `decision` | string | Yes      | `approve` or `deny`                                   |
-| `reason`   | string | No       | Why, up to 500 characters — recorded in the audit row |
+| Field      | Type   | Required | Description                                                                                                  |
+| ---------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------ |
+| `decision` | string | Yes      | `approve` or `deny`                                                                                          |
+| `reason`   | string | No       | Why, up to 500 characters — recorded in the audit row, with any email address replaced by `<email-redacted>` |
 
 **Response:**
 
