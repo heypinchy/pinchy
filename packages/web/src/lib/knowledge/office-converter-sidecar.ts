@@ -45,8 +45,9 @@
  * on it (office-convert.ts), and reads at most `MAX_RESPONSE_BYTES` of an
  * answer.
  *
- * Node built-ins only: the sidecar imports this, and it must not drag the web
- * app's dependency graph into a container whose point is to hold nothing.
+ * Node built-ins only, and two dependency-free helpers (office-formats,
+ * log-line): the sidecar imports this, and it must not drag the web app's
+ * dependency graph into a container whose point is to hold nothing.
  */
 import { randomUUID } from "node:crypto";
 import {
@@ -63,6 +64,7 @@ import {
 import { createServer, request, type IncomingMessage, type Server } from "node:http";
 import { basename, dirname, join, resolve } from "node:path";
 
+import { errorLine } from "../log-line";
 import { OFFICE_EXTENSIONS } from "./office-formats";
 import type { ConverterResult, ConverterRun, RunConverter } from "./office-soffice";
 
@@ -502,7 +504,7 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
           answer = [200, result];
         } catch (err) {
           // The details go to this container's log, not over the socket.
-          console.error("[office-converter] the converter could not run:", err);
+          console.error(`[office-converter] the converter could not run: ${errorLine(err)}`);
           answer = [
             500,
             {
@@ -540,7 +542,7 @@ export function createOfficeConverterServer(options: OfficeConverterServerOption
         reply(...answer);
       })
       .catch((err: unknown) => {
-        console.error("[office-converter] could not read a request:", err);
+        console.error(`[office-converter] could not read a request: ${errorLine(err)}`);
         if (!res.headersSent) reply(400, { error: "the request could not be read" });
       });
   });
