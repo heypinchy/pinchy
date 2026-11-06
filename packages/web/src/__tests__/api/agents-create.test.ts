@@ -419,18 +419,18 @@ describe("POST /api/agents", () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({
-        name: "HR Knowledge Base",
-        templateId: "knowledge-base",
+        name: "Contract Review",
+        templateId: "contract-analyzer",
         pluginConfig: {
-          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+          "pinchy-files": { allowed_paths: ["/data/contracts/"] },
         },
       }),
     });
 
     await POST(request, routeContext());
 
-    const expected = AGENT_TEMPLATES["knowledge-base"].defaultStarterPrompts;
-    expect(expected, "knowledge-base must define defaultStarterPrompts").toBeDefined();
+    const expected = AGENT_TEMPLATES["contract-analyzer"].defaultStarterPrompts;
+    expect(expected, "contract-analyzer must define defaultStarterPrompts").toBeDefined();
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
         starterPrompts: expected,
@@ -442,6 +442,30 @@ describe("POST /api/agents", () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({ name: "Blank", templateId: "custom" }),
+    });
+
+    await POST(request, routeContext());
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        starterPrompts: [],
+      })
+    );
+  });
+
+  it("seeds no starter prompts for a knowledge-base agent (#1270)", async () => {
+    // Pinchy cannot know what an organisation's documents cover, or in which
+    // language — so a new knowledge base starts with no chips rather than
+    // generic English ones that name topics the corpus may not contain.
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+        },
+      }),
     });
 
     await POST(request, routeContext());

@@ -132,6 +132,16 @@ export interface ActiveRun {
    * lets go of it). A stop now finds nothing running.
    */
   streamEnded?: boolean;
+  /**
+   * Sockets that started a newer turn on this session while this run was still
+   * registered (#1301). The newer turn reaches the registry only after the
+   * router's awaits (agent, licence, budget, connection); from the moment the
+   * message arrives, though, that tab is on the new turn, and a frame ending
+   * this run (`complete`, a `liveness` verdict) would end that one instead. So
+   * none of this run's frames reach these sockets, until the new turn is over
+   * (refused or ended) or the tab re-attaches to this run through history.
+   */
+  handedOverTo?: Set<WebSocket>;
   /** Settles once every abort sent for this run so far has been answered. */
   abortSettled?: Promise<void>;
   /**

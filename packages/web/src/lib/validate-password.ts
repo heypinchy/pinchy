@@ -5,11 +5,18 @@ import { isCommonPassword } from "@/lib/common-passwords";
  * Minimum password length, in characters. Aligned with OWASP ASVS L2.
  *
  * If you change this, also update `emailAndPassword.password.minLength`
- * in `auth.ts` so Better Auth's own paths reject the same passwords,
- * and update the user-facing copy in setup-form, settings-profile, and
- * the invite page.
+ * in `auth.ts` so Better Auth's own paths reject the same passwords.
+ * User-facing copy derives from it (`PASSWORD_RULE_HINT`, the error text).
  */
 export const PASSWORD_MIN_LENGTH = 12;
+
+/**
+ * The rule as a form shows it up front, before anyone has failed it (#1265).
+ * Derived from the constant so the hint cannot fall behind a policy bump. The
+ * breach-list check is not in it: it rejects a handful of passwords, and the
+ * inline error names it when it does.
+ */
+export const PASSWORD_RULE_HINT = `At least ${PASSWORD_MIN_LENGTH} characters, with a letter and a number.`;
 
 /**
  * Validates password strength. Returns an error message or null if valid.
