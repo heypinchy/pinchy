@@ -335,6 +335,70 @@ describe("kb index worker", () => {
     expect(row.outcome).toBe("success");
   });
 
+  // #1366: text with a NUL in it stopped a first full index for good — the
+  // job failed on the same document on every run.
+  it("finishes a job whose documents hold NUL characters", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "a-nul.pdf", "nul");
+    writePdf(tmpRoot, "b-good.pdf", "good");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    const deps = fakeDeps();
+    deps.extractPdf = async (p: string) => [
+      {
+        page: 1,
+        text: p.endsWith("a-nul.pdf")
+          ? "Delivery terms\u0000 for every order placed by phone."
+          : "Onboarding starts on day one for every new hire.",
+      },
+    ];
+
+    await runNextIndexJob({ deps });
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job?.status).toBe("succeeded");
+    expect(job?.counts).toMatchObject({ indexed: 2, failed: 0 });
+  });
+
+  it("succeeds with a failed-file count when the database refuses one file's rows", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "a-refused.pdf", "refused");
+    writePdf(tmpRoot, "b-good.pdf", "good");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    const refused = "Rows the vector column refuses for their width.";
+    const deps = fakeDeps();
+    deps.extractPdf = async (p: string) => [
+      { page: 1, text: p.endsWith("a-refused.pdf") ? refused : "Onboarding starts on day one." },
+    ];
+    // vector(768) refuses a 3-wide vector: a real rejection for one file only.
+    deps.embed = async (texts: string[]) =>
+      texts.map((text) => Array(text === refused ? 3 : 768).fill(0.01));
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runNextIndexJob({ deps });
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job?.status).toBe("succeeded");
+    expect(job?.counts).toMatchObject({ indexed: 1, failed: 1 });
+  });
+
   // A systemic outage is the job's failure. It must land as one and —
   // critically — release the org's active-job slot, or one Ollama blip would
   // wedge the queue until a restart.
