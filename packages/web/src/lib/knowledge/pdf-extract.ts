@@ -28,6 +28,8 @@ import {
 } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { hasSparseText, isScannedPage } from "../../../../plugins/pinchy-files/pdf-scan-rule";
+import { flattenOutline, type OutlineEntry } from "@/lib/pdf/outline";
+
 import { renderPageToImage } from "./pdf-render";
 import type { HeadingMark } from "./types";
 
@@ -128,87 +130,19 @@ interface PageLine {
   y: number | null;
 }
 
-/** Where one outline entry points, once its destination has been resolved. */
-interface OutlineTarget {
-  page: number;
-  /**
-   * The destination's top edge, or null when the destination names no
-   * coordinate.
-   *
-   * Only `/XYZ` carries one, which is what LibreOffice writes for a Word
-   * heading — and it is the whole reason a heading can be placed WITHIN a page
-   * rather than at the top of it. Every other destination type (`/Fit`, which
-   * is what pdfkit emits, and the rest) genuinely means "this page", so null
-   * is not a gap to paper over: it is the destination's own answer, and the
-   * top of the page is the honest reading of it.
-   */
-  top: number | null;
-  headings: string[];
-}
-
-/** The y a destination names, or null when it names none. */
-function destinationTop(dest: unknown[]): number | null {
-  const type = (dest[1] as { name?: string } | undefined)?.name;
-  return type === "XYZ" && typeof dest[3] === "number" ? dest[3] : null;
-}
-
 /**
- * The document's outline, flattened to one entry per heading and grouped by
- * the page it points at, in document order.
- *
- * An outline this cannot read is not an error: the document simply has no
- * headings to anchor on, and its chunks carry no locator (locator.ts). That is
- * the normal state of a Word file written without heading styles.
+ * The document's outline, grouped by the page each heading points at, in
+ * document order. The flattening itself is shared with the citation viewer
+ * (`lib/pdf/outline.ts`), which has to find these exact heading paths again.
  */
-async function readOutline(doc: PDFDocumentProxy): Promise<Map<number, OutlineTarget[]>> {
-  const byPage = new Map<number, OutlineTarget[]>();
-
-  let outline: OutlineNode[] | null;
-  try {
-    // pdfjs types the outline with its own node shape; OutlineNode is the
-    // subset this reads, and `dest` is genuinely `string | unknown[] | null`.
-    outline = (await doc.getOutline()) as OutlineNode[] | null;
-  } catch {
-    return byPage;
+async function readOutline(doc: PDFDocumentProxy): Promise<Map<number, OutlineEntry[]>> {
+  const byPage = new Map<number, OutlineEntry[]>();
+  for (const entry of await flattenOutline(doc)) {
+    const targets = byPage.get(entry.page) ?? [];
+    targets.push(entry);
+    byPage.set(entry.page, targets);
   }
-  if (!outline) return byPage;
-
-  const visit = async (nodes: OutlineNode[], path: string[]): Promise<void> => {
-    for (const node of nodes) {
-      const title = (node.title ?? "").trim();
-      // An untitled entry adds no level rather than an empty one: "§ Quality >
-      //  > Zone B" names a section nobody can find.
-      const headings = title ? [...path, title] : path;
-
-      if (headings.length > 0) {
-        try {
-          const dest =
-            typeof node.dest === "string" ? await doc.getDestination(node.dest) : node.dest;
-          if (Array.isArray(dest) && dest.length > 0) {
-            const page =
-              (await doc.getPageIndex(dest[0] as Parameters<typeof doc.getPageIndex>[0])) + 1;
-            const targets = byPage.get(page) ?? [];
-            targets.push({ page, top: destinationTop(dest), headings });
-            byPage.set(page, targets);
-          }
-        } catch {
-          // A destination that will not resolve costs its own heading and
-          // nothing else — the rest of the outline still anchors.
-        }
-      }
-
-      if (node.items?.length) await visit(node.items, headings);
-    }
-  };
-
-  await visit(outline, []);
   return byPage;
-}
-
-interface OutlineNode {
-  title?: string;
-  dest?: string | unknown[] | null;
-  items?: OutlineNode[];
 }
 
 /**
@@ -221,7 +155,7 @@ interface OutlineNode {
  * The y a destination carries is the document's own answer to the same
  * question.
  */
-function markHeadings(lines: PageLine[], targets: OutlineTarget[]): HeadingMark[] {
+function markHeadings(lines: PageLine[], targets: OutlineEntry[]): HeadingMark[] {
   const offsets: number[] = [];
   let offset = 0;
   for (const line of lines) {
