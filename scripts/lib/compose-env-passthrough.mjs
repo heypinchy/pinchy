@@ -19,8 +19,9 @@
  * expands, and a variable Compose never names is invisible from there. This
  * guard starts from the other end, from what the app reads:
  *
- *   1. every literal `process.env.NAME` / `process.env["NAME"]` in
- *      `packages/web/src` production code,
+ *   1. every literal `process.env.NAME` / `process.env["NAME"]` in the code
+ *      the pinchy image runs: `packages/web/src` production code plus the
+ *      custom server (`server.ts`, `server-preload.cjs`) that starts it,
  *   2. narrowed to the names any docs page mentions, since a name the docs
  *      present is one an operator will set,
  *   3. must appear in the `pinchy` service's `environment:` list.
@@ -166,7 +167,7 @@ export function checkExemptions({ reads, docs, forwarded, exemptions }) {
       );
     } else if (!reads.has(name)) {
       problems.push(
-        `NOT_FORWARDED_ON_PURPOSE lists ${name}, but packages/web/src no longer reads it. Drop the entry.`,
+        `NOT_FORWARDED_ON_PURPOSE lists ${name}, but the web app no longer reads it. Drop the entry.`,
       );
     } else if (!mentionedIn(docs, name)) {
       problems.push(
@@ -196,11 +197,23 @@ const isProductionSource = (root) => (path) => {
   );
 };
 
+/**
+ * The custom server the image starts (`package.json#start`, copied in by
+ * Dockerfile.pinchy). It sits beside `src/`, not in it, and reads switches
+ * nothing in `src/` does: the Telegram conflict watchdog's, for one.
+ */
+const SERVER_ENTRY_FILES = ["server.ts", "server-preload.cjs"];
+
 /** @param {string} repoRoot */
 export function readWebEnvReads(repoRoot) {
-  const src = join(repoRoot, "packages/web/src");
+  const web = join(repoRoot, "packages/web");
+  const src = join(web, "src");
+  const files = [
+    ...walk(src, isProductionSource(src)),
+    ...SERVER_ENTRY_FILES.map((name) => join(web, name)),
+  ];
   const names = new Set();
-  for (const file of walk(src, isProductionSource(src))) {
+  for (const file of files) {
     for (const name of extractEnvReads(readFileSync(file, "utf8")))
       names.add(name);
   }
