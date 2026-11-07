@@ -1048,6 +1048,203 @@ it("keeps the last indexed version searchable when a file changes into one that 
   expect(await chunksFor(docBefore.id)).toHaveLength(chunksBefore.length);
 });
 
+// #1366. Postgres `text` and `jsonb` cannot hold U+0000, and a PDF text layer
+// with a broken font encoding emits it routinely. Only Postgres rejects it, so
+// only a real-DB test sees it: the batched chunk insert failed and took the
+// whole run down — on the same file, on every run, forever.
+it("indexes a document whose extracted text holds NUL and other control characters", async () => {
+  const pdfPath = join(tmpRoot, "supplier-sheet.pdf");
+  writeFileSync(pdfPath, "pdf-with-nul-bytes");
+
+  const { deps } = fakeDeps([
+    { page: 1, text: `Quality cert\u0000ificate for incoming goods.\u0001\u001fValid until 2027.` },
+    { page: 2, text: "Line one\tcolumn\r\nLine two\fafter a form feed." },
+  ]);
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const texts = (await chunksFor(doc.id)).map((chunk) => chunk.chunkText).join("\n");
+  // NUL goes without a trace — it sits between the letters of a word.
+  expect(texts).toContain("Quality certificate for incoming goods.");
+  // The other C0 controls become a space, so the words either side stay apart.
+  expect(texts).toContain("goods.  Valid until 2027.");
+  // Tab, CR and LF are text, not noise.
+  expect(texts).toContain("Line one\tcolumn");
+  expect(texts).toContain("Line two after a form feed.");
+  expect(texts).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/);
+});
+
+it("indexes a workbook whose sheet name holds a NUL, which the locator carries into jsonb", async () => {
+  writeFileSync(join(tmpRoot, "suppliers.xlsx"), "fake-xlsx-bytes");
+  const { deps } = fakeDeps(undefined, {
+    chunks: [{ text: SHEET_ROWS_TEXT, sheet: "Supp\u0000liers", startRow: 2, endRow: 3 }],
+    sheets: ["Supp\u0000liers"],
+    hiddenSheets: [],
+    hiddenRows: 0,
+  });
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const [chunk] = await chunksFor(doc.id);
+  expect(chunk.locator).toEqual({ kind: "sheet", sheet: "Suppliers", startRow: 2, endRow: 3 });
+});
+
+it("does not write a chunk that held nothing but control characters", async () => {
+  writeFileSync(join(tmpRoot, "binary-noise.pdf"), "noise");
+  const { deps, embed } = fakeDeps([{ page: 1, text: "\u0000\u0001\u0000\u0002\u0000" }]);
+
+  // Nothing readable is left, so it is listed as unreadable — not indexed with
+  // an empty chunk the embedder was asked to vectorise.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  expect(embed).not.toHaveBeenCalled();
+});
+
+/**
+ * Deps whose embedder hands back a vector of the wrong width for the chunks of
+ * `rejectedText` — a value `vector(768)` refuses on insert, which is how a test
+ * gets a real Postgres rejection for one file's rows and not the next file's.
+ */
+function rejectingDeps(rejectedText: string, pagesFor: (path: string) => IngestPage[]) {
+  const embed = vi.fn(async (texts: string[]) =>
+    texts.map((text) => Array(text.includes(rejectedText) ? 3 : 768).fill(0.01))
+  );
+  const deps: IngestDeps = {
+    embed,
+    extractPdf: vi.fn(async (path: string) => pagesFor(path)),
+    extractXlsx: neverCalledXlsx,
+    convertOffice: neverCalledConvert,
+    ocrModel: null,
+    stagingDir,
+  };
+  return { deps, embed };
+}
+
+const REJECTED_TEXT = "These rows are refused by the database for one reason or another.";
+
+// #1366, the containment half. Whatever the next thing a database refuses about
+// one document's content turns out to be, it is a property of THAT document —
+// like a PDF that does not parse — and costs that document only.
+it("counts a file whose rows the database refuses as failed, and indexes the next one", async () => {
+  writeFileSync(join(tmpRoot, "a-refused.pdf"), "refused-bytes");
+  writeFileSync(join(tmpRoot, "b-good.pdf"), "good-bytes");
+  const { deps } = rejectingDeps(REJECTED_TEXT, (path) => [
+    { page: 1, text: path.endsWith("a-refused.pdf") ? REJECTED_TEXT : PAGE_1_TEXT },
+  ]);
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  let result: IngestResult;
+  try {
+    result = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+    // One line naming the file and what the database said. Not the failed
+    // query: drizzle's message quotes every parameter — the document's text
+    // and its vectors — and would push the reason past the line's bound.
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    const logged = consoleError.mock.calls[0].map(String).join(" ");
+    expect(logged).toContain(join(tmpRoot, "a-refused.pdf"));
+    expect(logged).toMatch(/expected 768 dimensions/);
+    expect(logged).not.toContain(REJECTED_TEXT);
+    expect(logged).not.toContain("Failed query");
+  } finally {
+    consoleError.mockRestore();
+  }
+  expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
+
+  // No half-written row: a document row without its chunks would read as
+  // "indexed, nothing found" in the unreadable list.
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs.map((d) => d.sourcePath)).toEqual([join(tmpRoot, "b-good.pdf")]);
+  expect(await chunksFor(docs[0].id)).not.toHaveLength(0);
+});
+
+it("tries a file the database refused again on the next run", async () => {
+  writeFileSync(join(tmpRoot, "refused.pdf"), "refused-bytes");
+  const refusing = rejectingDeps(REJECTED_TEXT, () => [{ page: 1, text: REJECTED_TEXT }]);
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, refusing.deps)).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  // Same bytes, and this time the write goes through: nothing on record made
+  // the file look done.
+  const { deps } = fakeDeps([{ page: 1, text: REJECTED_TEXT }]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+});
+
+it("keeps the last indexed version when the database refuses a changed file's new rows", async () => {
+  const pdfPath = join(tmpRoot, "policy.pdf");
+  writeFileSync(pdfPath, "good-bytes-v1");
+  const { deps } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  const [docBefore] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(docBefore.id);
+
+  writeFileSync(pdfPath, "changed-bytes-v2");
+  const refusing = rejectingDeps(REJECTED_TEXT, () => [{ page: 1, text: REJECTED_TEXT }]);
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, refusing.deps)).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  // Same rule as a changed file that fails to parse: the old version is
+  // deleted only together with writing the new one.
+  const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docsAfter).toHaveLength(1);
+  expect(docsAfter[0].id).toBe(docBefore.id);
+  expect(docsAfter[0].contentHash).toBe(docBefore.contentHash);
+  expect(await chunksFor(docBefore.id)).toHaveLength(chunksBefore.length);
+});
+
+// The other half: an error that says nothing about the file must still stop
+// the run. Counted per file instead, a database restart mid-reindex would read
+// as one "failed" document for every file still to come, and the job as done.
+it("stops the run when the database fails for a reason that is not the file", async () => {
+  writeFileSync(join(tmpRoot, "a-first.pdf"), "first-bytes");
+  writeFileSync(join(tmpRoot, "b-second.pdf"), "second-bytes");
+  const { deps, embed } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  const shutdown = Object.assign(new Error("terminating connection due to administrator command"), {
+    code: "57P01",
+  });
+  const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(shutdown);
+  try {
+    await expect(ingestDirectory(ORG_ID, tmpRoot, deps)).rejects.toBe(shutdown);
+  } finally {
+    transaction.mockRestore();
+  }
+
+  expect(embed).toHaveBeenCalledTimes(1);
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toEqual([]);
+});
+
+it("keeps a chunkless document's record when the database refuses its rebuilt rows", async () => {
+  writeFileSync(join(tmpRoot, "policy.pdf"), "bytes");
+  const { deps } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  await ingestDirectory(ORG_ID, tmpRoot, deps);
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  await db.delete(kbChunks).where(eq(kbChunks.documentId, doc.id));
+
+  const refusing = rejectingDeps(PAGE_1_TEXT, () => [{ page: 1, text: PAGE_1_TEXT }]);
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, refusing.deps)).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+  // The record is rewritten only together with its rows, so a refusal leaves
+  // it exactly as it was.
+  const [docAfter] = await db.select().from(kbDocuments).where(eq(kbDocuments.id, doc.id));
+  expect(docAfter).toEqual(doc);
+  // Still owed: the next run rebuilds it.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  expect(await chunksFor(doc.id)).not.toHaveLength(0);
+});
+
 // ── ingestPaths: many roots, one honest progress total ───────────────────
 
 /** Records every onProgress call so a test can assert the SEQUENCE, not just the final number — a bar that jumps 0 → done is not progress. */
@@ -1798,6 +1995,25 @@ it("indexes a Word document through its converted PDF, anchored on the heading p
   expect(chunks).not.toHaveLength(0);
   expect(chunks.every((chunk) => chunk.sourcePath === docPath)).toBe(true);
   for (const chunk of chunks) {
+    expect(chunk.locator).toEqual({ kind: "heading", headings: ["Quality management"] });
+  }
+});
+
+it("stores a Word heading that carried NUL without it (#1366)", async () => {
+  // The Office branch reads through its own dispatch; the cleaning has to
+  // cover it as well as the PDF and spreadsheet readers.
+  writeFileSync(join(tmpRoot, "Handbuch.docx"), "fake-docx-bytes");
+  const pages: IngestPage[] = [
+    {
+      ...WORD_PAGES[0],
+      headings: [{ charStart: 0, headings: ["Quality\u0000 management"] }],
+    },
+  ];
+  const { deps } = officeDeps(convertedTo("/artifacts/ab/ef.pdf"), () => pages);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  for (const chunk of await chunksFor(doc.id)) {
     expect(chunk.locator).toEqual({ kind: "heading", headings: ["Quality management"] });
   }
 });
