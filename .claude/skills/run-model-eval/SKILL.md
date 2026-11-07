@@ -51,7 +51,18 @@ resumes from JSONL.**
    `<label>.jsonl` and `<label>.trajectories.jsonl`, then re-run them.
 4. **odoo-mock is image-built** (`docker-compose.eval.yml` build context, no
    volume mount). Mock changes need
-   `... up -d --build odoo-mock` — and never mid-sweep.
+   `... up -d --build odoo-mock` — and never mid-sweep. **Always `--build` the
+   whole stack-up (rule 5 does), never a plain `up`:** a `docker compose up`
+   without `--build` reuses whatever mock image exists, which can be STALER than
+   the source. That is how the 2026-07-13 line-items baseline shipped
+   contaminated — the running mock predated the #615 many2one validation the
+   source already carried, so it silently credited invalid `account_id` writes
+   (pinchy#1165). Both eval specs now run a **fidelity guard**
+   (`eval/odoo-mock-fidelity.ts`) right after `waitForOdooMock()`: it POSTs one
+   deliberately-invalid `account.move.line` create and ABORTS the sweep unless
+   the mock rejects it. `eval:selftest` runs it too, so CI enforces the contract
+   on every PR. If a sweep aborts with "odoo-mock is STALE/unfaithful", rebuild
+   the mock (`... up -d --build odoo-mock`) and re-run — do not work around it.
 5. **Stack env is exact:** `PINCHY_VERSION=latest DB_PASSWORD=eval_dev_pw
 PINCHY_BUILD_SHA=$(git rev-parse HEAD) docker compose -p pinchy-eval -f
 docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.eval.yml up
