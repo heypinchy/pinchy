@@ -12,7 +12,9 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
 import { EMAIL_OPERATIONS, type EmailOperation } from "@/lib/tool-registry";
+import { apiGet, errorMessage } from "@/lib/api-client";
 
 // ── Email-specific display names ─────────────────────────────────────────
 
@@ -35,6 +37,12 @@ interface Connection {
   type: string;
   status?: string;
   data?: unknown;
+}
+
+/** One row of `GET /api/agents/:id/integrations`. */
+interface AgentIntegrationEntry {
+  connectionId: string;
+  permissions: Array<{ model: string; operation: string }>;
 }
 
 interface EmailPermissionSectionProps {
@@ -61,6 +69,7 @@ export function EmailPermissionSection({
     send: false,
   });
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   // Track initial state for dirty detection
   const [initialConnectionId, setInitialConnectionId] = useState("");
@@ -74,59 +83,70 @@ export function EmailPermissionSection({
 
   // Load existing agent permissions for these connections
   useEffect(() => {
-    async function load() {
+    const controller = new AbortController();
+    const { signal } = controller;
+    void (async () => {
       try {
-        const permsRes = await fetch(`/api/agents/${agentId}/integrations`);
+        const data = await apiGet<AgentIntegrationEntry[]>(`/api/agents/${agentId}/integrations`, {
+          signal,
+        });
+        if (signal.aborted) return;
+        setLoadFailed(false);
+        for (const entry of data) {
+          const matchingConn = connections.find((c) => c.id === entry.connectionId);
+          if (matchingConn) {
+            setConnectionId(entry.connectionId);
+            setInitialConnectionId(entry.connectionId);
 
-        if (permsRes.ok) {
-          const data = await permsRes.json();
-          for (const entry of data) {
-            const matchingConn = connections.find((c) => c.id === entry.connectionId);
-            if (matchingConn) {
-              setConnectionId(entry.connectionId);
-              setInitialConnectionId(entry.connectionId);
+            const ops: Record<EmailOperation, boolean> = {
+              read: false,
+              draft: false,
+              send: false,
+            };
+            const permSet = new Set<string>();
 
-              const ops: Record<EmailOperation, boolean> = {
-                read: false,
-                draft: false,
-                send: false,
-              };
-              const permSet = new Set<string>();
+            for (const perm of entry.permissions) {
+              if (perm.model !== "email") continue;
 
-              for (const perm of entry.permissions) {
-                if (perm.model !== "email") continue;
+              // Legacy alias: pre-#328 agent template creation could persist
+              // a standalone "search" or "list" row with NO accompanying
+              // "read" row (see tool-registry.ts EMAIL_OPERATIONS comment).
+              // The runtime (getEmailToolsForOperations / checkPermission)
+              // treats both as granting the full "read" toolset, so the
+              // checkbox must reflect that effective grant — otherwise it
+              // renders unchecked while read tools are actually enabled,
+              // and a save would silently revoke read by writing back only
+              // the checked operations.
+              const normalizedOp =
+                perm.operation === "search" || perm.operation === "list" ? "read" : perm.operation;
 
-                // Legacy alias: pre-#328 agent template creation could persist
-                // a standalone "search" or "list" row with NO accompanying
-                // "read" row (see tool-registry.ts EMAIL_OPERATIONS comment).
-                // The runtime (getEmailToolsForOperations / checkPermission)
-                // treats both as granting the full "read" toolset, so the
-                // checkbox must reflect that effective grant — otherwise it
-                // renders unchecked while read tools are actually enabled,
-                // and a save would silently revoke read by writing back only
-                // the checked operations.
-                const normalizedOp =
-                  perm.operation === "search" || perm.operation === "list"
-                    ? "read"
-                    : perm.operation;
-
-                if (EMAIL_OPERATIONS.includes(normalizedOp as EmailOperation)) {
-                  ops[normalizedOp as EmailOperation] = true;
-                  permSet.add(`email:${normalizedOp}`);
-                }
+              if (EMAIL_OPERATIONS.includes(normalizedOp as EmailOperation)) {
+                ops[normalizedOp as EmailOperation] = true;
+                permSet.add(`email:${normalizedOp}`);
               }
-
-              setInitialPermissions(permSet);
-              setOperations(ops);
-              break;
             }
+
+            setInitialPermissions(permSet);
+            setOperations(ops);
+            break;
           }
         }
+      } catch (err) {
+        if (signal.aborted) return;
+        // An empty editor here would read as "no email access", and saving
+        // from it would replace the real grants — so there is no editor.
+        setLoadFailed(true);
+        toast.error(
+          errorMessage(
+            err,
+            "Couldn't load this agent's email permissions. Try refreshing the page."
+          )
+        );
       } finally {
-        setLoading(false);
+        if (!signal.aborted) setLoading(false);
       }
-    }
-    load();
+    })();
+    return () => controller.abort();
   }, [agentId, connections]);
 
   // Compute permissions array from current state
@@ -165,11 +185,11 @@ export function EmailPermissionSection({
 
   // Notify parent of changes
   useEffect(() => {
-    if (loading) return;
+    if (loading || loadFailed) return;
     const perms = getPermissions();
     const hasConfig = connectionId && perms.length > 0;
     onChangeRef.current(hasConfig ? { connectionId, permissions: perms } : null, isDirty);
-  }, [connectionId, operations, loading, getPermissions, isDirty]);
+  }, [connectionId, operations, loading, loadFailed, getPermissions, isDirty]);
 
   function handleConnectionChange(id: string) {
     setConnectionId(id);
@@ -187,6 +207,14 @@ export function EmailPermissionSection({
 
   if (loading) {
     return <div className="text-muted-foreground py-4">Loading email configuration...</div>;
+  }
+
+  if (loadFailed) {
+    return (
+      <div className="text-muted-foreground py-4">
+        This agent&apos;s email permissions could not be loaded.
+      </div>
+    );
   }
 
   return (
