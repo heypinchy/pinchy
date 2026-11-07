@@ -20,6 +20,21 @@ services:
       # walk past them to the visitor's own address. Empty is the normal case:
       # loopback is trusted anyway, which is all a single proxy needs.
       - PINCHY_TRUSTED_PROXIES=${PINCHY_TRUSTED_PROXIES:-}
+      # Switches the docs tell operators to set in .env. A variable that is
+      # missing from this list never reaches the container: the app silently
+      # uses its default. That is how PINCHY_KB_OCR=off did nothing on v0.10.0
+      # (#1361). Each is empty by default, and every reader treats empty as
+      # unset. scripts/lib/compose-env-passthrough.mjs fails CI when a
+      # documented switch is missing from this list.
+      - PINCHY_KB_OCR=${PINCHY_KB_OCR:-}
+      - PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=${PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS:-}
+      - ALLOW_PRIVATE_URLS=${ALLOW_PRIVATE_URLS:-}
+      - ALLOW_PRIVATE_MAIL_HOSTS=${ALLOW_PRIVATE_MAIL_HOSTS:-}
+      - PINCHY_USAGE_POLL_INTERVAL_MS=${PINCHY_USAGE_POLL_INTERVAL_MS:-}
+      - AUDIT_VERIFY_INTERVAL_MS=${AUDIT_VERIFY_INTERVAL_MS:-}
+      - TELEGRAM_CONFLICT_AUTO_RESTART=${TELEGRAM_CONFLICT_AUTO_RESTART:-}
+      - TELEGRAM_CONFLICT_AUTO_DISABLE=${TELEGRAM_CONFLICT_AUTO_DISABLE:-}
+      - TELEGRAM_CONFLICT_RECENT_WINDOW_MS=${TELEGRAM_CONFLICT_RECENT_WINDOW_MS:-}
     volumes:
       - openclaw-config:/openclaw-config
       - openclaw-secrets:/openclaw-secrets

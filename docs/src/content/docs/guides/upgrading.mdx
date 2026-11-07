@@ -203,6 +203,20 @@ sed -i 's/PINCHY_VERSION=v0.10.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
+#### `PINCHY_KB_OCR=off` in `.env` now takes effect
+
+On v0.10.0, `PINCHY_KB_OCR=off` in your `.env` was ignored. We told you in the v0.10.0 notes to set it there to keep scanned pages away from your vision model, but our `docker-compose.yml` never passed it to the Pinchy container. So OCR stayed on: if you have an Anthropic, Google, OpenAI or Ollama Cloud key, Pinchy picked a vision model from it on its own, and indexing sent scanned pages to that provider. The `knowledge.reindex` entries in the [audit trail](/concepts/audit-trail/) show how many documents and pages went to which model since you upgraded. If you set it, scans read on v0.10.0 keep the text already in the index and are not sent again, and from this release on new and changed scans are not sent either. If you never set it, nothing changes: scans still go to your vision model.
+
+Eight more switches the docs tell you to set had the same gap, in every release so far: `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS`, `ALLOW_PRIVATE_URLS`, `ALLOW_PRIVATE_MAIL_HOSTS`, `PINCHY_USAGE_POLL_INTERVAL_MS`, `AUDIT_VERIFY_INTERVAL_MS`, and the three Telegram conflict switches `TELEGRAM_CONFLICT_AUTO_RESTART`, `TELEGRAM_CONFLICT_AUTO_DISABLE` and `TELEGRAM_CONFLICT_RECENT_WINDOW_MS`. The new `docker-compose.yml` passes all nine through. The upgrade commands above fetch it, and `docker compose up -d` recreates the container with your `.env` values. Every one of them is listed in [Environment variables](/reference/environment-variables/#behaviour-switches).
+
+**Check your `.env` before you upgrade.** Any of these lines you set once and forgot takes effect now:
+
+- `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1`: a custom (OpenAI-compatible) provider saved on a private address shows **Not in use** afterwards, and agents that use it get errors until you point it elsewhere. Until now, admins could save such addresses despite the setting.
+- `ALLOW_PRIVATE_URLS=1` or `ALLOW_PRIVATE_MAIL_HOSTS=1`: Odoo and mail connections can now reach your private network. Remove the line if that is not what you want.
+- `TELEGRAM_CONFLICT_AUTO_DISABLE=false`: if you set it to handle conflicts yourself, the watchdog may still have disabled a newly connected bot. Reconnect it from the agent's Telegram settings.
+
+If you added any of them to the `environment:` list of a `docker-compose.override.yml` as a workaround, you can keep it. The value there wins over `.env`.
+
 #### One file the database refuses no longer stops a reindex
 
 Some PDFs and workbooks carry a NUL character in their text or in a sheet name. PostgreSQL can't store that character, so it refused the file's rows, and the whole reindex stopped with an error starting `Failed query: insert into "kb_chunks"`. The database log said `invalid byte sequence for encoding "UTF8": 0x00`. The next run then stopped at the same file again, so documents after it never got indexed. We now remove NUL from what we read and turn the other invisible control characters into spaces before storing it. Tabs and line breaks stay. If the database still refuses a file's rows, that file counts as `failed` in the reindex report and the server log names it. If an earlier version of it was indexed, that version stays searchable. The run goes on with the next file, and the file is tried again on the next run. Nothing to configure. If a reindex stopped this way, run **Reindex now** after the upgrade.

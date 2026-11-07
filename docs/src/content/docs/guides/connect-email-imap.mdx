@@ -178,11 +178,13 @@ The message itself is fine, and `email_list` and `email_search` still show its s
 
 The connection test reports exactly why an attempt failed — refused, timed out, TLS error, wrong password. That's what makes it useful for fixing a mailbox, and it's also what would make it useful for mapping the network Pinchy runs in. So we only probe hosts that resolve to a public address.
 
-If your mail server genuinely lives on your own network — an on-premise Exchange or Dovecot box on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale address (`100.x`), an IPv6 unique-local address, or any other of the [private ranges](/reference/network-address-checks/#private-ranges) — set the environment variable on the Pinchy container and restart it:
+If your mail server genuinely lives on your own network — an on-premise Exchange or Dovecot box on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale address (`100.x`), an IPv6 unique-local address, or any other of the [private ranges](/reference/network-address-checks/#private-ranges) — add this line to your `.env`:
 
 ```bash
 ALLOW_PRIVATE_MAIL_HOSTS=1
 ```
+
+Then run `docker compose up -d` so the Pinchy container picks it up.
 
 Loopback, link-local, the cloud metadata endpoints and the reserved ranges stay blocked either way — `127.0.0.1`, `::1`, `0.0.0.0/8`, `169.254.169.254`, the documentation ranges, multicast and the rest of the [always-refused list](/reference/network-address-checks/#always-refused). No mail server lives there, so there's nothing to trade off.
 
