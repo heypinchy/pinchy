@@ -3,6 +3,7 @@
 // (provisioned by global-setup.ts, emptied between tests by the integration reset).
 
 import { describe, it, expect } from "vitest";
+import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { users, agents, chatSessionErrors, auditLog } from "@/db/schema";
@@ -86,6 +87,54 @@ describe("chat session errors persistence", () => {
     await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: new Date() });
 
     expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
+  });
+
+  it("clears an error recorded in the same millisecond as the bound", async () => {
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const input = { ...base(user, agent), clientMessageId: "m1" };
+    const recorded = await recordChatSessionError(input);
+
+    // `created_at` is the database's `now()`, which keeps microseconds; the
+    // bound is a JS Date, which has only milliseconds. An error and a success
+    // in the same millisecond read `.269812 <= .269000` — false — so the
+    // banner survived the turn that should have cleared it. Pinned here
+    // instead of left to how fast the runner is.
+    await db.execute(
+      sql`update chat_session_errors set created_at = '2026-11-06 09:15:30.269812' where id = ${recorded.id}`
+    );
+
+    await supersedeChatSessionErrors({
+      sessionKey: input.sessionKey,
+      before: new Date("2026-11-06T09:15:30.269Z"),
+    });
+
+    const [row] = await db
+      .select({ supersededAt: chatSessionErrors.supersededAt })
+      .from(chatSessionErrors)
+      .where(eq(chatSessionErrors.id, recorded.id));
+    expect(row.supersededAt).not.toBeNull();
+  });
+
+  it("does NOT clear an error recorded in the millisecond after the bound", async () => {
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const input = { ...base(user, agent), clientMessageId: "m1" };
+    const recorded = await recordChatSessionError(input);
+    await db.execute(
+      sql`update chat_session_errors set created_at = '2026-11-06 09:15:30.270000' where id = ${recorded.id}`
+    );
+
+    await supersedeChatSessionErrors({
+      sessionKey: input.sessionKey,
+      before: new Date("2026-11-06T09:15:30.269Z"),
+    });
+
+    const [row] = await db
+      .select({ supersededAt: chatSessionErrors.supersededAt })
+      .from(chatSessionErrors)
+      .where(eq(chatSessionErrors.id, recorded.id));
+    expect(row.supersededAt).toBeNull();
   });
 
   it("does NOT clear an error recorded after the successful turn's bound", async () => {

@@ -16,7 +16,7 @@
  * (`agent:{agentId}:direct:{userId}`) — never a prefix — so errors can't leak
  * across sessions or users.
  */
-import { and, desc, eq, gte, inArray, isNull, like, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, like, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { chatSessionErrors, auditLog } from "@/db/schema";
@@ -220,6 +220,11 @@ export async function resolveRetryGate({
  * `before` is app time compared against `created_at`, which the database fills
  * with `now()` — the same convention as `agentRanToolSince`, and sound on the
  * UTC session the Pinchy stack runs its database with.
+ *
+ * The comparison is at millisecond resolution because that is all `before`
+ * has: `created_at` keeps microseconds, a JS Date does not. Compared raw, an
+ * error and a success in the same millisecond read `.269812 <= .269000` —
+ * false — and the banner survives the turn that went through.
  */
 export async function supersedeChatSessionErrors({
   sessionKey,
@@ -234,7 +239,7 @@ export async function supersedeChatSessionErrors({
     .where(
       and(
         eq(chatSessionErrors.sessionKey, sessionKey),
-        lte(chatSessionErrors.createdAt, before),
+        sql`date_trunc('milliseconds', ${chatSessionErrors.createdAt}) <= ${sql.param(before, chatSessionErrors.createdAt)}`,
         isNull(chatSessionErrors.supersededAt)
       )
     );
