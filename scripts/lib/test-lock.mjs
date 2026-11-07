@@ -48,6 +48,30 @@ export const MAX_LOCK_AGE_MS = 20 * 60 * 1000;
  */
 export const MAX_WAIT_MS = 20 * 60 * 1000;
 
+/**
+ * How long a waiter sleeps between two looks at the lock.
+ *
+ * It lives here rather than next to the loop that uses it because it is a
+ * timing contract two other places have to reason about: the wrapper's wait
+ * loop, and the probe in test-lock.test.mjs that has to outlast a poll to
+ * observe a waiter at all. A copy of the number in either of those is a number
+ * that drifts silently — the probe would simply stop testing contention.
+ */
+export const POLL_MS = 2_000;
+
+/**
+ * The name of the owner file inside the lock directory.
+ *
+ * Here for the same reason POLL_MS is: with-test-lock.mjs builds the lock path
+ * out of it and the probes in test-lock.test.mjs seed that same path directly,
+ * so a copy in either is a copy that drifts — and this one already had, with
+ * two seed sites carrying a literal "owner" while the constant that exists to
+ * prevent exactly that stayed correct. Rename the file with a copy still in the
+ * tree and those probes seed a path the wrapper never reads: the lock reads as
+ * free, and every serialization assertion passes by doing nothing.
+ */
+export const OWNER_FILE = "owner";
+
 /** Tab-separated: a label may contain spaces, the other two fields cannot. */
 export function formatLockRecord({ pid, startedAtMs, label }) {
   return `${pid}\t${startedAtMs}\t${label ?? ""}\n`;
