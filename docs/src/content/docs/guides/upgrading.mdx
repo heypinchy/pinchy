@@ -203,6 +203,14 @@ sed -i 's/PINCHY_VERSION=v0.10.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
+#### `PINCHY_KB_OCR=off` in `.env` now takes effect
+
+On v0.10.0, `PINCHY_KB_OCR=off` in your `.env` was ignored. The v0.10.0 upgrade notes told you to set it there to keep scanned pages away from your vision model. But that release's `docker-compose.yml` never passed it to the Pinchy container, so OCR stayed on: whenever a vision model was set up, indexing sent scanned pages to it. If you set it, check your provider's usage for vision requests since you upgraded.
+
+Five more switches the docs tell you to set in `.env` had the same gap and were ignored as well: `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS`, `ALLOW_PRIVATE_URLS`, `ALLOW_PRIVATE_MAIL_HOSTS`, `PINCHY_USAGE_POLL_INTERVAL_MS` and `AUDIT_VERIFY_INTERVAL_MS`. The new `docker-compose.yml` passes all six through. The upgrade commands above fetch it, and `docker compose up -d` recreates the container with your `.env` values. Every one of them is listed in [Environment variables](/reference/environment-variables/#behaviour-switches).
+
+If you added any of them to the `environment:` list of a `docker-compose.override.yml` as a workaround, you can keep it. The value there wins over `.env`.
+
 ## Upgrading from v0.9.1 to v0.10.0
 
 ### Breaking changes
