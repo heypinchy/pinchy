@@ -80,6 +80,7 @@ import type { ChunkLocator } from "./locator";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
+import { isContentRejection, toStorableLocator, toStorableText } from "./stored-text";
 import type { IngestPage, IngestResult } from "./types";
 import {
   copyVerifiedSource,
@@ -699,6 +700,29 @@ async function extractDocument(
   resolveArtifact: ResolveArtifact,
   contentHash: string
 ): Promise<ExtractedDocument> {
+  const read = await readDocument(absPath, copyPath, deps, resolveArtifact, contentHash);
+  // The one place every reader's output passes through on its way to the
+  // database (#1366). A NUL in a text layer or a sheet name is refused by
+  // Postgres, and the other control characters are noise no search matches.
+  // A chunk that held nothing else is not written at all: it would be a row
+  // whose text says nothing, and an embedding of the empty string.
+  const chunks = read.chunks
+    .map((chunk) => ({
+      text: toStorableText(chunk.text),
+      locator: toStorableLocator(chunk.locator),
+    }))
+    .filter((chunk) => chunk.text.trim() !== "");
+  return { ...read, chunks, text: toStorableText(read.text) };
+}
+
+/** The dispatch described above, as the readers return it — before it is made storable. */
+async function readDocument(
+  absPath: string,
+  copyPath: string,
+  deps: IngestDeps,
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
+): Promise<ExtractedDocument> {
   if (isOfficeFile(absPath)) {
     return extractOfficeDocument(absPath, copyPath, deps, resolveArtifact, contentHash);
   }
@@ -818,26 +842,31 @@ async function extractOfficeDocument(
 }
 
 /**
- * Embeds every chunk and inserts the resulting kb_chunks rows for
- * `documentId`. Returns the number of chunks written — zero means the
- * document is indexed but unsearchable (e.g. an image-only scan whose text
- * layer is empty, or a workbook whose every sheet is hidden), which callers
- * must report as such rather than as a successful index.
+ * Embeds every chunk, then writes the document row (`writeDocument`, which
+ * returns its id) and the resulting kb_chunks rows in ONE transaction. Returns
+ * the number of chunks written — zero means the document is indexed but
+ * unsearchable (e.g. an image-only scan whose text layer is empty, or a
+ * workbook whose every sheet is hidden), which callers must report as such
+ * rather than as a successful index.
+ *
+ * Embedded first, written together: an embedder that goes down halfway, or a
+ * database that refuses the rows, leaves the stored document — its record and
+ * its chunks — exactly as it was, and a new document without a row at all.
+ *
+ * A refusal of THIS file's values (`isContentRejection`) is the file's failure,
+ * not the run's (#1366): it is counted `failed` and the run goes on, exactly
+ * like a file that cannot be read. Anything else the database says — a lost
+ * connection, a shutdown — still escapes, because it would fail every file
+ * after it the same way.
  */
 async function writeChunks(
-  documentId: string,
+  writeDocument: (tx: Transaction) => Promise<string>,
   orgId: string,
   sourcePath: string,
   chunks: LocatedChunk[],
   deps: IngestDeps,
-  onChunkProgress?: ChunkProgressCallback,
-  rewrite?: ChunkRewrite
+  onChunkProgress?: ChunkProgressCallback
 ): Promise<number> {
-  if (chunks.length === 0) {
-    if (rewrite) await db.transaction((tx) => applyRewrite(tx, documentId, rewrite));
-    return 0;
-  }
-
   const vectors: number[][] = [];
   for (let i = 0; i < chunks.length; i += EMBED_PROGRESS_BATCH) {
     const batch = chunks.slice(i, i + EMBED_PROGRESS_BATCH);
@@ -848,27 +877,35 @@ async function writeChunks(
     if (vectors.length < chunks.length) await onChunkProgress?.(vectors.length, chunks.length);
   }
 
-  // Embedded first, written in one transaction: an embedder that goes down
-  // halfway leaves the stored chunks — and the record that says what they
-  // are — exactly as they were.
-  const rows = chunks.map((chunk, i) => ({
-    documentId,
-    orgId,
-    sourcePath,
-    chunkText: chunk.text,
-    // Decided by `extractDocument`, per format, against the closed union in
-    // locator.ts (#933): a page for a PDF, a sheet + row range for a
-    // spreadsheet. This function no longer knows which, which is the point —
-    // adding the heading and slide producers (#938) touches the dispatch and
-    // not the write.
-    locator: chunk.locator,
-    lang: detectLang(chunk.text),
-    embedding: vectors[i],
-  }));
-  await db.transaction(async (tx) => {
-    if (rewrite) await applyRewrite(tx, documentId, rewrite);
-    await tx.insert(kbChunks).values(rows);
-  });
+  try {
+    await db.transaction(async (tx) => {
+      const documentId = await writeDocument(tx);
+      if (chunks.length === 0) return;
+      await tx.insert(kbChunks).values(
+        chunks.map((chunk, i) => ({
+          documentId,
+          orgId,
+          sourcePath,
+          chunkText: chunk.text,
+          // Decided by `extractDocument`, per format, against the closed union
+          // in locator.ts (#933): a page for a PDF, a sheet + row range for a
+          // spreadsheet. This function does not know which, which is the point
+          // — adding the heading and slide producers (#938) touched the
+          // dispatch and not the write.
+          locator: chunk.locator,
+          lang: detectLang(chunk.text),
+          embedding: vectors[i],
+        }))
+      );
+    });
+  } catch (err) {
+    const rejection = isContentRejection(err);
+    // The database's own error, not the query builder's wrapper around it: the
+    // wrapper's message quotes every parameter — the document's text and its
+    // vectors — and would push the reason out of the bounded log line.
+    if (rejection) throw new FileIngestError(sourcePath, rejection);
+    throw err;
+  }
 
   return chunks.length;
 }
@@ -891,9 +928,10 @@ async function applyRewrite(tx: Transaction, documentId: string, rewrite: ChunkR
 
 /**
  * A file-level ingest failure: THIS file could not be read or parsed (corrupt
- * PDF, permission denied, vanished between the walk and the read). Distinct
- * from the errors ingestDirectory deliberately lets escape — embedding and DB
- * failures are systemic, and reporting an Ollama outage as "193 corrupt files"
+ * PDF, permission denied, vanished between the walk and the read), or the
+ * database refused the values read from it (`writeChunks`). Distinct from the
+ * errors ingestDirectory deliberately lets escape — embedding and database
+ * outages are systemic, and reporting an Ollama outage as "193 corrupt files"
  * would bury the one fact an operator needs.
  */
 class FileIngestError extends Error {
@@ -980,7 +1018,9 @@ function couldReadDifferently(recorded: string, deps: IngestDeps): boolean {
  * Ingests one file: hash it, decide skip/recover/replace/insert, and write its
  * chunks. Reading and PDF extraction are wrapped in fileStep() so a failure
  * THIS file owns surfaces as a FileIngestError; embedding and DB calls are
- * deliberately left bare so a systemic outage aborts the whole run.
+ * deliberately left bare so a systemic outage aborts the whole run — save the
+ * one database answer that is about this file's values, which `writeChunks`
+ * turns into a FileIngestError of its own (#1366).
  */
 async function ingestFile(
   orgId: string,
@@ -1071,9 +1111,10 @@ async function ingestFile(
     if (!retryOwed && storedChunks > 0) return "skipped";
 
     // Robustness case: a document row survives with zero chunks and no
-    // empty read on record (a prior ingest crashed after the document insert
-    // but before chunk writes, an operator hand-deleted kb_chunks rows, or
-    // the row predates the record), or its last read is owed a retry — which
+    // empty read on record (written by a version that inserted the document
+    // before its chunks and crashed in between, an operator hand-deleted
+    // kb_chunks rows, or the row predates the record), or its last read is
+    // owed a retry — which
     // a read from an earlier artifact format always is. The
     // content hash still matches the file on disk, so a naive "hash matches ->
     // skip" would leave this document unsearchable while silently reporting
@@ -1099,18 +1140,21 @@ async function ingestFile(
         extracted.incomplete &&
         extracted.chunks.length < storedChunks;
       const record = extractionRecord(absPath, extracted, deps, previousIncompleteReads);
+      const rewrite: ChunkRewrite = {
+        // A document that keeps its chunks is not an empty one.
+        record: keepStored ? { ...record, emptyExtractionBy: null } : record,
+        replaceStored: storedChunks > 0 && !keepStored,
+      };
       const written = await writeChunks(
-        existing.id,
+        async (tx) => {
+          await applyRewrite(tx, existing.id, rewrite);
+          return existing.id;
+        },
         orgId,
         absPath,
         keepStored ? [] : extracted.chunks,
         deps,
-        onChunkProgress,
-        {
-          // A document that keeps its chunks is not an empty one.
-          record: keepStored ? { ...record, emptyExtractionBy: null } : record,
-          replaceStored: storedChunks > 0 && !keepStored,
-        }
+        onChunkProgress
       );
       if (keepStored) return "skipped";
       return written > 0 ? "indexed" : "unsearchable";
@@ -1123,34 +1167,33 @@ async function ingestFile(
   // turn that same failure into silent data loss on a success response.
   const { extracted, contentHash: readHash, mtime } = reread ?? (await extract());
 
-  if (existing) {
-    // Content changed since the last ingest: replace wholesale. Deleting
-    // the document row cascades to its (now stale) chunks via the
-    // kb_chunks.document_id FK.
-    await db.delete(kbDocuments).where(eq(kbDocuments.id, existing.id));
-  }
-
-  const [doc] = await db
-    .insert(kbDocuments)
-    .values({
-      orgId,
-      contentHash: readHash,
-      sourcePath: absPath,
-      status: statusForPath(absPath),
-      pageCount: extracted.pageCount,
-      mtime,
-      lang: detectLang(extracted.text),
-      // Written with the row rather than after the chunks: an empty read is
-      // only ever recorded when there are NO chunks to write, so there is no
-      // window in which a crash could leave it claiming a read that did not
-      // finish. A crash before the chunks leaves a row the zero-chunk branch
-      // rebuilds.
-      ...extractionRecord(absPath, extracted, deps, 0),
-    })
-    .returning();
-
   const written = await writeChunks(
-    doc.id,
+    async (tx) => {
+      if (existing) {
+        // Content changed since the last ingest: replace wholesale. Deleting
+        // the document row cascades to its (now stale) chunks via the
+        // kb_chunks.document_id FK — inside the transaction that writes the
+        // new version, so a refused write keeps the last good one searchable.
+        await tx.delete(kbDocuments).where(eq(kbDocuments.id, existing.id));
+      }
+      const [doc] = await tx
+        .insert(kbDocuments)
+        .values({
+          orgId,
+          contentHash: readHash,
+          sourcePath: absPath,
+          status: statusForPath(absPath),
+          pageCount: extracted.pageCount,
+          mtime,
+          lang: detectLang(extracted.text),
+          // Written with the row and its chunks, in one transaction: an empty
+          // read is only ever recorded when there are NO chunks to write, and
+          // the row never exists without the chunks it was read with.
+          ...extractionRecord(absPath, extracted, deps, 0),
+        })
+        .returning({ id: kbDocuments.id });
+      return doc.id;
+    },
     orgId,
     absPath,
     extracted.chunks,
@@ -1381,7 +1424,8 @@ export async function ingestPaths(
       tally[outcome]++;
       if (isArchivedPath(absPath)) archived++;
     } catch (err) {
-      // One unreadable or corrupt file is a normal property of a real corpus,
+      // One unreadable or corrupt file — or one whose values the database
+      // refuses — is a normal property of a real corpus,
       // so it costs itself and nothing else: without this boundary a single
       // bad PDF aborts the reindex for every other file, and under a retrying
       // job runner it would fail identically forever. Systemic errors
