@@ -16,6 +16,10 @@ describe("toStorableText", () => {
     expect(toStorableText("a\tb\nc\r\nd")).toBe("a\tb\nc\r\nd");
   });
 
+  it("replaces a lone surrogate, which jsonb refuses as an escape", () => {
+    expect(toStorableText("Scope \ud800 end \udc00")).toBe("Scope \ufffd end \ufffd");
+  });
+
   it("returns ordinary text unchanged", () => {
     const text = "Prüfbericht – Größe 12 µm, 100 % geprüft 🙂";
     expect(toStorableText(text)).toBe(text);
@@ -35,6 +39,16 @@ describe("toStorableLocator", () => {
     ).toEqual({ kind: "heading", headings: ["Intro", "Scope x"] });
   });
 
+  it("drops a heading level that held nothing but control characters", () => {
+    expect(
+      toStorableLocator({ kind: "heading", headings: ["Quality", "\u0000", "\u0001 "] })
+    ).toEqual({ kind: "heading", headings: ["Quality"] });
+  });
+
+  it("says nothing rather than an empty heading path", () => {
+    expect(toStorableLocator({ kind: "heading", headings: ["\u0000"] })).toBeNull();
+  });
+
   it("leaves page, slide and missing locators alone", () => {
     expect(toStorableLocator({ kind: "page", page: 3 })).toEqual({ kind: "page", page: 3 });
     expect(toStorableLocator({ kind: "slide", slide: 2 })).toEqual({ kind: "slide", slide: 2 });
@@ -51,14 +65,14 @@ describe("isContentRejection", () => {
     expect(isContentRejection(wrapped)).toBe(inner);
   });
 
-  it.each(["22000", "22P05", "23505", "54000"])(
+  it.each(["22000", "22P05", "22P02", "54000"])(
     "treats SQLSTATE %s as a refusal of this content",
     (code) => {
       expect(isContentRejection(pgError(code))).not.toBeNull();
     }
   );
 
-  it.each(["08006", "53300", "57P01", "40001", "XX000"])(
+  it.each(["08006", "53300", "57P01", "40001", "XX000", "23502", "23505"])(
     "treats SQLSTATE %s as a problem of the database, not of the file",
     (code) => {
       expect(isContentRejection(pgError(code))).toBeNull();

@@ -1201,6 +1201,27 @@ it("keeps the last indexed version when the database refuses a changed file's ne
   expect(await chunksFor(docBefore.id)).toHaveLength(chunksBefore.length);
 });
 
+// The other half: an error that says nothing about the file must still stop
+// the run. Counted per file instead, a database restart mid-reindex would read
+// as one "failed" document for every file still to come, and the job as done.
+it("stops the run when the database fails for a reason that is not the file", async () => {
+  writeFileSync(join(tmpRoot, "a-first.pdf"), "first-bytes");
+  writeFileSync(join(tmpRoot, "b-second.pdf"), "second-bytes");
+  const { deps, embed } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  const shutdown = Object.assign(new Error("terminating connection due to administrator command"), {
+    code: "57P01",
+  });
+  const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(shutdown);
+  try {
+    await expect(ingestDirectory(ORG_ID, tmpRoot, deps)).rejects.toBe(shutdown);
+  } finally {
+    transaction.mockRestore();
+  }
+
+  expect(embed).toHaveBeenCalledTimes(1);
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toEqual([]);
+});
+
 it("keeps a chunkless document's record when the database refuses its rebuilt rows", async () => {
   writeFileSync(join(tmpRoot, "policy.pdf"), "bytes");
   const { deps } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
@@ -1215,6 +1236,10 @@ it("keeps a chunkless document's record when the database refuses its rebuilt ro
   } finally {
     consoleError.mockRestore();
   }
+  // The record is rewritten only together with its rows, so a refusal leaves
+  // it exactly as it was.
+  const [docAfter] = await db.select().from(kbDocuments).where(eq(kbDocuments.id, doc.id));
+  expect(docAfter).toEqual(doc);
   // Still owed: the next run rebuilds it.
   expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
   expect(await chunksFor(doc.id)).not.toHaveLength(0);
@@ -1970,6 +1995,25 @@ it("indexes a Word document through its converted PDF, anchored on the heading p
   expect(chunks).not.toHaveLength(0);
   expect(chunks.every((chunk) => chunk.sourcePath === docPath)).toBe(true);
   for (const chunk of chunks) {
+    expect(chunk.locator).toEqual({ kind: "heading", headings: ["Quality management"] });
+  }
+});
+
+it("stores a Word heading that carried NUL without it (#1366)", async () => {
+  // The Office branch reads through its own dispatch; the cleaning has to
+  // cover it as well as the PDF and spreadsheet readers.
+  writeFileSync(join(tmpRoot, "Handbuch.docx"), "fake-docx-bytes");
+  const pages: IngestPage[] = [
+    {
+      ...WORD_PAGES[0],
+      headings: [{ charStart: 0, headings: ["Quality\u0000 management"] }],
+    },
+  ];
+  const { deps } = officeDeps(convertedTo("/artifacts/ab/ef.pdf"), () => pages);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  for (const chunk of await chunksFor(doc.id)) {
     expect(chunk.locator).toEqual({ kind: "heading", headings: ["Quality management"] });
   }
 });
