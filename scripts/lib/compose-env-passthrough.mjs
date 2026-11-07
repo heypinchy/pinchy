@@ -19,9 +19,11 @@
  * expands, and a variable Compose never names is invisible from there. This
  * guard starts from the other end, from what the app reads:
  *
- *   1. every literal `process.env.NAME` / `process.env["NAME"]` in the code
- *      the pinchy image runs: `packages/web/src` production code plus the
- *      custom server (`server.ts`, `server-preload.cjs`) that starts it,
+ *   1. every literal `process.env.NAME` / `process.env["NAME"]` in the app
+ *      the pinchy image serves: `packages/web/src` production code plus the
+ *      custom server (`server.ts`, `server-preload.cjs`) that starts it. The
+ *      entrypoint's `packages/web/scripts/*.mjs` and plugin modules `src`
+ *      imports are not read; none of their variables is documented today,
  *   2. narrowed to the names any docs page mentions, since a name the docs
  *      present is one an operator will set,
  *   3. must appear in the `pinchy` service's `environment:` list.
