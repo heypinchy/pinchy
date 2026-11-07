@@ -151,6 +151,12 @@ test("the corpora are real, so the check below cannot pass vacuously", () => {
     `expected the web app's env reads, got ${reads.size}`,
   );
   assert.ok(reads.has("DATABASE_URL"), "env-read scan missed DATABASE_URL");
+  // Read only by packages/web/server.ts, the custom server the image starts.
+  // A scan of src/ alone misses it, and with it every switch the server reads.
+  assert.ok(
+    reads.has("TELEGRAM_CONFLICT_AUTO_DISABLE"),
+    "env-read scan missed server.ts",
+  );
   assert.ok(
     forwarded().has("DATABASE_URL"),
     "pinchy environment did not parse",
