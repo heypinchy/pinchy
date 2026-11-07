@@ -380,6 +380,14 @@ Then find out what each account did. Its sign-up left no trace — registering w
 
 The API-key list in **Settings → API Keys** also now flags keys created by an admin who has since been demoted, not just one who was banned or deleted — consider rotating those.
 
+#### Security: file access outside `/data` is removed from older agents
+
+Since v0.9.0, an agent's **Allowed Directories** (under **Knowledge Base** in its permissions) can only be directories under `/data`, and only admins can change them. Before that, the settings API accepted any path, and a member could point their own personal agent at a folder outside `/data` — for example the directory that holds every agent's uploads, workbench files and memory. v0.9.0 refused new paths like that but left existing ones in place, and they kept working.
+
+This release no longer honours them anywhere: file tools, knowledge-base search, reindexing and file previews only use **Allowed Directories** under `/data`. Each agent's own uploads, workbench and memory are unaffected. On its first start, Pinchy also removes those paths from the agents that still have them, and writes one `agent.updated` row per agent to the [audit trail](/concepts/audit-trail/) with the actor `allowed-paths-cleanup`, `reason: "allowed_paths_outside_data_root"`, and how many paths the agent had before and after. The paths themselves aren't recorded, because a path can contain a person's name and an audit row can't be erased. The agent's other folders and settings stay as they were. A fresh install, or one where nobody set such a path, gets no rows.
+
+To see whether any agent lost access, filter the audit trail by `agent.updated` and look for entries whose actor is **Folder access cleanup**; their detail says `reason: "allowed_paths_outside_data_root"`. If a shared agent needs one of those folders, put the files under `/data` and grant the folder in its **Permissions** tab, under **Knowledge Base → Allowed Directories**. Personal agents have no folder settings; to give people access to such files, grant the folder to a shared Knowledge Base agent instead.
+
 #### Memory is now its own permission — and most agents gain it on upgrade
 
 An agent's memory used to hang off the **Write files** permission. Nothing said so, no agent template granted that permission, and the New Agent form quietly ticked it for you — so whether an agent could remember anything depended on a checkbox about files, and any agent created outside that form, including your personal Smithers, had no memory at all.

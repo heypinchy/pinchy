@@ -22,6 +22,7 @@
  */
 
 import type { AgentPluginConfig } from "@/db/schema";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 
 export interface IndexSchedule {
   /** Whether Pinchy reindexes on its own. */
@@ -242,9 +243,12 @@ export interface ScheduledIndexCandidate {
   pluginConfig: AgentPluginConfig | null;
 }
 
-/** The folders an agent is granted — the same source the reindex route and the search route scope by. */
+/**
+ * The folders an agent is granted — the same source the reindex route and the
+ * search route scope by. Entries outside /data are not grants (#1272).
+ */
 export function grantedKnowledgePaths(pluginConfig: AgentPluginConfig | null): string[] {
-  return pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
+  return grantedDataPaths(pluginConfig);
 }
 
 /**

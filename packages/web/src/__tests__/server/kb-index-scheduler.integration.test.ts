@@ -44,6 +44,12 @@ vi.mock("@/lib/knowledge/kb-embedder", async (importOriginal) => ({
   kbEmbedderAvailable: () => mockKbEmbedderAvailable(),
 }));
 
+// The agents' folders are temp directories, which are not under /data, so the
+// real accessor would treat every grant here as a pre-lockdown leftover and the
+// sweep would find nothing to index (#1272). These cases are about the sweep,
+// so the boundary is moved to the temp dir rather than switched off.
+vi.mock("@/lib/agent-granted-paths", () => import("@/test-helpers/granted-paths-under-tmpdir"));
+
 let tmpRoot: string;
 
 beforeEach(async () => {
