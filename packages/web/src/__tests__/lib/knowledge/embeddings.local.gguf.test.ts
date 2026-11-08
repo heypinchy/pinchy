@@ -84,5 +84,23 @@ describe.skipIf(!process.env.KB_EMBED_GGUF_PATH)(
       expect(vectors).toHaveLength(pieces.length);
       for (const vec of vectors) expect(vec).toHaveLength(768);
     }, 120_000);
+
+    // The context takes this text whole, but its batch does not: decoded in
+    // several calls, the vector would reflect only the last batch, so the head
+    // of the text would be missing from its own embedding (#1380).
+    it("splits a text the context takes but the batch does not", async () => {
+      const cfg = {
+        baseUrl: "unused",
+        provider: "local" as const,
+        modelPath: process.env.KB_EMBED_GGUF_PATH as string,
+        expectedDim: 768,
+      };
+      const prose =
+        "The quarterly maintenance report lists every pump inspected this month. ".repeat(60);
+
+      await expect(embedTexts([prose], cfg)).resolves.toHaveLength(1);
+      const [pieces] = await fitTextsForEmbedding([prose], cfg);
+      expect(pieces.length).toBeGreaterThan(1);
+    }, 120_000);
   }
 );

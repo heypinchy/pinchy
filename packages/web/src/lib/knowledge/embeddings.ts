@@ -456,18 +456,33 @@ const CONTEXT_HEADROOM_TOKENS = 4;
  */
 const OLLAMA_MAX_INPUT_CHARS = 2048;
 
+/**
+ * node-llama-cpp's default batch size when it is not readable: the context is
+ * created without one, which the library resolves to min(contextSize, 512).
+ */
+const DEFAULT_BATCH_TOKENS = 512;
+
 /** The input budget of the loaded context, in the model's tokens. */
 function localTokenBudget(embedder: LocalEmbedder): number {
-  // node-llama-cpp exposes the context size only on the private context it
-  // wraps; the model's training context is the upper bound an "auto" context
-  // is sized against, and the honest fallback when that field moves.
-  const contextSize = (embedder.context as { _llamaContext?: { contextSize?: unknown } })
-    ._llamaContext?.contextSize;
-  const train = embedder.model.trainContextSize;
-  const candidates = [contextSize, train].filter(
-    (n): n is number => typeof n === "number" && Number.isFinite(n) && n > 0
+  // node-llama-cpp exposes the context and batch size only on the private
+  // context it wraps; the model's training context is the upper bound an
+  // "auto" context is sized against, and the honest fallback when that field
+  // moves.
+  //
+  // The batch is the binding limit, not the context: an input longer than the
+  // batch is decoded in several calls, and the pooled vector then reflects only
+  // the last one — the head of the text drops out of its own embedding with no
+  // error (measured on embeddinggemma: cosine 0.98 to the tail, 0.64 to the
+  // head, #1380).
+  const llamaContext = (
+    embedder.context as { _llamaContext?: { contextSize?: unknown; batchSize?: unknown } }
+  )._llamaContext;
+  const isSize = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
+  const batch = isSize(llamaContext?.batchSize) ? llamaContext.batchSize : DEFAULT_BATCH_TOKENS;
+  const candidates = [llamaContext?.contextSize, embedder.model.trainContextSize, batch].filter(
+    isSize
   );
-  const size = candidates.length > 0 ? Math.min(...candidates) : 512;
+  const size = Math.min(...candidates);
   return Math.max(1, size - CONTEXT_HEADROOM_TOKENS);
 }
 

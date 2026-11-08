@@ -555,6 +555,31 @@ describe("fitTextsForEmbedding (provider: local, node-llama-cpp mocked)", () => 
     expect(fitted[1].join("")).toBe(long);
   });
 
+  // node-llama-cpp decodes an input longer than the batch in several calls,
+  // and the pooled vector then reflects only the last batch: the head of the
+  // piece would silently drop out of its own embedding.
+  it("splits to the context's batch size when that is smaller than the context", async () => {
+    const model = {
+      trainContextSize: 2048,
+      tokenize: (text: string) => Array.from(text),
+      detokenize: (tokens: string[]) => tokens.join(""),
+      createEmbeddingContext,
+    };
+    loadModel.mockResolvedValue(model);
+    createEmbeddingContext.mockResolvedValue({
+      getEmbeddingFor,
+      _llamaContext: { contextSize: 2048, batchSize: 40 },
+    });
+
+    const [pieces] = await fitTextsForEmbedding(["q".repeat(200)], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/fit-batch.gguf",
+    });
+    expect(pieces.length).toBeGreaterThan(4);
+    for (const piece of pieces) expect(piece.length).toBeLessThan(40);
+  });
+
   it("falls back to the model's training context when the context size is not readable", async () => {
     const model = {
       trainContextSize: 32,
