@@ -198,6 +198,25 @@ describe("getKnowledgeFolderStatus", () => {
     expect(folders[0]).toMatchObject({ expected: 3, state: "has_errors" });
   });
 
+  // A run that succeeds can still skip a folder it found empty (an unmounted
+  // share below the grant) and keep its documents. The plan then holds nothing
+  // for that folder, so it can't say how many files are there, and the run
+  // didn't look at them: no "0 expected", no "indexed today".
+  it("claims no count or date from a run for a folder it kept without looking", async () => {
+    const agent = await makeAgent();
+    await seedDoc("/kb/a.pdf");
+    await seedDoc("/kb/finance/1.pdf");
+    await seedDoc("/kb/finance/2.pdf");
+    await seedJob(agent.id, ["/kb"], "succeeded", { plan: [{ folder: "/kb", files: 1 }] });
+
+    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+    const finance = folders[0].children.find((c) => c.name === "finance")!;
+
+    expect(finance).toMatchObject({ expected: null, indexed: 2, state: "searchable" });
+    expect(Date.parse(finance.lastIndexedAt!)).toBeGreaterThan(Date.now() - 30_000);
+    expect(folders[0]).toMatchObject({ expected: null, indexed: 3 });
+  });
+
   // A failed run may have read nothing; it must not date every folder today.
   it("dates a folder by the last run that succeeded, not by one that failed", async () => {
     const agent = await makeAgent();
