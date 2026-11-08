@@ -103,6 +103,22 @@ interface OllamaEmbedResponse {
 }
 
 /**
+ * The embedder cannot embed anything right now: the model does not load, the
+ * endpoint is unreachable or times out, or it answers with vectors of the wrong
+ * shape. One outage, not a property of the text it was handed — so ingest stops
+ * the run on it instead of counting every remaining file as failed (#1380).
+ *
+ * An input the embedder refuses ("Input is longer than the context size") is
+ * deliberately NOT one: that is the file's failure, and the run goes on.
+ */
+export class EmbedderUnavailableError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "EmbedderUnavailableError";
+  }
+}
+
+/**
  * Validate the shape of a batch of embedding vectors the same way
  * regardless of which backend produced them (Ollama HTTP or the in-process
  * node-llama-cpp path): right count, consistent width across the batch, and
@@ -115,7 +131,7 @@ function assertEmbeddingShape(
   sourceLabel: string
 ): number[][] {
   if (!Array.isArray(embeddings) || embeddings.length !== expectedCount) {
-    throw new Error(
+    throw new EmbedderUnavailableError(
       `${sourceLabel} returned a malformed response: missing or mismatched 'embeddings' ` +
         `(expected ${expectedCount})`
     );
@@ -126,13 +142,15 @@ function assertEmbeddingShape(
     (vec): vec is number[] => Array.isArray(vec) && vec.length === dim
   );
   if (!allVectors) {
-    throw new Error(`${sourceLabel} returned vectors with inconsistent dimensions`);
+    throw new EmbedderUnavailableError(
+      `${sourceLabel} returned vectors with inconsistent dimensions`
+    );
   }
 
   if (cfg.expectedDim != null && dim !== cfg.expectedDim) {
     const modelLabel =
       cfg.model ?? (cfg.provider === "local" ? "the configured local GGUF model" : DEFAULT_MODEL);
-    throw new Error(
+    throw new EmbedderUnavailableError(
       `${sourceLabel} returned ${dim}-dim vectors but expected ${cfg.expectedDim} ` +
         `(model "${modelLabel}" is not the configured embedding model, ` +
         `or its dimensions differ from the kb_chunks.embedding column width)`
@@ -176,14 +194,33 @@ type LlamaEmbeddingContext = {
   getEmbeddingFor(text: string): Promise<{ vector: ArrayLike<number> }>;
 };
 
-function localEmbeddingContexts(): Map<string, Promise<LlamaEmbeddingContext>> {
-  return processWideCache("__pinchyLocalEmbeddingContexts", () => new Map(), isMap);
+/** The loaded model's tokenizer — what `fitTextsForEmbedding` measures with. */
+type LlamaModelHandle = {
+  trainContextSize?: number;
+  tokenize(text: string, specialTokens?: boolean): readonly unknown[];
+  detokenize(tokens: readonly unknown[], specialTokens?: boolean): string;
+};
+
+/**
+ * The context together with the model it was created from. The context alone
+ * cannot say how long an input may be; the model's tokenizer can, and measuring
+ * with anything else is how #1380 happened.
+ */
+interface LocalEmbedder {
+  context: LlamaEmbeddingContext;
+  model: LlamaModelHandle;
+}
+
+function localEmbeddingContexts(): Map<string, Promise<LocalEmbedder>> {
+  // A new key, not the old one: a process that cached the old value shape
+  // under the old key must never hand it back here.
+  return processWideCache("__pinchyLocalEmbedders", () => new Map(), isMap);
 }
 
 function getLocalEmbeddingContext(
   modelPath: string,
   threads: number | undefined
-): Promise<LlamaEmbeddingContext> {
+): Promise<LocalEmbedder> {
   const contexts = localEmbeddingContexts();
   let contextPromise = contexts.get(modelPath);
   if (!contextPromise) {
@@ -193,11 +230,14 @@ function getLocalEmbeddingContext(
       // imports this module — including the fast unit-test suite and
       // Ollama-only routes that never use the "local" provider.
       const { getLlama } = await import("node-llama-cpp");
-      const llama = await getLlama();
-      const model = await llama.loadModel({ modelPath });
+      const llama = await getLlama().catch(unavailable);
+      const model = await llama.loadModel({ modelPath }).catch(unavailable);
       try {
         const ctx = await model.createEmbeddingContext(threads != null ? { threads } : {});
-        return ctx as unknown as LlamaEmbeddingContext;
+        return {
+          context: ctx as unknown as LlamaEmbeddingContext,
+          model: model as unknown as LlamaModelHandle,
+        };
       } catch (err) {
         // The ~300 MB model is loaded; without a context nobody holds it, and
         // a retry would load another one next to it. Fire-and-forget, so a
@@ -206,7 +246,7 @@ function getLocalEmbeddingContext(
         void Promise.resolve()
           .then(() => model.dispose())
           .catch(() => {});
-        throw err;
+        return unavailable(err);
       }
     })();
     contextPromise = loading;
@@ -225,6 +265,12 @@ function getLocalEmbeddingContext(
   return contextPromise;
 }
 
+/** Rethrows a model-load failure as the outage it is, keeping its message. */
+function unavailable(err: unknown): never {
+  const message = err instanceof Error ? err.message : String(err);
+  throw new EmbedderUnavailableError(message, { cause: err });
+}
+
 /**
  * Embed a batch of texts in-process via node-llama-cpp, loading (and
  * memoizing) a GGUF model from `cfg.modelPath`. Sequential, not batched:
@@ -237,7 +283,7 @@ async function embedTextsLocal(texts: string[], cfg: EmbeddingConfig): Promise<n
     );
   }
 
-  const ctx = await getLocalEmbeddingContext(cfg.modelPath, cfg.threads);
+  const { context: ctx } = await getLocalEmbeddingContext(cfg.modelPath, cfg.threads);
 
   const vectors: number[][] = [];
   for (const text of texts) {
@@ -280,7 +326,12 @@ async function embedBatchViaOllama(
 
     if (!response.ok) {
       const error = await response.text().catch(() => "unknown error");
-      throw new Error(`Ollama embeddings API error (${response.status}): ${error}`);
+      const message = `Ollama embeddings API error (${response.status}): ${error}`;
+      // A 4xx is Ollama refusing THIS input; a 5xx (or a 429) is Ollama.
+      if (response.status >= 500 || response.status === 429) {
+        throw new EmbedderUnavailableError(message);
+      }
+      throw new Error(message);
     }
 
     const data = (await response.json()) as OllamaEmbedResponse;
@@ -291,7 +342,14 @@ async function embedBatchViaOllama(
     // timeout, distinct from a genuine network failure ("fetch failed") — which
     // stays as-is so a real connection error still reads as one.
     if (controller.signal.aborted) {
-      throw new Error(`Ollama embeddings request timed out after ${timeoutMs}ms`);
+      throw new EmbedderUnavailableError(
+        `Ollama embeddings request timed out after ${timeoutMs}ms`
+      );
+    }
+    // fetch() rejects with a TypeError ("fetch failed") when it cannot reach
+    // the endpoint at all — a connection refused, a DNS failure.
+    if (err instanceof TypeError) {
+      throw new EmbedderUnavailableError(err.message, { cause: err });
     }
     throw err;
   } finally {
@@ -339,4 +397,114 @@ export async function embedTexts(texts: string[], cfg: EmbeddingConfig): Promise
   // the concatenation once so mixed-width vectors fail here, not opaquely at the
   // kb_chunks embedding insert.
   return assertEmbeddingShape(all, texts.length, cfg, "Ollama embeddings API");
+}
+
+/** Counts and cuts text in the embedding model's own tokens. */
+export interface EmbeddingTokenizer {
+  tokenize(text: string): readonly unknown[];
+  detokenize(tokens: readonly unknown[]): string;
+}
+
+/**
+ * Cuts `text` into pieces of at most `maxTokens` tokens each, at token
+ * boundaries, measured with the tokenizer that will embed them. A text that
+ * fits comes back alone and unchanged.
+ *
+ * Each piece is re-measured after it is decoded, because decoding a window and
+ * tokenizing it again does not always give the same count (a multi-byte
+ * character split across the seam, a merge that only forms once the text is
+ * whole). The piece is what gets embedded, so the piece is what must fit; a
+ * window that does not is shrunk until it does.
+ */
+export function splitToTokenBudget(
+  text: string,
+  tokenizer: EmbeddingTokenizer,
+  maxTokens: number
+): string[] {
+  const budget = Math.max(1, Math.floor(maxTokens));
+  const tokens = tokenizer.tokenize(text);
+  if (tokens.length <= budget) return [text];
+
+  const pieces: string[] = [];
+  let start = 0;
+  while (start < tokens.length) {
+    let end = Math.min(start + budget, tokens.length);
+    let piece = tokenizer.detokenize(tokens.slice(start, end));
+    while (end - start > 1 && tokenizer.tokenize(piece).length > budget) {
+      end = start + Math.max(1, Math.floor((end - start) * 0.9));
+      piece = tokenizer.detokenize(tokens.slice(start, end));
+    }
+    if (piece.trim() !== "") pieces.push(piece);
+    start = end;
+  }
+  return pieces;
+}
+
+/**
+ * Tokens kept free under the context size. node-llama-cpp compares an input's
+ * length with the context BEFORE it adds the BOS/EOS tokens the model also
+ * needs room for, so an input exactly at the limit passes the check and then
+ * does not fit.
+ */
+const CONTEXT_HEADROOM_TOKENS = 4;
+
+/**
+ * Characters per piece on the Ollama path, which has no tokenizer to measure
+ * with. No token is shorter than one character, so 2048 characters stay within
+ * Ollama's default 2048-token context whatever the text — where Ollama would
+ * otherwise truncate a longer input silently and embed only its beginning.
+ */
+const OLLAMA_MAX_INPUT_CHARS = 2048;
+
+/** The input budget of the loaded context, in the model's tokens. */
+function localTokenBudget(embedder: LocalEmbedder): number {
+  // node-llama-cpp exposes the context size only on the private context it
+  // wraps; the model's training context is the upper bound an "auto" context
+  // is sized against, and the honest fallback when that field moves.
+  const contextSize = (embedder.context as { _llamaContext?: { contextSize?: unknown } })
+    ._llamaContext?.contextSize;
+  const train = embedder.model.trainContextSize;
+  const candidates = [contextSize, train].filter(
+    (n): n is number => typeof n === "number" && Number.isFinite(n) && n > 0
+  );
+  const size = candidates.length > 0 ? Math.min(...candidates) : 512;
+  return Math.max(1, size - CONTEXT_HEADROOM_TOKENS);
+}
+
+/**
+ * Cuts every text the embedder could not take whole into pieces it can (#1380).
+ * Returns one list of pieces per input, in order: a text that fits is a list of
+ * one, itself. `embedTexts` stays one vector per input; the caller decides what
+ * a piece is — ingest stores each as a chunk of its own, under the original
+ * chunk's locator.
+ *
+ * The chunker sizes chunks by a 4-characters-per-token estimate, and keeps a
+ * single over-long line whole. A table of part numbers tokenizes far denser
+ * than that, so a chunk the estimate calls 500 tokens can be several thousand
+ * — and the local context refuses it outright.
+ */
+export async function fitTextsForEmbedding(
+  texts: string[],
+  cfg: EmbeddingConfig
+): Promise<string[][]> {
+  if (cfg.provider === "local") {
+    if (!cfg.modelPath) {
+      throw new Error(
+        `fitTextsForEmbedding: provider "local" requires cfg.modelPath (filesystem path to a GGUF model file)`
+      );
+    }
+    const embedder = await getLocalEmbeddingContext(cfg.modelPath, cfg.threads);
+    const budget = localTokenBudget(embedder);
+    const tokenizer: EmbeddingTokenizer = {
+      tokenize: (text) => embedder.model.tokenize(text, false),
+      detokenize: (tokens) => embedder.model.detokenize(tokens, false),
+    };
+    return texts.map((text) => splitToTokenBudget(text, tokenizer, budget));
+  }
+
+  const byChar: EmbeddingTokenizer = {
+    tokenize: (text) => Array.from(text),
+    detokenize: (tokens) => (tokens as string[]).join(""),
+  };
+  return texts.map((text) => splitToTokenBudget(text, byChar, OLLAMA_MAX_INPUT_CHARS));
 }

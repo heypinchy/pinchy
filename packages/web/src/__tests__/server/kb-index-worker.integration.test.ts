@@ -25,6 +25,7 @@ import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { agents, auditLog, kbChunks, kbDocuments, kbIndexJobs } from "@/db/schema";
+import { EmbedderUnavailableError } from "@/lib/knowledge/embeddings";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { enqueueIndexJob, getLatestIndexJobForAgent } from "@/lib/knowledge/index-jobs";
 import {
@@ -416,7 +417,7 @@ describe("kb index worker", () => {
 
     const deps = fakeDeps();
     deps.embed = async () => {
-      throw new Error("connect ECONNREFUSED ollama.local:11434");
+      throw new EmbedderUnavailableError("connect ECONNREFUSED ollama.local:11434");
     };
 
     const ran = await runNextIndexJob({ deps });
@@ -721,7 +722,8 @@ describe("kb index worker", () => {
     const deps = fakeDeps();
     let embedCalls = 0;
     deps.embed = async (texts: string[]) => {
-      if (++embedCalls > 2) throw new Error("connect ECONNREFUSED ollama.local:11434");
+      if (++embedCalls > 2)
+        throw new EmbedderUnavailableError("connect ECONNREFUSED ollama.local:11434");
       return texts.map(() => Array(768).fill(0.01));
     };
 
@@ -1197,7 +1199,7 @@ describe("kb index worker tick", () => {
         const outage = officeDeps(CLEAN);
         outage.embed = async () => {
           vi.setSystemTime(Date.now() + 40 * 60_000);
-          throw new Error("connect ECONNREFUSED ollama.local:11434");
+          throw new EmbedderUnavailableError("connect ECONNREFUSED ollama.local:11434");
         };
 
         await runKbIndexWorkerTick({ deps: outage, artifactDir });
