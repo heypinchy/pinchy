@@ -350,13 +350,19 @@ export interface FolderFile {
 
 export type FileFilter = "all" | "not_searchable";
 
+/** `direct`: only the files in the folder itself. `tree`: everything below it. */
+export type FileScope = "direct" | "tree";
+
 export interface FolderFilesResult {
   folder: string;
   files: FolderFile[];
   /** Files matching filter and search, before pagination. */
   total: number;
-  /** Across the whole folder, regardless of filter and search. */
-  totals: { all: number; searchable: number; notSearchable: number };
+  /**
+   * Across the whole folder, regardless of filter and search. `all` counts the
+   * files the index reads; file types it does not read are `unsupported`.
+   */
+  totals: { all: number; searchable: number; notSearchable: number; unsupported: number };
   /** The folder holds more files than one listing reads; the counts cover the first part only. */
   truncated: boolean;
 }
@@ -413,6 +419,8 @@ export interface ListFolderFilesOptions {
   q?: string;
   offset?: number;
   limit?: number;
+  /** Defaults to `direct` for a granted root and `tree` for a subfolder. */
+  scope?: FileScope;
 }
 
 /**
@@ -420,8 +428,10 @@ export interface ListFolderFilesOptions {
  * not inside the agent's grants (or does not exist) — the caller answers 404
  * either way, so a member cannot probe the share for names.
  *
- * A granted root lists the files directly in it; its subfolders are their own
- * rows in the tree. A subfolder lists everything below it.
+ * By default a granted root lists the files directly in it (its subfolders are
+ * their own rows in the tree) and a subfolder lists everything below it, which
+ * is what its row counts. A root that is also a subfolder row of a shallower
+ * root asks for `tree`.
  */
 export async function listKnowledgeFolderFiles(
   orgId: string,
@@ -447,7 +457,7 @@ export async function listKnowledgeFolderFiles(
   const realFolder = await realpathWithinDir(folder, root);
   if (realFolder === null) return null;
 
-  const isRoot = roots.includes(folder);
+  const direct = (opts.scope ?? (roots.includes(folder) ? "direct" : "tree")) === "direct";
   const listed: Listed[] = [];
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- realFolder passed realpathWithinDir against a granted root.
   const info = await lstat(realFolder).catch(() => null);
@@ -459,7 +469,7 @@ export async function listKnowledgeFolderFiles(
       supported: isAllowedExtension(folder, DEFAULT_ALLOWED_EXTENSIONS),
     });
   } else {
-    await listFiles(realFolder, folder, !isRoot, listed);
+    await listFiles(realFolder, folder, !direct, listed);
   }
   const truncated = listed.length >= MAX_LISTED_FILES;
 
@@ -474,7 +484,7 @@ export async function listKnowledgeFolderFiles(
     FROM kb_documents d
     WHERE d.org_id = ${orgId}
       AND (${buildPathFilter([folder], sql`d.source_path`)})
-      ${isRoot ? sql`AND strpos(substr(d.source_path, ${offset}), '/') = 0` : sql``}
+      ${direct ? sql`AND strpos(substr(d.source_path, ${offset}), '/') = 0` : sql``}
   `);
   const docs = new Map(docRows.map((row) => [row.source_path, row]));
 
@@ -493,13 +503,16 @@ export async function listKnowledgeFolderFiles(
     return doc !== undefined && !doc.no_text && !doc.superseded;
   };
   const searchableCount = listed.filter(isSearchable).length;
+  const supportedCount = listed.filter((file) => file.supported).length;
 
   const needle = opts.q?.trim().toLowerCase() ?? "";
   const nameOf = (path: string) =>
     path === folder ? path.split("/").pop()! : path.slice(offset - 1);
   const matching = listed.filter(
     (file) =>
-      (opts.filter !== "not_searchable" || !isSearchable(file)) &&
+      // A type the index does not read is not "not searchable yet": nothing a
+      // run does will change it, so the not-searchable filter leaves it out.
+      (opts.filter !== "not_searchable" || (file.supported && !isSearchable(file))) &&
       (needle === "" || nameOf(file.path).toLowerCase().includes(needle))
   );
 
@@ -513,15 +526,19 @@ export async function listKnowledgeFolderFiles(
   const files = await Promise.all(
     page.map(async (file): Promise<FolderFile> => {
       const doc = docs.get(file.path);
-      // eslint-disable-next-line security/detect-non-literal-fs-filename -- listed below realFolder, which passed realpathWithinDir.
       // lstat: a listed file swapped for a link must not report its target's times.
-      const modified = (await lstat(join(realFolder, posix.relative(folder, file.path)))
-        .then((s) => s.mtime)
-        .catch(() => null)) as Date | null;
+      const real = join(realFolder, posix.relative(folder, file.path));
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- listed below realFolder, which passed realpathWithinDir.
+      const times = await lstat(real).catch(() => null);
+      const modified = times?.mtime ?? null;
+      // A copy that keeps its modification time (cp -p, rsync -a, a restored
+      // backup) still arrived when its inode changed. Whichever is later is
+      // when the file could first have been seen.
+      const arrived = times ? (times.ctime > times.mtime ? times.ctime : times.mtime) : null;
       return {
         path: file.path,
         name: nameOf(file.path),
-        state: fileState(file, doc, modified, activeCovers, lastRun),
+        state: fileState(file, doc, modified, arrived, activeCovers, lastRun),
         archived: doc?.status === "archived",
         indexedAt: doc ? new Date(doc.created_at).toISOString() : null,
         modifiedAt: modified ? modified.toISOString() : null,
@@ -534,9 +551,10 @@ export async function listKnowledgeFolderFiles(
     files,
     total: matching.length,
     totals: {
-      all: listed.length,
+      all: supportedCount,
       searchable: searchableCount,
-      notSearchable: listed.length - searchableCount,
+      notSearchable: supportedCount - searchableCount,
+      unsupported: listed.length - supportedCount,
     },
     truncated,
   };
@@ -549,6 +567,7 @@ function fileState(
   file: Listed,
   doc: DocRow | undefined,
   modified: Date | null,
+  arrived: Date | null,
   activeCovers: boolean,
   lastRun: FinishedJob | null
 ): FileState {
@@ -572,6 +591,6 @@ function fileState(
     return "searchable";
   }
   if (activeCovers) return "pending";
-  if (lastRun?.startedAt && modified && modified < lastRun.startedAt) return "failed";
+  if (lastRun?.startedAt && arrived && arrived < lastRun.startedAt) return "failed";
   return "new";
 }
