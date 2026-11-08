@@ -15,6 +15,12 @@
  *   stable between runs. The per-folder index status (#1386) reads progress
  *   against this order.
  *
+ * "Together" holds within a group, not across them: an archived subfolder
+ * (`Certificates/OLD/`) leaves its parent and waits at the end of the run. A
+ * per-folder status that counts it would call almost every folder unfinished
+ * until the archived tail is done, so count a folder's current files for
+ * "complete" and its archived ones separately.
+ *
  * Segment-wise rather than as plain strings: `Supplier A-Z/` would otherwise
  * land between `Supplier A/` and `Supplier A/sub/`, because `-` sorts before
  * `/`. Code-unit comparison, not `localeCompare`: the order must not depend on
