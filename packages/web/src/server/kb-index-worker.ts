@@ -26,7 +26,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
-import { embedTexts } from "@/lib/knowledge/embeddings";
+import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
@@ -101,6 +101,7 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
 
   return {
     embed: (texts) => embedTexts(texts, cfg),
+    fitForEmbedding: (texts) => fitTextsForEmbedding(texts, cfg),
     extractPdf: (absPath, opts) =>
       extractPdfPages(absPath, {
         outline: opts?.outline,

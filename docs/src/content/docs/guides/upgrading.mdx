@@ -203,6 +203,12 @@ sed -i 's/PINCHY_VERSION=v0.10.1/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
+#### One file the embedding model refuses no longer stops a reindex
+
+A passage can be dense enough — a table full of numbers, say — that it holds more tokens than the embedding model takes at once. The model then answered `Input is longer than the context size`, and the whole reindex stopped at that file. The next run stopped at the same file again, so on a large share the first full index never finished. We now measure every passage with the model's own tokenizer before embedding it and split one that is too long into pieces the model takes. Each piece keeps the page or sheet it came from, so citations still open in the right place.
+
+More generally, anything that goes wrong with one file now costs only that file: it counts as `failed` in the reindex report, the server log names it, and the run goes on with the next file. Only a problem that would fail every file after it stops the run: the embedding model can't be loaded or reached, the connection to the database is lost or the database shuts down, or the run is stopped. Nothing to configure. If a reindex kept stopping at the same file, run **Reindex now** after the upgrade.
+
 ## Upgrading from v0.10.0 to v0.10.1
 
 ### Breaking changes
