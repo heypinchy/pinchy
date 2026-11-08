@@ -305,15 +305,6 @@ export async function extractPdfPages(
   let skipped = 0;
 
   /**
-   * Returns the text this page should be indexed with: its own, or what a
-   * vision model read off a render of it.
-   *
-   * A failed vision call, a failed render and an exhausted budget all fall
-   * back to the page's own text. That is the honest degraded state — an empty
-   * scan indexes as an empty page, which #935 surfaces — and never a thrown
-   * error, because one unreadable page must not cost the whole document.
-   */
-  /**
    * Vision calls still out. Each one settles to a value and never rejects, so
    * nothing here can surface as an unhandled rejection if the loop throws.
    */
@@ -337,6 +328,15 @@ export async function extractPdfPages(
     return { read };
   }
 
+  /**
+   * Returns the text this page should be indexed with: its own, or what a
+   * vision model read off a render of it.
+   *
+   * A failed vision call, a failed render and an exhausted budget all fall
+   * back to the page's own text. That is the honest degraded state — an empty
+   * scan indexes as an empty page, which #935 surfaces — and never a thrown
+   * error, because one unreadable page must not cost the whole document.
+   */
   async function ocrIfScanned(
     page: PDFPageProxy,
     text: string
