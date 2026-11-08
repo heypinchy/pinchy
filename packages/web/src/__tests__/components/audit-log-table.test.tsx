@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { toast } from "sonner";
@@ -773,6 +773,32 @@ describe("AuditLogTable", () => {
     });
   });
 
+  it("mobile cards open their detail through a real button, not a button-role wrapper (#1300)", async () => {
+    // A card with role="button" that contains the actor/resource links is a
+    // nested interactive control (axe `nested-interactive`): screen readers
+    // flatten the links into the button's name and can't reach them.
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    const cards = document.querySelectorAll("[data-audit-card]");
+    expect(cards.length).toBeGreaterThan(0);
+    for (const card of cards) {
+      expect(card).not.toHaveAttribute("role");
+      expect(card).not.toHaveAttribute("tabindex");
+    }
+
+    const user = userEvent.setup();
+    const detailButtons = screen.getAllByRole("button", { name: "auth.login details" });
+    await user.click(detailButtons[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Entry Detail")).toBeInTheDocument();
+    });
+  });
+
   it("should render JSON detail with syntax highlighting tokens", async () => {
     const user = userEvent.setup();
     renderWithEntriesLoaded();
@@ -912,6 +938,52 @@ describe("AuditLogTable", () => {
       await waitFor(() => {
         expect(toast.error).toHaveBeenCalled();
       });
+    } finally {
+      document.execCommand = originalExec;
+      restoreClipboard?.();
+    }
+  });
+
+  it("copies the JSON detail through the fallback from inside the sheet's focus trap", async () => {
+    // Plain-HTTP install: no Clipboard API, so the hook copies from a hidden
+    // textarea via execCommand, which only works while that textarea holds
+    // focus. The detail sheet traps focus, and Radix portals it straight into
+    // <body>. Safari and Firefox on macOS leave focus on the sheet when the
+    // button is clicked, so a textarea placed by focus landed on <body>, the
+    // trap pulled focus back, nothing was copied and the button said "Copied".
+    let copiedText: string | null = null;
+    const originalExec = document.execCommand;
+    document.execCommand = vi.fn(() => {
+      const active = document.activeElement;
+      copiedText = active instanceof HTMLTextAreaElement ? active.value : null;
+      return true;
+    });
+    let restoreClipboard: (() => void) | undefined;
+
+    try {
+      renderWithEntriesLoaded();
+      await openFirstEntryDetail();
+
+      // Same restore contract as the toast test above.
+      const previousClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+      restoreClipboard = previousClipboard
+        ? () => Object.defineProperty(navigator, "clipboard", previousClipboard)
+        : () => {
+            delete (navigator as { clipboard?: unknown }).clipboard;
+          };
+      Object.defineProperty(navigator, "clipboard", {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
+
+      const sheet = screen.getByRole("dialog");
+      sheet.focus();
+      // fireEvent.click doesn't move focus — what a mouse click does there.
+      fireEvent.click(screen.getByRole("button", { name: /copy json/i }));
+
+      expect(copiedText).toBe(JSON.stringify({ email: "admin@example.com" }, null, 2));
+      expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
     } finally {
       document.execCommand = originalExec;
       restoreClipboard?.();

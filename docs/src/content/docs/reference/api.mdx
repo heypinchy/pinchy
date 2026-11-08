@@ -595,7 +595,9 @@ The agent's most recent index run — in flight or last finished — and whether
       "skipped": 12,
       "removed": 1,
       "unsearchable": 2,
-      "failed": 0
+      "failed": 0,
+      "archived": 0,
+      "unsupported": 4
     },
     "error": null,
     "createdAt": "2026-07-17T10:00:00.000Z",
@@ -618,6 +620,8 @@ The agent's most recent index run — in flight or last finished — and whether
 | `counts.removed`                | Source file no longer on disk; the document and its chunks were deleted. Stays `0` until the run's final pass.                                                                                                                                                                                                                                                                                                                                                                                               |
 | `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved — a workbook whose sheets are all hidden, or a scan that no vision model was available to read.                                                                                                                                                                                                                                                                                                     |
 | `counts.failed`                 | The file could not be read or parsed, or was refused because it had been [swapped for a symbolic link](/guides/mount-data-directories/#links-inside-a-mounted-folder) during the run. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                             |
+| `counts.archived`               | Documents in this run that sit under an archive folder (`OLD`, `Archiv` and the like) and are therefore left out of everyday search. Not a separate outcome: an archived document is also `indexed` or `skipped`.                                                                                                                                                                                                                                                                                            |
+| `counts.unsupported`            | Files in the granted folders whose type the index can't read — a `.tif` scan, an old `.xls`, a `.txt`. Not part of the counts above, because they never become documents. Known from the moment discovery finishes. Absent on a run that stopped before discovery finished, and on one that finished before Pinchy counted them. [`GET …/knowledge/unsupported`](#get-apiagentsagentidknowledgeunsupported) lists them.                                                                                      |
 | `error`                         | Why the run failed. `null` unless `status` is `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 `schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
@@ -706,6 +710,34 @@ A change is recorded as a `settings.updated` audit entry with the old and new sc
 
 Runs a hybrid (vector + full-text) search over the requesting agent's indexed, granted documents and returns numbered, citable passages. The raw query is never persisted — only a one-way hash, since a knowledge-base question can itself carry PII.
 
+### `POST /api/agents/:agentId/knowledge/passage`
+
+Which indexed passage on a cited page an answer drew on — what the citation viewer asks before it highlights one. Read-only: it isn't audited itself, because it accompanies a document view that `workspace-file` already records as `knowledge.source_viewed`.
+
+It returns text from a document, so it applies the same two gates as `workspace-file`, in the same order, before the index is read: the agent check (`404` for an agent you can't use, `403` for a paused one), then the agent's granted folders (`403` for a path outside them, `404` for a file that isn't there).
+
+**Request body:**
+
+| Field   | Type   | Required | Description                                                                                                                                   |
+| ------- | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`  | string | Yes      | The document's full path — the `path` a citation link carries.                                                                                |
+| `page`  | number | Yes      | The cited page, from 1.                                                                                                                       |
+| `claim` | string | No       | The answer's sentences that cite the source, at most 2000 characters. Used only to choose between the passages on the page, and never stored. |
+
+**Response:**
+
+```json
+{
+  "passage": {
+    "text": "§ 4 Reaktionszeiten\nDer Auftragnehmer reagiert auf Störungen innerhalb von vier Stunden."
+  }
+}
+```
+
+`passage` is the indexed text of the passage, or `null` when there is none to show: the page holds no indexed text, or it holds several passages and nothing says which — no `claim`, or the embedding model isn't available. With several, the one nearest to `claim` in meaning wins, which also works when the answer is in a different language than the document.
+
+**Errors:** `400` invalid body, `401` not authenticated, `403` path outside the agent's granted folders or agent paused, `404` agent not found or not accessible, or file not found, `502` the lookup failed.
+
 ### `GET /api/agents/:agentId/knowledge/unsearchable`
 
 **Which** documents the index holds but search can't reach. Two kinds: documents that produced no searchable text — the ones the `unsearchable` counter in the reindex status counts — and Word or PowerPoint files search leaves out until they have been converted again after an update, which that counter never counts. **Admin only.**
@@ -744,6 +776,34 @@ Scoped to the folders that agent is granted, exactly like search itself, so the 
 | `total`                  | How many there are. `documents` holds at most 100; `total` is never capped.                                                                                                                                                                                                                |
 | `totals`                 | `total` per reason, `no_text` and `awaiting_conversion`. Never capped either, so it counts documents `documents` doesn't show.                                                                                                                                                             |
 | `searchesIndex`          | Whether the agent has `knowledge_search`. Pinchy converts the `awaiting_conversion` files again on its own only for an agent that searches the index; for any other agent, a reindex converts them.                                                                                        |
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/unsupported`
+
+A CSV of the files in the agent's granted folders whose type the index can't read — the ones `counts.unsupported` counts. **Admin only.**
+
+The answer is a download (`Content-Disposition: attachment`), streamed, so a share with a hundred thousand such files works as well as one with three. It holds what the last run that finished found; nothing here walks the share. Scoped to the agent's granted folders, exactly like search itself. Hidden files and operating-system or Office clutter (`Thumbs.db`, `~$Report.docx`, `*.tmp`) are never listed.
+
+**Response:** `text/csv; charset=utf-8`, UTF-8 with a byte-order mark, one row per file, ordered by path:
+
+```csv
+"path","type"
+"/data/hr/Budget 2019.xls",".xls"
+"/data/hr/README",""
+"/data/hr/scans/Nameplate.tif",".tif"
+```
+
+| Column | Description                                                            |
+| ------ | ---------------------------------------------------------------------- |
+| `path` | The file's full path.                                                  |
+| `type` | Its extension, lowercased, with the dot. Empty for a file without one. |
+
+A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed with `'`, because a file name is text anyone who can write to the share chose.
 
 **Errors:**
 
@@ -871,6 +931,8 @@ List available agent templates.
 ```
 
 The full registry includes one Knowledge Base template, one Custom template, five document-analysis templates, three email templates, and 20+ Odoo templates. The response above is truncated — call the endpoint for the live list. Template IDs are stable across releases for templates that ship in stock builds.
+
+Each template also carries availability fields the create form reads. `available` and `unavailableReason` say whether a required connection is missing (Odoo, email) or an Odoo connection lacks the modules a template needs. `requiresWeb` marks web templates, and `webSearchConfigured` says whether a web-search provider exists. A web template stays `available` without one, because page fetching needs no key; only search does.
 
 ## Data Directories
 

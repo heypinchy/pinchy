@@ -60,10 +60,7 @@ export function AgentList({ agents, currentPath, onAgentClick }: AgentListProps)
                   {agent.name}
                 </span>
                 {agent.tagline && (
-                  <span
-                    className={`text-xs truncate ${isActive ? "text-muted-foreground" : "text-muted-foreground/70"}`}
-                    title={agent.tagline}
-                  >
+                  <span className="text-xs truncate text-muted-foreground" title={agent.tagline}>
                     {agent.tagline}
                   </span>
                 )}

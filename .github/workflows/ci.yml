@@ -666,7 +666,11 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # ≥2× the slowest green run: up to 16.8 min on 2026-11-05 before the
+    # accessibility sweep (e2e/23-accessibility.spec.ts) joined; its first
+    # green run with the sweep took 9.6 min (run 42106485600). Room for the
+    # slow end of that spread plus the sweep, doubled.
+    timeout-minutes: 40
 
     services:
       postgres:
@@ -836,6 +840,20 @@ jobs:
             -v "$PWD/config/verify-memory-search.sh:/verify-memory-search.sh:ro" \
             --entrypoint bash \
             ghcr.io/heypinchy/pinchy-openclaw:latest /verify-memory-search.sh
+
+      - uses: ./.github/actions/setup-pnpm
+
+      - name: Office converter boundary canary (no network, no secrets)
+        # LibreOffice opens files anyone with write access to a mounted share
+        # can plant. The office-converter service is what takes its network
+        # and its secrets away; this drives the image under test through the
+        # service exactly as docker-compose.yml declares it, with every profile
+        # and preflight hardening switched OFF, and asserts a host listener
+        # hears nothing — next to a CONTROL run on a bridge network that does
+        # fetch. Needs only the image, not the stack.
+        run: pnpm -C packages/web exec vitest run src/__tests__/lib/knowledge/office-convert.sidecar.canary.test.ts
+        env:
+          KB_SIDECAR_CANARY_VERSION: latest
 
       - name: Start production stack
         run: docker compose up -d
@@ -1057,6 +1075,40 @@ jobs:
             echo "::warning::Pinchy logged $ERROR_COUNT OpenClaw connection errors (expected at most 1)"
           fi
           echo "Clean startup verified (restarts=$RESTART_COUNT, connection_errors=$ERROR_COUNT)"
+
+      - name: Verify Office conversion goes through the sidecar, and only the sidecar
+        run: |
+          # The canary above proves the converter service has no network. This
+          # proves the shipped stack actually USES it: the web container stages
+          # a document in the shared spool and the sidecar converts it. Then,
+          # with the sidecar stopped, the same conversion must come back
+          # `infrastructure` — if the web container quietly converted on its
+          # own, LibreOffice would be back next to the secrets and nothing else
+          # would notice. Run as the pinchy user, like the web process: the
+          # converter (its own uid, pinchy's group) writes into the batch
+          # through the modes that user's batches carry.
+          wait_converter() {
+            for i in $(seq 1 30); do
+              [ "$(docker compose ps office-converter --format '{{.Health}}')" = "healthy" ] && return 0
+              sleep 2
+            done
+            echo "::error::office-converter did not become healthy"
+            docker compose ps
+            docker compose logs office-converter
+            return 1
+          }
+          check() {
+            docker compose exec -T --user pinchy pinchy \
+              node --import tsx scripts/check-office-converter.ts --expect "$1"
+          }
+          wait_converter
+          check converted || { docker compose logs office-converter; exit 1; }
+          docker compose stop office-converter
+          # The stopped converter leaves its socket, so the web side waits
+          # ~20 s for a restart before it books the batch.
+          check infrastructure
+          docker compose start office-converter
+          wait_converter
 
       - name: Verify plugins load + deps survive a pinchy-only restart (PR #275 regression)
         run: |
@@ -1404,8 +1456,8 @@ jobs:
         run: |
           RUNNING=$(docker compose ps --format json | jq -rs '[.[] | select(.State == "running")] | length')
           echo "Running services: $RUNNING"
-          if [ "$RUNNING" -ne 3 ]; then
-            echo "::error::Expected 3 running services (pinchy, openclaw, db), got $RUNNING"
+          if [ "$RUNNING" -ne 4 ]; then
+            echo "::error::Expected 4 running services (pinchy, office-converter, openclaw, db), got $RUNNING"
             docker compose ps
             exit 1
           fi

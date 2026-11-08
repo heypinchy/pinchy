@@ -458,7 +458,9 @@ export function UsageDashboard({
             </CardHeader>
             <CardContent className="px-2 pb-2 sm:px-6 sm:pb-3">
               <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={chartData} margin={{ left: -10, right: 5, top: 5, bottom: 0 }}>
+                {/* No negative left margin: it pulled the y-axis labels past the
+                    card edge and clipped "50.0k" to "0.0k" on a phone (#1300). */}
+                <LineChart data={chartData} margin={{ left: 0, right: 5, top: 5, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.9 0 0)" />
                   <XAxis
                     dataKey="date"

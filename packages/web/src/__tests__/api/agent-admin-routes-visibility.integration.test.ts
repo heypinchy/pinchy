@@ -1,5 +1,5 @@
 // Real-DB integration test for the four ADMIN-ONLY route families under
-// /api/agents/[agentId]/ — knowledge/reindex, knowledge/unsearchable,
+// /api/agents/[agentId]/ — knowledge/reindex, knowledge/unsearchable, knowledge/unsupported,
 // integrations, and connecting a Telegram bot.
 //
 // The verdict these pin: an admin may NOT reach into another user's personal
@@ -83,6 +83,11 @@ vi.mock("@/lib/knowledge/unsearchable", () => ({
   listUnsearchableDocuments: (...args: unknown[]) => mockListUnsearchableDocuments(...args),
 }));
 
+const mockListUnsupportedFiles = vi.fn();
+vi.mock("@/lib/knowledge/unsupported-files", () => ({
+  listUnsupportedFiles: (...args: unknown[]) => mockListUnsupportedFiles(...args),
+}));
+
 vi.mock("@/lib/knowledge/kb-embedder", () => ({
   kbEmbedderAvailable: () => true,
 }));
@@ -114,6 +119,7 @@ import {
   GET as REINDEX_GET,
 } from "@/app/api/agents/[agentId]/knowledge/reindex/route";
 import { GET as UNSEARCHABLE_GET } from "@/app/api/agents/[agentId]/knowledge/unsearchable/route";
+import { GET as UNSUPPORTED_GET } from "@/app/api/agents/[agentId]/knowledge/unsupported/route";
 import {
   GET as INTEGRATIONS_GET,
   PUT as INTEGRATIONS_PUT,
@@ -249,6 +255,18 @@ describe("admin-only agent management routes vs another user's personal agent (r
     );
 
     expect(mockListUnsearchableDocuments).not.toHaveBeenCalled();
+  });
+
+  // The CSV of files the index can't read names files on another user's share
+  // just as surely as the unsearchable list names documents.
+  it("GET knowledge/unsupported answers alike and never lists a file", async () => {
+    const foreign = await seedForeignPersonalAgent();
+
+    await expectIndistinguishable(foreign.id, (id) =>
+      UNSUPPORTED_GET(makeRequest(id), makeParams(id))
+    );
+
+    expect(mockListUnsupportedFiles).not.toHaveBeenCalled();
   });
 
   it("GET integrations answers alike", async () => {

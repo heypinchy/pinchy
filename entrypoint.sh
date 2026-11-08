@@ -36,6 +36,23 @@ chown pinchy:pinchy /openclaw-secrets 2>/dev/null || true
 # a broken corpus rather than a permissions problem.
 chown -R pinchy:pinchy /var/cache/pinchy-kb-artifacts 2>/dev/null || true
 
+# Spool shared with the office-converter sidecar, which runs as its own user
+# (pinchy-office) in the pinchy group. Owned by pinchy, group-writable so the
+# converter can create its socket, and sticky so it cannot rename or remove
+# what it did not create — the batches pinchy stages here. Docker seeds a new
+# volume with the image's ownership and mode; this repairs one that already
+# existed (it was 755 before the converter had a user of its own) or came from
+# somewhere else, on every start. The converter
+# has no capabilities and cannot fix any of it itself. Only the top level:
+# batches inside are short-lived and pinchy's.
+chown pinchy:pinchy /var/spool/pinchy-office 2>/dev/null || true
+chmod 1770 /var/spool/pinchy-office 2>/dev/null || true
+# A socket from a converter that ran as another user (builds before it had a
+# user of its own) is one the converter can no longer replace in a sticky
+# directory, so it would fail to start. Removing it costs nothing: the
+# converter creates a new one when it starts.
+find /var/spool/pinchy-office -maxdepth 1 -name converter.sock -type s ! -user pinchy-office -delete 2>/dev/null || true
+
 # Refresh plugin SOURCE in the shared openclaw-extensions volume on every
 # startup (the named volume is only seeded from the image on first creation;
 # upgrades otherwise keep stale content from the previous image). The sync

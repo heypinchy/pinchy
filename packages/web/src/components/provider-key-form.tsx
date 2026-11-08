@@ -973,7 +973,7 @@ export function ProviderKeyForm({
                       <li key={step.label}>
                         {step.link ? renderStepWithLink(step.label, step.link) : step.label}
                         {step.optional && (
-                          <span className="text-xs text-muted-foreground/60"> (optional)</span>
+                          <span className="text-xs text-muted-foreground"> (optional)</span>
                         )}
                       </li>
                     ))}

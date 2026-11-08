@@ -13,6 +13,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { imageInputNote } from "@/lib/attachment-capability";
+import {
+  CitationPdfViewer,
+  type PassageLookup,
+} from "@/components/assistant-ui/citation-pdf-viewer";
 
 import { useModelCapabilities } from "@/hooks/use-model-capabilities";
 
@@ -134,7 +138,7 @@ export const AttachmentPreview: FC = () => {
 };
 
 const CapabilityWarning: FC<{ message: string }> = ({ message }) => (
-  <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">{message}</p>
+  <p className="mt-1 text-xs text-amber-700 dark:text-amber-500">{message}</p>
 );
 
 /**
@@ -217,10 +221,18 @@ export const PdfDialog: FC<{
    * representation of the same document passes them all.
    */
   downloads?: DocumentDownload[];
+  /**
+   * The cited passage to find on `page`, for a knowledge-base citation (#1268).
+   * With one, the page is drawn by our own renderer, which can highlight it;
+   * without one — an attachment, a citation without a page — the browser's
+   * viewer shows the document as before. The renderer falls back to that same
+   * viewer on any failure.
+   */
+  passage?: PassageLookup | null;
   children: ReactNode;
   /** Test-only escape hatch; the dialog is trigger-driven in the app. */
   defaultOpen?: boolean;
-}> = ({ url, title, page, downloads, children, defaultOpen }) => {
+}> = ({ url, title, page, downloads, passage, children, defaultOpen }) => {
   // `title` is a filename for an attachment and a full path for a citation.
   // Show the leaf either way and keep the rest in the tooltip: a corpus has
   // same-named files in different folders, so the path has to stay reachable,
@@ -233,9 +245,28 @@ export const PdfDialog: FC<{
   // icons refuses to answer — so each names itself as soon as there is a
   // choice to make.
   const namesDownloads = documentDownloads.length > 1;
+  const highlightsPassage = Boolean(passage) && page !== null && page !== undefined;
+  // The viewer below the header names the page itself, with the page count
+  // and as the reader pages on; a second, static label would contradict it.
+  const [showsOwnRenderer, setShowsOwnRenderer] = useState(highlightsPassage);
+
+  /*
+    Remounted per open (the dialog unmounts its content when closed), which
+    is what makes `#page=N` in the url actually land: a PDF viewer honours
+    the fragment on load, not on a later fragment change.
+    `min-h-0` lets this shrink inside the flex column — without it the
+    embed keeps its intrinsic height and pushes the header off-screen.
+   */
+  const browserViewer = (
+    <embed src={url} type="application/pdf" className="block min-h-0 w-full flex-1" />
+  );
 
   return (
-    <Dialog defaultOpen={defaultOpen}>
+    <Dialog
+      defaultOpen={defaultOpen}
+      // Each open tries the renderer afresh: a fallback was about that open.
+      onOpenChange={(open) => open && setShowsOwnRenderer(highlightsPassage)}
+    >
       <DialogTrigger asChild>{children}</DialogTrigger>
       <DialogContent
         // Taller and wider than a default dialog because a page of A4 at a
@@ -252,7 +283,7 @@ export const PdfDialog: FC<{
           <DialogTitle className="truncate font-medium text-sm" title={title}>
             {filename}
           </DialogTitle>
-          {page !== null && page !== undefined && (
+          {page !== null && page !== undefined && !showsOwnRenderer && (
             <span className="shrink-0 text-muted-foreground text-xs">Page {page}</span>
           )}
           {/*
@@ -302,14 +333,17 @@ export const PdfDialog: FC<{
             </DialogClose>
           </div>
         </div>
-        {/*
-          Remounted per open (the dialog unmounts its content when closed), which
-          is what makes `#page=N` in the url actually land: a PDF viewer honours
-          the fragment on load, not on a later fragment change.
-          `min-h-0` lets this shrink inside the flex column — without it the
-          embed keeps its intrinsic height and pushes the header off-screen.
-         */}
-        <embed src={url} type="application/pdf" className="block min-h-0 w-full flex-1" />
+        {highlightsPassage && passage && page !== null && page !== undefined ? (
+          <CitationPdfViewer
+            url={url}
+            page={page}
+            passage={passage}
+            onFallback={() => setShowsOwnRenderer(false)}
+            fallback={browserViewer}
+          />
+        ) : (
+          browserViewer
+        )}
       </DialogContent>
     </Dialog>
   );

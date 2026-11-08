@@ -73,6 +73,7 @@ type Job = {
     unsearchable: number;
     failed: number;
     archived?: number;
+    unsupported?: number;
   } | null;
   error: string | null;
   createdAt: string;
@@ -183,6 +184,71 @@ describe("KnowledgeReindexSection", () => {
     expect(screen.queryByText(/skipped/i)).not.toBeInTheDocument();
     // Button is enabled again — the run is over.
     expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
+  });
+
+  // #1267: files whose type the indexer cannot read were invisible — counted
+  // nowhere, listed nowhere. The count sits with the others, and the list is a
+  // download, because a real share can hold 100k of them.
+  describe("files the index can't read", () => {
+    const counts = { indexed: 11, skipped: 0, removed: 0, unsearchable: 0, failed: 0 };
+
+    it("counts them beside the run's other findings and offers the list as a download", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 2 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText("2 not supported")).toBeInTheDocument();
+      const link = screen.getByRole("link", { name: /download the list/i });
+      expect(link).toHaveAttribute("href", "/api/agents/a1/knowledge/unsupported");
+      expect(link).toHaveAttribute("download");
+      expect(screen.getByText(/2 files are of a type pinchy can't read/i)).toBeInTheDocument();
+    });
+
+    it("speaks of one file in the singular", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 1 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText(/1 file is of a type pinchy can't read/i)).toBeInTheDocument();
+    });
+
+    // After a failed run the list is still the previous run's — it is written
+    // only by a run that reaches the end — so a link beside this run's number
+    // would offer a file that doesn't match it.
+    it("counts them after a failed run but offers no list", async () => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "failed",
+          error: "Embedder down",
+          counts: { ...counts, unsupported: 3 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText("3 not supported")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /download the list/i })).not.toBeInTheDocument();
+    });
+
+    it("says nothing more than the zero when every file could be read", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 0 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText("0 not supported")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /download the list/i })).not.toBeInTheDocument();
+    });
+
+    // A run that finished before this was counted never looked. "0 not
+    // supported" would claim it did.
+    it("shows no count at all for a run that finished before files were counted", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      await screen.findByText(/last indexed/i);
+      expect(screen.queryByText(/not supported/i)).not.toBeInTheDocument();
+    });
   });
 
   it("surfaces a concurrent-run conflict (409) as an error toast naming the blocking agent", async () => {
@@ -1004,15 +1070,17 @@ describe("KnowledgeReindexSection", () => {
     });
 
     // "today" and "tomorrow" are the viewer's too: 02:00 UTC is still today
-    // for someone in New York at 20:00 the evening before.
+    // for someone in New York at 19:00 the evening before.
     it("says today or tomorrow by the viewer's calendar, not the organization's", async () => {
-      viewIn("America/New_York", "2026-10-17T00:00:00.000Z"); // 20:00 on the 16th in New York
+      // 19:00 on the 16th in New York, 23:00 on the 16th in UTC: the run at
+      // 02:00 UTC is tomorrow for the organization and still today here.
+      viewIn("America/New_York", "2026-10-16T23:00:00.000Z");
       mockGet.mockResolvedValue({
         job: null,
         schedule: {
           ...nightly,
           timezone: "UTC",
-          nextRun: { ...nightly.nextRun, day: "today", at: "2026-10-17T02:00:00.000Z" },
+          nextRun: { ...nightly.nextRun, day: "tomorrow", at: "2026-10-17T02:00:00.000Z" },
         },
       });
 

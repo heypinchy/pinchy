@@ -21,6 +21,7 @@ import {
   SECRET_REQUIRED_FOR_NEW_DESTINATION,
   type DestinationChanges,
 } from "@/lib/secret-destination";
+import { refreshWebPluginConfig } from "@/lib/integrations/refresh-web-plugin-config";
 
 /**
  * Audit form of a destination diff: email-shaped tokens scrubbed from every
@@ -322,6 +323,7 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
   }
 
   await db.delete(integrationConnections).where(eq(integrationConnections.id, connectionId));
+  if (existing.type === "web-search") await refreshWebPluginConfig();
 
   // The OAuth app has an independent lifecycle: removing the last connection of a
   // provider intentionally leaves the stored app credentials in place. Admins manage

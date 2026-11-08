@@ -40,6 +40,11 @@ export const DEFAULT_INDEX_SCHEDULE: IndexSchedule = { enabled: true, time: "02:
 /** A 24-hour "HH:MM". Shared with the request schema so the route and this parser accept exactly the same values. */
 export const INDEX_SCHEDULE_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/** Whether `a` is the same setting as `b` — the test for "the admin changed the schedule since the slot was taken". */
+export function sameIndexSchedule(a: IndexSchedule | null, b: IndexSchedule): boolean {
+  return a !== null && a.enabled === b.enabled && a.time === b.time;
+}
+
 /** The org-local calendar date ("YYYY-MM-DD") and minutes since local midnight. */
 export interface LocalClock {
   date: string;
@@ -151,14 +156,24 @@ export interface IndexScheduleStatus extends IndexSchedule {
   lastSweep: { slot: string; startedAt: string; agentCount: number } | null;
 }
 
-/** The next slot ahead of `clock` (read in `timeZone`), or null while the schedule is off. */
+/**
+ * The next slot ahead of `clock` (read in `timeZone`), or null while the
+ * schedule is off.
+ *
+ * `lastSlot` is the slot the scheduler took last. It matters on one night: on
+ * the fall-back night a slot inside the repeated hour (02:30 in Vienna) runs,
+ * the clock goes back, and the local time is before the slot again for half
+ * an hour. Today's slot is taken then, so the next run is tomorrow's — not an
+ * `at` already in the past.
+ */
 export function nextIndexRun(
   clock: LocalClock,
   schedule: IndexSchedule,
-  timeZone: string
+  timeZone: string,
+  lastSlot: string | null
 ): NextIndexRun | null {
   if (!schedule.enabled) return null;
-  const today = clock.minutes < minutesOf(schedule.time);
+  const today = clock.minutes < minutesOf(schedule.time) && lastSlot !== clock.date;
   const date = today ? clock.date : shiftDate(clock.date, 1);
   return {
     date,
