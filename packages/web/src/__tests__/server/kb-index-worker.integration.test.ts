@@ -125,11 +125,40 @@ describe("kb index worker", () => {
       unsearchable: 0,
       failed: 0,
       archived: 0,
+      unsupported: 0,
     });
     expect(job?.finishedAt).toBeInstanceOf(Date);
 
     const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
     expect(docs).toHaveLength(1);
+  });
+
+  // The folder status (#1386) reads a folder's expected file count from this
+  // plan instead of walking the share on every request.
+  it("records which folder each queued file belongs to", async () => {
+    const agent = await makeAgent();
+    writePdf(tmpRoot, "handbook.pdf");
+    writePdf(join(tmpRoot, "certs"), "iso.pdf");
+    writePdf(join(tmpRoot, "certs", "2024"), "afnor.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    const byFolder = new Map<string, number>();
+    for (const segment of job?.folderPlan ?? []) {
+      byFolder.set(segment.folder, (byFolder.get(segment.folder) ?? 0) + segment.files);
+    }
+    expect(Object.fromEntries(byFolder)).toEqual({
+      [tmpRoot]: 1,
+      [join(tmpRoot, "certs")]: 2,
+    });
   });
 
   // The run lands hours after the request, in a context with no request behind

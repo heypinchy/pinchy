@@ -70,9 +70,24 @@ export interface IngestResult {
    * is a fact the operator must see, not infer.
    */
   archived: number;
+  /**
+   * Files under the run's folders whose type the indexer cannot read — a
+   * `.tif` scan, a legacy `.xls`, a `.txt` (#1267). They are not documents in
+   * the index at all, so they sit OUTSIDE the outcome partition above: before
+   * this was counted, a folder of 13 files reported 11 and the other two
+   * appeared nowhere. The list behind the number is kb_unsupported_files
+   * (unsupported-files.ts). Hidden files and OS/temp artifacts are not counted.
+   *
+   * Optional because it is read back from `kb_index_jobs.counts`: a run that
+   * finished before it was counted has no such key, and "0" would claim it
+   * looked.
+   */
+  unsupported?: number;
 }
 
 /** A fresh IngestResult with every counter at zero — the identity for summing per-root results. A function, not a shared const, so no caller can mutate the zero. */
 export function zeroIngestResult(): IngestResult {
+  // No `unsupported`: a run that never reached discovery did not look, and a
+  // zero would say it found none.
   return { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 };
 }

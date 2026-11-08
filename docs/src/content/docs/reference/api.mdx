@@ -520,7 +520,12 @@ The agent's most recent index run — in flight or last finished — and whether
     "enabled": true,
     "time": "02:00",
     "timezone": "Europe/Vienna",
-    "nextRun": { "date": "2026-07-18", "time": "02:00", "day": "tomorrow" },
+    "nextRun": {
+      "date": "2026-07-18",
+      "time": "02:00",
+      "day": "tomorrow",
+      "at": "2026-07-18T00:00:00.000Z"
+    },
     "included": true
   },
   "job": {
@@ -537,7 +542,9 @@ The agent's most recent index run — in flight or last finished — and whether
       "skipped": 12,
       "removed": 1,
       "unsearchable": 2,
-      "failed": 0
+      "failed": 0,
+      "archived": 0,
+      "unsupported": 4
     },
     "error": null,
     "createdAt": "2026-07-17T10:00:00.000Z",
@@ -560,17 +567,19 @@ The agent's most recent index run — in flight or last finished — and whether
 | `counts.removed`                | Source file no longer on disk; the document and its chunks were deleted. Stays `0` until the run's final pass.                                                                                                                                                                                                                                                                                                                                                                                               |
 | `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved — a workbook whose sheets are all hidden, or a scan that no vision model was available to read.                                                                                                                                                                                                                                                                                                     |
 | `counts.failed`                 | The file could not be read or parsed, or was refused because it had been [swapped for a symbolic link](/guides/mount-data-directories/#links-inside-a-mounted-folder) during the run. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                             |
+| `counts.archived`               | Documents in this run that sit under an archive folder (`OLD`, `Archiv` and the like) and are therefore left out of everyday search. Not a separate outcome: an archived document is also `indexed` or `skipped`.                                                                                                                                                                                                                                                                                            |
+| `counts.unsupported`            | Files in the granted folders whose type the index can't read — a `.tif` scan, an old `.xls`, a `.txt`. Not part of the counts above, because they never become documents. Known from the moment discovery finishes. Absent on a run that stopped before discovery finished, and on one that finished before Pinchy counted them. [`GET …/knowledge/unsupported`](#get-apiagentsagentidknowledgeunsupported) lists them.                                                                                      |
 | `error`                         | Why the run failed. `null` unless `status` is `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 `schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
 
-| Field               | Description                                                                                                                                                                                              |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `schedule.enabled`  | Whether the instance reindexes knowledge-base agents on its own every night. Set with [`PUT /api/settings/knowledge-index-schedule`](#put-apisettingsknowledge-index-schedule).                          |
-| `schedule.time`     | The time of day it runs, in the organization timezone.                                                                                                                                                   |
-| `schedule.timezone` | The organization timezone `time` is read in.                                                                                                                                                             |
-| `schedule.nextRun`  | The next run as `date`, `time` and `day` (`today` or `tomorrow`), all in the organization timezone. `null` while the nightly reindex is off.                                                             |
-| `schedule.included` | Whether the nightly run covers **this** agent. Only agents that have the `knowledge_search` permission and at least one granted folder are swept; an agent that only reads files is reindexed on demand. |
+| Field               | Description                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schedule.enabled`  | Whether the instance reindexes knowledge-base agents on its own every night. Set with [`PUT /api/settings/knowledge-index-schedule`](#put-apisettingsknowledge-index-schedule).                                                                                                                                                                                                        |
+| `schedule.time`     | The time of day it runs, in the organization timezone.                                                                                                                                                                                                                                                                                                                                 |
+| `schedule.timezone` | The organization timezone `time` is read in.                                                                                                                                                                                                                                                                                                                                           |
+| `schedule.nextRun`  | The next run as `date`, `time` and `day` (`today` or `tomorrow`), all in the organization timezone, and as `at`, the same moment as a UTC timestamp — the one to convert for a reader elsewhere. On the night the clocks go forward, a `time` that doesn't happen that night is reached at the first minute after the jump, and `at` says so. `null` while the nightly reindex is off. |
+| `schedule.included` | Whether the nightly run covers **this** agent. Only agents that have the `knowledge_search` permission and at least one granted folder are swept; an agent that only reads files is reindexed on demand.                                                                                                                                                                               |
 
 `unsearchable` and `failed` can be non-zero on a `succeeded` run: the reindex itself worked, and these are its findings about the corpus.
 
@@ -599,7 +608,12 @@ Once a night, at `time` in the [organization timezone](/reference/organization-t
   "enabled": true,
   "time": "02:00",
   "timezone": "Europe/Vienna",
-  "nextRun": { "date": "2026-10-18", "time": "02:00", "day": "tomorrow" },
+  "nextRun": {
+    "date": "2026-10-18",
+    "time": "02:00",
+    "day": "tomorrow",
+    "at": "2026-10-18T00:00:00.000Z"
+  },
   "currentSweep": null,
   "lastSweep": {
     "slot": "2026-10-17",
@@ -614,7 +628,7 @@ Once a night, at `time` in the [organization timezone](/reference/organization-t
 | `enabled`      | Whether the nightly reindex runs. On by default.                                                                                                                                            |
 | `time`         | 24-hour `HH:MM`, in the organization timezone. Defaults to `02:00`.                                                                                                                         |
 | `timezone`     | The organization timezone `time` is read in.                                                                                                                                                |
-| `nextRun`      | `date`, `time` and `day` (`today` or `tomorrow`) of the next run, in the organization timezone. `null` while `enabled` is `false`.                                                          |
+| `nextRun`      | `date`, `time` and `day` (`today` or `tomorrow`) of the next run, in the organization timezone, and `at`, the same moment as a UTC timestamp. `null` while `enabled` is `false`.            |
 | `currentSweep` | The night still queueing its agents: `slot` (the date it's for), `startedAt`, `agentCount`, and `waiting` — how many agents haven't had their turn yet. `null` when nothing is in progress. |
 | `lastSweep`    | The most recent night that queued all its agents: `slot`, `startedAt`, `agentCount`. Each agent's own outcome is on [`GET …/knowledge/reindex`](#get-apiagentsagentidknowledgereindex).     |
 
@@ -687,6 +701,148 @@ Scoped to the folders that agent is granted, exactly like search itself, so the 
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/unsupported`
+
+A CSV of the files in the agent's granted folders whose type the index can't read — the ones `counts.unsupported` counts. **Admin only.**
+
+The answer is a download (`Content-Disposition: attachment`), streamed, so a share with a hundred thousand such files works as well as one with three. It holds what the last run that finished found; nothing here walks the share. Scoped to the agent's granted folders, exactly like search itself. Hidden files and operating-system or Office clutter (`Thumbs.db`, `~$Report.docx`, `*.tmp`) are never listed.
+
+**Response:** `text/csv; charset=utf-8`, UTF-8 with a byte-order mark, one row per file, ordered by path:
+
+```csv
+"path","type"
+"/data/hr/Budget 2019.xls",".xls"
+"/data/hr/README",""
+"/data/hr/scans/Nameplate.tif",".tif"
+```
+
+| Column | Description                                                            |
+| ------ | ---------------------------------------------------------------------- |
+| `path` | The file's full path.                                                  |
+| `type` | Its extension, lowercased, with the dot. Empty for a file without one. |
+
+A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed with `'`, because a file name is text anyone who can write to the share chose.
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/folders`
+
+Which of the agent's granted folders are searchable, being indexed, queued, or incomplete. It covers each granted folder and the folders directly inside it. Open to **everyone who can chat with the agent**, not only admins.
+
+Scoped to the agent's saved granted folders, exactly like search itself. Nothing here walks the share: the counts come from the index and from the folder list the agent's latest run recorded.
+
+**Response:**
+
+```json
+{
+  "job": {
+    "status": "running",
+    "processed": 12,
+    "total": 60,
+    "currentFolder": "/data/kb/certificates",
+    "finishedAt": null
+  },
+  "folders": [
+    {
+      "path": "/data/kb",
+      "name": "/data/kb",
+      "state": "indexing",
+      "indexed": 0,
+      "searchable": 0,
+      "notSearchable": 0,
+      "expected": 60,
+      "pending": 48,
+      "lastIndexedAt": null,
+      "children": [
+        {
+          "path": "/data/kb/hr",
+          "name": "hr",
+          "state": "has_errors",
+          "indexed": 10,
+          "searchable": 8,
+          "notSearchable": 2,
+          "expected": 10,
+          "pending": 0,
+          "lastIndexedAt": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Field                     | Description                                                                                                                                                                                                                                                                                                 |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `job`                     | The agent's latest run, or `null` if it never had one. `status` is `pending`, `running`, `succeeded` or `failed`. `currentFolder` is the folder an active run is in, or `null` when the run hasn't recorded its folder list.                                                                                |
+| `folders[]`               | One entry per granted folder. `children` holds the folders directly inside it, with the same fields.                                                                                                                                                                                                        |
+| `folders[].state`         | `indexing` (the active run is in this folder), `queued` (the active run hasn't reached it yet), `searchable`, `has_errors` (some files can't be searched, or fewer files are in the index than the run found), `not_indexed` (no run has read it) or `empty` (the last run found nothing to index).         |
+| `folders[].indexed`       | Documents from this folder in the index.                                                                                                                                                                                                                                                                    |
+| `folders[].searchable`    | Of those, how many search can use.                                                                                                                                                                                                                                                                          |
+| `folders[].notSearchable` | Of those, how many it can't: no readable text, or waiting to be converted again.                                                                                                                                                                                                                            |
+| `folders[].expected`      | Files the latest run found in this folder. `null` when no run has recorded a folder list that covers it: the folder was granted after that run, the run counted it only as part of a larger folder, or the run kept the folder's documents without reading it (a share below the grant that came up empty). |
+| `folders[].pending`       | Files the active run still has to read here. `0` when no run is active.                                                                                                                                                                                                                                     |
+| `folders[].lastIndexedAt` | When the last successful run that covered this folder finished. Before any such run, when a document from this folder last entered the index, or `null`. A failed run doesn't count.                                                                                                                        |
+
+**Errors:**
+
+- `401` — not authenticated
+- `404` — agent not found, or the user can't chat with it
+
+### `GET /api/agents/:agentId/knowledge/files`
+
+One folder's files and whether search can use each one. Open to **everyone who can chat with the agent**, not only admins.
+
+**Query parameters:**
+
+| Parameter | Description                                                                                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `folder`  | Required. A granted folder, or a folder inside one.                                                                                                         |
+| `scope`   | `direct` (only the files in `folder` itself) or `tree` (everything below it). Defaults to `direct` for a granted folder and `tree` for a folder inside one. |
+| `filter`  | `all` (default) or `not_searchable`, which keeps only the files an answer can't come from.                                                                  |
+| `q`       | Optional. Keeps only files whose `name` contains this text, ignoring case.                                                                                  |
+| `offset`  | Default `0`.                                                                                                                                                |
+| `limit`   | Default `50`, at most `100`.                                                                                                                                |
+
+**Response** (for `?folder=/data/kb/hr&filter=not_searchable`):
+
+```json
+{
+  "folder": "/data/kb/hr",
+  "files": [
+    {
+      "path": "/data/kb/hr/scan.pdf",
+      "name": "scan.pdf",
+      "state": "no_text",
+      "archived": false,
+      "indexedAt": "2026-11-01T10:00:00.000Z",
+      "modifiedAt": "2026-10-28T08:12:00.000Z"
+    }
+  ],
+  "total": 1,
+  "totals": { "all": 2, "searchable": 1, "notSearchable": 1, "unsupported": 0 },
+  "truncated": false
+}
+```
+
+| Field              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `files[].state`    | `searchable`, `changed` (searchable, but modified since it was indexed), `no_text` (indexed, nothing readable in it), `awaiting_conversion` (an Office file waiting to be converted again), `pending` (the active run will read it), `failed` (the file was there before the last successful run started and it isn't in the index), `new` (added after the last successful run) or `unsupported` (a file type the index can't read). Only `searchable` and `changed` count as searchable. |
+| `files[].name`     | The path below `folder`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `files[].archived` | `true` for a file in an [archive folder](/guides/create-knowledge-base-agent/#current-documents-first), which everyday search leaves out.                                                                                                                                                                                                                                                                                                                                                  |
+| `total`            | Files matching `filter` and `q`, before `offset` and `limit`.                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `totals`           | Counts for everything `scope` lists, regardless of `filter` and `q`. `all` counts the files the index reads; `unsupported` counts the rest, which `not_searchable` leaves out.                                                                                                                                                                                                                                                                                                             |
+| `truncated`        | `true` when the listing stopped at 20,000 files; the folder may hold more, and `totals` cover only those listed.                                                                                                                                                                                                                                                                                                                                                                           |
+
+**Errors:**
+
+- `400` — `folder` is missing
+- `401` — not authenticated
+- `404` — agent not found, the user can't chat with it, or `folder` doesn't exist or isn't inside a granted folder (the same answer for both, so the share can't be probed for names)
 
 ## Automations
 

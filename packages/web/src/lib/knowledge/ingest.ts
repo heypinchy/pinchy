@@ -62,7 +62,9 @@ import {
   isHiddenSegment,
 } from "./exclude-globs";
 import { isArchivedPath, statusForPath } from "./archive-paths";
+import { orderForIngest } from "./ingest-order";
 import { buildPathFilter } from "./path-filter";
+import { recordUnsupportedFiles, unsupportedFileType } from "./unsupported-files";
 import { chunkPages } from "./chunk";
 import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
@@ -187,6 +189,13 @@ export interface IngestOptions {
    */
   onProgress?: (progress: IngestProgress) => void | Promise<void>;
   /**
+   * Called once, before the first file is touched, with every queued path in
+   * the order the run will process them. `processed` in a later progress
+   * report is a position in this list, which is what lets a caller say which
+   * folder the run is in without a write per file (folder-plan.ts, #1386).
+   */
+  onQueue?: (paths: readonly string[]) => void | Promise<void>;
+  /**
    * Called for every root the run left out: `unreadable` (it could not be
    * looked at — missing, unmounted, a read error mid-walk) or `emptied` (see
    * `keepEmptiedFolders`). Such a root contributes no files AND no removal pass.
@@ -264,11 +273,28 @@ export interface IngestProgress {
   counts: IngestResult;
 }
 
-/** Applies the per-file eligibility rules (skip-hidden + A/B denylist + extension allowlist) to a basename. */
-function isEligibleFile(name: string, allowedExtensions: readonly string[]): boolean {
-  if (isHiddenSegment(name)) return false;
-  if (isDenylistedFileName(name)) return false;
-  return isAllowedExtension(name, allowedExtensions);
+/**
+ * What discovery makes of a basename: a document to ingest, a file whose type
+ * the indexer cannot read (#1267), or something that was never a document — a
+ * hidden file, an OS or temp artifact (exclude-globs.ts).
+ *
+ * The middle answer is the one that used to vanish. It is a file somebody put
+ * on the share for a reason, so it is counted and listed; the last answer is
+ * noise, and listing it would bury the scans an admin has to convert.
+ */
+function classifyFile(
+  name: string,
+  allowedExtensions: readonly string[]
+): "eligible" | "unsupported" | "ignored" {
+  if (isHiddenSegment(name)) return "ignored";
+  if (isDenylistedFileName(name)) return "ignored";
+  return isAllowedExtension(name, allowedExtensions) ? "eligible" : "unsupported";
+}
+
+/** One root as discovery found it: the files to ingest, and the ones it cannot (path → type). */
+interface RootListing {
+  files: Map<string, DiscoveredFile>;
+  unsupported: Map<string, string>;
 }
 
 /**
@@ -309,10 +335,10 @@ async function describeFile(realPath: string): Promise<DiscoveredFile> {
 async function walkDir(
   dir: string,
   realDir: string,
-  allowedExtensions: readonly string[]
-): Promise<Map<string, DiscoveredFile>> {
+  allowedExtensions: readonly string[],
+  listing: RootListing
+): Promise<void> {
   const entries = await readdir(realDir, { withFileTypes: true });
-  const files = new Map<string, DiscoveredFile>();
 
   for (const entry of entries) {
     if (isHiddenSegment(entry.name)) continue;
@@ -323,17 +349,16 @@ async function walkDir(
     // file or to a folder is skipped here, and never followed.
     if (entry.isDirectory()) {
       if (isDenylistedDirName(entry.name)) continue;
-      for (const [path, file] of await walkDir(absPath, realPath, allowedExtensions)) {
-        files.set(path, file);
-      }
+      await walkDir(absPath, realPath, allowedExtensions, listing);
     } else if (entry.isFile()) {
-      if (isEligibleFile(entry.name, allowedExtensions)) {
-        files.set(absPath, await describeFile(realPath));
-      }
+      // No stat for an unsupported file: nothing reads it, and on a network
+      // share an lstat per file is a round trip per file.
+      const kind = classifyFile(entry.name, allowedExtensions);
+      if (kind === "eligible") listing.files.set(absPath, await describeFile(realPath));
+      else if (kind === "unsupported")
+        listing.unsupported.set(absPath, unsupportedFileType(entry.name));
     }
   }
-
-  return files;
 }
 
 /**
@@ -357,7 +382,7 @@ async function walkDir(
 async function discoverFiles(
   rootDir: string,
   allowedExtensions: readonly string[]
-): Promise<Map<string, DiscoveredFile> | null> {
+): Promise<RootListing | null> {
   // The ROOT may be a link — it is the admin's grant, and a share mounted
   // elsewhere is a normal way to set one up — so it is resolved once, here.
   // Everything below it is walked by real path and never through a link.
@@ -370,16 +395,20 @@ async function discoverFiles(
     return null;
   }
 
+  const listing: RootListing = { files: new Map(), unsupported: new Map() };
   if (rootStat.isFile()) {
-    return isEligibleFile(basename(rootDir), allowedExtensions)
-      ? new Map([[rootDir, await describeFile(realRoot)]])
-      : new Map();
+    const name = basename(rootDir);
+    const kind = classifyFile(name, allowedExtensions);
+    if (kind === "eligible") listing.files.set(rootDir, await describeFile(realRoot));
+    else if (kind === "unsupported") listing.unsupported.set(rootDir, unsupportedFileType(name));
+    return listing;
   }
   // A socket, device, or dangling symlink: readable, and holds no documents.
-  if (!rootStat.isDirectory()) return new Map();
+  if (!rootStat.isDirectory()) return listing;
 
   try {
-    return await walkDir(rootDir, realRoot, allowedExtensions);
+    await walkDir(rootDir, realRoot, allowedExtensions, listing);
+    return listing;
   } catch {
     // The root vanished or turned unreadable mid-walk. Same reasoning as
     // above: a partial listing must not be mistaken for the whole truth.
@@ -1352,13 +1381,18 @@ export async function ingestPaths(
   // no files to ingest AND no removal pass, because we have no evidence about
   // what is under it. See discoverFiles for why that distinction is not
   // pedantry.
-  const perRoot: Array<{ rootDir: string; discovered: Map<string, DiscoveredFile> }> = [];
+  const perRoot: Array<{
+    rootDir: string;
+    discovered: Map<string, DiscoveredFile>;
+    unsupported: Map<string, string>;
+  }> = [];
   for (const rootDir of rootDirs) {
-    const discovered = await discoverFiles(rootDir, allowedExtensions);
-    if (discovered === null) {
+    const listing = await discoverFiles(rootDir, allowedExtensions);
+    if (listing === null) {
       opts.onSkippedRoot?.(rootDir, "unreadable");
       continue;
     }
+    const discovered = listing.files;
     if (
       opts.keepEmptiedFolders &&
       discovered.size === 0 &&
@@ -1367,23 +1401,24 @@ export async function ingestPaths(
       opts.onSkippedRoot?.(rootDir, "emptied");
       continue;
     }
-    perRoot.push({ rootDir, discovered });
+    perRoot.push({ rootDir, discovered, unsupported: listing.unsupported });
   }
 
-  // Deduplicated across roots, but ordered so each file is ingested while its
-  // first root is being processed — the order only matters for readability of
-  // the progress stream, not for correctness. Deduplication covers the byte
-  // total too: a file granted under both /data and /data/hr is one unit of
-  // work and must be weighed once, or the run would stop short of its total.
-  const queue: Array<{ absPath: string } & DiscoveredFile> = [];
-  const seen = new Set<string>();
+  // Counted once however many overlapping roots found a file, like `total`.
+  const unsupported = new Set(perRoot.flatMap((root) => [...root.unsupported.keys()])).size;
+
+  // Deduplicated across roots: a file granted under both /data and /data/hr is
+  // one unit of work and must be weighed once, or the run would stop short of
+  // its total. Then ordered across ALL roots — current files before archived
+  // ones, folder by folder — so a first index that runs for days has the part
+  // people search complete first (ingest-order.ts, #1385).
+  const unique = new Map<string, DiscoveredFile>();
   for (const { discovered } of perRoot) {
     for (const [absPath, file] of discovered) {
-      if (seen.has(absPath)) continue;
-      seen.add(absPath);
-      queue.push({ absPath, ...file });
+      if (!unique.has(absPath)) unique.set(absPath, file);
     }
   }
+  const queue = orderForIngest([...unique].map(([absPath, file]) => ({ absPath, ...file })));
 
   // Converts in queue order, in batches, as the loop below reaches Office
   // documents — see officeArtifacts for why this is not a pre-pass.
@@ -1401,7 +1436,7 @@ export async function ingestPaths(
   let archived = 0;
   const total = queue.length;
   const totalBytes = queue.reduce((sum, file) => sum + file.bytes, 0);
-  const snapshot = (): IngestResult => ({ ...tally, removed, failed, archived });
+  const snapshot = (): IngestResult => ({ ...tally, removed, failed, archived, unsupported });
 
   /** `inFlightBytes` is the part of the CURRENT file already embedded — see the callback below. */
   const report = (inFlightBytes = 0) =>
@@ -1416,6 +1451,7 @@ export async function ingestPaths(
   // Reported before any work: "0 of N" is what tells a caller the run started
   // and how big it is. A caller that hears nothing until the first file lands
   // cannot tell a slow run from a dead one.
+  await opts.onQueue?.(queue.map((file) => file.absPath));
   await report();
 
   for (const { absPath, bytes, realPath } of queue) {
@@ -1483,7 +1519,16 @@ export async function ingestPaths(
   // look at each folder once and report it once. An emptied ROOT counts here
   // too: /data/hr was skipped as a root, and /data's pass must not delete what
   // was under it either.
-  const emptyFolders = opts.keepEmptiedFolders ? emptyFolderCheck(opts.onKeptFolder) : null;
+  //
+  // The folders it keeps are collected as well: the list of unsupported files
+  // follows the same rule as the documents, below.
+  const keptFolders: string[] = [];
+  const emptyFolders = opts.keepEmptiedFolders
+    ? emptyFolderCheck((folder) => {
+        keptFolders.push(folder);
+        opts.onKeptFolder?.(folder);
+      })
+    : null;
   const skippedEmptiedRoots = new Set(
     rootDirs.filter((root) => !perRoot.some((kept) => kept.rootDir === root))
   );
@@ -1499,6 +1544,17 @@ export async function ingestPaths(
       }
     );
   }
+
+  // Last, beside the removal pass and for the same reason: it says what is on
+  // the share NOW, so it is written only by a run that got to the end. A run
+  // that died halfway leaves the previous list in place rather than half a new
+  // one. A folder the run left as it was keeps its rows — a share that failed
+  // to mount is no evidence that its files are gone.
+  await recordUnsupportedFiles(
+    orgId,
+    perRoot.map(({ rootDir, unsupported: files }) => ({ rootDir, files })),
+    [...skippedEmptiedRoots, ...keptFolders]
+  );
 
   return snapshot();
 }
