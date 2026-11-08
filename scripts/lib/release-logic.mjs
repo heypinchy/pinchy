@@ -861,6 +861,55 @@ export function isReleasableBranch(branch) {
 }
 
 /**
+ * The version a branch declares right after `pnpm release <version>` cut it —
+ * what release.mjs writes into both package.json files in the post-release
+ * commit, beside the freshly opened upgrade-notes section (#1372).
+ *
+ * Since #1044 every commit that is not a release commit declares `<next>-dev`.
+ * The script used to leave both files at the released version, so the branch
+ * it ran on stayed non-dev: `assert-package-version.test.mjs` went red on the
+ * release-branch tip and on every backport after it, and was fixed by hand
+ * three releases in a row (#1371, #1384, #1392).
+ *
+ * "Next" depends on what the branch is for:
+ *  - `release/X.Y` hosts only patches of X.Y → `X.Y.(Z+1)-dev`.
+ *  - `main` is trunk and becomes the next minor → `X.(Y+1).0-dev`. A patch of
+ *    this minor comes off a `release/X.Y` branch, never off main.
+ *
+ * Throws for a release branch of a different minor than the version — that
+ * release would tag the wrong line. release.mjs calls this before it changes
+ * anything, so the refusal lands before the tag rather than after it.
+ *
+ * @param {string} version - the release being cut, e.g. "0.10.2"
+ * @param {string} branch - the branch it is cut from, e.g. "release/0.10"
+ * @returns {string} e.g. "0.10.3-dev"
+ */
+export function nextDevVersion(version, branch) {
+  if (typeof version !== "string" || !SEMVER_RE.test(version)) {
+    throw new Error(
+      `Not a release version: ${JSON.stringify(version)}. Expected "1.2.3".`,
+    );
+  }
+  const [major, minor, patch] = version.split(".").map(Number);
+  if (branch === "main") return `${major}.${minor + 1}.0-dev`;
+  if (RELEASE_BRANCH_RE.test(branch)) {
+    if (branch !== `release/${major}.${minor}`) {
+      throw new Error(
+        `Cannot release v${version} from ${branch}: a release/X.Y branch ` +
+          `hosts only X.Y.* releases. Cut it from release/${major}.${minor}` +
+          (patch === 0 ? " (or main)" : "") +
+          ".",
+      );
+    }
+    return `${major}.${minor}.${patch + 1}-dev`;
+  }
+  throw new Error(
+    `Cannot open a development version on branch ${JSON.stringify(branch)}: ` +
+      `releases are cut from main or a release/X.Y branch only.`,
+  );
+}
+
+/**
  * The moving image tag that pre-release.yml pushes for a branch.
  *
  * Staging tracks `:next` for `main`. A release branch must NOT push `:next` or it
