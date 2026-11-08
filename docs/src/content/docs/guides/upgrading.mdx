@@ -252,6 +252,10 @@ A passage can be dense enough — a table full of numbers, say — that it holds
 
 More generally, anything that goes wrong with one file now costs only that file: it counts as `failed` in the reindex report, the server log names it, and the run goes on with the next file. Only a problem that would fail every file after it stops the run: the embedding model can't be loaded or reached, the connection to the database is lost or the database shuts down, or the run is stopped. Nothing to configure. If a reindex kept stopping at the same file, run **Reindex now** after the upgrade.
 
+#### A first index reads current documents first
+
+A reindex used to read files in whatever order it found them, so on a large share the documents people ask about could come last. It now reads every file outside an [archived folder](/guides/create-knowledge-base-agent/#current-documents-first) first, folder by folder in path order, and the archived ones after that. A folder is searchable in full long before the run ends. Scanned PDFs are also sent to your vision model three pages at a time instead of one, which shortens a first index with many scans. Nothing to configure. To speed up embedding, raise `PINCHY_CPUS`: see [CPU when the knowledge base embeds](/guides/customizing-deployment/#cpu-when-the-knowledge-base-embeds).
+
 #### A change made while OpenClaw restarts now reaches it
 
 If you created an agent or changed a setting while OpenClaw was restarting or rate-limiting config changes, the change could land in `openclaw.json` and still never reach the running OpenClaw. Chats to that agent then failed with `unknown agent id` until some later, unrelated change happened to push the config again. We now push it again ourselves — when Pinchy reconnects to OpenClaw, or a minute later if OpenClaw stayed connected, backing off until OpenClaw has applied it, unless OpenClaw rejected the config itself. Restarting Pinchy in the meantime drops that retry; the next change you make delivers it. Nothing to configure.
