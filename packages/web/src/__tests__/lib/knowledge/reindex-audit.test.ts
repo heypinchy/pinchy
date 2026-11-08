@@ -144,3 +144,31 @@ describe("the detail's keys", () => {
     reindexDetail(undeclared);
   });
 });
+
+describe("the unsupported count (#1267)", () => {
+  const base = {
+    actorType: "system" as const,
+    actorId: KB_INDEX_WORKER_ACTOR,
+    agent,
+    outcome: "success" as const,
+    pathCount: 1,
+    jobId: "job-1",
+    trigger: "manual" as const,
+  };
+  const counts = { indexed: 3, skipped: 0, removed: 0, unsearchable: 0, failed: 0, archived: 0 };
+
+  // A count, never the list: a real share holds 100k such files, and their
+  // paths are exactly what this signed row must not carry.
+  it("carries how many files the run could not read, as a number", () => {
+    const entry = reindexAuditEntry({ ...base, counts: { ...counts, unsupported: 12 } });
+
+    expect((entry.detail as Record<string, unknown>).unsupported).toBe(12);
+  });
+
+  // A run that never got to discovery did not look; a zero would say it did.
+  it("is absent when the run's counts never had one", () => {
+    const entry = reindexAuditEntry({ ...base, counts });
+
+    expect(entry.detail).not.toHaveProperty("unsupported");
+  });
+});
