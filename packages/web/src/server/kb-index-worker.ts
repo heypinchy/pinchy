@@ -26,7 +26,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
-import { embedTexts } from "@/lib/knowledge/embeddings";
+import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
@@ -44,10 +44,12 @@ import {
   officeFormatVersionInUse,
   queueReconversion,
 } from "@/lib/knowledge/office-format-upgrade";
+import { buildFolderPlan } from "@/lib/knowledge/folder-plan";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
   claimNextIndexJob,
   finishIndexJob,
+  recordIndexJobFolderPlan,
   recordIndexJobProgress,
   requeueOrphanedIndexJobs,
   type KbIndexJob,
@@ -102,6 +104,7 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
 
   return {
     embed: (texts) => embedTexts(texts, cfg),
+    fitForEmbedding: (texts) => fitTextsForEmbedding(texts, cfg),
     extractPdf: (absPath, opts) =>
       extractPdfPages(absPath, {
         outline: opts?.outline,
@@ -191,6 +194,8 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
         counts = progress.counts;
         return recordIndexJobProgress(job.id, progress);
       },
+      onQueue: (queuePaths) =>
+        recordIndexJobFolderPlan(job.id, buildFolderPlan(job.paths, queuePaths)),
       onSkippedRoot: (rootDir, reason) => {
         unavailableFolders++;
         skippedRoots++;
@@ -224,8 +229,9 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
       throw new Error(FOLDERS_UNAVAILABLE_ERROR);
     }
   } catch (err) {
-    // Ingest already absorbs a single unreadable file (counting it `failed`),
-    // so reaching here means something systemic — the embedder (a missing GGUF
+    // Ingest already absorbs a single unreadable file, or one whose values the
+    // database refuses (counting it `failed`), so reaching here means something
+    // systemic — the embedder (a missing GGUF
     // or a node-llama-cpp load failure) or the database — took the run down.
     // Finishing the job (rather than leaving it `running`) is what frees the
     // org's active-job slot: without it, one transient failure would wedge the

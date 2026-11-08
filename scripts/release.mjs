@@ -19,8 +19,10 @@
  *      - the --verified staging attestation matches HEAD
  *      - pnpm audit --audit-level=high --prod passes (or --skip-audit)
  *   3. Bumps version in root package.json, packages/web/package.json, and .env.example
- *   4. Commits, tags, opens the next cycle's upgrade-notes section in a
- *      follow-up commit, and pushes both
+ *   4. Commits, tags, then opens the next cycle in a follow-up commit — the
+ *      next upgrade-notes section and the next `-dev` version in both
+ *      package.json files (X.Y.(Z+1)-dev on release/X.Y, X.(Y+1).0-dev on
+ *      main) — and pushes both
  *
  * What to do manually first (see CONTRIBUTING.md):
  *   - Update docs/src/content/docs/guides/upgrading.mdx (enforced)
@@ -46,6 +48,7 @@ import {
   openNextUpgradeSection,
   bumpReadmeQuickstartPins,
   isReleasableBranch,
+  nextDevVersion,
   checkCiGreenForHead,
   checkReleaseVerification,
   parseVerifiedSha,
@@ -155,6 +158,16 @@ if (!isReleasableBranch(branch)) {
   );
 }
 log(`  ✔ On ${branch} branch`);
+
+// What the branch declares after this release. Derived now, before anything is
+// written, so a version that does not belong on this branch (0.11.0 from
+// release/0.10) aborts here rather than after the tag is pushed.
+let devVersion;
+try {
+  devVersion = nextDevVersion(version, branch);
+} catch (e) {
+  fail(e.message);
+}
 
 // CI's verdict has to be about the commit being tagged. Asking only for the
 // newest run's conclusion answered "green" for a run that never saw this code
@@ -343,14 +356,30 @@ const frozenMdx = readFileSync(upgradingMdxPath, "utf8");
 const openedMdx = openNextUpgradeSection(frozenMdx, prevVersion, version);
 if (openedMdx !== frozenMdx) {
   writeFileSync(upgradingMdxPath, openedMdx);
-  exec(`git add "${upgradingMdxPath}"`);
-  exec(
-    `git commit -m "docs(upgrading): open the v${version} → next upgrade section"`,
-  );
   log(`  ✔ upgrading.mdx → opened v${version}→%%PINCHY_VERSION%% section`);
 } else {
   log(`  ✔ upgrading.mdx → next section already open (nothing to add)`);
 }
+
+// …and declare the next development version in the same commit (#1372). Since
+// #1044 only a release commit may carry a bare version; every other commit says
+// `<next>-dev`. Leaving both files at the release kept the branch non-dev, so
+// assert-package-version went red on its tip and on every backport after it.
+// The install pins (.env.example, README, marketplace) stay on the tag: they
+// answer "what should I pull?", and a -dev version is not pullable.
+writeFileSync(
+  rootPkgPath,
+  bumpPackageJson(readFileSync(rootPkgPath, "utf8"), devVersion),
+);
+writeFileSync(
+  webPkgPath,
+  bumpPackageJson(readFileSync(webPkgPath, "utf8"), devVersion),
+);
+log(`  ✔ package.json + packages/web/package.json → ${devVersion}`);
+
+exec(`git add package.json packages/web/package.json "${upgradingMdxPath}"`);
+exec(`git commit -m "chore(release): open ${devVersion} after v${version}"`);
+log(`  ✔ Committed ${devVersion}`);
 
 log("Pushing...");
 exec("git push origin HEAD");

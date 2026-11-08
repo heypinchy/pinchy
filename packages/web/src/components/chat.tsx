@@ -12,6 +12,7 @@ import { useAgentsContext } from "@/components/agents-provider";
 import { getAgentAvatarSvg } from "@/lib/avatar";
 import Link from "next/link";
 import { Settings } from "lucide-react";
+import { KnowledgeSearchSheet } from "@/components/knowledge-search-sheet";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
 import { ChatSwitcher } from "@/components/chat-switcher";
 import { AiDisclosureLabel } from "@/components/ai-disclosure-label";
@@ -171,6 +172,8 @@ interface ChatProps {
   isPersonal?: boolean;
   avatarUrl?: string;
   canEdit?: boolean;
+  /** Offer "What can this agent search?" in the header (#1386). */
+  searchesKnowledge?: boolean;
 }
 
 export function Chat({
@@ -181,6 +184,7 @@ export function Chat({
   isPersonal = false,
   avatarUrl,
   canEdit = false,
+  searchesKnowledge = false,
 }: ChatProps) {
   const { getAgent } = useAgentsContext();
   const liveAgent = getAgent(agentId);
@@ -295,6 +299,7 @@ export function Chat({
                                     chatId={chatId ?? null}
                                     avatarUrl={displayAvatar}
                                     canEdit={canEdit}
+                                    searchesKnowledge={searchesKnowledge}
                                   />
                                   <header className="hidden md:flex px-4 py-2.5 border-b items-center justify-between shrink-0">
                                     <div className="flex items-center gap-2 min-w-0 flex-1 animate-in fade-in duration-300">
@@ -333,6 +338,9 @@ export function Chat({
                                       <AiDisclosureLabel />
                                     </div>
                                     <div className="flex items-center gap-3 shrink-0">
+                                      {searchesKnowledge && (
+                                        <KnowledgeSearchSheet agentId={agentId} />
+                                      )}
                                       {canEdit && (
                                         <Link
                                           href={`/chat/${agentId}/settings`}

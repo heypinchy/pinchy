@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useScrollEdgeFade } from "@/hooks/use-scroll-edge-fade";
 import { useTabParam, AGENT_SETTINGS_TABS, type AgentSettingsTab } from "@/hooks/use-tab-param";
 import { authClient } from "@/lib/auth-client";
 import { toast } from "sonner";
@@ -194,6 +195,11 @@ export function AgentSettingsPageContent() {
             (tab === "automations" && canManageAutomations)
         );
   const [activeTab, setActiveTab] = useTabParam("general", visibleTabs);
+  const {
+    ref: tabListRef,
+    element: tabListElement,
+    style: tabListStyle,
+  } = useScrollEdgeFade<HTMLDivElement>();
 
   const [providers, setProviders] = useState<Provider[]>([]);
   const [soulContent, setSoulContent] = useState("");
@@ -272,6 +278,14 @@ export function AgentSettingsPageContent() {
       router.replace(`/chat/${agentId}`);
     }
   }, [isPending, agent, canEdit, router, agentId]);
+
+  // Keep the active tab visible in the scrolling tab list (#1400), e.g. after a
+  // deep link to ?tab=diagnostics on a phone. "nearest" only scrolls what is
+  // needed, so the page does not jump vertically.
+  useEffect(() => {
+    const active = tabListElement?.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+    active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTab, tabListElement]);
 
   const handleGeneralChange = useCallback((values: GeneralValues, isDirty: boolean) => {
     generalDraft.current = values;
@@ -502,7 +516,15 @@ export function AgentSettingsPageContent() {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList>
+          {/* The tabs are wider than a phone screen (#1400). The list scrolls on
+              its own so the page never scrolls sideways; justify-start because a
+              centred row that overflows clips its first tabs out of reach. The
+              scrollbar is hidden; an edge fade marks the side with more tabs. */}
+          <TabsList
+            ref={tabListRef}
+            style={tabListStyle}
+            className="max-w-full justify-start overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
             <TabsTrigger value="general">
               General {dirtyTabs.has("general") && <DirtyDot />}
             </TabsTrigger>

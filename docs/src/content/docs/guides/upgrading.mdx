@@ -187,7 +187,7 @@ If you need to roll back after an upgrade:
 
 The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint files to; those live on the `pinchy-kb-artifacts` volume. When the version you upgraded to converts those files differently, it keeps the older PDFs until it has converted again every file a knowledge-base agent can search, and only then deletes them. Roll back before that and nothing is lost. Roll back after it, and the older version still finds every such file in the search, but a citation of one that hasn't changed since won't open its preview, because the PDF it looks for is gone; the original file downloads as usual. If you want previews to survive a rollback, back up that volume alongside the database, the way [Backup & recovery](/guides/hardening/#backup--recovery) describes for the other volumes, and restore it with the database.
 
-## Upgrading from v0.10.0 to %%PINCHY_VERSION%%
+## Upgrading from v0.10.3 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -224,10 +224,6 @@ Agents created from a web template, such as the Market & News Monitor, used to g
 
 The address checks for Odoo, mail servers and OpenAI-compatible providers resolve the hostname, and the client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool already pinned the address it checked. From this release, so do the requests Pinchy makes itself right after a check: the mail **Test connection**, listing Odoo databases, and an OpenAI-compatible provider's model discovery and key check. Those also no longer contact a name that doesn't resolve. Everything else still looks the name up again: the agent's Odoo and mail tools, the agent runtime's requests to a provider, and Pinchy's other Odoo requests (testing credentials, previewing and syncing the schema). Nothing to configure.
 
-#### Files the knowledge base can't read are counted and listed
-
-A `.tif` scan, an old `.xls` or a `.txt` on a share used to vanish without a trace: no document, no counter, nothing to look up. A run now counts them as `N not supported` in the agent's **Index** section, and **Download the list** gives you a CSV with each one's path and type, so you can convert them or tell users what the agent can't see. Nothing to configure. The count and the list appear after each agent's next run. For an agent with knowledge search, the nightly run is enough; any other agent needs **Reindex now**. [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read) has the details.
-
 #### A change made while OpenClaw restarts now reaches it
 
 If you created an agent or changed a setting while OpenClaw was restarting or rate-limiting config changes, the change could land in `openclaw.json` and still never reach the running OpenClaw. Chats to that agent then failed with `unknown agent id` until some later, unrelated change happened to push the config again. We now push it again ourselves — when Pinchy reconnects to OpenClaw, or a minute later if OpenClaw stayed connected, backing off until OpenClaw has applied it, unless OpenClaw rejected the config itself. Restarting Pinchy in the meantime drops that retry; the next change you make delivers it. Nothing to configure.
@@ -240,11 +236,96 @@ Pinchy now remembers in each browser which person was signed in last. That way t
 
 Whenever an agent's plugin configuration changed — its folders, web search settings or confirmation rules — the `agent.updated` entry in the audit trail stored the whole configuration before and after, every folder path included. A path can name a person, and audit entries can't be changed later. Above about twenty folders, the entry also outgrew the size limit and was cut short, losing what had changed. The entry now records `allowedPathCount` in place of the folder list, plus a `folderAccess` field that says how many folders were added and removed. [Audit Trail → `agent.updated`](/concepts/audit-trail/#agentupdated) shows the shape. Entries written before the upgrade keep the paths they recorded. If a script of yours reads `changes.pluginConfig` from these entries, switch it to the counts.
 
+## Upgrading from v0.10.2 to v0.10.3
+
+### Breaking changes
+
+None so far.
+
+### Upgrade notes
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.10.2/PINCHY_VERSION=v0.10.3/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### Files the knowledge base can't read are counted and listed
+
+A `.tif` scan, an old `.xls` or a `.txt` on a share used to vanish without a trace: no document, no counter, nothing to look up. A run now counts them as `N not supported` in the agent's **Index** section, and **Download the list** gives you a CSV with each one's path and type, so you can convert them or tell users what the agent can't see. Nothing to configure. The count and the list appear after each agent's next run. For an agent with knowledge search, the nightly run is enough; any other agent needs **Reindex now**. [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read) has the details.
+
+#### A first index reads current documents first
+
+A reindex used to read files in whatever order it found them, so on a large share the documents people ask about could come last. It now reads every file outside an [archived folder](/guides/create-knowledge-base-agent/#current-documents-first) first, one folder after another, and the archived ones after that. Most folders are searchable long before the run ends. Scanned PDFs are also sent to your vision model three pages at a time instead of one, which shortens a first index with many scans. Nothing to configure. To speed up embedding, raise `PINCHY_CPUS`: see [CPU when the knowledge base embeds](/guides/customizing-deployment/#cpu-when-the-knowledge-base-embeds).
+
+#### See which folders and files a knowledge-base agent can search
+
+The **Index** section of a knowledge-base agent now has a **Folders** list. It shows each granted folder and the folders directly inside it as searchable, being indexed, queued or needing attention, and **Files** lists a folder's files with the state of each. Members see the same list, read-only, from **What can this agent search?** in the chat. Two new read-only endpoints serve it: [`GET …/knowledge/folders`](/reference/api/#get-apiagentsagentidknowledgefolders) and [`GET …/knowledge/files`](/reference/api/#get-apiagentsagentidknowledgefiles). Nothing to configure. The count of how many files a run found in each folder appears after each agent's next run; until then a folder's count is measured against what is in the index. [See what the agent can search](/guides/create-knowledge-base-agent/#see-what-the-agent-can-search) has the details.
+
 ### Database migrations
 
-The migration `0080` runs automatically on startup — no manual steps. It is additive.
+The migrations `0080`–`0081` run automatically on startup — no manual steps. Both are additive.
 
 - `0080` — `kb_unsupported_files`, the list of files a run found but can't index, behind the new **Download the list** in the Index section. It starts empty and fills on each agent's next run.
+- `0081` — a `folder_plan` column on `kb_index_jobs`: how many files each run found per folder, behind the counts in the new **Folders** list. Empty for runs before the upgrade.
+
+## Upgrading from v0.10.1 to v0.10.2
+
+### Breaking changes
+
+None so far.
+
+### Upgrade notes
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.10.1/PINCHY_VERSION=v0.10.2/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### One file the embedding model refuses no longer stops a reindex
+
+A passage can be dense enough — a table full of numbers, say — that it holds more tokens than the embedding model takes at once. The model then answered `Input is longer than the context size`, and the whole reindex stopped at that file. The next run stopped at the same file again, so on a large share the first full index never finished. We now measure every passage with the model's own tokenizer before embedding it and split one that is too long into pieces the model takes. Each piece keeps the page or sheet it came from, so citations still open in the right place.
+
+More generally, anything that goes wrong with one file now costs only that file: it counts as `failed` in the reindex report, the server log names it, and the run goes on with the next file. Only a problem that would fail every file after it stops the run: the embedding model can't be loaded or reached, the connection to the database is lost or the database shuts down, or the run is stopped. Nothing to configure. If a reindex kept stopping at the same file, run **Reindex now** after the upgrade.
+
+## Upgrading from v0.10.0 to v0.10.1
+
+### Breaking changes
+
+None so far.
+
+### Upgrade notes
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.10.0/PINCHY_VERSION=v0.10.1/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### `PINCHY_KB_OCR=off` in `.env` now takes effect
+
+On v0.10.0, `PINCHY_KB_OCR=off` in your `.env` was ignored. We told you in the v0.10.0 notes to set it there to keep scanned pages away from your vision model, but our `docker-compose.yml` never passed it to the Pinchy container. So OCR stayed on: if you have an Anthropic, Google, OpenAI or Ollama Cloud key, Pinchy picked a vision model from it on its own, and indexing sent scanned pages to that provider. The `knowledge.reindex` entries in the [audit trail](/concepts/audit-trail/) show how many documents and pages went to which model since you upgraded. If you set it, scans read on v0.10.0 keep the text already in the index and are not sent again, and from this release on new and changed scans are not sent either. If you never set it, nothing changes: scans still go to your vision model.
+
+Eight more switches the docs tell you to set had the same gap, in every release so far: `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS`, `ALLOW_PRIVATE_URLS`, `ALLOW_PRIVATE_MAIL_HOSTS`, `PINCHY_USAGE_POLL_INTERVAL_MS`, `AUDIT_VERIFY_INTERVAL_MS`, and the three Telegram conflict switches `TELEGRAM_CONFLICT_AUTO_RESTART`, `TELEGRAM_CONFLICT_AUTO_DISABLE` and `TELEGRAM_CONFLICT_RECENT_WINDOW_MS`. The new `docker-compose.yml` passes all nine through. The upgrade commands above fetch it, and `docker compose up -d` recreates the container with your `.env` values. Every one of them is listed in [Environment variables](/reference/environment-variables/#behaviour-switches).
+
+**Check your `.env` before you upgrade.** Any of these lines you set once and forgot takes effect now:
+
+- `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1`: a custom (OpenAI-compatible) provider saved on a private address shows **Not in use** afterwards, and agents that use it get errors until you point it elsewhere. Until now, admins could save such addresses despite the setting.
+- `ALLOW_PRIVATE_URLS=1` or `ALLOW_PRIVATE_MAIL_HOSTS=1`: Odoo and mail connections can now reach your private network. Remove the line if that is not what you want.
+- `TELEGRAM_CONFLICT_AUTO_DISABLE=false`: if you set it to handle conflicts yourself, the watchdog may still have disabled a newly connected bot. Reconnect it from the agent's Telegram settings.
+
+If you added any of them to the `environment:` list of a `docker-compose.override.yml` as a workaround, you can keep it. The value there wins over `.env`.
+
+#### One file the database refuses no longer stops a reindex
+
+Some PDFs and workbooks carry a NUL character in their text or in a sheet name. PostgreSQL can't store that character, so it refused the file's rows, and the whole reindex stopped with an error starting `Failed query: insert into "kb_chunks"`. The database log said `invalid byte sequence for encoding "UTF8": 0x00`. The next run then stopped at the same file again, so documents after it never got indexed. We now remove NUL from what we read and turn the other invisible control characters into spaces before storing it. Tabs and line breaks stay. If the database still refuses a file's rows, that file counts as `failed` in the reindex report and the server log names it. If an earlier version of it was indexed, that version stays searchable. The run goes on with the next file, and the file is tried again on the next run. Nothing to configure. If a reindex stopped this way, run **Reindex now** after the upgrade.
 
 ## Upgrading from v0.9.1 to v0.10.0
 
