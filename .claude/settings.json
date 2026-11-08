@@ -16,7 +16,15 @@
       "WebSearch"
     ],
     "deny": [
-      "Read(.env*)",
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.*.local)",
+      "Read(**/.env.production*)",
+      "Read(**/.env.development*)",
+      "Read(**/.env.staging*)",
+      "Read(**/.env.test*)",
+      "Read(**/.env.bak*)",
+      "Read(**/.env-*)",
       "Read(secrets/**)",
       "Bash(curl *)",
       "Bash(wget *)",

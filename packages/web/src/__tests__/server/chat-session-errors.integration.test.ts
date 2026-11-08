@@ -2,7 +2,7 @@
 // the chat "paused" banner (Concern 1). Uses the real Postgres test database
 // (provisioned by global-setup.ts, emptied between tests by the integration reset).
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 import { db } from "@/db";
 import { users, agents, chatSessionErrors, auditLog } from "@/db/schema";
@@ -86,6 +86,43 @@ describe("chat session errors persistence", () => {
     await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: new Date() });
 
     expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
+  });
+
+  // The bound is inclusive and app-clock time, so an error stamped at exactly
+  // `before` is cleared. When Postgres stamped `created_at` with `now()` it kept
+  // microseconds a JS Date cannot hold: the row sat a fraction of a millisecond
+  // AFTER its own timestamp as the app reads it, and survived the supersede.
+  it("clears an error recorded at exactly the bound", async () => {
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const input = { ...base(user, agent), clientMessageId: "m1" };
+    const row = await recordChatSessionError(input);
+
+    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: row.createdAt });
+
+    expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
+  });
+
+  // Every caller passes app time (`dispatchedAt`), so `created_at` must be app
+  // time too. A database clock ahead of the app's left an error recorded before
+  // a successful turn looking newer than that turn, and its banner stayed on top
+  // of the answer (#1301). Simulated by running the app clock behind the
+  // database's.
+  it("clears an earlier error even when the database clock runs ahead of the app's", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() - 5_000 });
+    try {
+      const user = await seedUser();
+      const agent = await seedAgent(user.id);
+      const input = { ...base(user, agent), clientMessageId: "m1" };
+      await recordChatSessionError(input);
+      vi.setSystemTime(Date.now() + 1_000);
+
+      await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: new Date() });
+
+      expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does NOT clear an error recorded after the successful turn's bound", async () => {
