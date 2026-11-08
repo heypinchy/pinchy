@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { KnowledgeFolderTree } from "@/components/knowledge-folder-tree";
 import { KnowledgeUnsearchableList } from "@/components/knowledge-unsearchable-list";
 import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import {
@@ -344,6 +345,19 @@ export function KnowledgeReindexSection({
             ) : job?.status === "failed" ? (
               <FailedState job={job} />
             ) : null}
+
+            {/* Where the run is and what each folder holds (#1386). Shown while
+                a run is in flight too: that is when "which folder is it in?" is
+                asked. The tree polls on its own while a run is active. */}
+            {allowedPathCount > 0 && !hasUnsavedPathChanges && (
+              <div className="space-y-2">
+                <h5 className="text-sm font-medium">Folders</h5>
+                <KnowledgeFolderTree
+                  agentId={agentId}
+                  reloadKey={`${savedPathsKey ?? allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
+                />
+              </div>
+            )}
 
             {/* Which documents the counts above mean by "unsearchable" (#935).
                 Hidden while a run is in flight — the list is about to change —
