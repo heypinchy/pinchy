@@ -100,6 +100,7 @@ import {
 } from "@/lib/knowledge/office-artifacts";
 import { stageOfficeSourceIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
+import { listUnsupportedFiles, type UnsupportedFile } from "@/lib/knowledge/unsupported-files";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -233,6 +234,7 @@ function counts(expected: Partial<IngestResult> = {}): IngestResult {
     unsearchable: 0,
     failed: 0,
     archived: 0,
+    unsupported: 0,
     ...expected,
   };
 }
@@ -249,7 +251,7 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
 
   const result = await ingestDirectory(ORG_ID, tmpRoot, deps);
 
-  expect(result).toEqual(counts({ indexed: 1 }));
+  expect(result).toEqual(counts({ indexed: 1, unsupported: 1 }));
   expectPrivateCopy(extractPdf, handed, pdfPath, "fake-pdf-bytes-v1");
 
   const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
@@ -284,7 +286,7 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
 
   // ── Second run, no changes on disk ──────────────────────────────────────
   const secondResult = await ingestDirectory(ORG_ID, tmpRoot, deps);
-  expect(secondResult).toEqual(counts({ skipped: 1 }));
+  expect(secondResult).toEqual(counts({ skipped: 1, unsupported: 1 }));
   // No re-extraction, no re-embedding: real idempotency, not just a
   // row-count coincidence.
   expect(extractPdf).toHaveBeenCalledTimes(1);
@@ -522,14 +524,14 @@ it("accepts a single-file root path (not just a directory) and indexes that one 
   expect(second).toEqual(counts({ skipped: 1 }));
 });
 
-it("ignores a single-file root whose extension is not on the allowlist", async () => {
+it("does not ingest a single-file root whose extension is not on the allowlist, and counts it", async () => {
   const txtPath = join(tmpRoot, "notes.txt");
   writeFileSync(txtPath, "not a pdf");
 
   const { deps, extractPdf } = fakeDeps();
   const result = await ingestDirectory(ORG_ID, txtPath, deps);
 
-  expect(result).toEqual(counts());
+  expect(result).toEqual(counts({ unsupported: 1 }));
   expect(extractPdf).not.toHaveBeenCalled();
   const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docs).toHaveLength(0);
@@ -3322,4 +3324,151 @@ it("does not index a link that was already in the folder when it was listed", as
 
   expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
   expect(seen).toEqual(["pdf bytes"]);
+});
+
+describe("files whose type the indexer cannot read (#1267)", () => {
+  async function unsupportedUnder(...allowedPaths: string[]): Promise<UnsupportedFile[]> {
+    const out: UnsupportedFile[] = [];
+    for await (const page of listUnsupportedFiles(ORG_ID, allowedPaths)) out.push(...page);
+    return out;
+  }
+
+  // The staging case the issue was filed from: 13 files, 11 indexed, and the
+  // other two nowhere. They must be counted and named, with their type.
+  it("counts and records them with path and type, beside the documents it indexes", async () => {
+    writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
+    mkdirSync(join(tmpRoot, "scans"));
+    writeFileSync(join(tmpRoot, "scans", "Nameplate.TIF"), "tiff");
+    writeFileSync(join(tmpRoot, "Budget 2019.xls"), "biff");
+    writeFileSync(join(tmpRoot, "README"), "no extension");
+
+    const result = await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
+
+    expect(result).toEqual(counts({ indexed: 1, unsupported: 3 }));
+    expect(await unsupportedUnder(tmpRoot)).toEqual(
+      [
+        { sourcePath: join(tmpRoot, "Budget 2019.xls"), type: ".xls" },
+        { sourcePath: join(tmpRoot, "README"), type: "" },
+        { sourcePath: join(tmpRoot, "scans", "Nameplate.TIF"), type: ".tif" },
+      ].sort((a, b) => (a.sourcePath < b.sourcePath ? -1 : 1))
+    );
+  });
+
+  // Never documents: listing them would bury the scans in noise. Same for
+  // anything under a hidden or OS-reserved folder.
+  it("leaves out hidden files, OS artifacts and temp files", async () => {
+    writeFileSync(join(tmpRoot, ".DS_Store"), "x");
+    writeFileSync(join(tmpRoot, "Thumbs.db"), "x");
+    writeFileSync(join(tmpRoot, "~$Report.docx"), "x");
+    writeFileSync(join(tmpRoot, "draft.tmp"), "x");
+    mkdirSync(join(tmpRoot, ".git"));
+    writeFileSync(join(tmpRoot, ".git", "config"), "x");
+    mkdirSync(join(tmpRoot, "$RECYCLE.BIN"));
+    writeFileSync(join(tmpRoot, "$RECYCLE.BIN", "deleted.tif"), "x");
+
+    const result = await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
+
+    expect(result).toEqual(counts());
+    expect(await unsupportedUnder(tmpRoot)).toEqual([]);
+  });
+
+  // The admin's progress view reads counts off the progress stream, and a run
+  // that dies halfway is read back the same way: the number is known from
+  // discovery on, not only from a return value a throw would skip.
+  it("reports the count from the first progress report on", async () => {
+    writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
+    writeFileSync(join(tmpRoot, "notes.txt"), "plain text");
+    const reports: IngestProgress[] = [];
+
+    await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, {
+      onProgress: (p) => void reports.push(p),
+    });
+
+    expect(reports[0].counts.unsupported).toBe(1);
+  });
+
+  it("drops a file from the list once it is gone or converted", async () => {
+    const xls = join(tmpRoot, "Budget.xls");
+    writeFileSync(xls, "biff");
+    await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
+
+    rmSync(xls);
+    writeFileSync(join(tmpRoot, "Budget.xlsx"), "converted");
+    const { deps } = fakeDeps();
+    await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+    expect(await unsupportedUnder(tmpRoot)).toEqual([]);
+  });
+
+  it("counts a granted single file of an unsupported type", async () => {
+    const tif = join(tmpRoot, "Plate.tif");
+    writeFileSync(tif, "tiff");
+
+    const result = await ingestPaths(ORG_ID, [tif], fakeDeps().deps);
+
+    expect(result).toEqual(counts({ unsupported: 1 }));
+    expect(await unsupportedUnder(tif)).toEqual([{ sourcePath: tif, type: ".tif" }]);
+  });
+
+  it("counts a file under two overlapping roots once", async () => {
+    mkdirSync(join(tmpRoot, "hr"));
+    writeFileSync(join(tmpRoot, "hr", "Plate.tif"), "tiff");
+
+    const result = await ingestPaths(ORG_ID, [tmpRoot, join(tmpRoot, "hr")], fakeDeps().deps);
+
+    expect(result.unsupported).toBe(1);
+  });
+
+  // A share that failed to mount is an empty folder. Its documents are kept
+  // (keepEmptiedFolders), and so is the list of what it holds that we cannot
+  // read: an outage must not read as "the scans are gone".
+  it("keeps the list of a folder that came up empty while its documents were kept", async () => {
+    const share = join(tmpRoot, "share");
+    mkdirSync(share);
+    writeFileSync(join(share, "contract.pdf"), "fake-pdf-bytes");
+    writeFileSync(join(share, "Plate.tif"), "tiff");
+    writeFileSync(join(tmpRoot, "other.pdf"), "fake-pdf-bytes-2");
+    await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, { keepEmptiedFolders: true });
+
+    rmSync(join(share, "contract.pdf"));
+    rmSync(join(share, "Plate.tif"));
+    await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, { keepEmptiedFolders: true });
+
+    expect(await unsupportedUnder(tmpRoot)).toEqual([
+      { sourcePath: join(share, "Plate.tif"), type: ".tif" },
+    ]);
+  });
+
+  it("keeps the list of a granted folder it could not read", async () => {
+    const share = join(tmpRoot, "share");
+    mkdirSync(share);
+    writeFileSync(join(share, "Plate.tif"), "tiff");
+    await ingestDirectory(ORG_ID, share, fakeDeps().deps);
+
+    rmSync(share, { recursive: true });
+    await ingestDirectory(ORG_ID, share, fakeDeps().deps);
+
+    expect(await unsupportedUnder(share)).toEqual([
+      { sourcePath: join(share, "Plate.tif"), type: ".tif" },
+    ]);
+  });
+
+  // Written at the end, like the removal pass: half a walk is not the share.
+  it("leaves the previous list in place when a run dies halfway", async () => {
+    writeFileSync(join(tmpRoot, "Plate.tif"), "tiff");
+    writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
+    await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
+
+    writeFileSync(join(tmpRoot, "Budget.xls"), "biff");
+    writeFileSync(join(tmpRoot, "handbook.pdf"), "changed-bytes");
+    const { deps } = fakeDeps();
+    deps.embed = async () => {
+      throw new EmbedderUnavailableError("embedder down");
+    };
+    await expect(ingestDirectory(ORG_ID, tmpRoot, deps)).rejects.toThrow("embedder down");
+
+    expect((await unsupportedUnder(tmpRoot)).map((f) => f.sourcePath)).toEqual([
+      join(tmpRoot, "Plate.tif"),
+    ]);
+  });
 });

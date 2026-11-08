@@ -47,6 +47,7 @@ export const APPLICATION_TABLES = [
   "kb_documents",
   "kb_chunks",
   "kb_index_jobs",
+  "kb_unsupported_files",
 ] as const;
 
 const quoted = (tables: readonly string[]) =>
