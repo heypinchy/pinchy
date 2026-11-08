@@ -26,12 +26,13 @@ import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
-import { embedTexts } from "@/lib/knowledge/embeddings";
+import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 import { extractXlsxIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
+import { clearSpoolBatches } from "@/lib/knowledge/office-converter-sidecar";
 import {
   clearStagedBatches,
   OFFICE_ARTIFACT_FORMAT_VERSION,
@@ -109,6 +110,7 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
 
   return {
     embed: (texts) => embedTexts(texts, cfg),
+    fitForEmbedding: (texts) => fitTextsForEmbedding(texts, cfg),
     extractPdf: (absPath, opts) =>
       extractPdfPages(absPath, {
         outline: opts?.outline,
@@ -231,8 +233,9 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
       throw new Error(FOLDERS_UNAVAILABLE_ERROR);
     }
   } catch (err) {
-    // Ingest already absorbs a single unreadable file (counting it `failed`),
-    // so reaching here means something systemic — the embedder (a missing GGUF
+    // Ingest already absorbs a single unreadable file, or one whose values the
+    // database refuses (counting it `failed`), so reaching here means something
+    // systemic — the embedder (a missing GGUF
     // or a node-llama-cpp load failure) or the database — took the run down.
     // Finishing the job (rather than leaving it `running`) is what frees the
     // org's active-job slot: without it, one transient failure would wedge the
@@ -420,7 +423,12 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
       // or read of ours exists yet. Housekeeping, so a failure is logged and
       // the queue still runs.
       try {
-        const cleared = await clearStagedBatches(opts.artifactDir);
+        // With the office-converter sidecar, Office batches are staged in its
+        // spool instead (office-converter-sidecar.ts): same premise, same act.
+        const spoolDir = process.env.KB_OFFICE_SPOOL_DIR;
+        const cleared =
+          (await clearStagedBatches(opts.artifactDir)) +
+          (spoolDir ? await clearSpoolBatches(spoolDir) : 0);
         if (cleared > 0) {
           console.log(
             `[kb-index-worker] cleared ${cleared} staged batch(es) and source copies left by an interrupted run`

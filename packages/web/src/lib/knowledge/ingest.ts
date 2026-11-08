@@ -62,6 +62,7 @@ import {
   isHiddenSegment,
 } from "./exclude-globs";
 import { isArchivedPath, statusForPath } from "./archive-paths";
+import { orderForIngest } from "./ingest-order";
 import { buildPathFilter } from "./path-filter";
 import { recordUnsupportedFiles, unsupportedFileType } from "./unsupported-files";
 import { chunkPages } from "./chunk";
@@ -80,6 +81,8 @@ import type { ChunkLocator } from "./locator";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
+import { isContentRejection, toStorableLocator, toStorableText } from "./stored-text";
+import { databaseErrorBehind, systemicIngestError } from "./ingest-errors";
 import type { IngestPage, IngestResult } from "./types";
 import {
   copyVerifiedSource,
@@ -98,6 +101,17 @@ export type { IngestPage, IngestResult } from "./types";
 export interface IngestDeps {
   /** Batch-embeds chunk texts into dense vectors (embeddinggemma-300m, 768-dim). Prod: `(t) => embedTexts(t, embedCfg)`. */
   embed: (texts: string[]) => Promise<number[][]>;
+  /**
+   * Cuts each chunk text the embedder could not take whole into pieces it can,
+   * one list per input (a text that fits is a list of one). Each piece is
+   * stored as a chunk of its own under the original chunk's locator, so the
+   * rows written are exactly the texts embedded. Prod:
+   * `(t) => fitTextsForEmbedding(t, embedCfg)` — measured with the embedding
+   * model's own tokenizer, because the chunker's 4-characters-per-token
+   * estimate is what let a chunk past the local context in #1380. Unset =
+   * chunks are embedded as they are.
+   */
+  fitForEmbedding?: (texts: string[]) => Promise<string[][]>;
   /**
    * Extracts per-page text from a PDF at an absolute path. Prod: pdfjs-based
    * (./pdf-extract.ts).
@@ -699,6 +713,29 @@ async function extractDocument(
   resolveArtifact: ResolveArtifact,
   contentHash: string
 ): Promise<ExtractedDocument> {
+  const read = await readDocument(absPath, copyPath, deps, resolveArtifact, contentHash);
+  // The one place every reader's output passes through on its way to the
+  // database (#1366). A NUL in a text layer or a sheet name is refused by
+  // Postgres, and the other control characters are noise no search matches.
+  // A chunk that held nothing else is not written at all: it would be a row
+  // whose text says nothing, and an embedding of the empty string.
+  const chunks = read.chunks
+    .map((chunk) => ({
+      text: toStorableText(chunk.text),
+      locator: toStorableLocator(chunk.locator),
+    }))
+    .filter((chunk) => chunk.text.trim() !== "");
+  return { ...read, chunks, text: toStorableText(read.text) };
+}
+
+/** The dispatch described above, as the readers return it — before it is made storable. */
+async function readDocument(
+  absPath: string,
+  copyPath: string,
+  deps: IngestDeps,
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
+): Promise<ExtractedDocument> {
   if (isOfficeFile(absPath)) {
     return extractOfficeDocument(absPath, copyPath, deps, resolveArtifact, contentHash);
   }
@@ -818,26 +855,51 @@ async function extractOfficeDocument(
 }
 
 /**
- * Embeds every chunk and inserts the resulting kb_chunks rows for
- * `documentId`. Returns the number of chunks written — zero means the
- * document is indexed but unsearchable (e.g. an image-only scan whose text
- * layer is empty, or a workbook whose every sheet is hidden), which callers
- * must report as such rather than as a successful index.
+ * Replaces every chunk the embedder cannot take whole with the pieces it can,
+ * each under the original chunk's locator (#1380). Without
+ * `deps.fitForEmbedding` the chunks pass through unchanged.
+ */
+async function fitChunksForEmbedding(
+  chunks: LocatedChunk[],
+  deps: IngestDeps
+): Promise<LocatedChunk[]> {
+  if (!deps.fitForEmbedding || chunks.length === 0) return chunks;
+  const fitted = await deps.fitForEmbedding(chunks.map((chunk) => chunk.text));
+  if (fitted.length !== chunks.length) {
+    throw new Error(
+      `fitForEmbedding returned ${fitted.length} piece lists for ${chunks.length} chunks`
+    );
+  }
+  return chunks.flatMap((chunk, i) => fitted[i].map((text) => ({ text, locator: chunk.locator })));
+}
+
+/**
+ * Embeds every chunk, then writes the document row (`writeDocument`, which
+ * returns its id) and the resulting kb_chunks rows in ONE transaction. Returns
+ * the number of chunks written — zero means the document is indexed but
+ * unsearchable (e.g. an image-only scan whose text layer is empty, or a
+ * workbook whose every sheet is hidden), which callers must report as such
+ * rather than as a successful index.
+ *
+ * Embedded first, written together: an embedder that goes down halfway, or a
+ * database that refuses the rows, leaves the stored document — its record and
+ * its chunks — exactly as it was, and a new document without a row at all.
+ *
+ * A refusal of THIS file's values (`isContentRejection`) is the file's failure,
+ * not the run's (#1366), and so is anything else that is not systemic
+ * (`systemicIngestError`, #1380): the per-file boundary in `ingestPaths`
+ * decides. The database's own error is what travels, never the query
+ * builder's wrapper, whose message quotes the document's text.
  */
 async function writeChunks(
-  documentId: string,
+  writeDocument: (tx: Transaction) => Promise<string>,
   orgId: string,
   sourcePath: string,
   chunks: LocatedChunk[],
   deps: IngestDeps,
-  onChunkProgress?: ChunkProgressCallback,
-  rewrite?: ChunkRewrite
+  onChunkProgress?: ChunkProgressCallback
 ): Promise<number> {
-  if (chunks.length === 0) {
-    if (rewrite) await db.transaction((tx) => applyRewrite(tx, documentId, rewrite));
-    return 0;
-  }
-
+  chunks = await fitChunksForEmbedding(chunks, deps);
   const vectors: number[][] = [];
   for (let i = 0; i < chunks.length; i += EMBED_PROGRESS_BATCH) {
     const batch = chunks.slice(i, i + EMBED_PROGRESS_BATCH);
@@ -848,27 +910,35 @@ async function writeChunks(
     if (vectors.length < chunks.length) await onChunkProgress?.(vectors.length, chunks.length);
   }
 
-  // Embedded first, written in one transaction: an embedder that goes down
-  // halfway leaves the stored chunks — and the record that says what they
-  // are — exactly as they were.
-  const rows = chunks.map((chunk, i) => ({
-    documentId,
-    orgId,
-    sourcePath,
-    chunkText: chunk.text,
-    // Decided by `extractDocument`, per format, against the closed union in
-    // locator.ts (#933): a page for a PDF, a sheet + row range for a
-    // spreadsheet. This function no longer knows which, which is the point —
-    // adding the heading and slide producers (#938) touches the dispatch and
-    // not the write.
-    locator: chunk.locator,
-    lang: detectLang(chunk.text),
-    embedding: vectors[i],
-  }));
-  await db.transaction(async (tx) => {
-    if (rewrite) await applyRewrite(tx, documentId, rewrite);
-    await tx.insert(kbChunks).values(rows);
-  });
+  try {
+    await db.transaction(async (tx) => {
+      const documentId = await writeDocument(tx);
+      if (chunks.length === 0) return;
+      await tx.insert(kbChunks).values(
+        chunks.map((chunk, i) => ({
+          documentId,
+          orgId,
+          sourcePath,
+          chunkText: chunk.text,
+          // Decided by `extractDocument`, per format, against the closed union
+          // in locator.ts (#933): a page for a PDF, a sheet + row range for a
+          // spreadsheet. This function does not know which, which is the point
+          // — adding the heading and slide producers (#938) touched the
+          // dispatch and not the write.
+          locator: chunk.locator,
+          lang: detectLang(chunk.text),
+          embedding: vectors[i],
+        }))
+      );
+    });
+  } catch (err) {
+    const rejection = isContentRejection(err);
+    // The database's own error, not the query builder's wrapper around it: the
+    // wrapper's message quotes every parameter — the document's text and its
+    // vectors — and would push the reason out of the bounded log line.
+    if (rejection) throw new FileIngestError(sourcePath, rejection);
+    throw databaseErrorBehind(err);
+  }
 
   return chunks.length;
 }
@@ -891,10 +961,11 @@ async function applyRewrite(tx: Transaction, documentId: string, rewrite: ChunkR
 
 /**
  * A file-level ingest failure: THIS file could not be read or parsed (corrupt
- * PDF, permission denied, vanished between the walk and the read). Distinct
- * from the errors ingestDirectory deliberately lets escape — embedding and DB
- * failures are systemic, and reporting an Ollama outage as "193 corrupt files"
- * would bury the one fact an operator needs.
+ * PDF, permission denied, vanished between the walk and the read), or the
+ * database refused the values read from it (`writeChunks`). It names the file
+ * for the log line. Since #1380 it is no longer the only error the per-file
+ * boundary contains — everything that is not systemic is — but a systemic
+ * cause inside one (a database connection lost mid-file) still stops the run.
  */
 class FileIngestError extends Error {
   constructor(
@@ -906,7 +977,19 @@ class FileIngestError extends Error {
   }
 }
 
-/** Runs a file-scoped step, tagging anything it throws as a FileIngestError so the per-file boundary in ingestDirectory can catch exactly those. */
+/**
+ * A progress write that failed inside a file's work. Carried out of the file
+ * unwrapped, so the per-file boundary does not count the run's own
+ * bookkeeping failing as that file's failure.
+ */
+class ProgressReportError extends Error {
+  constructor(cause: unknown) {
+    super("Reporting index progress failed", { cause });
+    this.name = "ProgressReportError";
+  }
+}
+
+/** Runs a file-scoped step, tagging anything it throws as a FileIngestError so the log line names the file it happened on. */
 async function fileStep<T>(sourcePath: string, step: () => Promise<T>): Promise<T> {
   try {
     return await step();
@@ -978,9 +1061,9 @@ function couldReadDifferently(recorded: string, deps: IngestDeps): boolean {
 
 /**
  * Ingests one file: hash it, decide skip/recover/replace/insert, and write its
- * chunks. Reading and PDF extraction are wrapped in fileStep() so a failure
- * THIS file owns surfaces as a FileIngestError; embedding and DB calls are
- * deliberately left bare so a systemic outage aborts the whole run.
+ * chunks. Whatever it throws is this file's failure unless
+ * `systemicIngestError` says otherwise — the per-file boundary in
+ * `ingestPaths` decides (#1380).
  */
 async function ingestFile(
   orgId: string,
@@ -1071,9 +1154,10 @@ async function ingestFile(
     if (!retryOwed && storedChunks > 0) return "skipped";
 
     // Robustness case: a document row survives with zero chunks and no
-    // empty read on record (a prior ingest crashed after the document insert
-    // but before chunk writes, an operator hand-deleted kb_chunks rows, or
-    // the row predates the record), or its last read is owed a retry — which
+    // empty read on record (written by a version that inserted the document
+    // before its chunks and crashed in between, an operator hand-deleted
+    // kb_chunks rows, or the row predates the record), or its last read is
+    // owed a retry — which
     // a read from an earlier artifact format always is. The
     // content hash still matches the file on disk, so a naive "hash matches ->
     // skip" would leave this document unsearchable while silently reporting
@@ -1099,18 +1183,21 @@ async function ingestFile(
         extracted.incomplete &&
         extracted.chunks.length < storedChunks;
       const record = extractionRecord(absPath, extracted, deps, previousIncompleteReads);
+      const rewrite: ChunkRewrite = {
+        // A document that keeps its chunks is not an empty one.
+        record: keepStored ? { ...record, emptyExtractionBy: null } : record,
+        replaceStored: storedChunks > 0 && !keepStored,
+      };
       const written = await writeChunks(
-        existing.id,
+        async (tx) => {
+          await applyRewrite(tx, existing.id, rewrite);
+          return existing.id;
+        },
         orgId,
         absPath,
         keepStored ? [] : extracted.chunks,
         deps,
-        onChunkProgress,
-        {
-          // A document that keeps its chunks is not an empty one.
-          record: keepStored ? { ...record, emptyExtractionBy: null } : record,
-          replaceStored: storedChunks > 0 && !keepStored,
-        }
+        onChunkProgress
       );
       if (keepStored) return "skipped";
       return written > 0 ? "indexed" : "unsearchable";
@@ -1123,34 +1210,33 @@ async function ingestFile(
   // turn that same failure into silent data loss on a success response.
   const { extracted, contentHash: readHash, mtime } = reread ?? (await extract());
 
-  if (existing) {
-    // Content changed since the last ingest: replace wholesale. Deleting
-    // the document row cascades to its (now stale) chunks via the
-    // kb_chunks.document_id FK.
-    await db.delete(kbDocuments).where(eq(kbDocuments.id, existing.id));
-  }
-
-  const [doc] = await db
-    .insert(kbDocuments)
-    .values({
-      orgId,
-      contentHash: readHash,
-      sourcePath: absPath,
-      status: statusForPath(absPath),
-      pageCount: extracted.pageCount,
-      mtime,
-      lang: detectLang(extracted.text),
-      // Written with the row rather than after the chunks: an empty read is
-      // only ever recorded when there are NO chunks to write, so there is no
-      // window in which a crash could leave it claiming a read that did not
-      // finish. A crash before the chunks leaves a row the zero-chunk branch
-      // rebuilds.
-      ...extractionRecord(absPath, extracted, deps, 0),
-    })
-    .returning();
-
   const written = await writeChunks(
-    doc.id,
+    async (tx) => {
+      if (existing) {
+        // Content changed since the last ingest: replace wholesale. Deleting
+        // the document row cascades to its (now stale) chunks via the
+        // kb_chunks.document_id FK — inside the transaction that writes the
+        // new version, so a refused write keeps the last good one searchable.
+        await tx.delete(kbDocuments).where(eq(kbDocuments.id, existing.id));
+      }
+      const [doc] = await tx
+        .insert(kbDocuments)
+        .values({
+          orgId,
+          contentHash: readHash,
+          sourcePath: absPath,
+          status: statusForPath(absPath),
+          pageCount: extracted.pageCount,
+          mtime,
+          lang: detectLang(extracted.text),
+          // Written with the row and its chunks, in one transaction: an empty
+          // read is only ever recorded when there are NO chunks to write, and
+          // the row never exists without the chunks it was read with.
+          ...extractionRecord(absPath, extracted, deps, 0),
+        })
+        .returning({ id: kbDocuments.id });
+      return doc.id;
+    },
     orgId,
     absPath,
     extracted.chunks,
@@ -1314,20 +1400,18 @@ export async function ingestPaths(
   // Counted once however many overlapping roots found a file, like `total`.
   const unsupported = new Set(perRoot.flatMap((root) => [...root.unsupported.keys()])).size;
 
-  // Deduplicated across roots, but ordered so each file is ingested while its
-  // first root is being processed — the order only matters for readability of
-  // the progress stream, not for correctness. Deduplication covers the byte
-  // total too: a file granted under both /data and /data/hr is one unit of
-  // work and must be weighed once, or the run would stop short of its total.
-  const queue: Array<{ absPath: string } & DiscoveredFile> = [];
-  const seen = new Set<string>();
+  // Deduplicated across roots: a file granted under both /data and /data/hr is
+  // one unit of work and must be weighed once, or the run would stop short of
+  // its total. Then ordered across ALL roots — current files before archived
+  // ones, folder by folder — so a first index that runs for days has the part
+  // people search complete first (ingest-order.ts, #1385).
+  const unique = new Map<string, DiscoveredFile>();
   for (const { discovered } of perRoot) {
     for (const [absPath, file] of discovered) {
-      if (seen.has(absPath)) continue;
-      seen.add(absPath);
-      queue.push({ absPath, ...file });
+      if (!unique.has(absPath)) unique.set(absPath, file);
     }
   }
+  const queue = orderForIngest([...unique].map(([absPath, file]) => ({ absPath, ...file })));
 
   // Converts in queue order, in batches, as the loop below reaches Office
   // documents — see officeArtifacts for why this is not a pre-pass.
@@ -1370,33 +1454,49 @@ export async function ingestPaths(
         realPath,
         deps,
         resolveArtifact,
-        (embedded, chunkTotal) =>
-          // Credit this file's bytes in proportion to the chunks embedded from
-          // it. Its chunk count IS known once it is split, and that is the one
-          // thing chunk-level progress is uniquely good for: without it the
-          // compilation PDF worth 38% of the corpus would hold both bar and ETA
-          // still for over an hour (#907).
-          report(chunkTotal > 0 ? Math.round((bytes * embedded) / chunkTotal) : 0)
+        async (embedded, chunkTotal) => {
+          try {
+            // Credit this file's bytes in proportion to the chunks embedded
+            // from it. Its chunk count IS known once it is split, and that is
+            // the one thing chunk-level progress is uniquely good for: without
+            // it the compilation PDF worth 38% of the corpus would hold both
+            // bar and ETA still for over an hour (#907).
+            await report(chunkTotal > 0 ? Math.round((bytes * embedded) / chunkTotal) : 0);
+          } catch (err) {
+            // A progress write that fails is the run's bookkeeping failing,
+            // not this file: it would fail the same way for every file after.
+            throw new ProgressReportError(err);
+          }
+        }
       );
       tally[outcome]++;
       if (isArchivedPath(absPath)) archived++;
     } catch (err) {
-      // One unreadable or corrupt file is a normal property of a real corpus,
-      // so it costs itself and nothing else: without this boundary a single
-      // bad PDF aborts the reindex for every other file, and under a retrying
-      // job runner it would fail identically forever. Systemic errors
-      // (embedding outage, DB gone) are NOT FileIngestErrors and still escape
-      // — see ingestFile. The tally reported so far is the caller's last
+      // One unreadable or corrupt file, one chunk the embedder refuses, one
+      // row the database will not take — each is a normal property of a real
+      // corpus, so it costs itself and nothing else: without this boundary a
+      // single bad file aborts the reindex for every other file, and under a
+      // retrying job runner it fails identically forever (#1380: a first
+      // reindex stopped at the same file on every run). Only an error that
+      // would fail every remaining file the same way stops the run — see
+      // ingest-errors.ts. The tally reported so far is the caller's last
       // honest word on what the run achieved before that happened.
-      if (!(err instanceof FileIngestError)) throw err;
+      if (err instanceof ProgressReportError) throw err.cause;
+      const systemic = systemicIngestError(err);
+      if (systemic) throw systemic;
+      const cause = err instanceof FileIngestError ? err.cause : err;
       // The admin-facing counts must not name paths (audit PII rule), so this
       // server log is the only place that says WHICH file failed and why.
-      // The message names the file, and the cause — a file-system error, a
-      // reader's — quotes it in its message and stack, so both go through the
-      // same escaping as a refusal: a newline in a file name cannot write a
-      // line of its own.
-      console.error(`[kb-ingest] ${oneLine(err.message, LOG_PATH_MAX + 32)}`, errorLine(err.cause));
-      if (err.cause instanceof SourceRefusedError) opts.onRefusedFile?.(absPath, err.cause.refusal);
+      // The path and the cause — a file-system error, a reader's — can quote
+      // the file name, so both go through the same escaping as a refusal: a
+      // newline in a file name cannot write a line of its own. Never the
+      // content: the cause is the database's own error or the embedder's,
+      // not a wrapper that quotes the chunk text.
+      console.error(
+        `[kb-ingest] ${oneLine(`Ingest failed for ${absPath}`, LOG_PATH_MAX + 32)}`,
+        errorLine(cause)
+      );
+      if (cause instanceof SourceRefusedError) opts.onRefusedFile?.(absPath, cause.refusal);
       failed++;
     }
     processed++;

@@ -339,10 +339,10 @@ This is intentionally an internal/contributor workflow — the public docs at [d
 
 ### Refreshing staging to the latest `main`
 
-Every push to `main` triggers the **Pre-release** workflow, which builds and publishes new `:next` images. Pull them onto your staging instance:
+Every push to `main` triggers the **Pre-release** workflow, which builds and publishes new `:next` images. Pull them onto your staging instance, together with `main`'s `docker-compose.yml` — an image that expects a service the old compose file doesn't start (the `office-converter`, for one) runs without it, and nothing else looks wrong. Keep staging's own changes in `docker-compose.override.yml`; the fetch replaces `docker-compose.yml`:
 
 ```bash
-ssh root@<staging-ip> "cd /opt/pinchy && docker compose pull && docker compose up -d && docker image prune -f"
+ssh root@<staging-ip> "cd /opt/pinchy && curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/main/docker-compose.yml -o docker-compose.yml && docker compose pull && docker compose up -d && docker image prune -f"
 ```
 
 Run this manually before each pre-release click-through. Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184).

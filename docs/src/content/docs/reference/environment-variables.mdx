@@ -1,6 +1,6 @@
 ---
 title: Environment Variables
-description: Every variable Pinchy's docker-compose.yml reads — version pin, port binding, secrets, licence key, and resource limits — with its default and what happens if you leave it unset.
+description: Every variable Pinchy's docker-compose.yml reads — version pin, port binding, secrets, licence key, behaviour switches, and resource limits — with its default and what happens if you leave it unset.
 ---
 
 Everything Pinchy needs to run lives in one file next to your `docker-compose.yml`: a plain `.env`. This page lists every variable that file can contain, what it does, and what happens when you leave it out.
@@ -129,18 +129,38 @@ In that case, the entries written while the variable was broken can't be saved. 
 
 You can enter the same key in **Settings → License** instead — the environment variable exists so an unattended deployment doesn't need a human in the UI. See [Enterprise Setup](/guides/enterprise-setup/).
 
+## Behaviour switches
+
+All of these are unset by default, and Pinchy behaves as described on the linked page. An empty value counts as unset. The defaults below are Pinchy's own; Compose passes an empty value.
+
+| Variable                                 | Default  | What it does                                                                                                                                                                                                                                                                     |
+| ---------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PINCHY_KB_OCR`                          | on       | `off` stops the knowledge base from sending scanned pages to your vision model. See [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider).                                                                                |
+| `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS` | off      | `1` also refuses provider base URLs on private networks. For managed hosts. See [Which base URLs are allowed](/guides/llm-providers/#which-base-urls-are-allowed).                                                                                                               |
+| `ALLOW_PRIVATE_URLS`                     | off      | `1` lets Odoo connections reach private networks. See [Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network).                                                                                                                                                |
+| `ALLOW_PRIVATE_MAIL_HOSTS`               | off      | `1` lets mail connections reach private networks. See [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network).                                                                                                                          |
+| `PINCHY_USAGE_POLL_INTERVAL_MS`          | 60000    | How often the usage dashboard's background sweep runs, in milliseconds (at least 1000). See [Where the numbers come from](/guides/usage-dashboard/#where-the-numbers-come-from).                                                                                                 |
+| `AUDIT_VERIFY_INTERVAL_MS`               | 6 hours  | How often the audit trail verifies itself, in milliseconds. See [Automatic verification](/concepts/audit-trail/#automatic-verification).                                                                                                                                         |
+| `TELEGRAM_CONFLICT_AUTO_RESTART`         | on       | `false` stops the watchdog from restarting a Telegram bot stuck in a polling conflict; a newly connected bot is then disabled at the first sustained conflict instead of after the restarts. See [Connect Additional Agents](/guides/telegram-setup/#connect-additional-agents). |
+| `TELEGRAM_CONFLICT_AUTO_DISABLE`         | on       | `false` stops the watchdog from disabling a newly connected bot that keeps losing a polling conflict. See [Connect Additional Agents](/guides/telegram-setup/#connect-additional-agents).                                                                                        |
+| `TELEGRAM_CONFLICT_RECENT_WINDOW_MS`     | 24 hours | How long a bot counts as newly connected for the auto-disable above, in milliseconds.                                                                                                                                                                                            |
+
+A change takes effect when the container is recreated. `docker compose up -d` does that, and `docker compose restart` does not, because it keeps the environment the container started with.
+
 ## Resource limits
 
-Every container carries a memory and CPU cap so one runaway agent cannot take the host down with it. The defaults suit a 4 GB VPS.
+Every container carries a memory and CPU cap so one runaway agent cannot take the host down with it. The defaults add up to about 5 GB; on a smaller host, lower them as [Sizing your host](/guides/customizing-deployment/#sizing-your-host) describes.
 
-| Variable             | Default | What it does                                                      |
-| -------------------- | ------- | ----------------------------------------------------------------- |
-| `PINCHY_MEM_LIMIT`   | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge) |
-| `PINCHY_CPUS`        | `1.5`   | CPU cores for `pinchy`                                            |
-| `OPENCLAW_MEM_LIMIT` | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)  |
-| `OPENCLAW_CPUS`      | `2`     | CPU cores for `openclaw`                                          |
-| `DB_MEM_LIMIT`       | `1g`    | Memory for the `db` container (PostgreSQL 17 + pgvector)          |
-| `DB_CPUS`            | `1`     | CPU cores for `db`                                                |
+| Variable                     | Default | What it does                                                             |
+| ---------------------------- | ------- | ------------------------------------------------------------------------ |
+| `PINCHY_MEM_LIMIT`           | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge)        |
+| `PINCHY_CPUS`                | `1.5`   | CPU cores for `pinchy`                                                   |
+| `OFFICE_CONVERTER_MEM_LIMIT` | `1g`    | Memory for the `office-converter` container (Word and PowerPoint to PDF) |
+| `OFFICE_CONVERTER_CPUS`      | `1`     | CPU cores for `office-converter`                                         |
+| `OPENCLAW_MEM_LIMIT`         | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)         |
+| `OPENCLAW_CPUS`              | `2`     | CPU cores for `openclaw`                                                 |
+| `DB_MEM_LIMIT`               | `1g`    | Memory for the `db` container (PostgreSQL 17 + pgvector)                 |
+| `DB_CPUS`                    | `1`     | CPU cores for `db`                                                       |
 
 `PINCHY_CPUS` also decides how many threads the knowledge base's embedding model gets; [CPU when the knowledge base embeds](/guides/customizing-deployment/#cpu-when-the-knowledge-base-embeds) explains how, and how to set `KB_EMBEDDING_THREADS` through an override file when your host hides its CPU limit from the container.
 
@@ -164,16 +184,17 @@ Compose merges `docker-compose.override.yml` automatically. [Customizing Your De
 
 Variables configure the stack; volumes hold its state. These survive `docker compose down` and are what a backup must cover.
 
-| Volume                | Purpose                                                                                  |
-| --------------------- | ---------------------------------------------------------------------------------------- |
-| `pgdata`              | PostgreSQL data — users, agents, conversations, the audit log                            |
-| `pinchy-secrets`      | Auto-generated secrets. **Back this up**, or you lose access to encrypted provider keys. |
-| `openclaw-config`     | Shared OpenClaw configuration                                                            |
-| `pinchy-workspaces`   | Agent workspaces (`SOUL.md`, `AGENTS.md`, uploads, workbench)                            |
-| `pinchy-data`         | The knowledge-base corpus, mounted read-only into the web tier                           |
-| `openclaw-extensions` | Pinchy's plugins for OpenClaw                                                            |
-| `pinchy-pdf-cache`    | Cached PDF text extractions — safe to delete, re-derived on demand                       |
-| `pinchy-kb-artifacts` | Converted Office-document PDFs — safe to delete, re-derived on demand                    |
-| `openclaw-secrets`    | **tmpfs**, runtime only. Cleared on restart and rebuilt from the database.               |
+| Volume                | Purpose                                                                                              |
+| --------------------- | ---------------------------------------------------------------------------------------------------- |
+| `pgdata`              | PostgreSQL data — users, agents, conversations, the audit log                                        |
+| `pinchy-secrets`      | Auto-generated secrets. **Back this up**, or you lose access to encrypted provider keys.             |
+| `openclaw-config`     | Shared OpenClaw configuration                                                                        |
+| `pinchy-workspaces`   | Agent workspaces (`SOUL.md`, `AGENTS.md`, uploads, workbench)                                        |
+| `pinchy-data`         | The knowledge-base corpus, mounted read-only into the web tier                                       |
+| `openclaw-extensions` | Pinchy's plugins for OpenClaw                                                                        |
+| `pinchy-pdf-cache`    | Cached PDF text extractions — safe to delete, re-derived on demand                                   |
+| `pinchy-kb-artifacts` | Converted Office-document PDFs — safe to delete, re-derived on demand                                |
+| `openclaw-secrets`    | **tmpfs**, runtime only. Cleared on restart and rebuilt from the database.                           |
+| `pinchy-office-spool` | Hand-over folder for Office conversion — only holds documents while they convert, nothing to back up |
 
 [Installation](/installation/) shows the exact mount paths per container.
