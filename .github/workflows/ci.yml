@@ -3026,12 +3026,22 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
 
       - name: Install Ollama
-        # Retry the whole install: ollama's installer downloads a binary from a
-        # CDN that intermittently returns a transient 504, which then feeds a
-        # partial body into zstd/tar and fails the step — not a real error.
+        # Retry the whole install: ollama.com and the CDN behind its installer
+        # intermittently return a transient 504 — not a real error.
+        #
+        # Download to a file, never `curl … | sh`: without pipefail a failed
+        # download feeds sh an empty script, sh exits 0, and the loop declares
+        # success (run 42473085435). `command -v` then checks the installer
+        # really left a binary behind, so a half-finished install retries too
+        # instead of failing in the next step under the wrong name.
         run: |
+          installer="$RUNNER_TEMP/ollama-install.sh"
           for attempt in 1 2 3; do
-            if curl -fsSL https://ollama.com/install.sh | sh; then exit 0; fi
+            if curl -fsSL -o "$installer" https://ollama.com/install.sh \
+              && sh "$installer" \
+              && command -v ollama >/dev/null; then
+              exit 0
+            fi
             echo "Ollama install attempt ${attempt} failed; retrying in 10s..."
             sleep 10
           done
