@@ -54,7 +54,7 @@ async function seedDoc(
 async function seedJob(
   agentId: string,
   paths: string[],
-  status: "running" | "succeeded",
+  status: "running" | "succeeded" | "failed",
   extra: { processed?: number; plan?: { folder: string; files: number }[] } = {}
 ) {
   const { job } = await enqueueIndexJob({
@@ -71,7 +71,7 @@ async function seedJob(
       status,
       processed: extra.processed ?? 0,
       startedAt: hourAgo,
-      finishedAt: status === "succeeded" ? new Date(Date.now() - 60_000) : null,
+      finishedAt: status === "running" ? null : new Date(Date.now() - 60_000),
     })
     .where(eq(kbIndexJobs.id, job.id));
   if (extra.plan) await recordIndexJobFolderPlan(job.id, extra.plan);
@@ -157,6 +157,68 @@ describe("getKnowledgeFolderStatus", () => {
     const { folders, job } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
 
     expect(folders[0].state).toBe("queued");
+    expect(job?.currentFolder).toBeNull();
+  });
+
+  // Saving a new grant starts no run. Until one looks at the folder, the last
+  // run's plan says nothing about it — and "nothing" is not "empty".
+  it("reports a folder the last planned run did not cover as not indexed, not empty", async () => {
+    const agent = await makeAgent();
+    await seedJob(agent.id, ["/kb"], "succeeded", { plan: [{ folder: "/kb", files: 2 }] });
+
+    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb", "/kb-new"]);
+    const added = folders.find((f) => f.path === "/kb-new")!;
+
+    expect(added).toMatchObject({ expected: null, state: "not_indexed" });
+  });
+
+  // After narrowing a grant from /kb to /kb/certs, the old plan counted the
+  // whole of certs as one folder: it cannot say how many files each of the
+  // new root's children holds.
+  it("gives no expected count to a folder an older plan counted only as part of a parent", async () => {
+    const agent = await makeAgent();
+    await seedDoc("/kb/certs/2024/a.pdf");
+    await seedJob(agent.id, ["/kb"], "succeeded", { plan: [{ folder: "/kb/certs", files: 5 }] });
+
+    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb/certs"]);
+    const child = folders[0].children.find((c) => c.name === "2024")!;
+
+    expect(child).toMatchObject({ expected: null, state: "searchable" });
+  });
+
+  // A run whose every root was unreadable (an unmounted share) records an
+  // empty plan. It must not wipe what the run before it found.
+  it("ignores the empty plan of a failed run", async () => {
+    const agent = await makeAgent();
+    await seedJob(agent.id, ["/kb"], "succeeded", { plan: [{ folder: "/kb", files: 3 }] });
+    await seedJob(agent.id, ["/kb"], "failed", { plan: [] });
+
+    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+
+    expect(folders[0]).toMatchObject({ expected: 3, state: "has_errors" });
+  });
+
+  // A failed run may have read nothing; it must not date every folder today.
+  it("dates a folder by the last run that succeeded, not by one that failed", async () => {
+    const agent = await makeAgent();
+    await seedJob(agent.id, ["/kb"], "failed");
+
+    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+
+    expect(folders[0].lastIndexedAt).toBeNull();
+  });
+
+  // The plan is built from the paths the run snapshotted. A folder removed from
+  // the grants mid-run must not stay on screen as "the folder it is in".
+  it("does not name a current folder outside the agent's present grants", async () => {
+    const agent = await makeAgent();
+    await seedJob(agent.id, ["/kb", "/hr"], "running", {
+      processed: 0,
+      plan: [{ folder: "/hr/salaries", files: 2 }],
+    });
+
+    const { job } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+
     expect(job?.currentFolder).toBeNull();
   });
 

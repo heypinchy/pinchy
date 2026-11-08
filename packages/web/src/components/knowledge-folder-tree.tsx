@@ -258,7 +258,9 @@ function FolderRow({
 /** "12 of 40 files searchable", against what the last run found when it recorded that. */
 export function countText(folder: FolderStatus): string {
   if (folder.state === "indexing" || folder.state === "queued") {
-    if (folder.expected !== null) {
+    // Nothing pending while queued means the new run has not listed its files
+    // yet: `expected` is still the last run's count, so "N of N done" would lie.
+    if (folder.expected !== null && (folder.pending > 0 || folder.state === "indexing")) {
       const done = Math.max(0, folder.expected - folder.pending);
       return `${done} of ${folder.expected} ${plural(folder.expected, "file")} done`;
     }
