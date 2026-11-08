@@ -88,6 +88,20 @@ export interface PdfOcrOptions {
 const DEFAULT_MAX_OCR_PAGES = 200;
 
 /**
+ * How many pages of one document are with the vision provider at once (#1385).
+ *
+ * The wait is the provider's, not this machine's: one page after another, a
+ * long scan held a whole run for minutes. Pages are still rendered one at a
+ * time (the render is local CPU and memory); only the provider calls overlap.
+ * Three, not more: each one is a call against the operator's key, and a wider
+ * fan-out trades a slow document for rate limits.
+ */
+const OCR_PAGE_CONCURRENCY = 3;
+
+/** What a page is indexed with — its own text, or what OCR read off it. */
+type PageRead = { text: string; failed?: true };
+
+/**
  * Whether the page paints an image at all.
  *
  * This is the cheap half of what `pinchy-files` asks: it establishes that
@@ -299,10 +313,34 @@ export async function extractPdfPages(
    * scan indexes as an empty page, which #935 surfaces — and never a thrown
    * error, because one unreadable page must not cost the whole document.
    */
+  /**
+   * Vision calls still out. Each one settles to a value and never rejects, so
+   * nothing here can surface as an unhandled rejection if the loop throws.
+   */
+  const inFlight = new Set<Promise<PageRead>>();
+
+  /**
+   * Starts the vision call for a rendered page, once a slot is free, and
+   * returns its result WITHOUT waiting for it — so the loop renders the next
+   * page while this one is with the provider.
+   */
+  async function startRead(image: Buffer, text: string): Promise<{ read: Promise<PageRead> }> {
+    while (inFlight.size >= OCR_PAGE_CONCURRENCY) await Promise.race(inFlight);
+    const read = ocr!.ocrPage(image).then(
+      (result): PageRead => (result === null ? { text, failed: true } : { text: result }),
+      (): PageRead => ({ text, failed: true })
+    );
+    inFlight.add(read);
+    void read.then(() => inFlight.delete(read));
+    // Wrapped: returning the promise itself from an async function would make
+    // the caller wait for it.
+    return { read };
+  }
+
   async function ocrIfScanned(
     page: PDFPageProxy,
     text: string
-  ): Promise<{ text: string; failed?: true }> {
+  ): Promise<PageRead | { read: Promise<PageRead> }> {
     if (!ocr || !hasSparseText(text)) return { text };
 
     const imageSizeUnknown = await paintsAnyImage(page as unknown as PageWithOperatorList);
@@ -319,15 +357,23 @@ export async function extractPdfPages(
     // A failed render counts as a failed read too. It costs no provider call,
     // and erring this way means a transient render failure (a memory squeeze)
     // is retried rather than taken as the document's last word.
+    let image: Buffer;
     try {
-      const image = await renderPageToImage(page);
-      rendered++;
-      const read = await ocr.ocrPage(image);
-      return read === null ? { text, failed: true } : { text: read };
+      image = await renderPageToImage(page);
     } catch {
       return { text, failed: true };
     }
+    rendered++;
+    return startRead(image, text);
   }
+
+  /** A page read so far: its text is final, or still with the vision provider. */
+  const pending: Array<{
+    page: number;
+    text: string;
+    lines: PageLine[];
+    read: PageRead | Promise<PageRead>;
+  }> = [];
 
   try {
     for (let i = 1; i <= doc.numPages; i++) {
@@ -369,23 +415,35 @@ export async function extractPdfPages(
 
         // The OCR decision, and the render, must happen while the page proxy
         // is still alive — `page.cleanup()` in the finally below releases it.
+        // The vision call itself only needs the rendered image, so it may
+        // still be running when the loop moves on.
         const read = ocr ? await ocrIfScanned(page, text) : { text };
-        const extracted: ExtractedPdfPage = { page: i, text: read.text };
-        if (read.failed) extracted.ocrFailed = true;
-        // Offsets into the text as extracted. OCR replaces that text wholesale
-        // when it fires, and a scanned page has no outline to speak of, so the
-        // marks are attached to the text they were measured against.
-        const targets = outline?.get(i);
-        if (targets?.length && extracted.text === text) {
-          extracted.headings = markHeadings(lines, targets);
-        }
-        pages.push(extracted);
+        pending.push({ page: i, text, lines, read: "read" in read ? read.read : read });
       } finally {
         page.cleanup();
       }
     }
   } finally {
+    // Every vision call that started is waited for, even when the loop threw:
+    // its usage is reported when it settles, and that must not land after the
+    // document has been given up on.
+    await Promise.all(inFlight);
     await loadingTask.destroy();
+  }
+
+  // In page order, whatever order the provider answered in.
+  for (const { page, text, lines, read } of pending) {
+    const { text: finalText, failed } = await read;
+    const extracted: ExtractedPdfPage = { page, text: finalText };
+    if (failed) extracted.ocrFailed = true;
+    // Offsets into the text as extracted. OCR replaces that text wholesale
+    // when it fires, and a scanned page has no outline to speak of, so the
+    // marks are attached to the text they were measured against.
+    const targets = outline?.get(page);
+    if (targets?.length && extracted.text === text) {
+      extracted.headings = markHeadings(lines, targets);
+    }
+    pages.push(extracted);
   }
 
   // Reported whenever this document had any scanned page: `rendered` is what
