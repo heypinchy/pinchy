@@ -187,7 +187,7 @@ If you need to roll back after an upgrade:
 
 The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint files to; those live on the `pinchy-kb-artifacts` volume. When the version you upgraded to converts those files differently, it keeps the older PDFs until it has converted again every file a knowledge-base agent can search, and only then deletes them. Roll back before that and nothing is lost. Roll back after it, and the older version still finds every such file in the search, but a citation of one that hasn't changed since won't open its preview, because the PDF it looks for is gone; the original file downloads as usual. If you want previews to survive a rollback, back up that volume alongside the database, the way [Backup & recovery](/guides/hardening/#backup--recovery) describes for the other volumes, and restore it with the database.
 
-## Upgrading from v0.10.1 to %%PINCHY_VERSION%%
+## Upgrading from v0.10.1 to v0.10.2
 
 ### Breaking changes
 
@@ -199,7 +199,7 @@ Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.10.1/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.10.1/PINCHY_VERSION=v0.10.2/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
