@@ -228,6 +228,12 @@ The address checks for Odoo, mail servers and OpenAI-compatible providers resolv
 
 A `.tif` scan, an old `.xls` or a `.txt` on a share used to vanish without a trace: no document, no counter, nothing to look up. A run now counts them as `N not supported` in the agent's **Index** section, and **Download the list** gives you a CSV with each one's path and type, so you can convert them or tell users what the agent can't see. Nothing to configure. The count and the list appear after each agent's next run. For an agent with knowledge search, the nightly run is enough; any other agent needs **Reindex now**. [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read) has the details.
 
+#### One file the embedding model refuses no longer stops a reindex
+
+A passage can be dense enough — a table full of numbers, say — that it holds more tokens than the embedding model takes at once. The model then answered `Input is longer than the context size`, and the whole reindex stopped at that file. The next run stopped at the same file again, so on a large share the first full index never finished. We now measure every passage with the model's own tokenizer before embedding it and split one that is too long into pieces the model takes. Each piece keeps the page or sheet it came from, so citations still open in the right place.
+
+More generally, anything that goes wrong with one file now costs only that file: it counts as `failed` in the reindex report, the server log names it, and the run goes on with the next file. Only a problem that would fail every file after it stops the run: the embedding model can't be loaded or reached, the connection to the database is lost or the database shuts down, or the run is stopped. Nothing to configure. If a reindex kept stopping at the same file, run **Reindex now** after the upgrade.
+
 #### A change made while OpenClaw restarts now reaches it
 
 If you created an agent or changed a setting while OpenClaw was restarting or rate-limiting config changes, the change could land in `openclaw.json` and still never reach the running OpenClaw. Chats to that agent then failed with `unknown agent id` until some later, unrelated change happened to push the config again. We now push it again ourselves — when Pinchy reconnects to OpenClaw, or a minute later if OpenClaw stayed connected, backing off until OpenClaw has applied it, unless OpenClaw rejected the config itself. Restarting Pinchy in the meantime drops that retry; the next change you make delivers it. Nothing to configure.
