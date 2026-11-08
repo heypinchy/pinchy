@@ -87,7 +87,8 @@ describe.skipIf(!process.env.KB_EMBED_GGUF_PATH)(
 
     // The context takes this text whole, but its batch does not: decoded in
     // several calls, the vector would reflect only the last batch, so the head
-    // of the text would be missing from its own embedding (#1380).
+    // of the text would be missing from its own embedding (#1380). The library
+    // does not throw for such a text — only the split shows the budget is right.
     it("splits a text the context takes but the batch does not", async () => {
       const cfg = {
         baseUrl: "unused",
