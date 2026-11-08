@@ -412,6 +412,43 @@ it("does not touch documents indexed from a different root directory for the sam
   }
 });
 
+it("reads every current file before any archived one, folder by folder, across roots (#1385)", async () => {
+  // A first index of a large share runs for days and people search it while it
+  // runs: what retrieval shows by default must be complete first, and whole
+  // folders must finish one after another for the per-folder status (#1386).
+  const otherRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-order-"));
+  try {
+    const files: Array<[string, string]> = [
+      [tmpRoot, "OLD/old-1.pdf"],
+      [tmpRoot, "Supplier B/b-1.pdf"],
+      [tmpRoot, "Supplier A/a-2.pdf"],
+      [tmpRoot, "Supplier A/a-1.pdf"],
+      [otherRoot, "Archiv/archiv-1.pdf"],
+      [otherRoot, "Certificates/cert-1.pdf"],
+    ];
+    for (const [root, rel] of files) {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), `bytes of ${rel}`);
+    }
+    const { deps, extractPdf } = fakeDeps();
+
+    await ingestPaths(ORG_ID, [tmpRoot, otherRoot], deps);
+
+    // Both roots sit in the same temp dir, and `pinchy-kb-ingest-order-…`
+    // sorts before `pinchy-kb-ingest-test-…`, so the whole order is fixed.
+    expect(extractPdf.mock.calls.map(([path]) => basename(path as string))).toEqual([
+      "cert-1.pdf",
+      "a-1.pdf",
+      "a-2.pdf",
+      "b-1.pdf",
+      "archiv-1.pdf",
+      "old-1.pdf",
+    ]);
+  } finally {
+    rmSync(otherRoot, { recursive: true, force: true });
+  }
+});
+
 // Robustness case (migration/pre-existing-data guard spirit): a kb_documents
 // row can exist with zero kb_chunks — e.g. a prior ingest crashed after the
 // document insert but before chunk writes, or an operator hand-deleted

@@ -62,6 +62,7 @@ import {
   isHiddenSegment,
 } from "./exclude-globs";
 import { isArchivedPath, statusForPath } from "./archive-paths";
+import { orderForIngest } from "./ingest-order";
 import { buildPathFilter } from "./path-filter";
 import { recordUnsupportedFiles, unsupportedFileType } from "./unsupported-files";
 import { chunkPages } from "./chunk";
@@ -1406,20 +1407,18 @@ export async function ingestPaths(
   // Counted once however many overlapping roots found a file, like `total`.
   const unsupported = new Set(perRoot.flatMap((root) => [...root.unsupported.keys()])).size;
 
-  // Deduplicated across roots, but ordered so each file is ingested while its
-  // first root is being processed — the order only matters for readability of
-  // the progress stream, not for correctness. Deduplication covers the byte
-  // total too: a file granted under both /data and /data/hr is one unit of
-  // work and must be weighed once, or the run would stop short of its total.
-  const queue: Array<{ absPath: string } & DiscoveredFile> = [];
-  const seen = new Set<string>();
+  // Deduplicated across roots: a file granted under both /data and /data/hr is
+  // one unit of work and must be weighed once, or the run would stop short of
+  // its total. Then ordered across ALL roots — current files before archived
+  // ones, folder by folder — so a first index that runs for days has the part
+  // people search complete first (ingest-order.ts, #1385).
+  const unique = new Map<string, DiscoveredFile>();
   for (const { discovered } of perRoot) {
     for (const [absPath, file] of discovered) {
-      if (seen.has(absPath)) continue;
-      seen.add(absPath);
-      queue.push({ absPath, ...file });
+      if (!unique.has(absPath)) unique.set(absPath, file);
     }
   }
+  const queue = orderForIngest([...unique].map(([absPath, file]) => ({ absPath, ...file })));
 
   // Converts in queue order, in batches, as the loop below reaches Office
   // documents — see officeArtifacts for why this is not a pre-pass.
