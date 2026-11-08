@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import type { FolderState } from "@/lib/knowledge/folder-plan";
 import type {
   FileFilter,
+  FileScope,
   FileState,
   FolderFilesResult,
   FolderStatus,
@@ -152,6 +153,7 @@ function RootRow({
         folder={root}
         pageSize={pageSize}
         title={root.path}
+        scope="direct"
         toggle={
           hasChildren ? (
             <Button
@@ -185,6 +187,7 @@ function RootRow({
                 folder={child}
                 pageSize={pageSize}
                 title={child.name}
+                scope="tree"
                 toggle={<span className="size-7 shrink-0" aria-hidden="true" />}
               />
             </li>
@@ -201,12 +204,19 @@ function FolderRow({
   pageSize,
   title,
   toggle,
+  scope,
 }: {
   agentId: string;
   folder: FolderStatus;
   pageSize: number;
   title: string;
   toggle: React.ReactNode;
+  /**
+   * What the row's counts cover, so its file list covers the same: a root row
+   * counts its own files (subfolders are rows of their own), a subfolder row
+   * its whole subtree — even when that subfolder is also a granted root.
+   */
+  scope: FileScope;
 }) {
   const [showFiles, setShowFiles] = useState(false);
   const filesId = useId();
@@ -248,7 +258,7 @@ function FolderRow({
       </div>
       {showFiles && (
         <div id={filesId} className="border-t px-3 py-3">
-          <FolderFiles agentId={agentId} folder={folder.path} pageSize={pageSize} />
+          <FolderFiles agentId={agentId} folder={folder.path} pageSize={pageSize} scope={scope} />
         </div>
       )}
     </div>
@@ -275,10 +285,12 @@ function FolderFiles({
   agentId,
   folder,
   pageSize,
+  scope,
 }: {
   agentId: string;
   folder: string;
   pageSize: number;
+  scope: FileScope;
 }) {
   const [filter, setFilter] = useState<FileFilter>("all");
   const [query, setQuery] = useState("");
@@ -303,6 +315,7 @@ function FolderFiles({
         filter,
         offset: String(offset),
         limit: String(pageSize),
+        scope,
       });
       if (q) params.set("q", q);
       try {
@@ -323,7 +336,7 @@ function FolderFiles({
         }
       }
     },
-    [agentId, folder, filter, q, pageSize]
+    [agentId, folder, filter, q, pageSize, scope]
   );
 
   useEffect(() => {
@@ -388,15 +401,22 @@ function FolderFiles({
       ) : page ? (
         <>
           <p className="text-xs text-muted-foreground" role="status">
+            {scope === "direct" && "Directly in this folder: "}
             {page.totals.searchable} of {page.totals.all} {plural(page.totals.all, "file")}{" "}
             searchable
+            {page.totals.unsupported > 0 &&
+              `, plus ${page.totals.unsupported} ${plural(page.totals.unsupported, "file")} the index can't read`}
             {page.truncated &&
               " — this folder is too large to list in full, so counts cover part of it"}
             .
           </p>
           {page.files.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              {q || filter !== "all" ? "No files match." : "No files in this folder."}
+              {q || filter !== "all"
+                ? "No files match."
+                : scope === "direct"
+                  ? "No files directly in this folder. Open a subfolder to see its files."
+                  : "No files in this folder."}
             </p>
           ) : (
             <ul className="max-h-72 space-y-1 overflow-y-auto">

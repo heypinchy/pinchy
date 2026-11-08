@@ -4,12 +4,16 @@ import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { type AgentPluginConfig } from "@/db/schema";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
-import { listKnowledgeFolderFiles, type FileFilter } from "@/lib/knowledge/index-status";
+import {
+  listKnowledgeFolderFiles,
+  type FileFilter,
+  type FileScope,
+} from "@/lib/knowledge/index-status";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
 /**
- * GET /api/agents/[agentId]/knowledge/files?folder=…&filter=…&q=…&offset=…&limit=…
+ * GET /api/agents/[agentId]/knowledge/files?folder=…&filter=…&q=…&offset=…&limit=…&scope=…
  * — one folder's files and whether search can use each (#1386).
  *
  * Same audience as the folders route: anyone who can chat with the agent.
@@ -37,6 +41,9 @@ export const GET = withAuth<RouteContext>(async (request, { params }, session) =
     return NextResponse.json({ error: "folder is required" }, { status: 400 });
   }
   const filter: FileFilter = query.get("filter") === "not_searchable" ? "not_searchable" : "all";
+  const scopeParam = query.get("scope");
+  const scope: FileScope | undefined =
+    scopeParam === "direct" || scopeParam === "tree" ? scopeParam : undefined;
   const offset = Number.parseInt(query.get("offset") ?? "0", 10);
   const limit = Number.parseInt(query.get("limit") ?? "50", 10);
 
@@ -46,6 +53,7 @@ export const GET = withAuth<RouteContext>(async (request, { params }, session) =
     q: query.get("q") ?? undefined,
     offset: Number.isFinite(offset) ? offset : 0,
     limit: Number.isFinite(limit) ? limit : 50,
+    scope,
   });
   if (!result) return NextResponse.json({ error: "Folder not found" }, { status: 404 });
   return NextResponse.json(result);

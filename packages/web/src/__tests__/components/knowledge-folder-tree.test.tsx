@@ -96,7 +96,7 @@ function files(overrides: Partial<FolderFilesResult> = {}): FolderFilesResult {
       },
     ],
     total: 2,
-    totals: { all: 2, searchable: 1, notSearchable: 1 },
+    totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 0 },
     truncated: false,
     ...overrides,
   };
@@ -225,6 +225,63 @@ describe("KnowledgeFolderTree", () => {
     expect(screen.getByText("policy.pdf")).toBeInTheDocument();
     expect(screen.getByText("Not indexed")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+  });
+
+  // A subfolder row counts its whole subtree, even when it is also a granted
+  // root; the root row counts only its own files. Each list must match its row.
+  it("asks for a subfolder's whole subtree and a root's own files", async () => {
+    mockGet.mockImplementation(async (url: string) =>
+      url.includes("/folders") ? status : files()
+    );
+    render(<KnowledgeFolderTree agentId="a1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /show subfolders/i }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Show files in /data/kb/hr" }));
+    await screen.findByText("scan.pdf");
+    expect(new URL(mockGet.mock.lastCall![0], "http://x").searchParams.get("scope")).toBe("tree");
+
+    await userEvent.click(screen.getByRole("button", { name: "Show files in /data/kb" }));
+    await waitFor(() =>
+      expect(new URL(mockGet.mock.lastCall![0], "http://x").searchParams.get("folder")).toBe(
+        "/data/kb"
+      )
+    );
+    expect(new URL(mockGet.mock.lastCall![0], "http://x").searchParams.get("scope")).toBe("direct");
+  });
+
+  it("says a root's list holds only its own files, and points to the subfolders", async () => {
+    mockGet.mockImplementation(async (url: string) =>
+      url.includes("/folders")
+        ? status
+        : files({
+            files: [],
+            total: 0,
+            totals: { all: 0, searchable: 0, notSearchable: 0, unsupported: 0 },
+          })
+    );
+    render(<KnowledgeFolderTree agentId="a1" />);
+    await userEvent.click(await screen.findByRole("button", { name: "Show files in /data/kb" }));
+
+    expect(
+      await screen.findByText(
+        "No files directly in this folder. Open a subfolder to see its files."
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("counts the files the index cannot read apart from the rest", async () => {
+    mockGet.mockImplementation(async (url: string) =>
+      url.includes("/folders")
+        ? status
+        : files({ totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 3 } })
+    );
+    render(<KnowledgeFolderTree agentId="a1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /show subfolders/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Show files in /data/kb/hr" }));
+
+    expect(
+      await screen.findByText(/1 of 2 files searchable, plus 3 files the index can't read/)
+    ).toBeInTheDocument();
   });
 
   it("says when a folder is too large to list in full", async () => {

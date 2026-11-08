@@ -116,7 +116,7 @@ describe("GET /api/agents/[agentId]/knowledge/files", () => {
     const res = await (
       await load()
     )(
-      request("?folder=/data/hr/certs&filter=not_searchable&q=iso&offset=50&limit=25"),
+      request("?folder=/data/hr/certs&filter=not_searchable&q=iso&offset=50&limit=25&scope=direct"),
       ctx as never
     );
     expect(res.status).toBe(200);
@@ -126,6 +126,7 @@ describe("GET /api/agents/[agentId]/knowledge/files", () => {
       q: "iso",
       offset: 50,
       limit: 25,
+      scope: "direct",
     });
   });
 
@@ -145,13 +146,14 @@ describe("GET /api/agents/[agentId]/knowledge/files", () => {
   it("falls back to defaults for an unknown filter and non-numeric paging", async () => {
     await (
       await load()
-    )(request("?folder=/data/hr&filter=evil&offset=x&limit=y"), ctx as never);
+    )(request("?folder=/data/hr&filter=evil&offset=x&limit=y&scope=evil"), ctx as never);
     expect(mockListFiles).toHaveBeenCalledWith(DEFAULT_ORG_ID, "agent-1", ["/data/hr"], {
       folder: "/data/hr",
       filter: "all",
       q: undefined,
       offset: 0,
       limit: 50,
+      scope: undefined,
     });
   });
 });

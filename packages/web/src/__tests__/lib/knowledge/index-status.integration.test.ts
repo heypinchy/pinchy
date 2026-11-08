@@ -50,12 +50,12 @@ async function seedDoc(
   }
 }
 
-/** A job in the given state; `startedAt` an hour ago so files written now count as newer. */
+/** A job in the given state; `startedAt` an hour ago (unless given) so files written now count as newer. */
 async function seedJob(
   agentId: string,
   paths: string[],
   status: "running" | "succeeded" | "failed",
-  extra: { processed?: number; plan?: { folder: string; files: number }[] } = {}
+  extra: { processed?: number; plan?: { folder: string; files: number }[]; startedAt?: Date } = {}
 ) {
   const { job } = await enqueueIndexJob({
     orgId: ORG_ID,
@@ -70,7 +70,7 @@ async function seedJob(
     .set({
       status,
       processed: extra.processed ?? 0,
-      startedAt: hourAgo,
+      startedAt: extra.startedAt ?? hourAgo,
       finishedAt: status === "running" ? null : new Date(Date.now() - 60_000),
     })
     .where(eq(kbIndexJobs.id, job.id));
@@ -261,8 +261,9 @@ describe("listKnowledgeFolderFiles", () => {
     // Indexed two hours ago, modified since — and after the last run started.
     await seedDoc(join(root, "certs", "old.pdf"), { mtime: longAgo });
     await seedJob(agent.id, [root], "succeeded");
-    // afnor.pdf has no document: the last run started an hour ago, the file is
-    // older than that, so the run saw it and did not get it in.
+    // afnor.pdf has no document and an old modification time — but a copy
+    // that keeps mtime (cp -p, rsync -a, a restored backup) still arrived
+    // now, which its ctime records. The last run cannot have seen it.
     await utimes(join(root, "certs", "2024", "afnor.pdf"), longAgo, longAgo);
 
     const result = await listKnowledgeFolderFiles(ORG_ID, agent.id, [root], {
@@ -272,13 +273,48 @@ describe("listKnowledgeFolderFiles", () => {
     expect(result).not.toBeNull();
     const states = Object.fromEntries(result!.files.map((f) => [f.name, f.state]));
     expect(states).toEqual({
-      "2024/afnor.pdf": "failed",
+      "2024/afnor.pdf": "new",
       "iso.pdf": "searchable",
       "old.pdf": "changed",
       "photo.xyz": "unsupported",
       "scan.pdf": "no_text",
     });
-    expect(result!.totals).toEqual({ all: 5, searchable: 2, notSearchable: 3 });
+    // `all` counts the files the index reads; photo.xyz is counted apart.
+    expect(result!.totals).toEqual({ all: 4, searchable: 2, notSearchable: 2, unsupported: 1 });
+  });
+
+  it("marks a file the last run saw but did not get in as failed", async () => {
+    const agent = await makeAgent();
+    // The run started after every file here arrived, so it walked past them.
+    await seedJob(agent.id, [root], "succeeded", { startedAt: new Date(Date.now() + 5_000) });
+
+    const result = await listKnowledgeFolderFiles(ORG_ID, agent.id, [root], { folder: root });
+
+    expect(result!.files.map((f) => [f.name, f.state])).toEqual([["handbook.pdf", "failed"]]);
+  });
+
+  // A root can also be a child row of a shallower root (/data and /data/hr
+  // both granted). The child row counts its whole subtree, so its file list
+  // must too; the root row lists only its own files.
+  it("lists a whole subtree or only direct files, as asked", async () => {
+    const agent = await makeAgent();
+
+    const tree = await listKnowledgeFolderFiles(ORG_ID, agent.id, [root], {
+      folder: root,
+      scope: "tree",
+    });
+    expect(tree!.files.map((f) => f.name)).toContain("certs/2024/afnor.pdf");
+
+    const direct = await listKnowledgeFolderFiles(ORG_ID, agent.id, [root], {
+      folder: join(root, "certs"),
+      scope: "direct",
+    });
+    expect(direct!.files.map((f) => f.name)).toEqual([
+      "iso.pdf",
+      "old.pdf",
+      "photo.xyz",
+      "scan.pdf",
+    ]);
   });
 
   it("lists only the files directly in a granted folder", async () => {
@@ -298,7 +334,9 @@ describe("listKnowledgeFolderFiles", () => {
       filter: "not_searchable",
     });
     expect(notSearchable!.files.map((f) => f.name)).not.toContain("iso.pdf");
-    expect(notSearchable!.total).toBe(4);
+    // A file type the index does not read is not "not searchable yet".
+    expect(notSearchable!.files.map((f) => f.name)).not.toContain("photo.xyz");
+    expect(notSearchable!.total).toBe(3);
 
     const searched = await listKnowledgeFolderFiles(ORG_ID, agent.id, [root], {
       folder: join(root, "certs"),
