@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { embedTexts } from "@/lib/knowledge/embeddings";
+import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
 
 /**
  * Exercises the real node-llama-cpp path end-to-end against a real GGUF
@@ -62,5 +62,46 @@ describe.skipIf(!process.env.KB_EMBED_GGUF_PATH)(
 
       expect(simRelevant).toBeGreaterThan(simUnrelated);
     }, 60_000);
+
+    it("splits a text the model cannot take in one piece into pieces it embeds (#1380)", async () => {
+      const cfg = {
+        baseUrl: "unused",
+        provider: "local" as const,
+        modelPath: process.env.KB_EMBED_GGUF_PATH as string,
+        expectedDim: 768,
+      };
+      // A number-dense table row costs far more tokens than characters suggest,
+      // which is how a chunk inside the character budget outgrew the context.
+      const dense = Array.from({ length: 1500 }, (_, i) => `${1000 + i},${i % 97}.${i % 13}`).join(
+        " | "
+      );
+
+      await expect(embedTexts([dense], cfg)).rejects.toThrow(/longer than the context size/);
+
+      const [pieces] = await fitTextsForEmbedding([dense], cfg);
+      expect(pieces.length).toBeGreaterThan(1);
+      const vectors = await embedTexts(pieces, cfg);
+      expect(vectors).toHaveLength(pieces.length);
+      for (const vec of vectors) expect(vec).toHaveLength(768);
+    }, 120_000);
+
+    // The context takes this text whole, but its batch does not: decoded in
+    // several calls, the vector would reflect only the last batch, so the head
+    // of the text would be missing from its own embedding (#1380). The library
+    // does not throw for such a text — only the split shows the budget is right.
+    it("splits a text the context takes but the batch does not", async () => {
+      const cfg = {
+        baseUrl: "unused",
+        provider: "local" as const,
+        modelPath: process.env.KB_EMBED_GGUF_PATH as string,
+        expectedDim: 768,
+      };
+      const prose =
+        "The quarterly maintenance report lists every pump inspected this month. ".repeat(60);
+
+      await expect(embedTexts([prose], cfg)).resolves.toHaveLength(1);
+      const [pieces] = await fitTextsForEmbedding([prose], cfg);
+      expect(pieces.length).toBeGreaterThan(1);
+    }, 120_000);
   }
 );
