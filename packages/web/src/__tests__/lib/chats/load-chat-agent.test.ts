@@ -62,6 +62,8 @@ const agentRow = (overrides: Record<string, unknown> = {}) => ({
   isPersonal: false,
   visibility: "all",
   avatarSeed: "seed-1",
+  allowedTools: [],
+  pluginConfig: null,
   ...overrides,
 });
 
@@ -131,6 +133,20 @@ describe("loadChatPageAgent", () => {
     expect(userId).toBe("user-1");
     expect(userRole).toBe("member");
     expect(avatarUrl).toBe("data:image/svg+xml;utf8,seed-1");
+  });
+
+  it("says the agent searches the knowledge base only when it can search and has a folder", async () => {
+    signedInAs("user-1", "member");
+    const kb = { "pinchy-files": { allowed_paths: ["/data/kb"] } };
+
+    dbReturns([agentRow({ allowedTools: ["knowledge_search"], pluginConfig: kb })]);
+    await expect(loadChatPageAgent("agent-1")).resolves.toMatchObject({ searchesKnowledge: true });
+
+    dbReturns([agentRow({ allowedTools: ["pinchy_read"], pluginConfig: kb })]);
+    await expect(loadChatPageAgent("agent-1")).resolves.toMatchObject({ searchesKnowledge: false });
+
+    dbReturns([agentRow({ allowedTools: ["knowledge_search"], pluginConfig: null })]);
+    await expect(loadChatPageAgent("agent-1")).resolves.toMatchObject({ searchesKnowledge: false });
   });
 
   it("grants canEdit to the owner of a personal agent", async () => {

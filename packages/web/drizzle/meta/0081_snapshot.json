@@ -1,5 +1,5 @@
 {
-  "id": "1e170002-7e5b-4a1c-89b6-fc3bda70f1c1",
+  "id": "0c53c185-2fb7-4ebb-b484-3053f038f90a",
   "prevId": "cc855eaa-9a70-4309-91c8-be95d496dd63",
   "version": "7",
   "dialect": "postgresql",
@@ -2578,6 +2578,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "folder_plan": {
+          "name": "folder_plan",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "error": {
           "name": "error",
           "type": "text",
@@ -2691,7 +2697,7 @@
         },
         "kb_index_jobs_trigger_check": {
           "name": "kb_index_jobs_trigger_check",
-          "value": "\"kb_index_jobs\".\"trigger\" IN ('manual', 'scheduled', 'upgrade', 'initial')"
+          "value": "\"kb_index_jobs\".\"trigger\" IN ('manual', 'scheduled', 'upgrade')"
         }
       },
       "isRLSEnabled": false

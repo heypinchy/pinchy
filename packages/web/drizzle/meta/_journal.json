@@ -572,8 +572,15 @@
     {
       "idx": 81,
       "version": "7",
-      "when": 1793955007957,
-      "tag": "0081_kb_index_job_initial_trigger",
+      "when": 1794130597526,
+      "tag": "0081_kb_index_job_folder_plan",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1794146410622,
+      "tag": "0082_kb_index_job_initial_trigger",
       "breakpoints": true
     }
   ]
