@@ -224,8 +224,10 @@ function FolderRow({
 
   return (
     <div>
-      <div className="flex flex-col gap-1 px-2 py-2 sm:flex-row sm:items-center sm:gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-1">
+      {/* The name's box starts at its text width and the row wraps, so the
+          metadata moves below the name before the name is cut (#1401). */}
+      <div className="flex flex-col gap-1 px-2 py-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3">
+        <div className="flex min-w-0 max-w-full grow items-center gap-1">
           {toggle}
           <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className="min-w-0 truncate font-mono text-xs" title={folder.path}>

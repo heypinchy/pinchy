@@ -124,6 +124,26 @@ describe("KnowledgeFolderTree", () => {
     expect(within(list).getByText("8 of 10 files searchable")).toBeInTheDocument();
   });
 
+  // jsdom cannot measure, so this pins the layout contract behind #1401: the
+  // name's box starts at its own text width (a basis of 0 left it only the
+  // space the metadata did not take, one pixel short of "kalkulation"), and
+  // the row may wrap, so the metadata moves below the name before the name
+  // is cut. A name too long for a line of its own still truncates.
+  it("gives the folder name priority over the metadata beside it", async () => {
+    mockGet.mockResolvedValue(status);
+    render(<KnowledgeFolderTree agentId="a1" />);
+
+    const name = await screen.findByTitle("/data/kb");
+    expect(name).toHaveClass("truncate");
+
+    const nameBox = name.parentElement!;
+    expect(nameBox).not.toHaveClass("flex-1");
+    expect(nameBox).toHaveClass("grow", "min-w-0", "max-w-full");
+
+    const row = nameBox.parentElement!;
+    expect(row).toHaveClass("sm:flex-row", "sm:flex-wrap");
+  });
+
   it("asks the folders route of the agent it was given", async () => {
     mockGet.mockResolvedValue({ job: null, folders: [] });
     render(<KnowledgeFolderTree agentId="agent-7" />);

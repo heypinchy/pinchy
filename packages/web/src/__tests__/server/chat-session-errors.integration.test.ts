@@ -83,7 +83,11 @@ describe("chat session errors persistence", () => {
     // The user moved on to m2 and got an answer: the banner about m1 is no
     // longer where the conversation stands (#1301). Superseding only on m1's
     // own success left it on top of every later answer, reload after reload.
-    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: new Date() });
+    // The bound sits a second ahead, not at `new Date()`: created_at is the
+    // database's now() in microseconds, a JS Date has milliseconds, so a row
+    // written in the same millisecond reads as after `new Date()` and stays.
+    const later = new Date(Date.now() + 1_000);
+    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: later });
 
     expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
   });
