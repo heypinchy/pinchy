@@ -20,7 +20,7 @@ type RouteContext = { params: Promise<{ agentId: string }> };
  * Scope: the agent's SAVED `pinchy-files` grants, never the request — the
  * same allow-list retrieval searches.
  */
-// audit-exempt: read-only status. It names the agent's granted folders and counts, which the agent's settings already show, and changes nothing.
+// audit-exempt: read-only status of the agent's granted folders, their subfolders and its latest run, for people who can already chat with the agent; it changes nothing.
 export const GET = withAuth<RouteContext>(async (_request, { params }, session) => {
   const { agentId } = await params;
 
