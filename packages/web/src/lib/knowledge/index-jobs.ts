@@ -14,7 +14,7 @@
  *     (lib/email-workflows/ledger.ts), which this codebase already uses in
  *     place of row locks.
  */
-import { and, asc, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbIndexJobs } from "@/db/schema";
@@ -245,7 +245,15 @@ export async function getLatestPlannedIndexJobForAgent(
   const [job] = await db
     .select()
     .from(kbIndexJobs)
-    .where(and(eq(kbIndexJobs.agentId, agentId), isNotNull(kbIndexJobs.folderPlan)))
+    .where(
+      and(
+        eq(kbIndexJobs.agentId, agentId),
+        isNotNull(kbIndexJobs.folderPlan),
+        // A failed run that found nothing (every root unreadable, say an
+        // unmounted share) knows less than the run before it, not more.
+        sql`not (${kbIndexJobs.status} = 'failed' and jsonb_array_length(${kbIndexJobs.folderPlan}) = 0)`
+      )
+    )
     .orderBy(desc(kbIndexJobs.createdAt))
     .limit(1);
   return job ?? null;

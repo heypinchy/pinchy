@@ -19,7 +19,7 @@
  */
 import { lstat, readdir } from "node:fs/promises";
 import { join, posix } from "node:path";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
 import { db } from "@/db";
@@ -168,7 +168,10 @@ async function countsUnderRoot(
 
 type FinishedJob = { paths: string[]; finishedAt: Date; startedAt: Date | null };
 
-/** The agent's recent finished runs, newest first. Enough to date every granted folder. */
+/**
+ * The agent's recent successful runs, newest first. Enough to date every
+ * granted folder. A failed run may have read nothing, so it dates nothing.
+ */
 async function recentFinishedJobs(agentId: string): Promise<FinishedJob[]> {
   const rows = await db
     .select({
@@ -177,17 +180,23 @@ async function recentFinishedJobs(agentId: string): Promise<FinishedJob[]> {
       startedAt: kbIndexJobs.startedAt,
     })
     .from(kbIndexJobs)
-    .where(
-      and(eq(kbIndexJobs.agentId, agentId), inArray(kbIndexJobs.status, ["succeeded", "failed"]))
-    )
+    .where(and(eq(kbIndexJobs.agentId, agentId), eq(kbIndexJobs.status, "succeeded")))
     .orderBy(desc(kbIndexJobs.finishedAt))
     .limit(20);
   return rows.filter((row): row is FinishedJob => row.finishedAt !== null);
 }
 
-/** The newest finished run whose grants covered `folder`. */
+/** The newest successful run whose grants covered `folder`. */
 function lastRunCovering(jobs: readonly FinishedJob[], folder: string): FinishedJob | null {
   return jobs.find((job) => job.paths.some((p) => isAtOrUnder(folder, normalizeRoot(p)))) ?? null;
+}
+
+/**
+ * The run snapshots its paths when it starts. A folder that has left the
+ * grants since must not stay on screen as "the folder it is in".
+ */
+function currentFolderWithin(folder: string | null, roots: readonly string[]): string | null {
+  return folder !== null && roots.some((r) => isAtOrUnder(folder, r)) ? folder : null;
 }
 
 function uniqueRoots(allowedPaths: readonly string[]): string[] {
@@ -216,11 +225,26 @@ export async function getKnowledgeFolderStatus(
   const planIsActive = active !== null && planned?.id === active.id;
   const position = planIsActive ? active.processed : null;
   const activeRoots = active ? active.paths.map(normalizeRoot) : [];
+  const planRoots = planned ? planned.paths.map(normalizeRoot) : [];
+
+  /**
+   * Whether the plan can say how many files `path` holds. It cannot when the
+   * planned run never looked there (a grant added since), or when it counted
+   * the folder only as part of a subfolder segment above it (a grant narrowed
+   * since): a child segment holds that child's whole subtree in one number.
+   */
+  const planKnows = (path: string): boolean =>
+    plan !== null &&
+    planRoots.some((r) => isAtOrUnder(path, r)) &&
+    !plan.some(
+      (s) => s.folder !== path && isAtOrUnder(path, s.folder) && !planRoots.includes(s.folder)
+    );
 
   const statusFor = (path: string, name: string, counts: Counts): FolderStatus => {
-    const progress = plan
-      ? folderPlanProgress(plan, path, position)
-      : { expected: null, pending: 0, current: false };
+    const progress =
+      plan && planKnows(path)
+        ? folderPlanProgress(plan, path, position)
+        : { expected: null, pending: 0, current: false };
     const awaitingDiscovery =
       active !== null &&
       !planIsActive &&
@@ -279,8 +303,10 @@ export async function getKnowledgeFolderStatus(
           status: latest.status,
           processed: latest.processed,
           total: latest.total,
-          currentFolder:
+          currentFolder: currentFolderWithin(
             planIsActive && plan && active ? currentPlanFolder(plan, active.processed) : null,
+            roots
+          ),
           finishedAt: latest.finishedAt ? latest.finishedAt.toISOString() : null,
         }
       : null,

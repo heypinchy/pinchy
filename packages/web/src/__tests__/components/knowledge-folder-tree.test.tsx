@@ -254,6 +254,14 @@ describe("countText", () => {
     );
   });
 
+  // A new run that has not listed its files yet still carries the last run's
+  // expected count, with nothing pending: that is not "all done".
+  it("does not call a queued folder done before the run has listed its files", () => {
+    expect(countText(folder({ path: "/a", state: "queued", expected: 40, pending: 0 }))).toBe(
+      "Waiting for the run to list its files"
+    );
+  });
+
   it("names an empty folder and a folder nothing has looked at", () => {
     expect(countText(folder({ path: "/a", state: "empty", expected: 0 }))).toBe(
       "Nothing to index here"
