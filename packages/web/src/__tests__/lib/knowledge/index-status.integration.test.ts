@@ -4,7 +4,7 @@
  * segment, or a filter that reaches into a sibling folder, still returns
  * plausible numbers from a mock — so they are pinned against Postgres.
  */
-import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realpathSync } from "node:fs";
@@ -277,6 +277,53 @@ describe("listKnowledgeFolderFiles", () => {
       expect(
         await listKnowledgeFolderFiles(ORG_ID, agent.id, [join(root, "certs")], { folder })
       ).toBeNull();
+    }
+  });
+
+  // Ingest skips hidden and OS-junk folders, and pinchy-files refuses any
+  // hidden path segment. A Samba recycle bin keeps deleted files under their
+  // old names: naming it in the query string must not list it.
+  it("refuses a hidden or denylisted folder inside the grant, and a hidden file", async () => {
+    const agent = await makeAgent();
+    await mkdir(join(root, ".recycle", "hr"), { recursive: true });
+    await writeFile(join(root, ".recycle", "hr", "deleted.pdf"), "x");
+    await mkdir(join(root, "$RECYCLE.BIN"), { recursive: true });
+    await writeFile(join(root, "$RECYCLE.BIN", "gone.pdf"), "x");
+
+    for (const folder of [
+      join(root, ".recycle"),
+      join(root, ".recycle", "hr"),
+      join(root, "$RECYCLE.BIN"),
+      join(root, "certs", ".hidden.pdf"),
+    ]) {
+      expect(await listKnowledgeFolderFiles(ORG_ID, agent.id, [root], { folder })).toBeNull();
+    }
+  });
+
+  // A folder spelled with `.` or `//` passes a prefix test but is not the
+  // path the listing builds, so offsets computed from it point elsewhere.
+  it("refuses a folder that is not written in its normal form", async () => {
+    const agent = await makeAgent();
+
+    for (const folder of [`${root}/.`, `${root}//certs`, `${root}/certs/./2024`]) {
+      expect(await listKnowledgeFolderFiles(ORG_ID, agent.id, [root], { folder })).toBeNull();
+    }
+  });
+
+  it("refuses a link inside the grant that points outside it", async () => {
+    const agent = await makeAgent();
+    const outside = realpathSync(await mkdtemp(join(tmpdir(), "kb-outside-")));
+    await writeFile(join(outside, "secret.pdf"), "x");
+    await symlink(outside, join(root, "certs", "escape"));
+
+    try {
+      expect(
+        await listKnowledgeFolderFiles(ORG_ID, agent.id, [root], {
+          folder: join(root, "certs", "escape"),
+        })
+      ).toBeNull();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
     }
   });
 });

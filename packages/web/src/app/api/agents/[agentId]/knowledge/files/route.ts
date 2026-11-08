@@ -17,11 +17,12 @@ type RouteContext = { params: Promise<{ agentId: string }> };
  * `folder` comes from the query string, so it is the one input here that is
  * not derived from the agent. It must be one of the agent's granted folders or
  * lie inside one — checked lexically and against the real path, so neither
- * `..` nor a link reaches past the grant. Anything else answers 404, the same
+ * `..` nor a link reaches past the grant, and never into a hidden or OS-junk
+ * folder ingest skips. Anything else answers 404, the same
  * answer as a folder that does not exist: a member must not be able to probe
  * the share for names.
  */
-// audit-exempt: read-only listing of files inside the agent's granted folders — the same files the agent can already read — and changes nothing.
+// audit-exempt: read-only listing of file names and index states inside the agent's granted folders, for people who can already chat with the agent; it changes nothing.
 export const GET = withAuth<RouteContext>(async (request, { params }, session) => {
   const { agentId } = await params;
 

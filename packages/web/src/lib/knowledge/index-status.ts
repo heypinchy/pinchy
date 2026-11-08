@@ -17,8 +17,8 @@
  *     exactly the file the reader is looking for. It runs on demand, for one
  *     folder, never on the polling path.
  */
-import { lstat, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, readdir } from "node:fs/promises";
+import { join, posix } from "node:path";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 
@@ -405,8 +405,19 @@ export async function listKnowledgeFolderFiles(
 ): Promise<FolderFilesResult | null> {
   const roots = uniqueRoots(allowedPaths);
   const folder = normalizeRoot(opts.folder);
+  // Only the normal spelling: `/kb/.` or `/kb//certs` pass a prefix test, but
+  // they are not the path the listing builds, so every offset taken from them
+  // would point somewhere else.
+  if (normalizeRoot(posix.normalize(folder)) !== folder) return null;
   const root = roots.filter((r) => isAtOrUnder(folder, r)).sort((a, b) => b.length - a.length)[0];
-  if (!root || folder.split("/").includes("..")) return null;
+  if (!root) return null;
+  // The same rules as ingest's discovery, applied to the folder asked for: a
+  // hidden or OS-junk folder inside the grant (a Samba `.recycle` keeps deleted
+  // files under their old names) is not part of what the agent searches.
+  const below = folder === root ? [] : folder.slice(root === "/" ? 1 : root.length + 1).split("/");
+  if (below.some((segment) => isHiddenSegment(segment) || isDenylistedDirName(segment))) {
+    return null;
+  }
   const realFolder = await realpathWithinDir(folder, root);
   if (realFolder === null) return null;
 
@@ -416,6 +427,7 @@ export async function listKnowledgeFolderFiles(
   const info = await lstat(realFolder).catch(() => null);
   if (!info) return null;
   if (info.isFile()) {
+    if (isDenylistedFileName(posix.basename(folder))) return null;
     listed.push({
       path: folder,
       supported: isAllowedExtension(folder, DEFAULT_ALLOWED_EXTENSIONS),
@@ -476,7 +488,8 @@ export async function listKnowledgeFolderFiles(
     page.map(async (file): Promise<FolderFile> => {
       const doc = docs.get(file.path);
       // eslint-disable-next-line security/detect-non-literal-fs-filename -- listed below realFolder, which passed realpathWithinDir.
-      const modified = (await stat(join(realFolder, file.path.slice(folder.length)))
+      // lstat: a listed file swapped for a link must not report its target's times.
+      const modified = (await lstat(join(realFolder, posix.relative(folder, file.path)))
         .then((s) => s.mtime)
         .catch(() => null)) as Date | null;
       return {
