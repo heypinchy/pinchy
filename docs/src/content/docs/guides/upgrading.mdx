@@ -205,7 +205,7 @@ docker compose pull && docker compose up -d && docker image prune -f
 
 #### A first index reads current documents first
 
-A reindex used to read files in whatever order it found them, so on a large share the documents people ask about could come last. It now reads every file outside an [archived folder](/guides/create-knowledge-base-agent/#current-documents-first) first, folder by folder in path order, and the archived ones after that. A folder is searchable in full long before the run ends. Scanned PDFs are also sent to your vision model three pages at a time instead of one, which shortens a first index with many scans. Nothing to configure. To speed up embedding, raise `PINCHY_CPUS`: see [CPU when the knowledge base embeds](/guides/customizing-deployment/#cpu-when-the-knowledge-base-embeds).
+A reindex used to read files in whatever order it found them, so on a large share the documents people ask about could come last. It now reads every file outside an [archived folder](/guides/create-knowledge-base-agent/#current-documents-first) first, one folder after another, and the archived ones after that. Most folders are searchable long before the run ends. Scanned PDFs are also sent to your vision model three pages at a time instead of one, which shortens a first index with many scans. Nothing to configure. To speed up embedding, raise `PINCHY_CPUS`: see [CPU when the knowledge base embeds](/guides/customizing-deployment/#cpu-when-the-knowledge-base-embeds).
 
 ## Upgrading from v0.10.1 to v0.10.2
 
