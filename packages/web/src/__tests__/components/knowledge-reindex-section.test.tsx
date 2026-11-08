@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
 import { flushPendingRenders } from "@/test-helpers/react";
-import { KnowledgeReindexSection, formatElapsed } from "@/components/knowledge-reindex-section";
+import {
+  KnowledgeReindexSection,
+  formatElapsed,
+  formatWhen,
+} from "@/components/knowledge-reindex-section";
 import { apiGet, apiPost, ApiError } from "@/lib/api-client";
 import { toast } from "sonner";
 
@@ -24,20 +28,31 @@ vi.mock("sonner", () => ({
 // knowledge-unsearchable-list.test.tsx). Stubbed here so this file keeps testing
 // ONE network conversation, with the props rendered as attributes so the
 // section's decisions about WHEN to show it stay assertable.
-vi.mock("@/components/knowledge-unsearchable-list", () => ({
-  KnowledgeUnsearchableList: (props: {
-    agentId: string;
-    announceNone: boolean;
-    reloadKey: string;
-  }) => (
-    <div
-      data-testid="unsearchable-list"
-      data-agent-id={props.agentId}
-      data-announce-none={String(props.announceNone)}
-      data-reload-key={props.reloadKey}
-    />
-  ),
-}));
+// `mockNoTextCount` is what the stub reports back up as the corpus-wide count
+// of documents without readable text — the number the badge has to agree with.
+let mockNoTextCount = 0;
+vi.mock("@/components/knowledge-unsearchable-list", async () => {
+  const { useEffect } = await import("react");
+  return {
+    KnowledgeUnsearchableList: (props: {
+      agentId: string;
+      announceNone: boolean;
+      reloadKey: string;
+      onNoTextCount?: (count: number) => void;
+    }) => {
+      const { onNoTextCount } = props;
+      useEffect(() => onNoTextCount?.(mockNoTextCount), [onNoTextCount]);
+      return (
+        <div
+          data-testid="unsearchable-list"
+          data-agent-id={props.agentId}
+          data-announce-none={String(props.announceNone)}
+          data-reload-key={props.reloadKey}
+        />
+      );
+    },
+  };
+});
 
 const mockGet = vi.mocked(apiGet);
 const mockPost = vi.mocked(apiPost);
@@ -57,6 +72,8 @@ type Job = {
     removed: number;
     unsearchable: number;
     failed: number;
+    archived?: number;
+    unsupported?: number;
   } | null;
   error: string | null;
   createdAt: string;
@@ -84,14 +101,17 @@ function job(overrides: Partial<Job>): Job {
 describe("KnowledgeReindexSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockNoTextCount = 0;
     mockGet.mockResolvedValue({ job: null });
   });
 
   it("shows a 'not yet indexed' state and an enabled trigger when directories are granted", async () => {
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled());
-    expect(screen.getByText(/not.*indexed/i)).toBeInTheDocument();
+    // About this agent's runs, not "nothing is searchable": the index is
+    // shared, so another agent's run may already cover these folders.
+    expect(await screen.findByText(/this agent hasn't been indexed yet/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
     expect(mockGet).toHaveBeenCalledWith("/api/agents/a1/knowledge/reindex");
   });
 
@@ -153,12 +173,82 @@ describe("KnowledgeReindexSection", () => {
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
     await waitFor(() => expect(screen.getByText(/last indexed/i)).toBeInTheDocument());
-    // The counters that mean "this document will never answer a question".
-    expect(screen.getByText(/4/)).toBeInTheDocument(); // unsearchable
-    expect(screen.getByText(/unsearchable/i)).toBeInTheDocument();
-    expect(screen.getByText(/failed/i)).toBeInTheDocument();
+    // The counters that mean "this document will never answer a question" —
+    // in words an admin understands: "unsearchable" was not (#1305).
+    expect(screen.getByText("4 without readable text")).toBeInTheDocument();
+    expect(screen.getByText("1 failed")).toBeInTheDocument();
+    expect(screen.getByText("90 new or changed")).toBeInTheDocument();
+    // A file whose content hash matched is unchanged, not skipped: "skipped"
+    // reads like something went wrong.
+    expect(screen.getByText("5 unchanged")).toBeInTheDocument();
+    expect(screen.queryByText(/skipped/i)).not.toBeInTheDocument();
     // Button is enabled again — the run is over.
     expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled();
+  });
+
+  // #1267: files whose type the indexer cannot read were invisible — counted
+  // nowhere, listed nowhere. The count sits with the others, and the list is a
+  // download, because a real share can hold 100k of them.
+  describe("files the index can't read", () => {
+    const counts = { indexed: 11, skipped: 0, removed: 0, unsearchable: 0, failed: 0 };
+
+    it("counts them beside the run's other findings and offers the list as a download", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 2 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText("2 not supported")).toBeInTheDocument();
+      const link = screen.getByRole("link", { name: /download the list/i });
+      expect(link).toHaveAttribute("href", "/api/agents/a1/knowledge/unsupported");
+      expect(link).toHaveAttribute("download");
+      expect(screen.getByText(/2 files are of a type pinchy can't read/i)).toBeInTheDocument();
+    });
+
+    it("speaks of one file in the singular", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 1 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText(/1 file is of a type pinchy can't read/i)).toBeInTheDocument();
+    });
+
+    // After a failed run the list is still the previous run's — it is written
+    // only by a run that reaches the end — so a link beside this run's number
+    // would offer a file that doesn't match it.
+    it("counts them after a failed run but offers no list", async () => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "failed",
+          error: "Embedder down",
+          counts: { ...counts, unsupported: 3 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText("3 not supported")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /download the list/i })).not.toBeInTheDocument();
+    });
+
+    it("says nothing more than the zero when every file could be read", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 0 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText("0 not supported")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /download the list/i })).not.toBeInTheDocument();
+    });
+
+    // A run that finished before this was counted never looked. "0 not
+    // supported" would claim it did.
+    it("shows no count at all for a run that finished before files were counted", async () => {
+      mockGet.mockResolvedValue({ job: job({ counts }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      await screen.findByText(/last indexed/i);
+      expect(screen.queryByText(/not supported/i)).not.toBeInTheDocument();
+    });
   });
 
   it("surfaces a concurrent-run conflict (409) as an error toast naming the blocking agent", async () => {
@@ -240,7 +330,7 @@ describe("KnowledgeReindexSection", () => {
       mockGet.mockResolvedValue({
         job: job({
           status: "succeeded",
-          counts: { indexed: 90, skipped: 5, removed: 0, unsearchable: 4, failed: 1 },
+          counts: { indexed: 90, skipped: 5, removed: 0, unsearchable: 0, failed: 0 },
         }),
       });
 
@@ -254,6 +344,22 @@ describe("KnowledgeReindexSection", () => {
     // The index is corpus-wide: another agent's run can have left unsearchable
     // documents inside this agent's scope, so the list is still asked for — it
     // just may not reassure about a zero it has no run to stand on.
+    // "Every document came back with searchable text" under a red "1 failed"
+    // is the all-clear the badge just withheld.
+    it("doesn't let it announce zero after a run that needs attention", async () => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 90, skipped: 5, removed: 0, unsearchable: 0, failed: 1 },
+        }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const list = await screen.findByTestId("unsearchable-list");
+      expect(list).toHaveAttribute("data-announce-none", "false");
+    });
+
     it("still shows the list before any run of its own, but without announcing zero", async () => {
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
@@ -317,13 +423,287 @@ describe("KnowledgeReindexSection", () => {
         afterJob2
       );
     });
+
+    // Swapping one saved folder for another keeps the count: the list (and
+    // the badge built on it) must still re-read, or it reports on a folder the
+    // agent no longer reads until the page is reloaded.
+    it("re-reads the list when a saved folder is swapped for another", async () => {
+      mockGet.mockResolvedValue({ job: job({ id: "job-1", status: "succeeded" }) });
+      const view = render(
+        <KnowledgeReindexSection
+          agentId="a1"
+          allowedPathCount={2}
+          savedPathsKey="/data/a|/data/b"
+        />
+      );
+      const before = (await screen.findByTestId("unsearchable-list")).getAttribute(
+        "data-reload-key"
+      );
+      view.rerender(
+        <KnowledgeReindexSection
+          agentId="a1"
+          allowedPathCount={2}
+          savedPathsKey="/data/b|/data/c"
+        />
+      );
+      expect(screen.getByTestId("unsearchable-list").getAttribute("data-reload-key")).not.toBe(
+        before
+      );
+    });
   });
 
-  it("warns that a reindex uses the saved grants while directory changes are unsaved", async () => {
-    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} hasUnsavedPathChanges />);
+  // The badge answers "is this healthy?" before anyone reads a number (#1305).
+  // It sits in a polite live region so a screen reader hears it change — and
+  // only the badge and its one sentence do: the per-poll progress numbers
+  // would make the region talk every three seconds.
+  describe("status at a glance", () => {
+    const statusText = async () => (await screen.findByRole("status")).textContent ?? "";
 
-    await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeEnabled());
-    expect(screen.getByText(/saved grants/i)).toBeInTheDocument();
+    // Before the first read answers, "Not indexed" would be a guess — and on a
+    // slow load it was the guess an admin saw first, about an index that was
+    // fine.
+    it("says it is checking until the first status read answers", async () => {
+      mockGet.mockReturnValue(new Promise(() => {}));
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      expect(await statusText()).toMatch(/checking/i);
+      expect(await statusText()).not.toMatch(/no runs yet/i);
+    });
+
+    it("says so when the status could not be read, instead of claiming nothing is indexed", async () => {
+      mockGet.mockRejectedValue(new Error("network down"));
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/couldn't load/i));
+      expect(await statusText()).not.toMatch(/no runs yet/i);
+    });
+
+    it("reads 'No directories' when none is granted", async () => {
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={0} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/no directories/i));
+    });
+
+    it("reads 'No runs yet' before this agent's first run", async () => {
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/no runs yet/i));
+    });
+
+    it("reads 'Indexing' while a run is in flight, without the moving numbers", async () => {
+      mockGet.mockResolvedValue({ job: job({ status: "running", processed: 3, total: 10 }) });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/^indexing/i));
+      expect(await statusText()).not.toMatch(/3 of 10/);
+    });
+
+    it("reads 'Indexed' after a run that left nothing to look at", async () => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/^indexed/i));
+      expect(await statusText()).toMatch(/last indexed/i);
+    });
+
+    it.each([
+      ["a document failed", { unsearchable: 0, failed: 1 }, 0],
+      ["a document has no searchable text", { unsearchable: 3, failed: 0 }, 0],
+      ["a folder couldn't be read", { unsearchable: 0, failed: 0 }, 1],
+    ])("reads 'Needs attention' when %s", async (_label, problems, unavailableFolders) => {
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          unavailableFolders,
+          counts: { indexed: 2, skipped: 11, removed: 0, ...problems },
+        }),
+      });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/needs attention/i));
+    });
+
+    // The last run's counts only cover what it touched: a scan found last
+    // week is "unchanged" tonight. The list below is corpus-wide, and the badge
+    // must not turn green over documents it still lists.
+    it("reads 'Needs attention' while documents without text remain, even after a clean run", async () => {
+      mockNoTextCount = 4;
+      mockGet.mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 0, skipped: 13, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/needs attention/i));
+    });
+
+    it("offers to try again when the status couldn't be loaded", async () => {
+      const user = userEvent.setup();
+      mockGet.mockRejectedValueOnce(new Error("network down")).mockResolvedValue({ job: null });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await user.click(await screen.findByRole("button", { name: /try again/i }));
+      await waitFor(async () => expect(await statusText()).toMatch(/no runs yet/i));
+    });
+
+    it("reads 'Failed' after a failed run", async () => {
+      mockGet.mockResolvedValue({
+        job: job({ status: "failed", error: "Embedding model crashed" }),
+      });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+      await waitFor(async () => expect(await statusText()).toMatch(/^failed/i));
+    });
+  });
+
+  // The run's outcome in one line, readable without the counts below: what
+  // the product owner asked for after a run ended with only a new timestamp.
+  it("summarizes the last run in the status line", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "succeeded",
+        counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /13 documents checked, 2 new or changed/
+    );
+  });
+
+  it("says 'nothing new' when the run found no changes", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "succeeded",
+        counts: { indexed: 0, skipped: 13, removed: 0, unsearchable: 0, failed: 0 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /13 documents checked, nothing new/
+    );
+  });
+
+  // Archive handling is a selling point, and the count was in the job all along.
+  it("shows how many documents sit in archive folders, and what that means", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "succeeded",
+        counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0, archived: 3 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    expect(await screen.findByText("3 in archive folders")).toBeInTheDocument();
+    expect(screen.getByText(/only when asked about the archive/i)).toBeInTheDocument();
+  });
+
+  it("leaves the archive count out at zero", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "succeeded",
+        counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0, archived: 0 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    await screen.findByText("2 new or changed");
+    expect(screen.queryByText(/archive folders/)).not.toBeInTheDocument();
+  });
+
+  // A small corpus can finish between two polls, so the bar never shows "x of
+  // y" and the run just... ends. The toast is the moment it ended.
+  it("confirms a run it watched finish with a success toast", async () => {
+    mockGet
+      .mockResolvedValueOnce({ job: job({ status: "running", processed: 3, total: 13 }) })
+      .mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0 },
+        }),
+      });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        "Reindex finished: 13 documents checked, 2 new or changed."
+      )
+    );
+  });
+
+  // A green "finished" beside a red "2 failed" would contradict the badge.
+  it("says how many documents need attention in the finish toast, as info", async () => {
+    mockGet
+      .mockResolvedValueOnce({ job: job({ status: "running", processed: 3, total: 13 }) })
+      .mockResolvedValue({
+        job: job({
+          status: "succeeded",
+          counts: { indexed: 0, skipped: 11, removed: 0, unsearchable: 0, failed: 2 },
+        }),
+      });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith(
+        "Reindex finished: 13 documents checked, nothing new. Something needs your attention."
+      )
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("does not toast about a run that had already finished before the page opened", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "succeeded",
+        counts: { indexed: 2, skipped: 11, removed: 0, unsearchable: 0, failed: 0 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    await screen.findByText("2 new or changed");
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  // A failure is shown inline, where it stays until it's fixed — not also as
+  // a toast: AGENTS.md, "Do not mix inline errors and toast errors for the
+  // same action."
+  it("reports a run it watched fail inline only, without a toast", async () => {
+    mockGet
+      .mockResolvedValueOnce({ job: job({ status: "running", processed: 3, total: 13 }) })
+      .mockResolvedValue({ job: job({ status: "failed", error: "Embedding model crashed" }) });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
+    expect(await screen.findByText("Embedding model crashed")).toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("leaves out a row of zeros under a run that failed before reading anything", async () => {
+    mockGet.mockResolvedValue({
+      job: job({
+        status: "failed",
+        error: "None of the granted folders could be read.",
+        counts: { indexed: 0, skipped: 0, removed: 0, unsearchable: 0, failed: 0 },
+      }),
+    });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    await screen.findByText("None of the granted folders could be read.");
+    expect(screen.queryByText("0 failed")).not.toBeInTheDocument();
+  });
+
+  // Reindexing before saving would index the OLD folders.
+  it("holds Reindex now back while directory changes are unsaved, and says why", async () => {
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} hasUnsavedPathChanges />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeDisabled());
+    expect(screen.getByRole("button", { name: /reindex/i })).toHaveAccessibleDescription(
+      /save your directory changes first/i
+    );
+  });
+
+  it("gives the progress bar an accessible name", async () => {
+    mockGet.mockResolvedValue({ job: job({ status: "running", processed: 3, total: 10 }) });
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+    expect(await screen.findByRole("progressbar", { name: /indexing progress/i })).toBeVisible();
+  });
+
+  // A disabled button can't be focused, so the reason has to travel with it.
+  it("describes a disabled trigger with the reason it is disabled", async () => {
+    render(<KnowledgeReindexSection agentId="a1" allowedPathCount={0} />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /reindex/i })).toHaveAccessibleDescription(
+        /grant at least one directory/i
+      )
+    );
   });
 
   it("ignores a slow status read that resolves after a reindex was triggered", async () => {
@@ -618,35 +998,142 @@ describe("KnowledgeReindexSection", () => {
   // this section. The answer is the nightly reindex, so the section says
   // whether it covers this agent and when it runs next.
   describe("the nightly reindex", () => {
+    // 02:00 in Vienna on 2026-10-17 (CEST) — the instant the route reports.
     const nightly = {
       enabled: true,
       time: "02:00",
       timezone: "Europe/Vienna",
-      nextRun: { date: "2026-10-17", time: "02:00", day: "tomorrow" },
+      nextRun: {
+        date: "2026-10-17",
+        time: "02:00",
+        day: "tomorrow",
+        at: "2026-10-17T00:00:00.000Z",
+      },
       included: true,
     };
 
-    it("says the index updates itself every night, and when next", async () => {
+    // The times are the viewer's, formatted the way their browser formats a
+    // time — the same as "Last indexed". The expectations are built with the
+    // same call so they hold in any locale the suite runs under.
+    const clockTime = (iso: string) =>
+      new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+    const originalTz = process.env.TZ;
+    afterEach(() => {
+      process.env.TZ = originalTz;
+      vi.useRealTimers();
+    });
+
+    function viewIn(timeZone: string, nowIso: string) {
+      process.env.TZ = timeZone;
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date(nowIso));
+    }
+
+    it("says the index updates itself every night, and when next, in the viewer's time", async () => {
+      viewIn("Europe/Vienna", "2026-10-16T12:00:00.000Z");
       mockGet.mockResolvedValue({ job: null, schedule: nightly });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const t = clockTime(nightly.nextRun.at);
+      expect(
+        await screen.findByText(
+          `New and changed documents are picked up every night at ${t}. Next run: tomorrow at ${t}.`
+        )
+      ).toBeInTheDocument();
+    });
+
+    // Staging reported "02:00 (UTC)" to an admin in Vienna, for whom that is
+    // 03:00 or 04:00. The viewer's clock comes first; the setting it was made
+    // in stays beside it, because Settings → Organization shows that one.
+    it("converts the time for a viewer outside the organization's time zone", async () => {
+      viewIn("Europe/Vienna", "2026-10-16T12:00:00.000Z");
+      mockGet.mockResolvedValue({
+        job: null,
+        schedule: {
+          ...nightly,
+          timezone: "UTC",
+          nextRun: { ...nightly.nextRun, at: "2026-10-17T02:00:00.000Z" },
+        },
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const t = clockTime("2026-10-17T02:00:00.000Z"); // 04:00 CEST
+      expect(t).toMatch(/04/);
+      expect(
+        await screen.findByText(
+          `New and changed documents are picked up every night at ${t} your time (02:00 UTC). Next run: tomorrow at ${t}.`
+        )
+      ).toBeInTheDocument();
+    });
+
+    // "today" and "tomorrow" are the viewer's too: 02:00 UTC is still today
+    // for someone in New York at 20:00 the evening before.
+    it("says today or tomorrow by the viewer's calendar, not the organization's", async () => {
+      viewIn("America/New_York", "2026-10-17T00:00:00.000Z"); // 20:00 on the 16th in New York
+      mockGet.mockResolvedValue({
+        job: null,
+        schedule: {
+          ...nightly,
+          timezone: "UTC",
+          nextRun: { ...nightly.nextRun, day: "today", at: "2026-10-17T02:00:00.000Z" },
+        },
+      });
 
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
       expect(
         await screen.findByText(
-          "New and changed documents are picked up every night at 02:00 (Europe/Vienna). Next run: tomorrow at 02:00."
+          new RegExp(`Next run: today at ${clockTime("2026-10-17T02:00:00.000Z")}\\.`)
         )
       ).toBeInTheDocument();
     });
 
-    it("says today when the next run is still ahead today", async () => {
+    it("says tomorrow when the next run falls on the viewer's next day", async () => {
+      viewIn("Europe/Vienna", "2026-10-16T20:00:00.000Z"); // 22:00 on the 16th in Vienna
       mockGet.mockResolvedValue({
         job: null,
-        schedule: { ...nightly, nextRun: { date: "2026-10-17", time: "02:00", day: "today" } },
+        schedule: { ...nightly, nextRun: { ...nightly.nextRun, day: "today" } },
       });
 
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
 
-      expect(await screen.findByText(/Next run: today at 02:00\./)).toBeInTheDocument();
+      expect(
+        await screen.findByText(
+          new RegExp(`Next run: tomorrow at ${clockTime(nightly.nextRun.at)}\\.`)
+        )
+      ).toBeInTheDocument();
+    });
+
+    // On the spring-forward night 02:00 never happens in Vienna and the run
+    // starts at 03:00 — true of that night, not of every night.
+    it("keeps the nightly time as set when only the next run is shifted by a clock change", async () => {
+      viewIn("Europe/Vienna", "2026-03-28T12:00:00.000Z");
+      mockGet.mockResolvedValue({
+        job: null,
+        schedule: {
+          ...nightly,
+          time: "02:30",
+          nextRun: {
+            date: "2026-03-29",
+            time: "02:30",
+            day: "tomorrow",
+            at: "2026-03-29T01:00:00.000Z",
+          },
+        },
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      const nightlyAt = clockTime("2026-03-28T01:30:00.000Z"); // 02:30 CET
+      const nextAt = clockTime("2026-03-29T01:00:00.000Z"); // 03:00 CEST
+      expect(
+        await screen.findByText(
+          `New and changed documents are picked up every night at ${nightlyAt}. Next run: tomorrow at ${nextAt}.`
+        )
+      ).toBeInTheDocument();
     });
 
     it("says so when the nightly reindex is off, and where to turn it on", async () => {
@@ -773,6 +1260,35 @@ describe("KnowledgeReindexSection", () => {
 
       await waitFor(() => expect(screen.getByText(/^Last indexed /)).toBeInTheDocument());
       expect(screen.queryByText(/automatically/)).not.toBeInTheDocument();
+    });
+  });
+
+  // "Last indexed 5.11.2026, 18:15:10" asked the admin to work out that this
+  // was an hour ago. Today and yesterday are said as words; seconds are noise.
+  describe("formatWhen", () => {
+    const now = new Date(2026, 10, 5, 20, 0); // local time, 5 Nov 2026, 20:00
+    const clock = (d: Date) =>
+      d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+    it("says today, with the time to the minute", () => {
+      const at = new Date(2026, 10, 5, 18, 15, 10);
+      expect(formatWhen(at.toISOString(), now)).toBe(`today at ${clock(at)}`);
+    });
+
+    it("says yesterday across midnight", () => {
+      const at = new Date(2026, 10, 4, 23, 50);
+      expect(formatWhen(at.toISOString(), now)).toBe(`yesterday at ${clock(at)}`);
+    });
+
+    it("names the date for anything older", () => {
+      const at = new Date(2026, 9, 28, 9, 5);
+      const date = at.toLocaleDateString(undefined, { dateStyle: "medium" });
+      expect(formatWhen(at.toISOString(), now)).toBe(`on ${date} at ${clock(at)}`);
+    });
+
+    it("falls back to 'just now' for a missing or unreadable timestamp", () => {
+      expect(formatWhen(null, now)).toBe("just now");
+      expect(formatWhen("not a date", now)).toBe("just now");
     });
   });
 
