@@ -158,6 +158,25 @@ One kind of run doesn't wait for the schedule, and runs with it switched off too
 
 Pinchy doesn't watch the folder for changes. File-change notifications don't arrive from network shares (SMB/CIFS), which is where knowledge bases usually live, and polling a large share every few minutes would mean reading it all day. A nightly run is the mechanism, not a stopgap. If a document needs to be searchable before tomorrow, click **Reindex now** — it takes the same route through the index and costs the same.
 
+## See what the agent can search
+
+The counts tell you how a run went. They don't tell you which part of your share an answer can come from. The **Folders** list does. You'll find it in the **Index** section, below the counts. Each granted folder and the folders directly inside it show one state:
+
+| State               | What it means                                                                                                                                                                               |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Indexing now**    | The run is working through this folder right now. The count says how far it has got.                                                                                                        |
+| **Queued**          | The run will get to this folder later. Until then, the agent answers from what was indexed before.                                                                                          |
+| **Searchable**      | Every file the last run found here is in the index.                                                                                                                                         |
+| **Needs attention** | Some files here can't be searched: they hold no readable text, they're waiting to be converted again, or fewer files made it into the index than the run found. **Files** shows which ones. |
+| **Not indexed yet** | No run has read this folder. A folder you granted today is in this state until the [nightly reindex](#keeping-the-index-current) or **Reindex now** gets to it.                             |
+| **No files**        | The last run found nothing to index here.                                                                                                                                                   |
+
+The count beside each folder is measured against what the last run found there, not against what made it into the index. So `40 of 100 files searchable` means 60 files aren't searchable yet, not that the folder holds 40.
+
+**Files** lists a folder's files, 50 at a time, each with its own state. On a granted folder it lists only the files directly in it; each subfolder has its own row and its own list. **Not yet searchable** shows only the files an answer can't come from, and the search box filters by name. Some states need a word of explanation. **No searchable text** is a scan or file with nothing to read (see [Documents that can't be searched](#documents-that-cant-be-searched)). **Not indexed** means the last successful run saw the file and it still isn't in the index; the run's log says why. **Added since the last run** is a new file that the next run picks up. **Changed since it was indexed** is still searchable, but in its old version until the next run. **File type not supported** is a file the index can't read at all (see [Files Pinchy can't read](#files-pinchy-cant-read)). Files the index can't read are counted apart from the rest, so `12 of 40 files searchable, plus 3 files the index can't read` means 40 files the index reads. A folder with 20,000 files or more is listed only in part, and the list says so.
+
+Everyone who can chat with the agent can see this, not only admins. "Why doesn't it know about the new price list?" is usually a member's question. In the chat, the folder button in the header opens **What can this agent search?**, which shows the same list, read-only. It only appears for an agent that searches the knowledge base. It names the granted folders and every file in them except hidden files and operating-system clutter, including files search can't return, such as scans and file types the index can't read. Nothing outside the granted folders appears.
+
 ## 8. Chat with the agent
 
 Go back to the agent's chat and start asking questions. The agent calls `knowledge_search` behind the scenes, which runs a hybrid search — semantic (vector) and full-text — over the passages you indexed, then answers using only what it found.

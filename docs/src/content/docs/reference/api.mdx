@@ -730,6 +730,120 @@ A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed w
 - `403` — not an admin
 - `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
 
+### `GET /api/agents/:agentId/knowledge/folders`
+
+Which of the agent's granted folders are searchable, being indexed, queued, or incomplete. It covers each granted folder and the folders directly inside it. Open to **everyone who can chat with the agent**, not only admins.
+
+Scoped to the agent's saved granted folders, exactly like search itself. Nothing here walks the share: the counts come from the index and from the folder list the agent's latest run recorded.
+
+**Response:**
+
+```json
+{
+  "job": {
+    "status": "running",
+    "processed": 12,
+    "total": 60,
+    "currentFolder": "/data/kb/certificates",
+    "finishedAt": null
+  },
+  "folders": [
+    {
+      "path": "/data/kb",
+      "name": "/data/kb",
+      "state": "indexing",
+      "indexed": 0,
+      "searchable": 0,
+      "notSearchable": 0,
+      "expected": 60,
+      "pending": 48,
+      "lastIndexedAt": null,
+      "children": [
+        {
+          "path": "/data/kb/hr",
+          "name": "hr",
+          "state": "has_errors",
+          "indexed": 10,
+          "searchable": 8,
+          "notSearchable": 2,
+          "expected": 10,
+          "pending": 0,
+          "lastIndexedAt": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Field                     | Description                                                                                                                                                                                                                                                                                                 |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `job`                     | The agent's latest run, or `null` if it never had one. `status` is `pending`, `running`, `succeeded` or `failed`. `currentFolder` is the folder an active run is in, or `null` when the run hasn't recorded its folder list.                                                                                |
+| `folders[]`               | One entry per granted folder. `children` holds the folders directly inside it, with the same fields.                                                                                                                                                                                                        |
+| `folders[].state`         | `indexing` (the active run is in this folder), `queued` (the active run hasn't reached it yet), `searchable`, `has_errors` (some files can't be searched, or fewer files are in the index than the run found), `not_indexed` (no run has read it) or `empty` (the last run found nothing to index).         |
+| `folders[].indexed`       | Documents from this folder in the index.                                                                                                                                                                                                                                                                    |
+| `folders[].searchable`    | Of those, how many search can use.                                                                                                                                                                                                                                                                          |
+| `folders[].notSearchable` | Of those, how many it can't: no readable text, or waiting to be converted again.                                                                                                                                                                                                                            |
+| `folders[].expected`      | Files the latest run found in this folder. `null` when no run has recorded a folder list that covers it: the folder was granted after that run, the run counted it only as part of a larger folder, or the run kept the folder's documents without reading it (a share below the grant that came up empty). |
+| `folders[].pending`       | Files the active run still has to read here. `0` when no run is active.                                                                                                                                                                                                                                     |
+| `folders[].lastIndexedAt` | When the last successful run that covered this folder finished. Before any such run, when a document from this folder last entered the index, or `null`. A failed run doesn't count.                                                                                                                        |
+
+**Errors:**
+
+- `401` — not authenticated
+- `404` — agent not found, or the user can't chat with it
+
+### `GET /api/agents/:agentId/knowledge/files`
+
+One folder's files and whether search can use each one. Open to **everyone who can chat with the agent**, not only admins.
+
+**Query parameters:**
+
+| Parameter | Description                                                                                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `folder`  | Required. A granted folder, or a folder inside one.                                                                                                         |
+| `scope`   | `direct` (only the files in `folder` itself) or `tree` (everything below it). Defaults to `direct` for a granted folder and `tree` for a folder inside one. |
+| `filter`  | `all` (default) or `not_searchable`, which keeps only the files an answer can't come from.                                                                  |
+| `q`       | Optional. Keeps only files whose `name` contains this text, ignoring case.                                                                                  |
+| `offset`  | Default `0`.                                                                                                                                                |
+| `limit`   | Default `50`, at most `100`.                                                                                                                                |
+
+**Response** (for `?folder=/data/kb/hr&filter=not_searchable`):
+
+```json
+{
+  "folder": "/data/kb/hr",
+  "files": [
+    {
+      "path": "/data/kb/hr/scan.pdf",
+      "name": "scan.pdf",
+      "state": "no_text",
+      "archived": false,
+      "indexedAt": "2026-11-01T10:00:00.000Z",
+      "modifiedAt": "2026-10-28T08:12:00.000Z"
+    }
+  ],
+  "total": 1,
+  "totals": { "all": 2, "searchable": 1, "notSearchable": 1, "unsupported": 0 },
+  "truncated": false
+}
+```
+
+| Field              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `files[].state`    | `searchable`, `changed` (searchable, but modified since it was indexed), `no_text` (indexed, nothing readable in it), `awaiting_conversion` (an Office file waiting to be converted again), `pending` (the active run will read it), `failed` (the file was there before the last successful run started and it isn't in the index), `new` (added after the last successful run) or `unsupported` (a file type the index can't read). Only `searchable` and `changed` count as searchable. |
+| `files[].name`     | The path below `folder`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `files[].archived` | `true` for a file in an [archive folder](/guides/create-knowledge-base-agent/#current-documents-first), which everyday search leaves out.                                                                                                                                                                                                                                                                                                                                                  |
+| `total`            | Files matching `filter` and `q`, before `offset` and `limit`.                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `totals`           | Counts for everything `scope` lists, regardless of `filter` and `q`. `all` counts the files the index reads; `unsupported` counts the rest, which `not_searchable` leaves out.                                                                                                                                                                                                                                                                                                             |
+| `truncated`        | `true` when the listing stopped at 20,000 files; the folder may hold more, and `totals` cover only those listed.                                                                                                                                                                                                                                                                                                                                                                           |
+
+**Errors:**
+
+- `400` — `folder` is missing
+- `401` — not authenticated
+- `404` — agent not found, the user can't chat with it, or `folder` doesn't exist or isn't inside a granted folder (the same answer for both, so the share can't be probed for names)
+
 ## Automations
 
 Standing email workflows an agent runs on its own — see [the Automations tab](/concepts/agent-settings/#automations-tab). You can manage automations on a personal agent you own; admins can manage them on any agent they can see, which is every shared agent. Someone else's **personal** agent is not one of them: personal agents stay private to their owner, admins included, and that rule wins here as it does everywhere else in Pinchy.
