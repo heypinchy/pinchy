@@ -72,6 +72,7 @@ vi.mock("@/lib/knowledge/verified-source", async (importOriginal) => {
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
+import { EmbedderUnavailableError } from "@/lib/knowledge/embeddings";
 import {
   EMBED_PROGRESS_BATCH,
   EXTRACTION_VERSION,
@@ -871,7 +872,7 @@ it("keeps a partly indexed scan's chunks when the embedder goes down during its 
     { page: 1, text: PAGE_1_TEXT },
     { page: 2, text: PAGE_2_TEXT },
   ]);
-  embed.mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
+  embed.mockRejectedValueOnce(new EmbedderUnavailableError("connect ECONNREFUSED"));
   await expect(ingestDirectory(ORG_ID, tmpRoot, withOcr)).rejects.toThrow(/ECONNREFUSED/);
 
   expect(await chunksFor(doc.id)).toEqual(stored);
@@ -889,7 +890,7 @@ it("changes a scan's record and its chunks together, so a re-read that dies is s
   await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL });
 
   extractPdf.mockResolvedValue([{ page: 1, text: PAGE_1_TEXT }]);
-  embed.mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
+  embed.mockRejectedValueOnce(new EmbedderUnavailableError("connect ECONNREFUSED"));
   const otherModel = { ...deps, ocrModel: "openai/gpt-5.5-mini" };
   await expect(ingestDirectory(ORG_ID, tmpRoot, otherModel)).rejects.toThrow(/ECONNREFUSED/);
   expect((await onlyDocument()).emptyExtractionBy).toBe(marker(`ocr:${VISION_MODEL}`));
@@ -977,17 +978,17 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
   expect(await chunksFor(docs[0].id)).not.toHaveLength(0);
 });
 
-// The counterpart to the test above, and the reason the per-file boundary is
-// scoped to extraction only: Ollama being unreachable is ONE outage, not N
-// corrupt files. Swallowing it per file would report "193 failed" for a
-// systemic problem, bury the actual cause, and pointlessly parse the whole
-// corpus on the way. Embedding and DB errors abort the run and surface.
+// The counterpart to the test above: an embedder that cannot embed anything is
+// ONE outage, not N corrupt files. Swallowing it per file would report "193
+// failed" for a systemic problem, bury the actual cause, and pointlessly parse
+// the whole corpus on the way. The embedder says which it is by type
+// (`EmbedderUnavailableError`), so the run stops on it and surfaces it.
 it("surfaces an embedding outage as a run failure instead of blaming every file", async () => {
   writeFileSync(join(tmpRoot, "a.pdf"), "bytes-a");
   writeFileSync(join(tmpRoot, "b.pdf"), "bytes-b");
 
   const embed = vi.fn(async () => {
-    throw new Error("connect ECONNREFUSED 127.0.0.1:11434");
+    throw new EmbedderUnavailableError("connect ECONNREFUSED 127.0.0.1:11434");
   });
   const extractPdf = vi.fn(async () => [{ page: 1, text: PAGE_1_TEXT }]);
 
@@ -1003,6 +1004,132 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
   ).rejects.toThrow(/ECONNREFUSED/);
   // Bailed on the first file rather than walking the rest of the corpus.
   expect(embed).toHaveBeenCalledTimes(1);
+});
+
+// #1380. The embedder refusing ONE file's text says nothing about the next
+// file: a first reindex of 14,000 documents stopped at file 2,285 on every run
+// because one chunk was longer than the local context, and the error took the
+// whole job down with it.
+it("keeps indexing the next file when the embedder refuses one file's text", async () => {
+  const TOO_LONG = "Part numbers 4711-0815-2342 that tokenize far denser than prose.";
+  writeFileSync(join(tmpRoot, "a-dense.pdf"), "dense-bytes");
+  writeFileSync(join(tmpRoot, "b-good.pdf"), "good-bytes");
+  const embed = vi.fn(async (texts: string[]) => {
+    if (texts.some((t) => t.includes(TOO_LONG))) {
+      throw new Error("Input is longer than the context size. Try to increase the context size");
+    }
+    return texts.map(() => Array(768).fill(0.1));
+  });
+  const deps: IngestDeps = {
+    embed,
+    extractPdf: vi.fn(async (path: string) => [
+      { page: 1, text: path.endsWith("a-dense.pdf") ? TOO_LONG : PAGE_1_TEXT },
+    ]),
+    extractXlsx: neverCalledXlsx,
+    convertOffice: neverCalledConvert,
+    ocrModel: null,
+    stagingDir,
+  };
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  let result: IngestResult;
+  try {
+    result = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+    // The server log says which file and why — never what it contains.
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    const logged = consoleError.mock.calls[0].map(String).join(" ");
+    expect(logged).toContain(join(tmpRoot, "a-dense.pdf"));
+    expect(logged).toContain("longer than the context size");
+    expect(logged).not.toContain(TOO_LONG);
+  } finally {
+    consoleError.mockRestore();
+  }
+  expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
+
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs.map((d) => d.sourcePath)).toEqual([join(tmpRoot, "b-good.pdf")]);
+
+  // And it is owed, not forgotten: the next run tries it again.
+  const { deps: healthy } = fakeDeps([{ page: 1, text: TOO_LONG }]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, healthy)).toEqual(
+    counts({ indexed: 1, skipped: 1 })
+  );
+});
+
+// The other half of #1380: a chunk the embedder cannot take whole is cut into
+// pieces it can, each stored as a chunk of its own under the same locator, so
+// a citation still points at the page the text came from.
+it("stores a chunk too long for the embedder as several chunks under the same locator", async () => {
+  writeFileSync(join(tmpRoot, "dense.pdf"), "dense-bytes");
+  const { deps, embed } = fakeDeps([{ page: 3, text: PAGE_1_TEXT }]);
+  const fitForEmbedding = vi.fn(async (texts: string[]) =>
+    texts.map((t) => [t.slice(0, 40), t.slice(40)])
+  );
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, fitForEmbedding })).toEqual(
+    counts({ indexed: 1 })
+  );
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const rows = await chunksFor(doc.id);
+  expect(rows.map((r) => r.chunkText)).toEqual([PAGE_1_TEXT.slice(0, 40), PAGE_1_TEXT.slice(40)]);
+  expect(rows.map((r) => r.locator)).toEqual([
+    { kind: "page", page: 3 },
+    { kind: "page", page: 3 },
+  ]);
+  // One vector per stored piece: what is embedded is exactly what is written.
+  expect(embed.mock.calls.flatMap(([texts]) => texts)).toEqual([
+    PAGE_1_TEXT.slice(0, 40),
+    PAGE_1_TEXT.slice(40),
+  ]);
+});
+
+it("stops the run when the database connection is lost mid-run", async () => {
+  writeFileSync(join(tmpRoot, "a-first.pdf"), "first-bytes");
+  writeFileSync(join(tmpRoot, "b-second.pdf"), "second-bytes");
+  const { deps, embed } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  const lost = Object.assign(new Error("write CONNECTION_CLOSED db:5432"), {
+    code: "CONNECTION_CLOSED",
+  });
+  const wrapped = new Error("Failed query: insert into kb_documents … params: …", { cause: lost });
+  const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(wrapped);
+  try {
+    await expect(ingestDirectory(ORG_ID, tmpRoot, deps)).rejects.toBe(lost);
+  } finally {
+    transaction.mockRestore();
+  }
+  // Stopped at the first file instead of embedding the rest of the corpus.
+  expect(embed).toHaveBeenCalledTimes(1);
+});
+
+// A full disk while one file is copied to staging costs that file, not the
+// run: one file larger than the space left would otherwise stop every run at
+// the same place, which is the failure #1380 removes.
+it("counts a file whose staging copy hits a full disk as failed and goes on", async () => {
+  writeFileSync(join(tmpRoot, "a-first.pdf"), "first-bytes");
+  writeFileSync(join(tmpRoot, "b-second.pdf"), "second-bytes");
+  const extractPdf = vi.fn(async (absPath: string) => {
+    if (absPath.endsWith("a-first.pdf")) {
+      throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    }
+    return [{ page: 1, text: PAGE_1_TEXT }];
+  });
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const result = await ingestDirectory(ORG_ID, tmpRoot, {
+      embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.1))),
+      extractPdf,
+      extractXlsx: neverCalledXlsx,
+      convertOffice: neverCalledConvert,
+      ocrModel: null,
+      stagingDir,
+    });
+    expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+  expect(extractPdf).toHaveBeenCalledTimes(2);
 });
 
 // The replace path must not destroy before it can rebuild: a previously
@@ -1542,7 +1669,7 @@ it("reports the running tally alongside progress, so a caller keeps it when the 
   const { deps } = fakeDeps();
   let embedCalls = 0;
   (deps.embed as ReturnType<typeof vi.fn>).mockImplementation(async (texts: string[]) => {
-    if (++embedCalls > 2) throw new Error("connect ECONNREFUSED");
+    if (++embedCalls > 2) throw new EmbedderUnavailableError("connect ECONNREFUSED");
     return texts.map(() => Array(768).fill(0.01));
   });
   const recorder = progressRecorder();
@@ -3336,7 +3463,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     writeFileSync(join(tmpRoot, "handbook.pdf"), "changed-bytes");
     const { deps } = fakeDeps();
     deps.embed = async () => {
-      throw new Error("embedder down");
+      throw new EmbedderUnavailableError("embedder down");
     };
     await expect(ingestDirectory(ORG_ID, tmpRoot, deps)).rejects.toThrow("embedder down");
 
