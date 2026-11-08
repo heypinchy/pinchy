@@ -3463,7 +3463,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     writeFileSync(join(tmpRoot, "handbook.pdf"), "changed-bytes");
     const { deps } = fakeDeps();
     deps.embed = async () => {
-      throw new Error("embedder down");
+      throw new EmbedderUnavailableError("embedder down");
     };
     await expect(ingestDirectory(ORG_ID, tmpRoot, deps)).rejects.toThrow("embedder down");
 
