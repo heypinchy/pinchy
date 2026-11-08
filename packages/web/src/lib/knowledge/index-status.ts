@@ -227,6 +227,7 @@ export async function getKnowledgeFolderStatus(
   // The plan only says what is still to come when it belongs to the active run.
   // An older run's plan still gives the expected counts.
   const planIsActive = active !== null && planned?.id === active.id;
+  const planSucceeded = planned?.status === "succeeded";
   const position = planIsActive ? active.processed : null;
   const activeRoots = active ? active.paths.map(normalizeRoot) : [];
   const planRoots = planned ? planned.paths.map(normalizeRoot) : [];
@@ -247,17 +248,23 @@ export async function getKnowledgeFolderStatus(
   const unknown = { expected: null, pending: 0, current: false };
   const statusFor = (path: string, name: string, counts: Counts): FolderStatus => {
     const planned = plan && planKnows(path) ? folderPlanProgress(plan, path, position) : unknown;
-    // A finished run removes the documents of files it no longer found, except
+    // A succeeded run removes the documents of files it no longer found, except
     // in a folder it skipped as unexpectedly empty (an unmounted share) and kept.
-    // More documents than the plan found means the run didn't look here.
+    // More documents than that run's plan found means it didn't look at all of
+    // them. (A failed run removes nothing, so there the plan is still a count.)
     const kept =
-      position === null && planned.expected !== null && counts.indexed > planned.expected;
+      position === null &&
+      planned.expected !== null &&
+      planSucceeded &&
+      counts.indexed > planned.expected;
     const progress = kept ? unknown : planned;
+    // With no file of it in the plan, the run never looked at the folder at all.
+    const unread = kept && planned.expected === 0;
     const awaitingDiscovery =
       active !== null &&
       !planIsActive &&
       activeRoots.some((r) => isAtOrUnder(path, r) || isAtOrUnder(r, path));
-    const run = kept ? null : lastRunCovering(finished, path);
+    const run = unread ? null : lastRunCovering(finished, path);
     const lastIndexed = run?.finishedAt ?? counts.lastCreated;
     return {
       path,

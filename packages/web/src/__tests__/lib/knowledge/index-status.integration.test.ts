@@ -215,6 +215,21 @@ describe("getKnowledgeFolderStatus", () => {
     expect(finance).toMatchObject({ expected: null, indexed: 2, state: "searchable" });
     expect(Date.parse(finance.lastIndexedAt!)).toBeGreaterThan(Date.now() - 30_000);
     expect(folders[0]).toMatchObject({ expected: null, indexed: 3 });
+    // The root's other files were read by the run: it keeps the run's date.
+    expect(Date.parse(folders[0].lastIndexedAt!)).toBeLessThan(Date.now() - 30_000);
+  });
+
+  // A run that fails removes nothing, so its plan can find fewer files than the
+  // index still holds after files were deleted. The plan is still a fresh count.
+  it("keeps a failed run's count for a folder whose files were deleted since", async () => {
+    const agent = await makeAgent();
+    await seedDoc("/kb/a.pdf");
+    await seedDoc("/kb/b.pdf");
+    await seedJob(agent.id, ["/kb"], "failed", { plan: [{ folder: "/kb", files: 1 }] });
+
+    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+
+    expect(folders[0]).toMatchObject({ expected: 1, indexed: 2 });
   });
 
   // A failed run may have read nothing; it must not date every folder today.
