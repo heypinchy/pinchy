@@ -188,6 +188,13 @@ export interface IngestOptions {
    */
   onProgress?: (progress: IngestProgress) => void | Promise<void>;
   /**
+   * Called once, before the first file is touched, with every queued path in
+   * the order the run will process them. `processed` in a later progress
+   * report is a position in this list, which is what lets a caller say which
+   * folder the run is in without a write per file (folder-plan.ts, #1386).
+   */
+  onQueue?: (paths: readonly string[]) => void | Promise<void>;
+  /**
    * Called for every root the run left out: `unreadable` (it could not be
    * looked at — missing, unmounted, a read error mid-walk) or `emptied` (see
    * `keepEmptiedFolders`). Such a root contributes no files AND no removal pass.
@@ -1445,6 +1452,7 @@ export async function ingestPaths(
   // Reported before any work: "0 of N" is what tells a caller the run started
   // and how big it is. A caller that hears nothing until the first file lands
   // cannot tell a slow run from a dead one.
+  await opts.onQueue?.(queue.map((file) => file.absPath));
   await report();
 
   for (const { absPath, bytes, realPath } of queue) {

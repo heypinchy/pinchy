@@ -14,12 +14,13 @@
  *     (lib/email-workflows/ledger.ts), which this codebase already uses in
  *     place of row locks.
  */
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbIndexJobs } from "@/db/schema";
 import { KB_INDEX_JOB_ACTIVE_STATUSES, type KbIndexJobTrigger } from "@/db/enums";
 
+import type { FolderPlanSegment } from "./folder-plan";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import type { IngestResult } from "./types";
 
@@ -160,6 +161,18 @@ export async function recordIndexJobProgress(
     .where(eq(kbIndexJobs.id, jobId));
 }
 
+/**
+ * Records which folder each queued file belongs to (folder-plan.ts). Called
+ * once per run, when discovery has walked every root and before the first
+ * file — the plan is what the folder status reads its expected counts from.
+ */
+export async function recordIndexJobFolderPlan(
+  jobId: string,
+  plan: FolderPlanSegment[]
+): Promise<void> {
+  await db.update(kbIndexJobs).set({ folderPlan: plan }).where(eq(kbIndexJobs.id, jobId));
+}
+
 export interface FinishIndexJobArgs {
   outcome: "succeeded" | "failed";
   /** The ingest's findings so far. Recorded on failure too — partial counts are the operator's only evidence of how far the run got. */
@@ -213,11 +226,29 @@ export async function requeueOrphanedIndexJobs(): Promise<number> {
       processedBytes: 0,
       totalBytes: null,
       counts: null,
+      folderPlan: null,
       startedAt: null,
     })
     .where(eq(kbIndexJobs.status, "running"))
     .returning({ id: kbIndexJobs.id });
   return requeued.length;
+}
+
+/**
+ * The agent's most recent job that recorded a folder plan, or null. Backs the
+ * folder status (#1386): a pending job has no plan yet, and the folder counts
+ * then come from the run before it.
+ */
+export async function getLatestPlannedIndexJobForAgent(
+  agentId: string
+): Promise<KbIndexJob | null> {
+  const [job] = await db
+    .select()
+    .from(kbIndexJobs)
+    .where(and(eq(kbIndexJobs.agentId, agentId), isNotNull(kbIndexJobs.folderPlan)))
+    .orderBy(desc(kbIndexJobs.createdAt))
+    .limit(1);
+  return job ?? null;
 }
 
 /** The agent's most recent index job — running or last finished. Backs the status route. */

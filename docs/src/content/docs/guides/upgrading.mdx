@@ -207,11 +207,16 @@ docker compose pull && docker compose up -d && docker image prune -f
 
 A `.tif` scan, an old `.xls` or a `.txt` on a share used to vanish without a trace: no document, no counter, nothing to look up. A run now counts them as `N not supported` in the agent's **Index** section, and **Download the list** gives you a CSV with each one's path and type, so you can convert them or tell users what the agent can't see. Nothing to configure. The count and the list appear after each agent's next run. For an agent with knowledge search, the nightly run is enough; any other agent needs **Reindex now**. [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read) has the details.
 
+#### See which folders and files a knowledge-base agent can search
+
+The **Index** section of a knowledge-base agent now has a **Folders** list. It shows each granted folder and the folders directly inside it as searchable, being indexed, queued or needing attention, and **Files** lists a folder's files with the state of each. Members see the same list, read-only, from **What can this agent search?** in the chat. Two new read-only endpoints serve it: [`GET …/knowledge/folders`](/reference/api/#get-apiagentsagentidknowledgefolders) and [`GET …/knowledge/files`](/reference/api/#get-apiagentsagentidknowledgefiles). Nothing to configure. The count of how many files a run found in each folder appears after each agent's next run; until then a folder's count is measured against what is in the index. [See what the agent can search](/guides/create-knowledge-base-agent/#see-what-the-agent-can-search) has the details.
+
 ### Database migrations
 
-The migration `0080` runs automatically on startup — no manual steps. It is additive.
+The migrations `0080`–`0081` run automatically on startup — no manual steps. Both are additive.
 
 - `0080` — `kb_unsupported_files`, the list of files a run found but can't index, behind the new **Download the list** in the Index section. It starts empty and fills on each agent's next run.
+- `0081` — a `folder_plan` column on `kb_index_jobs`: how many files each run found per folder, behind the counts in the new **Folders** list. Empty for runs before the upgrade.
 
 ## Upgrading from v0.10.1 to v0.10.2
 

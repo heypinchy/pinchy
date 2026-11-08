@@ -43,10 +43,12 @@ import {
   officeFormatVersionInUse,
   queueReconversion,
 } from "@/lib/knowledge/office-format-upgrade";
+import { buildFolderPlan } from "@/lib/knowledge/folder-plan";
 import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
 import {
   claimNextIndexJob,
   finishIndexJob,
+  recordIndexJobFolderPlan,
   recordIndexJobProgress,
   requeueOrphanedIndexJobs,
   type KbIndexJob,
@@ -191,6 +193,8 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
         counts = progress.counts;
         return recordIndexJobProgress(job.id, progress);
       },
+      onQueue: (queuePaths) =>
+        recordIndexJobFolderPlan(job.id, buildFolderPlan(job.paths, queuePaths)),
       onSkippedRoot: (rootDir, reason) => {
         unavailableFolders++;
         skippedRoots++;
