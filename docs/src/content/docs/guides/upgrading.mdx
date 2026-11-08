@@ -187,7 +187,7 @@ If you need to roll back after an upgrade:
 
 The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint files to; those live on the `pinchy-kb-artifacts` volume. When the version you upgraded to converts those files differently, it keeps the older PDFs until it has converted again every file a knowledge-base agent can search, and only then deletes them. Roll back before that and nothing is lost. Roll back after it, and the older version still finds every such file in the search, but a citation of one that hasn't changed since won't open its preview, because the PDF it looks for is gone; the original file downloads as usual. If you want previews to survive a rollback, back up that volume alongside the database, the way [Backup & recovery](/guides/hardening/#backup--recovery) describes for the other volumes, and restore it with the database.
 
-## Upgrading from v0.10.2 to %%PINCHY_VERSION%%
+## Upgrading from v0.10.3 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -224,6 +224,30 @@ Agents created from a web template, such as the Market & News Monitor, used to g
 
 The address checks for Odoo, mail servers and OpenAI-compatible providers resolve the hostname, and the client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool already pinned the address it checked. From this release, so do the requests Pinchy makes itself right after a check: the mail **Test connection**, listing Odoo databases, and an OpenAI-compatible provider's model discovery and key check. Those also no longer contact a name that doesn't resolve. Everything else still looks the name up again: the agent's Odoo and mail tools, the agent runtime's requests to a provider, and Pinchy's other Odoo requests (testing credentials, previewing and syncing the schema). Nothing to configure.
 
+#### A change made while OpenClaw restarts now reaches it
+
+If you created an agent or changed a setting while OpenClaw was restarting or rate-limiting config changes, the change could land in `openclaw.json` and still never reach the running OpenClaw. Chats to that agent then failed with `unknown agent id` until some later, unrelated change happened to push the config again. We now push it again ourselves — when Pinchy reconnects to OpenClaw, or a minute later if OpenClaw stayed connected, backing off until OpenClaw has applied it, unless OpenClaw rejected the config itself. Restarting Pinchy in the meantime drops that retry; the next change you make delivers it. Nothing to configure.
+
+#### Unsent drafts in the browser are cleared once
+
+Pinchy now remembers in each browser which person was signed in last. That way the next person on a shared computer never sees what the last one left behind: unsent drafts, attachments staged but not sent, files shared into the installed app but not sent, the last chat opened for each agent (#1286). After the upgrade, no browser has that record yet. So the first page load after the upgrade clears those things once. Only shares from the last 10 minutes are kept. Ask people to send any half-written message before you upgrade.
+
+## Upgrading from v0.10.2 to v0.10.3
+
+### Breaking changes
+
+None so far.
+
+### Upgrade notes
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.10.2/PINCHY_VERSION=v0.10.3/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
 #### Files the knowledge base can't read are counted and listed
 
 A `.tif` scan, an old `.xls` or a `.txt` on a share used to vanish without a trace: no document, no counter, nothing to look up. A run now counts them as `N not supported` in the agent's **Index** section, and **Download the list** gives you a CSV with each one's path and type, so you can convert them or tell users what the agent can't see. Nothing to configure. The count and the list appear after each agent's next run. For an agent with knowledge search, the nightly run is enough; any other agent needs **Reindex now**. [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read) has the details.
@@ -235,14 +259,6 @@ A reindex used to read files in whatever order it found them, so on a large shar
 #### See which folders and files a knowledge-base agent can search
 
 The **Index** section of a knowledge-base agent now has a **Folders** list. It shows each granted folder and the folders directly inside it as searchable, being indexed, queued or needing attention, and **Files** lists a folder's files with the state of each. Members see the same list, read-only, from **What can this agent search?** in the chat. Two new read-only endpoints serve it: [`GET …/knowledge/folders`](/reference/api/#get-apiagentsagentidknowledgefolders) and [`GET …/knowledge/files`](/reference/api/#get-apiagentsagentidknowledgefiles). Nothing to configure. The count of how many files a run found in each folder appears after each agent's next run; until then a folder's count is measured against what is in the index. [See what the agent can search](/guides/create-knowledge-base-agent/#see-what-the-agent-can-search) has the details.
-
-#### A change made while OpenClaw restarts now reaches it
-
-If you created an agent or changed a setting while OpenClaw was restarting or rate-limiting config changes, the change could land in `openclaw.json` and still never reach the running OpenClaw. Chats to that agent then failed with `unknown agent id` until some later, unrelated change happened to push the config again. We now push it again ourselves — when Pinchy reconnects to OpenClaw, or a minute later if OpenClaw stayed connected, backing off until OpenClaw has applied it, unless OpenClaw rejected the config itself. Restarting Pinchy in the meantime drops that retry; the next change you make delivers it. Nothing to configure.
-
-#### Unsent drafts in the browser are cleared once
-
-Pinchy now remembers in each browser which person was signed in last. That way the next person on a shared computer never sees what the last one left behind: unsent drafts, attachments staged but not sent, files shared into the installed app but not sent, the last chat opened for each agent (#1286). After the upgrade, no browser has that record yet. So the first page load after the upgrade clears those things once. Only shares from the last 10 minutes are kept. Ask people to send any half-written message before you upgrade.
 
 ### Database migrations
 
