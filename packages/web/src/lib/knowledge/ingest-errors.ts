@@ -79,6 +79,11 @@ export function databaseErrorBehind(err: unknown): unknown {
     seen.add(current);
     const code = (current as { code?: unknown }).code;
     if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return current;
+    // A query builder's wrapper (it carries the query and its params) is never
+    // what to quote, whatever its cause's code looks like: postgres.js raises
+    // some errors client-side with codes like `MAX_PARAMETERS_EXCEEDED`.
+    const isQueryWrapper = "params" in current && current.cause instanceof Error;
+    if (!isQueryWrapper) return current;
     current = current.cause;
   }
   return err;

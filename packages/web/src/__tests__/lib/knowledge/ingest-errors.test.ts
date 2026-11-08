@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EmbedderUnavailableError } from "@/lib/knowledge/embeddings";
-import { systemicIngestError } from "@/lib/knowledge/ingest-errors";
+import { databaseErrorBehind, systemicIngestError } from "@/lib/knowledge/ingest-errors";
 
 function withCode(code: string, message = `failed with ${code}`) {
   return Object.assign(new Error(message), { code });
@@ -68,5 +68,31 @@ describe("systemicIngestError", () => {
     const b = new Error("b", { cause: a });
     a.cause = b;
     expect(systemicIngestError(a)).toBeNull();
+  });
+});
+
+// The query builder's wrapper quotes every parameter — chunk text included —
+// so a log line must quote what it wraps, never the wrapper.
+describe("databaseErrorBehind", () => {
+  function drizzleWrapper(cause: Error) {
+    return Object.assign(new Error("Failed query: insert … params: secret chunk text", { cause }), {
+      query: "insert …",
+      params: ["secret chunk text"],
+    });
+  }
+
+  it("returns the database's error behind the wrapper", () => {
+    const inner = withCode("22021");
+    expect(databaseErrorBehind(drizzleWrapper(inner))).toBe(inner);
+  });
+
+  it("unwraps a client-side error whose code is not a SQLSTATE", () => {
+    const inner = withCode("MAX_PARAMETERS_EXCEEDED", "Max number of parameters (65534) exceeded");
+    expect(databaseErrorBehind(drizzleWrapper(inner))).toBe(inner);
+  });
+
+  it("returns an error that wraps nothing as it is", () => {
+    const err = new Error("plain");
+    expect(databaseErrorBehind(err)).toBe(err);
   });
 });

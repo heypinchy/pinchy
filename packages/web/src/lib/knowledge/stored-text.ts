@@ -49,10 +49,9 @@ export function toStorableLocator(locator: ChunkLocator | null): ChunkLocator | 
 // constraint a file's content could violate, so a 23xxx there is a concurrent
 // writer or a bug in this code, and counting it as "N failed" would hide it.
 // The embedding width is checked in the embedder before any write, so a wrong
-// width never reaches here as a verdict on the file either. Everything else — a
-// lost connection, too many clients, a shutdown, a serialization failure — says
-// nothing about the file, and must still stop the run instead of being counted
-// as one failed file per remaining document.
+// width never reaches here as a verdict on the file either. Which of the other
+// errors stop the run and which cost only the file is decided in
+// ./ingest-errors.ts (#1380).
 const CONTENT_REJECTION = /^(22|54)[0-9A-Z]{3}$/;
 
 /**
