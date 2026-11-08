@@ -58,7 +58,11 @@ export interface FolderStatus {
   searchable: number;
   /** Of `indexed`, the ones it cannot: no text, or waiting to be converted again. */
   notSearchable: number;
-  /** Files the last run found here; null before any run recorded a folder plan. */
+  /**
+   * Files the last run found here; null when no run's plan covers the folder:
+   * none recorded one, the folder was granted since, the plan counted it only as
+   * part of a larger folder, or the run kept its documents without looking.
+   */
   expected: number | null;
   /** Files the active run has still to reach here; 0 when no run is active. */
   pending: number;
@@ -240,16 +244,20 @@ export async function getKnowledgeFolderStatus(
       (s) => s.folder !== path && isAtOrUnder(path, s.folder) && !planRoots.includes(s.folder)
     );
 
+  const unknown = { expected: null, pending: 0, current: false };
   const statusFor = (path: string, name: string, counts: Counts): FolderStatus => {
-    const progress =
-      plan && planKnows(path)
-        ? folderPlanProgress(plan, path, position)
-        : { expected: null, pending: 0, current: false };
+    const planned = plan && planKnows(path) ? folderPlanProgress(plan, path, position) : unknown;
+    // A finished run removes the documents of files it no longer found, except
+    // in a folder it skipped as unexpectedly empty (an unmounted share) and kept.
+    // More documents than the plan found means the run didn't look here.
+    const kept =
+      position === null && planned.expected !== null && counts.indexed > planned.expected;
+    const progress = kept ? unknown : planned;
     const awaitingDiscovery =
       active !== null &&
       !planIsActive &&
       activeRoots.some((r) => isAtOrUnder(path, r) || isAtOrUnder(r, path));
-    const run = lastRunCovering(finished, path);
+    const run = kept ? null : lastRunCovering(finished, path);
     const lastIndexed = run?.finishedAt ?? counts.lastCreated;
     return {
       path,
@@ -502,7 +510,7 @@ export async function listKnowledgeFolderFiles(
     const doc = docs.get(file.path);
     return doc !== undefined && !doc.no_text && !doc.superseded;
   };
-  const searchableCount = listed.filter(isSearchable).length;
+  const searchableCount = listed.filter((file) => file.supported && isSearchable(file)).length;
   const supportedCount = listed.filter((file) => file.supported).length;
 
   const needle = opts.q?.trim().toLowerCase() ?? "";

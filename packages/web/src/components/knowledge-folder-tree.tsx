@@ -212,9 +212,9 @@ function FolderRow({
   title: string;
   toggle: React.ReactNode;
   /**
-   * What the row's counts cover, so its file list covers the same: a root row
-   * counts its own files (subfolders are rows of their own), a subfolder row
-   * its whole subtree — even when that subfolder is also a granted root.
+   * Which files the row's list holds. A root row lists only its own files,
+   * since each subfolder has a row and a list of its own; a subfolder row lists
+   * its whole subtree, as its counts do — even when it is also a granted root.
    */
   scope: FileScope;
 }) {
