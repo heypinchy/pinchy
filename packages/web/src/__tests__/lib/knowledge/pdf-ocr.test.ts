@@ -220,3 +220,68 @@ it("does not mark a page the vision model read as empty, or one the budget left 
 
   expect(pages.map((page) => page.ocrFailed)).toEqual([undefined, undefined]);
 });
+
+it("reads up to three scanned pages at once, and keeps them in page order (#1385)", async () => {
+  // One page at a time, a long scan held a run for minutes while the vision
+  // provider — not this machine — did the work. Three at once is the bound:
+  // more would trade a slow document for provider rate limits.
+  const path = await writePdf("long-scan.pdf", ["scan", "scan", "scan", "scan", "scan", "scan"]);
+  const waiting: Array<() => void> = [];
+  let active = 0;
+  let peak = 0;
+  let calls = 0;
+  const ocrPage = vi.fn(async () => {
+    const call = calls++;
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise<void>((release) => waiting.push(release));
+    active--;
+    return `READ ${call}`;
+  });
+
+  let done = false;
+  const run = extractPdfPages(path, { ocr: { ocrPage } }).finally(() => {
+    done = true;
+  });
+
+  await vi.waitFor(() => expect(active).toBe(3), { timeout: 15_000 });
+  // Release the NEWEST call each time, so answers come back out of page order
+  // and the first page is the last to be answered.
+  while (!done) {
+    await vi.waitFor(() => expect(waiting.length > 0 || done).toBe(true), { timeout: 15_000 });
+    waiting.pop()?.();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const pages = await run;
+
+  expect(peak).toBe(3);
+  expect(ocrPage).toHaveBeenCalledTimes(6);
+  expect(pages.map((page) => page.text)).toEqual([
+    "READ 0",
+    "READ 1",
+    "READ 2",
+    "READ 3",
+    "READ 4",
+    "READ 5",
+  ]);
+});
+
+it("marks only the page whose read failed when pages are read at once", async () => {
+  const path = await writePdf("three-scans.pdf", ["scan", "scan", "scan"]);
+  let calls = 0;
+  const ocrPage = vi.fn(async (): Promise<string | null> => {
+    const call = calls++;
+    if (call === 1) throw new Error("socket hang up");
+    return `READ ${call}`;
+  });
+  const onDocumentOcr = vi.fn();
+
+  const pages = await extractPdfPages(path, { ocr: { ocrPage, onDocumentOcr } });
+
+  expect(pages.map((page) => [page.text, page.ocrFailed])).toEqual([
+    ["READ 0", undefined],
+    ["", true],
+    ["READ 2", undefined],
+  ]);
+  expect(onDocumentOcr).toHaveBeenCalledWith({ rendered: 3, skipped: 0 });
+});
