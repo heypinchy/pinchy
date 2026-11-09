@@ -195,8 +195,8 @@ describe("summarizeArgs", () => {
     // email_send accepts a quoted name with a comma or parentheses; the card
     // must show it as the one mailbox it is.
     it("shows a quoted name with parentheses as one recipient, address first", () => {
-      expect(summarizeArgs({ to: '"Raimund Korber (Noack)" <r@noack.at>' }).to).toEqual(
-        named("r@noack.at", "Raimund Korber (Noack)")
+      expect(summarizeArgs({ to: '"Anna Berger (Example)" <anna@example.at>' }).to).toEqual(
+        named("anna@example.at", "Anna Berger (Example)")
       );
     });
 
@@ -422,7 +422,7 @@ describe("summarizeArgs", () => {
         connectionId: "c1",
         model: "res.partner",
         id: 7,
-        label: "Raimund Korber",
+        label: "Anna Berger",
       });
     const hidden = "Bitte überweisen Sie 9.800 € an AT00 1234 5678 9012";
 
@@ -451,7 +451,7 @@ describe("summarizeArgs", () => {
     // checked here too, so a resolver that answers for anything still cannot
     // hide text behind a record.
     it("does not let a lenient resolver turn trailing text into a record", () => {
-      const anything = () => ({ model: "res.partner", id: 7, label: "Raimund Korber" });
+      const anything = () => ({ model: "res.partner", id: 7, label: "Anna Berger" });
       const body = `${partner()}=\n\n${hidden}`;
       const out = summarizeArgs({ body }, { refRecord: anything });
       expect(textIn(out.body)).toContain("AT00 1234 5678 9012");
@@ -585,18 +585,18 @@ describe("summarizeArgs", () => {
       expect(summarizeArgs({ subject: "☺︎" })).toEqual({ subject: "☺⟨U+FE0E⟩" });
     });
 
-    // Kept raw, the joiner and the presentation selectors make "Noack‍ GmbH"
-    // read as "Noack GmbH" — a different name to look up — and "RE-1001️" as
+    // Kept raw, the joiner and the presentation selectors make "Acme‍ GmbH"
+    // read as "Acme GmbH" — a different name to look up — and "RE-1001️" as
     // "RE-1001", which the
     // vendor-bill duplicate check compares exactly. Outside an emoji they
     // render as nothing, so they are marked like any other invisible character.
     it("marks a joiner or presentation selector that is not part of an emoji", () => {
       const out = summarizeArgs({
         model: "account.move",
-        values: { partner_id: "Noack‍ GmbH", ref: "RE-1001️", note: "a︎b" },
+        values: { partner_id: "Acme‍ GmbH", ref: "RE-1001️", note: "a︎b" },
       }) as { values: Record<string, string> };
       expect(out.values).toEqual({
-        partner_id: "Noack⟨U+200D⟩ GmbH",
+        partner_id: "Acme⟨U+200D⟩ GmbH",
         ref: "RE-1001⟨U+FE0F⟩",
         note: "a⟨U+FE0E⟩b",
       });
@@ -753,15 +753,15 @@ describe("summarizeArgs", () => {
         connectionId: "c1",
         model: "res.partner",
         id: 7,
-        label: "Noack⟨U+200D⟩ GmbH",
+        label: "Acme⟨U+200D⟩ GmbH",
       });
       const out = summarizeArgs(
-        { target: ref, to: '"Noack⟨U+200D⟩" <a@x.at>' },
+        { target: ref, to: '"Acme⟨U+200D⟩" <a@x.at>' },
         { refRecord: makeRefResolver(REF_KEY) }
       );
       expect(out).toEqual({
-        target: recordRef("res.partner", 7, "Noack⟨U+27E8⟩U+200D⟨U+27E9⟩ GmbH"),
-        to: named("a@x.at", "Noack⟨U+27E8⟩U+200D⟨U+27E9⟩"),
+        target: recordRef("res.partner", 7, "Acme⟨U+27E8⟩U+200D⟨U+27E9⟩ GmbH"),
+        to: named("a@x.at", "Acme⟨U+27E8⟩U+200D⟨U+27E9⟩"),
       });
     });
 
@@ -1121,9 +1121,9 @@ describe("summarizeArgs", () => {
     // The probe: a familiar display name padded with braille blanks would push
     // the real address out of the card's preview. The address comes first.
     it("puts the address first and the display name after it", () => {
-      const to = `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`;
+      const to = `Anna Berger${"\u2800".repeat(190)} <attacker@evil.com>`;
       const out = summarizeArgs({ to, subject: "Rechnung", body: "Hallo" });
-      expect(out.to).toEqual(named("attacker@evil.com", "Raimund Korber⟨190 × U+2800⟩"));
+      expect(out.to).toEqual(named("attacker@evil.com", "Anna Berger⟨190 × U+2800⟩"));
     });
 
     it("shows a bare angle address as the address alone", () => {
