@@ -162,14 +162,14 @@ overfitting (nobody can hand-tune retrieval against data the eval doesn't
 see), and designed rather than found (every document earns its place by
 catching a real regression class).
 
-The real `/data/noack` corpus is an **optional, local-only** realism
-sweep — `KB_EVAL_CORPUS_DIR=/path/to/noack KB_EVAL_CORPUS=noack pnpm -C
-packages/web kb-eval:models` (a `--corpus=noack` CLI flag is also accepted;
+The real `/data/customer` corpus is an **optional, local-only** realism
+sweep — `KB_EVAL_CORPUS_DIR=/path/to/customer KB_EVAL_CORPUS=customer pnpm -C
+packages/web kb-eval:models` (a `--corpus=customer` CLI flag is also accepted;
 the env var is checked as a fallback). It is never committed and never runs
-in CI: `corpusFromEnv()` (`run-kb-eval.ts`) hard-errors if `noack` is
+in CI: `corpusFromEnv()` (`run-kb-eval.ts`) hard-errors if `customer` is
 requested with `CI` set, unconditionally, with no way to override — the
 check is deliberately loud rather than a silent fallback to the synthetic
-corpus. **Noack ingest itself isn't wired yet** — selecting the noack corpus
+corpus. **Customer-corpus ingest itself isn't wired yet** — selecting the customer corpus
 today throws an explicit "no ingest path" error rather than silently
 measuring against an empty index. That wiring is a guarded, explicit
 local-only follow-up, not part of this harness's CI-facing surface.

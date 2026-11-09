@@ -452,7 +452,7 @@ describe("formatWithCitations", () => {
   it("states the citation contract in the result, not only in a template", () => {
     // The behaviour this pins: an agent cites its sources because the TOOL
     // asked it to, not because someone pasted the instruction into its
-    // AGENTS.md. Observed on the Noack corpus 2026-07-27: the same question,
+    // AGENTS.md. Observed on the customer corpus 2026-07-27: the same question,
     // the same 5 successful knowledge_search calls with 8 hits each, produced
     // a fully-cited answer for an agent carrying the knowledge-base template
     // and an uncited one for an agent whose template slot was empty. The
@@ -508,45 +508,47 @@ describe("formatWithCitations", () => {
   it("cites the path the reader recognises, never the container path", () => {
     // The absolute path is what the CONTAINER sees. Showing it in a citation
     // misleads: the customer knows the tree below the mount from Explorer and
-    // has never seen "/data/noack". The model can only cite what it is shown,
+    // has never seen "/data/customer". The model can only cite what it is shown,
     // so the leak has to be closed here, in the string. (#933)
-    const noack: KnowledgeSearchResult[] = [
+    const customer: KnowledgeSearchResult[] = [
       {
         chunkId: "c1",
         text: "Incubate 24 h.",
-        sourcePath: "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
-        citationPath: "OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
+        sourcePath: "/data/customer/OLD/archive-2012/datasheets/product-insert.pdf",
+        citationPath: "OLD/archive-2012/datasheets/product-insert.pdf",
         locator: { kind: "page", page: 2 },
-        docName: "PI_EColi.pdf",
+        docName: "product-insert.pdf",
       },
     ];
-    const out = formatWithCitations(noack);
+    const out = formatWithCitations(customer);
     expect(out).toBe(
-      CONTRACT + '[1] OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf (p. 2): "Incubate 24 h."' + LANGUAGE
+      CONTRACT +
+        '[1] OLD/archive-2012/datasheets/product-insert.pdf (p. 2): "Incubate 24 h."' +
+        LANGUAGE
     );
     expect(out).not.toContain("/data/");
   });
 
   it("identifies a source by its path, not its bare filename", () => {
     // A real corpus nests documents many levels deep and reuses filenames
-    // across folders (the 3M/Noack corpus has ~194 docs under
-    // /data/noack/OLD/QF_2012/PrintingFiles_QF/...). A bare basename leaves the
+    // across folders (the customer corpus has ~194 docs under
+    // /data/customer/OLD/archive-2012/datasheets/...). A bare basename leaves the
     // reader unable to FIND the document and verify the claim — which is the
     // entire point of cite-then-answer. Found in the 2026-07-16 live Block-A
     // test: the answer was fully grounded, but the citation
-    // "PI_EColi-Coliform_Count_Plate.pdf" was unfindable in a 194-document tree.
+    // "product-insert-coliform-count.pdf" was unfindable in a 194-document tree.
     const nested: KnowledgeSearchResult[] = [
       {
         chunkId: "c1",
         text: "Incubate 24 h.",
-        sourcePath: "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
-        citationPath: "OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
+        sourcePath: "/data/customer/OLD/archive-2012/datasheets/product-insert.pdf",
+        citationPath: "OLD/archive-2012/datasheets/product-insert.pdf",
         locator: { kind: "page", page: 2 },
-        docName: "PI_EColi.pdf",
+        docName: "product-insert.pdf",
       },
     ];
     const out = formatWithCitations(nested);
-    expect(out).toContain("OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf");
+    expect(out).toContain("OLD/archive-2012/datasheets/product-insert.pdf");
   });
 
   it("distinguishes same-named documents in different folders", () => {
@@ -583,7 +585,7 @@ describe("formatWithCitations", () => {
       {
         chunkId: "c1",
         text: "Goods are checked on arrival.",
-        sourcePath: "/data/noack/QM/handbook.docx",
+        sourcePath: "/data/customer/QM/handbook.docx",
         citationPath: "QM/handbook.docx",
         locator: { kind: "heading", headings: ["Quality", "Incoming goods"] },
         docName: "handbook.docx",
@@ -591,7 +593,7 @@ describe("formatWithCitations", () => {
       {
         chunkId: "c2",
         text: "Q3 revenue was flat.",
-        sourcePath: "/data/noack/Sales/review.pptx",
+        sourcePath: "/data/customer/Sales/review.pptx",
         citationPath: "Sales/review.pptx",
         locator: { kind: "slide", slide: 4 },
         docName: "review.pptx",
@@ -599,7 +601,7 @@ describe("formatWithCitations", () => {
       {
         chunkId: "c3",
         text: "Acme GmbH, DE, approved.",
-        sourcePath: "/data/noack/Platform/suppliers.xlsx",
+        sourcePath: "/data/customer/Platform/suppliers.xlsx",
         citationPath: "Platform/suppliers.xlsx",
         locator: { kind: "sheet", sheet: "Suppliers", startRow: 5, endRow: 12 },
         docName: "suppliers.xlsx",

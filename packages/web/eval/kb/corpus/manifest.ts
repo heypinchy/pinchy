@@ -356,7 +356,7 @@ export const KB_EVAL_CORPUS: CorpusDoc[] = [
   //     copy sits under an OLD/ segment, so statusForPath (archive-paths.ts)
   //     seeds it as `archived` — default retrieval must return only the
   //     current cert, and citing the 2013-expired one is the exact dangerous
-  //     answer the 2026-07-14 Noack live test surfaced.
+  //     answer the 2026-07-14 customer live test surfaced.
   {
     sourcePath: "/data/quality/afnor-certificate-2024.md",
     file: "quality/afnor-certificate-2024.md",

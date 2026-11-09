@@ -220,7 +220,7 @@ describe("pinchy-files plugin", () => {
   // told "your knowledge base is at /data/x — start here first" walks the folder
   // tree instead of searching. Reading files returns no page numbers, so nothing
   // it finds can be cited, and the answer's Sources list comes out broken.
-  // Measured on the Noack corpus: 4x ls + 5x read + 8x search over ~5 minutes
+  // Measured on the customer corpus: 4x ls + 5x read + 8x search over ~5 minutes
   // with a malformed citation list, against 3 searches in ~30s once the agent
   // stopped being pointed at the file tools.
   //
