@@ -279,3 +279,189 @@ describe("CitationPdfViewer", () => {
     expect(await screen.findByRole("region", { name: "Page 4" })).toHaveAttribute("tabindex", "0");
   });
 });
+
+/**
+ * A Word citation names a heading path, not a page (#1268, Office addendum).
+ * The viewer finds the section through the converted PDF's outline, then the
+ * passage among that section's pages — and when the heading is not in the
+ * outline, it opens exactly as before: the browser's viewer.
+ */
+describe("CitationPdfViewer for a Word section", () => {
+  const WORD_URL = "/api/agents/a1/workspace-file/Handbuch.pdf?path=%2Fdata%2Fq%2FHandbuch.docx";
+  const HEADING = "Wartung > Reaktionszeiten";
+  const WORD_PASSAGE = {
+    url: "/api/agents/a1/knowledge/passage",
+    body: { path: "/data/q/Handbuch.docx", heading: HEADING, claim: "Four hours." },
+  };
+  const PASSAGE_TEXT = "Der Auftragnehmer reagiert auf Störungen\ninnerhalb von vier Stunden.";
+
+  function wordHandle(runsByPage: Record<number, string[]> = {}) {
+    return {
+      ...handle(),
+      outline: vi.fn(async () => [
+        { page: 1, top: null, headings: ["Wartung"] },
+        { page: 2, top: 700, headings: ["Wartung", "Reaktionszeiten"] },
+        { page: 5, top: 700, headings: ["Sicherheit"] },
+      ]),
+      pageRuns: vi.fn(async (n: number) => runsByPage[n] ?? []),
+    };
+  }
+
+  function renderSection(passage: typeof WORD_PASSAGE | null = WORD_PASSAGE) {
+    return render(
+      <CitationPdfViewer
+        url={WORD_URL}
+        page={null}
+        heading={HEADING}
+        passage={passage}
+        fallback={<div data-testid="browser-viewer" />}
+      />
+    );
+  }
+
+  it("opens at the page of the section that holds the passage, highlighted", async () => {
+    const pdf = wordHandle({ 3: PAGE_4.runs.map((r) => r.str) });
+    mockOpenPdf.mockResolvedValue(pdf);
+    fetchSpy.mockResolvedValue(jsonResponse({ passage: { text: PASSAGE_TEXT } }));
+
+    renderSection();
+
+    expect(await screen.findByText("Page 3 of 12")).toBeInTheDocument();
+    await waitFor(() => expect(highlights()).toHaveLength(2));
+    expect(pdf.renderPage.mock.calls.at(-1)?.[0]).toBe(3);
+    // Only the section's pages were read, and only until the passage was found.
+    expect(pdf.pageRuns.mock.calls.map(([n]) => n)).toEqual([2, 3]);
+  });
+
+  it("opens at the section's first page when the passage is not in it", async () => {
+    const pdf = wordHandle();
+    // Drawn and scanned pages read the same runs; neither holds the passage.
+    pdf.renderPage.mockResolvedValue({ ...PAGE_4, runs: [run("Inhaltsverzeichnis", 100)] });
+    mockOpenPdf.mockResolvedValue(pdf);
+    fetchSpy.mockResolvedValue(jsonResponse({ passage: { text: PASSAGE_TEXT } }));
+
+    renderSection();
+
+    expect(await screen.findByText("Page 2 of 12")).toBeInTheDocument();
+    expect(highlights()).toHaveLength(0);
+  });
+
+  it("opens at the section's first page when the passage lookup fails", async () => {
+    const pdf = wordHandle();
+    mockOpenPdf.mockResolvedValue(pdf);
+    fetchSpy.mockResolvedValue(jsonResponse({ error: "Passage lookup failed" }, { status: 502 }));
+
+    renderSection();
+
+    expect(await screen.findByText("Page 2 of 12")).toBeInTheDocument();
+    expect(pdf.pageRuns).not.toHaveBeenCalled();
+  });
+
+  it("opens the section without waiting for a slow passage lookup", async () => {
+    // A section usually holds several passages, so the lookup embeds the
+    // claim — seconds on a cold model. The section is known without it.
+    const pdf = wordHandle({ 3: PAGE_4.runs.map((r) => r.str) });
+    mockOpenPdf.mockResolvedValue(pdf);
+    fetchSpy.mockReturnValue(new Promise(() => {}));
+
+    renderSection();
+
+    expect(await screen.findByText("Page 2 of 12")).toBeInTheDocument();
+    expect(pdf.pageRuns).not.toHaveBeenCalled();
+  });
+
+  it("moves to the passage's page when the lookup answers after the section opened", async () => {
+    const pdf = wordHandle({ 3: PAGE_4.runs.map((r) => r.str) });
+    mockOpenPdf.mockResolvedValue(pdf);
+    let answer: (res: Response) => void = () => {};
+    fetchSpy.mockReturnValue(new Promise<Response>((resolve) => (answer = resolve)));
+
+    renderSection();
+    expect(await screen.findByText("Page 2 of 12")).toBeInTheDocument();
+
+    await act(async () => answer(jsonResponse({ passage: { text: PASSAGE_TEXT } })));
+
+    expect(await screen.findByText("Page 3 of 12")).toBeInTheDocument();
+    await waitFor(() => expect(highlights()).toHaveLength(2));
+  });
+
+  it("does not pull a reader back who paged on before the passage was found", async () => {
+    const pdf = wordHandle({ 3: PAGE_4.runs.map((r) => r.str) });
+    // Drawn and scanned pages agree: only page 3 holds the passage.
+    pdf.renderPage.mockImplementation(async (n: number) =>
+      n === 3 ? PAGE_4 : { ...PAGE_4, runs: [run("Inhaltsverzeichnis", 100)] }
+    );
+    mockOpenPdf.mockResolvedValue(pdf);
+    let answer: (res: Response) => void = () => {};
+    fetchSpy.mockReturnValue(new Promise<Response>((resolve) => (answer = resolve)));
+
+    renderSection();
+    expect(await screen.findByText("Page 2 of 12")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await screen.findByText("Page 4 of 12")).toBeInTheDocument();
+
+    await act(async () => answer(jsonResponse({ passage: { text: PASSAGE_TEXT } })));
+    await waitFor(() => expect(pdf.pageRuns).toHaveBeenCalledWith(3));
+    await act(async () => {});
+
+    // The reader stayed where they were…
+    expect(screen.getByText("Page 4 of 12")).toBeInTheDocument();
+    // …and the highlight did move: the page they come back to is page 3.
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(await screen.findByText("Page 3 of 12")).toBeInTheDocument();
+    await waitFor(() => expect(highlights()).toHaveLength(2));
+  });
+
+  it("falls back without waiting for the passage lookup when the heading is unknown", async () => {
+    const pdf = wordHandle();
+    pdf.outline.mockResolvedValue([]);
+    mockOpenPdf.mockResolvedValue(pdf);
+    fetchSpy.mockReturnValue(new Promise(() => {}));
+
+    renderSection();
+
+    expect(await screen.findByTestId("browser-viewer")).toBeInTheDocument();
+  });
+
+  it("falls back to the browser's viewer when the outline has no such heading", async () => {
+    // Renamed since indexing, misspelled by the model, or a document with no
+    // outline at all: no section to open at, so the document opens as before.
+    const pdf = wordHandle();
+    pdf.outline.mockResolvedValue([{ page: 1, top: null, headings: ["Andere Überschrift"] }]);
+    mockOpenPdf.mockResolvedValue(pdf);
+    fetchSpy.mockResolvedValue(jsonResponse({ passage: null }));
+
+    renderSection();
+
+    expect(await screen.findByTestId("browser-viewer")).toBeInTheDocument();
+    expect(pdf.renderPage).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the browser's viewer when the outline cannot be read", async () => {
+    const pdf = wordHandle();
+    pdf.outline.mockRejectedValue(new Error("broken outline"));
+    mockOpenPdf.mockResolvedValue(pdf);
+    fetchSpy.mockResolvedValue(jsonResponse({ passage: null }));
+
+    renderSection();
+
+    expect(await screen.findByTestId("browser-viewer")).toBeInTheDocument();
+  });
+
+  it("keeps the highlight on the section's page when the reader pages on", async () => {
+    const pdf = wordHandle({ 3: PAGE_4.runs.map((r) => r.str) });
+    mockOpenPdf.mockResolvedValue(pdf);
+    fetchSpy.mockResolvedValue(jsonResponse({ passage: { text: PASSAGE_TEXT } }));
+
+    renderSection();
+    await waitFor(() => expect(highlights()).toHaveLength(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await screen.findByText("Page 4 of 12")).toBeInTheDocument();
+    await waitFor(() => expect(highlights()).toHaveLength(0));
+
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    await waitFor(() => expect(highlights()).toHaveLength(2));
+  });
+});

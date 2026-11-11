@@ -236,6 +236,18 @@ Pinchy now remembers in each browser which person was signed in last. That way t
 
 Whenever an agent's plugin configuration changed — its folders, web search settings or confirmation rules — the `agent.updated` entry in the audit trail stored the whole configuration before and after, every folder path included. A path can name a person, and audit entries can't be changed later. Above about twenty folders, the entry also outgrew the size limit and was cut short, losing what had changed. The entry now records `allowedPathCount` in place of the folder list, plus a `folderAccess` field that says how many folders were added and removed. [Audit Trail → `agent.updated`](/concepts/audit-trail/#agentupdated) shows the shape. Entries written before the upgrade keep the paths they recorded. If a script of yours reads `changes.pluginConfig` from these entries, switch it to the counts.
 
+#### A new Knowledge Base agent indexes its folders on its own
+
+Creating a Knowledge Base agent, or granting an existing one a folder, used to index nothing: the agent answered "nothing found" until someone clicked **Reindex now** or the nightly run got to it. Now granting a folder nothing has indexed yet queues its first index straight away — after the run that's already going, if there is one — and the agent's chat shows how far it has got until it's done. See [Index the documents](/guides/create-knowledge-base-agent/#6-index-the-documents).
+
+At the upgrade itself, every agent that has the `knowledge_search` permission and a granted folder no run has gone through yet gets its first index when Pinchy starts, one after another. Coming from a v0.10 release, that is usually nobody: its runs already count. Coming straight from v0.9.1, it is every such agent, because the index is empty after that upgrade (see [Knowledge Base agents need one reindex after upgrading](#knowledge-base-agents-need-one-reindex-after-upgrading)) — so you don't have to wait for the nightly run or click **Reindex now**. The runs are audited as reindexes with `trigger: "initial"`, requested by `kb-index-worker`.
+
+### Database migrations
+
+The migration `0082` runs automatically on startup — no manual steps. It is additive.
+
+- `0082` — `initial` as a fourth `trigger` on `kb_index_jobs`, for the first index Pinchy starts when an agent is granted a folder nothing has indexed yet.
+
 ## Upgrading from v0.10.2 to v0.10.3
 
 ### Breaking changes

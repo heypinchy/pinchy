@@ -22,7 +22,13 @@
  */
 import { fromCitationPath, toCitationPath } from "./citation-path";
 import type { ChunkLocator } from "./locator";
-import { convertedPdfName, isOfficeFile, isSpreadsheetFile } from "./office-formats";
+import {
+  convertedPdfName,
+  isOfficeFile,
+  isPresentationFile,
+  isSpreadsheetFile,
+  isWordFile,
+} from "./office-formats";
 
 /**
  * A DATA-ROOT-RELATIVE path ending in an extension we can serve, anchored at the
@@ -201,6 +207,61 @@ function trailingLocator(rest: string, isSpreadsheet: boolean): ChunkLocator | n
   const endRow = range[3] === undefined ? startRow : Number(range[3]);
   if (sheet === "" || startRow < 1 || endRow < startRow) return null;
   return { kind: "sheet", sheet, startRow, endRow };
+}
+
+/** `— slide 4`, `(slide 4)`, `, Folie 4` — the slide hint that may follow a presentation path. */
+const TRAILING_SLIDE = /^\s*(?:[—–\-,:]\s*)?(?:\(\s*)?(?:slide|folie)\s*(\d{1,5})\b/i;
+
+/**
+ * `(§ Safety > Zone B)` / `— § Quality > Incoming goods` — the heading path
+ * that may follow a Word path, in the shape `formatLocator` renders.
+ *
+ * The parenthesised form is the one `knowledge_search` prints, and it ends at
+ * ITS closing parenthesis, not the first one: real headings carry their own
+ * ("Anhang A (normativ)", "Gewährleistung (§ 5)"). One level of nesting is
+ * read. An unparenthesised path runs to the end of the line — a heading may
+ * hold commas or dots — but stops before a `;` or a `[n]` that starts the
+ * next citation on the same line.
+ *
+ * The separator's whitespace runs are unambiguous, and the alternatives
+ * inside a heading start with different characters, so a long line costs at
+ * most quadratic time on a heading that never closes, never exponential.
+ */
+const TRAILING_HEADING =
+  /^\s*(?:[—–\-,:]\s*)?(?:\(\s*§\s*((?:[^()\n]|\([^()\n]*\))+)\)|§\s*([^\n;[]+))/;
+
+/** Longest heading path carried to the viewer; the endpoint accepts more. */
+const MAX_CITED_HEADING_CHARS = 1000;
+
+/**
+ * Which section of an Office document a citation names (#1268, Office
+ * addendum), read from the text after the path: a slide for a presentation,
+ * a heading path for a Word document. Only the format that HAS such a section
+ * gets one — a "slide 4" after a `.docx` names nothing in it.
+ *
+ * Returned as the hast properties it travels as, beside `data-cited-claim`,
+ * and for the same reason: the href's shape is what the renderer trusts as a
+ * citation, and it must not widen to carry a hint.
+ */
+function trailingOfficeSection(rest: string, path: string): Record<string, string> | null {
+  if (isPresentationFile(path)) {
+    const slide = TRAILING_SLIDE.exec(rest);
+    return slide && Number(slide[1]) >= 1 ? { dataCitedSlide: String(Number(slide[1])) } : null;
+  }
+  if (isWordFile(path)) {
+    const match = TRAILING_HEADING.exec(rest);
+    if (!match) return null;
+    // A sentence may close right after the heading: "… — § Safety." The dot is
+    // the sentence's, and a heading spelled with it would name nothing.
+    const heading = (match[1] ?? match[2])
+      .trim()
+      .replace(/[.,;:]+$/, "")
+      .trim();
+    return heading && heading.length <= MAX_CITED_HEADING_CHARS
+      ? { dataCitedHeading: heading }
+      : null;
+  }
+  return null;
 }
 
 /**
@@ -464,7 +525,7 @@ export const WORKSPACE_FILE_HREF = /^\/api\/agents\/[^/]+\/workspace-file\?path=
 /**
  * Recovers the CITATION path from an href built by `buildSourceHref`, for use
  * as the viewer's title. Citation and not absolute: this value is what the
- * reader sees above the document, and `/data/noack/…` there would put the
+ * reader sees above the document, and `/data/customer/…` there would put the
  * container path straight back in front of them (#933). Returns null for
  * anything else, which is how the renderer tells a citation from an ordinary
  * link. Kept beside the builder so the two cannot drift — a dialog whose
@@ -523,14 +584,35 @@ export function buildSourceViewerUrl(href: string): string | null {
   return `${routePath}/${encodeURIComponent(shown)}${query}${fragment}`;
 }
 
+/** The passage endpoint's body: one anchor, plus the claim when there is one. */
+export type PassageRequestBody = { path: string; claim?: string } & (
+  { page: number } | { slide: number } | { heading: string }
+);
+
 /**
- * The request the citation viewer makes to find the cited passage on the cited
- * page (#1268), or null when there is nothing to find: no page to look on, or
- * a document whose passages are not anchored on pages.
+ * The section hints `remarkSourceLinks` attached to an Office citation, as the
+ * renderer reads them back off the link (`data-cited-slide`,
+ * `data-cited-heading`). Strings, because that is what a hast property is by
+ * the time it reaches the anchor.
+ */
+export interface CitedSection {
+  slide?: string;
+  heading?: string;
+}
+
+/**
+ * The request the citation viewer makes to find the cited passage (#1268), or
+ * null when there is nothing to find.
  *
- * Office documents are the second case. They open as their converted PDF, but
- * their passages are anchored on headings (a Word page break is a rendering
- * result, #933), so no page of that PDF names a set of candidates.
+ * - A PDF asks about the cited PAGE; without one there are no candidates.
+ * - A presentation asks about the cited SLIDE, which is page N of its
+ *   converted PDF (the converter maps them one to one).
+ * - A Word document asks about the cited HEADING path. Its passages are
+ *   anchored on headings, not pages (a Word page break is a rendering result,
+ *   #933); the viewer finds the page through the converted PDF's outline.
+ *
+ * An Office citation with only a page hint asks nothing: its chunks carry no
+ * page, so the hint names no set of candidates.
  *
  * Built from the href rather than from separate props, so it asks about the
  * document the viewer shows — through the same citation path `parseSourceHref`
@@ -542,20 +624,44 @@ export function buildSourceViewerUrl(href: string): string | null {
  */
 export function buildPassageRequest(
   href: string,
-  claim: string | undefined
-): { url: string; body: { path: string; page: number; claim?: string } } | null {
+  claim: string | undefined,
+  section: CitedSection = {}
+): { url: string; body: PassageRequestBody } | null {
   const source = parseSourceHref(href);
-  if (!source || source.locator?.kind !== "page" || isOfficeFile(source.path)) return null;
+  if (!source) return null;
+
+  const anchor = passageAnchor(source.path, source.locator, section);
+  if (!anchor) return null;
 
   const agentSegment = href.slice("/api/agents/".length, href.indexOf("/workspace-file"));
   return {
     url: `/api/agents/${agentSegment}/knowledge/passage`,
     body: {
       path: fromCitationPath(source.path),
-      page: source.locator.page,
+      ...anchor,
       ...(claim ? { claim } : {}),
     },
   };
+}
+
+function passageAnchor(
+  path: string,
+  locator: ChunkLocator | null,
+  section: CitedSection
+): { page: number } | { slide: number } | { heading: string } | null {
+  if (isPresentationFile(path)) {
+    // Re-checked here: the property arrives from the rendered DOM, and only a
+    // plain positive number is a slide.
+    if (!section.slide || !/^\d{1,5}$/.test(section.slide)) return null;
+    const slide = Number(section.slide);
+    return slide >= 1 ? { slide } : null;
+  }
+  if (isWordFile(path)) {
+    const heading = section.heading?.trim();
+    return heading && heading.length <= MAX_CITED_HEADING_CHARS ? { heading } : null;
+  }
+  if (isOfficeFile(path)) return null;
+  return locator?.kind === "page" ? { page: locator.page } : null;
 }
 
 /** `[everything before "#", "#…" or ""]` — the fragment keeps its `#`. */
@@ -638,13 +744,15 @@ function linkifyText(
     const locator = trailingLocator(value.slice(end), isSpreadsheetFile(path));
 
     const claim = claimFor(value, start, end, value.slice(cursor, start), numbered);
+    const section = isOfficeFile(path) ? trailingOfficeSection(value.slice(end), path) : null;
+    const hProperties = { ...(claim ? { dataCitedClaim: claim } : {}), ...section };
 
     if (start > cursor) parts.push({ type: "text", value: value.slice(cursor, start) });
     parts.push({
       type: "link",
       url: buildSourceHref(agentId, path, locator),
       children: [{ type: "text", value: path }],
-      ...(claim ? { data: { hProperties: { dataCitedClaim: claim } } } : {}),
+      ...(Object.keys(hProperties).length > 0 ? { data: { hProperties } } : {}),
     });
     cursor = end;
   }

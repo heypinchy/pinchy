@@ -148,7 +148,7 @@ export function returnedDocumentIds(results: KnowledgeSearchResult[]): DocumentR
  * What the caller is expected to do with these passages, carried by the result
  * itself rather than by the agent's instructions.
  *
- * The distinction is not cosmetic. On the Noack corpus (2026-07-27) the same
+ * The distinction is not cosmetic. On the customer corpus (2026-07-27) the same
  * question produced a fully-cited answer from an agent carrying the
  * knowledge-base template and an uncited one from an agent whose template slot
  * was empty — identical retrieval, five successful searches with eight hits

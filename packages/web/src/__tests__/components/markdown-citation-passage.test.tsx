@@ -69,4 +69,40 @@ describe("the claim a citation supports reaches the viewer", () => {
     renderAnswer(["Vier Stunden [1].", "", "- [1] quality/Wartung.pdf — p. 4"].join("\n"));
     expect(document.querySelector("[data-cited-claim]")).toBeNull();
   });
+
+  it("asks about the slide a presentation citation names", () => {
+    const props = renderAnswer(
+      ["Die Marge stieg um 4 % [1].", "", "- [1] sales/Pitch.pptx — slide 7"].join("\n")
+    );
+
+    expect(props.page).toBeNull();
+    expect(props.passage).toEqual({
+      url: "/api/agents/agent-1/knowledge/passage",
+      body: { path: "/data/sales/Pitch.pptx", slide: 7, claim: "Die Marge stieg um 4 %." },
+    });
+  });
+
+  it("asks about the heading a Word citation names", () => {
+    const props = renderAnswer(
+      [
+        "Wareneingang wird binnen 24 Stunden geprüft [1].",
+        "",
+        "- [1] quality/Handbuch.docx — § Qualität > Wareneingang",
+      ].join("\n")
+    );
+
+    expect(props.passage).toEqual({
+      url: "/api/agents/agent-1/knowledge/passage",
+      body: {
+        path: "/data/quality/Handbuch.docx",
+        heading: "Qualität > Wareneingang",
+        claim: "Wareneingang wird binnen 24 Stunden geprüft.",
+      },
+    });
+  });
+
+  it("does not put the section on the link a reader sees", () => {
+    renderAnswer("- [1] quality/Handbuch.docx — § Qualität\n- [2] sales/Pitch.pptx — slide 2");
+    expect(document.querySelector("[data-cited-heading], [data-cited-slide]")).toBeNull();
+  });
 });

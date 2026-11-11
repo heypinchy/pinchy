@@ -137,7 +137,7 @@ it("does no OCR at all when none is configured", async () => {
 });
 
 it("stops rendering after the page budget, and says how many it skipped", async () => {
-  // A 1159-page scan is real (issue #941, the Noack corpus). Without a bound,
+  // A 1159-page scan is real (issue #941, the customer corpus). Without a bound,
   // one document would spend 1159 vision calls at index time.
   const path = await writePdf("huge.pdf", ["scan", "scan", "scan", "scan"]);
   const ocrPage = vi.fn(async () => "PAGE TEXT");

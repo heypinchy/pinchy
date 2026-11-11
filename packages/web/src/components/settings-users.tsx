@@ -30,6 +30,7 @@ import {
 import { toast } from "sonner";
 import { ShieldAlert, X } from "lucide-react";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
+import { useLicenseStatus } from "@/hooks/use-license-status";
 import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
@@ -184,8 +185,17 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [resetLink, setResetLink] = useState<string | null>(null);
   const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
   const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
-  const [isEnterprise, setIsEnterprise] = useState(false);
-  const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
+  // Refreshed with the list (fetchUsers), since seat usage moves with it.
+  const { license, refetch: refetchLicense } = useLicenseStatus({
+    enabled: false,
+    notifyOnFailure: true,
+  });
+  // null = unknown: hide group features rather than claim there is no license.
+  const isEnterprise = license?.enterprise ?? null;
+  const seatInfo =
+    typeof license?.maxUsers === "number" && typeof license?.seatsUsed === "number"
+      ? { maxUsers: license.maxUsers, seatsUsed: license.seatsUsed }
+      : null;
   const [unknownOriginDismissed, setUnknownOriginDismissed] = useState(false);
   // "Mark as known" cannot be undone — the acknowledgement is an audit row and
   // nothing withdraws it — so it asks first, like Deactivate does.
@@ -202,15 +212,13 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
 
   const fetchUsers = useCallback(async () => {
     try {
-      const [usersRes, invitesRes, groupsData, enterpriseData] = await Promise.all([
+      const [usersRes, invitesRes, groupsData] = await Promise.all([
         fetch("/api/users"),
         fetch("/api/users/invites"),
         fetch("/api/groups")
           .then((r) => (r.ok ? r.json() : []))
           .catch(() => []),
-        fetch("/api/enterprise/status")
-          .then((r) => (r.ok ? r.json() : { enterprise: false }))
-          .catch(() => ({ enterprise: false })),
+        refetchLicense(),
       ]);
       if (usersRes.ok) {
         const usersData = await usersRes.json();
@@ -218,17 +226,10 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         setItems(mergeUserList(usersData.users, invitesData.invites));
       }
       setAllGroups(Array.isArray(groupsData) ? groupsData : []);
-      setIsEnterprise(enterpriseData?.enterprise ?? false);
-      if (
-        typeof enterpriseData?.maxUsers === "number" &&
-        typeof enterpriseData?.seatsUsed === "number"
-      ) {
-        setSeatInfo({ maxUsers: enterpriseData.maxUsers, seatsUsed: enterpriseData.seatsUsed });
-      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [refetchLicense]);
 
   useEffect(() => {
     fetchUsers();

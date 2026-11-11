@@ -3,8 +3,8 @@
  * shows.
  *
  * A citation earns trust only if the reader can (a) find the document and (b)
- * check the spot. We store what the CONTAINER sees — `/data/noack/OLD/QF_2012/
- * PrintingFiles_QF/x.pdf` — and nobody at the customer has ever seen that
+ * check the spot. We store what the CONTAINER sees — `/data/customer/OLD/archive-2012/
+ * datasheets/x.pdf` — and nobody at the customer has ever seen that
  * prefix; what they know from Explorer is the tree below the mount. So a
  * citation shows the path relative to the data root. (#933)
  *

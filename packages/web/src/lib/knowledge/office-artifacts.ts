@@ -18,7 +18,7 @@
  * is free at the call site here. Keying on it directly means
  *
  *   - no staleness window at all (size+mtime can collide; content cannot),
- *   - two copies of the same document convert once — and the Noack corpus
+ *   - two copies of the same document convert once — and the customer corpus
  *     really does contain the same discussion guide as both `.doc` and
  *     `.docx`,
  *   - the source path never appears in the store, so a shared artifact volume

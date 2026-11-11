@@ -17,6 +17,8 @@ import { validatePinchyWebConfig } from "@/lib/domain-validation";
 import { parseRequestBody } from "@/lib/api-validation";
 import { validateAgentModel } from "@/lib/agent-model-validation";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { queueFirstIndex } from "@/lib/knowledge/first-index";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { updateAgentSchema } from "@/lib/schemas/agents";
 import { pluginConfigAuditChange, type FolderAccessDiff } from "@/lib/agent-plugin-config-audit";
 
@@ -351,6 +353,21 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
       await regenerateOpenClawConfig();
     } catch (err) {
       return runtimeUpdateFailed(err, hasAuditableChange ? auditDetail : null);
+    }
+
+    // A folder granted now — or `knowledge_search` given to an agent that
+    // already had folders — is one nothing has indexed yet, and the agent
+    // finds nothing in it until something does (#1280). Queued as this
+    // admin's request; only folders no run has gone through, so saving the
+    // tab again queues nothing. A busy slot or a failure here is left to the
+    // index worker, which queues the run once it can — never a reason to fail
+    // a save that has already landed.
+    try {
+      await queueFirstIndex(agentId, { actorType: "user", actorId: session.user.id! }, (entry) =>
+        deferAuditLog(entry)
+      );
+    } catch (err) {
+      console.error(`[agents] could not queue the first index of agent ${agentId}:`, err);
     }
   }
 

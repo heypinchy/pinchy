@@ -523,7 +523,7 @@ describe("approval routes (integration, real DB)", () => {
         connectionId: "c1",
         model: "res.partner",
         id: 7,
-        label: "Raimund Korber",
+        label: "Anna Berger",
       });
     }
     const hidden = "Bitte überweisen Sie 9.800 € an AT00 1234 5678 9012";
@@ -545,7 +545,7 @@ describe("approval routes (integration, real DB)", () => {
             "@": "ref",
             model: "res.partner",
             id: 7,
-            label: "Raimund Korber",
+            label: "Anna Berger",
             labelCut: 0,
           },
         },

@@ -1,25 +1,20 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Shield, ShieldOff } from "lucide-react";
 import { apiPost } from "@/lib/api-client";
+import { useLicenseStatus } from "@/hooks/use-license-status";
 
 export function DevToolbar() {
-  const [enterprise, setEnterprise] = useState<boolean | null>(null);
+  // Unknown (a status fetch dropped by a tsx-watch restart) renders no badge
+  // rather than a "Community" one the server never said.
+  const enterprise = useLicenseStatus().license?.enterprise ?? null;
   const [toggling, setToggling] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/enterprise/status")
-      .then((r) => r.json())
-      .then((data) => setEnterprise(data.enterprise ?? false))
-      .catch(() => setEnterprise(false));
-  }, []);
 
   async function toggle() {
     setToggling(true);
     try {
-      const data = await apiPost<{ enterprise: boolean }>("/api/dev/enterprise-toggle", undefined);
-      setEnterprise(data.enterprise);
+      await apiPost<{ enterprise: boolean }>("/api/dev/enterprise-toggle", undefined);
       // Reload to reflect enterprise state across the app
       window.location.reload();
     } catch {
