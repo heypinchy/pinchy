@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { embedTexts, LOCAL_MODEL_RETRY_COOLDOWN_MS } from "@/lib/knowledge/embeddings";
+import {
+  EmbedderUnavailableError,
+  embedTexts,
+  fitTextsForEmbedding,
+  LOCAL_MODEL_RETRY_COOLDOWN_MS,
+  splitToTokenBudget,
+  type EmbeddingTokenizer,
+} from "@/lib/knowledge/embeddings";
 
 global.fetch = vi.fn();
 
@@ -463,5 +470,193 @@ describe("embedTexts (provider: local, node-llama-cpp mocked)", () => {
 
       await expect(embedTexts(["a"], cfg)).rejects.toThrow("context: out of memory");
     });
+  });
+});
+
+/**
+ * A tokenizer that counts very differently from the chunker's 4-chars-per-token
+ * estimate: every character is a token. A 600-character chunk — 150 tokens to
+ * the estimate, comfortably under the 512 target — is 600 tokens here, which is
+ * the shape of #1380 (a part-number table or a run of digits tokenizes far
+ * denser than prose).
+ */
+const charTokenizer: EmbeddingTokenizer = {
+  tokenize: (text) => Array.from(text),
+  detokenize: (tokens) => (tokens as string[]).join(""),
+};
+
+describe("splitToTokenBudget", () => {
+  it("leaves a text that fits alone", () => {
+    expect(splitToTokenBudget("short text", charTokenizer, 100)).toEqual(["short text"]);
+  });
+
+  it("splits a chunk the estimate accepts but the tokenizer counts far above the budget", () => {
+    const text = "4711-0815 ".repeat(60); // 600 chars: 150 "estimated" tokens, 600 real ones
+    const pieces = splitToTokenBudget(text, charTokenizer, 256);
+
+    expect(pieces.length).toBe(3);
+    for (const piece of pieces)
+      expect(charTokenizer.tokenize(piece).length).toBeLessThanOrEqual(256);
+    // Nothing is lost: the pieces are the chunk, cut at token boundaries.
+    expect(pieces.join("")).toBe(text);
+  });
+
+  // Detokenizing a window and tokenizing it again is not always the same count:
+  // a byte-fallback token cut in half, or a merge that only forms across the
+  // seam. The piece is what gets embedded, so the piece is what must fit.
+  it("shrinks a window whose detokenized text re-tokenizes past the budget", () => {
+    // Every "x" decodes to "xx" — so a window re-tokenizes to twice its size.
+    const inflating: EmbeddingTokenizer = {
+      tokenize: (text) => Array.from(text),
+      detokenize: (tokens) => (tokens as string[]).map((t) => (t === "x" ? "xx" : t)).join(""),
+    };
+    const pieces = splitToTokenBudget("x".repeat(40), inflating, 10);
+    for (const piece of pieces) expect(inflating.tokenize(piece).length).toBeLessThanOrEqual(10);
+    expect(pieces.join("").length).toBe(80);
+  });
+
+  it("drops a whitespace-only piece rather than embedding nothing", () => {
+    const pieces = splitToTokenBudget("a".repeat(10) + " ".repeat(10), charTokenizer, 10);
+    expect(pieces).toEqual(["a".repeat(10)]);
+  });
+});
+
+describe("fitTextsForEmbedding (provider: local, node-llama-cpp mocked)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getLlama.mockResolvedValue({ loadModel });
+  });
+
+  function modelWithContext(contextSize: number, trainContextSize = 2048) {
+    const model = {
+      trainContextSize,
+      tokenize: (text: string) => Array.from(text),
+      detokenize: (tokens: string[]) => tokens.join(""),
+      createEmbeddingContext,
+    };
+    loadModel.mockResolvedValue(model);
+    createEmbeddingContext.mockResolvedValue({ getEmbeddingFor, _llamaContext: { contextSize } });
+  }
+
+  it("splits a text the model's own tokenizer counts past the context, and leaves the rest", async () => {
+    modelWithContext(64);
+    const long = "9".repeat(150);
+    const fitted = await fitTextsForEmbedding(["fits", long], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/fit-split.gguf",
+    });
+
+    expect(fitted[0]).toEqual(["fits"]);
+    expect(fitted[1].length).toBeGreaterThan(2);
+    // A little headroom under the context: node-llama-cpp checks the length
+    // before it adds the BOS/EOS tokens the model still needs room for.
+    for (const piece of fitted[1]) expect(piece.length).toBeLessThan(64);
+    expect(fitted[1].join("")).toBe(long);
+  });
+
+  // node-llama-cpp decodes an input longer than the batch in several calls,
+  // and the pooled vector then reflects only the last batch: the head of the
+  // piece would silently drop out of its own embedding.
+  it("splits to the context's batch size when that is smaller than the context", async () => {
+    const model = {
+      trainContextSize: 2048,
+      tokenize: (text: string) => Array.from(text),
+      detokenize: (tokens: string[]) => tokens.join(""),
+      createEmbeddingContext,
+    };
+    loadModel.mockResolvedValue(model);
+    createEmbeddingContext.mockResolvedValue({
+      getEmbeddingFor,
+      _llamaContext: { contextSize: 2048, batchSize: 40 },
+    });
+
+    const [pieces] = await fitTextsForEmbedding(["q".repeat(200)], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/fit-batch.gguf",
+    });
+    expect(pieces.length).toBeGreaterThan(4);
+    for (const piece of pieces) expect(piece.length).toBeLessThan(40);
+  });
+
+  it("falls back to the model's training context when the context size is not readable", async () => {
+    const model = {
+      trainContextSize: 32,
+      tokenize: (text: string) => Array.from(text),
+      detokenize: (tokens: string[]) => tokens.join(""),
+      createEmbeddingContext,
+    };
+    loadModel.mockResolvedValue(model);
+    createEmbeddingContext.mockResolvedValue({ getEmbeddingFor });
+
+    const [pieces] = await fitTextsForEmbedding(["z".repeat(100)], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/fit-train-ctx.gguf",
+    });
+    for (const piece of pieces) expect(piece.length).toBeLessThan(32);
+  });
+
+  it("splits for the Ollama path by characters, without a network call", async () => {
+    const fitted = await fitTextsForEmbedding(["a".repeat(5000)], {
+      baseUrl: "http://ollama:11434",
+    });
+    expect(fitted[0].length).toBeGreaterThan(1);
+    expect(fitted[0].join("")).toBe("a".repeat(5000));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+// The run-stopping errors are told apart by type, not by message: an embedder
+// that cannot embed anything is one outage, an input it refuses is one file.
+describe("EmbedderUnavailableError", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getLlama.mockResolvedValue({ loadModel });
+    loadModel.mockResolvedValue({ createEmbeddingContext });
+    createEmbeddingContext.mockResolvedValue({ getEmbeddingFor });
+  });
+
+  it("is what a model that will not load throws", async () => {
+    loadModel.mockRejectedValueOnce(new Error("ENOMEM"));
+    const err = await embedTexts(["a"], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/typed-load-failure.gguf",
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(EmbedderUnavailableError);
+    expect(err.message).toContain("ENOMEM");
+  });
+
+  it("is not what an input the context refuses throws", async () => {
+    getEmbeddingFor.mockRejectedValueOnce(
+      new Error("Input is longer than the context size. Try to increase the context size")
+    );
+    const err = await embedTexts(["a"], {
+      baseUrl: "unused",
+      provider: "local",
+      modelPath: "/models/typed-input-failure.gguf",
+    }).catch((e) => e);
+    expect(err).not.toBeInstanceOf(EmbedderUnavailableError);
+  });
+
+  it("is what an unreachable Ollama throws", async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError("fetch failed"));
+    await expect(embedTexts(["a"], { baseUrl: "http://ollama:11434" })).rejects.toBeInstanceOf(
+      EmbedderUnavailableError
+    );
+  });
+
+  it("is what a wrong vector width throws", async () => {
+    getEmbeddingFor.mockResolvedValue({ vector: [1, 2, 3] });
+    await expect(
+      embedTexts(["a"], {
+        baseUrl: "unused",
+        provider: "local",
+        modelPath: "/models/typed-width.gguf",
+        expectedDim: 768,
+      })
+    ).rejects.toBeInstanceOf(EmbedderUnavailableError);
   });
 });

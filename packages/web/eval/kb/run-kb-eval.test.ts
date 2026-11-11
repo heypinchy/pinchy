@@ -1,7 +1,7 @@
 // packages/web/eval/kb/run-kb-eval.test.ts
 //
 // Unit tests for the keyless/pure parts of run-kb-eval.ts (Task 3.4): the
-// (model, goldId) resume filter and the --corpus=synthetic|noack switch. The
+// (model, goldId) resume filter and the --corpus=synthetic|customer switch. The
 // JSONL/scorecard I/O (appendRunResult/readExistingRuns/writeScorecard) is
 // straight filesystem plumbing identical in shape to ../run-eval.ts's
 // already-exercised equivalents and is exercised for real by the live sweep
@@ -13,7 +13,7 @@ import {
   corpusFromEnv,
   countRunsForPair,
   infraErrorRun,
-  noackCorpusDir,
+  customerCorpusDir,
   pendingPairs,
   retrievedSourcesFromAuditEntries,
   scorecardRuns,
@@ -160,32 +160,32 @@ describe("corpusFromEnv", () => {
     expect(() => corpusFromEnv({}, ["--corpus=bogus"])).toThrow(/Unknown --corpus value/);
   });
 
-  it("honors --corpus=noack ONLY with the explicit local opt-in (KB_EVAL_CORPUS_DIR set, no CI)", () => {
-    expect(corpusFromEnv({ KB_EVAL_CORPUS_DIR: "/opt/noack-corpus" }, ["--corpus=noack"])).toBe(
-      "noack"
-    );
+  it("honors --corpus=customer ONLY with the explicit local opt-in (KB_EVAL_CORPUS_DIR set, no CI)", () => {
+    expect(
+      corpusFromEnv({ KB_EVAL_CORPUS_DIR: "/opt/customer-corpus" }, ["--corpus=customer"])
+    ).toBe("customer");
   });
 
-  it("rejects --corpus=noack when KB_EVAL_CORPUS_DIR is not set, even outside CI", () => {
-    expect(() => corpusFromEnv({}, ["--corpus=noack"])).toThrow(/KB_EVAL_CORPUS_DIR/);
+  it("rejects --corpus=customer when KB_EVAL_CORPUS_DIR is not set, even outside CI", () => {
+    expect(() => corpusFromEnv({}, ["--corpus=customer"])).toThrow(/KB_EVAL_CORPUS_DIR/);
   });
 
-  it("hard-errors on --corpus=noack when CI is set, even with KB_EVAL_CORPUS_DIR present", () => {
+  it("hard-errors on --corpus=customer when CI is set, even with KB_EVAL_CORPUS_DIR present", () => {
     expect(() =>
-      corpusFromEnv({ CI: "1", KB_EVAL_CORPUS_DIR: "/opt/noack-corpus" }, ["--corpus=noack"])
+      corpusFromEnv({ CI: "1", KB_EVAL_CORPUS_DIR: "/opt/customer-corpus" }, ["--corpus=customer"])
     ).toThrow(/CI/);
   });
 
-  it("hard-errors on KB_EVAL_CORPUS=noack (env-only selection) when CI is set", () => {
+  it("hard-errors on KB_EVAL_CORPUS=customer (env-only selection) when CI is set", () => {
     expect(() =>
-      corpusFromEnv({ CI: "true", KB_EVAL_CORPUS: "noack", KB_EVAL_CORPUS_DIR: "/x" }, [])
+      corpusFromEnv({ CI: "true", KB_EVAL_CORPUS: "customer", KB_EVAL_CORPUS_DIR: "/x" }, [])
     ).toThrow(/CI/);
   });
 
-  it("a bare --corpus flag with no value does not silently select noack (falls through to the unknown-value error)", () => {
+  it("a bare --corpus flag with no value does not silently select customer (falls through to the unknown-value error)", () => {
     // Regression guard for a naive regex: "--corpus=" with an empty value
     // must not be treated as falsy-and-ignored (which would silently fall
-    // through to the synthetic default) OR misparsed into "noack".
+    // through to the synthetic default) OR misparsed into "customer".
     expect(() => corpusFromEnv({}, ["--corpus="])).toThrow(/Unknown --corpus value ""/);
   });
 });
@@ -318,14 +318,14 @@ describe("infraErrorRun", () => {
   });
 });
 
-describe("noackCorpusDir", () => {
+describe("customerCorpusDir", () => {
   it("returns the trimmed directory when KB_EVAL_CORPUS_DIR is set", () => {
-    expect(noackCorpusDir({ KB_EVAL_CORPUS_DIR: "  /opt/noack-corpus  " })).toBe(
-      "/opt/noack-corpus"
+    expect(customerCorpusDir({ KB_EVAL_CORPUS_DIR: "  /opt/customer-corpus  " })).toBe(
+      "/opt/customer-corpus"
     );
   });
 
   it("throws when KB_EVAL_CORPUS_DIR is unset", () => {
-    expect(() => noackCorpusDir({})).toThrow(/KB_EVAL_CORPUS_DIR/);
+    expect(() => customerCorpusDir({})).toThrow(/KB_EVAL_CORPUS_DIR/);
   });
 });

@@ -35,7 +35,7 @@ The General tab controls the agent's identity and the AI model it uses.
 | **Tagline** | A short description shown below the agent name in the sidebar. Optional.                      |
 | **Model**   | The AI model the agent uses, grouped by configured provider (e.g. OpenAI, Anthropic, Ollama). |
 
-Below the form fields, the tab shows the **agent type** — either "Personal agent" or "Shared agent." Personal agents are private to their owner with isolated memory and conversations. Shared agents are accessible to all team members, and memory from all conversations is shared.
+Below the form fields, the tab shows the **agent type** — either "Personal agent" or "Shared agent." Personal agents are private to their owner with isolated memory and conversations. Shared agents are accessible to all team members. If a shared agent has the **Memory** permission, what it remembers from one person's conversations is available in everyone's; without it, the agent doesn't keep memory and won't remember earlier conversations. See [Understanding Agent Memory](/explanation/agent-memory/). Either way, a shared agent can read the files in its workspace in every member's conversations — see [Workspaces](/concepts/workspaces/).
 
 **Starter prompts** are clickable suggestion chips shown below the agent's greeting when someone starts a new conversation with it, until they send their first message. The chips step aside while there is text in the message box, so a click can't replace a draft. They lower the entry barrier for role-specific agents — for example "Summarize my latest HR tickets" on an HR assistant. Clicking a chip sends that prompt to the agent. Most templates ship with a few sensible starter prompts already filled in; edit them, add your own with **Add prompt**, or clear the list for no chips. **Knowledge Base** and **Custom Agent** start with none: a Custom Agent has no role to suggest prompts for, and a Knowledge Base can't know what your documents cover or which language your team uses, so any default would name a topic you may not have. The agent's greeting is always shown, with or without chips.
 
@@ -106,7 +106,7 @@ Why not just let the agent remember it? Because memory isn't loaded by scheduled
 
 The Permissions tab controls which tools an agent can use. Pinchy uses an **allow-list** model: agents start with zero tools enabled, and admins grant specific capabilities.
 
-Tools are organised into three sections that are always shown — **Memory**, **Workspace** and **Knowledge Base** — plus sections that only appear when a matching connection exists. The three permanent sections follow the zones of an agent's workspace: what it remembers, what it may produce, and what it may read.
+Tools are organised into three sections that are always shown — **Memory**, **Workspace** and **Knowledge Base** — plus sections that appear when a matching connection exists (Web Search also appears when the agent already holds a web tool; see below). The three permanent sections follow the zones of an agent's workspace: what it remembers, what it may produce, and what it may read.
 
 **Memory** — the **Memory** (`pinchy_memory`) toggle, which lets the agent write and re-read `MEMORY.md` and the daily notes under `memory/`. Without it the agent has no memory and is not offered the recall tools, so it will not claim one. See [Understanding Agent Memory](/explanation/agent-memory/#memory-is-a-permission).
 
@@ -114,7 +114,7 @@ Tools are organised into three sections that are always shown — **Memory**, **
 
 **Knowledge Base** — sandboxed **read** access to admin-curated directories. **Workspace read access is always on** — agents can always list and read files under `uploads/` and `workbench/`. This section contains the **Allowed Directories** picker, which grants the agent read-access to additional directories under `/data/`. Agents can never write to those directories.
 
-**Web Search** — appears only when at least one active Web Search (Brave) connection exists:
+**Web Search** — appears when an active Web Search (Brave) connection exists, or when the agent already has a web tool (agents created from a web template do). Without a connection, the section says web search isn't set up and links to Settings → Integrations: **Fetch web pages** works without one, **Search the web** does not.
 
 | Tool            | Tool ID             | Description                                  |
 | --------------- | ------------------- | -------------------------------------------- |

@@ -2,7 +2,7 @@
  * Byte-range parsing for the workspace-file serving route.
  *
  * This exists because a knowledge-base corpus contains genuinely large PDFs —
- * the Noack corpus has a 268 MB and a 174 MB scanned compilation binder, and
+ * the customer corpus has a 268 MB and a 174 MB scanned compilation binder, and
  * those two are also the most-cited documents in it. Serving them means never
  * materialising the file in memory, and it means answering range requests:
  * a browser PDF viewer asked to open at `#page=510` fetches the trailer, then

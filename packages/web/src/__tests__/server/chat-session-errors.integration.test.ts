@@ -2,7 +2,7 @@
 // the chat "paused" banner (Concern 1). Uses the real Postgres test database
 // (provisioned by global-setup.ts, emptied between tests by the integration reset).
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 import { db } from "@/db";
 import { users, agents, chatSessionErrors, auditLog } from "@/db/schema";
@@ -13,6 +13,7 @@ import {
   dismissChatSessionError,
   agentRanToolSince,
   resolveRetryGate,
+  ACTIVE_ERROR_MAX_AGE_MS,
 } from "@/server/chat-session-errors";
 import { appendAuditLog } from "@/lib/audit";
 
@@ -73,28 +74,109 @@ describe("chat session errors persistence", () => {
     expect(active!.errorClass).toBe("transient");
   });
 
-  it("clears the active error once the triggering message's run succeeds (supersede by clientMessageId)", async () => {
+  it("clears the active error once a later turn of the session succeeds — the retry, or any other message", async () => {
     const user = await seedUser();
     const agent = await seedAgent(user.id);
     const input = { ...base(user, agent), clientMessageId: "m1" };
     await recordChatSessionError(input);
 
-    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, clientMessageId: "m1" });
+    // The user moved on to m2 and got an answer: the banner about m1 is no
+    // longer where the conversation stands (#1301). Superseding only on m1's
+    // own success left it on top of every later answer, reload after reload.
+    // The bound sits a second ahead, not at `new Date()`: created_at is the
+    // database's now() in microseconds, a JS Date has milliseconds, so a row
+    // written in the same millisecond reads as after `new Date()` and stays.
+    const later = new Date(Date.now() + 1_000);
+    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: later });
 
     expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
   });
 
-  it("does NOT clear the error when a DIFFERENT message succeeds", async () => {
+  // The bound is inclusive and app-clock time, so an error stamped at exactly
+  // `before` is cleared. When Postgres stamped `created_at` with `now()` it kept
+  // microseconds a JS Date cannot hold: the row sat a fraction of a millisecond
+  // AFTER its own timestamp as the app reads it, and survived the supersede.
+  it("clears an error recorded at exactly the bound", async () => {
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const input = { ...base(user, agent), clientMessageId: "m1" };
+    const row = await recordChatSessionError(input);
+
+    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: row.createdAt });
+
+    expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
+  });
+
+  // Every caller passes app time (`dispatchedAt`), so `created_at` must be app
+  // time too. A database clock ahead of the app's left an error recorded before
+  // a successful turn looking newer than that turn, and its banner stayed on top
+  // of the answer (#1301). Simulated by running the app clock behind the
+  // database's.
+  it("clears an earlier error even when the database clock runs ahead of the app's", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() - 5_000 });
+    try {
+      const user = await seedUser();
+      const agent = await seedAgent(user.id);
+      const input = { ...base(user, agent), clientMessageId: "m1" };
+      await recordChatSessionError(input);
+      vi.setSystemTime(Date.now() + 1_000);
+
+      await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: new Date() });
+
+      expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT clear an error recorded after the successful turn's bound", async () => {
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const input = { ...base(user, agent), clientMessageId: "m1" };
+    const bound = new Date(Date.now() - 60_000);
+    await recordChatSessionError(input);
+
+    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: bound });
+
+    expect(await getActiveChatSessionError(input.sessionKey)).not.toBeNull();
+  });
+
+  it("does NOT clear another session's error", async () => {
     const user = await seedUser();
     const agent = await seedAgent(user.id);
     const input = { ...base(user, agent), clientMessageId: "m1" };
     await recordChatSessionError(input);
 
-    // The user moved on to an unrelated question m2 that succeeded — the
-    // unanswered m1 error must survive.
-    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, clientMessageId: "m2" });
+    await supersedeChatSessionErrors({
+      sessionKey: `${input.sessionKey}:other`,
+      before: new Date(),
+    });
 
     expect(await getActiveChatSessionError(input.sessionKey)).not.toBeNull();
+  });
+
+  it("ages an error out of the banner after a day, unresolved or not", async () => {
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const sessionKey = `agent:${agent.id}:direct:${user.id}`;
+    const hour = 60 * 60 * 1000;
+    const row = (providerError: string, ageMs: number) => ({
+      userId: user.id,
+      agentId: agent.id,
+      sessionKey,
+      agentName: agent.name,
+      errorClass: "transient",
+      transientReason: "rate_limit",
+      providerError,
+      sideEffects: false,
+      createdAt: new Date(Date.now() - ageMs),
+    });
+
+    await db.insert(chatSessionErrors).values(row("yesterday", ACTIVE_ERROR_MAX_AGE_MS + hour));
+    expect(await getActiveChatSessionError(sessionKey)).toBeNull();
+
+    await db.insert(chatSessionErrors).values(row("this morning", ACTIVE_ERROR_MAX_AGE_MS - hour));
+    expect((await getActiveChatSessionError(sessionKey))?.providerError).toBe("this morning");
   });
 
   it("hides a dismissed error and scopes dismissal to the owning user", async () => {
@@ -139,7 +221,7 @@ describe("chat session errors persistence", () => {
         transientReason: "rate_limit",
         providerError: "older",
         sideEffects: false,
-        createdAt: new Date("2026-06-18T09:00:00Z"),
+        createdAt: new Date(Date.now() - 10 * 60_000),
       },
       {
         userId: user.id,
@@ -150,7 +232,7 @@ describe("chat session errors persistence", () => {
         transientReason: "overloaded",
         providerError: "newer",
         sideEffects: false,
-        createdAt: new Date("2026-06-18T09:05:00Z"),
+        createdAt: new Date(Date.now() - 5 * 60_000),
       },
     ]);
 

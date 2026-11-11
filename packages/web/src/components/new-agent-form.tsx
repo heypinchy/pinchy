@@ -28,6 +28,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TemplateSelector } from "@/components/template-selector";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { DocsLink } from "@/components/docs-link";
+import { WebSearchNotSetUpNotice } from "@/components/web-search-not-set-up-notice";
 import { ArrowLeft, Check, ExternalLink, Info, AlertTriangle, X } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
 import {
@@ -51,6 +52,7 @@ interface Template {
   requiresOdooConnection: boolean;
   requiresEmailConnection?: boolean;
   requiresWeb?: boolean;
+  webSearchConfigured?: boolean;
   odooAccessLevel?: string;
   defaultTagline: string | null;
 }
@@ -86,7 +88,7 @@ function PermissionPreview({ template }: { template?: Template }) {
         {items.map((item) => (
           <li key={item.text} className="flex items-center gap-2 text-sm text-muted-foreground">
             {item.icon === "check" && <Check className="size-4 text-green-600 shrink-0" />}
-            {item.icon === "cross" && <X className="size-4 text-muted-foreground/50 shrink-0" />}
+            {item.icon === "cross" && <X className="size-4 text-muted-foreground shrink-0" />}
             {item.icon === "warning" && (
               <AlertTriangle className="size-4 text-yellow-600 shrink-0" />
             )}
@@ -739,6 +741,13 @@ export function NewAgentForm() {
                       </DocsLink>
                     </div>
                   )}
+
+                  {/* Not a blocker: page fetch works without a search
+                      provider, and search turns on once one is added (#1297). */}
+                  {selectedTemplateObj?.requiresWeb &&
+                    selectedTemplateObj.webSearchConfigured === false && (
+                      <WebSearchNotSetUpNotice />
+                    )}
 
                   <PermissionPreview template={selectedTemplateObj} />
 

@@ -54,7 +54,12 @@ import { buildInviteUrl } from "@/lib/invite-url";
 interface UserDetailSheetProps {
   user: UserListItem & { kind: "user" };
   allGroups: UserGroup[];
-  isEnterprise: boolean;
+  /**
+   * null = the license status could not be read yet. Adding stays locked (the
+   * server enforces it anyway), but the sheet does not claim there is no
+   * license.
+   */
+  isEnterprise: boolean | null;
   currentUserId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -115,8 +120,8 @@ export function UserDetailSheet({
   // originally in a group can be unchecked (and re-checked before saving);
   // new memberships need a license.
   const originalGroupIds = new Set(user.groups.map((g) => g.id));
-  const showGroups = allGroups.length > 0 && (isEnterprise || originalGroupIds.size > 0);
-  const canAddToGroup = (groupId: string) => isEnterprise || originalGroupIds.has(groupId);
+  const showGroups = allGroups.length > 0 && (isEnterprise === true || originalGroupIds.size > 0);
+  const canAddToGroup = (groupId: string) => isEnterprise === true || originalGroupIds.has(groupId);
 
   const isDirty = useMemo(() => {
     if (selectedRole !== user.role) return true;
@@ -300,7 +305,7 @@ export function UserDetailSheet({
                   </label>
                 ))}
               </div>
-              {!isEnterprise && (
+              {isEnterprise === false && (
                 <p className="text-xs text-muted-foreground">
                   Adding to groups requires an active license. Removing always works.
                 </p>

@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { KnowledgeFolderTree } from "@/components/knowledge-folder-tree";
 import { KnowledgeUnsearchableList } from "@/components/knowledge-unsearchable-list";
 import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import {
@@ -340,10 +341,23 @@ export function KnowledgeReindexSection({
             {allowedPathCount === 0 ? null : active && job ? (
               <RunningState job={job} now={now} samples={samples} />
             ) : job?.status === "succeeded" ? (
-              <SucceededState job={job} />
+              <SucceededState job={job} agentId={agentId} />
             ) : job?.status === "failed" ? (
               <FailedState job={job} />
             ) : null}
+
+            {/* Where the run is and what each folder holds (#1386). Shown while
+                a run is in flight too: that is when "which folder is it in?" is
+                asked. The tree polls on its own while a run is active. */}
+            {allowedPathCount > 0 && !hasUnsavedPathChanges && (
+              <div className="space-y-2">
+                <h5 className="text-sm font-medium">Folders</h5>
+                <KnowledgeFolderTree
+                  agentId={agentId}
+                  reloadKey={`${savedPathsKey ?? allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
+                />
+              </div>
+            )}
 
             {/* Which documents the counts above mean by "unsearchable" (#935).
                 Hidden while a run is in flight — the list is about to change —
@@ -712,11 +726,52 @@ function UnavailableFoldersNote({ count }: { count: number }) {
   );
 }
 
-function SucceededState({ job }: { job: ReindexJob }) {
+/**
+ * Files on the share whose type Pinchy can't read (#1267) — a `.tif` scan, an
+ * old `.xls`. Not documents in the index at all, so nothing else on this page
+ * mentions them, and without this line a gap in the agent's answers reads as
+ * the model's fault.
+ *
+ * The list is a download, not a panel: a real share can hold 100k such files,
+ * and a spreadsheet is where an admin sorts them by type to decide what to
+ * convert. A plain link, so the browser streams the file to disk instead of
+ * this page holding it in memory.
+ *
+ * Shown after a successful run only: after a failed one the list is still the
+ * previous run's (it is written when a run reaches the end).
+ *
+ * Even then the count and the list need not match exactly, and the copy says
+ * "the list", not "these N files". The count is this run's; the list also keeps
+ * files from folders the run had to leave as they were, and follows the
+ * agent's grants as they are now rather than as they were when the run was
+ * queued.
+ */
+function UnsupportedFilesNote({ agentId, count }: { agentId: string; count: number }) {
+  const files = count === 1 ? "1 file is" : `${count} files are`;
+  return (
+    <p className="text-sm text-muted-foreground">
+      {files} of a type Pinchy can&apos;t read, like scans saved as .tif or old .xls spreadsheets.
+      Your agent can&apos;t answer from {count === 1 ? "it" : "them"}. Saved as PDF, Word,
+      PowerPoint or .xlsx, {count === 1 ? "it's" : "they're"} picked up by the next run.{" "}
+      <a
+        href={`/api/agents/${agentId}/knowledge/unsupported`}
+        download
+        className="font-medium text-foreground underline underline-offset-4"
+      >
+        Download the list
+      </a>
+    </p>
+  );
+}
+
+function SucceededState({ job, agentId }: { job: ReindexJob; agentId: string }) {
   if (!job.counts && !(job.unavailableFolders ?? 0)) return null;
   return (
     <>
       {job.counts && <CountsSummary counts={job.counts} />}
+      {(job.counts?.unsupported ?? 0) > 0 && (
+        <UnsupportedFilesNote agentId={agentId} count={job.counts!.unsupported!} />
+      )}
       {(job.unavailableFolders ?? 0) > 0 && (
         <UnavailableFoldersNote count={job.unavailableFolders!} />
       )}
@@ -777,6 +832,13 @@ function CountsSummary({ counts }: { counts: IngestResult }) {
         >
           {counts.failed} failed
         </li>
+        {/* Files the index can't read at all (#1267). Absent on a run that
+            finished before these were counted: it never looked, and a zero
+            would say it found none. Muted, and no reason for "Needs
+            attention": it's a fact about the share, not a fault of the run. */}
+        {counts.unsupported !== undefined && (
+          <li className="text-muted-foreground">{counts.unsupported} not supported</li>
+        )}
         {/* Orthogonal to the others: an archived document is also new or
             unchanged. Shown only when there are some. */}
         {archived > 0 && <li className="text-muted-foreground">{archived} in archive folders</li>}

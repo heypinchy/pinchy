@@ -35,6 +35,13 @@ type ModelPickerProps = {
   deprecatedModelId?: string;
   requiredCapabilities?: ModelCapability[];
   filterToCompatible?: boolean;
+  /**
+   * Forwarded to the trigger. `FormControl` injects these into its direct
+   * child; dropping them left the trigger without the "Model" label (#1300).
+   */
+  id?: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: boolean;
 };
 
 const CAPABILITY_ICONS = [{ key: "vision" as const, Icon: Image, label: "Supports image input" }];
@@ -78,6 +85,9 @@ export function ModelPicker({
   deprecatedModelId,
   requiredCapabilities,
   filterToCompatible,
+  id,
+  "aria-describedby": ariaDescribedBy,
+  "aria-invalid": ariaInvalid,
 }: ModelPickerProps) {
   const providersWithModels = providers.filter((p) => p.models.length > 0);
 
@@ -91,7 +101,7 @@ export function ModelPicker({
 
   return (
     <Select onValueChange={onChange} defaultValue={value}>
-      <SelectTrigger>
+      <SelectTrigger id={id} aria-describedby={ariaDescribedBy} aria-invalid={ariaInvalid}>
         <SelectValue placeholder="Select a model" />
       </SelectTrigger>
       <SelectContent>

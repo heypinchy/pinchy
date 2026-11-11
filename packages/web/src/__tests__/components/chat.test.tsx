@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { Chat } from "@/components/chat";
 import { makeAgent } from "@/test-helpers/fixtures";
@@ -79,10 +80,23 @@ vi.mock("@/components/assistant-ui/thread", () => ({
 }));
 
 vi.mock("@/components/mobile-chat-header", () => ({
-  MobileChatHeader: ({ agentId, agentName, avatarUrl }: any) => (
-    <div data-testid="mobile-chat-header" data-agent-id={agentId} data-avatar-url={avatarUrl}>
+  MobileChatHeader: ({ agentId, agentName, avatarUrl, searchesKnowledge }: any) => (
+    <div
+      data-testid="mobile-chat-header"
+      data-agent-id={agentId}
+      data-avatar-url={avatarUrl}
+      data-searches-knowledge={String(Boolean(searchesKnowledge))}
+    >
       {agentName}
     </div>
+  ),
+}));
+
+vi.mock("@/components/knowledge-search-sheet", () => ({
+  KnowledgeSearchSheet: ({ agentId }: any) => (
+    <button type="button" data-testid="knowledge-search" data-agent-id={agentId}>
+      What can this agent search?
+    </button>
   ),
 }));
 
@@ -245,6 +259,23 @@ describe("Chat", () => {
     expect(screen.queryByRole("link", { name: /settings/i })).not.toBeInTheDocument();
   });
 
+  it("offers 'What can this agent search?' on both headers only for a knowledge-base agent", () => {
+    const { unmount } = render(<Chat agentId="agent-1" agentName="Smithers" searchesKnowledge />);
+    expect(screen.getByTestId("knowledge-search")).toHaveAttribute("data-agent-id", "agent-1");
+    expect(screen.getByTestId("mobile-chat-header")).toHaveAttribute(
+      "data-searches-knowledge",
+      "true"
+    );
+    unmount();
+
+    render(<Chat agentId="agent-1" agentName="Smithers" />);
+    expect(screen.queryByTestId("knowledge-search")).not.toBeInTheDocument();
+    expect(screen.getByTestId("mobile-chat-header")).toHaveAttribute(
+      "data-searches-knowledge",
+      "false"
+    );
+  });
+
   it("should render MobileChatHeader", () => {
     render(<Chat agentId="agent-1" agentName="Smithers" />);
     const mobileHeader = screen.getByTestId("mobile-chat-header");
@@ -261,6 +292,34 @@ describe("Chat", () => {
   it("should show 'Shared' badge for shared agents", () => {
     render(<Chat agentId="agent-1" agentName="Sales Bot" isPersonal={false} />);
     expect(screen.getByText("Shared")).toBeInTheDocument();
+  });
+
+  describe("Shared badge tooltip", () => {
+    // Memory is a per-agent permission (`pinchy_memory`). Only an agent that
+    // holds it turns conversations into shared knowledge (#1275).
+    async function hoverSharedBadge() {
+      await userEvent.hover(screen.getByText("Shared"));
+    }
+
+    it("says conversations build team knowledge when the agent has memory", async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ allowedTools: ["pinchy_memory"] }));
+      render(<Chat agentId="agent-1" agentName="Sales Bot" />);
+      await hoverSharedBadge();
+      expect((await screen.findAllByText(/help build team knowledge/i)).length).toBeGreaterThan(0);
+    });
+
+    it("does not claim team knowledge when the agent has no memory", async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ allowedTools: ["knowledge_search"] }));
+      render(<Chat agentId="agent-1" agentName="Sales Bot" />);
+      await hoverSharedBadge();
+      // Only memory is off: files in the shared workspace still persist, so the
+      // tooltip must not claim that nothing carries over.
+      expect(
+        (await screen.findAllByText(/doesn't keep memory of your conversations/i)).length
+      ).toBeGreaterThan(0);
+      expect(screen.queryByText(/nothing carries over/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/team knowledge/i)).not.toBeInTheDocument();
+    });
   });
 
   it("should show 'Private' badge for personal agents", () => {

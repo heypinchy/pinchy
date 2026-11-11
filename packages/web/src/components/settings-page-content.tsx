@@ -226,7 +226,7 @@ export function SettingsPageContent({
           >
             <div
               role="presentation"
-              className="text-muted-foreground/70 px-2 pt-1 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
+              className="text-muted-foreground px-2 pt-1 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
             >
               Personal
             </div>
@@ -238,7 +238,7 @@ export function SettingsPageContent({
               <>
                 <div
                   role="presentation"
-                  className="text-muted-foreground/70 px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
+                  className="text-muted-foreground px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
                 >
                   Administration
                 </div>
@@ -254,7 +254,7 @@ export function SettingsPageContent({
                 <TabsTrigger value="organization">Organization</TabsTrigger>
                 <div
                   role="presentation"
-                  className="text-muted-foreground/70 px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
+                  className="text-muted-foreground px-2 pt-6 pb-1 text-[0.6875rem] font-semibold tracking-[0.08em] uppercase"
                 >
                   Security &amp; Compliance
                 </div>

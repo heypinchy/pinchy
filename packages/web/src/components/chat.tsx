@@ -12,6 +12,7 @@ import { useAgentsContext } from "@/components/agents-provider";
 import { getAgentAvatarSvg } from "@/lib/avatar";
 import Link from "next/link";
 import { Settings } from "lucide-react";
+import { KnowledgeSearchSheet } from "@/components/knowledge-search-sheet";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
 import { ChatSwitcher } from "@/components/chat-switcher";
 import { AiDisclosureLabel } from "@/components/ai-disclosure-label";
@@ -171,6 +172,8 @@ interface ChatProps {
   isPersonal?: boolean;
   avatarUrl?: string;
   canEdit?: boolean;
+  /** Offer "What can this agent search?" in the header (#1386). */
+  searchesKnowledge?: boolean;
 }
 
 export function Chat({
@@ -181,6 +184,7 @@ export function Chat({
   isPersonal = false,
   avatarUrl,
   canEdit = false,
+  searchesKnowledge = false,
 }: ChatProps) {
   const { getAgent } = useAgentsContext();
   const liveAgent = getAgent(agentId);
@@ -189,6 +193,9 @@ export function Chat({
     ? getAgentAvatarSvg({ avatarSeed: liveAgent.avatarSeed, name: liveAgent.name })
     : avatarUrl;
   const displayIsPersonal = liveAgent?.isPersonal ?? isPersonal;
+  // Memory is a permission, not a property of shared agents: only an agent
+  // granted `pinchy_memory` turns conversations into team knowledge.
+  const keepsMemory = (liveAgent?.allowedTools ?? []).includes("pinchy_memory");
 
   const { bundle: chatBundle, publish } = useChatSession(agentId, chatId);
 
@@ -292,6 +299,7 @@ export function Chat({
                                     chatId={chatId ?? null}
                                     avatarUrl={displayAvatar}
                                     canEdit={canEdit}
+                                    searchesKnowledge={searchesKnowledge}
                                   />
                                   <header className="hidden md:flex px-4 py-2.5 border-b items-center justify-between shrink-0">
                                     <div className="flex items-center gap-2 min-w-0 flex-1 animate-in fade-in duration-300">
@@ -321,13 +329,18 @@ export function Chat({
                                           <TooltipContent>
                                             {displayIsPersonal
                                               ? "Your conversations are private and not shared with anyone."
-                                              : "Your conversations help build team knowledge that's available to all team members."}
+                                              : keepsMemory
+                                                ? "Your conversations help build team knowledge that's available to all team members."
+                                                : "Your whole team can use this agent, but it doesn't keep memory of your conversations."}
                                           </TooltipContent>
                                         </Tooltip>
                                       </TooltipProvider>
                                       <AiDisclosureLabel />
                                     </div>
                                     <div className="flex items-center gap-3 shrink-0">
+                                      {searchesKnowledge && (
+                                        <KnowledgeSearchSheet agentId={agentId} />
+                                      )}
                                       {canEdit && (
                                         <Link
                                           href={`/chat/${agentId}/settings`}

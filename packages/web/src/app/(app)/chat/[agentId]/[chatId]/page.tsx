@@ -17,7 +17,7 @@ export default async function ChatPage({
   params: Promise<{ agentId: string; chatId: string }>;
 }) {
   const { agentId, chatId } = await params;
-  const { agent, avatarUrl, canEdit } = await loadChatPageAgent(agentId);
+  const { agent, avatarUrl, canEdit, searchesKnowledge } = await loadChatPageAgent(agentId);
 
   return (
     <Chat
@@ -30,6 +30,7 @@ export default async function ChatPage({
       isPersonal={agent.isPersonal}
       avatarUrl={avatarUrl}
       canEdit={canEdit}
+      searchesKnowledge={searchesKnowledge}
     />
   );
 }

@@ -100,6 +100,7 @@ describe("ChatPage telegram segment (#508)", () => {
       name: "Smithers",
       ownerId: "user-1",
       isPersonal: true,
+      allowedTools: [],
       avatarSeed: "seed-x",
     };
 
@@ -128,6 +129,7 @@ describe("ChatPage telegram segment (#508)", () => {
       name: "Personal Agent",
       ownerId: "owner-user",
       isPersonal: true,
+      allowedTools: [],
     };
 
     mockRequireAuth.mockResolvedValue({ user: { id: "other-user", role: "member" } });

@@ -283,7 +283,7 @@ export function pendingPairs(
 
 // ── `--corpus` switch ─────────────────────────────────────────────────────
 
-export type KbEvalCorpus = "synthetic" | "noack";
+export type KbEvalCorpus = "synthetic" | "customer";
 
 /**
  * Reads a `--corpus=<value>` CLI flag from `argv` (checked first, so an
@@ -293,15 +293,15 @@ export type KbEvalCorpus = "synthetic" | "noack";
  * mutating global process state.
  *
  * GUARD (KB Eval Harness plan, Task 3.4 + design's corpus decision): the
- * Noack corpus is real, non-public customer/company documents and must
+ * customer corpus is real, non-public customer/company documents and must
  * NEVER be selectable in CI or any committed/automated path — only an
  * explicit, local, human-supplied opt-in.
  *   - `CI` set (any truthy value, matching every other CI-detection in this
- *     repo) + `--corpus=noack` is a HARD ERROR, unconditionally — this is
+ *     repo) + `--corpus=customer` is a HARD ERROR, unconditionally — this is
  *     the one guard that must never be bypassable by an env var, since CI is
  *     exactly the environment this exists to protect.
- *   - Outside CI, `--corpus=noack` additionally requires `KB_EVAL_CORPUS_DIR`
- *     to be set (see `noackCorpusDir`) — refusing to guess a path to a
+ *   - Outside CI, `--corpus=customer` additionally requires `KB_EVAL_CORPUS_DIR`
+ *     to be set (see `customerCorpusDir`) — refusing to guess a path to a
  *     non-public corpus keeps the opt-in explicit rather than "whatever
  *     happens to be on disk."
  * An unrecognized `--corpus` value is also a hard error (fail loud, not a
@@ -316,21 +316,21 @@ export function corpusFromEnv(
     .find((v): v is string => v !== undefined);
   const requested = (argFlag ?? env.KB_EVAL_CORPUS ?? "synthetic").trim();
 
-  if (requested !== "synthetic" && requested !== "noack") {
+  if (requested !== "synthetic" && requested !== "customer") {
     throw new Error(
-      `Unknown --corpus value "${requested}" — expected "synthetic" (default) or "noack".`
+      `Unknown --corpus value "${requested}" — expected "synthetic" (default) or "customer".`
     );
   }
 
-  if (requested === "noack") {
+  if (requested === "customer") {
     if (env.CI) {
       throw new Error(
-        "--corpus=noack is not allowed when CI is set. The Noack corpus is real, non-public " +
+        "--corpus=customer is not allowed when CI is set. The customer corpus is real, non-public " +
           "customer documents and is local-only by design — it must never run in CI or any " +
           "committed/automated path. Use --corpus=synthetic (default) in CI."
       );
     }
-    noackCorpusDir(env); // throws if the explicit local opt-in is missing.
+    customerCorpusDir(env); // throws if the explicit local opt-in is missing.
   }
 
   return requested;
@@ -396,16 +396,16 @@ export function retrievedSourcesFromAuditEntries(
 }
 
 /**
- * Resolves the local directory the (local-only) Noack corpus lives in.
+ * Resolves the local directory the (local-only) customer corpus lives in.
  * Requires `KB_EVAL_CORPUS_DIR` to be explicitly set — see `corpusFromEnv`'s
  * doc comment for why this must be an explicit opt-in, never a guessed
  * default path.
  */
-export function noackCorpusDir(env: Record<string, string | undefined> = process.env): string {
+export function customerCorpusDir(env: Record<string, string | undefined> = process.env): string {
   const dir = env.KB_EVAL_CORPUS_DIR?.trim();
   if (!dir) {
     throw new Error(
-      "--corpus=noack requires KB_EVAL_CORPUS_DIR to be set to the local Noack corpus directory " +
+      "--corpus=customer requires KB_EVAL_CORPUS_DIR to be set to the local customer corpus directory " +
         "— refusing to guess a path to a non-public corpus. This is a local-only, explicit opt-in."
     );
   }

@@ -45,6 +45,25 @@ services:
       # the workspace-file serve route in web resolve the same paths an agent's
       # allowed_paths reference.
       - ./sample-data:/data/sample-docs:ro
+      # A spool of its own, for both services (same target, so it replaces
+      # the base file's mount). Dev runs them as root, and a capability-less
+      # root converter cannot write a spool the production image prepared —
+      # owned by 999, sticky, its socket owned by 998 — in the same project.
+      - pinchy-office-spool-dev:/var/spool/pinchy-office
+  office-converter:
+    # No image override needed: `pinchy` above builds the image the base file
+    # names, and Compose runs this service on that local build.
+    #
+    # Root, because the dev image has no `pinchy` user and the dev web process
+    # stages its batches as root — the production converter's uid (998, group
+    # 999) could not write the PDFs back. Still no network, no capabilities,
+    # read-only root filesystem.
+    user: "0:0"
+    volumes:
+      # Live source, like the pinchy service, so a change to the converter is
+      # one `docker compose restart office-converter` away.
+      - ./packages/web/src:/app/packages/web/src:ro
+      - pinchy-office-spool-dev:/var/spool/pinchy-office
   openclaw:
     build:
       context: .
@@ -111,6 +130,7 @@ services:
 
 volumes:
   caddy_data_dev:
+  pinchy-office-spool-dev:
   dev-pinchy-files-node-modules:
   dev-pinchy-odoo-node-modules:
   dev-pinchy-web-node-modules:

@@ -30,6 +30,11 @@ services:
       # keep the rate limit enabled. `auth-config-consistency.test.ts` blocks
       # this var from being added to `docker-compose.yml` or `.dev.yml`.
       PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT: "1"
+  office-converter:
+    # The converter runs the web image it serves — here, the build under test.
+    # Left on the base file's release tag it would run a different converter
+    # than the one this PR changes (office-converter-isolation.test.ts).
+    image: ${PINCHY_IMAGE:-pinchy:e2e}
   openclaw:
     image: ${OPENCLAW_IMAGE:-pinchy-openclaw:e2e}
     build:

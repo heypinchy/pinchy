@@ -46,6 +46,7 @@ import {
   type BudgetAction,
 } from "./enums";
 import type { EmailWorkflowFilter, ProcessedEmailOutcome } from "@/lib/email-workflows/types";
+import type { FolderPlanSegment } from "@/lib/knowledge/folder-plan";
 import type { IngestResult } from "@/lib/knowledge/ingest";
 import type { ChunkLocator } from "@/lib/knowledge/locator";
 import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
@@ -1299,6 +1300,31 @@ export const kbDocuments = pgTable(
   ]
 );
 
+// kb_unsupported_files is the list behind the "not supported" count (#1267):
+// files under a granted folder whose type the indexer cannot read (a `.tif`
+// scan, a legacy `.xls`, a `.txt`). They have no kb_documents row — ingest
+// never opens them — so without this table nothing in the database says they
+// exist, and a gap in the agent's answers reads as a model problem.
+//
+// Current state, not history: each run replaces the rows under the folders it
+// walked (unsupported-files.ts), so the table is as large as the share's
+// unsupported files and never grows by night. A row per file rather than a list
+// on the job or in the audit row, because a real share holds 100k+ such files —
+// far past the 2 KB audit `detail` budget — and the CSV export pages through
+// them by path.
+export const kbUnsupportedFiles = pgTable(
+  "kb_unsupported_files",
+  {
+    orgId: text("org_id").notNull(),
+    sourcePath: text("source_path").notNull(),
+    // The file's extension, lowercased, with its dot (".tif"); "" for a file
+    // with none. What the admin sorts the download by to see what to convert.
+    fileType: text("file_type").notNull(),
+    seenAt: timestamp("seen_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.orgId, t.sourcePath] })]
+);
+
 // kb_chunks denormalizes org_id and source_path from the parent document so
 // retrieval (Task 7) can filter by allowed_paths without a join. embedding
 // is vector(768) (embeddinggemma-300m, see ./vector); the FTS tsv generated
@@ -1391,6 +1417,13 @@ export const kbIndexJobs = pgTable(
     // terminal state — on failure too, since partial counts are the operator's
     // only evidence of how far the run got.
     counts: jsonb("counts").$type<IngestResult>(),
+    // Which folder each queued file belongs to, as run-length segments in
+    // queue order (lib/knowledge/folder-plan.ts). Written once, when discovery
+    // has walked every root — the same moment `total` is. It is how the
+    // folder status (#1386) knows how many files a folder holds and which one
+    // the run is in right now, without walking the share on every read. Null
+    // until then, and on every job that ran before it was recorded.
+    folderPlan: jsonb("folder_plan").$type<FolderPlanSegment[]>(),
     error: text("error"),
     // The Office artifact format version (OFFICE_ARTIFACT_FORMAT_VERSION) the
     // run converted under, written when it reaches a terminal state; null on a

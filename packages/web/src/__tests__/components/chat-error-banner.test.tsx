@@ -15,8 +15,10 @@ vi.mock("@/lib/api-client", () => ({
 // The thread's inline-error signal (#583). Default false so the banner renders
 // as before; the suppression test flips it to true.
 let mockHasInlineError = false;
+let mockIsRunning = false;
 vi.mock("@/components/chat-session-provider", () => ({
   useChatSessionHasInlineError: () => mockHasInlineError,
+  useChatSessionIsRunning: () => mockIsRunning,
 }));
 
 const transientRow = {
@@ -49,6 +51,7 @@ const providerRejectionRow = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockHasInlineError = false;
+  mockIsRunning = false;
   mockApiDelete.mockResolvedValue({ dismissed: true });
 });
 
@@ -100,6 +103,23 @@ describe("ChatErrorBanner", () => {
     await load.release();
     expect(screen.queryByText("Penny paused")).not.toBeInTheDocument();
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("asks again once a turn in this chat ends, so a later answer clears it without a reload (#1301)", async () => {
+    mockApiGet.mockResolvedValueOnce({ error: transientRow });
+    const { rerender } = render(<ChatErrorBanner agentId="agent-1" onRetry={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("Penny paused")).toBeInTheDocument());
+
+    // The user asks something else; it goes through, and the server supersedes
+    // the old error.
+    mockIsRunning = true;
+    rerender(<ChatErrorBanner agentId="agent-1" onRetry={vi.fn()} />);
+    mockApiGet.mockResolvedValueOnce({ error: null });
+    mockIsRunning = false;
+    rerender(<ChatErrorBanner agentId="agent-1" onRetry={vi.fn()} />);
+
+    await waitFor(() => expect(screen.queryByText("Penny paused")).not.toBeInTheDocument());
+    expect(mockApiGet).toHaveBeenCalledTimes(2);
   });
 
   it("dismisses via the API and hides the banner", async () => {

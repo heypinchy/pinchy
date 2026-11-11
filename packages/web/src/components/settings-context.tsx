@@ -108,6 +108,7 @@ function ContextSection({
         <p className="text-sm text-muted-foreground">{explanation}</p>
 
         <MarkdownEditor
+          label={title}
           value={content}
           onChange={(v) => {
             setContent(v);
