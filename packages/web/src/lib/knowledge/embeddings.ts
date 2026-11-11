@@ -406,15 +406,86 @@ export interface EmbeddingTokenizer {
 }
 
 /**
- * Cuts `text` into pieces of at most `maxTokens` tokens each, at token
- * boundaries, measured with the tokenizer that will embed them. A text that
- * fits comes back alone and unchanged.
+ * Most characters one token may stand for when estimating how much text to
+ * measure for the next piece. A cap, not a guess: a window this wide holds at
+ * least a budget's worth of tokens for any ordinary text, and one enormous line
+ * (a whole page without a break) is never re-measured in full for every piece.
+ */
+const MAX_CHARS_PER_TOKEN = 16;
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * Where to end a piece that starts at `start` and may reach at most `limit`
+ * (exclusive). Prefers, in order: a paragraph break, a line break (chunk.ts
+ * keeps a table line whole on purpose), a sentence end, a space — each only in
+ * the back half of the window, so a break near the start does not leave a
+ * sliver of a piece. Otherwise the last grapheme boundary: never inside a
+ * character, never between a letter and its combining accent.
+ */
+function findCut(text: string, start: number, limit: number): number {
+  const floor = start + Math.max(1, Math.floor((limit - start) / 2));
+  let line = -1;
+  let sentence = -1;
+  let space = -1;
+  for (let i = Math.min(limit, text.length - 1); i >= floor; i--) {
+    const ch = text.charAt(i);
+    if (ch === "\n") {
+      // A blank line: cut at the first of its two line breaks.
+      let j = i - 1;
+      while (j >= floor && " \t\r".includes(text.charAt(j))) j--;
+      if (j >= floor && text.charAt(j) === "\n") return j;
+      if (line === -1) line = i;
+    } else if (/\s/.test(ch)) {
+      if (sentence === -1 && /[.!?;:]/.test(text.charAt(i - 1))) sentence = i;
+      if (space === -1) space = i;
+    }
+  }
+  for (const cut of [line, sentence, space]) if (cut > start) return cut;
+
+  // No break in reach: the last grapheme boundary at or before the limit, or —
+  // a single grapheme longer than the window — the first one after the start.
+  // Segmentation starts at `start`, which is a real boundary: the segmenter
+  // treats a slice's start as one, so starting mid-text could pair a flag's
+  // regional indicators the wrong way or open inside a long combining cluster.
+  const from = start;
+  let best = -1;
+  for (const { index } of graphemes.segment(text.slice(from, Math.min(text.length, limit + 64)))) {
+    if (index === 0) continue; // the slice's own start, which may sit inside a grapheme
+    const at = from + index;
+    if (at > start && at <= limit) best = at;
+    if (at > limit) {
+      if (best === -1) best = at;
+      break;
+    }
+  }
+  if (best !== -1) return best;
+  // A grapheme longer than the slice: at least never split a surrogate pair.
+  const at = Math.min(text.length, limit);
+  return /[\uDC00-\uDFFF]/.test(text.charAt(at)) ? at + 1 : at;
+}
+
+/**
+ * Cuts `text` into pieces of at most `maxTokens` tokens each, measured with the
+ * tokenizer that will embed them. A text that fits comes back alone and
+ * unchanged.
  *
- * Each piece is re-measured after it is decoded, because decoding a window and
- * tokenizing it again does not always give the same count (a multi-byte
- * character split across the seam, a merge that only forms once the text is
- * whole). The piece is what gets embedded, so the piece is what must fit; a
- * window that does not is shrunk until it does.
+ * The pieces are cut from the ORIGINAL text, at a paragraph, line, sentence,
+ * word or grapheme boundary; the tokenizer only measures. Decoding a window of
+ * tokens back to text — what this did before — cuts a byte-fallback character
+ * between its bytes and stores U+FFFD, and the citation viewer can then no
+ * longer find the chunk on its page (`locatePassage` needs it verbatim). So
+ * every piece is a slice of the text, in order, with only whitespace between
+ * two of them.
+ *
+ * The pieces do not overlap. The chunker already overlaps chunks by 15%; a
+ * piece of an over-long chunk is a rare case, and overlap there would only
+ * store the same words twice under the same locator.
+ *
+ * Each piece is measured as cut, and a cut that does not fit is moved back
+ * until it does: the token count of a prefix is not monotonic in its length (a
+ * merge that only forms once a word is whole), so the estimate is a start, not
+ * a promise.
  */
 export function splitToTokenBudget(
   text: string,
@@ -422,20 +493,37 @@ export function splitToTokenBudget(
   maxTokens: number
 ): string[] {
   const budget = Math.max(1, Math.floor(maxTokens));
-  const tokens = tokenizer.tokenize(text);
-  if (tokens.length <= budget) return [text];
+  if (tokenizer.tokenize(text).length <= budget) return [text];
 
+  const windowChars = budget * MAX_CHARS_PER_TOKEN;
   const pieces: string[] = [];
   let start = 0;
-  while (start < tokens.length) {
-    let end = Math.min(start + budget, tokens.length);
-    let piece = tokenizer.detokenize(tokens.slice(start, end));
-    while (end - start > 1 && tokenizer.tokenize(piece).length > budget) {
-      end = start + Math.max(1, Math.floor((end - start) * 0.9));
-      piece = tokenizer.detokenize(tokens.slice(start, end));
+  while (start < text.length) {
+    while (start < text.length && /\s/.test(text.charAt(start))) start++;
+    if (start >= text.length) break;
+
+    const windowEnd = Math.min(text.length, start + windowChars);
+    const tokens = tokenizer.tokenize(text.slice(start, windowEnd));
+    let limit =
+      windowEnd === text.length && tokens.length <= budget
+        ? text.length
+        : start +
+          Math.min(
+            windowEnd - start,
+            Math.max(1, tokenizer.detokenize(tokens.slice(0, budget)).length)
+          );
+
+    let cut = limit === text.length ? limit : findCut(text, start, limit);
+    let piece = text.slice(start, cut).trimEnd();
+    while (tokenizer.tokenize(piece).length > budget) {
+      limit = start + Math.max(1, Math.floor((cut - start) * 0.9));
+      const shorter = findCut(text, start, limit);
+      if (shorter >= cut) break; // one grapheme over the budget: nothing smaller to cut
+      cut = shorter;
+      piece = text.slice(start, cut).trimEnd();
     }
-    if (piece.trim() !== "") pieces.push(piece);
-    start = end;
+    pieces.push(piece);
+    start = cut;
   }
   return pieces;
 }
