@@ -259,6 +259,31 @@ describe("deriveFolderState", () => {
       );
     });
 
+    // Only as many as are still to come can be on their way. The rest were
+    // already read and failed — under a parent, behind another folder's archive.
+    it("needs attention when more archived files wait than are still to come", () => {
+      expect(
+        deriveFolderState({
+          ...archiveLeft,
+          indexed: 1100,
+          pending: 5,
+          pendingArchived: 5,
+          notSearchable: 7,
+          rereadArchived: 7,
+        })
+      ).toBe("has_errors");
+      expect(
+        deriveFolderState({
+          ...archiveLeft,
+          indexed: 1100,
+          pending: 5,
+          pendingArchived: 5,
+          notSearchable: 5,
+          rereadArchived: 5,
+        })
+      ).toBe("searchable");
+    });
+
     it("is still queued while current files are to come as well", () => {
       expect(deriveFolderState({ ...archiveLeft, pending: 430 })).toBe("queued");
     });
