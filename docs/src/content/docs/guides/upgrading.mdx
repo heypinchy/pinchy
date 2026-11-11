@@ -203,6 +203,10 @@ sed -i 's/PINCHY_VERSION=v0.10.3/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
+#### Very long documents are indexed instead of failing every night
+
+A document that came to more than about 8,000 passages — a long manual, a large scanned archive — could not be saved to the knowledge base: the reindex report counted it `failed`, it kept whatever it had in the index, and the next run read it again, scanned pages included, and failed the same way. Since v0.10.2 [cuts passages too long for the embedding model](#one-file-the-embedding-model-refuses-no-longer-stops-a-reindex) into smaller ones, more documents reach that size. They are now saved like any other. Nothing to do on upgrade: the next reindex picks them up.
+
 ## Upgrading from v0.10.2 to v0.10.3
 
 ### Breaking changes
