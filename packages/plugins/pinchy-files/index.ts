@@ -931,8 +931,9 @@ const plugin = {
           description:
             "Generate a CSV, XLSX, or PDF file from tabular data (columns + rows) and save it " +
             "into your workbench. In Pinchy's web chat the user gets it as a downloadable " +
-            "attachment; the result says whether this conversation is one. Supported formats: csv (spreadsheet-safe, UTF-8 with BOM), xlsx (a " +
-            "single-sheet Excel workbook), pdf (a simple table report). Existing files are " +
+            "attachment; the result says whether this conversation is one. Supported " +
+            "formats: csv (spreadsheet-safe, UTF-8 with BOM), xlsx (a single-sheet Excel " +
+            "workbook), pdf (a simple table report). Existing files are " +
             "never overwritten — on a name collision a numeric suffix is appended (e.g. " +
             "export-2.csv); the tool result reports the actual filename used.",
           parameters,

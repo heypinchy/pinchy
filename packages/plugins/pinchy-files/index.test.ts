@@ -1554,6 +1554,16 @@ describe("pinchy_generate_file tool", () => {
     expect(tool.description).toContain("web chat");
   });
 
+  it("builds the same description for a web-chat run and an inbox run", async () => {
+    // Both arrive as "webchat", so they share one cached description.
+    const web = await makeGenerateFileTool(WEB_CHAT_CTX);
+    const inbox = await makeGenerateFileTool({
+      sessionKey: "agent:agent-1:inbox:ledger-1",
+      messageChannel: "webchat",
+    });
+    expect(inbox.description).toBe(web.description);
+  });
+
   it("tells the agent the file was delivered in a web-chat run", async () => {
     const { text } = await generatedText(WEB_CHAT_CTX);
     expect(text).toContain("Delivered to the user in chat");
