@@ -423,6 +423,7 @@ export function Chat({
                                             <button
                                               type="button"
                                               aria-label={indicator.label}
+                                              data-error={indicator.colorClass === "bg-destructive"}
                                               className="cursor-default p-1.5 -m-1.5 inline-flex items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                             >
                                               <span

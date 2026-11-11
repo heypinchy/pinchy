@@ -258,6 +258,24 @@ describe("Chat", () => {
       render(<Chat agentId="agent-1" agentName="Smithers" />);
       expect(getDotColor(/image too large/i)).toContain("bg-destructive");
     });
+
+    // The cold-start E2E guard watches for a red flash during startup. It must
+    // see every red state, not only the one whose label it once matched.
+    it.each([
+      [{ kind: "unavailable", reason: "disconnected" }, "true"],
+      [{ kind: "unavailable", reason: "upstreamDown" }, "true"],
+      [{ kind: "unavailable", reason: "unreachable" }, "true"],
+      [{ kind: "unavailable", reason: "historyTimeout" }, "true"],
+      [{ kind: "payloadRejected" }, "true"],
+      [{ kind: "starting" }, "false"],
+      [{ kind: "unavailable", reason: "configuring" }, "false"],
+      [{ kind: "ready" }, "false"],
+    ])("marks the indicator for %o with data-error=%s", (status, expected) => {
+      mockUseChatStatus.mockReturnValue(status);
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      const button = document.querySelector("button[data-error]");
+      expect(button?.getAttribute("data-error")).toBe(expected);
+    });
   });
 
   it("should render a settings link with correct href when canEdit is true", () => {
