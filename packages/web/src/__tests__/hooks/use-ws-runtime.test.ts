@@ -1992,10 +1992,12 @@ describe("useWsRuntime", () => {
       });
       expect(wsInstances).toHaveLength(2);
 
-      // Successful reconnect resets counter
+      // Successful reconnect resets counter. The server's first frame, not the
+      // open, is what makes it successful (#1422).
       const ws2 = wsInstances[1];
       act(() => {
         ws2.simulateOpen();
+        ws2.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       // Disconnect again - should use 1s delay (not 2s)
@@ -2189,10 +2191,12 @@ describe("useWsRuntime", () => {
       expect(messages[0].content[0].text).toBe("Hello while connecting");
       expect(messages[1].role).toBe("assistant");
 
-      // Now the connection opens
+      // Now the connection opens and the server answers on it (#1422: an open
+      // the server then refuses must not swallow the queued message).
       ws.readyState = 1;
       act(() => {
         ws.simulateOpen();
+        ws.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       // The queued message should now be sent
@@ -2236,6 +2240,7 @@ describe("useWsRuntime", () => {
       ws2.readyState = 1;
       act(() => {
         ws2.simulateOpen();
+        ws2.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       // The queued message should be sent on the new connection
@@ -2274,6 +2279,7 @@ describe("useWsRuntime", () => {
       ws2.readyState = MockWebSocket.OPEN;
       act(() => {
         ws2.simulateOpen();
+        ws2.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       const sentMessages = ws2.send.mock.calls.filter(
@@ -2713,6 +2719,7 @@ describe("useWsRuntime", () => {
       const nextWs = wsInstances[1];
       act(() => {
         nextWs.simulateOpen();
+        nextWs.simulateMessage({ type: "openclaw_status", connected: true });
       });
 
       expect(nextWs.send).toHaveBeenCalledWith(

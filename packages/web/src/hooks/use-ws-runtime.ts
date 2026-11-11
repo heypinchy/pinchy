@@ -607,6 +607,11 @@ export function useWsRuntime(
   const shouldRecoverFromHistoryRef = useRef(false);
   const lifecycleSuspendedRef = useRef(false);
   const pendingMessageRef = useRef<string | null>(null);
+  // The socket the server has answered on (#1422). `open` only means the
+  // handshake finished; a refused connection is opened and then closed. Every
+  // accepted connection gets a first frame, so only that frame makes a socket
+  // count: it is what flushes the queued message and resets the backoff.
+  const servedSocketRef = useRef<WebSocket | null>(null);
   // Latest slash-command handler (#611). Kept in a ref so `onNew` (memoized
   // without it in its deps) always calls the freshest version.
   const onSlashCommandRef = useRef<((command: SlashCommand) => void) | undefined>(onSlashCommand);
@@ -1330,7 +1335,6 @@ export function useWsRuntime(
         }
         setIsConnected(true);
         setPayloadRejected(false);
-        reconnectAttemptRef.current = 0;
         failedSinceOpenRef.current = 0;
         startHeartbeat(ws);
         // Tier 2b: arm the pre-history buffer on EVERY open, then drain it
@@ -1351,12 +1355,8 @@ export function useWsRuntime(
         // genuinely fresh load nothing is streaming, so the buffer drains empty
         // on the (always-sent) history response — no stall, no benefit lost.
         sendHistoryRequest(ws);
-
-        // Flush any message that was queued while disconnected/connecting
-        if (pendingMessageRef.current) {
-          ws.send(pendingMessageRef.current);
-          pendingMessageRef.current = null;
-        }
+        // The queued message and the backoff reset wait for the server's first
+        // frame (see `servedSocketRef`).
       };
 
       ws.onclose = (event?: CloseEvent) => {
@@ -2136,6 +2136,15 @@ export function useWsRuntime(
 
       ws.onmessage = (event) => {
         if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
+        if (servedSocketRef.current !== ws) {
+          servedSocketRef.current = ws;
+          reconnectAttemptRef.current = 0;
+          // Flush any message that was queued while disconnected/connecting.
+          if (pendingMessageRef.current) {
+            ws.send(pendingMessageRef.current);
+            pendingMessageRef.current = null;
+          }
+        }
         try {
           const data = JSON.parse(event.data);
           // Any frame proves the connection is alive and being served.
@@ -2253,9 +2262,8 @@ export function useWsRuntime(
 
   /**
    * Send a JSON-serialised payload over the WebSocket if it's open, otherwise
-   * queue it for delivery the moment the next connection completes the
-   * handshake (see `connect()` in the main effect — it flushes
-   * pendingMessageRef on open).
+   * queue it for delivery on the first frame of the next connection the server
+   * accepts (see `servedSocketRef`).
    */
   const sendOrQueue = useCallback(
     (payload: string) => {

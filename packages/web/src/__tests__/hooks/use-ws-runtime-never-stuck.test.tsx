@@ -452,6 +452,81 @@ describe("useWsRuntime — the chat never gets stuck (#1422)", () => {
     });
   });
 
+  describe("a connection counts once the server has answered on it", () => {
+    function sentChatMessages(ws: MockWebSocket): string[] {
+      return ws.send.mock.calls
+        .map(([raw]) => JSON.parse(raw as string))
+        .filter((frame) => frame.type === "message")
+        .map((frame) => frame.content as string);
+    }
+
+    function typeMessage(result: { current: ReturnType<typeof useWsRuntime> }, text: string) {
+      const runtime = result.current.runtime as unknown as {
+        onNew: (message: unknown) => Promise<void>;
+      };
+      act(() => {
+        void runtime.onNew({ content: [{ type: "text", text }], parentId: "root" });
+      });
+    }
+
+    it("holds a queued message through a refused handshake and sends it on the next served socket", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      typeMessage(result, "Written while connecting");
+      const refused = latestWs();
+      act(() => {
+        refused.simulateOpen(); // the browser says open…
+        refused.simulateClose(4429, "too_many_connections"); // …and the server says no
+      });
+      expect(sentChatMessages(refused)).toEqual([]);
+
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+      });
+      const served = latestWs();
+      expect(served).not.toBe(refused);
+      act(() => {
+        served.simulateOpen();
+      });
+      expect(sentChatMessages(served)).toEqual([]); // open alone proves nothing
+      act(() => {
+        served.simulateMessage({ type: "openclaw_status", connected: true });
+      });
+      expect(sentChatMessages(served)).toEqual(["Written while connecting"]);
+    });
+
+    it("an open that closes before the server says anything does not reset the backoff", () => {
+      vi.spyOn(Math, "random").mockReturnValue(1);
+      renderHook(() => useWsRuntime("agent-1"));
+      // Three failures in a row: the next delay is 8 s.
+      for (let i = 0; i < 3; i++) failAndRedial();
+      const before = wsInstances.length;
+      act(() => {
+        latestWs().simulateOpen();
+        latestWs().simulateClose(1006);
+      });
+      act(() => {
+        vi.advanceTimersByTime(2_000);
+      });
+      expect(wsInstances.length).toBe(before); // a reset backoff would have redialed after 1 s
+    });
+
+    it("a served connection does reset the backoff", () => {
+      vi.spyOn(Math, "random").mockReturnValue(1);
+      renderHook(() => useWsRuntime("agent-1"));
+      for (let i = 0; i < 3; i++) failAndRedial();
+      const before = wsInstances.length;
+      act(() => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "openclaw_status", connected: true });
+        latestWs().simulateClose(1006);
+      });
+      act(() => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(wsInstances.length).toBe(before + 1);
+    });
+  });
+
   describe("Try again", () => {
     it("redials immediately instead of waiting out the backoff, and restarts the backoff", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
