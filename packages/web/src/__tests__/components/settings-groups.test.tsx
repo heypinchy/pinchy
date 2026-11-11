@@ -6,7 +6,7 @@ import "@testing-library/jest-dom";
 import { toast } from "sonner";
 import { SettingsGroups } from "@/components/settings-groups";
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() } }));
 
 describe("SettingsGroups", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -237,6 +237,39 @@ describe("SettingsGroups", () => {
     expect(
       screen.getByText(/Create groups to control which users can access which agents/)
     ).toBeInTheDocument();
+  });
+
+  // A status fetch that never reached the server (a restarting container, a
+  // dropped connection) or came back non-OK says nothing about the license.
+  // Rendering the upgrade card for it tells an enterprise admin they are on
+  // Community. "Unknown" stays in the loading state and retries.
+  it.each([
+    ["the status fetch rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+    [
+      "the status fetch answers 500",
+      async () => jsonResponse({ error: "Internal Server Error" }, { status: 500 }),
+    ],
+  ])("does not render the upgrade card when %s", async (_label, statusResponse) => {
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/enterprise/status") return statusResponse();
+      return jsonResponse([]);
+    });
+    render(<SettingsGroups />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/license status/i),
+        expect.objectContaining({
+          id: expect.any(String),
+        })
+      );
+    });
+
+    expect(screen.queryByText("Pro")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Create groups to control which users can access which agents/)
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
 
   it("on edit partial-failure (PATCH ok, PUT members fails), surfaces a specific toast and refreshes data", async () => {
