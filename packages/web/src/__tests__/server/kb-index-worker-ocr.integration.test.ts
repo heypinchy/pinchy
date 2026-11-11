@@ -12,9 +12,9 @@
  * worker itself adds on top of them.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { tmpdir } from "node:os";
+import { makeKbSourceRoot } from "@/test-helpers/kb-source-root";
 import { and, eq, like } from "drizzle-orm";
 
 import { db } from "@/db";
@@ -69,7 +69,7 @@ const OCR_MODEL = "anthropic/claude-haiku-4-5-20251001";
 let tmpRoot: string;
 
 beforeEach(async () => {
-  tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-worker-ocr-test-"));
+  tmpRoot = makeKbSourceRoot("pinchy-kb-worker-ocr-test-");
   artifactVolume.staging = join(tmpRoot, ".kb-artifacts", "staging");
   await db.delete(kbIndexJobs);
   await db.delete(usageRecords).where(like(usageRecords.sessionKey, "kb-index:%"));
