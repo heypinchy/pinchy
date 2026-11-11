@@ -7,6 +7,7 @@ import {
   splitToTokenBudget,
   type EmbeddingTokenizer,
 } from "@/lib/knowledge/embeddings";
+import { locatePassage } from "@/lib/knowledge/passage-match";
 
 global.fetch = vi.fn();
 
@@ -485,6 +486,62 @@ const charTokenizer: EmbeddingTokenizer = {
   detokenize: (tokens) => (tokens as string[]).join(""),
 };
 
+/**
+ * A SentencePiece-style tokenizer with byte fallback: ASCII and U+FFFD are in
+ * the vocabulary (one token each), everything else is one token per UTF-8 byte.
+ * Decoding a window that starts or ends inside a multi-byte character yields
+ * U+FFFD — the way a real GGUF vocabulary decodes a rare code point it only
+ * knows as bytes.
+ */
+const byteFallbackTokenizer: EmbeddingTokenizer = {
+  tokenize: (text) =>
+    Array.from(text).flatMap<string | number>((ch) =>
+      ch.charCodeAt(0) < 0x80 || ch === "\uFFFD" ? [ch] : Array.from(new TextEncoder().encode(ch))
+    ),
+  detokenize: (tokens) => {
+    let out = "";
+    let bytes: number[] = [];
+    const flush = () => {
+      out += new TextDecoder().decode(new Uint8Array(bytes));
+      bytes = [];
+    };
+    for (const token of tokens) {
+      if (typeof token === "number") bytes.push(token);
+      else {
+        flush();
+        out += token as string;
+      }
+    }
+    flush();
+    return out;
+  },
+};
+
+/**
+ * The invariants the citation viewer depends on (`locatePassage` matches a
+ * chunk against the page with whitespace removed): every piece is a verbatim
+ * slice of the original, in order, without overlap; only whitespace lies
+ * between them; each fits the budget; no U+FFFD the original did not have.
+ */
+function expectPiecesOfOriginal(
+  text: string,
+  pieces: string[],
+  tokenizer: EmbeddingTokenizer,
+  budget: number
+) {
+  let at = 0;
+  for (const piece of pieces) {
+    expect(piece.trim()).not.toBe("");
+    const start = text.slice(at).search(/\S/) + at;
+    expect(text.slice(at, start).trim()).toBe("");
+    expect(text.startsWith(piece, start)).toBe(true);
+    expect(tokenizer.tokenize(piece).length).toBeLessThanOrEqual(budget);
+    if (!text.includes("\uFFFD")) expect(piece).not.toContain("\uFFFD");
+    at = start + piece.length;
+  }
+  expect(text.slice(at).trim()).toBe("");
+}
+
 describe("splitToTokenBudget", () => {
   it("leaves a text that fits alone", () => {
     expect(splitToTokenBudget("short text", charTokenizer, 100)).toEqual(["short text"]);
@@ -495,24 +552,109 @@ describe("splitToTokenBudget", () => {
     const pieces = splitToTokenBudget(text, charTokenizer, 256);
 
     expect(pieces.length).toBe(3);
-    for (const piece of pieces)
-      expect(charTokenizer.tokenize(piece).length).toBeLessThanOrEqual(256);
-    // Nothing is lost: the pieces are the chunk, cut at token boundaries.
+    // Nothing is lost: the pieces are the chunk, cut between its words.
+    expectPiecesOfOriginal(text, pieces, charTokenizer, 256);
+    expect(pieces.join(" ")).toBe(text.trim());
+  });
+
+  // Decoding a window of tokens back to text is what put U+FFFD into stored
+  // chunks: a byte-fallback character cut between its bytes. The pieces are
+  // cut from the original text instead; the tokenizer only measures.
+  it("never cuts a character between its bytes, so every piece is a substring of the original", () => {
+    // CJK Extension B: four UTF-8 bytes each, tokenized as bytes.
+    const text = Array.from({ length: 60 }, (_, i) => String.fromCodePoint(0x20000 + i * 7)).join(
+      ""
+    );
+    const pieces = splitToTokenBudget(text, byteFallbackTokenizer, 10);
+
+    expect(pieces.length).toBeGreaterThan(1);
+    expectPiecesOfOriginal(text, pieces, byteFallbackTokenizer, 10);
     expect(pieces.join("")).toBe(text);
   });
 
-  // Detokenizing a window and tokenizing it again is not always the same count:
-  // a byte-fallback token cut in half, or a merge that only forms across the
-  // seam. The piece is what gets embedded, so the piece is what must fit.
-  it("shrinks a window whose detokenized text re-tokenizes past the budget", () => {
-    // Every "x" decodes to "xx" — so a window re-tokenizes to twice its size.
+  it("keeps every piece findable on the page it came from", () => {
+    const runs = [
+      "Prüfprotokoll 𠀀𠀇𠀎 Pumpe 7",
+      "Messwert 4711-0815 laut Datenblatt",
+      "Ventil 𠀕𠀜𠀣 geprüft und freigegeben.",
+      "Nächste Wartung in zwölf Monaten 𠀪𠀱𠀸.",
+    ];
+    const text = runs.join("\n");
+    const pieces = splitToTokenBudget(text, byteFallbackTokenizer, 40);
+
+    expect(pieces.length).toBeGreaterThan(1);
+    expectPiecesOfOriginal(text, pieces, byteFallbackTokenizer, 40);
+    for (const piece of pieces) {
+      if (piece.replace(/\s+/g, "").length >= 12) expect(locatePassage(runs, piece)).not.toBeNull();
+    }
+  });
+
+  it("prefers a paragraph break over a line break", () => {
+    const text = "a".repeat(30) + "\n\n" + "b".repeat(20) + "\n" + "c".repeat(20);
+    const pieces = splitToTokenBudget(text, charTokenizer, 60);
+    expect(pieces[0]).toBe("a".repeat(30));
+    expectPiecesOfOriginal(text, pieces, charTokenizer, 60);
+  });
+
+  // chunk.ts keeps a table line whole on purpose; a cut inside the row would
+  // separate a part number from its value.
+  it("prefers a line break over a sentence end or a space", () => {
+    const row = (n: number) => `Teil ${n}. Wert ${n * 3} Stück`;
+    const text = [row(1), row(2), row(3), row(4), row(5)].join("\n");
+    const pieces = splitToTokenBudget(text, charTokenizer, 50);
+    for (const piece of pieces) {
+      for (const line of piece.split("\n")) expect(text.split("\n")).toContain(line);
+    }
+    expectPiecesOfOriginal(text, pieces, charTokenizer, 50);
+  });
+
+  it("prefers a sentence end over a space", () => {
+    const text = "One two three four. Five six seven eight nine ten eleven";
+    const pieces = splitToTokenBudget(text, charTokenizer, 30);
+    expect(pieces[0]).toBe("One two three four.");
+    expectPiecesOfOriginal(text, pieces, charTokenizer, 30);
+  });
+
+  it("cuts a line without any space between graphemes, never inside one", () => {
+    const text = "e\u0301".repeat(40); // "é" as a base letter plus a combining accent
+    const pieces = splitToTokenBudget(text, charTokenizer, 15);
+    for (const piece of pieces) expect(piece.startsWith("\u0301")).toBe(false);
+    expectPiecesOfOriginal(text, pieces, charTokenizer, 15);
+    expect(pieces.join("")).toBe(text);
+  });
+
+  // One enormous line can be a whole page. Measuring the rest of the text for
+  // every piece would make a long chunk quadratic.
+  it("measures a bounded window per piece, not the rest of the text", () => {
+    const measured: number[] = [];
+    const counting: EmbeddingTokenizer = {
+      tokenize: (text) => {
+        measured.push(text.length);
+        return Array.from(text);
+      },
+      detokenize: (tokens) => (tokens as string[]).join(""),
+    };
+    const text = "z".repeat(200_000);
+    const pieces = splitToTokenBudget(text, counting, 100);
+
+    expect(pieces.join("")).toBe(text);
+    // The first call measures the whole text to decide whether to split at all.
+    expect(Math.max(...measured.slice(1))).toBeLessThan(10_000);
+  });
+
+  // Decoding a window and tokenizing it again is not always the same count: a
+  // merge that only forms across the seam, a token that decodes longer than it
+  // read. The piece is what gets embedded, so the piece is what must fit.
+  it("shrinks a cut whose text measures past the budget", () => {
+    // Every "x" decodes to "xx" — so the decoded window overestimates the cut twice over.
     const inflating: EmbeddingTokenizer = {
       tokenize: (text) => Array.from(text),
       detokenize: (tokens) => (tokens as string[]).map((t) => (t === "x" ? "xx" : t)).join(""),
     };
-    const pieces = splitToTokenBudget("x".repeat(40), inflating, 10);
-    for (const piece of pieces) expect(inflating.tokenize(piece).length).toBeLessThanOrEqual(10);
-    expect(pieces.join("").length).toBe(80);
+    const text = "x".repeat(40);
+    const pieces = splitToTokenBudget(text, inflating, 10);
+    expectPiecesOfOriginal(text, pieces, inflating, 10);
+    expect(pieces.join("")).toBe(text);
   });
 
   it("drops a whitespace-only piece rather than embedding nothing", () => {
