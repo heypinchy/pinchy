@@ -21,10 +21,15 @@ When an attachment is rejected, the indicator reads **Image too large** and a ba
 
 When the state is Unavailable, the indicator and status message explain why:
 
-- **Disconnected** (red): The connection dropped. Pinchy is trying to reconnect automatically.
+- **Disconnected** (red): The connection dropped. Pinchy is trying to reconnect automatically and says so, with a **Try again now** button.
+- **Offline** (red): Your device has no network. Pinchy pauses and reconnects as soon as you're back online.
+- **Too many connections** (red): The server turned the connection away because too many are open, or because Pinchy connected too quickly. The message names which. Pinchy keeps trying at a relaxed pace; closing other Pinchy tabs helps.
+- **The agent isn't reachable** (red): Pinchy is connected, but the agent runtime behind it isn't answering. This is different from the Configuring state, which follows a change you made. If it lasts, the message adds a **Report this issue** link.
+- **Can't reach Pinchy** (red): The connection has been down for about 30 seconds. Pinchy keeps retrying in the background, and the message offers **Try again** and **Reload**.
 - **Configuring** (yellow): You recently changed agent settings. Pinchy is applying the changes and will be ready in a moment.
-- **Exhausted** (red): Reconnection attempts failed. You need to reload the page to resume.
 - **Chat didn't load** (red): Your conversation history didn't arrive within 20 seconds of opening the chat. See below.
+
+Pinchy never stops retrying while the tab is visible, so no state asks you to reload as the only way out. **Try again** closes the connection and opens a new one at once, and a message you were typing stays in the composer. If your session ended while the connection was down, Pinchy takes you to the login page instead.
 
 ## When the conversation doesn't load
 
@@ -33,6 +38,10 @@ Opening a chat starts with one request: Pinchy asks the server for your conversa
 Two things happen at once. Pinchy reconnects by itself and asks again, which fixes the common case without you doing anything. And the chat tells you what's going on, with a **Try again** button that reconnects on demand. Whichever gets there first wins: as soon as your history arrives, the message disappears and the conversation is back.
 
 You never have to reload the page to get out of this state.
+
+## Reconnecting
+
+Retries start after one second and back off to about 15 seconds, with a little jitter so many tabs don't retry together. A connection attempt that hasn't opened after 10 seconds is cut and retried. While a connection is open, Pinchy sends a small keep-alive ping about every 25 seconds, so a connection that quietly died is noticed and replaced; the pings never appear in your chat. A tab that was asleep or hidden reconnects itself when you come back to it.
 
 ## Auto-recovery
 
@@ -48,7 +57,7 @@ The live update itself carries no message content — only a small signal that t
 
 ## Brief disconnects don't lock the UI
 
-Pinchy waits 2 seconds before showing the Disconnected state. During those 2 seconds the interface stays in its previous state (Ready or Responding) so short network hiccups are absorbed silently without disrupting your flow.
+Pinchy waits 2 seconds before showing the Disconnected state. During those 2 seconds the interface stays in its previous state (Ready or Responding) so short network hiccups are absorbed silently without disrupting your flow. Two cases skip the wait, because Pinchy already knows the reason: your device going offline, and the server refusing the connection.
 
 ## Typing while the agent responds
 

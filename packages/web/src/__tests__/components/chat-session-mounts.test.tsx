@@ -4,10 +4,12 @@ import { render, act } from "@testing-library/react";
 import { useState } from "react";
 import { ChatSessionProvider, useChatSession } from "@/components/chat-session-provider";
 import { ChatSessionMounts } from "@/components/chat-session-mounts";
+import { useChatConnection } from "@/lib/chat-connection-store";
 
 // Mutable state that tests can override to control useWsRuntime's return value.
 let mockIsRunning = false;
-let mockReconnectExhausted = false;
+let mockConnectionRejection: "too_many_connections" | "rate_limited" | null = null;
+let mockIsOffline = false;
 let mockPayloadRejected = false;
 let mockPathname = "/agents";
 
@@ -45,7 +47,8 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
       hasInitialContent: true,
       isOpenClawConnected: true,
       isDelayed: false,
-      reconnectExhausted: mockReconnectExhausted,
+      isOffline: mockIsOffline,
+      connectionRejection: mockConnectionRejection,
       payloadRejected: mockPayloadRejected,
       onRetryContinue: vi.fn(),
       onRetryResend: vi.fn(),
@@ -75,7 +78,8 @@ function seedBundle(agentId: string, publish: (b: any) => void) {
 describe("ChatSessionMounts", () => {
   beforeEach(() => {
     mockIsRunning = false;
-    mockReconnectExhausted = false;
+    mockConnectionRejection = null;
+    mockIsOffline = false;
     mockPayloadRejected = false;
     mockPathname = "/agents";
     routerPushSpy.mockClear();
@@ -424,19 +428,75 @@ describe("ChatSessionMounts", () => {
       return observed[observed.length - 1];
     }
 
-    it("publishes lastError='Connection lost...' when bundle.reconnectExhausted is true", () => {
-      const bundle = lastBundleFor("agent-exhausted", () => {
-        mockReconnectExhausted = true;
+    it("publishes a lastError that says we are still retrying when the server refused the connection", () => {
+      const bundle = lastBundleFor("agent-refused", () => {
+        mockConnectionRejection = "too_many_connections";
       });
-      expect(bundle?.lastError).toMatch(/connection lost/i);
+      expect(bundle?.lastError).toMatch(/too many/i);
+      expect(bundle?.lastError).toMatch(/retry|trying/i);
+      // Retrying is automatic: no copy may say reload is the only way out.
+      expect(bundle?.lastError).not.toMatch(/reload/i);
     });
 
-    it("publishes lastError=null when reconnectExhausted is not set", () => {
-      // Per-turn failures are now authoritative `liveness: failed` verdicts
-      // rendered as a thread bubble — they are NOT surfaced as a sidebar
-      // lastError. Reconnect exhaustion is the only sidebar error.
+    it("names the rate limit when that is what refused the connection", () => {
+      const bundle = lastBundleFor("agent-rate-limited", () => {
+        mockConnectionRejection = "rate_limited";
+      });
+      expect(bundle?.lastError).toMatch(/too quickly|rate/i);
+      expect(bundle?.lastError).not.toMatch(/reload/i);
+    });
+
+    it("publishes lastError=null for a plain outage and for being offline", () => {
+      // An outage heals itself (and the chat says so); the sidebar's red dot is
+      // for what needs a person, and nothing here needs a reload.
+      expect(lastBundleFor("agent-offline", () => (mockIsOffline = true))?.lastError).toBeNull();
+    });
+
+    it("publishes lastError=null when the connection is healthy", () => {
+      // Per-turn failures are authoritative `liveness: failed` verdicts rendered
+      // as a thread bubble — they are NOT surfaced as a sidebar lastError.
       const bundle = lastBundleFor("agent-healthy", () => {});
       expect(bundle?.lastError).toBeNull();
+    });
+  });
+
+  describe("connection info for the chat (#1422)", () => {
+    function Seed({ agentId }: { agentId: string }) {
+      const session = useChatSession(agentId);
+      if (!session.bundle) seedBundle(agentId, session.publish);
+      return null;
+    }
+    function Probe({ agentId, onInfo }: { agentId: string; onInfo: (i: unknown) => void }) {
+      onInfo(useChatConnection(agentId));
+      return null;
+    }
+
+    it("hands the chat the offline flag and the refusal reason the runtime reports", () => {
+      mockIsOffline = true;
+      mockConnectionRejection = "rate_limited";
+      let info: unknown;
+      render(
+        <ChatSessionProvider>
+          <Seed agentId="agent-info" />
+          <ChatSessionMounts />
+          <Probe agentId="agent-info" onInfo={(i) => (info = i)} />
+        </ChatSessionProvider>
+      );
+      expect(info).toEqual({ isOffline: true, rejection: "rate_limited" });
+    });
+
+    it("forgets the connection info when the instance unmounts", () => {
+      mockIsOffline = true;
+      let info: unknown;
+      const { unmount } = render(
+        <ChatSessionProvider>
+          <Seed agentId="agent-gone" />
+          <ChatSessionMounts />
+        </ChatSessionProvider>
+      );
+      unmount();
+      render(<Probe agentId="agent-gone" onInfo={(i) => (info = i)} />);
+      expect(info).toEqual({ isOffline: false, rejection: null });
     });
   });
 });
