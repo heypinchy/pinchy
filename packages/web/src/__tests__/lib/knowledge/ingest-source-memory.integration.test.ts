@@ -119,6 +119,9 @@ it("streams every source through the server one chunk at a time, and hands reade
         hiddenRows: 0,
       };
     },
+    readEmail: async () => {
+      throw new Error("this run holds no mail");
+    },
     convertScan: async () => {
       throw new Error("this run holds no scan");
     },

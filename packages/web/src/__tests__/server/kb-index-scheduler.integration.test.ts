@@ -138,6 +138,9 @@ function fakeDeps(): IngestDeps {
     convertOffice: async () => {
       throw new Error("convertOffice must not be called for a PDF");
     },
+    readEmail: async () => {
+      throw new Error("readEmail must not be called for a PDF");
+    },
     convertScan: async () => {
       throw new Error("convertScan must not be called for a PDF");
     },

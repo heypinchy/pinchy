@@ -77,6 +77,7 @@ import {
   needsConversion,
   OfficeFileRejectedError,
   isPresentationFile,
+  isMsgFile,
   isScanFile,
   isSpreadsheetFile,
   isTextFile,
@@ -88,6 +89,7 @@ import { OFFICE_ARTIFACT_FORMAT_VERSION, SCAN_ARTIFACT_FORMAT_VERSION } from "./
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
 import { readTextFile } from "./text-extract";
+import { emailContextLine, formatEmailText, type ParsedEmail } from "./msg-extract";
 import { isContentRejection, toStorableLocator, toStorableText } from "./stored-text";
 import { databaseErrorBehind, systemicIngestError } from "./ingest-errors";
 import type { IngestPage, IngestResult } from "./types";
@@ -180,6 +182,18 @@ export interface IngestDeps {
    * one.
    */
   convertScan: (copyPath: string, contentHash: string) => Promise<ScanConversion>;
+  /**
+   * Reads a saved Outlook message into its headers and body (#1409). Prod:
+   * `readMsgIsolated`, the fenced reader child (kb-index-worker.ts) — the
+   * parser walks an untrusted Compound File.
+   *
+   * A refusal of the file (not a Compound File, too large, damaged) is an
+   * `OfficeFileRejectedError`; anything else is about the machine, and the
+   * file counts as failed. Required for the same reason `convertScan` is: once
+   * `DEFAULT_ALLOWED_EXTENSIONS` names `.msg`, every caller's ingest WILL meet
+   * one.
+   */
+  readEmail: (copyPath: string) => Promise<ParsedEmail>;
   /**
    * The vision model `extractPdf` reads scanned pages with this run, or null
    * when it reads the text layer only (no vision model, or `PINCHY_KB_OCR=off`).
@@ -562,10 +576,10 @@ interface ExtractedDocument {
   /**
    * What read it, for the record of an empty read: OCR can change what a PDF
    * page yields, and nothing about a spreadsheet's hidden sheets, a document
-   * the converter could not convert, a scan whose bytes were refused, or a
-   * text file.
+   * the converter could not convert, a scan whose bytes were refused, a
+   * text file, or an Outlook message.
    */
-  reader: "pdf" | "sheets" | "converter" | "image" | "text";
+  reader: "pdf" | "sheets" | "converter" | "image" | "text" | "email";
 }
 
 /**
@@ -768,6 +782,7 @@ function logRefusal(absPath: string, verdict: string, reason: string): void {
  *   TIFF scan     the PDF of its frames, through the PDF path: frame N =
  *                 page N
  *   plain text    no locator — it has no pages, so a citation opens the file
+ *   Outlook mail  no locator, like plain text; headers above the body
  *
  * `absPath` is the document's identity and decides the dispatch; `copyPath`
  * is what the readers open — a private copy of the verified bytes, so none of
@@ -825,6 +840,10 @@ async function readDocument(
 
   if (isTextFile(absPath)) {
     return extractTextFile(absPath, copyPath);
+  }
+
+  if (isMsgFile(absPath)) {
+    return extractEmail(absPath, copyPath, deps);
   }
 
   return readPdfPages(await deps.extractPdf(copyPath));
@@ -976,6 +995,47 @@ async function convertedArtifact(
     return null;
   }
   return outcome.artifactPath;
+}
+
+/**
+ * Reads a saved Outlook message (#1409): a header block — subject, sender,
+ * recipients, date, attachment names — above the body (msg-extract.ts). Like
+ * a text file it has no pages, so its chunks carry no locator and the citation
+ * names the file. Every chunk after the first lost the header block, so it
+ * starts with one line naming the mail.
+ *
+ * Attachment contents are not read: a citation could not point inside the
+ * mail at them. Their names are in the header block, so a search for the file
+ * name still finds the mail.
+ */
+async function extractEmail(
+  absPath: string,
+  copyPath: string,
+  deps: IngestDeps
+): Promise<ExtractedDocument> {
+  const email = await deps.readEmail(copyPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    logRefusal(absPath, "not read", err.message);
+    return null;
+  });
+  if (email === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "email" };
+  }
+  if (email.bodyTruncated) {
+    logRefusal(absPath, "body cut", "longer than an indexed mail body may be");
+  }
+  const text = formatEmailText(email);
+  const context = emailContextLine(email);
+  return {
+    chunks: chunkPages([{ page: 1, text }]).map((chunk, i) => ({
+      text: i === 0 ? chunk.text : `${context}\n${chunk.text}`,
+      locator: null,
+    })),
+    pageCount: null,
+    text,
+    incomplete: false,
+    reader: "email",
+  };
 }
 
 /**

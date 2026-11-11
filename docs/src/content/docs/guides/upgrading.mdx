@@ -312,6 +312,10 @@ A TIFF holds images only, so every page of one is sent to your vision model, exa
 
 A `.txt` is read in the encoding it was saved in, so a file from Windows Notepad keeps its umlauts. A `.docm` is converted like a `.docx`, and its macros never run. See [Supported file types](/guides/mount-data-directories/#supported-file-types) for both, and for the size limits.
 
+#### Outlook emails are indexed
+
+The knowledge base now indexes emails saved from Outlook (`.msg`): subject, sender, recipients, date, the names of the attachments and the body. Until now the **Index** section counted them as not supported and listed them in its download. Nothing to do on upgrade: the next reindex — the nightly one or **Reindex now** — reads them, and they drop off that list. Bcc recipients and the contents of attachments are not indexed; save an attachment next to the mail to make it searchable. See [Supported file types](/guides/mount-data-directories/#supported-file-types).
+
 #### A knowledge base inside an archive folder is no longer hidden
 
 The archive rule (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)) read the whole path of a document, including the folders above the one an agent is granted. An agent granted a folder that is itself called `Archiv`, or sits below one — `/data/Archiv/Projekte` — therefore had every document marked archived, and everyday search found nothing. The rule now reads only the path inside the granted folder. Nothing to do on upgrade: the next index run — the nightly one, or **Reindex now** — marks those documents current again without reading them a second time. When two agents are granted nested folders, the folder granted further down decides for both.

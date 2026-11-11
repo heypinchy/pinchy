@@ -18,9 +18,11 @@ import {
   isOfficeFile,
   isPresentationFile,
   isSpreadsheetFile,
+  isMsgFile,
   isScanFile,
   isTextFile,
   isWordFile,
+  MSG_EXTENSIONS,
   needsConversion,
   OFFICE_EXTENSIONS,
   PRESENTATION_EXTENSIONS,
@@ -199,7 +201,7 @@ describe("CONVERTED_EXTENSIONS", () => {
   });
 });
 
-describe("isScanFile and isTextFile (#1409)", () => {
+describe("isScanFile, isTextFile and isMsgFile (#1409)", () => {
   it("recognises a scanned TIFF under either spelling, whatever the case", () => {
     expect(isScanFile("/data/plates/Typenschild.tif")).toBe(true);
     expect(isScanFile("/data/plates/Typenschild.TIFF")).toBe(true);
@@ -213,6 +215,12 @@ describe("isScanFile and isTextFile (#1409)", () => {
     expect(isTextFile("/data/.txt")).toBe(false);
   });
 
+  it("recognises a saved Outlook message", () => {
+    expect(isMsgFile("/data/mail/Angebot.MSG")).toBe(true);
+    expect(isMsgFile("/data/mail/Angebot.eml")).toBe(false);
+    expect(isMsgFile("/data/.msg")).toBe(false);
+  });
+
   it("gives every readable extension exactly one reader", () => {
     // `readDocument` dispatches on these lists in turn. An extension in two of
     // them would take whichever branch is tested first, silently.
@@ -221,6 +229,7 @@ describe("isScanFile and isTextFile (#1409)", () => {
       ...SPREADSHEET_EXTENSIONS,
       ...SCAN_EXTENSIONS,
       ...TEXT_EXTENSIONS,
+      ...MSG_EXTENSIONS,
       ".pdf",
     ];
     expect(new Set(all).size).toBe(all.length);
