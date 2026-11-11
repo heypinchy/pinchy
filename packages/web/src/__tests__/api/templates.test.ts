@@ -403,6 +403,40 @@ describe("GET /api/templates", () => {
     );
   });
 
+  // #1297: web templates stay creatable without a search provider (page fetch
+  // needs no key), but the form must know search is not set up.
+  it("keeps web templates available and reports webSearchConfigured=false without a web-search connection", async () => {
+    mockLimit.mockResolvedValue([]);
+
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
+    const body = await response.json();
+
+    const monitor = body.templates.find((t: { id: string }) => t.id === "market-monitor");
+    expect(monitor.requiresWeb).toBe(true);
+    expect(monitor.available).toBe(true);
+    expect(monitor.webSearchConfigured).toBe(false);
+  });
+
+  it("reports webSearchConfigured=true when a web-search connection exists", async () => {
+    const seededConnections = [{ type: "web-search", id: "brave-1" }];
+    mockLimit.mockImplementation((n: number) => {
+      const condition = mockWhere.mock.calls.at(-1)?.[0];
+      return Promise.resolve(matchSeededConnections(seededConnections, condition).slice(0, n));
+    });
+
+    const response = await GET(
+      new NextRequest("http://localhost:7777/api/templates"),
+      routeContext()
+    );
+    const body = await response.json();
+
+    const monitor = body.templates.find((t: { id: string }) => t.id === "market-monitor");
+    expect(monitor.webSearchConfigured).toBe(true);
+  });
+
   it("includes requiresEmailConnection flag in email template response", async () => {
     mockLimit.mockResolvedValue([]);
 

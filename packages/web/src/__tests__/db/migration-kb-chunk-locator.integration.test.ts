@@ -127,14 +127,14 @@ describe("0061 kb chunk locator (populated pre-#933 data)", () => {
       const documentId = crypto.randomUUID();
       await client`
         INSERT INTO kb_documents (id, org_id, content_hash, source_path)
-        VALUES (${documentId}, 'org-locator-test', 'hash-locator', '/data/noack/QM/handbook.pdf')
+        VALUES (${documentId}, 'org-locator-test', 'hash-locator', '/data/customer/QM/handbook.pdf')
       `;
       for (const { chunkText, page } of FIXTURE_CHUNKS) {
         await client`
           INSERT INTO kb_chunks (id, document_id, org_id, source_path, chunk_text, page)
           VALUES (
             ${crypto.randomUUID()}, ${documentId}, 'org-locator-test',
-            '/data/noack/QM/handbook.pdf', ${chunkText}, ${page}
+            '/data/customer/QM/handbook.pdf', ${chunkText}, ${page}
           )
         `;
       }

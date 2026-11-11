@@ -40,6 +40,7 @@ import {
   parseVerifiedSha,
   findSkippedReleases,
   isReleasableBranch,
+  nextDevVersion,
   stagingPinAdvice,
 } from "./lib/release-logic.mjs";
 import { newestFrozenRelease } from "./lib/version-identity.mjs";
@@ -149,6 +150,18 @@ if (prevVersion) {
 }
 
 const onReleasableBranch = isReleasableBranch(branch.out);
+// Same derivation `pnpm release` runs before it writes anything: it refuses a
+// version that does not belong on this branch (0.11.0 from release/0.10), and
+// otherwise names the -dev version the post-release commit will open.
+let devVersion = null;
+let devVersionError = null;
+if (onReleasableBranch) {
+  try {
+    devVersion = nextDevVersion(version, branch.out);
+  } catch (e) {
+    devVersionError = e.message;
+  }
+}
 
 const ci = tryExecFile("gh", [
   "run",
@@ -170,6 +183,14 @@ out("Auto-checked (also enforced by `pnpm release`):");
 out(
   `  ${mark(onReleasableBranch)} on main or release/X.Y branch${onReleasableBranch ? ` (${branch.out})` : ` (on: ${branch.out || "?"})`}`,
 );
+if (onReleasableBranch) {
+  out(
+    `  ${mark(devVersion !== null)} ${tag} belongs on ${branch.out}` +
+      (devVersion
+        ? ` (the branch opens ${devVersion} after the cut)`
+        : ` — ${devVersionError}`),
+  );
+}
 out(`  ${mark(status.ok && status.out === "")} working tree clean`);
 out(
   `  ${mark(tags.ok && !tags.out.split("\n").includes(tag))} tag ${tag} is free`,

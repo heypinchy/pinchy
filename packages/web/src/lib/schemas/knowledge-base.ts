@@ -55,3 +55,34 @@ export const knowledgeIndexScheduleSchema = z.object({
 });
 
 export type KnowledgeIndexScheduleRequest = z.infer<typeof knowledgeIndexScheduleSchema>;
+
+/**
+ * Body for `POST /api/agents/[agentId]/knowledge/passage` — the citation viewer
+ * asking which indexed passage of a cited page, slide or Word section the
+ * answer drew on (#1268).
+ *
+ * `path` is the absolute path the citation link carries (the same value the
+ * workspace-file route reads from `?path=`); the route checks it against the
+ * agent's grants before the index is read. `claim` is the answer's own text
+ * citing the source — a ranking hint, capped well above what the viewer sends
+ * (600 characters) and never stored. It travels in a body rather than a query
+ * string because it is conversation text, which does not belong in access logs.
+ */
+const citedPassageBase = {
+  path: z.string().min(1).max(4096),
+  claim: z.string().max(2000).optional(),
+};
+
+/*
+ * Exactly one anchor, by format: a PDF's `page`, a presentation's `slide`, or
+ * a Word document's `heading` path joined with " > " (the spelling a citation
+ * shows). Strict objects, so a body naming two anchors is a 400 rather than a
+ * silent pick of whichever branch happens to match first.
+ */
+export const citedPassageSchema = z.union([
+  z.strictObject({ ...citedPassageBase, page: z.number().int().min(1).max(99999) }),
+  z.strictObject({ ...citedPassageBase, slide: z.number().int().min(1).max(99999) }),
+  z.strictObject({ ...citedPassageBase, heading: z.string().trim().min(1).max(2000) }),
+]);
+
+export type CitedPassageRequest = z.infer<typeof citedPassageSchema>;

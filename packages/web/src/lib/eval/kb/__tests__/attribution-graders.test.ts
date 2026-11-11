@@ -52,11 +52,11 @@ describe("gradeCitationResolution", () => {
 
 **Sources:**
 
-- [1] /data/quality/Quality File 2012_4.pdf — p. 12
-- [2] /data/quality/Quality File 2012_4.pdf — p. 169`,
+- [1] /data/quality/Quality Handbook 2012.pdf — p. 12
+- [2] /data/quality/Quality Handbook 2012.pdf — p. 169`,
       retrieved: [
-        src(1, "/data/quality/Quality File 2012_4.pdf"),
-        src(2, "/data/quality/Quality File 2012_4.pdf"),
+        src(1, "/data/quality/Quality Handbook 2012.pdf"),
+        src(2, "/data/quality/Quality Handbook 2012.pdf"),
       ],
     };
 
@@ -139,8 +139,8 @@ describe("gradePathCitation", () => {
 
 **Sources:**
 
-- [1] Quality File 2012_4.pdf — p. 12`,
-      retrieved: [src(1, "/data/quality/Quality File 2012_4.pdf")],
+- [1] Quality Handbook 2012.pdf — p. 12`,
+      retrieved: [src(1, "/data/quality/Quality Handbook 2012.pdf")],
     };
 
     const result = gradePathCitation(input);
@@ -157,7 +157,7 @@ describe("gradePathCitation", () => {
 **Sources:**
 
 - [1] /data/other-folder/unrelated.md — p. 3`,
-      retrieved: [src(1, "/data/quality/Quality File 2012_4.pdf")],
+      retrieved: [src(1, "/data/quality/Quality Handbook 2012.pdf")],
     };
 
     const result = gradePathCitation(input);
@@ -626,11 +626,11 @@ describe("gradeAttribution", () => {
 
 **Sources:**
 
-- [1] Quality File 2012_4.pdf — p. 12
-- [2] Quality File 2012_4.pdf — p. 169`,
+- [1] Quality Handbook 2012.pdf — p. 12
+- [2] Quality Handbook 2012.pdf — p. 169`,
       retrieved: [
-        src(1, "/data/quality/Quality File 2012_4.pdf"),
-        src(2, "/data/quality/Quality File 2012_4.pdf"),
+        src(1, "/data/quality/Quality Handbook 2012.pdf"),
+        src(2, "/data/quality/Quality Handbook 2012.pdf"),
       ],
     };
 

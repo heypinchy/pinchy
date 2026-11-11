@@ -22,7 +22,13 @@
  */
 import { fromCitationPath, toCitationPath } from "./citation-path";
 import type { ChunkLocator } from "./locator";
-import { convertedPdfName, isOfficeFile, isSpreadsheetFile } from "./office-formats";
+import {
+  convertedPdfName,
+  isOfficeFile,
+  isPresentationFile,
+  isSpreadsheetFile,
+  isWordFile,
+} from "./office-formats";
 
 /**
  * A DATA-ROOT-RELATIVE path ending in an extension we can serve, anchored at the
@@ -203,6 +209,61 @@ function trailingLocator(rest: string, isSpreadsheet: boolean): ChunkLocator | n
   return { kind: "sheet", sheet, startRow, endRow };
 }
 
+/** `— slide 4`, `(slide 4)`, `, Folie 4` — the slide hint that may follow a presentation path. */
+const TRAILING_SLIDE = /^\s*(?:[—–\-,:]\s*)?(?:\(\s*)?(?:slide|folie)\s*(\d{1,5})\b/i;
+
+/**
+ * `(§ Safety > Zone B)` / `— § Quality > Incoming goods` — the heading path
+ * that may follow a Word path, in the shape `formatLocator` renders.
+ *
+ * The parenthesised form is the one `knowledge_search` prints, and it ends at
+ * ITS closing parenthesis, not the first one: real headings carry their own
+ * ("Anhang A (normativ)", "Gewährleistung (§ 5)"). One level of nesting is
+ * read. An unparenthesised path runs to the end of the line — a heading may
+ * hold commas or dots — but stops before a `;` or a `[n]` that starts the
+ * next citation on the same line.
+ *
+ * The separator's whitespace runs are unambiguous, and the alternatives
+ * inside a heading start with different characters, so a long line costs at
+ * most quadratic time on a heading that never closes, never exponential.
+ */
+const TRAILING_HEADING =
+  /^\s*(?:[—–\-,:]\s*)?(?:\(\s*§\s*((?:[^()\n]|\([^()\n]*\))+)\)|§\s*([^\n;[]+))/;
+
+/** Longest heading path carried to the viewer; the endpoint accepts more. */
+const MAX_CITED_HEADING_CHARS = 1000;
+
+/**
+ * Which section of an Office document a citation names (#1268, Office
+ * addendum), read from the text after the path: a slide for a presentation,
+ * a heading path for a Word document. Only the format that HAS such a section
+ * gets one — a "slide 4" after a `.docx` names nothing in it.
+ *
+ * Returned as the hast properties it travels as, beside `data-cited-claim`,
+ * and for the same reason: the href's shape is what the renderer trusts as a
+ * citation, and it must not widen to carry a hint.
+ */
+function trailingOfficeSection(rest: string, path: string): Record<string, string> | null {
+  if (isPresentationFile(path)) {
+    const slide = TRAILING_SLIDE.exec(rest);
+    return slide && Number(slide[1]) >= 1 ? { dataCitedSlide: String(Number(slide[1])) } : null;
+  }
+  if (isWordFile(path)) {
+    const match = TRAILING_HEADING.exec(rest);
+    if (!match) return null;
+    // A sentence may close right after the heading: "… — § Safety." The dot is
+    // the sentence's, and a heading spelled with it would name nothing.
+    const heading = (match[1] ?? match[2])
+      .trim()
+      .replace(/[.,;:]+$/, "")
+      .trim();
+    return heading && heading.length <= MAX_CITED_HEADING_CHARS
+      ? { dataCitedHeading: heading }
+      : null;
+  }
+  return null;
+}
+
 /**
  * The fragment that carries a locator to the viewer, or "" for none.
  *
@@ -245,6 +306,181 @@ interface MdastNode {
   value?: string;
   url?: string;
   children?: MdastNode[];
+  data?: { hProperties?: Record<string, string> };
+}
+
+/**
+ * The claim a citation supports, for the viewer to find the cited PASSAGE on
+ * the cited page (#1268). The href says which page; a dense page holds two or
+ * three indexed passages, and the index can only say which one the answer drew
+ * on if it is told what the answer said. The claim is that: the sentences of
+ * the answer that cite the entry's number, or — for a path cited inline in
+ * prose — the sentence around it.
+ *
+ * Carried as a hast property on the link (`data-cited-claim`), never in the
+ * href, so `WORKSPACE_FILE_HREF` — the shape the renderer trusts — stays as
+ * narrow as it is. Markdown has no syntax for hast properties, so a model
+ * cannot write one; and the claim is only a ranking hint for our own endpoint,
+ * which re-checks the reader's access to the document whatever it says.
+ */
+const CLAIM_MAX_SENTENCES = 3;
+const CLAIM_MAX_CHARS = 600;
+
+/** Below this many letters a "claim" is the reference itself, not something it supports. */
+const CLAIM_MIN_LETTERS = 15;
+
+/**
+ * `[1]`, `[1, 3]` — the inline markers a sentence cites its sources with.
+ * Flat and bounded on purpose (no nested quantifier): this runs over every
+ * streamed chunk of model output. The numbers are read out of the match.
+ */
+const CITATION_MARKERS = /\[(\d[\d,\s]{0,30})\]/g;
+
+/** `[1] ` right before a path: the number of the Sources entry it belongs to. */
+const ENTRY_NUMBER_BEFORE_PATH = /\[(\d{1,3})\]\s*[:.\-–—]?\s*$/;
+
+/**
+ * Blocks whose inline text forms sentences. List items and quotes hold
+ * paragraphs. A table ROW, not a cell: the marker usually sits in a cell of
+ * its own, beside the cells it backs.
+ */
+const SENTENCE_BLOCKS = new Set(["paragraph", "heading", "tableRow"]);
+
+/** One inline marker, read at a given position (sticky). */
+const MARKER_AT = /\[\d[\d,\s]{0,30}\]/y;
+
+/**
+ * Sentence boundaries: a `.`, `!` or `?` followed by whitespace — with two
+ * exceptions that decide which sentence a citation belongs to.
+ *
+ * - Markers right after the stop stay with the sentence before it.
+ *   "claim. [1]" is as common as "claim [1]." (the contract only says "next
+ *   to the claim"), and read the other way source 1 would be handed the NEXT
+ *   sentence: a confident highlight of the wrong passage.
+ * - A one- or two-letter abbreviation does not end a sentence, or the most
+ *   common thing a citation trails, "p. 4" / "S. 4", would cut it in half.
+ *
+ * A hand-written scan rather than one regex, and every check looks at a
+ * bounded window: this runs on each streamed chunk of model output, and a
+ * whitespace run must cost linear time, not quadratic.
+ */
+function splitSentences(text: string): Array<{ start: number; end: number }> {
+  const sentences: Array<{ start: number; end: number }> = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch !== "." && ch !== "!" && ch !== "?") continue;
+
+    let end = i + 1;
+    for (let k = end; ;) {
+      // Spaces and tabs only: a marker at the start of the NEXT line is a
+      // Sources entry's own number, not a citation of this sentence.
+      while (k < text.length && (text[k] === " " || text[k] === "\t") && k - end < 8) k++;
+      MARKER_AT.lastIndex = k;
+      if (!MARKER_AT.test(text)) break;
+      end = k = MARKER_AT.lastIndex;
+    }
+    if (end < text.length && !/\s/.test(text[end])) continue;
+    if (end === i + 1 && ch === ".") {
+      const tail = text.slice(Math.max(start, i - 3), i);
+      if (/(?:^|[\s(])\p{L}{1,2}$/u.test(tail)) continue;
+    }
+
+    sentences.push({ start, end });
+    let next = end;
+    while (next < text.length && /\s/.test(text[next])) next++;
+    start = next;
+    i = next - 1;
+  }
+  if (start < text.length) sentences.push({ start, end: text.length });
+  return sentences;
+}
+
+/** The sentence as the claim: markers dropped, whitespace normalised. */
+function claimText(sentence: string): string {
+  return sentence
+    .replace(CITATION_MARKERS, "")
+    .replace(/\s+/g, " ")
+    .replace(/ ([.,;:!?])/g, "$1")
+    .trim();
+}
+
+function letters(text: string): number {
+  return text.match(/\p{L}/gu)?.length ?? 0;
+}
+
+function capClaim(sentences: string[]): string | undefined {
+  const joined = sentences.slice(0, CLAIM_MAX_SENTENCES).join(" ");
+  if (letters(joined) < CLAIM_MIN_LETTERS) return undefined;
+  if (joined.length <= CLAIM_MAX_CHARS) return joined;
+  const cut = joined.slice(0, CLAIM_MAX_CHARS);
+  const lastSpace = cut.lastIndexOf(" ");
+  return lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
+}
+
+function inlineText(node: MdastNode): string {
+  if (node.type === "text" || node.type === "inlineCode") return node.value ?? "";
+  return (node.children ?? []).map(inlineText).join(node.type === "tableRow" ? " " : "");
+}
+
+/**
+ * Every sentence of the answer that cites a number, by number. Sentences that
+ * themselves name a document path are left out: those are Sources entries (or
+ * inline references), and a reference is not a claim about its own content.
+ */
+function claimsByNumber(tree: MdastNode): Map<number, string[]> {
+  const byNumber = new Map<number, string[]>();
+  const visit = (node: MdastNode) => {
+    if (SENTENCE_BLOCKS.has(node.type)) {
+      const text = inlineText(node);
+      for (const { start, end } of splitSentences(text)) {
+        const sentence = text.slice(start, end);
+        if (findSourcePaths(sentence).length > 0) continue;
+        const cited = new Set<number>();
+        for (const marker of sentence.matchAll(CITATION_MARKERS)) {
+          for (const n of marker[1].split(",")) {
+            if (/^\d{1,3}$/.test(n.trim())) cited.add(Number(n.trim()));
+          }
+        }
+        if (cited.size === 0) continue;
+        const claim = claimText(sentence);
+        // A marker standing alone ("… [1]" after a list) is no claim, and must
+        // not use up one of the three sentences a claim may hold.
+        if (letters(claim) < CLAIM_MIN_LETTERS) continue;
+        for (const n of cited) byNumber.set(n, [...(byNumber.get(n) ?? []), claim]);
+      }
+      return;
+    }
+    (node.children ?? []).forEach(visit);
+  };
+  visit(tree);
+  return byNumber;
+}
+
+/**
+ * The claim for the path at `start..end` of `value`. `before` is the text
+ * between the previous path in this node and this one — where a Sources
+ * entry's `[N]` stands.
+ */
+function claimFor(
+  value: string,
+  start: number,
+  end: number,
+  before: string,
+  numbered: () => Map<number, string[]>
+): string | undefined {
+  // Only the end of `before` can hold the number; a bounded slice keeps the
+  // `\s*` in the pattern from going quadratic on a whitespace run.
+  const entry = ENTRY_NUMBER_BEFORE_PATH.exec(before.slice(-48));
+  const sentences = entry ? numbered().get(Number(entry[1])) : undefined;
+  if (sentences) return capClaim(sentences);
+  // No sentence cites the number elsewhere: the path may stand inside its own
+  // claim ("four hours [1]: quality/x.pdf, p. 4."), so read the sentence it
+  // is in. A bare Sources line yields too few letters and no claim.
+  const sentence = splitSentences(value).find((s) => s.start <= start && end <= s.end);
+  if (!sentence) return undefined;
+  const text = value.slice(sentence.start, start) + value.slice(end, sentence.end);
+  return capClaim([claimText(text)]);
 }
 
 /**
@@ -289,7 +525,7 @@ export const WORKSPACE_FILE_HREF = /^\/api\/agents\/[^/]+\/workspace-file\?path=
 /**
  * Recovers the CITATION path from an href built by `buildSourceHref`, for use
  * as the viewer's title. Citation and not absolute: this value is what the
- * reader sees above the document, and `/data/noack/…` there would put the
+ * reader sees above the document, and `/data/customer/…` there would put the
  * container path straight back in front of them (#933). Returns null for
  * anything else, which is how the renderer tells a citation from an ordinary
  * link. Kept beside the builder so the two cannot drift — a dialog whose
@@ -346,6 +582,86 @@ export function buildSourceViewerUrl(href: string): string | null {
   const name = leafName(source.path);
   const shown = isOfficeFile(source.path) ? convertedPdfName(name) : name;
   return `${routePath}/${encodeURIComponent(shown)}${query}${fragment}`;
+}
+
+/** The passage endpoint's body: one anchor, plus the claim when there is one. */
+export type PassageRequestBody = { path: string; claim?: string } & (
+  { page: number } | { slide: number } | { heading: string }
+);
+
+/**
+ * The section hints `remarkSourceLinks` attached to an Office citation, as the
+ * renderer reads them back off the link (`data-cited-slide`,
+ * `data-cited-heading`). Strings, because that is what a hast property is by
+ * the time it reaches the anchor.
+ */
+export interface CitedSection {
+  slide?: string;
+  heading?: string;
+}
+
+/**
+ * The request the citation viewer makes to find the cited passage (#1268), or
+ * null when there is nothing to find.
+ *
+ * - A PDF asks about the cited PAGE; without one there are no candidates.
+ * - A presentation asks about the cited SLIDE, which is page N of its
+ *   converted PDF (the converter maps them one to one).
+ * - A Word document asks about the cited HEADING path. Its passages are
+ *   anchored on headings, not pages (a Word page break is a rendering result,
+ *   #933); the viewer finds the page through the converted PDF's outline.
+ *
+ * An Office citation with only a page hint asks nothing: its chunks carry no
+ * page, so the hint names no set of candidates.
+ *
+ * Built from the href rather than from separate props, so it asks about the
+ * document the viewer shows — through the same citation path `parseSourceHref`
+ * reads, which confines it to the data root. (A hand-written href naming a
+ * path outside it opens that path and asks about its data-root reading; both
+ * requests are gated on their own, so the worst case is no highlight.) The
+ * agent comes from the href's own path segment, which `WORKSPACE_FILE_HREF`
+ * already confines to a same-origin `/api/agents/<id>/` url.
+ */
+export function buildPassageRequest(
+  href: string,
+  claim: string | undefined,
+  section: CitedSection = {}
+): { url: string; body: PassageRequestBody } | null {
+  const source = parseSourceHref(href);
+  if (!source) return null;
+
+  const anchor = passageAnchor(source.path, source.locator, section);
+  if (!anchor) return null;
+
+  const agentSegment = href.slice("/api/agents/".length, href.indexOf("/workspace-file"));
+  return {
+    url: `/api/agents/${agentSegment}/knowledge/passage`,
+    body: {
+      path: fromCitationPath(source.path),
+      ...anchor,
+      ...(claim ? { claim } : {}),
+    },
+  };
+}
+
+function passageAnchor(
+  path: string,
+  locator: ChunkLocator | null,
+  section: CitedSection
+): { page: number } | { slide: number } | { heading: string } | null {
+  if (isPresentationFile(path)) {
+    // Re-checked here: the property arrives from the rendered DOM, and only a
+    // plain positive number is a slide.
+    if (!section.slide || !/^\d{1,5}$/.test(section.slide)) return null;
+    const slide = Number(section.slide);
+    return slide >= 1 ? { slide } : null;
+  }
+  if (isWordFile(path)) {
+    const heading = section.heading?.trim();
+    return heading && heading.length <= MAX_CITED_HEADING_CHARS ? { heading } : null;
+  }
+  if (isOfficeFile(path)) return null;
+  return locator?.kind === "page" ? { page: locator.page } : null;
 }
 
 /** `[everything before "#", "#…" or ""]` — the fragment keeps its `#`. */
@@ -408,7 +724,11 @@ export function buildSourceDownloads(
  * matched, which lets the caller leave the original node untouched rather than
  * replace it with an equivalent copy.
  */
-function linkifyText(value: string, agentId: string): MdastNode[] | null {
+function linkifyText(
+  value: string,
+  agentId: string,
+  numbered: () => Map<number, string[]>
+): MdastNode[] | null {
   const matches = findSourcePaths(value);
   if (matches.length === 0) return null;
 
@@ -423,11 +743,16 @@ function linkifyText(value: string, agentId: string): MdastNode[] | null {
     // sees what is being cited, and the link merely opens there.
     const locator = trailingLocator(value.slice(end), isSpreadsheetFile(path));
 
+    const claim = claimFor(value, start, end, value.slice(cursor, start), numbered);
+    const section = isOfficeFile(path) ? trailingOfficeSection(value.slice(end), path) : null;
+    const hProperties = { ...(claim ? { dataCitedClaim: claim } : {}), ...section };
+
     if (start > cursor) parts.push({ type: "text", value: value.slice(cursor, start) });
     parts.push({
       type: "link",
       url: buildSourceHref(agentId, path, locator),
       children: [{ type: "text", value: path }],
+      ...(Object.keys(hProperties).length > 0 ? { data: { hProperties } } : {}),
     });
     cursor = end;
   }
@@ -444,6 +769,11 @@ function linkifyText(value: string, agentId: string): MdastNode[] | null {
  */
 export function remarkSourceLinks({ agentId }: { agentId: string }) {
   return (tree: MdastNode) => {
+    // Read before any text node is rewritten, and only once a citation needs
+    // it: most messages cite nothing, and this runs on every streamed chunk.
+    let numbered: Map<number, string[]> | null = null;
+    const claims = () => (numbered ??= claimsByNumber(tree));
+
     const visit = (node: MdastNode) => {
       // `link` is skipped so we never nest an anchor inside an anchor; `code`
       // and `inlineCode` because a path shown as code is being displayed, not
@@ -455,7 +785,7 @@ export function remarkSourceLinks({ agentId }: { agentId: string }) {
       let changed = false;
       for (const child of node.children) {
         if (child.type === "text" && child.value) {
-          const parts = linkifyText(child.value, agentId);
+          const parts = linkifyText(child.value, agentId, claims);
           if (parts) {
             rewritten.push(...parts);
             changed = true;

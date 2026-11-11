@@ -261,8 +261,8 @@ jobs:
         run: |
           RUNNING=$(docker compose ps --format json | jq -rs '[.[] | select(.State == "running")] | length')
           echo "Running services: $RUNNING"
-          if [ "$RUNNING" -ne 3 ]; then
-            echo "::error::Expected 3 running services (pinchy, openclaw, db), got $RUNNING"
+          if [ "$RUNNING" -ne 4 ]; then
+            echo "::error::Expected 4 running services (pinchy, office-converter, openclaw, db), got $RUNNING"
             docker compose ps
             exit 1
           fi

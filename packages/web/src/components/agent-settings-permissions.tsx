@@ -14,6 +14,7 @@ import {
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
 import { EmailPermissionSection } from "@/components/email-permission-section";
 import { WebSearchPermissionSection } from "@/components/web-search-permission-section";
+import { WebSearchNotSetUpNotice } from "@/components/web-search-not-set-up-notice";
 import { KnowledgeReindexSection } from "@/components/knowledge-reindex-section";
 import { ApprovalConfirmationSection } from "@/components/approval-confirmation-section";
 import { getConfirmMap, type ConfirmMap } from "@/lib/approvals/policy";
@@ -156,6 +157,9 @@ export function AgentSettingsPermissions({
   }, [agent.allowedTools, agent.pluginConfig]);
 
   const hasWebToolChecked = webTools.some((tool) => allowedKbTools.includes(tool.id));
+  // Read from the saved agent, not the form state: unchecking the last web
+  // tool must not make the section vanish under the cursor before saving.
+  const hasSavedWebTool = webTools.some((tool) => agent.allowedTools.includes(tool.id));
 
   // A reindex operates on the SAVED grants (the route reads pluginConfig), so
   // the reindex section is gated on the persisted paths — never on the picker's
@@ -387,10 +391,14 @@ export function AgentSettingsPermissions({
         {kbTools.length > 0 && <div className="space-y-3">{kbTools.map(renderToolCheckbox)}</div>}
       </section>
 
-      {/* Web Search section — only when at least one active Web Search connection exists */}
-      {hasWebSearchApiKey && (
+      {/* Web Search section — when a Web Search connection exists, or when the
+          agent already holds a web tool without one (#1297: a web template
+          grants both tools regardless; hiding them would make the grant
+          invisible and impossible to revoke). */}
+      {(hasWebSearchApiKey || hasSavedWebTool) && (
         <section className="space-y-4">
           <h3 className="text-lg font-semibold">Web Search</h3>
+          {!hasWebSearchApiKey && <WebSearchNotSetUpNotice />}
           <div className="space-y-3">
             {webTools.map((tool) => (
               <div key={tool.id} className="flex items-center space-x-3">

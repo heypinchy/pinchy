@@ -1193,41 +1193,44 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     .from(integrationConnections)
     .where(eq(integrationConnections.type, "web-search"));
 
-  if (webSearchConnections.length > 0) {
-    const webConn = webSearchConnections[0];
+  // The plugin loads whenever an agent holds a web tool, provider or not
+  // (#1297). pinchy_web_fetch needs no key at all; pinchy_web_search answers
+  // "not configured" until an admin adds one, so the agent can say why
+  // instead of claiming it has no web tools. Gating the whole entry on the
+  // connection left web-template agents with neither tool.
+  const webConn = webSearchConnections[0];
+  const webAgentConfigs: Record<string, Record<string, unknown>> = {};
 
-    const webAgentConfigs: Record<string, Record<string, unknown>> = {};
+  for (const agent of liveAgents) {
+    const allowedTools = (agent.allowedTools as string[]) || [];
+    const hasWebSearch = allowedTools.includes("pinchy_web_search");
+    const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
 
-    for (const agent of liveAgents) {
-      const allowedTools = (agent.allowedTools as string[]) || [];
-      const hasWebSearch = allowedTools.includes("pinchy_web_search");
-      const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
+    if (hasWebSearch || hasWebFetch) {
+      const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
+      const tools: string[] = [];
+      if (hasWebSearch) tools.push("pinchy_web_search");
+      if (hasWebFetch) tools.push("pinchy_web_fetch");
 
-      if (hasWebSearch || hasWebFetch) {
-        const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
-        const tools: string[] = [];
-        if (hasWebSearch) tools.push("pinchy_web_search");
-        if (hasWebFetch) tools.push("pinchy_web_fetch");
-
-        webAgentConfigs[agent.id] = { tools, ...webConfig };
-      }
+      webAgentConfigs[agent.id] = { tools, ...webConfig };
     }
+  }
 
-    if (Object.keys(webAgentConfigs).length > 0) {
-      // No braveApiKey in plugin config. The plugin fetches it on demand
-      // from the credentials API — same pattern as pinchy-odoo / pinchy-email.
-      // See #209 for the bug class motivated this migration.
-      entries["pinchy-web"] = {
-        enabled: true,
-        config: {
-          apiBaseUrl:
-            process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-          gatewayToken: gatewayTokenString,
-          connectionId: webConn.id,
-          agents: webAgentConfigs,
-        },
-      };
-    }
+  if (Object.keys(webAgentConfigs).length > 0) {
+    // No braveApiKey in plugin config. The plugin fetches it on demand
+    // from the credentials API — same pattern as pinchy-odoo / pinchy-email.
+    // See #209 for the bug class motivated this migration. Without a
+    // connection there is no key to fetch, so connectionId is left out.
+    entries["pinchy-web"] = {
+      enabled: true,
+      config: {
+        apiBaseUrl:
+          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        gatewayToken: gatewayTokenString,
+        ...(webConn ? { connectionId: webConn.id } : {}),
+        agents: webAgentConfigs,
+      },
+    };
   }
 
   // Emit the pinchy-email plugin entry from the per-agent email configs

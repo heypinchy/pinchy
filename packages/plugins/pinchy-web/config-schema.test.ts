@@ -30,8 +30,20 @@ describe("pinchy-web manifest contract", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("requires apiBaseUrl, gatewayToken, connectionId, agents at the top level", () => {
+  it("requires apiBaseUrl, gatewayToken, agents at the top level", () => {
     expect(validatePluginEntry(manifest, { agents: {} }).ok).toBe(false);
+  });
+
+  // #1297: with no web-search provider configured, Pinchy still emits the
+  // entry so pinchy_web_fetch works — just without a connectionId.
+  it("accepts the config emitted when no web-search connection exists", () => {
+    const result = validatePluginEntry(manifest, {
+      apiBaseUrl: "http://pinchy:7777",
+      gatewayToken: "gw-token",
+      agents: { "agent-1": { tools: ["pinchy_web_search", "pinchy_web_fetch"] } },
+    });
+    if (!result.ok) throw new Error(result.errors.join("\n"));
+    expect(result.ok).toBe(true);
   });
 
   it("requires tools per agent", () => {

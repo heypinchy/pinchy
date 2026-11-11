@@ -99,7 +99,9 @@ describe("isSlotDue", () => {
 
 describe("nextIndexRun", () => {
   it("is tonight while today's slot is still ahead", () => {
-    expect(nextIndexRun({ date: "2026-10-17", minutes: 60 }, NIGHTLY, "UTC")).toEqual({
+    expect(
+      nextIndexRun({ date: "2026-10-17", minutes: 60 }, NIGHTLY, "UTC", "2026-10-16")
+    ).toMatchObject({
       date: "2026-10-17",
       time: "02:00",
       day: "today",
@@ -108,7 +110,9 @@ describe("nextIndexRun", () => {
   });
 
   it("is tomorrow once today's slot has passed", () => {
-    expect(nextIndexRun({ date: "2026-10-17", minutes: 600 }, NIGHTLY, "UTC")).toEqual({
+    expect(
+      nextIndexRun({ date: "2026-10-17", minutes: 600 }, NIGHTLY, "UTC", "2026-10-17")
+    ).toMatchObject({
       date: "2026-10-18",
       time: "02:00",
       day: "tomorrow",
@@ -116,20 +120,51 @@ describe("nextIndexRun", () => {
     });
   });
 
+  // The fall-back night: a 02:30 slot in Vienna ran at the first 02:30, then
+  // the clock went back to 02:00. The local time is before 02:30 again, but
+  // tonight's slot is taken — the next run is tomorrow's, not one that
+  // already happened.
+  it("is tomorrow when the clock went back past a slot already taken today", () => {
+    const halfHourly: IndexSchedule = { enabled: true, time: "02:30" };
+    const clock = localClock(new Date("2026-10-25T01:10:00Z"), "Europe/Vienna");
+    expect(clock).toEqual({ date: "2026-10-25", minutes: 130 });
+    expect(nextIndexRun(clock, halfHourly, "Europe/Vienna", "2026-10-25")).toEqual({
+      date: "2026-10-26",
+      time: "02:30",
+      day: "tomorrow",
+      at: "2026-10-26T01:30:00.000Z",
+    });
+  });
+
+  // No state yet, or one the scheduler is about to re-take: today's slot
+  // still lies ahead.
+  it.each([null, "corrupt", "2027-01-01"])(
+    "is tonight while today's slot is ahead and the last slot is %s",
+    (lastSlot) => {
+      expect(
+        nextIndexRun({ date: "2026-10-17", minutes: 60 }, NIGHTLY, "UTC", lastSlot)
+      ).toMatchObject({
+        date: "2026-10-17",
+        time: "02:00",
+        day: "today",
+      });
+    }
+  );
+
   // The instant is what lets a viewer in another zone read the run in their
   // own time: 02:00 in Vienna is 00:00 UTC in summer and 01:00 UTC in winter.
   it("carries the instant of the run, read in the org timezone", () => {
-    expect(nextIndexRun({ date: "2026-07-17", minutes: 60 }, NIGHTLY, "Europe/Vienna")?.at).toBe(
-      "2026-07-17T00:00:00.000Z"
-    );
-    expect(nextIndexRun({ date: "2026-12-17", minutes: 60 }, NIGHTLY, "Europe/Vienna")?.at).toBe(
-      "2026-12-17T01:00:00.000Z"
-    );
+    expect(
+      nextIndexRun({ date: "2026-07-17", minutes: 60 }, NIGHTLY, "Europe/Vienna", null)?.at
+    ).toBe("2026-07-17T00:00:00.000Z");
+    expect(
+      nextIndexRun({ date: "2026-12-17", minutes: 60 }, NIGHTLY, "Europe/Vienna", null)?.at
+    ).toBe("2026-12-17T01:00:00.000Z");
   });
 
   it("is nothing while the schedule is off", () => {
     expect(
-      nextIndexRun({ date: "2026-10-17", minutes: 60 }, { ...NIGHTLY, enabled: false }, "UTC")
+      nextIndexRun({ date: "2026-10-17", minutes: 60 }, { ...NIGHTLY, enabled: false }, "UTC", null)
     ).toBe(null);
   });
 });
@@ -152,13 +187,14 @@ describe("slotInstant", () => {
 
   it("is the first minute after the gap on the spring-forward night", () => {
     // 2026-03-29 in Vienna: 02:00 never happens; the slot is due at 03:00 CEST.
+    const halfPast: IndexSchedule = { enabled: true, time: "02:30" };
     const at = slotInstant("2026-03-29", "02:30", "Europe/Vienna");
     expect(at.toISOString()).toBe("2026-03-29T01:00:00.000Z");
-    expect(isSlotDue(localClock(at, "Europe/Vienna"), NIGHTLY, "2026-03-28")).toBe(true);
+    expect(isSlotDue(localClock(at, "Europe/Vienna"), halfPast, "2026-03-28")).toBe(true);
     expect(
       isSlotDue(
         localClock(new Date(at.getTime() - 60_000), "Europe/Vienna"),
-        { enabled: true, time: "02:30" },
+        halfPast,
         "2026-03-28"
       )
     ).toBe(false);

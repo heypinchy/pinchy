@@ -16,7 +16,11 @@ import { NextRequest } from "next/server";
 
 import { mockSession } from "@/test-helpers/auth";
 import { setSetting } from "@/lib/settings";
-import { getIndexSchedule, saveIndexScheduleState } from "@/lib/knowledge/index-schedule-store";
+import {
+  getIndexSchedule,
+  saveIndexSchedule,
+  saveIndexScheduleState,
+} from "@/lib/knowledge/index-schedule-store";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -121,6 +125,54 @@ describe("GET /api/settings/knowledge-index-schedule", () => {
     });
   });
 
+  // The fall-back night in Vienna: the 02:30 slot ran at 02:30 CEST, then the
+  // clock went back. At 02:10 CET the local time is before 02:30 again, but
+  // tonight's run already happened — the screen must not promise it again.
+  it("reports tomorrow, not a run that already happened, after the clock went back", async () => {
+    await saveIndexSchedule({ enabled: true, time: "02:30" });
+    await saveIndexScheduleState({
+      lastSlot: "2026-10-25",
+      schedule: { enabled: true, time: "02:30" },
+      timezone: "Europe/Vienna",
+      sweep: null,
+      lastSweep: null,
+    });
+    vi.setSystemTime(new Date("2026-10-25T01:10:00Z"));
+
+    const body = await (await GET(new NextRequest(URL), ctx as never)).json();
+
+    expect(body.nextRun).toEqual({
+      date: "2026-10-26",
+      time: "02:30",
+      day: "tomorrow",
+      at: "2026-10-26T01:30:00.000Z",
+    });
+  });
+
+  // Tonight's 23:30 was taken in Tokyo; the org then moved to Vienna, where it
+  // is 17:00. The scheduler re-takes the slot on Vienna's clock and runs at
+  // 23:30 tonight, so the screen must not read Tokyo's slot as tonight's.
+  it("reports today after a timezone change, even though today's slot was taken in the old zone", async () => {
+    await saveIndexSchedule({ enabled: true, time: "23:30" });
+    await saveIndexScheduleState({
+      lastSlot: "2026-10-17",
+      schedule: { enabled: true, time: "23:30" },
+      timezone: "Asia/Tokyo",
+      sweep: null,
+      lastSweep: null,
+    });
+    vi.setSystemTime(new Date("2026-10-17T15:00:00Z"));
+
+    const body = await (await GET(new NextRequest(URL), ctx as never)).json();
+
+    expect(body.nextRun).toEqual({
+      date: "2026-10-17",
+      time: "23:30",
+      day: "today",
+      at: "2026-10-17T21:30:00.000Z",
+    });
+  });
+
   it("is admin-only", async () => {
     mockGetSession.mockResolvedValue(member);
     const res = await GET(new NextRequest(URL), ctx as never);
@@ -145,6 +197,28 @@ describe("PUT /api/settings/knowledge-index-schedule", () => {
       },
     });
     expect(await getIndexSchedule()).toEqual({ enabled: true, time: "23:30" });
+  });
+
+  // Tonight's 02:00 already ran. Moving the time to 23:30 is a new schedule:
+  // the scheduler re-takes the slot against it, so 23:30 today still runs —
+  // and the answer must say so rather than read the old slot as tonight's.
+  it("answers today for a new time still ahead, even after today's slot under the old time ran", async () => {
+    await saveIndexScheduleState({
+      lastSlot: "2026-10-16",
+      schedule: { enabled: true, time: "02:00" },
+      timezone: "Europe/Vienna",
+      sweep: null,
+      lastSweep: null,
+    });
+
+    const res = await PUT(putRequest({ enabled: true, time: "23:30" }), ctx as never);
+
+    expect((await res.json()).nextRun).toEqual({
+      date: "2026-10-16",
+      time: "23:30",
+      day: "today",
+      at: "2026-10-16T21:30:00.000Z",
+    });
   });
 
   it("switches the nightly run off", async () => {

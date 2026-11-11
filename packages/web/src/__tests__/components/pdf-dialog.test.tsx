@@ -18,8 +18,13 @@
  * which is also the only thing that works on iOS Safari, where an embedded PDF
  * renders blank no matter what we do.
  */
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+
+const mockOpenPdf = vi.fn();
+vi.mock("@/lib/pdf/browser-pdf", () => ({
+  openPdf: (...args: unknown[]) => mockOpenPdf(...args),
+}));
 
 import { PdfDialog } from "@/components/assistant-ui/attachment-preview";
 import { buildSourceDownloads, buildSourceHref } from "@/lib/knowledge/source-links";
@@ -33,13 +38,13 @@ function openDialog(url: string, title: string, page: number | null = null) {
 }
 
 const SOURCE_URL =
-  "/api/agents/a1/workspace-file?path=%2Fdata%2Fnoack%2FPPR%2Fdocument.pdf#page=510";
+  "/api/agents/a1/workspace-file?path=%2Fdata%2Fcustomer%2FPPR%2Fdocument.pdf#page=510";
 
 describe("PdfDialog", () => {
   it("names the document by its filename, not the route or the full path", () => {
     // Chrome's own title bar reads "workspace-file" here — the route segment.
     // A reader checking a citation needs to know WHICH document opened.
-    openDialog(SOURCE_URL, "noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "customer/PPR/document.pdf");
 
     expect(screen.getByText("document.pdf")).toBeInTheDocument();
   });
@@ -47,9 +52,9 @@ describe("PdfDialog", () => {
   it("keeps the full path reachable without spending width on it", () => {
     // A corpus has same-named files in different folders, so the path has to
     // survive somewhere — but it must not push the controls off a narrow screen.
-    openDialog(SOURCE_URL, "noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "customer/PPR/document.pdf");
 
-    expect(screen.getByTitle("noack/PPR/document.pdf")).toBeInTheDocument();
+    expect(screen.getByTitle("customer/PPR/document.pdf")).toBeInTheDocument();
   });
 
   it("shows which page the citation pointed at", () => {
@@ -57,7 +62,7 @@ describe("PdfDialog", () => {
     // decided what a citation's page is; a second regex here would be a second
     // answer to the same question, and the two had already drifted (`\d{1,5}`
     // against a whole fragment vs `\d+` anywhere in the string).
-    openDialog(SOURCE_URL, "noack/PPR/document.pdf", 510);
+    openDialog(SOURCE_URL, "customer/PPR/document.pdf", 510);
 
     expect(screen.getByText(/page 510/i)).toBeInTheDocument();
   });
@@ -72,7 +77,7 @@ describe("PdfDialog", () => {
   it("offers a full tab, which is the only working path on iOS Safari", () => {
     // iOS Safari renders an embedded PDF blank regardless of headers or markup.
     // Without this link the dialog is a dead end on every iPhone.
-    openDialog(SOURCE_URL, "noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "customer/PPR/document.pdf");
 
     const link = screen.getByRole("link", { name: /open in new tab/i });
     expect(link).toHaveAttribute("href", SOURCE_URL);
@@ -82,14 +87,14 @@ describe("PdfDialog", () => {
   });
 
   it("still closes", () => {
-    openDialog(SOURCE_URL, "noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "customer/PPR/document.pdf");
 
     expect(screen.getByRole("button", { name: /close/i })).toBeInTheDocument();
   });
 
   it("renders the viewer at the exact url it was given, fragment included", () => {
     // The `#page=N` fragment is the whole reason a citation lands where it does.
-    const { container } = openDialog(SOURCE_URL, "noack/PPR/document.pdf");
+    const { container } = openDialog(SOURCE_URL, "customer/PPR/document.pdf");
 
     const embed = container.ownerDocument.querySelector("embed");
     expect(embed).toHaveAttribute("src", SOURCE_URL);
@@ -112,7 +117,7 @@ describe("PdfDialog", () => {
  */
 describe("PdfDialog — taking the document", () => {
   it("offers a way to keep the document, not just look at it", () => {
-    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "/data/customer/PPR/document.pdf");
 
     // A link, not a div with a click handler: that is what makes it reachable
     // by keyboard at all, and `getByRole("link")` only matches an element that
@@ -125,13 +130,13 @@ describe("PdfDialog — taking the document", () => {
     // Same bytes, different act. Without the flag the request is
     // indistinguishable from opening the viewer, and the audit trail cannot
     // answer who took the actual spec sheet out of the building.
-    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "/data/customer/PPR/document.pdf");
 
     const href = screen.getByRole("link", { name: /download/i }).getAttribute("href")!;
     const parsed = new URL(href, "http://localhost");
     expect(parsed.searchParams.get("download")).toBe("1");
     // The path has to survive intact — it is what the route resolves.
-    expect(parsed.searchParams.get("path")).toBe("/data/noack/PPR/document.pdf");
+    expect(parsed.searchParams.get("path")).toBe("/data/customer/PPR/document.pdf");
   });
 
   it("also asks the browser to save, for the routes that never see the flag", () => {
@@ -151,7 +156,7 @@ describe("PdfDialog — taking the document", () => {
   it("downloads the whole document even when the citation opened at one page", () => {
     // `#page=510` positions a viewer. Carried onto a download it means nothing,
     // and a saved file named after a fragment would be worse than nothing.
-    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "/data/customer/PPR/document.pdf");
 
     const href = screen.getByRole("link", { name: /download/i }).getAttribute("href")!;
     expect(href).not.toContain("#");
@@ -161,7 +166,7 @@ describe("PdfDialog — taking the document", () => {
     // Wave 2 puts a second entry beside this one (the original next to its
     // converted PDF), and two controls both labelled "Download" would be a
     // coin flip for anyone not looking at the screen.
-    openDialog(SOURCE_URL, "/data/noack/PPR/document.pdf");
+    openDialog(SOURCE_URL, "/data/customer/PPR/document.pdf");
 
     expect(screen.getByRole("link", { name: /download document\.pdf/i })).toBeInTheDocument();
   });
@@ -173,7 +178,7 @@ describe("PdfDialog — taking the document", () => {
     render(
       <PdfDialog
         url={SOURCE_URL}
-        title="/data/noack/PPR/report.docx"
+        title="/data/customer/PPR/report.docx"
         downloads={[
           {
             label: "original",
@@ -200,11 +205,14 @@ describe("PdfDialog — taking the document", () => {
     // download urls and the preview url describing one document. Rendering it
     // here proves the two halves fit — the list shape and the labels a reader
     // actually distinguishes them by.
-    const href = buildSourceHref("a1", "noack/QF_2012/Angebot.doc", { kind: "page", page: 3 });
+    const href = buildSourceHref("a1", "customer/archive-2012/Angebot.doc", {
+      kind: "page",
+      page: 3,
+    });
     render(
       <PdfDialog
         url={href}
-        title="noack/QF_2012/Angebot.doc"
+        title="customer/archive-2012/Angebot.doc"
         page={3}
         downloads={buildSourceDownloads(href)!}
         defaultOpen
@@ -223,11 +231,11 @@ describe("PdfDialog — taking the document", () => {
     // Labelled by filename, both read "Vorlage_Wartung…" once the header
     // truncated them. The visible label says which representation each is;
     // the tooltip still says which file lands in the downloads folder.
-    const href = buildSourceHref("a1", "noack/Vorlage_Wartung_Kundendienst_2026.docx", null);
+    const href = buildSourceHref("a1", "customer/Vorlage_Wartung_Kundendienst_2026.docx", null);
     render(
       <PdfDialog
         url={href}
-        title="noack/Vorlage_Wartung_Kundendienst_2026.docx"
+        title="customer/Vorlage_Wartung_Kundendienst_2026.docx"
         downloads={buildSourceDownloads(href)!}
         defaultOpen
       >
@@ -250,12 +258,160 @@ describe("PdfDialog — taking the document", () => {
     // Download and Close off the right edge of a phone, which is exactly where
     // a reader forwarding a document to a customer is most likely to be.
     const longName = "Prüfbericht Nr. 5 – Ölwanne, Revision C, freigegeben 2026-07-28.pdf";
-    openDialog(SOURCE_URL, `/data/noack/PPR/${longName}`);
+    openDialog(SOURCE_URL, `/data/customer/PPR/${longName}`);
 
     const title = screen.getByText(longName);
     expect(title.className).toContain("truncate");
 
     const controls = screen.getByRole("link", { name: /download/i }).parentElement!;
     expect(controls.className).toContain("shrink-0");
+  });
+});
+
+/**
+ * A page citation with a passage to find opens into our own renderer instead
+ * of the browser's viewer, which cannot highlight (#1268). Everything else
+ * keeps the browser's viewer — see citation-pdf-viewer.test.tsx for the
+ * renderer itself.
+ */
+describe("PdfDialog with a passage to highlight", () => {
+  const passage = {
+    url: "/api/agents/a1/knowledge/passage",
+    body: { path: "/data/customer/PPR/document.pdf", page: 510 },
+  };
+
+  it("draws the cited page itself instead of embedding the browser's viewer", async () => {
+    mockOpenPdf.mockReset().mockResolvedValue({
+      numPages: 600,
+      renderPage: vi.fn(async () => ({ width: 600, height: 800, runs: [] })),
+      destroy: vi.fn(),
+    });
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ passage: null }), { status: 200 }));
+
+    render(
+      <PdfDialog
+        url={SOURCE_URL}
+        title="customer/PPR/document.pdf"
+        page={510}
+        passage={passage}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    expect(await screen.findByText("Page 510 of 600")).toBeInTheDocument();
+    expect(document.querySelector("embed")).toBeNull();
+    // One page label, not the header's and the viewer's both.
+    expect(screen.getAllByText(/page 510/i)).toHaveLength(1);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    fetchSpy.mockRestore();
+  });
+
+  it("falls back to the browser's viewer at the cited page when the document will not open", async () => {
+    mockOpenPdf.mockReset().mockRejectedValue(new Error("Invalid PDF structure"));
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ passage: null }), { status: 200 }));
+
+    render(
+      <PdfDialog
+        url={SOURCE_URL}
+        title="customer/PPR/document.pdf"
+        page={510}
+        passage={passage}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    await waitFor(() => expect(document.querySelector("embed")).toHaveAttribute("src", SOURCE_URL));
+    expect(screen.getByText(/page 510/i)).toBeInTheDocument();
+    fetchSpy.mockRestore();
+  });
+
+  it("keeps the browser's viewer when there is no passage to look for", () => {
+    mockOpenPdf.mockReset();
+
+    render(
+      <PdfDialog
+        url={SOURCE_URL}
+        title="customer/PPR/document.pdf"
+        page={510}
+        passage={null}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    expect(document.querySelector("embed")).toHaveAttribute("src", SOURCE_URL);
+    expect(mockOpenPdf).not.toHaveBeenCalled();
+  });
+
+  it("draws a slide citation at its slide, which is the converted PDF's page", async () => {
+    const renderPage = vi.fn(async (_page: number) => ({ width: 600, height: 800, runs: [] }));
+    mockOpenPdf.mockReset().mockResolvedValue({ numPages: 20, renderPage, destroy: vi.fn() });
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ passage: null }), { status: 200 }));
+    const deckUrl = "/api/agents/a1/workspace-file/Pitch.pdf?path=%2Fdata%2Fsales%2FPitch.pptx";
+
+    render(
+      <PdfDialog
+        url={deckUrl}
+        title="sales/Pitch.pptx"
+        page={null}
+        passage={{
+          url: "/api/agents/a1/knowledge/passage",
+          body: { path: "/data/sales/Pitch.pptx", slide: 7 },
+        }}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    expect(await screen.findByText("Page 7 of 20")).toBeInTheDocument();
+    expect(renderPage.mock.calls[0][0]).toBe(7);
+    expect(document.querySelector("embed")).toBeNull();
+    fetchSpy.mockRestore();
+  });
+
+  it("opens a Word citation as before when its heading cannot be found", async () => {
+    mockOpenPdf.mockReset().mockResolvedValue({
+      numPages: 20,
+      renderPage: vi.fn(),
+      outline: vi.fn(async () => []),
+      pageRuns: vi.fn(async () => []),
+      destroy: vi.fn(),
+    });
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ passage: null }), { status: 200 }));
+    const wordUrl = "/api/agents/a1/workspace-file/Handbuch.pdf?path=%2Fdata%2Fq%2FHandbuch.docx";
+
+    render(
+      <PdfDialog
+        url={wordUrl}
+        title="q/Handbuch.docx"
+        page={null}
+        passage={{
+          url: "/api/agents/a1/knowledge/passage",
+          body: { path: "/data/q/Handbuch.docx", heading: "Wartung" },
+        }}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    await waitFor(() => expect(document.querySelector("embed")).toHaveAttribute("src", wordUrl));
+    // No page to name: the browser's viewer opens at the top, as it did.
+    expect(screen.queryByText(/page \d/i)).not.toBeInTheDocument();
+    fetchSpy.mockRestore();
   });
 });

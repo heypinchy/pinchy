@@ -235,6 +235,21 @@ describe("runSoffice", () => {
     expect(result.stderr).toContain(`impl_store <file://${dir}/out/19.pdf> failed`);
   });
 
+  it("caps stderr at exactly 32 KB, however large the chunk it arrives in", async () => {
+    // A pipe read can deliver 64 KB at once; the cap has to hold for the
+    // chunk that crosses it, or the answer outgrows what the web side reads.
+    const big = join(tmpRoot, "big");
+    writeFileSync(big, "\u0001".repeat(200_000));
+    process.env.KB_SOFFICE_BIN = stub("soffice-burst", `cat ${big} >&2\n`);
+
+    const result = await run();
+
+    expect(result.stderr.length).toBe(32 * 1024);
+    // Even escaped six-fold, as JSON does with control characters, the
+    // answer stays under the 256 KB the web side accepts.
+    expect(JSON.stringify(result).length).toBeLessThan(256 * 1024);
+  });
+
   it("rejects rather than resolving when the binary is missing", async () => {
     process.env.KB_SOFFICE_BIN = join(tmpRoot, "not-installed");
 
@@ -265,6 +280,42 @@ describe("runSoffice", () => {
       const grandchild = Number(await readFile(pidFile, "utf8"));
       expect(grandchild).toBeGreaterThan(0);
       expect(await isGone(grandchild)).toBe(true);
+    }, 15_000);
+
+    it("answers once the converter has exited, even when something it started still holds its stderr", async () => {
+      // 'close' waits for every holder of the stderr pipe. A process the
+      // converter left behind must not keep the batch from answering — the
+      // sidecar's leftover check needs the answer to run at all.
+      const pidFile = join(tmpRoot, "holder.pid");
+      process.env.KB_SOFFICE_BIN = stub(
+        "soffice-leaves-holder",
+        `sleep 30 &\nprintf '%s' "$!" > ${pidFile}\nexit 0\n`
+      );
+      const started = Date.now();
+
+      const result = await run({ timeoutMs: 60_000 });
+
+      expect(result).toMatchObject({ code: 0, timedOut: false });
+      expect(Date.now() - started).toBeLessThan(15_000);
+      expect(await isGone(Number(await readFile(pidFile, "utf8")))).toBe(true);
+    }, 30_000);
+
+    it("does not call a converter that exited in time timed out while its stderr drains", async () => {
+      // It exits before the budget; something it started holds stderr past
+      // the budget. The batch finished — its PDFs are written — and must not
+      // be booked as "exceeded its time budget".
+      const pidFile = join(tmpRoot, "late-holder.pid");
+      process.env.KB_SOFFICE_BIN = stub(
+        "soffice-exits-in-time",
+        `sleep 30 &\nprintf '%s' "$!" > ${pidFile}\nsleep 2\nexit 0\n`
+      );
+
+      // Exits at ~2 s; the budget ends at 3.5 s, inside the 2 s drain that
+      // follows — with room for a slow start on a loaded machine.
+      const result = await run({ timeoutMs: 3_500 });
+
+      expect(result).toMatchObject({ code: 0, timedOut: false });
+      expect(await isGone(Number(await readFile(pidFile, "utf8")))).toBe(true);
     }, 15_000);
 
     it("does not fire for a converter that finishes in time", async () => {

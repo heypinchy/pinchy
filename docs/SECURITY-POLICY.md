@@ -14,15 +14,16 @@ This document describes the security architecture, controls, and practices of th
 
 ## 2. Architecture Overview
 
-Pinchy runs as a Docker Compose stack with three services on a single host:
+Pinchy runs as a Docker Compose stack with four services on a single host:
 
-| Service              | Purpose                        | Communication                  |
-| -------------------- | ------------------------------ | ------------------------------ |
-| **Pinchy Web**       | Next.js application (UI + API) | Serves HTTP/WebSocket to users |
-| **PostgreSQL**       | Data storage                   | Localhost only                 |
-| **OpenClaw Gateway** | AI agent runtime               | Localhost WebSocket bridge     |
+| Service              | Purpose                                           | Communication                                                            |
+| -------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ |
+| **Pinchy Web**       | Next.js application (UI + API)                    | Serves HTTP/WebSocket to users                                           |
+| **PostgreSQL**       | Data storage                                      | Localhost only                                                           |
+| **OpenClaw Gateway** | AI agent runtime                                  | Localhost WebSocket bridge                                               |
+| **Office converter** | Word and PowerPoint to PDF for the knowledge base | No network at all; a Unix socket in a volume shared with Pinchy Web only |
 
-All inter-service communication occurs over **localhost**. No service is required to be exposed to the public internet except the Pinchy Web application (via reverse proxy configured by the customer).
+All inter-service communication occurs over **localhost**, except the Office converter's, which has no network and talks to Pinchy Web over a Unix socket. No service is required to be exposed to the public internet except the Pinchy Web application (via reverse proxy configured by the customer).
 
 ---
 

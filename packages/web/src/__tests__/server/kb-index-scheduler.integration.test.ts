@@ -10,9 +10,9 @@
  * every case says exactly which wall-clock moment it is about.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { makeKbSourceRoot } from "@/test-helpers/kb-source-root";
 import { asc, eq } from "drizzle-orm";
 
 import { db } from "@/db";
@@ -58,7 +58,7 @@ beforeEach(async () => {
   // (see runKbIndexSchedulerTick below).
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-10-01T00:00:00Z"));
-  tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-scheduler-test-"));
+  tmpRoot = makeKbSourceRoot("pinchy-kb-scheduler-test-");
   _resetKbIndexSchedulerForTest();
   _resetKbIndexWorkerForTest();
   mockKbEmbedderAvailable.mockReturnValue(true);
@@ -524,6 +524,49 @@ describe("kb index scheduler", () => {
     await runKbIndexSchedulerTick({ now: vienna("2026-10-20", "02:20") });
 
     expect((await jobs()).map((j) => j.agentId)).toEqual([first.id, second.id]);
+  });
+
+  // On the fall-back night the hour before the change happens twice. A slot
+  // inside it that is not on the hour — 02:30 in Vienna, 01:30 in New York —
+  // passes, the clock goes back, and for the next half hour the latest passed
+  // slot reads as yesterday's again. That is the clock repeating itself, not a
+  // last slot from the future, and the second 02:30 must not start a second
+  // full walk of every knowledge base.
+  describe("on the night the clock goes back", () => {
+    it.each([
+      [
+        "Europe/Vienna",
+        "02:30",
+        "2026-10-25T00:00:00Z",
+        "2026-10-25T02:00:00Z",
+        "2026-10-25T00:30:00.000Z",
+      ],
+      [
+        "America/New_York",
+        "01:30",
+        "2026-11-01T04:00:00Z",
+        "2026-11-01T07:00:00Z",
+        "2026-11-01T05:30:00.000Z",
+      ],
+    ])(
+      "runs once in %s for a %s slot inside the repeated hour",
+      async (timezone, time, from, to, firstOccurrence) => {
+        await setSetting("org.timezone", timezone);
+        await saveIndexSchedule({ enabled: true, time });
+        await makeAgent("Handbook");
+
+        for (let t = Date.parse(from); t <= Date.parse(to); t += 60_000) {
+          await runKbIndexSchedulerTick({ now: new Date(t) });
+          // Finish each queued run at once, so a second sweep is not held
+          // back merely by the first one still draining.
+          await runNextIndexJob({ deps: fakeDeps() });
+        }
+
+        expect(await jobs()).toHaveLength(1);
+        // The first occurrence, the one isSlotDue promises — not the repeat.
+        expect((await getIndexScheduleState()).lastSweep?.startedAt).toBe(firstOccurrence);
+      }
+    );
   });
 
   describe("when the admin changes the schedule", () => {

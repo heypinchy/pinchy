@@ -75,6 +75,7 @@ import { useShareIntake } from "@/components/share/use-share-intake";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { canOfferInstructionHandoff, stashInstructionDraft } from "@/lib/instruction-handoff";
+import { KnowledgeFirstIndexNotice } from "@/components/chat/knowledge-first-index-notice";
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -102,6 +103,7 @@ const MessageTimestamp: FC = () => {
 };
 
 const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMessages }) => {
+  const agentId = useContext(AgentIdContext);
   return (
     <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
       {!isReconcilingMessages && (
@@ -128,6 +130,9 @@ const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMess
 
       <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
         <ThreadScrollToBottom />
+        {/* Above the composer, where it is read before the question it would
+            otherwise answer "nothing found" to (#1280). */}
+        {agentId && <KnowledgeFirstIndexNotice agentId={agentId} />}
         <Composer />
       </ThreadPrimitive.ViewportFooter>
     </ThreadPrimitive.Viewport>

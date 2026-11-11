@@ -54,6 +54,18 @@ vi.mock("@/components/knowledge-unsearchable-list", async () => {
   };
 });
 
+// The folder tree owns its own reads too (knowledge-folder-tree.test.tsx).
+// Stubbed so it does not add calls to the conversation this file counts.
+vi.mock("@/components/knowledge-folder-tree", () => ({
+  KnowledgeFolderTree: (props: { agentId: string; reloadKey?: string }) => (
+    <div
+      data-testid="folder-tree"
+      data-agent-id={props.agentId}
+      data-reload-key={props.reloadKey}
+    />
+  ),
+}));
+
 const mockGet = vi.mocked(apiGet);
 const mockPost = vi.mocked(apiPost);
 
@@ -390,6 +402,29 @@ describe("KnowledgeReindexSection", () => {
 
       await waitFor(() => expect(screen.getByText(/indexing 3 of 10/i)).toBeInTheDocument());
       expect(screen.queryByTestId("unsearchable-list")).not.toBeInTheDocument();
+    });
+
+    // The folder tree (#1386) is the one detail that stays during a run:
+    // "which folder is it in?" is asked exactly then.
+    it("shows the folder tree while a run is in flight", async () => {
+      mockGet.mockResolvedValue({ job: job({ status: "running", processed: 3, total: 10 }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      expect(await screen.findByTestId("folder-tree")).toHaveAttribute("data-agent-id", "a1");
+    });
+
+    it("hides the folder tree without a grant, and while directory changes are unsaved", async () => {
+      mockGet.mockResolvedValue({ job: null });
+      const view = render(<KnowledgeReindexSection agentId="a1" allowedPathCount={0} />);
+      await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeDisabled());
+      expect(screen.queryByTestId("folder-tree")).not.toBeInTheDocument();
+
+      view.rerender(
+        <KnowledgeReindexSection agentId="a1" allowedPathCount={2} hasUnsavedPathChanges />
+      );
+      await screen.findByText(/save your directory changes first/i);
+      expect(screen.queryByTestId("folder-tree")).not.toBeInTheDocument();
     });
 
     it("hides the list when no directory is granted", async () => {
@@ -1070,15 +1105,17 @@ describe("KnowledgeReindexSection", () => {
     });
 
     // "today" and "tomorrow" are the viewer's too: 02:00 UTC is still today
-    // for someone in New York at 20:00 the evening before.
+    // for someone in New York at 19:00 the evening before.
     it("says today or tomorrow by the viewer's calendar, not the organization's", async () => {
-      viewIn("America/New_York", "2026-10-17T00:00:00.000Z"); // 20:00 on the 16th in New York
+      // 19:00 on the 16th in New York, 23:00 on the 16th in UTC: the run at
+      // 02:00 UTC is tomorrow for the organization and still today here.
+      viewIn("America/New_York", "2026-10-16T23:00:00.000Z");
       mockGet.mockResolvedValue({
         job: null,
         schedule: {
           ...nightly,
           timezone: "UTC",
-          nextRun: { ...nightly.nextRun, day: "today", at: "2026-10-17T02:00:00.000Z" },
+          nextRun: { ...nightly.nextRun, day: "tomorrow", at: "2026-10-17T02:00:00.000Z" },
         },
       });
 
