@@ -1301,8 +1301,8 @@ export const kbDocuments = pgTable(
 );
 
 // kb_unsupported_files is the list behind the "not supported" count (#1267):
-// files under a granted folder whose type the indexer cannot read (an Outlook
-// `.msg`, a legacy `.xls`, an `.rtf`). They have no kb_documents row — ingest
+// files under a granted folder whose type the indexer cannot read (an `.rtf`, a
+// binary `.xlsb`). They have no kb_documents row — ingest
 // never opens them — so without this table nothing in the database says they
 // exist, and a gap in the agent's answers reads as a model problem.
 //

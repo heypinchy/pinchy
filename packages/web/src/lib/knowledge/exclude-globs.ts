@@ -22,6 +22,7 @@
  * test, and override.
  */
 import {
+  MSG_EXTENSIONS,
   OFFICE_EXTENSIONS,
   SCAN_EXTENSIONS,
   SPREADSHEET_EXTENSIONS,
@@ -43,8 +44,9 @@ import {
  * exactly that reason and stays absent — LibreOffice would convert it, but a
  * sheet has no page to cite (see `SPREADSHEET_EXTENSIONS`).
  *
- * Scanned TIFFs and plain text joined in #1409: a TIFF is read through the
- * scanned-PDF path's OCR, a `.txt` as it is.
+ * Scanned TIFFs, plain text and Outlook messages joined in #1409: a TIFF is
+ * read through the scanned-PDF path's OCR, a `.txt` as it is, a `.msg` as its
+ * headers and body.
  */
 export const DEFAULT_ALLOWED_EXTENSIONS: readonly string[] = [
   ".pdf",
@@ -52,6 +54,7 @@ export const DEFAULT_ALLOWED_EXTENSIONS: readonly string[] = [
   ...OFFICE_EXTENSIONS,
   ...SCAN_EXTENSIONS,
   ...TEXT_EXTENSIONS,
+  ...MSG_EXTENSIONS,
 ];
 
 /** Exact (case-insensitive) file names that are always OS artifacts. */

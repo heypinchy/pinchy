@@ -74,6 +74,7 @@ import { join } from "node:path";
 
 import { OfficeFileRejectedError, StagedCopyWriteError } from "./office-formats";
 import type { StagedSource } from "./office-preflight";
+import type { ParsedEmail } from "./msg-extract";
 import type { TiffConversion } from "./tiff-pdf";
 import {
   XlsxExtractionError,
@@ -110,7 +111,9 @@ export type SheetReaderRequest =
   /** The Office file at `path`, checked and written to `dest` (`stageOfficeSource`). */
   | { op: "stage-office"; path: string; dest: string }
   /** The TIFF at `path`, one PDF page per frame, written to `dest` (`tiffToPdf`). */
-  | { op: "tiff-pdf"; path: string; dest: string; maxFrames: number };
+  | { op: "tiff-pdf"; path: string; dest: string; maxFrames: number }
+  /** The Outlook message at `path`, parsed to headers and body (`parseMsg`). */
+  | { op: "msg"; path: string };
 
 /** What the reader is called in its errors and log lines: the job it was doing. */
 function readerName(request: SheetReaderRequest): string {
@@ -121,6 +124,8 @@ function readerName(request: SheetReaderRequest): string {
       return "Office preflight";
     case "tiff-pdf":
       return "TIFF reader";
+    case "msg":
+      return "Outlook message reader";
     default:
       return "spreadsheet reader";
   }
@@ -525,4 +530,17 @@ export async function tiffToPdfIsolated(
     { op: "tiff-pdf", path: absPath, dest, maxFrames: opts.maxFrames },
     { timeoutMs: TIFF_READER_TIMEOUT_MS, ...readerOptions }
   )) as TiffConversion;
+}
+
+/**
+ * `parseMsg`, in a child process (#1409). The parser walks an untrusted
+ * Compound File and inflates compressed RTF, so it runs behind the same fence
+ * as the other readers. A refusal is `OfficeFileRejectedError`; a child that
+ * stopped any other way is a `SheetReaderStoppedError`.
+ */
+export async function readMsgIsolated(
+  absPath: string,
+  readerOptions: SheetReaderOptions = {}
+): Promise<ParsedEmail> {
+  return (await runSheetReader({ op: "msg", path: absPath }, readerOptions)) as ParsedEmail;
 }

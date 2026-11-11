@@ -47,6 +47,7 @@ import { chmod } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeKbSourceRoot } from "@/test-helpers/kb-source-root";
+import { buildMsg } from "@/test-helpers/msg-fixture";
 import { format } from "node:util";
 import { and, count, eq } from "drizzle-orm";
 import ExcelJS from "exceljs";
@@ -117,6 +118,7 @@ import {
   SCAN_ARTIFACT_FORMAT_VERSION,
 } from "@/lib/knowledge/office-artifacts";
 import { stageOfficeSourceIsolated } from "@/lib/knowledge/xlsx-isolated";
+import { parseMsg, type ParsedEmail } from "@/lib/knowledge/msg-extract";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 import { listUnsupportedFiles, type UnsupportedFile } from "@/lib/knowledge/unsupported-files";
 import { DEFAULT_ALLOWED_EXTENSIONS } from "@/lib/knowledge/exclude-globs";
@@ -175,6 +177,11 @@ const neverCalledScan = async (): Promise<ScanConversion> => {
   throw new Error("convertScan must not be called for anything but a TIFF");
 };
 
+/** And for the mail reader: only a .msg may reach it. */
+const neverCalledEmail = async (): Promise<ParsedEmail> => {
+  throw new Error("readEmail must not be called for anything but an Outlook message");
+};
+
 function fakeDeps(
   pages: IngestPage[] = [
     { page: 1, text: PAGE_1_TEXT },
@@ -208,6 +215,7 @@ function fakeDeps(
       extractPdf,
       extractXlsx,
       convertScan: neverCalledScan,
+      readEmail: (path: string) => parseMsg(path),
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -529,6 +537,7 @@ it("stores the hash of the bytes it re-read when a chunkless document is saved b
     ],
     extractXlsx: neverCalledXlsx,
     convertScan: neverCalledScan,
+    readEmail: neverCalledEmail,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -1200,6 +1209,74 @@ it("records an empty text file as read, and leaves it alone after", async () => 
   );
 });
 
+it("reads an Outlook message: headers and body searchable, cited by file name (#1409)", async () => {
+  writeFileSync(
+    join(tmpRoot, "Angebot.msg"),
+    buildMsg({
+      subject: "Angebot Prüfstand – Größe 3",
+      body: "anbei unser Angebot über 12 Stück.",
+      senderName: "Jörg Müller",
+      senderEmail: "j.mueller@lieferant.example",
+      recipients: [{ name: "Einkauf", email: "einkauf@firma.example", type: "to" }],
+      delivered: new Date(Date.UTC(2026, 10, 3, 9, 15)),
+      attachments: [{ name: "Angebot-4711.pdf", data: Buffer.from("%PDF-1.4") }],
+    })
+  );
+  const { deps, extractPdf } = fakeDeps();
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  expect(extractPdf).not.toHaveBeenCalled();
+
+  const doc = await onlyDocument();
+  expect(doc.pageCount).toBeNull();
+  const chunks = await chunksFor(doc.id);
+  const text = chunks.map((chunk) => chunk.chunkText).join(" ");
+  expect(text).toContain("Subject: Angebot Prüfstand – Größe 3");
+  expect(text).toContain("From: Jörg Müller <j.mueller@lieferant.example>");
+  expect(text).toContain("Attachments: Angebot-4711.pdf");
+  expect(text).toContain("anbei unser Angebot über 12 Stück.");
+  // A mail has no page to point at; the citation names the file.
+  expect(chunks.every((chunk) => chunk.locator === null)).toBe(true);
+});
+
+// A long mail splits into several chunks, and only the first carries the
+// header block. A hit in chunk 3 must still say which mail it is.
+it("names the mail at the top of every later chunk of a long message", async () => {
+  const paragraph = "Die Lieferung erfolgt in Teilmengen nach Abruf durch den Einkauf. ";
+  writeFileSync(
+    join(tmpRoot, "Rahmenvertrag.msg"),
+    buildMsg({
+      subject: "Rahmenvertrag 2027",
+      senderName: "Vertrieb",
+      body: Array.from({ length: 200 }, () => paragraph).join("\n\n"),
+    })
+  );
+  const { deps } = fakeDeps();
+
+  await ingestDirectory(ORG_ID, tmpRoot, deps);
+  const chunks = await chunksFor((await onlyDocument()).id);
+  expect(chunks.length).toBeGreaterThan(1);
+  for (const chunk of chunks.slice(1)) {
+    expect(chunk.chunkText.startsWith("Email: Rahmenvertrag 2027 — from Vertrieb\n")).toBe(true);
+  }
+});
+
+it("records a .msg that is not an Outlook message as refused, and leaves it alone after", async () => {
+  writeFileSync(join(tmpRoot, "fake.msg"), "From: a@b\n\nplain mime saved as .msg");
+  const { deps } = fakeDeps();
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+    expect(warn.mock.calls.flat().join(" ")).toContain("fake.msg: not read");
+  } finally {
+    warn.mockRestore();
+  }
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker("email"));
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL })).toEqual(
+    counts({ skipped: 1 })
+  );
+});
+
 // A corpus is not a curated fixture: one corrupt or unreadable PDF is normal.
 // Without a per-file boundary it aborts the entire reindex, so a single bad
 // file costs every other file its update — and under a retrying job runner it
@@ -1221,6 +1298,7 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
       extractPdf,
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
+      readEmail: neverCalledEmail,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -1265,6 +1343,7 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
       extractPdf,
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
+      readEmail: neverCalledEmail,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -1295,6 +1374,7 @@ it("keeps indexing the next file when the embedder refuses one file's text", asy
     ]),
     extractXlsx: neverCalledXlsx,
     convertScan: neverCalledScan,
+    readEmail: neverCalledEmail,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -1493,6 +1573,7 @@ it("counts a file whose staging copy hits a full disk as failed and goes on", as
       extractPdf,
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
+      readEmail: neverCalledEmail,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -1533,6 +1614,7 @@ it("keeps the last indexed version searchable when a file changes into one that 
     extractPdf,
     extractXlsx: neverCalledXlsx,
     convertScan: neverCalledScan,
+    readEmail: neverCalledEmail,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -1615,6 +1697,7 @@ function rejectingDeps(rejectedText: string, pagesFor: (path: string) => IngestP
     extractPdf: vi.fn(async (path: string) => pagesFor(path)),
     extractXlsx: neverCalledXlsx,
     convertScan: neverCalledScan,
+    readEmail: neverCalledEmail,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -2601,6 +2684,7 @@ function officeDeps(
       extractXlsx: neverCalledXlsx,
       convertOffice,
       convertScan: neverCalledScan,
+      readEmail: neverCalledEmail,
       ocrModel: null,
       stagingDir,
     } as IngestDeps,
@@ -2805,6 +2889,7 @@ describe("the converter's log lines about a document", () => {
       extractPdf: vi.fn(async () => WORD_PAGES),
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
+      readEmail: neverCalledEmail,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store: new OfficeArtifactStore(storeRoot),
@@ -2915,6 +3000,7 @@ it("keeps a failed file's log entry to one bounded line, whatever its name holds
       extractPdf,
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
+      readEmail: neverCalledEmail,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -2954,6 +3040,7 @@ it.skipIf(process.getuid?.() === 0)(
         }),
         extractXlsx: neverCalledXlsx,
         convertScan: neverCalledScan,
+        readEmail: neverCalledEmail,
         convertOffice: neverCalledConvert,
         ocrModel: null,
         stagingDir,
@@ -3057,6 +3144,7 @@ describe("an artifact volume that cannot be written", () => {
       extractPdf: vi.fn(async () => WORD_PAGES),
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
+      readEmail: neverCalledEmail,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store: new OfficeArtifactStore(storeRoot),
@@ -3322,6 +3410,7 @@ it("converts a batch mate again when it was saved between its batch and its own 
     extractXlsx: neverCalledXlsx,
     convertOffice,
     convertScan: neverCalledScan,
+    readEmail: neverCalledEmail,
     ocrModel: null,
     stagingDir,
   };
@@ -3379,6 +3468,7 @@ it("spends one converter attempt per batch when the converter never answers at a
     extractXlsx: neverCalledXlsx,
     convertOffice,
     convertScan: neverCalledScan,
+    readEmail: neverCalledEmail,
     ocrModel: null,
     stagingDir,
   } as IngestDeps;
@@ -3443,6 +3533,7 @@ describe("an Office document converted under an earlier artifact format", () => 
       ]),
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
+      readEmail: neverCalledEmail,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store,
@@ -3626,6 +3717,7 @@ function recordingDeps() {
       };
     }),
     convertScan: neverCalledScan,
+    readEmail: neverCalledEmail,
     convertOffice: vi.fn(async (sources: readonly { absPath: string }[]) =>
       sources.map((source) => {
         read(source.absPath);
@@ -3884,16 +3976,21 @@ describe("files whose type the indexer cannot read (#1267)", () => {
   // before #1409 read neither scans nor text files. The next run must read
   // them and take them off the list — not leave them listed as unreadable
   // beside the documents they became.
-  it("reads the scans and text files an earlier version listed, and drops them from the list", async () => {
+  it("reads the scans, text files and mails an earlier version listed, and drops them from the list", async () => {
     const tifPath = join(tmpRoot, "delivery-note.tif");
     const txtPath = join(tmpRoot, "notes.txt");
     writeFileSync(tifPath, "fake-tiff-bytes");
     writeFileSync(txtPath, "Every delivery is checked against the order.");
+    writeFileSync(join(tmpRoot, "Angebot.msg"), buildMsg({ subject: "Angebot", body: "Text" }));
     const before = DEFAULT_ALLOWED_EXTENSIONS.filter(
-      (ext) => ![".tif", ".tiff", ".txt"].includes(ext)
+      (ext) => ![".tif", ".tiff", ".txt", ".msg"].includes(ext)
     );
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, { allowedExtensions: before });
-    expect((await unsupportedUnder(tmpRoot)).map((f) => f.type).sort()).toEqual([".tif", ".txt"]);
+    expect((await unsupportedUnder(tmpRoot)).map((f) => f.type).sort()).toEqual([
+      ".msg",
+      ".tif",
+      ".txt",
+    ]);
 
     const { deps } = fakeDeps(SCAN_PAGES);
     const { convertScan } = fakeScanConverter(2);
@@ -3903,7 +4000,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
       ocrModel: VISION_MODEL,
     });
 
-    expect(result).toEqual(counts({ indexed: 2 }));
+    expect(result).toEqual(counts({ indexed: 3 }));
     expect(convertScan).toHaveBeenCalledTimes(1);
     expect(await unsupportedUnder(tmpRoot)).toEqual([]);
   });
