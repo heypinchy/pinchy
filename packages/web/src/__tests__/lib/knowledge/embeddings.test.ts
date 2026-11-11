@@ -7,7 +7,6 @@ import {
   splitToTokenBudget,
   type EmbeddingTokenizer,
 } from "@/lib/knowledge/embeddings";
-import { locatePassage } from "@/lib/knowledge/passage-match";
 
 global.fetch = vi.fn();
 
@@ -584,9 +583,9 @@ describe("splitToTokenBudget", () => {
 
     expect(pieces.length).toBeGreaterThan(1);
     expectPiecesOfOriginal(text, pieces, byteFallbackTokenizer, 40);
-    for (const piece of pieces) {
-      if (piece.replace(/\s+/g, "").length >= 12) expect(locatePassage(runs, piece)).not.toBeNull();
-    }
+    // The citation viewer matches a passage against its page with whitespace removed.
+    const page = runs.join("").replace(/\s+/g, "");
+    for (const piece of pieces) expect(page).toContain(piece.replace(/\s+/g, ""));
   });
 
   it("prefers a paragraph break over a line break", () => {
