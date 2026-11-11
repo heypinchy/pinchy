@@ -192,7 +192,7 @@ echo "  ✅ Presets applied"
 echo "📁 Configuring directories and permissions..."
 
 # Create directories in OpenClaw container with human-friendly names
-# scan_data_directories() uses basename as label, so name the folders nicely
+# The picker labels each folder with its own name, so name the folders nicely
 docker compose exec -T openclaw sh -c '
   mkdir -p "/data/Reactor Operations" "/data/Safety Protocols" "/data/Employee Handbook" \
            "/data/NRC Inspections" "/data/Executive Memos" "/data/Budget Reports"
@@ -214,17 +214,9 @@ docker compose cp "$SCRIPT_DIR/fixtures/emergency-shutdown-procedure.pdf" \
 docker compose cp "$SCRIPT_DIR/fixtures/coolant-system-overview.pdf" \
   "openclaw:/data/Reactor Operations/coolant-system-overview.pdf" > /dev/null
 echo "  ✅ Knowledge Base fixtures placed"
-# Trigger rescan so data-directories.json picks them up
-docker compose exec -T openclaw sh -c '
-  ls -d /data/*/ 2>/dev/null | sed "s|/$||" | \
-    node -e "const lines=require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\").trim().split(\"\n\").filter(Boolean); \
-    const dirs=lines.map(p=>({path:p,name:require(\"path\").basename(p)})); \
-    console.log(JSON.stringify({directories:dirs}))" \
-    > /root/.openclaw/data-directories.json
-'
-
-# Verify
-DIR_COUNT=$(docker compose exec -T pinchy sh -c 'cat /openclaw-config/data-directories.json' 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('directories',[])))" 2>/dev/null || echo "0")
+# Verify. The picker lists /data live from the pinchy container (#1363), so
+# the count read there is the count the screenshots will show.
+DIR_COUNT=$(docker compose exec -T pinchy sh -c 'ls -d /data/*/ 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ' || echo "0")
 echo "  ✅ $DIR_COUNT directories configured"
 
 # Web Search integration (enables hasApiKey path in Web Search UI for screenshots)

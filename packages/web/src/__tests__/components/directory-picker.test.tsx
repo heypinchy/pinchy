@@ -409,3 +409,91 @@ describe("DirectoryPicker — selection count with subfolders", () => {
     expect(screen.getByText("1 of 2 selected, plus 2 subfolders")).toBeInTheDocument();
   });
 });
+
+// A grant outlives the folder it names: rename a mount and the agent keeps a
+// grant for the old path, which used to sit in the list as an ordinary ticked
+// box (#1363). The settings page asks the server which grants still exist and
+// hands the answer in; the picker says so where the grant is shown.
+describe("DirectoryPicker — grants whose folder is gone or can't be opened (#1363)", () => {
+  const mounts = [{ path: "/data/suppliers", name: "suppliers" }];
+
+  it("marks a grant whose folder is gone and offers to remove it", async () => {
+    const onChange = vi.fn();
+    render(
+      <DirectoryPicker
+        directories={mounts}
+        selected={["/data/suppliers", "/data/pinchy-suppliers/"]}
+        onChange={onChange}
+        browseSubfolders={false}
+        grantedFolders={[
+          { path: "/data/suppliers", status: "available" },
+          { path: "/data/pinchy-suppliers/", status: "missing" },
+        ]}
+      />
+    );
+
+    // The one action is removing it — not a ticked box that reads as working.
+    expect(screen.queryByRole("checkbox", { name: "/data/pinchy-suppliers" })).toBeNull();
+    expect(screen.getByText("/data/pinchy-suppliers")).toBeInTheDocument();
+    expect(screen.getByText(/Folder not found/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove /data/pinchy-suppliers" }));
+    expect(onChange).toHaveBeenCalledWith(["/data/suppliers"]);
+  });
+
+  it("tells a folder Pinchy can't open apart from one that is gone, and keeps it granted", () => {
+    render(
+      <DirectoryPicker
+        directories={mounts}
+        selected={["/data/suppliers", "/data/locked/"]}
+        onChange={vi.fn()}
+        browseSubfolders={false}
+        grantedFolders={[
+          { path: "/data/suppliers", status: "unreadable" },
+          { path: "/data/locked/", status: "unreadable" },
+        ]}
+      />
+    );
+
+    // Removing the grant is the wrong fix for a share mounted with the wrong
+    // owner, so it stays an ordinary checkbox — with the reason beside it,
+    // in the tree as well as in the list below it.
+    expect(screen.getByRole("checkbox", { name: "suppliers" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "/data/locked" })).toBeChecked();
+    expect(screen.getAllByText(/Pinchy can't open this folder/)).toHaveLength(2);
+    expect(screen.queryByText(/Folder not found/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Remove/ })).toBeNull();
+    expect(screen.getByRole("checkbox", { name: "suppliers" })).toHaveAccessibleDescription(
+      /Pinchy can't open this folder/
+    );
+  });
+
+  it("says when a grant runs through a link agents can't read through", () => {
+    render(
+      <DirectoryPicker
+        directories={mounts}
+        selected={["/data/shortcut"]}
+        onChange={vi.fn()}
+        browseSubfolders={false}
+        grantedFolders={[{ path: "/data/shortcut", status: "link" }]}
+      />
+    );
+    expect(screen.getByRole("checkbox", { name: "/data/shortcut" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "/data/shortcut" })).toHaveAccessibleDescription(
+      /symbolic link/
+    );
+  });
+
+  it("shows grants as before when no status is known", () => {
+    render(
+      <DirectoryPicker
+        directories={mounts}
+        selected={["/data/pinchy-suppliers"]}
+        onChange={vi.fn()}
+        browseSubfolders={false}
+      />
+    );
+    expect(screen.getByRole("checkbox", { name: "/data/pinchy-suppliers" })).toBeChecked();
+    expect(screen.queryByText(/Folder not found/)).toBeNull();
+  });
+});

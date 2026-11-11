@@ -22,6 +22,7 @@ import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions"
 import type { AgentPluginConfig } from "@/db/schema";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
 import { grantedDataPaths } from "@/lib/agent-granted-paths";
+import { useGrantedFolders } from "@/hooks/use-granted-folders";
 
 export interface PermissionsValues {
   allowedTools: string[];
@@ -167,6 +168,10 @@ export function AgentSettingsPermissions({
   // the agent after a save, so this recomputes to the new truth on its own.
   const savedAllowedPaths = grantedDataPaths(agent.pluginConfig);
   const hasUnsavedPathChanges = !sameDirectorySet(allowedPaths, savedAllowedPaths);
+  const savedPathsKey = savedAllowedPaths.map(directoryKey).sort().join("|");
+  // Which saved grants still name a folder that exists (#1363). Admin-only,
+  // like the route it reads.
+  const grantedFolders = useGrantedFolders(agent.id, savedPathsKey, isAdmin);
 
   // Check if the agent has sensitive data access (any allowed paths or odoo/email tools)
   const hasSensitiveDataAccess =
@@ -361,6 +366,7 @@ export function AgentSettingsPermissions({
             onChange={handlePathsChange}
             label="Allowed Directories"
             browseSubfolders={isAdmin}
+            grantedFolders={grantedFolders}
           />
           {/* Beside the checkboxes that made the change, not in the index
               block below: it is a fact about this form, and only an admin has
@@ -383,7 +389,7 @@ export function AgentSettingsPermissions({
             agentId={agent.id}
             allowedPathCount={savedAllowedPaths.length}
             hasUnsavedPathChanges={hasUnsavedPathChanges}
-            savedPathsKey={savedAllowedPaths.map(directoryKey).sort().join("|")}
+            savedPathsKey={savedPathsKey}
           />
         )}
 

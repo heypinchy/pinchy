@@ -1897,8 +1897,28 @@ it("tells the caller about a root it could not read", async () => {
 
   await ingestPaths(ORG_ID, [missing], fakeDeps().deps, { onSkippedRoot });
 
-  expect(onSkippedRoot).toHaveBeenCalledWith(missing, "unreadable");
+  expect(onSkippedRoot).toHaveBeenCalledWith(missing, "missing");
 });
+
+// A folder that is gone and one Pinchy may not open need different fixes —
+// remove the grant, or fix the share's permissions — so the caller has to be
+// able to tell them apart (#1363).
+it.skipIf(process.getuid?.() === 0)(
+  "tells a root it may not open apart from one that is gone",
+  async () => {
+    const locked = join(tmpRoot, "locked");
+    writePdf(locked, "handbook.pdf");
+    await chmod(locked, 0o000);
+    const onSkippedRoot = vi.fn();
+    try {
+      await ingestPaths(ORG_ID, [locked], fakeDeps().deps, { onSkippedRoot });
+    } finally {
+      await chmod(locked, 0o755);
+    }
+
+    expect(onSkippedRoot).toHaveBeenCalledWith(locked, "unreadable");
+  }
+);
 
 // A failed network mount under Docker is not an error, it is an EMPTY
 // directory: the bind mount shows the bare mountpoint. From inside the

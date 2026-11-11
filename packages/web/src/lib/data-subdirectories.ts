@@ -2,9 +2,9 @@
  * One level of the folder tree below a `/data` mount, for the directory picker
  * (#1269).
  *
- * The top-level mounts come from the OpenClaw container's start-up scan
- * (`/openclaw-config/data-directories.json`). Below that, the picker asks for
- * one folder's children at a time, when the admin expands it. Lazy rather than
+ * The top-level mounts come from `listDataMounts`, which reads `/data` itself
+ * on every request. Below that, the picker asks for one folder's children at a
+ * time, when the admin expands it. Lazy rather than
  * a depth-limited tree on purpose: a customer share can hold tens of thousands
  * of folders on a network drive, and a tree walked up front costs a full
  * directory crawl on every page load to show folders nobody opens.
@@ -13,7 +13,7 @@
  *
  *   - The path must sit strictly BELOW the data root after `..`/`.` are
  *     collapsed. The root itself is refused — its children are the mounts, and
- *     those have exactly one source (the OpenClaw scan), not two that can
+ *     those have exactly one source (`listDataMounts`), not two that can
  *     disagree.
  *   - No component below the root may be a symlink. The real path of the
  *     requested folder must equal its lexical path, so a link planted inside a
@@ -29,6 +29,7 @@
  * The input is never URL-decoded here. The route decodes the query string once;
  * a `%2e%2e` that survives that is a folder name, not a traversal.
  */
+import type { Dirent } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { join, normalize, relative, resolve } from "node:path";
 
@@ -54,6 +55,50 @@ export type ListDataSubdirectoriesResult =
 interface ListOptions {
   /** The data root. Only tests pass this; production always uses `/data/`. */
   root?: string;
+}
+
+/**
+ * The folders directly under the data root — the mounts the picker starts from.
+ *
+ * Read live, on every call. This list used to come from a file the OpenClaw
+ * container wrote at start-up, so a mount that was renamed or deleted stayed
+ * on offer until that container restarted — next to the agent's grant for it,
+ * which then looked like an ordinary, working folder (#1363). Both containers
+ * mount the same `pinchy-data` volume at `/data`, and Docker creates a mount
+ * point for every nested mount inside it, so a share mounted on `openclaw`
+ * only still appears here (empty), exactly as it did in the old scan.
+ *
+ * Same rules as one level down: real folders only, no symlinks, no hidden or
+ * OS junk folders. A root that cannot be read answers an empty list, which the
+ * picker already explains (nothing mounted yet).
+ */
+export async function listDataMounts({ root = DATA_ROOT }: ListOptions = {}): Promise<
+  DataSubdirectory[]
+> {
+  const lexicalRoot = resolve(root);
+  let entries;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- the data root constant (or a test sandbox), never request input.
+    entries = await readdir(lexicalRoot, { withFileTypes: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT") {
+      console.warn("[data-directories]", `failed to list ${lexicalRoot}:`, code ?? String(err));
+    }
+    return [];
+  }
+  return folderNames(entries).map((name) => ({ path: join(lexicalRoot, name), name }));
+}
+
+/** Real, visible folders among `entries`, sorted the way a person reads them. */
+function folderNames(entries: Dirent[]): string[] {
+  return entries
+    .filter(
+      (entry) =>
+        entry.isDirectory() && !isHiddenSegment(entry.name) && !isDenylistedDirName(entry.name)
+    )
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
 }
 
 export async function listDataSubdirectories(
@@ -99,13 +144,7 @@ export async function listDataSubdirectories(
     return { ok: false, reason: "not_listable" };
   }
 
-  const names = entries
-    .filter(
-      (entry) =>
-        entry.isDirectory() && !isHiddenSegment(entry.name) && !isDenylistedDirName(entry.name)
-    )
-    .map((entry) => entry.name)
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  const names = folderNames(entries);
 
   return {
     ok: true,

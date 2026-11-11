@@ -664,7 +664,7 @@ The agent's most recent index run — in flight or last finished — and whether
 | `counts.failed`                 | The file could not be read or parsed, or was refused because it had been [swapped for a symbolic link](/guides/mount-data-directories/#links-inside-a-mounted-folder) during the run. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                             |
 | `counts.archived`               | Documents in this run that sit under an archive folder (`OLD`, `Archiv` and the like) and are therefore left out of everyday search. Not a separate outcome: an archived document is also `indexed` or `skipped`.                                                                                                                                                                                                                                                                                            |
 | `counts.unsupported`            | Files in the granted folders whose type the index can't read — an Outlook `.msg`, a binary `.xlsb` workbook, an `.rtf` note. Not part of the counts above, because they never become documents. Known from the moment discovery finishes. Absent on a run that stopped before discovery finished, and on one that finished before Pinchy counted them. [`GET …/knowledge/unsupported`](#get-apiagentsagentidknowledgeunsupported) lists them.                                                                |
-| `error`                         | Why the run failed. `null` unless `status` is `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `error`                         | Why the run failed. `null` unless `status` is `failed`. When none of the agent's folders could be read, it names them and says, per folder, whether it is gone (remove the grant or mount it again), can't be opened (a permissions problem on the server), or came up empty while the index still holds its documents (a share that didn't mount). The matching audit entry gives the same failure without folder paths.                                                                                    |
 
 `schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
 
@@ -1207,7 +1207,7 @@ List directories available under `/data/` for agent configuration.
 
 Returns an empty array if `/data/` does not exist or contains no subdirectories. Hidden directories (starting with `.`) are excluded.
 
-These are the top-level mounts, as the `openclaw` container found them when it started. To grant a folder inside one, list its subfolders with [`GET /api/data-directories/children`](#get-apidata-directorieschildren).
+These are the top-level mounts, read from `/data/` on every request, so a mount that was renamed or removed is gone from the list straight away. Symbolic links are left out. To grant a folder inside one, list its subfolders with [`GET /api/data-directories/children`](#get-apidata-directorieschildren).
 
 ### `GET /api/data-directories/children`
 
@@ -1244,6 +1244,37 @@ The folder is read in the `pinchy` container, so a share mounted only on `opencl
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — the folder doesn't exist, isn't a folder, can't be read, or is reached through a symbolic link
+
+### `GET /api/agents/:agentId/granted-folders`
+
+Whether each folder the agent is granted still exists. The directory picker uses it to mark a grant whose folder was renamed, moved or deleted, instead of showing it as an ordinary ticked box. **Admin only.**
+
+It checks the agent's **saved** grants under `/data/` and nothing else: it takes no path from the request, so it can't be used to ask about an arbitrary folder. Nothing outside `/data/` is touched, and a symbolic link is reported as one rather than followed.
+
+**Response:**
+
+```json
+{
+  "folders": [
+    { "path": "/data/suppliers", "status": "available" },
+    { "path": "/data/old-suppliers", "status": "missing" }
+  ]
+}
+```
+
+| `status`       | Meaning                                                                                                                                  |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `available`    | The folder is there and Pinchy can open it.                                                                                              |
+| `missing`      | Nothing is there any more, or a file is. Remove the grant with [`PATCH /api/agents/:id`](#patch-apiagentsid), or mount the folder again. |
+| `unreadable`   | Something is there, but Pinchy isn't allowed to open it. A permissions problem on the server — removing the grant is not the fix.        |
+| `link`         | The path runs through a symbolic link. Agents can't read through one.                                                                    |
+| `outside_data` | Not a path under `/data/`. Never checked.                                                                                                |
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent
 
 ## Settings
 

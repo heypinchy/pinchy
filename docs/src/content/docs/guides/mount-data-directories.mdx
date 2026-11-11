@@ -70,10 +70,10 @@ picker to grant a subfolder.
 
 Two containers read `/data`, for different jobs:
 
-| Service    | Reads `/data` for                                                         | Needed when                                     |
-| ---------- | ------------------------------------------------------------------------- | ----------------------------------------------- |
-| `openclaw` | Agent file access, and the directory list shown in the permissions picker | Always                                          |
-| `pinchy`   | Knowledge Base indexing, and the subfolders the permissions picker lists  | You index those documents, or grant a subfolder |
+| Service    | Reads `/data` for                                                        | Needed when                                     |
+| ---------- | ------------------------------------------------------------------------ | ----------------------------------------------- |
+| `openclaw` | Agent file access                                                        | Always                                          |
+| `pinchy`   | Knowledge Base indexing, and the subfolders the permissions picker lists | You index those documents, or grant a subfolder |
 
 Mounting in both is the simple path, and it's what we recommend: the paths stay identical, and a directory you later point a [Knowledge Base agent](/guides/create-knowledge-base-agent/) at is already there. A directory mounted only on `openclaw` shows up in the picker and agents can read it, but indexing it finds nothing, and it opens with no subfolders.
 
@@ -122,9 +122,9 @@ Each mounted directory appears as a separate selectable option in the Permission
 
 ## How directories appear in the UI
 
-When you configure an agent's permissions in the **Permissions tab** of Agent Settings, Pinchy scans `/data/` for subdirectories and displays them as selectable options, and you can open each one to grant a folder inside it. Each mounted directory shows up by name — for example, `/data/hr-policies` appears as "hr-policies".
+When you configure an agent's permissions in the **Permissions tab** of Agent Settings, Pinchy lists the directories under `/data/` as selectable options, and you can open each one to grant a folder inside it. Each mounted directory shows up by name — for example, `/data/hr-policies` appears as "hr-policies".
 
-The scan runs when the `openclaw` container starts, so a new mount appears in the picker after `docker compose up -d`, not before.
+The list is read each time you open the tab, so it always shows what is mounted right now: a new mount appears once `docker compose up -d` has picked it up, and a mount you removed or renamed is gone from the list.
 
 ### Granting a subfolder
 
@@ -135,10 +135,12 @@ Granting a folder grants everything inside it. So when a folder is ticked, the f
 A few things worth knowing:
 
 - **Subfolders are read in the `pinchy` container.** A share mounted only on `openclaw` still shows up as a mount, but opens with no subfolders. Mount it on both services, as described [above](#why-both-services).
-- **Symbolic links are not offered**, and a folder reached through one can't be opened. A link inside a share can point anywhere, so the picker only ever shows the folder a grant actually names. See [Links inside a mounted folder](#links-inside-a-mounted-folder).
+- **Symbolic links are not offered**, and a folder reached through one can't be opened. A link inside a share can point anywhere, so the picker only ever shows the folder a grant actually names. An older grant that names a link is marked as one. See [Links inside a mounted folder](#links-inside-a-mounted-folder).
 - **Hidden folders and operating-system folders** (`.snapshot`, `$RECYCLE.BIN` and the like) are left out. The index skips them anyway.
 - **A folder with more than 500 subfolders** shows the first 500 and says so.
-- **A grant the picker can't show** — a folder that was renamed or moved, or one beyond the first 500 — is listed below the folders, still ticked, so you can take it away.
+- **A grant the picker can't show** — a folder beyond the first 500, or one that no longer exists — is listed below the folders, so you can take it away.
+- **A granted folder that is gone is marked "Folder not found"**, with a **Remove** button instead of a tick box. That is what a renamed or deleted mount leaves behind: the agent still holds a grant for `/data/old-name`, and nothing can be read through it. Remove it and save; the change is recorded in the [audit trail](/concepts/audit-trail/) like any other permission change. If the folder was only unmounted for a while, mount it again instead and the mark goes away.
+- **A granted folder Pinchy can't open is marked too**, and keeps its tick box: the folder is there, but its permissions on the server don't let Pinchy in. Removing the grant is the wrong fix for that one — see [NAS or network drive](#nas-or-network-drive) for mounting a share so Pinchy can read it.
 - **For a Knowledge Base agent, archive folders count inside the granted folder only.** Documents under a folder named `OLD`, `Archive`, `Archived` or `Archiv` _inside_ the folder you grant are left out of everyday search. The granted folder's own name and the folders above it don't count: grant `/data/Archiv` or `/data/Archiv/Projekte` and everyday search finds what's in it (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)). Reading files is not affected.
 
 ## Verifying your mounts
