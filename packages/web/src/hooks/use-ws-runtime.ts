@@ -1310,6 +1310,11 @@ export function useWsRuntime(
 
     function connect() {
       if (leavingForLoginRef.current) return;
+      // One socket at a time (#1422). A live socket or a pending backoff
+      // already owns the next connection; a second dial would hold a slot of
+      // the per-user limit with no handler that ever closes it. A caller that
+      // wants a fresh socket now drops the old one and the timer first.
+      if (isSocketAlive(wsRef.current) || reconnectTimerRef.current) return;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?agentId=${agentId}`);
       // Snapshot the agentId at connection time. Handlers compare this against
@@ -2233,7 +2238,11 @@ export function useWsRuntime(
         clearTimeout(timer);
       }
       ackTimers.clear();
-      wsRef.current?.close();
+      // Released, not just closed: the next effect's connect() must not see it
+      // as the live socket while its close is still in flight.
+      const ws = wsRef.current;
+      wsRef.current = null;
+      ws?.close();
     };
     // chatId (#508) is intentionally in the deps: switching the chat must tear
     // down the old WS and reconnect so the fresh connect() sends a history

@@ -527,6 +527,33 @@ describe("useWsRuntime — the chat never gets stuck (#1422)", () => {
     });
   });
 
+  describe("one socket at a time", () => {
+    it("a catch-up while the first dial is still connecting does not open a second socket", () => {
+      renderHook(() => useWsRuntime("agent-1"));
+      expect(wsInstances).toHaveLength(1);
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(wsInstances).toHaveLength(1);
+    });
+
+    it("a catch-up during a pending backoff leaves the dial to the backoff", () => {
+      vi.spyOn(Math, "random").mockReturnValue(1);
+      renderHook(() => useWsRuntime("agent-1"));
+      act(() => {
+        latestWs().simulateClose(1006); // 1 s backoff pending
+      });
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(wsInstances).toHaveLength(1);
+      act(() => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(wsInstances).toHaveLength(2); // the backoff dials, and only once
+    });
+  });
+
   describe("Try again", () => {
     it("redials immediately instead of waiting out the backoff, and restarts the backoff", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
