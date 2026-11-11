@@ -21,7 +21,9 @@
 # Known open case, zod GHSA-mrhx-c7xc-m3w5 (high, memory exhaustion while
 # validating oversized constrained collections; fixed in 4.6.6), triaged
 # 2026-10-24: openclaw@2026.7.1-2 inlines zod 4.4.3
-# (dist/schemas-*.js, `version = { major: 4, minor: 4, patch: 3 }`), and that
+# (dist/schemas-*.js, `version = { major: 4, minor: 4, patch: 3 }`); re-checked
+# 2026-11-05 on 2026.9.2, still 4.4.3 (dist/worker/worker.mjs and
+# dist/control-ui/assets/config-runtime-*.js), and that
 # copy validates openclaw's own config and plugin schemas. The root override
 # `openclaw>zod@<4.6.6` still matters — @modelcontextprotocol/sdk and
 # @agentclientprotocol/sdk, which openclaw imports rather than inlines, resolve
