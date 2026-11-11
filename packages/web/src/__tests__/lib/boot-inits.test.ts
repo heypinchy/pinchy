@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   recordConfigRegenSuccess: vi.fn(),
   recordConfigRegenFailure: vi.fn(),
   reportUnknownOriginUsers: vi.fn().mockResolvedValue(0),
+  stripUngrantablePaths: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock("@/lib/session-migration", () => ({ migrateSessionKeys: mocks.migrateSessionKeys }));
@@ -49,6 +50,10 @@ vi.mock("@/lib/user-provenance", () => ({
   reportUnknownOriginUsers: mocks.reportUnknownOriginUsers,
 }));
 
+vi.mock("@/lib/strip-ungrantable-paths", () => ({
+  stripUngrantablePaths: mocks.stripUngrantablePaths,
+}));
+
 describe("bootInits", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -61,6 +66,36 @@ describe("bootInits", () => {
     mocks.regenerateOpenClawConfig.mockResolvedValue(undefined);
     mocks.checkSecretsVolumeWritable.mockReturnValue({ ok: true });
     mocks.reportUnknownOriginUsers.mockResolvedValue(0);
+    mocks.stripUngrantablePaths.mockResolvedValue(0);
+  });
+
+  // #1272: rows written before the v0.9.0 lockdown can grant folders outside
+  // /data. The cleanup must run before the boot regenerate, so the config
+  // OpenClaw starts with is built from rows that no longer carry them.
+  it("removes pre-lockdown grants outside /data before regenerating the config", async () => {
+    const { bootInits } = await import("@/lib/boot-inits");
+    await bootInits();
+
+    expect(mocks.stripUngrantablePaths).toHaveBeenCalledOnce();
+    expect(mocks.stripUngrantablePaths.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.regenerateOpenClawConfig.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("still regenerates the config when the grant cleanup throws", async () => {
+    mocks.stripUngrantablePaths.mockRejectedValue(new Error("db hiccup"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    const result = await bootInits();
+
+    expect(result).toBe(true);
+    expect(mocks.regenerateOpenClawConfig).toHaveBeenCalledOnce();
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[pinchy] Failed to remove file-access grants outside /data:",
+      "db hiccup"
+    );
+    errorSpy.mockRestore();
   });
 
   it("reports accounts of unknown origin on every boot once setup is complete", async () => {

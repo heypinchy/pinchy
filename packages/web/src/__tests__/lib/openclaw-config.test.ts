@@ -1997,6 +1997,41 @@ describe("regenerateOpenClawConfig", () => {
     expect(agentConfig.allowed_paths).toContain("/root/.openclaw/workspaces/agent-1/uploads");
   });
 
+  it("drops a pre-lockdown allowed_paths entry outside /data from the emitted pinchy-files config (#1272)", async () => {
+    // A row written before v0.9.0 confined allowed_paths to /data: a member
+    // pointed their agent at the workspaces root, which would let pinchy_read
+    // reach every other agent's uploads, workbench and MEMORY.md. The stored
+    // row is old data; this build is new code. It must not emit the grant.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Pre-lockdown Agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: ["pinchy_read"],
+          pluginConfig: {
+            "pinchy-files": {
+              allowed_paths: ["/data/kb", "/root/.openclaw/workspaces", "/", "/database"],
+            },
+          },
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = writtenOpenClawConfig(mockedWriteFileSync);
+    const config = JSON.parse(written);
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["agent-1"];
+
+    expect(agentConfig.allowed_paths).toEqual([
+      "/data/kb",
+      "/root/.openclaw/workspaces/agent-1/uploads",
+      "/root/.openclaw/workspaces/agent-1/workbench",
+    ]);
+  });
+
   it("injects workspace/uploads even when agent has no pluginConfig", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([

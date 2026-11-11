@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { getAgentWithAccess } from "@/lib/agent-access";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 import { resolveAllowedFile } from "@/lib/agent-file-access";
 import { findCitedPassage } from "@/lib/knowledge/cited-passage";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
@@ -48,8 +49,7 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
         ? { slide: parsed.data.slide }
         : { heading: parsed.data.heading };
 
-  const allowedPaths =
-    (agent.pluginConfig as AgentPluginConfig | null)?.["pinchy-files"]?.allowed_paths ?? [];
+  const allowedPaths = grantedDataPaths(agent.pluginConfig as AgentPluginConfig | null);
   const resolved = await resolveAllowedFile(path, allowedPaths);
   if (!resolved.ok) {
     return NextResponse.json(

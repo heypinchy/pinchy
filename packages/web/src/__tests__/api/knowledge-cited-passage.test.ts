@@ -181,6 +181,22 @@ describe("POST /api/agents/[agentId]/knowledge/passage", () => {
     expect(mockFindCitedPassage).not.toHaveBeenCalled();
   });
 
+  // An agent created before the v0.9.0 lockdown can still store a grant
+  // outside /data (#1272). The route must check the file against the grants
+  // under /data only, or that leftover would let it read passages from there.
+  it("ignores a stored grant outside /data when checking the file", async () => {
+    mockGetAgentWithAccess.mockResolvedValueOnce({
+      ...agentRow,
+      pluginConfig: {
+        "pinchy-files": { allowed_paths: ["/data/quality", "/root/.openclaw/workspaces"] },
+      },
+    });
+
+    await POST(makeRequest(validBody), ctx as never);
+
+    expect(mockResolveAllowedFile).toHaveBeenCalledWith(validBody.path, ["/data/quality"]);
+  });
+
   it("answers 404 for a granted path that does not exist", async () => {
     mockResolveAllowedFile.mockResolvedValueOnce({ ok: false, status: 404 });
 

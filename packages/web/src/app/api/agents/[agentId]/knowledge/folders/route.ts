@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 import { type AgentPluginConfig } from "@/db/schema";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { getKnowledgeFolderStatus } from "@/lib/knowledge/index-status";
@@ -26,8 +27,7 @@ export const GET = withAuth<RouteContext>(async (_request, { params }, session) 
 
   const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
   if (agentOrError instanceof NextResponse) return agentOrError;
-  const allowedPaths =
-    (agentOrError.pluginConfig as AgentPluginConfig | null)?.["pinchy-files"]?.allowed_paths ?? [];
+  const allowedPaths = grantedDataPaths(agentOrError.pluginConfig as AgentPluginConfig | null);
 
   return NextResponse.json(await getKnowledgeFolderStatus(DEFAULT_ORG_ID, agentId, allowedPaths));
 });
