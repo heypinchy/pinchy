@@ -453,6 +453,65 @@ async function loadOpenClawFlushResolver(): Promise<(params: { cfg: unknown }) =
   return resolver;
 }
 
+/**
+ * Load one named export from OpenClaw's installed dist. Chunk file names carry
+ * a content hash and exports are minified (`resolveSkillWorkshopConfig as t`),
+ * so the chunk is found by file-name prefix AND by the named export it
+ * declares. Exactly one chunk must match: zero means OpenClaw renamed or moved
+ * the function, two means this loader can no longer tell which one runs —
+ * either way the contract has to be re-verified against the installed version.
+ */
+async function loadOpenClawDistExport(chunkPattern: RegExp, name: string): Promise<unknown> {
+  const { createRequire } = await import("module");
+  const { pathToFileURL } = await import("url");
+  const pathMod = await import("path");
+  const fsActual = await vi.importActual<typeof import("fs")>("fs");
+  const require = createRequire(import.meta.url);
+  const dist = pathMod.dirname(require.resolve("openclaw"));
+  const exportPattern = new RegExp(`^export \\{[^}]*\\b${name} as (\\w+)`, "m");
+  const matches = fsActual
+    .readdirSync(dist)
+    .filter((n) => chunkPattern.test(n))
+    .map((n) => ({
+      file: pathMod.join(dist, n),
+      local: exportPattern.exec(fsActual.readFileSync(pathMod.join(dist, n), "utf-8"))?.[1],
+    }))
+    .filter((m): m is { file: string; local: string } => m.local !== undefined);
+  if (matches.length !== 1) {
+    throw new Error(
+      `Expected one ${chunkPattern.source} chunk in ${dist} exporting ${name}, found ${String(matches.length)} — re-verify the contract against the installed openclaw version.`
+    );
+  }
+  const mod = (await import(pathToFileURL(matches[0].file).href)) as Record<string, unknown>;
+  const fn = mod[matches[0].local];
+  if (typeof fn !== "function") {
+    throw new Error(`${matches[0].file} exports ${name} as a non-function.`);
+  }
+  return fn;
+}
+
+/**
+ * memory-core reads its dreaming switch in two steps: which plugin entry holds
+ * the memory config (the `plugins.slots.memory` owner, memory-core by default),
+ * then the dreaming block inside it. Both come from OpenClaw so a moved key or
+ * a changed slot rule turns the contract test red.
+ */
+async function loadOpenClawDreamingResolver(): Promise<{
+  resolvePluginConfig: (cfg: unknown) => unknown;
+  resolveDreaming: (params: { pluginConfig: unknown; cfg: unknown }) => { enabled: boolean };
+}> {
+  return {
+    resolvePluginConfig: (await loadOpenClawDistExport(
+      /^dreaming-.*\.js$/,
+      "resolveMemoryDreamingPluginConfig"
+    )) as (cfg: unknown) => unknown,
+    resolveDreaming: (await loadOpenClawDistExport(
+      /^dreaming-.*\.js$/,
+      "resolveMemoryDreamingConfig"
+    )) as (params: { pluginConfig: unknown; cfg: unknown }) => { enabled: boolean },
+  };
+}
+
 describe("regenerateOpenClawConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1714,6 +1773,87 @@ describe("regenerateOpenClawConfig", () => {
       const withoutFlag = structuredClone(config);
       delete withoutFlag.agents.defaults.compaction;
       expect(resolveFlushPlan({ cfg: withoutFlag })).not.toBeNull();
+    }
+  );
+
+  it(
+    "turns off memory-core's default-on dreaming, as memory-core's own resolver reads it",
+    { timeout: 30_000 },
+    async () => {
+      // OpenClaw 2026.8.1 turned "grounded dreaming" on by default: a nightly
+      // memory-core cron that ingests interactive session transcripts and
+      // rewrites MEMORY.md with the agent's default model. In Pinchy that is a
+      // second, ungoverned writer of agent memory (pinchy_memory is the
+      // governed one), it reads conversations of every user of a shared agent,
+      // and it spends the customer's model budget outside any chat turn. It
+      // stays off until Pinchy decides to offer it.
+      const { resolvePluginConfig, resolveDreaming } = await loadOpenClawDreamingResolver();
+
+      await regenerateOpenClawConfig();
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+      expect(
+        resolveDreaming({ pluginConfig: resolvePluginConfig(config), cfg: config }).enabled
+      ).toBe(false);
+
+      // Baseline against a false green: without Pinchy's entry, OpenClaw's own
+      // default is on.
+      const withoutEntry = structuredClone(config);
+      delete withoutEntry.plugins.entries["memory-core"];
+      expect(
+        resolveDreaming({ pluginConfig: resolvePluginConfig(withoutEntry), cfg: withoutEntry })
+          .enabled
+      ).toBe(true);
+    }
+  );
+
+  it("keeps OpenClaw's own memory-core entry fields while forcing dreaming off", async () => {
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
+        plugins: {
+          allow: ["memory-core"],
+          entries: {
+            "memory-core": {
+              enabled: true,
+              config: { dreaming: { enabled: true, frequency: "0 4 * * *" } },
+            },
+          },
+        },
+      })
+    );
+
+    await regenerateOpenClawConfig();
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+    expect(config.plugins.entries["memory-core"]).toEqual({
+      enabled: true,
+      config: { dreaming: { enabled: false, frequency: "0 4 * * *" } },
+    });
+  });
+
+  it(
+    "turns off autonomous skill self-learning, as OpenClaw's own Skill Workshop config reads it",
+    { timeout: 30_000 },
+    async () => {
+      // OpenClaw 2026.8.1 made Skill Workshop's autonomous mode `auto` by
+      // default: after a substantial turn a background model run drafts a skill
+      // and applies it without approval. Pinchy assigns each agent an explicit,
+      // admin-chosen skill list; a skill the runtime writes for itself is a
+      // change no admin approved and the audit trail never sees.
+      const resolveWorkshop = (await loadOpenClawDistExport(
+        /^config-.*\.js$/,
+        "resolveSkillWorkshopConfig"
+      )) as (cfg: unknown) => { autonomous: { mode: string } };
+
+      await regenerateOpenClawConfig();
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+      expect(resolveWorkshop(config).autonomous.mode).toBe("off");
+
+      const withoutSkills = structuredClone(config);
+      delete withoutSkills.skills;
+      expect(resolveWorkshop(withoutSkills).autonomous.mode).toBe("auto");
     }
   );
 

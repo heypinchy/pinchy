@@ -946,6 +946,13 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
         },
       },
     },
+    // OpenClaw 2026.8.1 made Skill Workshop's autonomous self-learning `auto`
+    // by default: after a substantial turn a background model run drafts a
+    // skill and applies it without approval. Pinchy agents run an explicit,
+    // admin-chosen skill list, and a skill the runtime writes for itself is a
+    // change no admin approved and the audit trail never sees. Forced off on
+    // every regenerate, like `hooks.internal.enabled` above.
+    skills: { workshop: { autonomous: { mode: "off" as const } } },
   };
 
   // Preserve OpenClaw-enriched top-level fields that Pinchy doesn't manage
@@ -1367,6 +1374,26 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       entries[pluginId] = entry;
     }
   }
+
+  // OpenClaw 2026.8.1 turned memory-core's "grounded dreaming" on by default: a
+  // nightly cron that ingests interactive session transcripts and rewrites
+  // MEMORY.md with the agent's default model. In Pinchy that is a second,
+  // ungoverned writer of agent memory (`pinchy_memory` is the governed one), it
+  // reads the conversations of every user of a shared agent, and it spends the
+  // model budget outside any chat turn. Forced off; whatever else OpenClaw keeps
+  // in the entry (enabled, other dreaming settings) is preserved.
+  const memoryCoreEntry = (entries["memory-core"] as Record<string, unknown> | undefined) ?? {};
+  const memoryCoreConfig = (memoryCoreEntry.config as Record<string, unknown> | undefined) ?? {};
+  entries["memory-core"] = {
+    ...memoryCoreEntry,
+    config: {
+      ...memoryCoreConfig,
+      dreaming: {
+        ...((memoryCoreConfig.dreaming as Record<string, unknown> | undefined) ?? {}),
+        enabled: false,
+      },
+    },
+  };
 
   if (allowedPlugins.length > 0 || Object.keys(entries).length > 0) {
     config.plugins = { allow: allowedPlugins, entries };
