@@ -426,6 +426,15 @@ This is enforced in three places so no code path can re-enable it by omission: t
 
 We expect to bring workspace terminals back as a first-class, **RBAC-scoped and audited** feature — gated behind a role grant and writing an audit row per session — rather than the ungoverned admin shell OpenClaw ships upstream. Until then, it stays off. If you have a specific need for it, [open an issue](https://github.com/heypinchy/pinchy/issues) describing the use case.
 
+## Background memory rewriting and skill self-learning (disabled)
+
+OpenClaw 2026.8 switched on two background features by default. Pinchy keeps both off:
+
+- **Dreaming** (`plugins.entries.memory-core.config.dreaming.enabled: false`). A nightly job reads an agent's conversations and rewrites its `MEMORY.md` with the agent's model. For a shared agent that means reading every user's conversations, writing memory outside any chat turn, and spending model budget nobody asked for. Agents keep their memory through the Memory tool, inside a conversation.
+- **Skill self-learning** (`skills.workshop.autonomous.mode: "off"`). After a longer turn, OpenClaw would draft a new skill and install it without approval. In Pinchy, an admin chooses which skills an agent has.
+
+Both settings are written into every config Pinchy generates and into the image's baked-in `config/openclaw.json`. Any other dreaming setting in `openclaw.json` is left as it is.
+
 ## Backup & recovery
 
 :::note
