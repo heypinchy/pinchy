@@ -13,9 +13,10 @@ on:
         description: >-
           Version to render into %%PINCHY_VERSION%% (e.g. v0.9.0). REQUIRED when
           dispatching from a branch with no release tag on it: inject-version.sh
-          would otherwise fall back to packages/web/package.json, which on `main`
-          still carries the PREVIOUS release — publishing docs that tell users to
-          pull an older image than the one they can run.
+          would otherwise fall back to the newest release upgrading.mdx records,
+          which while the next release is being prepared is the PREVIOUS one —
+          publishing docs that tell users to pull an older image than the one
+          they are publishing docs for.
         required: true
         type: string
 
