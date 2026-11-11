@@ -12,6 +12,7 @@ import { expect, it } from "vitest";
 
 import {
   countUnsupportedFiles,
+  countUnsupportedFilesByKind,
   listUnsupportedFiles,
   recordUnsupportedFiles,
   type UnsupportedFile,
@@ -157,4 +158,37 @@ it("pages through a large list without dropping or repeating a row", async () =>
   const read = await readAll(ORG_ID, ["/data"], 1000);
 
   expect(read.map((f) => f.sourcePath)).toEqual(many);
+});
+
+// #1410: a run that finished before the split stored one `unsupported` number
+// for documents and non-documents alike. The rows behind it carry each file's
+// type, so the split can be read back from them — without it, a share of
+// drivers keeps an agent under "needs attention" until the next run.
+it("counts documents not supported yet apart from files that are not documents", async () => {
+  await recordUnsupportedFiles(
+    ORG_ID,
+    [
+      {
+        rootDir: "/data",
+        files: new Map([
+          ["/data/hr/Order.msg", ".msg"],
+          ["/data/hr/driver/usb.dll", ".dll"],
+          ["/data/hr/driver/setup.EXE", ".exe"],
+          ["/data/hr/FIRMWARE", ""],
+          ["/data/legal/Prices.xlsb", ".xlsb"],
+        ]),
+      },
+    ],
+    []
+  );
+
+  expect(await countUnsupportedFilesByKind(ORG_ID, ["/data/hr"])).toEqual({
+    unsupported: 1,
+    ignored: 3,
+  });
+  expect(await countUnsupportedFilesByKind(ORG_ID, ["/data"])).toEqual({
+    unsupported: 2,
+    ignored: 3,
+  });
+  expect(await countUnsupportedFilesByKind(ORG_ID, [])).toEqual({ unsupported: 0, ignored: 0 });
 });

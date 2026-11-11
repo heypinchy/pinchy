@@ -56,7 +56,9 @@ const FILE_STATE: Record<FileState, { label: string; attention: boolean }> = {
   pending: { label: "Queued", attention: false },
   failed: { label: "Not indexed", attention: true },
   new: { label: "Added since the last run", attention: false },
-  unsupported: { label: "File type not supported", attention: false },
+  unsupported: { label: "File type not supported yet", attention: false },
+  // Not a document (#1410): skipped on purpose, named so nothing is hidden.
+  ignored: { label: "Not a document — skipped", attention: false },
 };
 
 /**
@@ -406,8 +408,7 @@ function FolderFiles({
             {scope === "direct" && "Directly in this folder: "}
             {page.totals.searchable} of {page.totals.all} {plural(page.totals.all, "file")}{" "}
             searchable
-            {page.totals.unsupported > 0 &&
-              `, plus ${page.totals.unsupported} ${plural(page.totals.unsupported, "file")} the index can't read`}
+            {outsideIndexText(page.totals)}
             {page.truncated &&
               " — this folder is too large to list in full, so counts cover part of it"}
             .
@@ -468,6 +469,27 @@ function FolderFiles({
       ) : null}
     </div>
   );
+}
+
+/**
+ * The files a listing found but the index leaves out, documents it cannot read
+ * yet apart from files that are not documents at all (#1410).
+ */
+function outsideIndexText(totals: { unsupported: number; ignored: number }): string {
+  const parts: string[] = [];
+  if (totals.unsupported > 0) {
+    parts.push(
+      `${totals.unsupported} ${plural(totals.unsupported, "file")} the index can't read yet`
+    );
+  }
+  if (totals.ignored > 0) {
+    parts.push(
+      totals.ignored === 1
+        ? "1 file skipped because it isn't a document"
+        : `${totals.ignored} files skipped because they aren't documents`
+    );
+  }
+  return parts.length > 0 ? `, plus ${parts.join(" and ")}` : "";
 }
 
 function plural(n: number, word: string): string {

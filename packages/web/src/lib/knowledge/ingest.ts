@@ -66,6 +66,7 @@ import { statusForPath } from "./archive-paths";
 import { orderForIngest } from "./ingest-order";
 import { buildPathFilter } from "./path-filter";
 import { recordUnsupportedFiles, unsupportedFileType } from "./unsupported-files";
+import { unsupportedFileKind } from "./unsupported-kind";
 import { chunkPages } from "./chunk";
 import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
@@ -1531,8 +1532,15 @@ export async function ingestPaths(
     perRoot.push({ rootDir, discovered, unsupported: listing.unsupported });
   }
 
-  // Counted once however many overlapping roots found a file, like `total`.
-  const unsupported = new Set(perRoot.flatMap((root) => [...root.unsupported.keys()])).size;
+  // Counted once however many overlapping roots found a file, like `total`,
+  // and split by whether the file is a document at all (#1410).
+  const unreadable = new Map(perRoot.flatMap((root) => [...root.unsupported]));
+  let unsupported = 0;
+  let ignored = 0;
+  for (const type of unreadable.values()) {
+    if (unsupportedFileKind(type) === "unsupported") unsupported++;
+    else ignored++;
+  }
 
   // Deduplicated across roots: a file granted under both /data and /data/hr is
   // one unit of work and must be weighed once, or the run would stop short of
@@ -1569,7 +1577,14 @@ export async function ingestPaths(
   let archived = 0;
   const total = queue.length;
   const totalBytes = queue.reduce((sum, file) => sum + file.bytes, 0);
-  const snapshot = (): IngestResult => ({ ...tally, removed, failed, archived, unsupported });
+  const snapshot = (): IngestResult => ({
+    ...tally,
+    removed,
+    failed,
+    archived,
+    unsupported,
+    ignored,
+  });
 
   /** `inFlightBytes` is the part of the CURRENT file already embedded — see the callback below. */
   const report = (inFlightBytes = 0) =>

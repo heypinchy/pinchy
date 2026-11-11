@@ -96,7 +96,7 @@ function files(overrides: Partial<FolderFilesResult> = {}): FolderFilesResult {
       },
     ],
     total: 2,
-    totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 0 },
+    totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 0, ignored: 0 },
     truncated: false,
     ...overrides,
   };
@@ -276,7 +276,7 @@ describe("KnowledgeFolderTree", () => {
         : files({
             files: [],
             total: 0,
-            totals: { all: 0, searchable: 0, notSearchable: 0, unsupported: 0 },
+            totals: { all: 0, searchable: 0, notSearchable: 0, unsupported: 0, ignored: 0 },
           })
     );
     render(<KnowledgeFolderTree agentId="a1" />);
@@ -293,15 +293,65 @@ describe("KnowledgeFolderTree", () => {
     mockGet.mockImplementation(async (url: string) =>
       url.includes("/folders")
         ? status
-        : files({ totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 3 } })
+        : files({
+            totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 3, ignored: 0 },
+          })
     );
     render(<KnowledgeFolderTree agentId="a1" />);
     await userEvent.click(await screen.findByRole("button", { name: /show subfolders/i }));
     await userEvent.click(screen.getByRole("button", { name: "Show files in /data/kb/hr" }));
 
     expect(
-      await screen.findByText(/1 of 2 files searchable, plus 3 files the index can't read/)
+      await screen.findByText(/1 of 2 files searchable, plus 3 files the index can't read yet\./)
     ).toBeInTheDocument();
+  });
+
+  // #1410: a driver or a data export is not a document anybody has to convert.
+  // It is still named — skipped, not hidden — but apart from the documents.
+  it("names files that are not documents apart from the ones the index can't read yet", async () => {
+    mockGet.mockImplementation(async (url: string) =>
+      url.includes("/folders")
+        ? status
+        : files({
+            totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 3, ignored: 4 },
+          })
+    );
+    render(<KnowledgeFolderTree agentId="a1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /show subfolders/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Show files in /data/kb/hr" }));
+
+    expect(
+      await screen.findByText(
+        /1 of 2 files searchable, plus 3 files the index can't read yet and 4 files skipped because they aren't documents\./
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("marks a file that is not a document as skipped, without asking for attention", async () => {
+    mockGet.mockImplementation(async (url: string) =>
+      url.includes("/folders")
+        ? status
+        : files({
+            files: [
+              {
+                path: "/data/kb/hr/driver.dll",
+                name: "driver.dll",
+                state: "ignored",
+                archived: false,
+                indexedAt: null,
+                modifiedAt: null,
+              },
+            ],
+            total: 1,
+            totals: { all: 0, searchable: 0, notSearchable: 0, unsupported: 0, ignored: 1 },
+          })
+    );
+    render(<KnowledgeFolderTree agentId="a1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /show subfolders/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Show files in /data/kb/hr" }));
+
+    const label = await screen.findByText("Not a document — skipped");
+    expect(label.className).not.toMatch(/amber/);
   });
 
   it("says when a folder is too large to list in full", async () => {

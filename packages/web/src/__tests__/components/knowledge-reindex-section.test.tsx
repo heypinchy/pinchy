@@ -86,6 +86,7 @@ type Job = {
     failed: number;
     archived?: number;
     unsupported?: number;
+    ignored?: number;
   } | null;
   error: string | null;
   createdAt: string;
@@ -209,7 +210,7 @@ describe("KnowledgeReindexSection", () => {
 
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
 
-      expect(await screen.findByText("2 not supported")).toBeInTheDocument();
+      expect(await screen.findByText("2 not supported yet")).toBeInTheDocument();
       const link = screen.getByRole("link", { name: /download the list/i });
       expect(link).toHaveAttribute("href", "/api/agents/a1/knowledge/unsupported");
       expect(link).toHaveAttribute("download");
@@ -249,7 +250,7 @@ describe("KnowledgeReindexSection", () => {
 
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
 
-      expect(await screen.findByText("3 not supported")).toBeInTheDocument();
+      expect(await screen.findByText("3 not supported yet")).toBeInTheDocument();
       expect(screen.queryByRole("link", { name: /download the list/i })).not.toBeInTheDocument();
     });
 
@@ -258,7 +259,7 @@ describe("KnowledgeReindexSection", () => {
 
       render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
 
-      expect(await screen.findByText("0 not supported")).toBeInTheDocument();
+      expect(await screen.findByText("0 not supported yet")).toBeInTheDocument();
       expect(screen.queryByRole("link", { name: /download the list/i })).not.toBeInTheDocument();
     });
 
@@ -271,6 +272,65 @@ describe("KnowledgeReindexSection", () => {
 
       await screen.findByText(/last indexed/i);
       expect(screen.queryByText(/not supported/i)).not.toBeInTheDocument();
+    });
+  });
+
+  // #1410: a share holds programs, drivers, data exports and firmware next to
+  // its documents. Those were never documents, so they are counted apart as
+  // "ignored" — shown, never hidden, but no reason to act and no warning.
+  describe("files that are not documents (#1410)", () => {
+    const counts = { indexed: 11, skipped: 2, removed: 0, unsearchable: 0, failed: 0 };
+
+    it("shows a folder of binaries and readable documents as healthy, with no warning", async () => {
+      mockGet.mockResolvedValue({
+        job: job({ counts: { ...counts, unsupported: 0, ignored: 400 } }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByText("400 ignored (not documents)")).toBeInTheDocument();
+      expect(screen.getByRole("status")).not.toHaveTextContent(/needs attention/i);
+      expect(screen.getByText("Indexed")).toBeInTheDocument();
+      expect(screen.queryByText(/of a type pinchy can't read/i)).not.toBeInTheDocument();
+    });
+
+    it("still says it skipped them, and offers the list", async () => {
+      mockGet.mockResolvedValue({
+        job: job({ counts: { ...counts, unsupported: 0, ignored: 400 } }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(
+        await screen.findByText(/400 files were skipped because they aren't documents/i)
+      ).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /download the list/i })).toHaveAttribute(
+        "href",
+        "/api/agents/a1/knowledge/unsupported"
+      );
+    });
+
+    it("names only the documents it can't read yet in the note, and the rest in passing", async () => {
+      mockGet.mockResolvedValue({
+        job: job({ counts: { ...counts, unsupported: 2, ignored: 400 } }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      const note = await screen.findByText(/2 files are of a type pinchy can't read yet/i);
+      expect(note).toHaveTextContent(/also names 400 files we skipped/i);
+      expect(screen.getAllByRole("link", { name: /download the list/i })).toHaveLength(1);
+    });
+
+    // "Checked" is every file the run looked at, so the numbers below it add up.
+    it("counts every file the run looked at as checked", async () => {
+      mockGet.mockResolvedValue({
+        job: job({ counts: { ...counts, unsupported: 2, ignored: 400 } }),
+      });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      expect(await screen.findByRole("status")).toHaveTextContent(/415 files checked/);
     });
   });
 
@@ -610,7 +670,7 @@ describe("KnowledgeReindexSection", () => {
     });
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
     expect(await screen.findByRole("status")).toHaveTextContent(
-      /13 documents checked, 2 new or changed/
+      /13 files checked, 2 new or changed/
     );
   });
 
@@ -622,9 +682,7 @@ describe("KnowledgeReindexSection", () => {
       }),
     });
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      /13 documents checked, nothing new/
-    );
+    expect(await screen.findByRole("status")).toHaveTextContent(/13 files checked, nothing new/);
   });
 
   // Archive handling is a selling point, and the count was in the job all along.
@@ -666,7 +724,7 @@ describe("KnowledgeReindexSection", () => {
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith(
-        "Reindex finished: 13 documents checked, 2 new or changed."
+        "Reindex finished: 13 files checked, 2 new or changed."
       )
     );
   });
@@ -684,7 +742,7 @@ describe("KnowledgeReindexSection", () => {
     render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} pollIntervalMs={20} />);
     await waitFor(() =>
       expect(toast.info).toHaveBeenCalledWith(
-        "Reindex finished: 13 documents checked, nothing new. Something needs your attention."
+        "Reindex finished: 13 files checked, nothing new. Something needs your attention."
       )
     );
     expect(toast.success).not.toHaveBeenCalled();
