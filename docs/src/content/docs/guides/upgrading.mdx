@@ -272,6 +272,10 @@ A document that came to more than about 8,000 passages — a long manual, a larg
 
 Each chat you visit keeps its own connection to Pinchy while you move on, and Pinchy allows ten per person across all devices and tabs. A few agents on a desktop and a few on a phone could use them all up, and chat then refused to connect. A tab now keeps at most three idle chats connected and closes the one you looked at longest ago first; a chat that is still answering is never closed. One you come back to after it was dropped reconnects and loads its history as usual. Nothing to configure.
 
+#### A knowledge base inside an archive folder is no longer hidden
+
+The archive rule (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)) read the whole path of a document, including the folders above the one an agent is granted. An agent granted a folder that is itself called `Archiv`, or sits below one — `/data/Archiv/Projekte` — therefore had every document marked archived, and everyday search found nothing. The rule now reads only the path inside the granted folder. Nothing to do on upgrade: the next index run — the nightly one, or **Reindex now** — marks those documents current again without reading them a second time. When two agents are granted nested folders, the folder granted further down decides for both.
+
 ### Database migrations
 
 The migration `0082` runs automatically on startup — no manual steps. It is additive.
