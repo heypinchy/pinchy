@@ -494,7 +494,7 @@ describe("countText", () => {
     ).toBe("37 of 40 files searchable");
   });
 
-  it("counts archived files the run will convert again as on their way", () => {
+  it("leaves archived files waiting for conversion out while the archive is to come", () => {
     expect(
       countText(
         folder({
@@ -558,6 +558,42 @@ describe("countText", () => {
     ).toBe("0 of 5 archived files done");
   });
 
+  it("doesn't let the archive stand in for a missing current file", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "has_errors",
+          indexed: 44,
+          searchable: 44,
+          archivedSearchable: 5,
+          expected: 45,
+          pending: 5,
+          pendingArchived: 5,
+          expectedArchived: 5,
+        })
+      )
+    ).toBe("39 of 40 files searchable · 5 archived files queued");
+  });
+
+  it("counts the archive with the rest once the run is through it", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "has_errors",
+          indexed: 45,
+          searchable: 44,
+          notSearchable: 1,
+          archivedSearchable: 4,
+          archivedNotSearchable: 1,
+          expected: 45,
+          expectedArchived: 5,
+        })
+      )
+    ).toBe("44 of 45 files searchable");
+  });
+
   it("names the archive in the singular", () => {
     expect(
       countText(
@@ -566,6 +602,7 @@ describe("countText", () => {
           state: "has_errors",
           indexed: 3,
           searchable: 2,
+          notSearchable: 1,
           expected: 4,
           pending: 1,
           pendingArchived: 1,
@@ -586,83 +623,104 @@ describe("countText", () => {
 // the server, the count here. They drifted apart twice while archived files
 // were still to come; whatever one says, the other must not contradict it.
 describe("countText agrees with the folder's state", () => {
-  const cases: Array<Partial<FolderStatus>> = [
-    { indexed: 40, searchable: 40, expected: 40 },
-    { indexed: 40, searchable: 37, notSearchable: 3, expected: 40 },
-    { indexed: 38, searchable: 38, expected: 40 },
-    { indexed: 45, searchable: 42, notSearchable: 3, expected: 40 },
-    // Re-runs that find the archive already in the index, archive still to come.
-    {
-      indexed: 45,
-      searchable: 45,
-      archivedSearchable: 5,
-      expected: 45,
-      expectedArchived: 5,
-      pending: 5,
-      pendingArchived: 5,
-    },
-    {
-      indexed: 45,
-      searchable: 42,
-      notSearchable: 3,
-      archivedSearchable: 5,
-      expected: 45,
-      expectedArchived: 5,
-      pending: 5,
-      pendingArchived: 5,
-    },
-    {
-      indexed: 45,
-      searchable: 44,
-      notSearchable: 1,
-      archivedSearchable: 4,
-      archivedNotSearchable: 1,
-      expected: 45,
-      expectedArchived: 5,
-      pending: 5,
-      pendingArchived: 5,
-    },
-    {
-      indexed: 44,
-      searchable: 44,
-      archivedSearchable: 5,
-      expected: 45,
-      expectedArchived: 5,
-      pending: 5,
-      pendingArchived: 5,
-    },
-    // Mid-archive, and the first run with no archive in the index yet.
-    {
-      indexed: 42,
-      searchable: 42,
-      archivedSearchable: 2,
-      expected: 45,
-      expectedArchived: 5,
-      pending: 3,
-      pendingArchived: 3,
-      indexingArchive: true,
-    },
-    {
-      indexed: 40,
-      searchable: 40,
-      expected: 45,
-      expectedArchived: 5,
-      pending: 5,
-      pendingArchived: 5,
-    },
-    // The archive read, one archived file without text.
-    {
-      indexed: 45,
-      searchable: 44,
-      notSearchable: 1,
-      archivedSearchable: 4,
-      archivedNotSearchable: 1,
-      expected: 45,
-      expectedArchived: 5,
-    },
+  const cases: Array<[string, Partial<FolderStatus>]> = [
+    ["every file searchable", { indexed: 40, searchable: 40, expected: 40 }],
+    ["files without text", { indexed: 40, searchable: 37, notSearchable: 3, expected: 40 }],
+    ["files missing", { indexed: 38, searchable: 38, expected: 40 }],
+    [
+      "documents of deleted files beside files without text",
+      { indexed: 45, searchable: 42, notSearchable: 3, expected: 40 },
+    ],
+    [
+      "re-run, archive in the index and still to come",
+      {
+        indexed: 45,
+        searchable: 45,
+        archivedSearchable: 5,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 5,
+        pendingArchived: 5,
+      },
+    ],
+    [
+      "re-run, current files without text",
+      {
+        indexed: 45,
+        searchable: 42,
+        notSearchable: 3,
+        archivedSearchable: 5,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 5,
+        pendingArchived: 5,
+      },
+    ],
+    [
+      "re-run, an archived file without text",
+      {
+        indexed: 45,
+        searchable: 44,
+        notSearchable: 1,
+        archivedSearchable: 4,
+        archivedNotSearchable: 1,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 5,
+        pendingArchived: 5,
+      },
+    ],
+    [
+      "re-run, a current file missing",
+      {
+        indexed: 44,
+        searchable: 44,
+        archivedSearchable: 5,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 5,
+        pendingArchived: 5,
+      },
+    ],
+    [
+      "mid-archive",
+      {
+        indexed: 42,
+        searchable: 42,
+        archivedSearchable: 2,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 3,
+        pendingArchived: 3,
+        indexingArchive: true,
+      },
+    ],
+    [
+      "first run, archive not yet in the index",
+      {
+        indexed: 40,
+        searchable: 40,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 5,
+        pendingArchived: 5,
+      },
+    ],
+    [
+      "archive read, an archived file without text",
+      {
+        indexed: 45,
+        searchable: 44,
+        notSearchable: 1,
+        archivedSearchable: 4,
+        archivedNotSearchable: 1,
+        expected: 45,
+        expectedArchived: 5,
+      },
+    ],
   ];
 
-  it.each(cases.map((c, i) => [i, c] as const))("case %i", (_, overrides) => {
+  it.each(cases)("%s", (_, overrides) => {
     const f = folder({ path: "/a", ...overrides });
     const state = deriveFolderState({
       indexed: f.indexed,

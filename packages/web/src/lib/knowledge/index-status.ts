@@ -163,21 +163,26 @@ async function countsUnderRoot(
 ): Promise<{ direct: Counts; children: Map<string, Counts> }> {
   const offset = root === "/" ? 2 : root.length + 2;
   const superseded = readFromSupersededArtifact(sql`d.source_path`, sql`d.artifact_format_version`);
-  const noText = sql`NOT EXISTS (SELECT 1 FROM kb_chunks c WHERE c.document_id = d.id)`;
+  // Whether a document is searchable is worked out once per row, then counted
+  // twice: for the folder, and for its archive.
   const rows = await db.execute<CountRow>(sql`
     SELECT split_part(substr(d.source_path, ${offset}), '/', 1) AS child,
            strpos(substr(d.source_path, ${offset}), '/') > 0 AS in_sub,
            COUNT(*) AS indexed,
-           -- "Has no chunk", correlated on document_id as in unsearchable.ts.
-           COUNT(*) FILTER (WHERE ${noText} OR ${superseded}) AS not_searchable,
+           COUNT(*) FILTER (WHERE d.unsearchable) AS not_searchable,
            COUNT(*) FILTER (WHERE d.status = 'archived') AS archived,
-           COUNT(*) FILTER (
-             WHERE d.status = 'archived' AND (${noText} OR ${superseded})
-           ) AS archived_not_searchable,
+           COUNT(*) FILTER (WHERE d.status = 'archived' AND d.unsearchable)
+             AS archived_not_searchable,
            MAX(d.created_at) AT TIME ZONE 'UTC' AS last_created
-    FROM kb_documents d
-    WHERE d.org_id = ${orgId}
-      AND (${buildPathFilter([root], sql`d.source_path`)})
+    FROM (
+      SELECT d.source_path, d.status, d.created_at,
+             -- "Has no chunk", correlated on document_id as in unsearchable.ts.
+             (NOT EXISTS (SELECT 1 FROM kb_chunks c WHERE c.document_id = d.id)
+               OR ${superseded}) AS unsearchable
+      FROM kb_documents d
+      WHERE d.org_id = ${orgId}
+        AND (${buildPathFilter([root], sql`d.source_path`)})
+    ) d
     GROUP BY 1, 2
   `);
 

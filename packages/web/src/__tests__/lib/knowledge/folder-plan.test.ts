@@ -262,20 +262,6 @@ describe("deriveFolderState", () => {
       ).toBe("searchable");
     });
 
-    it("needs attention for an archived file without text once the archive is read", () => {
-      expect(
-        deriveFolderState({
-          ...base,
-          indexed: 1105,
-          expected: 1105,
-          expectedArchived: 428,
-          archived: 428,
-          notSearchable: 1,
-          archivedNotSearchable: 1,
-        })
-      ).toBe("has_errors");
-    });
-
     // The archive's documents from an earlier run must not stand in for a
     // current file that never made it in.
     it("needs attention when a current file is missing, whatever the archive holds", () => {
@@ -321,5 +307,20 @@ describe("deriveFolderState", () => {
         "indexing"
       );
     });
+  });
+
+  // Once the run is through the archive, it counts like any other file.
+  it("needs attention for an archived file without text once the archive is read", () => {
+    expect(
+      deriveFolderState({
+        ...base,
+        indexed: 1105,
+        expected: 1105,
+        expectedArchived: 428,
+        archived: 428,
+        notSearchable: 1,
+        archivedNotSearchable: 1,
+      })
+    ).toBe("has_errors");
   });
 });
