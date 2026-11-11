@@ -648,7 +648,7 @@ describe("Email operation helpers", () => {
       expect(getEmailToolsForOperations(["bogus"])).toEqual([]);
     });
 
-    // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+    // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
     // pre-PR #328 template creation stored per-tool operations (list, read,
     // search, draft) as raw agent_connection_permissions rows — see
     // ebe6b47a2's "Operation vocabulary mismatch" fix, which normalized the
@@ -683,7 +683,7 @@ describe("Email operation helpers", () => {
       ]);
     });
 
-    // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+    // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
     // "list" is the OTHER legacy per-tool operation pre-#328 template creation
     // could persist (alongside "search" above), and unlike "search" it had NO
     // alias at all until now — a standalone (email, "list") row derived an

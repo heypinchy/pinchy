@@ -324,7 +324,7 @@ function errorResult(error: unknown): {
  * carry the recipient and the full body as tool params; the audit route logs
  * raw params verbatim unless the tool returns curated `details` (route.ts:
  * curatesNonErrorFields deletes detail.params). Those params are PII that would
- * otherwise land in the append-only, HMAC-signed audit in plaintext (AGENTS.md
+ * otherwise land in the append-only, HMAC-signed audit in plaintext (agent-rules/secrets.md
  * § Secret Handling: "Never write plaintext email addresses or other PII into
  * audit detail").
  *

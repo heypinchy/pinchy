@@ -12,7 +12,7 @@
  *   3. CI keeps running it.
  *
  * This is the read-side sibling of the no-untracked-skips / no-test-deletion /
- * plugin-typecheck guards (see AGENTS.md): it forces a silent narrowing of the
+ * plugin-typecheck guards (see agent-rules/): it forces a silent narrowing of the
  * gate to be a loud, deliberate act.
  */
 

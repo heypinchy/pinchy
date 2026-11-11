@@ -849,7 +849,7 @@ describe("SettingsIntegrations — OAuth callback errors (persistent banner)", (
 
   // An OAuth connect failure is a PERMANENT, actionable config error that comes
   // back after a full-page redirect — it must live in the DOM until the user
-  // dismisses it, not vanish with a ~4-second toast (AGENTS.md "Error And
+  // dismisses it, not vanish with a ~4-second toast (agent-rules/ui.md "Error And
   // Notification UI"; the token_exchange_failed toast is exactly what a user
   // missed on staging 2026-07-06).
   it("renders a persistent banner (NOT a toast) for token_exchange_failed, pointing at the Client Secret", async () => {

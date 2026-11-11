@@ -973,7 +973,7 @@ describe("GET /api/agents/[agentId]/workspace-file — download", () => {
     // embedded viewer, and nothing embeds an attachment — but next.config.ts
     // applies SAMEORIGIN to `/api/agents/:agentId/workspace-file` with no
     // regard for the query string, and a config header WINS over a route's
-    // (AGENTS.md § Embeddable Serving Routes). So a route-level assertion of
+    // (agent-rules/web-routes.md § Embeddable Serving Routes). So a route-level assertion of
     // "no framing invitation" would describe a response no browser receives.
     //
     // It is inert rather than a gap: `Content-Disposition: attachment` is never

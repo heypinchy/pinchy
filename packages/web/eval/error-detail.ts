@@ -47,7 +47,7 @@ const TRANSPORT_CODES = new Set([
  * `page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:7781/…`.
  *
  * Curated, never a blanket `net::ERR_` prefix match. `ERR_BLOCKED_BY_RESPONSE`
- * is how this repo's X-Frame-Options defect presents (see AGENTS.md),
+ * is how this repo's X-Frame-Options defect presents (see agent-rules/web-routes.md),
  * `ERR_ABORTED` is a navigation the page itself cancelled, and `ERR_CERT_*` is
  * a configuration fault a retry cannot fix. Retrying any of those is exactly
  * how a product bug disappears behind a note blaming the uplink.

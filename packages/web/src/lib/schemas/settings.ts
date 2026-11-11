@@ -3,7 +3,7 @@ import { z } from "zod";
 /**
  * Request schemas for the settings- and self-service routes, shared with their
  * client counterparts so a rename on either side is a compile error rather
- * than a runtime 400 (AGENTS.md § "Shared Schemas And Typed Client").
+ * than a runtime 400 (agent-rules/web-routes.md § "Shared Schemas And Typed Client").
  *
  * These are the ROUTE's shapes. The forms keep their own schemas where the
  * form is not the payload — `settings-profile.tsx` validates a

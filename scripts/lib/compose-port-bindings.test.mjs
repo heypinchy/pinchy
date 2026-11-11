@@ -12,7 +12,7 @@
  * convention lives in nine files, is one token wide, and has no failure mode
  * that anyone would notice locally. That is the shape of every drift this repo
  * has already paid for, so it gets a tripwire rather than a habit — the same
- * argument as `contracts.tools` in AGENTS.md.
+ * argument as `contracts.tools` in agent-rules/docs.md.
  *
  * The escape hatch is deliberately not a list of accepted exceptions. A stack
  * that genuinely needs a routable bind writes it the way `docker-compose.yml`

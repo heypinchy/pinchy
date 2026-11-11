@@ -11,7 +11,7 @@
  * A spec listed here is claimed by imap and ignored by email; a spec NOT
  * listed here runs under email by default (the email config is a denylist).
  * Both configs import from this module, so there is no second list to keep
- * in sync by hand. See AGENTS.md, "A Hand-Maintained List That Mirrors Code
+ * in sync by hand. See agent-rules/docs.md, "A Hand-Maintained List That Mirrors Code
  * Will Be Wrong".
  */
 export const IMAP_ONLY_SPEC_FILES = [

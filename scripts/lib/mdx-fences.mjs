@@ -20,7 +20,7 @@
  *    truncated at the same place, and reports green.
  *
  * So the masking lives in one module that all of them import, for the same
- * reason `readRequestHost` does (AGENTS.md § "`/api/internal/` Is A Security
+ * reason `readRequestHost` does (agent-rules/web-routes.md § "`/api/internal/` Is A Security
  * Claim"): two gates reading one input must read it the same way.
  */
 

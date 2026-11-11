@@ -891,7 +891,7 @@ describe("withApiKey", () => {
 
     it("bounds the audit rows ACROSS source addresses, not per address", async () => {
       // The one property that makes auditing an unauthenticated caller safe.
-      // AGENTS.md § "`/api/internal/` Is A Security Claim, Not A Folder Name":
+      // agent-rules/web-routes.md § "`/api/internal/` Is A Security Claim, Not A Folder Name":
       // the remote address is caller-supplied, so a per-address audit window
       // grows per request and stops throttling — a distributed key-guessing
       // sweep would mint one row per source, and every appendAuditLog takes

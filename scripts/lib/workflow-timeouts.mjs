@@ -24,7 +24,7 @@
  * fail that one job — GitHub refuses to parse the whole FILE, so the run ends
  * in seconds with no jobs at all and no status reported. On ci.yml that is
  * the same unmergeable-with-nothing-broken failure as a workflow-level
- * `paths-ignore` on a required check (see AGENTS.md), reached from a third
+ * `paths-ignore` on a required check (see agent-rules/ci.md), reached from a third
  * direction. This repo shipped it once: `vuln-scan` and release.yml's `docs`
  * both got a timeout in the first draft of this very change, and both CI and
  * Release died at 0s.
@@ -35,7 +35,7 @@
  * simply not ours to set for a third-party reusable workflow.
  *
  * Read-side sibling of the no-untracked-skips / no-test-deletion /
- * ci-path-filter guards (see AGENTS.md): it turns "somebody forgot" into a
+ * ci-path-filter guards (see agent-rules/): it turns "somebody forgot" into a
  * loud, specific failure instead of a runner quietly burning its default
  * budget.
  */

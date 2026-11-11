@@ -12,7 +12,7 @@
 //
 // No integration test covers the gap either, and cannot cheaply: every E2E
 // stack configures no domain, so `getCachedDomain()` returns null and the host
-// check is inert in all of them (see AGENTS.md § "`/api/internal/` Is A
+// check is inert in all of them (see agent-rules/web-routes.md § "`/api/internal/` Is A
 // Security Claim, Not A Folder Name").
 //
 // Known limitation, stated plainly: this reads the source text. It proves the

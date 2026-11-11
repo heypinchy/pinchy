@@ -971,7 +971,7 @@ describe("kb index worker tick", () => {
   });
 
   describe("Office documents an earlier artifact format indexed", () => {
-    // AGENTS.md § "Test Migrations Against Pre-Existing Data". After a bump
+    // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data". After a bump
     // of OFFICE_ARTIFACT_FORMAT_VERSION, the rows the upgrade finds were read
     // from PDFs the earlier conversion made. The ingest converts them again
     // on its next run — but the nightly run can be switched off, and until

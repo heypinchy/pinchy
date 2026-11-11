@@ -267,7 +267,7 @@ jobs:
       # formats. `quality` is ungated (it is required), so this runs on every PR,
       # including docs-only ones — which is why the old dedicated
       # `docs-format.yml` workflow is gone rather than duplicated here.
-      # See AGENTS.md § "One Format Gate, Whole-Tree, From The Root".
+      # See agent-rules/tooling.md § "One Format Gate, Whole-Tree, From The Root".
       - name: Format check (repo)
         run: pnpm format:check
 
@@ -276,8 +276,8 @@ jobs:
       #
       # PR #1063 landed a ci.yml GitHub could not parse. Nothing failed —
       # the required checks reported "Expected — Waiting for status" instead,
-      # which is the unmergeable-with-nothing-broken shape AGENTS.md already
-      # documents twice (§ "CI Path Filtering Is Job-Level" and § "Never Put
+      # which is the unmergeable-with-nothing-broken shape agent-rules/ci.md
+      # already documents twice (§ "CI Path Filtering Is Job-Level" and § "Never Put
       # A Required Check In A Matrix"), arriving here from a third direction.
       #
       # And release.yml / pre-release.yml both passed `config-inline:` to
@@ -314,7 +314,7 @@ jobs:
       # its verdict when somebody edits this file. shellcheck and pyflakes are
       # NOT: actionlint shells out to whatever the `ubuntu-latest` image
       # happens to ship, so a runner-image bump that adds one rule turns main
-      # red with no commit behind it. AGENTS.md makes exactly this call for
+      # red with no commit behind it. agent-rules/docs.md makes exactly this call for
       # the docs-freshness sweep ("a check that can go red between two
       # identical commits does not belong in front of a merge button"), and it
       # applies with more force here, because this check gates every merge.
@@ -423,7 +423,7 @@ jobs:
         # docs/dist/, so it MUST follow the build step. It lives here, in the
         # ungated `quality` job, rather than in a job of its own: a docs check
         # gated on `changes` would skip on exactly the docs-only PRs it guards —
-        # see AGENTS.md § "CI Path Filtering Is Job-Level, Never Workflow-Level".
+        # see agent-rules/ci.md § "CI Path Filtering Is Job-Level, Never Workflow-Level".
         run: cd docs && pnpm check:anchors
 
       - name: Docs rendered-table check (built output)
@@ -477,7 +477,7 @@ jobs:
           # Fail if the PR removes test cases on net — deleted test files or
           # removed it()/test() blocks — without an explicit, tracked override.
           # Closes the gap left by no-untracked-skips (which only catches
-          # .skip/.todo). See AGENTS.md § "No Untracked Test Removal".
+          # .skip/.todo). See agent-rules/testing.md § "No Untracked Test Removal".
           #
           # Fetch base + deepen HEAD so a merge-base resolves (correct PR-diff
           # semantics). The guard falls back to a tip-to-tip diff if it can't,
@@ -497,7 +497,7 @@ jobs:
           # registry, an agent template, the audit event catalogue, the settings
           # navigation, a plugin's declared tools) without touching docs/.
           # The docs-coverage guard catches a drifted LIST; this catches prose
-          # that quietly became untrue. See AGENTS.md § "A User-Visible Change
+          # that quietly became untrue. See agent-rules/docs.md § "A User-Visible Change
           # Needs A Docs Change".
           #
           # The fetches above already deepened base and HEAD for the
@@ -3107,7 +3107,7 @@ jobs:
           # site, not a file on disk, so lychee can only produce noise there.
           # Internal docs links and their #anchors are checked instead against
           # the BUILT site by the `quality` job's `pnpm check:anchors` step
-          # (#769; see AGENTS.md § "In-Page Anchors Are Checked By The Docs
+          # (#769; see agent-rules/docs.md § "In-Page Anchors Are Checked By The Docs
           # Build"). External links out of docs/ remain unchecked.
           args: "--no-progress --max-retries 3 --retry-wait-time 5 --accept '200..=299,429,500..=599' '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'github\\.com/heypinchy/website' --exclude 'github\\.com/heypinchy/pinchy/stargazers' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com' --exclude 'contributor-covenant\\.org' --exclude 'star-history\\.com'"
         env:

@@ -8,7 +8,7 @@
  * Those are different questions, and only the second one catches a wrong flag.
  *
  * Gated with describe.skipIf on the presence of `soffice` (an allowed env/OS
- * conditional gate per AGENTS.md, not an untracked skip): LibreOffice is a
+ * conditional gate per agent-rules/testing.md, not an untracked skip): LibreOffice is a
  * 422 MB image layer that exists in the Pinchy runtime image and on almost no
  * developer laptop. It is excluded from `pnpm test` and run by
  * `pnpm test:libreoffice` (vitest.libreoffice.config.ts, one file at a time),

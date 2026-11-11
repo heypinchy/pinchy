@@ -26,7 +26,7 @@ jobs:
       # Deliberately NOT a PR gate. The question needs the network, the answer
       # changes without anyone touching the repo, and a check that can go red
       # between two identical commits does not belong in front of a merge
-      # button. See AGENTS.md § "Forward-looking claims need an issue".
+      # button. See agent-rules/docs.md § "Forward-looking claims need an issue".
       - name: Check docs freshness
         env:
           GH_TOKEN: ${{ github.token }}

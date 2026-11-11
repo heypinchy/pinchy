@@ -413,7 +413,7 @@ describe("approvals gate decision service", () => {
   // one confirmation per attempt. That lands twice — a wall of cards in the
   // requester's inbox now, and one approval.expired audit row per request at
   // the next sweep, each of which takes the audit log's single advisory lock
-  // (AGENTS.md §"An audit row … needs a bound").
+  // (agent-rules/web-routes.md §"An audit row … needs a bound").
   it("stops opening new confirmations once the requester is at the pending cap", async () => {
     for (let i = 0; i < MAX_PENDING_PER_REQUESTER; i++) {
       await decideGate({ ...base(), argsDigest: `digest-${i}` });

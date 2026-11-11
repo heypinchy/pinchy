@@ -1,5 +1,5 @@
 /**
- * pinchy-knowledge — a thin credential-proxy plugin (see AGENTS.md "Pattern
+ * pinchy-knowledge — a thin credential-proxy plugin (see agent-rules/secrets.md "Pattern
  * B") in front of Pinchy's internal knowledge-base retrieval API. All
  * retrieval logic (hybrid search, path scoping, embeddings) lives in
  * packages/web (POST /api/internal/knowledge/search); this plugin's
