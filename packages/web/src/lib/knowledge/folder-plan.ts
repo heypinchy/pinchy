@@ -208,8 +208,8 @@ export function deriveFolderState(input: FolderStateInput): FolderState {
   const pendingCurrent = input.pending - input.pendingArchived;
   if (input.current && !input.currentArchived) return "indexing";
   if (pendingCurrent > 0) return "queued";
-  // The run has only archived files left here, or none. The ones it already
-  // passed decide the state; the archive still to come is reported apart.
+  // The run has only archived files left here, or none. With archive left, the
+  // current files alone decide; the archive is judged once the run is through it.
   if (input.pendingArchived > 0 && input.expected === input.expectedArchived) {
     // Nothing here but archive: no current file to be searchable for, so the
     // folder is unfinished until the run is through it — even on a re-run that

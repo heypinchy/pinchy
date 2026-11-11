@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
 import { KnowledgeFolderTree, countText } from "@/components/knowledge-folder-tree";
+import { deriveFolderState } from "@/lib/knowledge/folder-plan";
 import { apiGet } from "@/lib/api-client";
 import type {
   FolderFilesResult,
@@ -578,5 +579,106 @@ describe("countText", () => {
     expect(countText(folder({ path: "/a", indexed: 1, searchable: 1, expected: 1 }))).toBe(
       "1 of 1 file searchable"
     );
+  });
+});
+
+// The state beside a folder and its count are worked out apart — the state on
+// the server, the count here. They drifted apart twice while archived files
+// were still to come; whatever one says, the other must not contradict it.
+describe("countText agrees with the folder's state", () => {
+  const cases: Array<Partial<FolderStatus>> = [
+    { indexed: 40, searchable: 40, expected: 40 },
+    { indexed: 40, searchable: 37, notSearchable: 3, expected: 40 },
+    { indexed: 38, searchable: 38, expected: 40 },
+    { indexed: 45, searchable: 42, notSearchable: 3, expected: 40 },
+    // Re-runs that find the archive already in the index, archive still to come.
+    {
+      indexed: 45,
+      searchable: 45,
+      archivedSearchable: 5,
+      expected: 45,
+      expectedArchived: 5,
+      pending: 5,
+      pendingArchived: 5,
+    },
+    {
+      indexed: 45,
+      searchable: 42,
+      notSearchable: 3,
+      archivedSearchable: 5,
+      expected: 45,
+      expectedArchived: 5,
+      pending: 5,
+      pendingArchived: 5,
+    },
+    {
+      indexed: 45,
+      searchable: 44,
+      notSearchable: 1,
+      archivedSearchable: 4,
+      archivedNotSearchable: 1,
+      expected: 45,
+      expectedArchived: 5,
+      pending: 5,
+      pendingArchived: 5,
+    },
+    {
+      indexed: 44,
+      searchable: 44,
+      archivedSearchable: 5,
+      expected: 45,
+      expectedArchived: 5,
+      pending: 5,
+      pendingArchived: 5,
+    },
+    // Mid-archive, and the first run with no archive in the index yet.
+    {
+      indexed: 42,
+      searchable: 42,
+      archivedSearchable: 2,
+      expected: 45,
+      expectedArchived: 5,
+      pending: 3,
+      pendingArchived: 3,
+      indexingArchive: true,
+    },
+    {
+      indexed: 40,
+      searchable: 40,
+      expected: 45,
+      expectedArchived: 5,
+      pending: 5,
+      pendingArchived: 5,
+    },
+    // The archive read, one archived file without text.
+    {
+      indexed: 45,
+      searchable: 44,
+      notSearchable: 1,
+      archivedSearchable: 4,
+      archivedNotSearchable: 1,
+      expected: 45,
+      expectedArchived: 5,
+    },
+  ];
+
+  it.each(cases.map((c, i) => [i, c] as const))("case %i", (_, overrides) => {
+    const f = folder({ path: "/a", ...overrides });
+    const state = deriveFolderState({
+      indexed: f.indexed,
+      notSearchable: f.notSearchable,
+      expected: f.expected,
+      pending: f.pending,
+      pendingArchived: f.pendingArchived,
+      expectedArchived: f.expectedArchived,
+      current: f.indexingArchive,
+      currentArchived: f.indexingArchive,
+      archived: f.archivedSearchable + f.archivedNotSearchable,
+      archivedNotSearchable: f.archivedNotSearchable,
+      awaitingDiscovery: false,
+    });
+    expect(["searchable", "has_errors"]).toContain(state);
+    const [, done, of] = countText({ ...f, state }).match(/^(\d+) of (\d+) /)!;
+    expect(state === "searchable").toBe(done === of);
   });
 });
