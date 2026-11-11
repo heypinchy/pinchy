@@ -198,7 +198,8 @@ const CAUSE_ORDER: readonly NoTextCause[] = [
   "ocr_off",
   "no_vision_model",
   "read_next_run",
-  "read_failed",
+  "vision_failed",
+  "read_refused",
   "read_blank",
 ];
 
@@ -228,24 +229,32 @@ function CauseSentence({ cause, count, of }: { cause: NoTextCause; count: number
     case "read_next_run":
       return (
         <p>
-          {subject} will be read on the next run: a vision model can read {them} now, or the last
-          attempt didn&apos;t finish.
+          {subject} will be read on the next run: a vision model can read {them} now, an older
+          version of Pinchy read {them}, or the last attempt didn&apos;t finish.
         </p>
       );
-    case "read_failed":
+    case "vision_failed":
       return (
         <p>
-          {subject} couldn&apos;t be read: the file was refused — too large, damaged, or not what
-          its name says — or every attempt to read {them} failed. The server log names each file and
-          the reason. A file that&apos;s replaced is read again on the next run.
+          {subject} couldn&apos;t be read: the vision model failed on every attempt, five runs in a
+          row. Configure a different vision model, or replace the file, and the next run reads{" "}
+          {them} again.
+        </p>
+      );
+    case "read_refused":
+      return (
+        <p>
+          {subject} couldn&apos;t be read: {one ? "the file" : "each file"} is too large, damaged,
+          or not what its name says, or is a workbook with nothing visible in it. The server log
+          names each refused file and the reason. A file that&apos;s replaced is read again on the
+          next run.
         </p>
       );
     case "read_blank":
       return (
         <p>
-          {subject} {one ? "was" : "were"} read in full by a vision model and{" "}
-          {one ? "holds" : "hold"} no text — a blank page, a picture without words, or a scan too
-          faint to make out.
+          {subject} {one ? "was" : "were"} read in full and {one ? "holds" : "hold"} no text — a
+          blank page, a picture without words, or a scan too faint to make out.
         </p>
       );
   }

@@ -59,18 +59,20 @@ export type UnsearchableReason = "no_text" | "awaiting_conversion";
  *   on this server (`PINCHY_KB_OCR`).
  * - `no_vision_model`: not read by a vision model, and none is available.
  * - `read_next_run`: the next run reads it again — a vision model is
- *   available that has not read it yet, or its last read did not finish.
- * - `read_failed`: Pinchy could not read it, and reading the same file again
- *   would not change that — the converter or the workbook reader refused it
- *   (too large, damaged, not what its name says; the server log names the
- *   file and the reason), or every vision read of it failed. A workbook with
- *   no cells at all lands here too: its record looks the same as a refused
- *   one's.
- * - `read_blank`: a vision model read it in full and found nothing.
- *   Changing the OCR setup changes nothing for it.
+ *   available that has not read it yet, its last read did not finish, or an
+ *   older extractor read it.
+ * - `read_refused`: the converter or the workbook reader turned it away — too
+ *   large, damaged, not what its name says; the server log names the file and
+ *   the reason. A workbook with nothing visible in it (no cells, or every
+ *   sheet hidden) lands here too: its record looks the same as a refused
+ *   one's. Only a replaced file is read again.
+ * - `vision_failed`: every vision read of it failed, five runs in a row. Read
+ *   again once a different vision model is configured, or the file replaced.
+ * - `read_blank`: read in full, scanned pages by a vision model, and nothing
+ *   found. Changing the OCR setup changes nothing for it.
  */
 export type NoTextCause =
-  "ocr_off" | "no_vision_model" | "read_next_run" | "read_failed" | "read_blank";
+  "ocr_off" | "no_vision_model" | "read_next_run" | "read_refused" | "vision_failed" | "read_blank";
 
 export interface UnsearchableDocument {
   /** Absolute path of the source file, as indexed. */
@@ -140,13 +142,17 @@ export function noTextCause(
   // has — and its record is not written until it settles.
   if (incompleteReads > 0 && incompleteReads < MAX_INCOMPLETE_READS) return "read_next_run";
 
-  const separator = record?.indexOf("|") ?? -1;
-  const current =
-    record !== null && separator >= 0 && record.slice(0, separator) === String(EXTRACTION_VERSION);
-  // No record (one from before the record existed) or one an older extractor
-  // wrote: ingest reads it again, with whatever OCR the run has — the same as
-  // a scan read without OCR.
-  const reader = current ? record.slice(separator + 1) : "no-ocr";
+  // "<extraction version>|<reader>", as ingest writes it.
+  const parts = record === null ? null : /^([^|]*)\|([\s\S]*)$/.exec(record);
+  const recorded = parts?.[2] ?? null;
+  const current = parts !== null && parts[1] === String(EXTRACTION_VERSION);
+  // An older extractor's record from a reader no vision model enters into:
+  // ingest reads it again with the current extractor, whatever OCR is.
+  if (!current && (recorded === "sheets" || recorded === "converter")) return "read_next_run";
+  // No record (one from before the record existed) or a scan's record an older
+  // extractor wrote: ingest reads it again, with whatever OCR the run has —
+  // the same as a scan read without OCR.
+  const reader = current && recorded !== null ? recorded : "no-ocr";
 
   if (reader === "no-ocr") {
     if (ocr.state === "off") return "ocr_off";
@@ -156,11 +162,11 @@ export function noTextCause(
   if (reader.startsWith("ocr:")) {
     if (ocr.state === "on" && `ocr:${ocr.model}` !== reader) return "read_next_run";
     // Out of retries: every vision read failed, so it was never read in full.
-    return incompleteReads >= MAX_INCOMPLETE_READS ? "read_failed" : "read_blank";
+    return incompleteReads >= MAX_INCOMPLETE_READS ? "vision_failed" : "read_blank";
   }
-  // The converter and the workbook reader are never tried again on the same
-  // bytes, and they come back empty when they refuse a file.
-  return "read_failed";
+  // The converter and the workbook reader come back empty when they refuse a
+  // file. Once that is on record, neither is tried again on the same bytes.
+  return "read_refused";
 }
 
 /**
@@ -250,7 +256,8 @@ const emptyCauses = (): Record<NoTextCause, number> => ({
   ocr_off: 0,
   no_vision_model: 0,
   read_next_run: 0,
-  read_failed: 0,
+  read_refused: 0,
+  vision_failed: 0,
   read_blank: 0,
 });
 

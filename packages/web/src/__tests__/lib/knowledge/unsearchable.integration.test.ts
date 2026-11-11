@@ -176,7 +176,14 @@ it("returns nothing when the agent is granted no directories", async () => {
   expect(await summarizeUnsearchableDocuments(ORG_ID, [], NO_MODEL)).toEqual({
     total: 0,
     totals: { no_text: 0, awaiting_conversion: 0 },
-    causes: { ocr_off: 0, no_vision_model: 0, read_next_run: 0, read_failed: 0, read_blank: 0 },
+    causes: {
+      ocr_off: 0,
+      no_vision_model: 0,
+      read_next_run: 0,
+      read_refused: 0,
+      vision_failed: 0,
+      read_blank: 0,
+    },
     groups: [],
   });
   const pages = [];
@@ -464,10 +471,11 @@ it("says the next run reads it again when a different vision model is available 
 // The converter and the workbook reader come back empty when they REFUSE a
 // file — too large, damaged, not what its name says (ingest.ts, readDocument
 // and extractOfficeDocument; the reason is in the server log). A converted
-// Office file is read as a PDF, so its record never names the converter. And
-// neither reader is ever tried again on the same bytes, so no OCR setting
-// changes anything for them: the honest answer is that it could not be read.
-it("says a file the converter or the workbook reader refused could not be read", async () => {
+// Office file is read as a PDF, so its record never names the converter. Once
+// their record is written neither reader is tried again on the same bytes, so
+// no OCR setting changes anything for them — and no vision model was ever
+// involved, so the page must not say one failed.
+it("says a file the converter or the workbook reader refused was refused", async () => {
   await seedUnsearchable("/data/share/Broken.xlsx", "active", readBy("sheets"));
   // Converted under the current rules — an older artifact would be waiting
   // for a conversion instead, which is the other reason.
@@ -482,7 +490,7 @@ it("says a file the converter or the workbook reader refused could not be read",
 
   for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
     const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
-    expect(result.documents.map((d) => d.cause)).toEqual(["read_failed", "read_failed"]);
+    expect(result.documents.map((d) => d.cause)).toEqual(["read_refused", "read_refused"]);
   }
 });
 
@@ -500,9 +508,10 @@ it("says the next run reads again a document whose last read did not finish, wha
 });
 
 // Out of retries, the record names the vision model — but every call failed,
-// so "read in full, holds no text" would be false. Ingest tries it again only
-// with a different model (couldReadDifferently).
-it("says a scan whose vision reads kept failing could not be read, not that it holds no text", async () => {
+// so "read in full, holds no text" would be false, and so would "refused": no
+// reader turned the file away. Ingest tries it again only with a different
+// model (couldReadDifferently).
+it("says a scan whose vision reads kept failing failed at the vision model, not that it holds no text", async () => {
   await seedUnsearchable(
     "/data/share/Oversized.pdf",
     "active",
@@ -512,7 +521,7 @@ it("says a scan whose vision reads kept failing could not be read, not that it h
 
   for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
     const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
-    expect(result.documents[0].cause).toBe("read_failed");
+    expect(result.documents[0].cause).toBe("vision_failed");
   }
   const otherModel = await listUnsearchableDocuments(ORG_ID, ["/data/share"], {
     state: "on",
@@ -525,13 +534,13 @@ it("says a scan whose vision reads kept failing could not be read, not that it h
 // did not finish. Ingest reads it again on the next run (it skips only a
 // document on record as empty), with whatever OCR the server has then — so
 // it waits on exactly what a scan read without OCR waits on. The same holds
-// for a record an older extractor wrote.
+// for a scan's record an older extractor wrote.
 it("treats a document with no record, or an outdated one, like a scan read without OCR", async () => {
   await seedUnsearchable("/data/share/A legacy.pdf", "active", null);
   await seedUnsearchable(
     "/data/share/B outdated.pdf",
     "active",
-    `${EXTRACTION_VERSION - 1}|sheets`
+    `${EXTRACTION_VERSION - 1}|no-ocr`
   );
 
   const off = await listUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_OFF);
@@ -539,6 +548,27 @@ it("treats a document with no record, or an outdated one, like a scan read witho
 
   expect(off.documents.map((d) => d.cause)).toEqual(["ocr_off", "ocr_off"]);
   expect(on.documents.map((d) => d.cause)).toEqual(["read_next_run", "read_next_run"]);
+});
+
+// An older extractor's record from the workbook reader or the converter: the
+// next run reads it with the current extractor (ingest reads every outdated
+// record again), and no vision model enters into it — so no OCR setting may
+// be blamed for it.
+it("says the next run reads a workbook or an Office file on an outdated record, whatever OCR is", async () => {
+  await seedUnsearchable("/data/share/Old.xlsx", "active", `${EXTRACTION_VERSION - 1}|sheets`);
+  // Converted under the current rules, or it would be waiting for a conversion.
+  await db.insert(kbDocuments).values({
+    orgId: ORG_ID,
+    contentHash: "hash-old-pptx",
+    sourcePath: "/data/share/Old.pptx",
+    emptyExtractionBy: `${EXTRACTION_VERSION - 1}|converter`,
+    artifactFormatVersion: OFFICE_ARTIFACT_FORMAT_VERSION,
+  });
+
+  for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
+    const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
+    expect(result.documents.map((d) => d.cause)).toEqual(["read_next_run", "read_next_run"]);
+  }
 });
 
 it("gives a document waiting to be converted again no OCR cause", async () => {
@@ -559,6 +589,12 @@ it("counts each cause over the whole scope", async () => {
     readBy("ocr:anthropic/claude-haiku-4-5")
   );
   await seedUnsearchable("/data/share/Broken.xlsx", "active", readBy("sheets"));
+  await seedUnsearchable(
+    "/data/share/Oversized.pdf",
+    "active",
+    readBy("ocr:anthropic/claude-haiku-4-5"),
+    5
+  );
   await seedReadable("/data/share/Angebot.docx");
 
   const summary = await summarizeUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_OFF);
@@ -567,10 +603,11 @@ it("counts each cause over the whole scope", async () => {
     ocr_off: 3,
     no_vision_model: 0,
     read_next_run: 0,
-    read_failed: 1,
+    read_refused: 1,
+    vision_failed: 1,
     read_blank: 1,
   });
-  expect(summary.totals).toEqual({ no_text: 5, awaiting_conversion: 1 });
+  expect(summary.totals).toEqual({ no_text: 6, awaiting_conversion: 1 });
 });
 
 // ── The full list, for the download (#1364) ────────────────────────────────

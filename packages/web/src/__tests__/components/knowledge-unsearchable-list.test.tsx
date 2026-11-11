@@ -17,7 +17,8 @@ const mockGet = vi.mocked(apiGet);
 
 const URL = "/api/agents/a1/knowledge/unsearchable";
 
-type Cause = "ocr_off" | "no_vision_model" | "read_next_run" | "read_failed" | "read_blank";
+type Cause =
+  "ocr_off" | "no_vision_model" | "read_next_run" | "read_refused" | "vision_failed" | "read_blank";
 type Group = { root: string; folder: string | null; count: number };
 type Doc = {
   sourcePath: string;
@@ -49,7 +50,8 @@ function summary(
       ocr_off: 0,
       no_vision_model: 0,
       read_next_run: 0,
-      read_failed: 0,
+      read_refused: 0,
+      vision_failed: 0,
       read_blank: 0,
       ...(overrides.causes ?? { no_vision_model: noText }),
     },
@@ -296,31 +298,67 @@ describe("KnowledgeUnsearchableList", () => {
     expect(screen.queryByText(/weren't read by a vision model/i)).not.toBeInTheDocument();
   });
 
-  // Refused by the converter or the workbook reader, or every vision read
-  // failed: no OCR setting fixes it, and the server log is where the reason is.
-  it("says a document Pinchy couldn't read is named in the server log, not waiting on OCR", async () => {
-    serve(summary({ noText: 1, causes: { read_failed: 1 } }));
+  // Refused by the converter or the workbook reader: no OCR setting fixes it,
+  // and the server log is where the reason is.
+  it("says a refused document is named in the server log, not waiting on OCR", async () => {
+    serve(summary({ noText: 1, causes: { read_refused: 1 } }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
-    await waitFor(() => expect(screen.getByText(/it couldn't be read/i)).toBeInTheDocument());
-    expect(screen.getByText(/the server log names each file and the reason/i)).toBeInTheDocument();
-    expect(screen.queryByText(/vision model is available/i)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/it couldn't be read: the file is too large, damaged/i)
+      ).toBeInTheDocument()
+    );
+    expect(screen.getByText(/the server log names each refused file/i)).toBeInTheDocument();
+    expect(screen.queryByText(/vision model/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/switched off/i)).not.toBeInTheDocument();
   });
 
+  it("speaks of each file when several were refused", async () => {
+    serve(summary({ noText: 2, causes: { read_refused: 2 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/they couldn't be read: each file is too large, damaged/i)
+      ).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/the file is too large/i)).not.toBeInTheDocument();
+  });
+
+  // Every vision read failed. Nothing in the server log names the file for
+  // these, so the sentence must not send an admin there; what helps is a
+  // different vision model, or a new copy of the file.
+  it("says a document the vision model kept failing on is read again with a different model", async () => {
+    serve(summary({ noText: 1, causes: { vision_failed: 1 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/it couldn't be read: the vision model failed on every attempt/i)
+      ).toBeInTheDocument()
+    );
+    expect(screen.getByText(/a different vision model/i)).toBeInTheDocument();
+    expect(screen.queryByText(/server log/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/too large, damaged/i)).not.toBeInTheDocument();
+  });
+
   // Read and still empty: nothing to configure, and saying so stops the hunt.
+  // Not "by a vision model": an empty Word file or a drawing without a single
+  // scanned page is on the same record, and no vision model ever saw it.
   it("says a document read in full holds no text, without promising another run", async () => {
     serve(summary({ noText: 1, causes: { read_blank: 1 } }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
     await waitFor(() =>
-      expect(
-        screen.getByText(/was read in full by a vision model and holds no text/i)
-      ).toBeInTheDocument()
+      expect(screen.getByText(/was read in full and holds no text/i)).toBeInTheDocument()
     );
     expect(screen.queryByText(/next run/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/by a vision model/i)).not.toBeInTheDocument();
   });
 
   it("gives each cause its own share when the documents differ", async () => {
