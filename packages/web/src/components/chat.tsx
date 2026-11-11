@@ -190,7 +190,7 @@ function ChatStatusBanner({ status, isDelayed, rejection, onRetry }: ChatStatusB
     content = <DelayHint />;
   } else if (connection) {
     content = (
-      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 py-2 text-center text-xs text-destructive border-t bg-destructive/5">
+      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 py-2 text-center text-xs text-red-700 dark:text-destructive border-t bg-destructive/5">
         <span>{connection}</span>
         <Button variant="outline" size="sm" onClick={onRetry}>
           <RotateCw className="size-3" />
@@ -212,7 +212,7 @@ function ChatStatusBanner({ status, isDelayed, rejection, onRetry }: ChatStatusB
     );
   } else if (status.kind === "payloadRejected") {
     content = (
-      <div className="px-4 py-2 text-center text-xs text-destructive border-t bg-destructive/5">
+      <div className="px-4 py-2 text-center text-xs text-red-700 dark:text-destructive border-t bg-destructive/5">
         Image too large. Send a smaller file to keep chatting.
       </div>
     );

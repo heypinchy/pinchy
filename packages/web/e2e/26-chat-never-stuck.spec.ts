@@ -3,12 +3,16 @@
  *
  * Before the fix the client gave up after ten attempts and showed "Please
  * reload", and a server-side connection cap turned that into a loop users could
- * only break by closing tabs. These specs drive the real socket through
- * `page.routeWebSocket` and assert what a user sees:
+ * only break by closing tabs. These specs drive the browser's real WebSocket
+ * through `page.routeWebSocket` and assert what a user sees:
  *
  *   (a) a refused connection (4429) says why, and "Try again now" recovers;
  *   (b) a dropped socket heals without a reload, and the draft survives;
  *   (c) going offline says so and recovers when the network returns.
+ *
+ * The server side of the socket is played by the route itself, not forwarded:
+ * this stack runs no OpenClaw, so a real `/api/ws` never reports the agent
+ * runtime up and the chat could never reach "Connected" to start from.
  *
  * No fixed sleeps: every wait is an assertion on something the user can see.
  */
@@ -39,6 +43,31 @@ async function openChat(page: Page, request: APIRequestContext) {
 }
 
 const WS_URL = /\/api\/ws\?agentId=/;
+const GREETING = "Hello from the mocked agent.";
+
+/**
+ * Answers the socket the way a healthy `/api/ws` does: the runtime is up, the
+ * history request gets a non-empty thread, and the app-level heartbeat gets
+ * its pong.
+ */
+function serveHealthy(ws: WebSocketRoute) {
+  ws.onMessage((raw) => {
+    const message = JSON.parse(raw.toString()) as { type?: string };
+    if (message.type === "history") {
+      ws.send(JSON.stringify({ type: "openclaw_status", connected: true }));
+      ws.send(
+        JSON.stringify({
+          type: "history",
+          messages: [{ role: "assistant", content: GREETING }],
+        })
+      );
+    } else if (message.type === "ping") {
+      ws.send(JSON.stringify({ type: "pong" }));
+    }
+  });
+}
+
+const connected = (page: Page) => page.getByRole("button", { name: "Connected" });
 
 test.describe("chat never stuck on reconnecting (#1422)", () => {
   test("a refused connection says why, and Try again now gets in", async ({ page, request }) => {
@@ -51,7 +80,7 @@ test.describe("chat never stuck on reconnecting (#1422)", () => {
         ws.close({ code: 4429, reason: "too_many_connections" });
         return;
       }
-      ws.connectToServer();
+      serveHealthy(ws);
     });
 
     await page.goto(`/chat/${agentId}`);
@@ -64,7 +93,7 @@ test.describe("chat never stuck on reconnecting (#1422)", () => {
 
     refuse = false;
     await page.getByRole("button", { name: /try again now/i }).click();
-    await expect(page.getByRole("button", { name: "Connected" })).toBeVisible({ timeout: 30_000 });
+    await expect(connected(page)).toBeVisible({ timeout: 30_000 });
     await expect(status).not.toContainText(/too many open connections/i);
   });
 
@@ -80,11 +109,12 @@ test.describe("chat never stuck on reconnecting (#1422)", () => {
         return;
       }
       routes.push(ws);
-      ws.connectToServer();
+      serveHealthy(ws);
     });
 
     await page.goto(`/chat/${agentId}`);
-    await expect(page.getByRole("button", { name: "Connected" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(GREETING)).toBeVisible({ timeout: 30_000 });
+    await expect(connected(page)).toBeVisible({ timeout: 30_000 });
 
     const composer = page.getByPlaceholder(/send a message/i);
     await composer.fill("half-written question");
@@ -92,11 +122,14 @@ test.describe("chat never stuck on reconnecting (#1422)", () => {
     // The server goes away and every reconnect is refused for a while.
     serverUp = false;
     routes.forEach((ws) => ws.close({ code: 1001, reason: "going away" }));
-    await expect(page.getByRole("status")).toContainText(/reconnecting/i, { timeout: 30_000 });
+    await expect(connected(page)).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.getByRole("status")).toContainText(/(keep|still) trying/i, {
+      timeout: 30_000,
+    });
 
     // It comes back; the client must find it on its own.
     serverUp = true;
-    await expect(page.getByRole("button", { name: "Connected" })).toBeVisible({ timeout: 60_000 });
+    await expect(connected(page)).toBeVisible({ timeout: 60_000 });
     await expect(composer).toHaveValue("half-written question");
   });
 
@@ -108,14 +141,16 @@ test.describe("chat never stuck on reconnecting (#1422)", () => {
     test.setTimeout(120_000);
     const agentId = await openChat(page, request);
 
+    await page.routeWebSocket(WS_URL, serveHealthy);
+
     await page.goto(`/chat/${agentId}`);
-    await expect(page.getByRole("button", { name: "Connected" })).toBeVisible({ timeout: 30_000 });
+    await expect(connected(page)).toBeVisible({ timeout: 30_000 });
 
     await context.setOffline(true);
     await expect(page.getByRole("status")).toContainText(/you're offline/i, { timeout: 15_000 });
 
     await context.setOffline(false);
-    await expect(page.getByRole("button", { name: "Connected" })).toBeVisible({ timeout: 30_000 });
+    await expect(connected(page)).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("status")).not.toContainText(/offline/i);
   });
 });
