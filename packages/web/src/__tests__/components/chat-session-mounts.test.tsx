@@ -9,6 +9,7 @@ import { ChatSessionMounts } from "@/components/chat-session-mounts";
 let mockIsRunning = false;
 let mockReconnectExhausted = false;
 let mockPayloadRejected = false;
+let mockHasQueuedMessage = false;
 let mockPathname = "/agents";
 
 // Hoisted so tests can assert on navigation — the `/compact` and `/reset`
@@ -47,6 +48,7 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
       isDelayed: false,
       reconnectExhausted: mockReconnectExhausted,
       payloadRejected: mockPayloadRejected,
+      hasQueuedMessage: mockHasQueuedMessage,
       onRetryContinue: vi.fn(),
       onRetryResend: vi.fn(),
     };
@@ -77,6 +79,7 @@ describe("ChatSessionMounts", () => {
     mockIsRunning = false;
     mockReconnectExhausted = false;
     mockPayloadRejected = false;
+    mockHasQueuedMessage = false;
     mockPathname = "/agents";
     routerPushSpy.mockClear();
   });
@@ -429,6 +432,15 @@ describe("ChatSessionMounts", () => {
         mockReconnectExhausted = true;
       });
       expect(bundle?.lastError).toMatch(/connection lost/i);
+    });
+
+    it("publishes a message still queued in the instance (#957)", () => {
+      // The store exempts such a chat from eviction; it can only do that if
+      // the flag reaches the bundle.
+      const bundle = lastBundleFor("agent-queued", () => {
+        mockHasQueuedMessage = true;
+      });
+      expect(bundle?.hasQueuedMessage).toBe(true);
     });
 
     it("publishes lastError=null when reconnectExhausted is not set", () => {

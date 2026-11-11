@@ -181,6 +181,7 @@ function ChatSessionInstance({
       payloadRejected: bundle.payloadRejected,
       historyTimedOut: bundle.historyTimedOut,
       hasInlineError: bundle.hasInlineError,
+      hasQueuedMessage: bundle.hasQueuedMessage,
       onRetryContinue,
       onRetryResend,
       retryHistory,
@@ -207,6 +208,7 @@ function ChatSessionInstance({
     bundle.payloadRejected,
     bundle.historyTimedOut,
     bundle.hasInlineError,
+    bundle.hasQueuedMessage,
     bundle.pendingUploads,
   ]);
 

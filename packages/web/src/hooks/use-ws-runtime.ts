@@ -512,6 +512,9 @@ export function useWsRuntime(
   const shouldRecoverFromHistoryRef = useRef(false);
   const lifecycleSuspendedRef = useRef(false);
   const pendingMessageRef = useRef<string | null>(null);
+  // Mirrors `pendingMessageRef` for consumers (#957): a queued payload lives
+  // only in this instance, so the chat must not be unmounted while one waits.
+  const [hasQueuedMessage, setHasQueuedMessage] = useState(false);
   // Latest slash-command handler (#611). Kept in a ref so `onNew` (memoized
   // without it in its deps) always calls the freshest version.
   const onSlashCommandRef = useRef<((command: SlashCommand) => void) | undefined>(onSlashCommand);
@@ -1106,6 +1109,7 @@ export function useWsRuntime(
         if (pendingMessageRef.current) {
           ws.send(pendingMessageRef.current);
           pendingMessageRef.current = null;
+          setHasQueuedMessage(false);
         }
       };
 
@@ -1987,6 +1991,7 @@ export function useWsRuntime(
         ws.send(payload);
       } else {
         pendingMessageRef.current = payload;
+        setHasQueuedMessage(true);
         if (
           ws?.readyState === WebSocket.CONNECTING ||
           ws?.readyState === WebSocket.CLOSING ||
@@ -2550,6 +2555,7 @@ export function useWsRuntime(
     hasInlineError: messages.some((m) => m.error),
     onRetryContinue,
     onRetryResend,
+    hasQueuedMessage,
     pendingUploads,
     addPendingUpload,
     removePendingUpload,

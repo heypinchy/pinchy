@@ -47,6 +47,12 @@ export interface RuntimeBundle {
    * failure is already on screen inline, making the banner a true fallback.
    */
   hasInlineError?: boolean;
+  /**
+   * A message waits in the instance for the next connection (#957). Only that
+   * instance holds it, so the chat is exempt from eviction while it is set.
+   * Optional so the placeholder bundle stays valid; absent ≙ false.
+   */
+  hasQueuedMessage?: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
   lastError: string | null;
@@ -80,12 +86,14 @@ export const MAX_LIVE_BUNDLES = 3;
 
 /**
  * Whether evicting this chat loses nothing. Its instance is the only holder of
- * a running turn and of files staged in its composer — nothing restores those
+ * a running turn, a message queued for the next connection, and files staged
+ * in its composer — nothing restores those
  * on remount — so such a chat stays mounted whatever the cap says.
  */
 function isEvictable(bundle: RuntimeBundle | undefined): boolean {
   if (!bundle) return true;
   if (bundle.isRunning) return false;
+  if (bundle.hasQueuedMessage) return false;
   if (bundle.pendingUploads.length > 0) return false;
   return true;
 }

@@ -465,6 +465,17 @@ describe("ChatSessionProvider", () => {
       expect(result.current.length).toBe(4);
     });
 
+    it("never evicts a chat with a message queued for the next connection", () => {
+      // A failed reconnect drops isRunning, but the queued message exists only
+      // in the instance; evicting it would lose what the user sent.
+      const { result, pubWith } = setup();
+      pubWith("a", { hasQueuedMessage: true });
+      pubWith("b");
+      pubWith("c");
+      pubWith("d");
+      expect([...result.current].sort()).toEqual(["a", "c", "d"]);
+    });
+
     it("never evicts a chat whose composer still holds attachments", () => {
       // Staged uploads live only in the instance's state; nothing restores them
       // on remount, so evicting the chat would silently drop the user's file.
