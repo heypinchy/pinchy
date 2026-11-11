@@ -35,6 +35,7 @@ import {
   isHiddenSegment,
 } from "./exclude-globs";
 import {
+  archivedToReconvert,
   currentPlanFolder,
   deriveFolderState,
   folderPlanProgress,
@@ -59,6 +60,11 @@ export interface FolderStatus {
   /** Of `indexed`, the ones it cannot: no text, or waiting to be converted again. */
   notSearchable: number;
   /**
+   * Of `notSearchable`, archived documents the active run will still convert
+   * again. They are on their way, so `state` doesn't count them as errors.
+   */
+  archivedToReconvert: number;
+  /**
    * Files the last run found here; null when no run's plan covers the folder:
    * none recorded one, the folder was granted since, the plan counted it only as
    * part of a larger folder, or the run kept its documents without looking.
@@ -66,6 +72,16 @@ export interface FolderStatus {
   expected: number | null;
   /** Files the active run has still to reach here; 0 when no run is active. */
   pending: number;
+  /**
+   * Of `pending`, the files in archived subfolders. A run reads those last, so
+   * a folder whose current files are all in can still have its archive to come
+   * — its `state` then speaks for the current files alone (#1405).
+   */
+  pendingArchived: number;
+  /** Of `expected`, the files in archived subfolders. 0 when the plan doesn't mark them. */
+  expectedArchived: number;
+  /** The active run is reading this folder's archived files right now. */
+  indexingArchive: boolean;
   /** When a run covering this folder last finished; falls back to the newest document in it. */
   lastIndexedAt: string | null;
 }
@@ -92,20 +108,29 @@ interface CountRow extends Record<string, unknown> {
   in_sub: boolean;
   indexed: string | number;
   not_searchable: string | number;
+  reread_archived: string | number;
   last_created: Date | string | null;
 }
 
 interface Counts {
   indexed: number;
   notSearchable: number;
+  /** Of `notSearchable`, archived documents a reconversion will read again. */
+  rereadArchived: number;
   lastCreated: Date | null;
 }
 
-const zero = (): Counts => ({ indexed: 0, notSearchable: 0, lastCreated: null });
+const zero = (): Counts => ({
+  indexed: 0,
+  notSearchable: 0,
+  rereadArchived: 0,
+  lastCreated: null,
+});
 
 function addCounts(into: Counts, row: Counts): void {
   into.indexed += row.indexed;
   into.notSearchable += row.notSearchable;
+  into.rereadArchived += row.rereadArchived;
   if (row.lastCreated && (!into.lastCreated || row.lastCreated > into.lastCreated)) {
     into.lastCreated = row.lastCreated;
   }
@@ -144,6 +169,7 @@ async function countsUnderRoot(
              WHERE NOT EXISTS (SELECT 1 FROM kb_chunks c WHERE c.document_id = d.id)
                 OR ${superseded}
            ) AS not_searchable,
+           COUNT(*) FILTER (WHERE d.status = 'archived' AND ${superseded}) AS reread_archived,
            MAX(d.created_at) AT TIME ZONE 'UTC' AS last_created
     FROM kb_documents d
     WHERE d.org_id = ${orgId}
@@ -157,6 +183,7 @@ async function countsUnderRoot(
     const counts: Counts = {
       indexed: Number(row.indexed),
       notSearchable: Number(row.not_searchable),
+      rereadArchived: Number(row.reread_archived),
       lastCreated: row.last_created ? new Date(row.last_created) : null,
     };
     if (!row.in_sub) {
@@ -245,7 +272,14 @@ export async function getKnowledgeFolderStatus(
       (s) => s.folder !== path && isAtOrUnder(path, s.folder) && !planRoots.includes(s.folder)
     );
 
-  const unknown = { expected: null, pending: 0, current: false };
+  const unknown = {
+    expected: null,
+    expectedArchived: 0,
+    pending: 0,
+    pendingArchived: 0,
+    current: false,
+    currentArchived: false,
+  };
   const statusFor = (path: string, name: string, counts: Counts): FolderStatus => {
     const planned = plan && planKnows(path) ? folderPlanProgress(plan, path, position) : unknown;
     // A succeeded run removes the documents of files it no longer found, except
@@ -272,16 +306,27 @@ export async function getKnowledgeFolderStatus(
       state: deriveFolderState({
         indexed: counts.indexed,
         notSearchable: counts.notSearchable,
+        rereadArchived: counts.rereadArchived,
         expected: progress.expected,
         pending: progress.pending,
+        pendingArchived: progress.pendingArchived,
+        expectedArchived: progress.expectedArchived,
         current: progress.current,
+        currentArchived: progress.currentArchived,
         awaitingDiscovery,
       }),
       indexed: counts.indexed,
       searchable: counts.indexed - counts.notSearchable,
       notSearchable: counts.notSearchable,
+      archivedToReconvert: archivedToReconvert({
+        rereadArchived: counts.rereadArchived,
+        pendingArchived: progress.pendingArchived,
+      }),
       expected: progress.expected,
       pending: progress.pending,
+      pendingArchived: progress.pendingArchived,
+      expectedArchived: progress.expectedArchived,
+      indexingArchive: progress.current && progress.currentArchived,
       lastIndexedAt: lastIndexed ? lastIndexed.toISOString() : null,
     };
   };

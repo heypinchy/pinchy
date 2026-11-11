@@ -13,6 +13,7 @@ import { eq } from "drizzle-orm";
 
 import { db } from "@/db";
 import { agents, kbChunks, kbDocuments, kbIndexJobs } from "@/db/schema";
+import type { FolderPlanSegment } from "@/lib/knowledge/folder-plan";
 import { enqueueIndexJob, recordIndexJobFolderPlan } from "@/lib/knowledge/index-jobs";
 import { getKnowledgeFolderStatus, listKnowledgeFolderFiles } from "@/lib/knowledge/index-status";
 
@@ -28,7 +29,7 @@ async function makeAgent() {
 
 async function seedDoc(
   sourcePath: string,
-  opts: { chunks?: boolean; mtime?: Date } = {}
+  opts: { chunks?: boolean; mtime?: Date; status?: "active" | "archived" } = {}
 ): Promise<void> {
   const [doc] = await db
     .insert(kbDocuments)
@@ -37,6 +38,7 @@ async function seedDoc(
       contentHash: `hash-${sourcePath}`,
       sourcePath,
       mtime: opts.mtime ?? null,
+      ...(opts.status ? { status: opts.status } : {}),
     })
     .returning();
   if (opts.chunks ?? true) {
@@ -55,7 +57,7 @@ async function seedJob(
   agentId: string,
   paths: string[],
   status: "running" | "succeeded" | "failed",
-  extra: { processed?: number; plan?: { folder: string; files: number }[]; startedAt?: Date } = {}
+  extra: { processed?: number; plan?: FolderPlanSegment[]; startedAt?: Date } = {}
 ) {
   const { job } = await enqueueIndexJob({
     orgId: ORG_ID,
@@ -148,6 +150,104 @@ describe("getKnowledgeFolderStatus", () => {
     expect(byName.legal).toMatchObject({ state: "indexing", pending: 3, expected: 3 });
     expect(byName.sales).toMatchObject({ state: "queued", pending: 1 });
     expect(folders[0].state).toBe("indexing");
+  });
+
+  // #1405: a first index reads archives last. A folder whose current files
+  // are all in is searchable, with its archive still to come reported apart.
+  it("reports a folder with only its archive left as searchable, archive pending", async () => {
+    const agent = await makeAgent();
+    await seedDoc("/kb/certs/iso.pdf");
+    await seedDoc("/kb/certs/din.pdf");
+    await seedJob(agent.id, ["/kb"], "running", {
+      processed: 3,
+      plan: [
+        { folder: "/kb/certs", files: 2 },
+        { folder: "/kb/legal", files: 2 },
+        { folder: "/kb/certs", files: 3, archived: true },
+        { folder: "/kb/legal", files: 1, archived: true },
+      ],
+    });
+
+    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+    const byName = Object.fromEntries(folders[0].children.map((c) => [c.name, c]));
+
+    expect(byName.certs).toMatchObject({
+      state: "searchable",
+      expected: 5,
+      expectedArchived: 3,
+      pending: 3,
+      pendingArchived: 3,
+      indexingArchive: false,
+    });
+    // The run is still in legal's current files.
+    expect(byName.legal).toMatchObject({
+      state: "indexing",
+      pending: 2,
+      pendingArchived: 1,
+      indexingArchive: false,
+    });
+    expect(folders[0].state).toBe("indexing");
+  });
+
+  it("keeps a folder searchable while the run reads its archive", async () => {
+    const agent = await makeAgent();
+    await seedDoc("/kb/certs/iso.pdf");
+    // The run has read the first archived file too, and is on the second.
+    await seedDoc("/kb/certs/OLD/2019.pdf");
+    await seedJob(agent.id, ["/kb"], "running", {
+      processed: 2,
+      plan: [
+        { folder: "/kb/certs", files: 1 },
+        { folder: "/kb/certs", files: 3, archived: true },
+      ],
+    });
+
+    const { folders, job } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+    const certs = folders[0].children.find((c) => c.name === "certs")!;
+
+    expect(job?.currentFolder).toBe("/kb/certs");
+    expect(certs).toMatchObject({
+      state: "searchable",
+      pending: 2,
+      pendingArchived: 2,
+      indexingArchive: true,
+    });
+    expect(folders[0]).toMatchObject({ state: "searchable", indexingArchive: true });
+  });
+
+  // A reconversion run re-reads archived Office files last. Their documents
+  // wait for conversion until it gets there: the run is on its way, so the
+  // folder is not in trouble. An archived scan with no text is.
+  it("doesn't flag archived files a run will still convert again", async () => {
+    const agent = await makeAgent();
+    await seedDoc("/kb/certs/iso.pdf");
+    // No artifact format recorded: read from an earlier conversion.
+    await seedDoc("/kb/certs/OLD/2019.docx", { status: "archived" });
+    await seedDoc("/kb/legal/nda.pdf");
+    await seedDoc("/kb/legal/OLD/scan.pdf", { status: "archived", chunks: false });
+    await seedJob(agent.id, ["/kb"], "running", {
+      processed: 2,
+      plan: [
+        { folder: "/kb/certs", files: 1 },
+        { folder: "/kb/legal", files: 1 },
+        { folder: "/kb/certs", files: 1, archived: true },
+        { folder: "/kb/legal", files: 1, archived: true },
+      ],
+    });
+
+    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+    const byName = Object.fromEntries(folders[0].children.map((c) => [c.name, c]));
+
+    expect(byName.certs).toMatchObject({
+      state: "searchable",
+      notSearchable: 1,
+      archivedToReconvert: 1,
+    });
+    expect(byName.legal).toMatchObject({
+      state: "has_errors",
+      notSearchable: 1,
+      archivedToReconvert: 0,
+    });
   });
 
   it("shows a folder as queued while an active run has not finished discovery", async () => {

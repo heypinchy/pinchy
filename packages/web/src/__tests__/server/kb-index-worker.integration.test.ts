@@ -202,6 +202,31 @@ describe("kb index worker", () => {
     });
   });
 
+  // #1405: the run reads archived files last, so the plan must say which
+  // segment is archive — otherwise the folder status counts a folder's archive
+  // as current files still to come, and the folder reads "Queued" for hours.
+  it("marks the archived part of a folder in the plan it records", async () => {
+    const agent = await makeAgent();
+    writePdf(join(tmpRoot, "certs"), "iso.pdf");
+    writePdf(join(tmpRoot, "certs", "OLD"), "iso-2019.pdf");
+    writePdf(join(tmpRoot, "certs", "OLD"), "iso-2018.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job?.folderPlan).toEqual([
+      { folder: join(tmpRoot, "certs"), files: 1 },
+      { folder: join(tmpRoot, "certs"), files: 2, archived: true },
+    ]);
+  });
+
   // The run lands hours after the request, in a context with no request behind
   // it, so it has to audit itself. Correlated to the admin's row by jobId — the
   // same reason GC sweeps carry a sweepId.
