@@ -15,6 +15,11 @@
  * appear in more than one segment when the queue visits it twice (files of a
  * folder, then a subfolder, then more files); every reader sums segments.
  *
+ * Archived files are segments of their own, marked `archived` (#1405). A run
+ * reads them last (ingest-order.ts), so a folder's archive sits at the end of
+ * the queue, far from its current files; without the mark, a folder whose
+ * current files are all in would read as unfinished until the run ends.
+ *
  * Pure: no database, no filesystem. Shared by the worker that writes the plan
  * and the status read that interprets it.
  */
@@ -24,6 +29,18 @@ export interface FolderPlanSegment {
   folder: string;
   /** How many consecutive queue entries belong to it. */
   files: number;
+  /**
+   * The files sit in an archived subfolder (archive-paths.ts). Absent rather
+   * than false otherwise, and absent on every plan recorded before #1405.
+   */
+  archived?: true;
+}
+
+/** One entry of a run's queue, as ingest reports it. */
+export interface QueuedFile {
+  path: string;
+  /** The archive rule put it in an archived subfolder. */
+  archived: boolean;
 }
 
 /** A granted path without a trailing separator, so prefix tests can append one. */
@@ -63,15 +80,15 @@ export function folderKeyFor(roots: readonly string[], path: string): string | n
 /** Builds the plan from the run's queue, in queue order. A path outside every root is dropped. */
 export function buildFolderPlan(
   roots: readonly string[],
-  queuePaths: readonly string[]
+  queue: readonly QueuedFile[]
 ): FolderPlanSegment[] {
   const plan: FolderPlanSegment[] = [];
-  for (const path of queuePaths) {
+  for (const { path, archived } of queue) {
     const folder = folderKeyFor(roots, path);
     if (folder === null) continue;
     const last = plan[plan.length - 1];
-    if (last && last.folder === folder) last.files++;
-    else plan.push({ folder, files: 1 });
+    if (last && last.folder === folder && (last.archived === true) === archived) last.files++;
+    else plan.push(archived ? { folder, files: 1, archived: true } : { folder, files: 1 });
   }
   return plan;
 }
@@ -79,10 +96,16 @@ export function buildFolderPlan(
 export interface FolderPlanProgress {
   /** Files the run found under the folder. */
   expected: number;
-  /** Of those, the ones the run has not reached yet. */
+  /** Of those, the ones in archived subfolders. */
+  expectedArchived: number;
+  /** Of `expected`, the ones the run has not reached yet. */
   pending: number;
+  /** Of `pending`, the ones in archived subfolders. */
+  pendingArchived: number;
   /** Whether the file the run is on right now sits under the folder. */
   current: boolean;
+  /** Whether that file is an archived one. */
+  currentArchived: boolean;
 }
 
 /**
@@ -96,21 +119,30 @@ export function folderPlanProgress(
   processed: number | null
 ): FolderPlanProgress {
   let expected = 0;
+  let expectedArchived = 0;
   let pending = 0;
+  let pendingArchived = 0;
   let current = false;
+  let currentArchived = false;
   let start = 0;
   for (const segment of plan) {
     const end = start + segment.files;
     if (isAtOrUnder(segment.folder, folder)) {
       expected += segment.files;
+      if (segment.archived) expectedArchived += segment.files;
       if (processed !== null) {
-        pending += Math.max(0, end - Math.max(start, processed));
-        if (processed >= start && processed < end) current = true;
+        const left = Math.max(0, end - Math.max(start, processed));
+        pending += left;
+        if (segment.archived) pendingArchived += left;
+        if (processed >= start && processed < end) {
+          current = true;
+          currentArchived = segment.archived === true;
+        }
       }
     }
     start = end;
   }
-  return { expected, pending, current };
+  return { expected, expectedArchived, pending, pendingArchived, current, currentArchived };
 }
 
 /** The folder of the file a run is on, or null once it is past the end. */
@@ -133,8 +165,12 @@ export function currentPlanFolder(
  * - `indexing`: the run is working in this folder right now.
  * - `queued`: the run will reach files here, but is not here yet.
  * - `searchable`: every file the last run found here is in the index with text.
- * - `has_errors`: the last run is over, and some file here is not searchable —
- *   it holds no text, waits to be converted again, or never made it in.
+ *   While a run is still to read the folder's archived files, but none of its
+ *   current ones (#1405): every current file it found is in with text — the
+ *   archive's progress is reported apart (`pendingArchived`).
+ * - `has_errors`: the last run is over (or has only archived files left here),
+ *   and some file here is not searchable — it holds no text, waits to be
+ *   converted again, or never made it in.
  * - `not_indexed`: no run has looked at this folder, and the index holds nothing from it.
  * - `empty`: the last run looked and found no file it could index.
  */
@@ -150,21 +186,38 @@ export interface FolderStateInput {
   expected: number | null;
   /** Files an active run has still to reach here. 0 when no run is active. */
   pending: number;
+  /** Of `pending`, the ones in archived subfolders. */
+  pendingArchived: number;
+  /** Of `expected`, the ones in archived subfolders. 0 on a plan recorded before #1405. */
+  expectedArchived: number;
   /** Whether the active run is in this folder right now. */
   current: boolean;
+  /** Whether the file it is on is an archived one. */
+  currentArchived: boolean;
   /** An active run covers this folder but has not finished discovery yet. */
   awaitingDiscovery: boolean;
 }
 
 export function deriveFolderState(input: FolderStateInput): FolderState {
-  if (input.current) return "indexing";
-  if (input.pending > 0 || input.awaitingDiscovery) return "queued";
+  if (input.awaitingDiscovery) return "queued";
+  const pendingCurrent = input.pending - input.pendingArchived;
+  if (input.current && !input.currentArchived) return "indexing";
+  if (pendingCurrent > 0) return "queued";
+  // The run has only archived files left here, or none. The ones it already
+  // passed decide the state; the archive still to come is reported apart.
+  if (input.pendingArchived > 0 && input.expected === input.expectedArchived) {
+    // Nothing here but archive: no current file to be searchable for, so the
+    // folder is unfinished until the run is through it — even on a re-run that
+    // finds the archive already in the index.
+    return input.current ? "indexing" : "queued";
+  }
+  const reached = input.expected === null ? null : input.expected - input.pending;
   if (input.indexed === 0) {
-    if (input.expected === null) return "not_indexed";
-    if (input.expected === 0) return "empty";
+    if (reached === null) return "not_indexed";
+    if (reached === 0) return "empty";
     return "has_errors";
   }
   if (input.notSearchable > 0) return "has_errors";
-  if (input.expected !== null && input.indexed < input.expected) return "has_errors";
+  if (reached !== null && input.indexed < reached) return "has_errors";
   return "searchable";
 }

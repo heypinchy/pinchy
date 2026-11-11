@@ -66,6 +66,16 @@ export interface FolderStatus {
   expected: number | null;
   /** Files the active run has still to reach here; 0 when no run is active. */
   pending: number;
+  /**
+   * Of `pending`, the files in archived subfolders. A run reads those last, so
+   * a folder whose current files are all in can still have its archive to come
+   * — its `state` then speaks for the current files alone (#1405).
+   */
+  pendingArchived: number;
+  /** Of `expected`, the files in archived subfolders. 0 when the plan doesn't mark them. */
+  expectedArchived: number;
+  /** The active run is reading this folder's archived files right now. */
+  indexingArchive: boolean;
   /** When a run covering this folder last finished; falls back to the newest document in it. */
   lastIndexedAt: string | null;
 }
@@ -245,7 +255,14 @@ export async function getKnowledgeFolderStatus(
       (s) => s.folder !== path && isAtOrUnder(path, s.folder) && !planRoots.includes(s.folder)
     );
 
-  const unknown = { expected: null, pending: 0, current: false };
+  const unknown = {
+    expected: null,
+    expectedArchived: 0,
+    pending: 0,
+    pendingArchived: 0,
+    current: false,
+    currentArchived: false,
+  };
   const statusFor = (path: string, name: string, counts: Counts): FolderStatus => {
     const planned = plan && planKnows(path) ? folderPlanProgress(plan, path, position) : unknown;
     // A succeeded run removes the documents of files it no longer found, except
@@ -274,7 +291,10 @@ export async function getKnowledgeFolderStatus(
         notSearchable: counts.notSearchable,
         expected: progress.expected,
         pending: progress.pending,
+        pendingArchived: progress.pendingArchived,
+        expectedArchived: progress.expectedArchived,
         current: progress.current,
+        currentArchived: progress.currentArchived,
         awaitingDiscovery,
       }),
       indexed: counts.indexed,
@@ -282,6 +302,9 @@ export async function getKnowledgeFolderStatus(
       notSearchable: counts.notSearchable,
       expected: progress.expected,
       pending: progress.pending,
+      pendingArchived: progress.pendingArchived,
+      expectedArchived: progress.expectedArchived,
+      indexingArchive: progress.current && progress.currentArchived,
       lastIndexedAt: lastIndexed ? lastIndexed.toISOString() : null,
     };
   };

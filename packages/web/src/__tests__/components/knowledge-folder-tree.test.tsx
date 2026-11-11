@@ -28,6 +28,9 @@ function folder(overrides: Partial<FolderStatus> & { path: string }): FolderStat
     notSearchable: 0,
     expected: null,
     pending: 0,
+    pendingArchived: 0,
+    expectedArchived: 0,
+    indexingArchive: false,
     lastIndexedAt: null,
     ...overrides,
   };
@@ -344,6 +347,124 @@ describe("countText", () => {
       "Nothing to index here"
     );
     expect(countText(folder({ path: "/a", state: "not_indexed" }))).toBe("No files indexed yet");
+  });
+
+  // #1405: a run reads archived subfolders last. A folder whose current files
+  // are all in is searchable, and its archive still to come is counted apart
+  // instead of holding the whole row at "677 of 1105 files done".
+  it("counts the archive still to come apart from the current files", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "searchable",
+          indexed: 677,
+          searchable: 677,
+          expected: 1105,
+          pending: 428,
+          pendingArchived: 428,
+          expectedArchived: 428,
+        })
+      )
+    ).toBe("677 of 677 files searchable · 428 archived files queued");
+  });
+
+  it("says when the run is reading the folder's archive", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "searchable",
+          indexed: 680,
+          searchable: 680,
+          expected: 1105,
+          pending: 425,
+          pendingArchived: 425,
+          expectedArchived: 428,
+          indexingArchive: true,
+        })
+      )
+    ).toBe("680 of 680 files searchable · indexing archived files, 425 left");
+  });
+
+  // A later run re-reads an archive the index already holds: never "1105 of 677".
+  it("does not count more searchable files than the folder holds on a re-run", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "searchable",
+          indexed: 1105,
+          searchable: 1105,
+          expected: 1105,
+          pending: 428,
+          pendingArchived: 428,
+          expectedArchived: 428,
+        })
+      )
+    ).toBe("1105 of 1105 files searchable · 428 archived files queued");
+  });
+
+  // While a folder's current files are still being read, count against them:
+  // the archive comes last and is counted apart, so the row doesn't sit at
+  // "677 of 1105 files done" long after the last current file is in.
+  it("counts a folder's current files apart from its archive while they are read", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "indexing",
+          expected: 1105,
+          expectedArchived: 428,
+          pending: 430,
+          pendingArchived: 428,
+        })
+      )
+    ).toBe("675 of 677 files done · 428 archived files queued");
+  });
+
+  it("counts a folder of only archived files as archived files", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "indexing",
+          expected: 5,
+          expectedArchived: 5,
+          pending: 4,
+          pendingArchived: 4,
+        })
+      )
+    ).toBe("1 of 5 archived files done");
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "queued",
+          expected: 5,
+          expectedArchived: 5,
+          pending: 5,
+          pendingArchived: 5,
+        })
+      )
+    ).toBe("0 of 5 archived files done");
+  });
+
+  it("names the archive in the singular", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "has_errors",
+          indexed: 3,
+          searchable: 2,
+          expected: 4,
+          pending: 1,
+          pendingArchived: 1,
+          expectedArchived: 1,
+        })
+      )
+    ).toBe("2 of 3 files searchable · 1 archived file queued");
   });
 
   it("uses the singular for one file", () => {

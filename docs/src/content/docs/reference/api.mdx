@@ -978,6 +978,9 @@ Scoped to the agent's saved granted folders, exactly like search itself. Nothing
       "notSearchable": 0,
       "expected": 60,
       "pending": 48,
+      "pendingArchived": 6,
+      "expectedArchived": 6,
+      "indexingArchive": false,
       "lastIndexedAt": null,
       "children": [
         {
@@ -989,6 +992,9 @@ Scoped to the agent's saved granted folders, exactly like search itself. Nothing
           "notSearchable": 2,
           "expected": 10,
           "pending": 0,
+          "pendingArchived": 0,
+          "expectedArchived": 0,
+          "indexingArchive": false,
           "lastIndexedAt": "2026-11-01T10:00:00.000Z"
         }
       ]
@@ -997,17 +1003,20 @@ Scoped to the agent's saved granted folders, exactly like search itself. Nothing
 }
 ```
 
-| Field                     | Description                                                                                                                                                                                                                                                                                                 |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `job`                     | The agent's latest run, or `null` if it never had one. `status` is `pending`, `running`, `succeeded` or `failed`. `currentFolder` is the folder an active run is in, or `null` when the run hasn't recorded its folder list.                                                                                |
-| `folders[]`               | One entry per granted folder. `children` holds the folders directly inside it, with the same fields.                                                                                                                                                                                                        |
-| `folders[].state`         | `indexing` (the active run is in this folder), `queued` (the active run hasn't reached it yet), `searchable`, `has_errors` (some files can't be searched, or fewer files are in the index than the run found), `not_indexed` (no run has read it) or `empty` (the last run found nothing to index).         |
-| `folders[].indexed`       | Documents from this folder in the index.                                                                                                                                                                                                                                                                    |
-| `folders[].searchable`    | Of those, how many search can use.                                                                                                                                                                                                                                                                          |
-| `folders[].notSearchable` | Of those, how many it can't: no readable text, or waiting to be converted again.                                                                                                                                                                                                                            |
-| `folders[].expected`      | Files the latest run found in this folder. `null` when no run has recorded a folder list that covers it: the folder was granted after that run, the run counted it only as part of a larger folder, or the run kept the folder's documents without reading it (a share below the grant that came up empty). |
-| `folders[].pending`       | Files the active run still has to read here. `0` when no run is active.                                                                                                                                                                                                                                     |
-| `folders[].lastIndexedAt` | When the last successful run that covered this folder finished. Before any such run, when a document from this folder last entered the index, or `null`. A failed run doesn't count.                                                                                                                        |
+| Field                        | Description                                                                                                                                                                                                                                                                                                 |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `job`                        | The agent's latest run, or `null` if it never had one. `status` is `pending`, `running`, `succeeded` or `failed`. `currentFolder` is the folder an active run is in, or `null` when the run hasn't recorded its folder list.                                                                                |
+| `folders[]`                  | One entry per granted folder. `children` holds the folders directly inside it, with the same fields.                                                                                                                                                                                                        |
+| `folders[].state`            | `indexing` (the active run is in this folder), `queued` (the active run hasn't reached it yet), `searchable`, `has_errors` (some files can't be searched, or fewer files are in the index than the run found), `not_indexed` (no run has read it) or `empty` (the last run found nothing to index).         |
+| `folders[].indexed`          | Documents from this folder in the index.                                                                                                                                                                                                                                                                    |
+| `folders[].searchable`       | Of those, how many search can use.                                                                                                                                                                                                                                                                          |
+| `folders[].notSearchable`    | Of those, how many it can't: no readable text, or waiting to be converted again.                                                                                                                                                                                                                            |
+| `folders[].expected`         | Files the latest run found in this folder. `null` when no run has recorded a folder list that covers it: the folder was granted after that run, the run counted it only as part of a larger folder, or the run kept the folder's documents without reading it (a share below the grant that came up empty). |
+| `folders[].pending`          | Files the active run still has to read here. `0` when no run is active.                                                                                                                                                                                                                                     |
+| `folders[].pendingArchived`  | Of `pending`, the files in [archived folders](/guides/create-knowledge-base-agent/#current-documents-first). A run reads those last, so while only archived files are left here, `state` speaks for the current files alone: `searchable` once they're all in.                                              |
+| `folders[].expectedArchived` | Of `expected`, the files in archived folders. A folder that holds nothing else stays `indexing` or `queued` until the run is through all of them. `0` when the run's folder list doesn't mark archived files (a run started before this field existed).                                                     |
+| `folders[].indexingArchive`  | `true` while the active run is reading an archived file in this folder.                                                                                                                                                                                                                                     |
+| `folders[].lastIndexedAt`    | When the last successful run that covered this folder finished. Before any such run, when a document from this folder last entered the index, or `null`. A failed run doesn't count.                                                                                                                        |
 
 **Errors:**
 
