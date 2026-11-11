@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  EMAIL_CONTEXT_LINE_MAX_CHARS,
   emailContextLine,
   formatEmailText,
   MSG_MAX_RECIPIENTS,
@@ -195,6 +196,25 @@ describe("formatEmailText", () => {
 });
 
 describe("emailContextLine", () => {
+  // The line is repeated in front of every chunk after the first, outside the
+  // reader's fence. A subject the size of the body would multiply into
+  // gigabytes across a long mail, so the line has a ceiling of its own.
+  it("stays short however long the subject and sender are", () => {
+    const line = emailContextLine({
+      subject: "s".repeat(1_000_000),
+      from: "f".repeat(1_000_000),
+      to: [],
+      cc: [],
+      date: "2026-11-03 09:15 UTC",
+      body: "",
+      attachments: [],
+      bodyTruncated: false,
+    });
+    expect(line.length).toBeLessThanOrEqual(EMAIL_CONTEXT_LINE_MAX_CHARS);
+    expect(line.startsWith("Email: sss")).toBe(true);
+    expect(line.endsWith("…")).toBe(true);
+  });
+
   // Every chunk after the first loses the header block; this line is what
   // tells a reader of chunk 4 which mail it came from.
   it("names the mail by subject, sender and date", async () => {

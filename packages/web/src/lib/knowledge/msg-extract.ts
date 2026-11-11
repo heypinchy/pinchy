@@ -46,6 +46,14 @@ export const MSG_MAX_BODY_CHARS = 10 * 1024 * 1024;
  */
 export const MSG_MAX_RECIPIENTS = 50;
 
+/**
+ * Longest context line. It is repeated in front of every chunk after the
+ * first, in the indexer's own process, so its length multiplies with the
+ * mail's: a crafted subject the size of the body would otherwise cost
+ * gigabytes there. Real subjects and senders fit with room to spare.
+ */
+export const EMAIL_CONTEXT_LINE_MAX_CHARS = 300;
+
 /** The Compound File signature every `.msg` starts with. */
 const CFB_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
 
@@ -167,7 +175,10 @@ export function formatEmailText(email: ParsedEmail): string {
  */
 export function emailContextLine(email: ParsedEmail): string {
   const by = [email.from && `from ${email.from}`, email.date].filter(Boolean).join(", ");
-  return `Email: ${email.subject || "(no subject)"}${by ? ` — ${by}` : ""}`;
+  const line = `Email: ${email.subject || "(no subject)"}${by ? ` — ${by}` : ""}`;
+  return line.length <= EMAIL_CONTEXT_LINE_MAX_CHARS
+    ? line
+    : `${line.slice(0, EMAIL_CONTEXT_LINE_MAX_CHARS - 1)}…`;
 }
 
 function address(name: string | undefined, email: string | undefined): string | null {
