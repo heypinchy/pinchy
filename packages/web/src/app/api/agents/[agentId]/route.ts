@@ -223,9 +223,22 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
    *
    * `detail` is null when there is nothing auditable to record.
    */
-  function runtimeUpdateFailed(err: unknown, detail: AgentUpdateDetail | null): NextResponse {
+  function runtimeUpdateFailed(
+    err: unknown,
+    detail: AgentUpdateDetail | null,
+    followUp?: { err: unknown; groupsNotSaved: boolean }
+  ): NextResponse {
     const cause = err instanceof Error ? err.message : String(err);
     console.error(`[agents] config regeneration failed for agent ${agentId}:`, err);
+    let followUpNote = "";
+    if (followUp) {
+      const followUpCause =
+        followUp.err instanceof Error ? followUp.err.message : String(followUp.err);
+      console.error(`[agents] follow-up step failed for agent ${agentId}:`, followUp.err);
+      followUpNote = followUp.groupsNotSaved
+        ? `. The group assignment was not saved: ${followUpCause}`
+        : `. A follow-up step also failed: ${followUpCause}`;
+    }
     if (detail) {
       after(() =>
         appendAuditLog({
@@ -245,7 +258,9 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
       );
     }
     return NextResponse.json(
-      { error: `Settings were saved, but the agent runtime was not updated: ${cause}` },
+      {
+        error: `Settings were saved, but the agent runtime was not updated: ${cause}${followUpNote}`,
+      },
       { status: 500 }
     );
   }
@@ -273,69 +288,79 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     }
   }
 
-  // Capture old group IDs for audit diff (BEFORE delete/insert)
-  const oldGroupIds =
-    body.groupIds !== undefined && session.user.role === "admin"
-      ? await getAgentGroupIds(agentId)
-      : [];
-
-  // Update group assignments if provided (zod already validated string[]).
-  // Atomic replace: the wipe and the re-insert must commit or roll back
-  // together. As two standalone statements, an insert failure (I/O error, a
-  // group deleted in the validation→insert window) would leave a restricted
-  // agent stripped of every group with none re-added — silent access loss.
-  // Mirrors users/[userId]/groups and groups/[groupId]/members.
-  if (body.groupIds !== undefined && session.user.role === "admin") {
-    await db.transaction(async (tx) => {
-      await tx.delete(agentGroups).where(eq(agentGroups.agentId, agentId));
-      if (body.groupIds!.length > 0) {
-        await tx
-          .insert(agentGroups)
-          .values(body.groupIds!.map((groupId: string) => ({ agentId, groupId })));
-      }
-    });
-  }
-
-  if (data.name !== undefined || data.tagline !== undefined) {
-    writeIdentityFile(agentId, {
-      name: agent.name,
-      tagline: agent.tagline,
-    });
-  }
-
-  // Build audit detail with group diffs
   const auditDetail: AgentUpdateDetail = { changes };
+  const groupsRequested = body.groupIds !== undefined && session.user.role === "admin";
+  let groupsWritten = false;
 
-  if (body.groupIds !== undefined && session.user.role === "admin") {
-    const newIds = body.groupIds;
-    const addedIds = newIds.filter((id: string) => !oldGroupIds.includes(id));
-    const removedIds = oldGroupIds.filter((id: string) => !newIds.includes(id));
-    if (addedIds.length > 0 || removedIds.length > 0) {
-      const allGroupIds = [...new Set([...addedIds, ...removedIds])];
-      const groupRows =
-        allGroupIds.length > 0
-          ? await db
-              .select({ id: groups.id, name: groups.name })
-              .from(groups)
-              .where(inArray(groups.id, allGroupIds))
-          : [];
-      const nameMap = new Map(groupRows.map((g: { id: string; name: string }) => [g.id, g.name]));
-      auditDetail.allowedGroups = {
-        added: addedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
-        removed: removedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
-      };
+  // Everything from here to the push may throw. With a runtime failure held,
+  // a throw must not escape: the caller is owed that answer and its audit row,
+  // and an escaping error becomes a blank Next.js 500 for a row that is
+  // already committed. Without one held, the throw escapes as before.
+  let followUpError: unknown = null;
+  try {
+    // Capture old group IDs for audit diff (BEFORE delete/insert)
+    const oldGroupIds = groupsRequested ? await getAgentGroupIds(agentId) : [];
+
+    // Update group assignments if provided (zod already validated string[]).
+    // Atomic replace: the wipe and the re-insert must commit or roll back
+    // together. As two standalone statements, an insert failure (I/O error, a
+    // group deleted in the validation→insert window) would leave a restricted
+    // agent stripped of every group with none re-added — silent access loss.
+    // Mirrors users/[userId]/groups and groups/[groupId]/members.
+    if (groupsRequested) {
+      await db.transaction(async (tx) => {
+        await tx.delete(agentGroups).where(eq(agentGroups.agentId, agentId));
+        if (body.groupIds!.length > 0) {
+          await tx
+            .insert(agentGroups)
+            .values(body.groupIds!.map((groupId: string) => ({ agentId, groupId })));
+        }
+      });
+      groupsWritten = true;
     }
+
+    if (data.name !== undefined || data.tagline !== undefined) {
+      writeIdentityFile(agentId, {
+        name: agent.name,
+        tagline: agent.tagline,
+      });
+    }
+
+    // Build audit detail with group diffs — only for groups that were written
+    if (groupsWritten && body.groupIds !== undefined) {
+      const newIds = body.groupIds;
+      const addedIds = newIds.filter((id: string) => !oldGroupIds.includes(id));
+      const removedIds = oldGroupIds.filter((id: string) => !newIds.includes(id));
+      if (addedIds.length > 0 || removedIds.length > 0) {
+        const allGroupIds = [...new Set([...addedIds, ...removedIds])];
+        const groupRows =
+          allGroupIds.length > 0
+            ? await db
+                .select({ id: groups.id, name: groups.name })
+                .from(groups)
+                .where(inArray(groups.id, allGroupIds))
+            : [];
+        const nameMap = new Map(groupRows.map((g: { id: string; name: string }) => [g.id, g.name]));
+        auditDetail.allowedGroups = {
+          added: addedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
+          removed: removedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
+        };
+      }
+    }
+
+    // Recalculate Telegram allow-from stores when visibility or groups change.
+    // Above the push, where it has always run: the rows it mirrors are already
+    // committed, so a failed push must not skip it and leave the store enforcing
+    // an access rule the database no longer has.
+    if (body.visibility !== undefined || body.groupIds !== undefined) {
+      await recalculateTelegramAllowStores();
+    }
+  } catch (err) {
+    if (!runtimeError) throw err;
+    followUpError = err;
   }
 
   const hasAuditableChange = Object.keys(changes).length > 0 || Boolean(auditDetail.allowedGroups);
-
-  // Recalculate Telegram allow-from stores when visibility or groups change.
-  // Above the push, where it has always run: the rows it mirrors are already
-  // committed, so a failed push must not skip it and leave the store enforcing
-  // an access rule the database no longer has.
-  if (body.visibility !== undefined || body.groupIds !== undefined) {
-    await recalculateTelegramAllowStores();
-  }
 
   // Rebuild OpenClaw config when tool permissions or plugin config change — these
   // fields affect the generated openclaw.json (e.g. write_paths for pinchy_write).
@@ -351,7 +376,13 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   if (runtimeError) {
     // No second push: it could not make the first one's state current, and a
     // second failure would only repeat the message.
-    return runtimeUpdateFailed(runtimeError, hasAuditableChange ? auditDetail : null);
+    return runtimeUpdateFailed(
+      runtimeError,
+      hasAuditableChange ? auditDetail : null,
+      followUpError === null
+        ? undefined
+        : { err: followUpError, groupsNotSaved: groupsRequested && !groupsWritten }
+    );
   }
 
   if (data.allowedTools !== undefined || data.pluginConfig !== undefined) {

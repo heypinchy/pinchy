@@ -113,6 +113,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
+import { writeIdentityFile } from "@/lib/workspace";
 
 function mockAgent(agent: Record<string, unknown>) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -556,5 +557,83 @@ describe("PATCH /api/agents/[agentId] — group change alongside a failed runtim
     expect(db.transaction).not.toHaveBeenCalled();
     expect(recalculateTelegramAllowStores).not.toHaveBeenCalled();
     expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/agents/[agentId] — a later step fails after a held runtime failure", () => {
+  // The runtime failure is held so the group replace can still run. That
+  // means the steps between the hold and the answer run with a failure
+  // already owed to the caller — and if one of them throws, the held answer
+  // must still go out. Escaping instead hands Next.js a blank 500 with no
+  // audit row, for an agent row that is already committed.
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  function patch(body: Record<string, unknown>) {
+    return new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  it("still answers readably and audits when the group replace fails", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", allowedTools: [] });
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
+    // A group deleted since the page loaded: the FK rejects the insert.
+    vi.mocked(db.transaction).mockRejectedValueOnce(
+      new Error('insert violates foreign key constraint "agent_groups_group_id_fkey"')
+    );
+
+    const res = await PATCH(patch({ allowedTools: ["email_read"], groupIds: ["group-gone"] }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    await flushAfter();
+
+    expect(res.status).toBe(500);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/runtime was not updated/i);
+    // The group change did NOT land, so the answer must not imply it did.
+    expect(error).toMatch(/group.*not saved/i);
+
+    const rows = vi.mocked(appendAuditLog).mock.calls.map(([entry]) => entry);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ eventType: "agent.updated", outcome: "failure" });
+    expect(rows[0].detail).toMatchObject({
+      changes: { allowedTools: { to: ["email_read"] } },
+      runtimeUpdate: { applied: false },
+    });
+    // No group diff: nothing about the groups changed.
+    expect(rows[0].detail).not.toHaveProperty("allowedGroups");
+  });
+
+  it("still answers readably and audits when the identity file write fails", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", allowedTools: [] });
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
+    vi.mocked(writeIdentityFile).mockImplementationOnce(() => {
+      throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    });
+
+    const res = await PATCH(patch({ name: "Penelope" }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    await flushAfter();
+
+    expect(res.status).toBe(500);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/runtime was not updated/i);
+    expect(error).toMatch(/ENOSPC/);
+
+    const rows = vi.mocked(appendAuditLog).mock.calls.map(([entry]) => entry);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ eventType: "agent.updated", outcome: "failure" });
+    expect(rows[0].detail).toMatchObject({ changes: { name: { from: "Penny", to: "Penelope" } } });
   });
 });
