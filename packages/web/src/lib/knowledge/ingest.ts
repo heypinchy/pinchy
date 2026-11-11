@@ -52,6 +52,7 @@ import { and, count, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
+import { inBatches, rowsPerInsert } from "@/db/insert-batches";
 import { errorLine, LOG_PATH_MAX, LOG_REASON_MAX, oneLine } from "@/lib/log-line";
 
 import {
@@ -920,23 +921,27 @@ async function writeChunks(
   try {
     await db.transaction(async (tx) => {
       const documentId = await writeDocument(tx);
-      if (chunks.length === 0) return;
-      await tx.insert(kbChunks).values(
-        chunks.map((chunk, i) => ({
-          documentId,
-          orgId,
-          sourcePath,
-          chunkText: chunk.text,
-          // Decided by `extractDocument`, per format, against the closed union
-          // in locator.ts (#933): a page for a PDF, a sheet + row range for a
-          // spreadsheet. This function does not know which, which is the point
-          // — adding the heading and slide producers (#938) touched the
-          // dispatch and not the write.
-          locator: chunk.locator,
-          lang: detectLang(chunk.text),
-          embedding: vectors[i],
-        }))
-      );
+      const rows = chunks.map((chunk, i) => ({
+        documentId,
+        orgId,
+        sourcePath,
+        chunkText: chunk.text,
+        // Decided by `extractDocument`, per format, against the closed union
+        // in locator.ts (#933): a page for a PDF, a sheet + row range for a
+        // spreadsheet. This function does not know which, which is the point
+        // — adding the heading and slide producers (#938) touched the
+        // dispatch and not the write.
+        locator: chunk.locator,
+        lang: detectLang(chunk.text),
+        embedding: vectors[i],
+      }));
+      // In batches, because one statement binds at most 65,533 parameters
+      // (insert-batches.ts) and a long document has more chunks than that —
+      // inside this one transaction, so a refused batch still leaves the
+      // stored document exactly as it was.
+      for (const batch of inBatches(rows, rowsPerInsert(kbChunks))) {
+        await tx.insert(kbChunks).values(batch);
+      }
     });
   } catch (err) {
     const rejection = isContentRejection(err);

@@ -292,11 +292,18 @@ repeated.
 }
 ```
 
-The change **is** stored; only the runtime has not caught up. A later save or a
-restart applies it. Retrying is safe — the update is idempotent — but treating
+The change **is** stored; only the runtime has not caught up. That includes a
+`groupIds` change sent in the same request: the group assignment is written
+before Pinchy answers. If writing it fails too, the message says so with a
+second sentence, `The group assignment was not saved: <cause>`, and only the
+group change needs to be sent again. Any other step that fails after the
+group assignment is written adds `A follow-up step also failed: <cause>`
+instead; the group change is then stored. A later save or a restart brings the
+runtime up to date. Retrying is safe — the update is idempotent — but treating
 the change as discarded is not. Pinchy records this case in the audit trail as
 an `agent.updated` entry with outcome `failure`, so a change that reached the
-database but not the runtime still leaves a trace.
+database but not the runtime still leaves a trace — including the
+`allowedGroups` diff when the request changed the agent's groups.
 
 ### `DELETE /api/agents/:id`
 

@@ -9,6 +9,7 @@ import {
   normalizeMimeType,
   safeMimeLabel,
 } from "./delivery-mime.js";
+import { isWebChatRun } from "./web-chat-run.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 import { parseSingleRecipient } from "./recipient.js";
 import { refusingUnknownParams } from "./unknown-params.js";
@@ -176,24 +177,6 @@ interface PluginToolContext {
   agentId?: string;
   sessionKey?: string;
   messageChannel?: string;
-}
-
-/**
- * Whether this run will end in Pinchy's web-chat artifact poll — the only
- * place a saved file becomes a download chip (`deliverRunArtifacts` in
- * packages/web/src/server/stream-pipe.ts). OpenClaw itself forwards a tool's
- * `file` block to no channel: Telegram only receives `details.media`, which
- * this plugin does not emit.
- *
- * Both halves are needed. A web-chat run is a gateway `agent` call with no
- * channel, which OpenClaw resolves to "webchat" — but so is an automation
- * inbox run (`agent:<id>:inbox:<ledgerId>`), which has no chat to show a chip
- * in. A Telegram DM uses the same `:direct:` key shape, on channel "telegram".
- * Anything OpenClaw did not report counts as "not web chat": claiming less
- * than happened is the safe direction.
- */
-function isWebChatRun(ctx: PluginToolContext | undefined): boolean {
-  return ctx?.messageChannel === "webchat" && /^agent:[^:]+:direct:/.test(ctx.sessionKey ?? "");
 }
 
 // A text block carries `text`; a delivery block (`type: "file"` / `"image"`)
