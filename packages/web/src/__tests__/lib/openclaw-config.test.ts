@@ -271,8 +271,12 @@ import {
   DOCS_PUBLIC_BASE_URL_SETTING_KEY,
   MEMORY_EMBEDDING_MODEL_PATH,
 } from "@/lib/openclaw-config";
-import { MAX_EFFECTIVE_CONTEXT_TOKENS } from "@/lib/openclaw-config/effective-context";
-import { OPENCLAW_GATEWAY_BIND, OPENCLAW_GATEWAY_MODE } from "@/lib/openclaw-config/paths";
+import {
+  LLAMA_SERVER_COMMAND,
+  LLAMA_SERVER_PRESET_PATH,
+  OPENCLAW_GATEWAY_BIND,
+  OPENCLAW_GATEWAY_MODE,
+} from "@/lib/openclaw-config/paths";
 import { REFUSED_BASE_URL } from "@/lib/openai-compatible-stored-url";
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
 import { regenerateOnConnect } from "@/server/openclaw-connect-regenerate";
@@ -512,6 +516,19 @@ async function loadOpenClawDreamingResolver(): Promise<{
   };
 }
 
+/**
+ * The agent roster OpenClaw 2026.9 reads: `agents.entries`, keyed by id, in
+ * emission order. Projected back to `{ id, ...entry }` so assertions read the
+ * way they did against the retired `agents.list` array — typed `any` like the
+ * parsed JSON that array came from, so `.find(...)` reads the same too.
+ */
+function rosterOf(config: { agents?: { entries?: Record<string, object> } }): any[] {
+  return Object.entries(config.agents?.entries ?? {}).map(([id, entry]) => ({
+    id,
+    ...(entry as Record<string, unknown>),
+  }));
+}
+
 describe("regenerateOpenClawConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -552,7 +569,7 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
-  it("should disable heartbeat per agent in agents.list", async () => {
+  it("should disable heartbeat per agent in the roster", async () => {
     // Rationale: Heartbeat fires LLM calls in the background and racks up
     // tokens for every agent, even idle ones. Pinchy disables it by default
     // (`heartbeat: { every: "0m" }`). We set it per-agent, NOT on agents.defaults,
@@ -569,7 +586,7 @@ describe("regenerateOpenClawConfig", () => {
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
-    for (const agent of config.agents.list) {
+    for (const agent of rosterOf(config)) {
       expect(agent.heartbeat).toEqual({ every: "0m" });
     }
     // Must NOT be in agents.defaults (would cause hot-reload loops)
@@ -599,7 +616,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(isOpenClawConfigWrite(mockedWriteFileSync.mock.calls[0] ?? [])).toBe(false);
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
-    expect(config.agents.list.map((a: { id: string }) => a.id)).toContain("a1");
+    expect(rosterOf(config).map((a: { id: string }) => a.id)).toContain("a1");
   });
 
   it("should disable OpenClaw features that have no purpose in a containerized Pinchy deployment", async () => {
@@ -620,7 +637,8 @@ describe("regenerateOpenClawConfig", () => {
     //     Disabling cuts memory + reduces the attack surface — and makes
     //     the controlUi.dangerously* sub-toggles moot.
     //
-    //   - canvasHost.enabled=true (default): hosts OpenClaw's "canvas"
+    //   - the canvas plugin's host.enabled=true (default; root `canvasHost`
+    //     until OpenClaw 2026.7): hosts OpenClaw's "canvas"
     //     artifact server. Pinchy doesn't render OpenClaw canvases anywhere
     //     in its UI; the schema says "Keep disabled when canvas workflows
     //     are inactive to reduce exposed local services."
@@ -643,11 +661,12 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written) as {
       update?: { checkOnStart?: boolean };
       gateway?: { controlUi?: { enabled?: boolean }; terminal?: { enabled?: boolean } };
-      canvasHost?: { enabled?: boolean };
+      plugins?: { entries?: { canvas?: { config?: { host?: { enabled?: boolean } } } } };
     };
     expect(config.update?.checkOnStart).toBe(false);
     expect(config.gateway?.controlUi?.enabled).toBe(false);
-    expect(config.canvasHost?.enabled).toBe(false);
+    // The canvas host lives in the bundled `canvas` plugin since OpenClaw 2026.8.
+    expect(config.plugins?.entries?.canvas?.config?.host?.enabled).toBe(false);
     expect(config.gateway?.terminal?.enabled).toBe(false);
   });
 
@@ -731,9 +750,9 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.session?.reset).toEqual({ mode: "idle", idleMinutes: 525600 });
   });
 
-  it("preserves OpenClaw-enriched sub-fields under discovery, update, canvasHost across regenerate (C1)", async () => {
+  it("preserves OpenClaw-enriched sub-fields under discovery, update and the canvas plugin entry across regenerate (C1)", async () => {
     // Regression guard for review feedback on PR #269: writing
-    // `discovery`, `update`, `canvasHost` as fresh objects without
+    // `discovery`, `update`, the canvas host as fresh objects without
     // spreading `existing.<field>` first re-introduces the same bug
     // class this PR is meant to close (#193, #237). If OpenClaw enriches
     // a sub-field under any of these three new top-level paths and we
@@ -750,7 +769,7 @@ describe("regenerateOpenClawConfig", () => {
           lan: { discoveredPeers: ["peer-1"] },
         },
         update: { lastCheckedAt: "2026-05-03T00:00:00Z", channel: "stable" },
-        canvasHost: { enabled: true, boundPort: 18792 },
+        plugins: { entries: { canvas: { enabled: true, config: { host: { enabled: true } } } } },
       })
     );
 
@@ -763,14 +782,16 @@ describe("regenerateOpenClawConfig", () => {
         lan?: { discoveredPeers?: string[] };
       };
       update?: { checkOnStart?: boolean; lastCheckedAt?: string; channel?: string };
-      canvasHost?: { enabled?: boolean; boundPort?: number };
+      plugins?: {
+        entries?: { canvas?: { enabled?: boolean; config?: { host?: { enabled?: boolean } } } };
+      };
     };
 
     // Pinchy's intent: mode=off, checkOnStart=false, enabled=false (the
     // disables this PR adds).
     expect(config.discovery?.mdns?.mode).toBe("off");
     expect(config.update?.checkOnStart).toBe(false);
-    expect(config.canvasHost?.enabled).toBe(false);
+    expect(config.plugins?.entries?.canvas?.config?.host?.enabled).toBe(false);
 
     // OpenClaw's enrichments must survive byte-for-byte. If any of these
     // assertions fail, regenerate is stripping them and the cascade is
@@ -779,7 +800,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.discovery?.lan?.discoveredPeers).toEqual(["peer-1"]);
     expect(config.update?.lastCheckedAt).toBe("2026-05-03T00:00:00Z");
     expect(config.update?.channel).toBe("stable");
-    expect(config.canvasHost?.boundPort).toBe(18792);
+    expect(config.plugins?.entries?.canvas?.enabled).toBe(true);
   });
 
   it("enables OpenClaw's media TTL so ~/.openclaw/media doesn't grow unboundedly", async () => {
@@ -788,40 +809,40 @@ describe("regenerateOpenClawConfig", () => {
     // (reported via POST /api/internal/channel-messages), so the original
     // OpenClaw copies under ~/.openclaw/media are disposable shortly after
     // capture. OpenClaw only
-    // runs its own media-cleanup sweep when `media.ttlHours` is set in
-    // config — verified against OpenClaw 2026.6.11's server.impl, which reads
-    // `cfgAtStart.media?.ttlHours` and otherwise sets `mediaCleanup: null`
-    // (no maintenance loop at all). Without this field the media directory
+    // runs its own media-cleanup sweep when `attachments.ttlHours` is set in
+    // config — verified against OpenClaw 2026.9.2's server maintenance, which
+    // reads `getRuntimeConfig().attachments?.ttlHours` and otherwise prunes
+    // outbound media only. (Root `media.ttlHours` until OpenClaw 2026.7.) Without this field the media directory
     // grows without bound. 48h is a generous safety margin over the
     // millisecond-scale mirror, covering mirror outages/retries.
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync)) as {
-      media?: { ttlHours?: number };
+      attachments?: { ttlHours?: number };
     };
-    expect(config.media?.ttlHours).toBe(48);
+    expect(config.attachments?.ttlHours).toBe(48);
   });
 
-  it("owns media.ttlHours deterministically but preserves other keys under an existing media block", async () => {
+  it("owns attachments.ttlHours deterministically but preserves other keys under an existing attachments block", async () => {
     // Same "Pinchy-owned field, spread the rest" pattern as
-    // channels.telegram's PINCHY_OWNED_TELEGRAM_FIELDS and canvasHost.enabled
+    // channels.telegram's PINCHY_OWNED_TELEGRAM_FIELDS and the canvas host flag
     // above: an admin- or OpenClaw-tuned ttlHours must not survive a
     // regenerate (Pinchy is the source of truth for this operational value,
     // matching the disposable-original rationale above), but any OTHER
-    // sibling OpenClaw enriches under `media` must round-trip untouched.
+    // sibling OpenClaw enriches under `attachments` must round-trip untouched.
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
-        media: { ttlHours: 12, someOtherEnrichedField: "keep-me" },
+        attachments: { ttlHours: 12, someOtherEnrichedField: "keep-me" },
       })
     );
 
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync)) as {
-      media?: { ttlHours?: number; someOtherEnrichedField?: string };
+      attachments?: { ttlHours?: number; someOtherEnrichedField?: string };
     };
-    expect(config.media?.ttlHours).toBe(48);
-    expect(config.media?.someOtherEnrichedField).toBe("keep-me");
+    expect(config.attachments?.ttlHours).toBe(48);
+    expect(config.attachments?.someOtherEnrichedField).toBe("keep-me");
   });
 
   it("should disable mDNS discovery so the Bonjour watchdog can't kill the gateway", async () => {
@@ -953,7 +974,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(bonjourIdx).toBe(acpxIdx + 1);
   });
 
-  it("should write agents.list with all agents from DB", async () => {
+  it("should write the roster (agents.entries) with all agents from DB", async () => {
     const agentsData = [
       {
         id: "uuid-agent-1",
@@ -979,8 +1000,8 @@ describe("regenerateOpenClawConfig", () => {
     const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
-    expect(config.agents.list).toHaveLength(2);
-    expect(config.agents.list[0]).toEqual({
+    expect(rosterOf(config)).toHaveLength(2);
+    expect(rosterOf(config)[0]).toEqual({
       id: "uuid-agent-1",
       name: "Smithers",
       model: "anthropic/claude-opus-4-7",
@@ -995,7 +1016,7 @@ describe("regenerateOpenClawConfig", () => {
       // ...) from agents Pinchy never opted into them on.
       skills: [],
     });
-    expect(config.agents.list[1]).toEqual({
+    expect(rosterOf(config)[1]).toEqual({
       id: "uuid-agent-2",
       name: "Jeeves",
       model: "openai/gpt-5.4",
@@ -1033,7 +1054,7 @@ describe("regenerateOpenClawConfig", () => {
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
 
-    expect(config.agents.list[0].model).toEqual({
+    expect(rosterOf(config)[0].model).toEqual({
       primary: "anthropic/claude-opus-4-7",
       fallbacks: ["anthropic/claude-haiku-4-5-20251001"],
     });
@@ -1062,7 +1083,7 @@ describe("regenerateOpenClawConfig", () => {
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
 
-    expect(config.agents.list[0].model).toBe("anthropic/claude-haiku-4-5-20251001");
+    expect(rosterOf(config)[0].model).toBe("anthropic/claude-haiku-4-5-20251001");
   });
 
   it("keys the chat fallback per agent id — one agent gets a chain, another a bare string (#881)", async () => {
@@ -1095,7 +1116,7 @@ describe("regenerateOpenClawConfig", () => {
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     const byId = Object.fromEntries(
-      config.agents.list.map((a: { id: string; model: unknown }) => [a.id, a.model])
+      rosterOf(config).map((a: { id: string; model: unknown }) => [a.id, a.model])
     );
 
     expect(byId["uuid-agent-chain"]).toEqual({
@@ -1132,10 +1153,10 @@ describe("regenerateOpenClawConfig", () => {
 
     // getDefaultModel("ollama-cloud") → minimax-m3 (mock), which the tools
     // blocklist rejects → no fallback → bare string kept.
-    expect(config.agents.list[0].model).toBe("ollama-cloud/gemini-3-flash-preview");
+    expect(rosterOf(config)[0].model).toBe("ollama-cloud/gemini-3-flash-preview");
   });
 
-  it("excludes soft-deleted (tombstoned) agents from agents.list", async () => {
+  it("excludes soft-deleted (tombstoned) agents from the roster", async () => {
     const agentsData = [
       {
         id: "live-1",
@@ -1158,7 +1179,7 @@ describe("regenerateOpenClawConfig", () => {
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
-    const ids = config.agents.list.map((a: { id: string }) => a.id);
+    const ids = rosterOf(config).map((a: { id: string }) => a.id);
     expect(ids).toContain("live-1");
     // A tombstoned agent must not be a live, addressable agent in the runtime
     // config (it would point at a deleted workspace + keep its tool config).
@@ -1194,7 +1215,7 @@ describe("regenerateOpenClawConfig", () => {
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
-    const agentEntry = config.agents.list.find((a: { id: string }) => a.id === "ws-agent-1");
+    const agentEntry = rosterOf(config).find((a: { id: string }) => a.id === "ws-agent-1");
     expect(agentEntry.tools.fs).toEqual({ workspaceOnly: true });
   });
 
@@ -1240,7 +1261,7 @@ describe("regenerateOpenClawConfig", () => {
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
-    const agentEntry = config.agents.list.find(
+    const agentEntry = rosterOf(config).find(
       (a: { id: string }) => a.id === "security-contract-agent"
     );
     const allow = (agentEntry.tools?.allow ?? []) as string[];
@@ -1864,13 +1885,66 @@ describe("regenerateOpenClawConfig", () => {
     // failed ("No API key found for provider openai"), leaving 0 chunks and a
     // disabled tool. ollama-cloud and Anthropic offer NO embeddings, so the only
     // provider that works for every deployment is the bundled local GGUF
-    // (llama-cpp provider + EmbeddingGemma). Pin it in agents.defaults so recall
-    // works offline, with no key, on every install.
+    // (llama-cpp provider + EmbeddingGemma). Pin it in `memory.search` (until
+    // OpenClaw 2026.7: `agents.defaults.memorySearch`) so recall works offline,
+    // with no key, on every install.
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
-    expect(config.agents.defaults.memorySearch.provider).toBe("local");
-    expect(config.agents.defaults.memorySearch.local.modelPath).toMatch(/\.gguf$/);
+    expect(config.memory.search.provider).toBe("local");
+    expect(config.memory.search.local.modelPath).toMatch(/\.gguf$/);
+    expect(config.agents.defaults.memorySearch).toBeUndefined();
+  });
+
+  it("points the `local` embeddings at the llama-server the image ships", async () => {
+    // Since OpenClaw 2026.9 the llama.cpp provider embeds through a managed
+    // llama-server child process, configured under
+    // models.providers.llama-cpp.localService. Without that block every embed
+    // fails ("Local embeddings need the managed llama.cpp server config") and
+    // memory_search finds nothing — so Pinchy emits it on every install, with
+    // or without a chat provider, pointed at the binary Dockerfile.openclaw
+    // bakes in (OpenClaw's own setup would download one, which an offline
+    // install cannot). No chat models: the server only serves embeddings.
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(config.models.providers["llama-cpp"]).toEqual({
+      baseUrl: "http://127.0.0.1:19432/v1",
+      api: "openai-completions",
+      models: [],
+      localService: {
+        command: LLAMA_SERVER_COMMAND,
+        args: [
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "19432",
+          "--models-preset",
+          LLAMA_SERVER_PRESET_PATH,
+          "--models-max",
+          "2",
+          "--metrics",
+          "--no-ui",
+        ],
+        healthUrl: "http://127.0.0.1:19432/health",
+        readyTimeoutMs: 30000,
+        idleStopMs: 600000,
+      },
+    });
+    expect(LLAMA_SERVER_COMMAND).toBe("/opt/llama-server/llama-server");
+  });
+
+  it("keeps the llama-server provider next to the chat providers", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-decrypted" : null
+    );
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    expect(Object.keys(config.models.providers).sort()).toEqual(["anthropic", "llama-cpp"]);
   });
 
   it("includes the OpenClaw `llama-cpp` embedding provider in plugins.allow", async () => {
@@ -1899,7 +1973,10 @@ describe("regenerateOpenClawConfig", () => {
     const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
-    expect(config.agents.list).toEqual([]);
+    // No roster at all: OpenClaw's implicit `main` stands in until the first
+    // agent exists, and an empty `entries` is what its schema rejects.
+    expect(config.agents.entries).toBeUndefined();
+    expect(config.agents.list).toBeUndefined();
   });
 
   it("should handle no configured providers", async () => {
@@ -1912,18 +1989,15 @@ describe("regenerateOpenClawConfig", () => {
 
     // No env block when no provider keys are configured
     expect(config.env).toBeUndefined();
-    // No provider-derived defaults (no model). The memory-flush disable, the
-    // local memory-search embedding provider and the native compaction ceiling
-    // are provider-independent and always present (see dedicated tests above) —
-    // the ceiling especially so: it must bound models OpenClaw resolves on its
-    // own, which is exactly the case where Pinchy emits no provider tree at all.
+    // No provider-derived defaults (no model). The memory-flush disable and
+    // the local memory-search embedding provider are provider-independent and
+    // always present (see dedicated tests above).
     expect(config.agents.defaults).toEqual({
       compaction: { memoryFlush: { enabled: false } },
-      contextTokens: MAX_EFFECTIVE_CONTEXT_TOKENS,
-      memorySearch: {
-        provider: "local",
-        local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH },
-      },
+    });
+    expect(config.memory.search).toEqual({
+      provider: "local",
+      local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH },
     });
   });
 
@@ -1948,7 +2022,7 @@ describe("regenerateOpenClawConfig", () => {
 
     const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
-    const kbAgent = config.agents.list.find((a: { id: string }) => a.id === "kb-agent-id");
+    const kbAgent = rosterOf(config).find((a: { id: string }) => a.id === "kb-agent-id");
 
     expect(kbAgent.tools).toBeDefined();
     // Allowlist posture: tools.allow is set, tools.deny is gone entirely.
@@ -1982,7 +2056,7 @@ describe("regenerateOpenClawConfig", () => {
 
     const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
-    const customAgent = config.agents.list.find((a: { id: string }) => a.id === "custom-agent-id");
+    const customAgent = rosterOf(config).find((a: { id: string }) => a.id === "custom-agent-id");
 
     expect(customAgent.tools).toBeDefined();
     expect(customAgent.tools.allow).toBeDefined();
@@ -2968,22 +3042,23 @@ describe("regenerateOpenClawConfig", () => {
     expect(models[1].contextTokens).toBe(8_192);
   });
 
-  it("also caps every model natively via agents.defaults.contextTokens", async () => {
-    // Layer two, and deliberately redundant with the emitted-tree clamp: OpenClaw
-    // applies `agents.defaults.contextTokens` as a min() over whatever it resolved
-    // for a model (resolveContextWindowInfo → source "agentContextTokens";
-    // resolveContextTokensForModel → capOverride). Its coverage is strictly wider
-    // than ours — it also bounds models OpenClaw resolves from its OWN catalog or
-    // runtime discovery, which Pinchy's tree never emits and the clamp therefore
-    // cannot reach. The per-model tree values stay because they carry the lower
-    // researched knees and make the budget visible in openclaw.json; this one
-    // makes the bug class unreachable rather than merely un-emitted.
+  it("no longer emits agents.defaults.contextTokens, which OpenClaw 2026.8 retired", async () => {
+    // Until OpenClaw 2026.7 this was layer two of the ceiling: a min() over
+    // every model OpenClaw resolved, including ones from its own catalog that
+    // Pinchy never emits. OpenClaw 2026.8 removed the key (and the per-agent
+    // one); its loader rejects both, and the only place left for a budget is
+    // the per-model `contextTokens` the clamp above emits for every model in
+    // Pinchy's tree. An earlier Pinchy's value on disk has to go too.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({ agents: { defaults: { contextTokens: 262144 } } })
+    );
+
     await regenerateOpenClawConfig();
 
     const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
-    expect(config.agents.defaults.contextTokens).toBe(262144);
+    expect(config.agents.defaults.contextTokens).toBeUndefined();
   });
 
   it("writes reasoning, input (vision), and cost fields for every Ollama Cloud model", async () => {
@@ -3115,7 +3190,7 @@ describe("regenerateOpenClawConfig", () => {
     }
   });
 
-  it("should not include models block when neither ollama provider is configured", async () => {
+  it("emits no chat provider when neither ollama provider is configured", async () => {
     mockedGetSetting.mockResolvedValue(null);
 
     await regenerateOpenClawConfig();
@@ -3123,7 +3198,9 @@ describe("regenerateOpenClawConfig", () => {
     const written = writtenOpenClawConfig(mockedWriteFileSync);
     const config = JSON.parse(written);
 
-    expect(config.models).toBeUndefined();
+    // Only the embedding server, which every install carries (see "points the
+    // `local` embeddings at the llama-server the image ships").
+    expect(Object.keys(config.models.providers)).toEqual(["llama-cpp"]);
   });
 
   it("should include local ollama provider config when ollama_local_url is set", async () => {
@@ -3902,7 +3979,13 @@ describe("regenerateOpenClawConfig", () => {
     expect("publicBaseUrl" in config.plugins.entries["pinchy-docs"].config).toBe(false);
   });
 
-  it("writes per-agent auth-profiles.json scoped to each agent's model provider", async () => {
+  // OpenClaw 2026.9 retired auth-profiles.json: profiles live in its SQLite
+  // store, and a legacy file next to an empty store makes every model call for
+  // that agent fail with AuthProfileMigrationRequiredError ("run openclaw
+  // doctor --fix"), which no Pinchy deployment runs. The key reaches the agent
+  // through the provider entry's SecretRef instead, which OpenClaw resolves
+  // when no auth profile exists.
+  it("never writes auth-profiles.json; each provider key reaches OpenClaw as a SecretRef", async () => {
     const agentsData = [
       {
         id: "agent-alpha",
@@ -3933,114 +4016,22 @@ describe("regenerateOpenClawConfig", () => {
 
     await regenerateOpenClawConfig();
 
-    // auth-profiles.json is written atomically via writeFileSync → renameSync.
-    // CONFIG_PATH is /openclaw-config/openclaw.json so configRoot = /openclaw-config.
     const authProfileCalls = mockedWriteFileSync.mock.calls.filter((call) =>
       String(call[0]).includes("auth-profiles.json")
     );
-    expect(authProfileCalls.length).toBe(2);
+    expect(authProfileCalls).toEqual([]);
 
-    // agent-alpha uses anthropic model → only anthropic-default profile
-    const alphaCall = authProfileCalls.find((call) => String(call[0]).includes("agent-alpha"))!;
-    expect(alphaCall).toBeDefined();
-    const alphaContent = JSON.parse(String(alphaCall[1]));
-    expect(Object.keys(alphaContent.profiles)).toEqual(["anthropic-default"]);
-    expect(Object.keys(alphaContent.profiles)).not.toContain("openai-default");
-
-    // agent-beta uses openai model → only openai-default profile
-    const betaCall = authProfileCalls.find((call) => String(call[0]).includes("agent-beta"))!;
-    expect(betaCall).toBeDefined();
-    const betaContent = JSON.parse(String(betaCall[1]));
-    expect(Object.keys(betaContent.profiles)).toEqual(["openai-default"]);
-    expect(Object.keys(betaContent.profiles)).not.toContain("anthropic-default");
-  });
-
-  // #934: a single agent's auth-profiles write is not allowed to decide whether
-  // OpenClaw ever hears about the config at all.
-  //
-  // agents/<id>/agent is shared with OpenClaw, which creates it root-owned 0700
-  // when it derives that agent's models.json. When it wins that race, Pinchy
-  // (uid 999) gets a permanent EACCES — and because the per-agent loop ran
-  // BEFORE `pushConfigInBackground`, the throw took the whole push with it. The
-  // provider the user had just saved never reached OpenClaw, so every dispatch
-  // for EVERY agent died with `Unknown model: openai/gpt-5.5`. What the user saw
-  // was Smithers going silent, with the real cause only in the container log.
-  //
-  // The same escalation disabled the recovery path: maybeSelfHealOnModelError
-  // re-resolves the model by calling regenerateOpenClawConfig, which threw on
-  // the identical EACCES before pushing anything.
-  describe("a per-agent auth-profiles failure does not sink the config push (#934)", () => {
-    // The denied agent comes FIRST so "the other agent still got its profiles"
-    // is a real assertion rather than an artefact of iteration order.
-    const agentsData = [
-      {
-        id: "agent-denied",
-        name: "Jeeves",
-        model: "openai/gpt-5.4",
-        allowedTools: [],
-        pluginConfig: null,
-        createdAt: new Date(),
-      },
-      {
-        id: "agent-ok",
-        name: "Smithers",
-        model: "anthropic/claude-sonnet-4-6",
-        allowedTools: [],
-        pluginConfig: null,
-        createdAt: new Date(),
-      },
-    ];
-
-    beforeEach(() => {
-      mockedDb.select.mockReturnValue({ from: mockFrom(agentsData) } as never);
-      mockedGetSetting.mockImplementation(async (key: string) => {
-        if (key === "anthropic_api_key") return "sk-ant-test";
-        if (key === "openai_api_key") return "sk-openai-test";
-        return null;
-      });
-      // Deny exactly one agent's directory, the way a root-owned 0700
-      // agents/<id>/agent does. Every other write behaves normally.
-      mockedWriteFileSync.mockImplementation((target) => {
-        if (String(target).includes("agents/agent-denied/agent/auth-profiles.json")) {
-          const err = new Error(
-            `EACCES: permission denied, open '${String(target)}.tmp-100'`
-          ) as NodeJS.ErrnoException;
-          err.code = "EACCES";
-          throw err;
-        }
-      });
+    const written = findOpenClawConfigWrite(mockedWriteFileSync);
+    const config = JSON.parse(String(written![1]));
+    expect(config.models.providers.anthropic.apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
     });
-
-    it("still writes openclaw.json so OpenClaw learns the provider and the model", async () => {
-      await regenerateOpenClawConfig().catch(() => {});
-      await drainBackgroundCoroutine();
-
-      const written = findOpenClawConfigWrite(mockedWriteFileSync);
-      expect(written).toBeDefined();
-      const config = JSON.parse(String(written![1]));
-      expect(config.models.providers.openai).toBeDefined();
-    });
-
-    it("still writes the auth profiles of every other agent", async () => {
-      await regenerateOpenClawConfig().catch(() => {});
-
-      const okCall = mockedWriteFileSync.mock.calls.find((call) =>
-        String(call[0]).includes("agents/agent-ok/agent/auth-profiles.json")
-      );
-      expect(okCall).toBeDefined();
-    });
-
-    it("still reports the failure to the caller, naming the agent and what did land", async () => {
-      // Silence is the other half of the bug: the wizard turns this rejection
-      // into a warning toast and records configRegenerated: false in the audit
-      // trail. Swallowing it would trade a loud failure for a silent one.
-      //
-      // But the message has to say what actually happened now — the raw EACCES
-      // reads as "the regenerate failed", which is no longer true: the config
-      // did reach OpenClaw, one agent just has no auth profile.
-      await expect(regenerateOpenClawConfig()).rejects.toThrow(/agent-denied/);
-      await expect(regenerateOpenClawConfig()).rejects.toThrow(/auth-profiles/);
-      await expect(regenerateOpenClawConfig()).rejects.toThrow(/rest of the config was applied/i);
+    expect(config.models.providers.openai.apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/openai/apiKey",
     });
   });
 
@@ -4076,7 +4067,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(authProfileCalls.length).toBe(0);
   });
 
-  it("can write an E2E-only auth profile for ollama-local when Docker Desktop requires it", async () => {
+  it("can give ollama-local an E2E-only API key when Docker Desktop requires it", async () => {
     process.env.PINCHY_E2E_OLLAMA_LOCAL_API_KEY = "1";
     const agentsData = [
       {
@@ -4116,16 +4107,11 @@ describe("regenerateOpenClawConfig", () => {
       })
     );
 
-    const authProfileCall = mockedWriteFileSync.mock.calls.find((call) =>
-      String(call[0]).includes("agents/agent-llama/agent/auth-profiles.json")
-    );
-    expect(authProfileCall).toBeDefined();
-    const authProfile = JSON.parse(String(authProfileCall![1]));
-    expect(authProfile.profiles["ollama-local-default"]).toEqual({
-      type: "api_key",
-      provider: "ollama-local",
-      keyRef: { kind: "secret", path: "providers.ollama-local.apiKey" },
-    });
+    // The SecretRef above is the whole of it: no auth-profiles.json, which
+    // OpenClaw 2026.9 would refuse to run beside its empty SQLite store.
+    expect(
+      mockedWriteFileSync.mock.calls.some((call) => String(call[0]).includes("auth-profiles.json"))
+    ).toBe(false);
   });
 
   it("retries readExistingConfig after 300 ms when it returns empty (EACCES/transient race)", async () => {
@@ -4234,7 +4220,7 @@ describe("regenerateOpenClawConfig", () => {
     // chokidar, which updates currentCompareConfig to the raw Pinchy payload.
     // config.apply then writes a slightly transformed file (OC's merge
     // applies startup-era defaults) → reload handler detects a diff in
-    // gateway/discovery/update/canvasHost → restart → ConfigMutationConflictError.
+    // gateway/discovery/update → restart → ConfigMutationConflictError.
     // When no WS client (or config.apply fails all retries), writeConfigAtomic
     // writes the file directly so inotify picks it up.
 
@@ -5635,24 +5621,27 @@ describe("seedRestartClassOverridesIfMissing", () => {
     ]);
     expect(written.discovery?.mdns?.mode).toBe("off");
     expect(written.update?.checkOnStart).toBe(false);
-    expect(written.canvasHost?.enabled).toBe(false);
+    // The canvas host lives in the bundled `canvas` plugin since OpenClaw 2026.8.
+    expect(written.plugins?.entries?.canvas?.config?.host?.enabled).toBe(false);
+    expect(written.canvasHost).toBeUndefined();
     // Workspace terminals (OpenClaw 2026.7.1+) are a restart-class gateway field;
     // seed them off up front so the first regenerate isn't a missing-then-added
     // diff that triggers a SIGUSR1 restart.
     expect(written.gateway?.terminal?.enabled).toBe(false);
-    // OpenClaw has no reload rule for `media`, so the first regenerate adding
-    // ttlHours would restart the gateway — seed it up front too.
-    expect(written.media?.ttlHours).toBe(48);
+    // OpenClaw has no reload rule for `attachments` (root `media` until
+    // 2026.7), so the first regenerate adding ttlHours would restart the
+    // gateway — seed it up front too.
+    expect(written.attachments?.ttlHours).toBe(48);
+    expect(written.media).toBeUndefined();
     // OpenClaw refuses to start on a config without gateway.mode, and adding
     // mode/bind in the first regenerate is a restart-class `gateway` diff.
     expect(written.gateway?.mode).toBe("local");
     expect(written.gateway?.bind).toBe("lan");
   });
 
-  it("seeds media.ttlHours when it is missing and keeps OpenClaw's media siblings", () => {
-    // Installs created before the media TTL existed carry every other override
-    // but no `media` block; the seed must add ttlHours without dropping fields
-    // OpenClaw may have enriched under `media`.
+  it("seeds attachments.ttlHours when it is missing and keeps OpenClaw's attachments siblings", () => {
+    // The seed must add ttlHours without dropping fields OpenClaw may have
+    // enriched under `attachments`.
     const existing = {
       gateway: {
         mode: "local",
@@ -5665,8 +5654,9 @@ describe("seedRestartClassOverridesIfMissing", () => {
       },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
-      canvasHost: { enabled: false },
-      media: { maxBytes: 1024 },
+      plugins: { entries: { canvas: { config: { host: { enabled: false } } } } },
+      memory: { search: { provider: "local", local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH } } },
+      attachments: { maxBytes: 1024 },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5674,7 +5664,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
 
     expect(changed).toBe(true);
     const written = JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1]));
-    expect(written.media).toEqual({ maxBytes: 1024, ttlHours: 48 });
+    expect(written.attachments).toEqual({ maxBytes: 1024, ttlHours: 48 });
   });
 
   // One fixture per guard condition: every override correct except one. Each row
@@ -5692,8 +5682,9 @@ describe("seedRestartClassOverridesIfMissing", () => {
     },
     discovery: { mdns: { mode: "off" } },
     update: { checkOnStart: false },
-    canvasHost: { enabled: false },
-    media: { ttlHours: 48 },
+    plugins: { entries: { canvas: { config: { host: { enabled: false } } } } },
+    attachments: { ttlHours: 48 },
+    memory: { search: { provider: "local", local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH } } },
   });
   type Fixture = ReturnType<typeof allOverridesCorrect>;
   const onlyOneOverrideOff: Array<{
@@ -5727,9 +5718,19 @@ describe("seedRestartClassOverridesIfMissing", () => {
       expectFixed: (w) => expect(w.update.checkOnStart).toBe(false),
     },
     {
-      field: "canvasHost.enabled",
-      breakIt: (c) => (c.canvasHost.enabled = true),
-      expectFixed: (w) => expect(w.canvasHost.enabled).toBe(false),
+      field: "the canvas plugin's host.enabled",
+      breakIt: (c) => (c.plugins.entries.canvas.config.host.enabled = true),
+      expectFixed: (w) => expect(w.plugins.entries.canvas.config.host.enabled).toBe(false),
+    },
+    {
+      field: "attachments.ttlHours",
+      breakIt: (c) => (c.attachments.ttlHours = 12),
+      expectFixed: (w) => expect(w.attachments.ttlHours).toBe(48),
+    },
+    {
+      field: "memory.search.local.modelPath",
+      breakIt: (c) => (c.memory.search.local.modelPath = "/models/other.gguf"),
+      expectFixed: (w) => expect(w.memory.search.local.modelPath).toBe(MEMORY_EMBEDDING_MODEL_PATH),
     },
   ];
   for (const row of onlyOneOverrideOff) {
@@ -5742,6 +5743,73 @@ describe("seedRestartClassOverridesIfMissing", () => {
       row.expectFixed(JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1])));
     });
   }
+
+  it("moves the keys OpenClaw 2026.8/9 retired before OpenClaw starts (upgrade from an earlier Pinchy)", () => {
+    // OpenClaw 2026.9's loader rejects these, and its gateway refuses to start
+    // on a file that carries them; only `openclaw doctor` migrates them. Pinchy
+    // boots first (the OpenClaw container waits for it), so the boot seed is
+    // the one place an upgraded install's file can be fixed before OpenClaw
+    // reads it — the first regenerate runs only once OpenClaw is up.
+    const { attachments: _attachments, plugins: _plugins, ...overrides } = allOverridesCorrect();
+    const existing = {
+      ...overrides,
+      plugins: { allow: ["pinchy-audit"], entries: { "pinchy-audit": { enabled: true } } },
+      canvasHost: { enabled: false },
+      media: { ttlHours: 48 },
+      agents: {
+        defaults: {
+          contextTokens: 262144,
+          memorySearch: { provider: "local", local: { modelPath: "/models/x.gguf" } },
+          compaction: { memoryFlush: { enabled: false } },
+        },
+        list: [
+          { id: "smithers", name: "Smithers", contextTokens: 1000 },
+          { id: "kb", name: "KB" },
+        ],
+      },
+      memory: { backend: "builtin" },
+      bindings: [
+        { agentId: "smithers", match: { channel: "telegram", peer: { kind: "dm", id: "1" } } },
+        { agentId: "kb", match: { channel: "telegram", accountId: "kb" } },
+      ],
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+    expect(seedRestartClassOverridesIfMissing()).toBe(true);
+    const written = JSON.parse(String(findOpenClawConfigWrite(mockedWriteFileSync)![1]));
+
+    expect(written.canvasHost).toBeUndefined();
+    expect(written.media).toBeUndefined();
+    expect(written.plugins.entries.canvas.config.host.enabled).toBe(false);
+    expect(written.plugins.entries["pinchy-audit"]).toEqual({ enabled: true });
+    expect(written.attachments.ttlHours).toBe(48);
+    // Moved, then pinned to the bundled model as every regenerate does.
+    expect(written.memory).toEqual({
+      backend: "builtin",
+      search: { provider: "local", local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH } },
+    });
+    expect(written.agents.list).toBeUndefined();
+    expect(written.agents.ownership).toBe("explicit");
+    expect(written.agents.entries).toEqual({ smithers: { name: "Smithers" }, kb: { name: "KB" } });
+    expect(written.agents.defaults).toEqual({ compaction: { memoryFlush: { enabled: false } } });
+    expect(written.bindings[0].match.peer).toEqual({ kind: "direct", id: "1" });
+    expect(written.bindings[1]).toEqual(existing.bindings[1]);
+  });
+
+  it("does not rewrite a file already in OpenClaw 2026.9's layout", () => {
+    // The migration must be a no-op on a current file, or every boot writes.
+    const existing = {
+      ...allOverridesCorrect(),
+      agents: { ownership: "explicit", entries: { a: { name: "A" }, b: { name: "B" } } },
+      bindings: [
+        { agentId: "a", match: { channel: "telegram", peer: { kind: "direct", id: "1" } } },
+      ],
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
+
+    expect(seedRestartClassOverridesIfMissing()).toBe(false);
+    expect(findOpenClawConfigWrite(mockedWriteFileSync)).toBeUndefined();
+  });
 
   it("refuses to seed (no write) when openclaw.json is EACCES", () => {
     // readExistingConfig throws on a persistent EACCES (OpenClaw's 0600
@@ -5771,8 +5839,9 @@ describe("seedRestartClassOverridesIfMissing", () => {
       },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
-      canvasHost: { enabled: false },
-      media: { ttlHours: 48 },
+      plugins: { entries: { canvas: { config: { host: { enabled: false } } } } },
+      attachments: { ttlHours: 48 },
+      memory: { search: { provider: "local", local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH } } },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5797,8 +5866,9 @@ describe("seedRestartClassOverridesIfMissing", () => {
       },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
-      canvasHost: { enabled: false },
-      media: { ttlHours: 48 },
+      plugins: { entries: { canvas: { config: { host: { enabled: false } } } } },
+      attachments: { ttlHours: 48 },
+      memory: { search: { provider: "local", local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH } } },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5830,8 +5900,9 @@ describe("seedRestartClassOverridesIfMissing", () => {
       },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
-      canvasHost: { enabled: false },
-      media: { ttlHours: 48 },
+      plugins: { entries: { canvas: { config: { host: { enabled: false } } } } },
+      attachments: { ttlHours: 48 },
+      memory: { search: { provider: "local", local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH } } },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5859,8 +5930,9 @@ describe("seedRestartClassOverridesIfMissing", () => {
       },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
-      canvasHost: { enabled: false },
-      media: { ttlHours: 48 },
+      plugins: { entries: { canvas: { config: { host: { enabled: false } } } } },
+      attachments: { ttlHours: 48 },
+      memory: { search: { provider: "local", local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH } } },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -5895,8 +5967,8 @@ describe("seedRestartClassOverridesIfMissing", () => {
         controlUi: { enabled: true, allowedOrigins: ["http://localhost:18789"] },
       },
       discovery: { mdns: { mode: "auto" } }, // OC default — needs flip
-      // update + canvasHost missing entirely
-      agents: { list: [{ id: "preserved-agent", name: "Preserved" }] },
+      // update + canvas host + attachments missing entirely
+      agents: { entries: { "preserved-agent": { name: "Preserved" } } },
       plugins: { allow: ["pinchy-audit"], entries: { "pinchy-audit": { enabled: true } } },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
@@ -5912,14 +5984,18 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.gateway.controlUi.enabled).toBe(false);
     expect(written.discovery.mdns.mode).toBe("off");
     expect(written.update.checkOnStart).toBe(false);
-    expect(written.canvasHost.enabled).toBe(false);
+    expect(written.plugins.entries.canvas.config.host.enabled).toBe(false);
+    expect(written.attachments.ttlHours).toBe(48);
 
     // Non-restart-class fields preserved byte-for-byte:
     expect(written.meta).toEqual(existing.meta);
     expect(written.gateway.auth).toEqual(existing.gateway.auth);
     expect(written.gateway.controlUi.allowedOrigins).toEqual(["http://localhost:18789"]);
     expect(written.agents).toEqual(existing.agents);
-    expect(written.plugins).toEqual(existing.plugins);
+    expect(written.plugins.allow).toEqual(existing.plugins.allow);
+    expect(written.plugins.entries["pinchy-audit"]).toEqual(
+      existing.plugins.entries["pinchy-audit"]
+    );
   });
 
   it("still seeds when the on-disk config carries a legacy plaintext provider key (#884)", () => {
@@ -5954,7 +6030,7 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.gateway.terminal.enabled).toBe(false);
     expect(written.discovery.mdns.mode).toBe("off");
     expect(written.update.checkOnStart).toBe(false);
-    expect(written.canvasHost.enabled).toBe(false);
+    expect(written.plugins.entries.canvas.config.host.enabled).toBe(false);
 
     // The pre-existing blocks ride through untouched — the seed heals the
     // restart-class fields, it does not silently drop provider config.
@@ -5993,8 +6069,9 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // gateway.mode"), so the seeded file IS the baseline its first reload diffs.
     //
     // All four converge on the same seeded baseline — that convergence is the
-    // point. Each case still guards something different: the pre-media one is
-    // the only case that fails if `needsMediaTtl` is dropped from the skip check
+    // point. Each case still guards something different: the one without the
+    // attachments TTL is the only case that fails if `needsAttachmentsTtl` is
+    // dropped from the skip check
     // (in the others another override already forces the write), and the baked
     // one pins config/openclaw.json to the seed.
     const startingFiles: Array<{
@@ -6014,14 +6091,25 @@ describe("seedRestartClassOverridesIfMissing", () => {
       // The dev image and a host-run Pinchy have no entrypoint seed.
       { name: "no openclaw.json (dev image / host-run Pinchy)", file: async () => null },
       {
-        // The seed baseline as it looked before the media TTL: every other
-        // override present, no `media`. The seed is the only thing that adds it
+        // The seed baseline without the attachments TTL: every other override
+        // present, no `attachments`. The seed is the only thing that adds it
         // here — this case fails if the seed stops doing so, which the
         // baked-config case cannot see.
-        name: "a pre-media-TTL seed baseline",
+        name: "a seed baseline without the attachments TTL",
         file: async () => {
-          const { media: _media, ...rest } = await readBaked();
+          const { attachments: _attachments, ...rest } = await readBaked();
           return rest;
+        },
+      },
+      // An upgraded install: the baked file as Pinchy on OpenClaw 2026.7 wrote
+      // it (root `canvasHost` and `media`). The seed moves both before
+      // OpenClaw starts; whatever it moves them to must already be what the
+      // regenerate writes.
+      {
+        name: "the baked file as an earlier Pinchy wrote it (OpenClaw 2026.7 keys)",
+        file: async () => {
+          const { attachments: _attachments, plugins: _plugins, ...rest } = await readBaked();
+          return { ...rest, canvasHost: { enabled: false }, media: { ttlHours: 48 } };
         },
       },
     ];
@@ -6365,7 +6453,7 @@ describe("seedGatewayTokenIfMissing", () => {
       },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
-      canvasHost: { enabled: false },
+      plugins: { entries: { canvas: { config: { host: { enabled: false } } } } },
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existing));
 
@@ -6387,7 +6475,7 @@ describe("seedGatewayTokenIfMissing", () => {
     expect(written.gateway.controlUi.enabled).toBe(false);
     expect(written.discovery.mdns.mode).toBe("off");
     expect(written.update.checkOnStart).toBe(false);
-    expect(written.canvasHost.enabled).toBe(false);
+    expect(written.plugins.entries.canvas.config.host.enabled).toBe(false);
   });
 
   it("refuses to write when readExistingConfig throws EACCES (avoids clobbering enriched OC state during chmod race, #314)", async () => {
@@ -6887,9 +6975,12 @@ describe("pinchy-odoo config size", () => {
     // Should NOT have full schema with fields
     expect(odooConfig.schema).toBeUndefined();
 
-    // Config should be small (no field definitions bloating it)
-    const configSize = writtenCall![1]!.toString().length;
-    expect(configSize).toBeLessThan(5000); // Without schema: ~2-3KB. With schema it would be 100KB+
+    // The odoo entry should be small (no field definitions bloating it).
+    // Measured on the entry rather than the whole file, so blocks the file
+    // carries for other reasons (the llama-server provider, say) don't eat
+    // this budget.
+    const odooEntrySize = JSON.stringify(config.plugins.entries["pinchy-odoo"]).length;
+    expect(odooEntrySize).toBeLessThan(5000); // Without schema: well under 1KB. With schema it would be 100KB+
   });
 
   it("does not decrypt Odoo connection credentials at config-write time", async () => {
@@ -7328,7 +7419,7 @@ describe("restart-state integration", () => {
     });
   });
 
-  describe("updateTelegramChannelConfig agents.list consistency (OpenClaw 2026.7.1 bindings validation)", () => {
+  describe("updateTelegramChannelConfig roster consistency (OpenClaw bindings validation)", () => {
     // OpenClaw 2026.7.1 cross-validates the whole config: every
     // bindings[].agentId must exist in agents.list (skipped only when
     // agents.list is empty/absent). A targeted bot-connect that patches a
@@ -7338,16 +7429,18 @@ describe("restart-state integration", () => {
     // config.apply RPC with INVALID_REQUEST AND skips the file-watcher
     // reload of the same file ("config reload skipped (invalid config)"),
     // so the new account never reaches OpenClaw and its polling never
-    // starts. The targeted writer must detect the stale agents.list and
-    // hand the update to the caller for a full regeneration instead of
-    // writing a config OpenClaw refuses to load.
+    // starts. The targeted writer must detect the stale roster and hand the
+    // update to the caller for a full regeneration instead of writing a
+    // config OpenClaw refuses to load. Since OpenClaw 2026.9 the roster is
+    // the keyed `agents.entries`; the boot seed migrates an older file's
+    // `agents.list` before OpenClaw starts.
 
-    it("returns 'agent-not-in-config' and writes nothing when agents.list lacks the agent", async () => {
+    it("returns 'agent-not-in-config' and writes nothing when the roster lacks the agent", async () => {
       const { restartState } = await import("@/server/restart-state");
       mockedReadFileSync.mockReturnValue(
         JSON.stringify({
           gateway: { mode: "local", bind: "lan" },
-          agents: { list: [{ id: "some-other-agent" }] },
+          agents: { entries: { "some-other-agent": {} } },
         })
       );
 
@@ -7358,11 +7451,11 @@ describe("restart-state integration", () => {
       expect(restartState.notifyRestart).not.toHaveBeenCalled();
     });
 
-    it("returns 'applied' and writes when agents.list contains the agent", () => {
+    it("returns 'applied' and writes when the roster contains the agent", () => {
       mockedReadFileSync.mockReturnValue(
         JSON.stringify({
           gateway: { mode: "local", bind: "lan" },
-          agents: { list: [{ id: "agent-99" }] },
+          agents: { entries: { "agent-99": {} } },
         })
       );
 
@@ -7372,7 +7465,7 @@ describe("restart-state integration", () => {
       expect(mockedWriteFileSync).toHaveBeenCalled();
     });
 
-    it("returns 'applied' when the config has no agents.list (bootstrap) — OpenClaw skips the cross-check for an empty list", () => {
+    it("returns 'applied' when the config has no roster yet (bootstrap) — OpenClaw skips the cross-check for an empty one", () => {
       mockedReadFileSync.mockReturnValue(
         JSON.stringify({ gateway: { mode: "local", bind: "lan" } })
       );
@@ -7383,12 +7476,12 @@ describe("restart-state integration", () => {
       expect(mockedWriteFileSync).toHaveBeenCalled();
     });
 
-    it("removal (accountId, null) is unaffected by a stale agents.list", () => {
+    it("removal (accountId, null) is unaffected by a stale roster", () => {
       // Removing a binding can never introduce an unknown agentId.
       mockedReadFileSync.mockReturnValue(
         JSON.stringify({
           gateway: { mode: "local", bind: "lan" },
-          agents: { list: [{ id: "some-other-agent" }] },
+          agents: { entries: { "some-other-agent": {} } },
           channels: {
             telegram: {
               enabled: true,
@@ -7832,7 +7925,7 @@ describe("restart-state integration", () => {
           match: {
             channel: "telegram",
             accountId: "admin-smithers",
-            peer: { kind: "dm", id: "111222333" },
+            peer: { kind: "direct", id: "111222333" },
           },
         },
         {
@@ -7840,7 +7933,7 @@ describe("restart-state integration", () => {
           match: {
             channel: "telegram",
             accountId: "admin-smithers",
-            peer: { kind: "dm", id: "444555666" },
+            peer: { kind: "direct", id: "444555666" },
           },
         },
       ])
@@ -8026,7 +8119,7 @@ describe("restart-state integration", () => {
           match: {
             channel: "telegram",
             accountId: "agent-1",
-            peer: { kind: "dm", id: "999888" },
+            peer: { kind: "direct", id: "999888" },
           },
         },
       ])
@@ -8119,7 +8212,7 @@ describe("restart-state integration", () => {
           match: {
             channel: "telegram",
             accountId: "agent-1",
-            peer: { kind: "dm", id: "999888" },
+            peer: { kind: "direct", id: "999888" },
           },
         },
       ])
@@ -8983,7 +9076,7 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
-    const agent = config.agents.list.find((a: { id: string }) => a.id === "kb1");
+    const agent = rosterOf(config).find((a: { id: string }) => a.id === "kb1");
     const primary = typeof agent.model === "string" ? agent.model : agent.model.primary;
     expect(primary).toBe("anthropic/claude-haiku-5-5");
     expect(agent.tools.allow).toEqual(
@@ -11591,8 +11684,9 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     const upgradeConfig = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     const upgradeSecrets = mockWriteSecretsFile.mock.calls.at(-1)![0];
 
-    // ONLY the built-in provider key — no custom slug leaked into the tree.
-    expect(Object.keys(upgradeConfig.models.providers)).toEqual(["anthropic"]);
+    // ONLY the built-in provider key (beside the embedding server every
+    // install carries) — no custom slug leaked into the tree.
+    expect(Object.keys(upgradeConfig.models.providers)).toEqual(["anthropic", "llama-cpp"]);
     // The built-in entry is emitted the same way the rest of this file asserts
     // built-in providers (SecretRef apiKey + OC-required baseUrl + a catalog).
     expect(upgradeConfig.models.providers.anthropic.apiKey).toMatchObject({

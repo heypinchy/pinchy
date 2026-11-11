@@ -904,10 +904,13 @@ describe("answer language (#1296)", () => {
     // thinking off on this OpenClaw version. A newer OpenClaw may turn it on.
     // When this fails, check that Haiku 5.5 with thinking still answers a
     // second turn after a note, then update the pinned version here.
+    // 2026.9.2: OpenClaw's own resolveThinkingDefaultWithRuntimeCatalog still
+    // resolves anthropic/claude-haiku-5-5 to "off" for the catalog Pinchy
+    // emits (reasoning: false), exactly as 2026.7.1-2 did.
     const runtime = JSON.parse(
       readFileSync(join(__dirname, "../../openclaw-runtime/package.json"), "utf8")
     ) as { dependencies: Record<string, string> };
-    expect(runtime.dependencies.openclaw).toBe("2026.7.1-2");
+    expect(runtime.dependencies.openclaw).toBe("2026.9.2");
   });
 
   it("names the question's language and quotes the question after the passages", async () => {

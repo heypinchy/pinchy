@@ -21,11 +21,25 @@
 set -euo pipefail
 
 MODEL_PATH="/opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf"
+LLAMA_SERVER="/opt/llama-server/llama-server"
+LLAMA_PRESET="/root/.openclaw/tools/llama.cpp/models.ini"
+LLAMA_PORT=19432
 AGENT="memory-smoke-agent"
 WS="/root/.openclaw/workspaces/$AGENT"
 
 test -f "$MODEL_PATH" || {
   echo "::error::bundled embedding model missing at $MODEL_PATH"
+  exit 1
+}
+test -x "$LLAMA_SERVER" || {
+  echo "::error::bundled llama-server missing at $LLAMA_SERVER"
+  exit 1
+}
+# The binary must load in this image — a glibc or shared-library gap shows up
+# here, not as a vague "embeddings unavailable" from the provider later.
+"$LLAMA_SERVER" --version >/dev/null 2>&1 || {
+  echo "::error::bundled llama-server does not run in this image"
+  "$LLAMA_SERVER" --version || true
   exit 1
 }
 
@@ -36,12 +50,18 @@ printf 'Invoices from supplier Helmcraft always post to collective account 3400.
 
 # Minimal Pinchy-shaped config: llama-cpp enabled via plugins.allow ONLY (no
 # per-plugin entry — mirrors regenerateOpenClawConfig), memory-search pinned to
-# the local provider + bundled model.
+# the local provider + bundled model, and the managed llama-server the provider
+# embeds through since OpenClaw 2026.9 — the same block build.ts emits
+# (buildManagedLlamaCppProvider), pointed at the binary the image ships.
 cat >/root/.openclaw/openclaw.json <<JSON
 {"gateway":{"mode":"local","bind":"lan","auth":{"token":"smoke"}},
  "plugins":{"allow":["memory-core","llama-cpp"],"entries":{}},
- "agents":{"defaults":{"memorySearch":{"provider":"local","local":{"modelPath":"$MODEL_PATH"}}},
-           "list":[{"id":"$AGENT","name":"Smoke","workspace":"$WS"}]}}
+ "models":{"providers":{"llama-cpp":{
+   "baseUrl":"http://127.0.0.1:$LLAMA_PORT/v1","api":"openai-completions","models":[],
+   "localService":{"command":"$LLAMA_SERVER","args":["--host","127.0.0.1","--port","$LLAMA_PORT","--models-preset","$LLAMA_PRESET","--models-max","2","--metrics","--no-ui"],
+     "healthUrl":"http://127.0.0.1:$LLAMA_PORT/health","readyTimeoutMs":30000,"idleStopMs":600000}}}},
+ "memory":{"search":{"provider":"local","local":{"modelPath":"$MODEL_PATH"}}},
+ "agents":{"entries":{"$AGENT":{"name":"Smoke","workspace":"$WS"}}}}
 JSON
 
 # Stage the bundled provider into the (normally volume-mounted) config dir and

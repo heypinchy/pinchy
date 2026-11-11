@@ -6,14 +6,15 @@
 # function instead of a re-implemented copy that could drift from production.
 #
 # `openclaw plugins install @openclaw/llama-cpp-provider` runs at image-build time
-# and writes the provider (with its prebuilt node-llama-cpp native runtime) under
-# ~/.openclaw/npm/projects/. That path lives on the `openclaw-config` volume, which
+# and writes the provider under ~/.openclaw/npm/projects/. Since OpenClaw 2026.9
+# the provider embeds through a llama-server child process; that binary is baked
+# separately at /opt/llama-server (Dockerfile.openclaw) and is not on the volume. That path lives on the `openclaw-config` volume, which
 # shadows the image-baked copy on upgrades — so the built provider is kept in
 # /opt/llama-cpp-deps (non-volume) and copied into ~/.openclaw/npm here if absent
 # or if the volume holds a different provider release,
 # then the persisted plugin registry is refreshed so OpenClaw rediscovers it. This
 # is what gives memory-core its key-less, OFFLINE `local` embedding provider — the
-# backend Pinchy pins in agents.defaults.memorySearch (see MEMORY_EMBEDDING_MODEL_PATH
+# backend Pinchy pins in memory.search (see MEMORY_EMBEDDING_MODEL_PATH
 # in openclaw-config/build.ts). Without it, memory_search returns 0 chunks and
 # agent recall silently fails. Same volume-shadow-defeating pattern as
 # install_plugin_deps.

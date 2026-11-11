@@ -30,3 +30,34 @@ export const OPENCLAW_MEDIA_TTL_HOURS = 48;
 // holds the two together.
 export const OPENCLAW_GATEWAY_MODE = "local";
 export const OPENCLAW_GATEWAY_BIND = "lan";
+
+/**
+ * Absolute path (inside the OpenClaw container) to the bundled EmbeddingGemma
+ * GGUF used by memory-core's `local` embedding provider. Baked into the openclaw
+ * image at build time so memory search works offline with no API key — see
+ * Dockerfile.openclaw. Overridable via `MEMORY_EMBEDDING_MODEL_PATH` for
+ * air-gapped forks that ship a different local model.
+ */
+export const MEMORY_EMBEDDING_MODEL_PATH =
+  process.env.MEMORY_EMBEDDING_MODEL_PATH?.trim() ||
+  "/opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf";
+
+/** `models.providers` key of the managed llama-server (the provider plugin's id). */
+export const LLAMA_CPP_PROVIDER_ID = "llama-cpp";
+
+/**
+ * Absolute path (inside the OpenClaw container) to the llama-server binary the
+ * llama.cpp provider runs for `local` embeddings since OpenClaw 2026.9. Baked
+ * into the openclaw image (Dockerfile.openclaw, `llama-server` stage) — the
+ * provider's own setup would download it, which an offline install cannot.
+ * OpenClaw requires an absolute path here.
+ */
+export const LLAMA_SERVER_COMMAND = "/opt/llama-server/llama-server";
+
+/**
+ * The llama-server models preset. The provider writes it itself before it
+ * starts the server — the embedding model from `memory.search.local.modelPath`
+ * — at the path the server's `--models-preset` argument names. This is the
+ * provider's own default location in OpenClaw's state dir.
+ */
+export const LLAMA_SERVER_PRESET_PATH = "/root/.openclaw/tools/llama.cpp/models.ini";

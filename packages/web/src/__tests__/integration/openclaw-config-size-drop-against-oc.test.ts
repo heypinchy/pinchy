@@ -56,11 +56,18 @@ import {
   writeFileSync,
   readdirSync,
 } from "fs";
-import { createRequire } from "module";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { join } from "path";
 import { pathToFileURL } from "url";
 import { endPinchyProcess } from "@/test-helpers/pinchy-restart";
+import {
+  gatewayRequest,
+  importDefined,
+  loadGatewayHandlers,
+  openClawDist,
+  releaseGatewayWrites,
+  type GatewayHandler,
+} from "@/test-helpers/openclaw-gateway-handlers";
 
 const mockGetClient = vi.fn();
 vi.mock("@/server/openclaw-client", () => ({
@@ -104,40 +111,40 @@ vi.mock("fs", async (importOriginal) => {
 
 type Json = Record<string, unknown>;
 
-type Respond = (ok: boolean, payload?: unknown, error?: { message?: string }) => void;
-type ConfigHandler = (opts: {
-  params: Json;
-  respond: Respond;
-  client: null;
-  context: undefined;
-}) => unknown;
+/**
+ * The options a test's setup writes its starting openclaw.json with. OpenClaw
+ * 2026.9 reads a missing file as one holding the implicit "main" agent and
+ * refuses a write that drops it; a setup file stands for an install that has
+ * long since replaced it, which is how OpenClaw's own first-agent bootstrap
+ * writes it (`allowedAgentRosterRemovals: ["main"]`).
+ */
+const SEED = { allowedAgentRosterRemovals: ["main"] };
 
-/** The pinned package's dist/ (`openclaw/plugin-sdk/config-runtime` is public and lives in dist/plugin-sdk/). */
-function openClawDist(): string {
-  const require = createRequire(import.meta.url);
-  return dirname(dirname(require.resolve("openclaw/plugin-sdk/config-runtime")));
-}
+type ConfigHandler = GatewayHandler;
+const loadConfigHandlers = loadGatewayHandlers;
+const request = gatewayRequest;
 
-/** The one dist/ chunk that exports `name` under that name. Fails loudly if a bump moves it. */
-async function importChunkExporting<T>(name: string): Promise<T> {
-  const dist = openClawDist();
-  const exports = new RegExp(`export \\{[^}]*\\b${name}\\b[^}]*\\}`);
-  const exporting = readdirSync(dist).filter(
-    (f) => f.endsWith(".js") && exports.test(readFileSync(join(dist, f), "utf-8"))
-  );
-  expect(exporting, `exactly one chunk in ${dist} must export ${name}`).toHaveLength(1);
-  return (await import(pathToFileURL(join(dist, exporting[0])).href)) as T;
-}
+/** openclaw-node's `client.request`, answered by the real handlers (Pinchy calls agents.delete). */
+const agentsRequest = (handlers: Record<string, ConfigHandler>) => (method: string, params: Json) =>
+  request(handlers[method], params);
 
-/** OpenClaw's gateway `configHandlers`, from the pinned package's dist/. */
-async function loadConfigHandlers(): Promise<Record<string, ConfigHandler>> {
-  const mod = await importChunkExporting<{ configHandlers: Record<string, ConfigHandler> }>(
-    "configHandlers"
-  );
-  expect(Object.keys(mod.configHandlers)).toEqual(
-    expect.arrayContaining(["config.get", "config.apply"])
-  );
-  return mod.configHandlers;
+/**
+ * config.apply as Pinchy's client sees it — except that a write OpenClaw
+ * committed while a SecretRef in it resolves to nothing rejects here. Up to
+ * 2026.7 OpenClaw refused such a write outright (a SecretRef error); 2026.9
+ * commits it and names the owner in `degradedSecretOwners`, and every call
+ * through that provider then fails. Either way the write left OpenClaw on a
+ * config it cannot run as meant — what these tests guard against.
+ */
+async function strictApply(handler: ConfigHandler, params: Json): Promise<Json> {
+  const response = await request(handler, params);
+  const degraded = response.degradedSecretOwners;
+  if (Array.isArray(degraded) && degraded.length > 0) {
+    throw new Error(
+      `config.apply committed with SecretRef owners unavailable: ${JSON.stringify(degraded)}`
+    );
+  }
+  return response;
 }
 
 interface OcSnapshot {
@@ -165,9 +172,14 @@ async function promoteToLastKnownGood(): Promise<void> {
  * the startup read (`readGatewayStartupConfig`: recoverSuspicious, which
  * restores last-known-good / `.bak` over a file under half of it) and the
  * startup SecretRef activation (`createRuntimeSecretsActivator`, reason
- * "startup"), which throws "Startup failed: required secrets are unavailable"
- * on a SecretRef the secrets file cannot resolve. Resolves with the config it
- * would run.
+ * "startup"). Resolves with the config it would run.
+ *
+ * Up to 2026.7 that activation threw "Startup failed: required secrets are
+ * unavailable" on a SecretRef the secrets file cannot resolve: a crash loop.
+ * 2026.9 starts anyway and marks the owner "configured-unavailable"
+ * ([SECRETS_OWNER_UNAVAILABLE]) — for a provider, every call through it then
+ * fails. Either way OpenClaw does not run the config Pinchy meant, so a
+ * degraded start rejects here too, worded so the same assertions match both.
  */
 async function startOpenClaw(): Promise<Json> {
   const oc = await loadOcConfigModule();
@@ -177,24 +189,20 @@ async function startOpenClaw(): Promise<Json> {
   });
   expect(snapshot.valid, "OpenClaw's startup read must find a valid config").toBe(true);
   type Activate = (config: Json, params: { reason: string; activate: boolean }) => Promise<unknown>;
-  const { createRuntimeSecretsActivator } = await importChunkExporting<{
-    createRuntimeSecretsActivator: (params: Json) => Activate;
-  }>("createRuntimeSecretsActivator");
+  const createRuntimeSecretsActivator = await importDefined<(params: Json) => Activate>(
+    "createRuntimeSecretsActivator"
+  );
   const silent = { info: () => {}, warn: () => {}, error: () => {} };
   const activate = createRuntimeSecretsActivator({ logSecrets: silent, emitStateEvent: () => {} });
-  await activate(snapshot.config, { reason: "startup", activate: false });
+  const prepared = (await activate(snapshot.config, { reason: "startup", activate: false })) as {
+    degradedOwners?: { ownerKind: string; ownerId: string; reason?: string }[];
+  };
+  const degraded = prepared?.degradedOwners ?? [];
+  if (degraded.length > 0) {
+    const owners = degraded.map((o) => `${o.ownerKind}:${o.ownerId} (${o.reason})`).join(", ");
+    throw new Error(`Startup degraded: required secrets are unavailable for ${owners}`);
+  }
   return snapshot.config;
-}
-
-/** One gateway request: resolves with the response, or rejects the way the client does. */
-function request(handler: ConfigHandler, params: Json): Promise<Json> {
-  return new Promise((resolve, reject) => {
-    const respond: Respond = (ok, payload, error) =>
-      ok ? resolve(payload as Json) : reject(new Error(error?.message ?? "request failed"));
-    Promise.resolve(handler({ params, respond, client: null, context: undefined })).catch(
-      (err: unknown) => reject(err instanceof Error ? err : new Error(String(err)))
-    );
-  });
 }
 
 function model(i: number): Json {
@@ -226,7 +234,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     return {
       gateway: { mode: "local", bind: "loopback", auth: { mode: "token", token: "t".repeat(40) } },
       secrets: { providers: { pinchy: { source: "file", path: secretsPath, mode: "json" } } },
-      agents: { list: [{ id: "smithers", name: "Smithers" }] },
+      agents: { entries: { smithers: { name: "Smithers" } } },
       models: {
         providers: {
           anthropic: {
@@ -264,6 +272,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
   });
 
   afterEach(() => {
+    releaseGatewayWrites();
     delete process.env.OPENCLAW_STATE_DIR;
     delete process.env.OPENCLAW_CONFIG_PATH;
     unreadableToPinchy.path = "";
@@ -284,10 +293,10 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     const handlers = await loadConfigHandlers();
     const get = () => request(handlers["config.get"], {});
     const apply = (raw: string, baseHash?: string, options: Json = {}) =>
-      request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}), ...options });
+      strictApply(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}), ...options });
 
     writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
-    await writeConfigFile(config({ "acme-llm": acme() }) as OcConfig);
+    await writeConfigFile(config({ "acme-llm": acme() }) as OcConfig, SEED);
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -372,13 +381,13 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     const handlers = await loadConfigHandlers();
     const get = () => request(handlers["config.get"], {});
     const apply = (raw: string, baseHash?: string, options: Json = {}) =>
-      request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}), ...options });
+      strictApply(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}), ...options });
     try {
       writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
       expect(() => readSecretsFile(), "precondition: Pinchy cannot read secrets.json").toThrow(
         /EACCES/
       );
-      await writeConfigFile(config({ "acme-llm": acme() }) as OcConfig);
+      await writeConfigFile(config({ "acme-llm": acme() }) as OcConfig, SEED);
       await promoteToLastKnownGood();
       vi.spyOn(console, "log").mockImplementation(() => {});
       vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -395,10 +404,8 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
           {
             ...onDisk,
             agents: {
-              list: [
-                { id: "smithers", name: "Smithers" },
-                { id: "kb", name: "KB" },
-              ],
+              ownership: "explicit",
+              entries: { smithers: { name: "Smithers" }, kb: { name: "KB" } },
             },
           },
           null,
@@ -429,12 +436,14 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       // A targeted writer's copy of the file is accepted.
       await apply(targeted(), (await get()).hash as string);
       expect(
-        (JSON.parse(readFileSync(ocConfigPath, "utf-8")) as { agents: { list: Json[] } }).agents
-          .list
+        Object.keys(
+          (JSON.parse(readFileSync(ocConfigPath, "utf-8")) as { agents: { entries: Json } }).agents
+            .entries
+        )
       ).toHaveLength(2);
 
       // The deletion then lands in steps from there…
-      mockGetClient.mockReturnValue({ config: { get, apply } });
+      mockGetClient.mockReturnValue({ config: { get, apply }, request: agentsRequest(handlers) });
       pushConfigInBackground(JSON.stringify(target, null, 2), { fullRegenerate: true });
       for (let i = 0; i < 2000 && getPendingConfigPushCount() > 0; i++) {
         await new Promise((r) => setTimeout(r, 5));
@@ -469,7 +478,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     const { writeConfigFile } = await import("openclaw/plugin-sdk/config-runtime");
     type OcConfig = Parameters<typeof writeConfigFile>[0];
     writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
-    await writeConfigFile(config({ "acme-llm": acme() }) as OcConfig);
+    await writeConfigFile(config({ "acme-llm": acme() }) as OcConfig, SEED);
     await promoteToLastKnownGood();
     // The state the old regenerate left behind.
     const bundle = { providers: { anthropic: { apiKey: "sk-ant-test" } } };
@@ -519,7 +528,8 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     try {
       writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, "acme-llm": { apiKey: "sk-acme" } });
       await writeConfigFile(
-        config({ "acme-llm": acme(), ollama: ollama(ollamaModels) }) as OcConfig
+        config({ "acme-llm": acme(), ollama: ollama(ollamaModels) }) as OcConfig,
+        SEED
       );
       await promoteToLastKnownGood();
       const onDiskContent = readFileSync(ocConfigPath, "utf-8");
@@ -584,7 +594,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     const handlers = await loadConfigHandlers();
     const get = () => request(handlers["config.get"], {});
     const apply = (raw: string, baseHash?: string, options: Json = {}) =>
-      request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}), ...options });
+      strictApply(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}), ...options });
     const OLD_SLOT = "acme-llm@0000000000000001";
     const NEW_SLOT = "acme-llm@0000000000000002";
     const acmeOld = {
@@ -601,7 +611,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     };
     try {
       writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, [OLD_SLOT]: { apiKey: "sk-acme-old" } });
-      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig);
+      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig, SEED);
       await promoteToLastKnownGood();
       vi.spyOn(console, "log").mockImplementation(() => {});
       vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -616,7 +626,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       const targeted = () => {
         const file = onDisk();
         delete file.meta;
-        return JSON.stringify({ ...file, agents: { list: [{ id: "smithers", name: "S" }] } });
+        return JSON.stringify({ ...file, agents: { entries: { smithers: { name: "S" } } } });
       };
       /** OpenClaw starts on the file, and accepts a targeted writer's copy of it. */
       const usable = async () => {
@@ -659,7 +669,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       expect(acme.models).toHaveLength(40);
 
       // The push then finds the provider in place and delivers the rest.
-      mockGetClient.mockReturnValue({ config: { get, apply } });
+      mockGetClient.mockReturnValue({ config: { get, apply }, request: agentsRequest(handlers) });
       pushConfigInBackground(JSON.stringify(target, null, 2), { fullRegenerate: true });
       for (let i = 0; i < 2000 && getPendingConfigPushCount() > 0; i++) {
         await new Promise((r) => setTimeout(r, 5));
@@ -709,11 +719,14 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     };
     try {
       writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, [OLD_SLOT]: { apiKey: "sk-acme-old" } });
-      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig);
-      await writeConfigFile({
-        ...config({ "acme-llm": acmeOld }),
-        agents: { list: [{ id: "smithers", name: "Smithers 2" }] },
-      } as OcConfig);
+      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig, SEED);
+      await writeConfigFile(
+        {
+          ...config({ "acme-llm": acmeOld }),
+          agents: { entries: { smithers: { name: "Smithers 2" } } },
+        } as OcConfig,
+        SEED
+      );
       await promoteToLastKnownGood();
       expect(existsSync(`${ocConfigPath}.bak`), "precondition: OpenClaw has a .bak").toBe(true);
 
@@ -783,7 +796,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     const handlers = await loadConfigHandlers();
     const get = () => request(handlers["config.get"], {});
     const apply = (raw: string, baseHash?: string) =>
-      request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}) });
+      strictApply(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}) });
     const OLD_SLOT = "acme-llm@0000000000000001";
     const NEW_SLOT = "acme-llm@0000000000000002";
     const acmeOld = {
@@ -815,11 +828,14 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
     /** OpenClaw's file and last-known-good as before the re-key, with a `.bak`. */
     const installOld = async () => {
       writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, [OLD_SLOT]: { apiKey: "sk-acme-old" } });
-      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig);
-      await writeConfigFile({
-        ...config({ "acme-llm": acmeOld }),
-        agents: { list: [{ id: "smithers", name: "Smithers 2" }] },
-      } as OcConfig);
+      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig, SEED);
+      await writeConfigFile(
+        {
+          ...config({ "acme-llm": acmeOld }),
+          agents: { entries: { smithers: { name: "Smithers 2" } } },
+        } as OcConfig,
+        SEED
+      );
       await promoteToLastKnownGood();
       return readFileSync(ocConfigPath, "utf-8");
     };
@@ -827,7 +843,7 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       vi.spyOn(console, "log").mockImplementation(() => {});
       vi.spyOn(console, "warn").mockImplementation(() => {});
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      mockGetClient.mockReturnValue({ config: { get, apply } });
+      mockGetClient.mockReturnValue({ config: { get, apply }, request: agentsRequest(handlers) });
 
       // The band: a target the #311 guard passes, whose entry written whole
       // would still be inside the headroom over OpenClaw's read-side line.
@@ -957,11 +973,14 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
         Array.from({ length: 40 }, (_, i) => model(i))
       );
       writeSecrets({ anthropic: { apiKey: "sk-ant-test" }, [OLD_SLOT]: { apiKey: "sk-acme-old" } });
-      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig);
-      await writeConfigFile({
-        ...config({ "acme-llm": acmeOld }),
-        agents: { list: [{ id: "smithers", name: "Smithers 2" }] },
-      } as OcConfig);
+      await writeConfigFile(config({ "acme-llm": acmeOld }) as OcConfig, SEED);
+      await writeConfigFile(
+        {
+          ...config({ "acme-llm": acmeOld }),
+          agents: { entries: { smithers: { name: "Smithers 2" } } },
+        } as OcConfig,
+        SEED
+      );
       await promoteToLastKnownGood();
       return readFileSync(ocConfigPath, "utf-8");
     }
@@ -1041,8 +1060,8 @@ describe("a >50% provider deletion against OpenClaw's real config.get / config.a
       const handlers = await loadConfigHandlers();
       const get = () => request(handlers["config.get"], {});
       const apply = (raw: string, baseHash?: string) =>
-        request(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}) });
-      mockGetClient.mockReturnValue({ config: { get, apply } });
+        strictApply(handlers["config.apply"], { raw, ...(baseHash ? { baseHash } : {}) });
+      mockGetClient.mockReturnValue({ config: { get, apply }, request: agentsRequest(handlers) });
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       const regenerate = vi.fn(() => {
         pinchy.pushConfigInBackground(serialize(target), {

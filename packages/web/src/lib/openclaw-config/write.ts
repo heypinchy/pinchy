@@ -10,6 +10,11 @@ import {
 import { CONFIG_PATH } from "./paths";
 import { parseSizeDropRejection, planShrinkPush, utf8Bytes } from "./size-drop";
 import { unresolvedSecretRefs } from "./keyless-bridge";
+import {
+  PLACEHOLDER_AGENT_ID,
+  parseRosterDropRejection,
+  retainRosterEntries,
+} from "./roster-removal";
 import { clearLastGoodBound, guardFileWrite, UnderReadSideLineError } from "./last-good-bound";
 import {
   trackConfigPushStarted,
@@ -322,6 +327,21 @@ const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 // calibration that keeps missing (it should never need a second). The step
 // budget is checked before a step is applied, never after.
 const MAX_SHRINK_STEPS = 8;
+
+/**
+ * How often one push hands agents OpenClaw refused to drop to its
+ * agents.delete (see parseRosterDropRejection) before it stops trying.
+ * One round normally does it; the rest absorb an agents.delete that was
+ * rate-limited or raced another writer. Past the budget the refused apply
+ * takes the ordinary failure path.
+ */
+const MAX_ROSTER_REMOVAL_ROUNDS = 3;
+
+/**
+ * How OpenClaw 2026.9's agents.delete words its refusal of the agent the
+ * others inherit auth profiles from (agents.defaults.authInheritance).
+ */
+const INHERITED_AUTH_OWNER_REFUSAL = "owns inherited credentials";
 const MAX_SIZE_DROP_REFUSALS = 3;
 
 /**
@@ -395,7 +415,10 @@ export interface PushConfigOptions {
  *   `gateway-mode-removed`), which also leaves an openclaw.json.rejected.<ts>
  *   file behind on every attempt;
  * - "is not valid as real data": `restoreRedactedValues` meeting a redaction
- *   sentinel with no original value.
+ *   sentinel with no original value;
+ * - "Config write would drop agent roster entries" (OpenClaw 2026.9): a
+ *   roster change agents.delete could not carry out (MAX_ROSTER_REMOVAL_ROUNDS)
+ *   — e.g. an agent other agents inherit credentials from.
  * The same payload would be refused again, so such a fallback queues no
  * follow-up. Anything else — a timeout, a stale hash past its retries, a
  * disconnect, a rate limit, a refusal not listed here — is retried by the
@@ -406,6 +429,7 @@ const CONFIG_REFUSED_ERROR_FRAGMENTS = [
   "invalid config",
   "Config write rejected",
   "is not valid as real data",
+  "Config write would drop agent roster entries",
 ];
 
 /**
@@ -461,6 +485,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     let lastOcConfig: Record<string, unknown> | undefined;
     let lastSent: string | undefined;
     let lastSizeDrop = "";
+    // Agents OpenClaw refused to drop (parseRosterDropRejection), removed on
+    // the next attempt through agents.delete.
+    let rosterRemoval: string[] | undefined;
+    let rosterRemovalRounds = 0;
+    let placeholderRetired = false;
     const shrinkKnown = () => options.expectsProviderShrink === true || shrink !== undefined;
     // Hand a shrink that stopped short of its target to one follow-up full
     // regenerate (see MAX_SHRINK_STEPS) — and, should that one be stranded
@@ -643,7 +672,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // the file before config.apply triggers the chokidar watcher, which updates
     // currentCompareConfig to the raw Pinchy payload. config.apply then writes a
     // slightly different file (OC's merge transforms it), so the reload handler
-    // detects a diff including gateway/discovery/update/canvasHost and triggers a
+    // detects a diff including gateway/discovery/update and triggers a
     // gateway restart — causing ConfigMutationConflictError when ensureGatewayStartupAuth
     // tries to write with a stale initialSnapshotRead hash.
     // Without the prior file write, currentCompareConfig stays as startup_source;
@@ -762,6 +791,16 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
               JSON.stringify(supplementedConfig, null, 2)
             )
           ) {
+            // After agents.delete removed what OpenClaw refused to drop, the
+            // target is already in place: that round delivered it.
+            if (rosterRemovalRounds > 0) {
+              console.log(
+                `[openclaw-config] push gen=${String(generation)}: delivered via roster removal (target ≡ OC runtime)`
+              );
+              runtimeReached();
+              onChangeApplied?.();
+              return;
+            }
             console.log(
               `[openclaw-config] push gen=${String(generation)}: no-op skip (supplemented payload ≡ OC runtime)`
             );
@@ -788,6 +827,83 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           payload = plan.payload;
           isShrinkStep = plan.isStep;
         }
+
+        // OpenClaw 2026.9 refused the previous attempt for dropping agents from
+        // its roster. Only agents.delete may remove one, and it refuses the sole
+        // agent and the one others inherit auth from — so first apply this
+        // attempt's payload with those agents kept (adding whatever the target
+        // adds, and handing the inherited-auth role to an agent that stays),
+        // then delete them, then deliver the target on the next attempt. OpenClaw's
+        // placeholder "main" is kept but not deleted: the catch below retires
+        // it once it is the only agent left to drop. Built on `payload`, not the target:
+        // during a provider deletion that is the step OpenClaw's size-drop
+        // guard accepts, and the agents ride along with it. `deleteFiles:
+        // false`: Pinchy owns the workspace and deleteAgent already removed
+        // it; OpenClaw still drops the agent's sessions, cron jobs and
+        // bindings, as it does for its own deletions.
+        if (rosterRemoval) {
+          const ids = rosterRemoval;
+          if (rosterRemovalRounds >= MAX_ROSTER_REMOVAL_ROUNDS) {
+            rosterRemoval = undefined;
+          } else {
+            rosterRemovalRounds++;
+            const bridge = JSON.stringify(
+              retainRosterEntries(
+                JSON.parse(payload) as Record<string, unknown>,
+                lastOcConfig ?? {},
+                ids
+              ),
+              null,
+              2
+            );
+            if (
+              !configsAreEquivalentUpToOpenClawMetadata(
+                JSON.stringify(current.config ?? {}, null, 2),
+                bridge
+              )
+            ) {
+              lastSent = bridge;
+              await client.config.apply(bridge, current.hash, {
+                note: `pinchy: keep ${ids.join(", ")} until agents.delete removes it`,
+              });
+              if (isShrinkStep && shrink) {
+                shrinkSteps++;
+                shrink.ocBaselineBytes = utf8Bytes(bridge) + shrink.offset;
+              }
+            }
+            let roleRepinned = false;
+            for (const agentId of ids) {
+              if (agentId === PLACEHOLDER_AGENT_ID) continue;
+              try {
+                await client.request("agents.delete", { agentId, deleteFiles: false });
+              } catch (err) {
+                const m = err instanceof Error ? err.message : String(err);
+                // Already gone: the next apply tells whether OpenClaw agrees.
+                if (m.includes(`"${agentId}" not found`)) continue;
+                // A bridge that grew a sole-agent roster: OpenClaw handed the
+                // inherited-auth role back to that agent by name, over the
+                // bridge's own. The next round's bridge changes no roster, so
+                // OpenClaw takes its authInheritance.
+                if (!m.includes(INHERITED_AUTH_OWNER_REFUSAL)) throw err;
+                roleRepinned = true;
+              }
+            }
+            if (roleRepinned) {
+              console.log(
+                `[openclaw-config] push gen=${String(generation)}: OpenClaw kept the inherited-auth role on an agent being removed; re-pointing it`
+              );
+              i--;
+              continue;
+            }
+            rosterRemoval = undefined;
+            console.log(
+              `[openclaw-config] push gen=${String(generation)}: removed ${ids.join(", ")} from OpenClaw's roster via agents.delete`
+            );
+            i--;
+            continue;
+          }
+        }
+
         lastSent = payload;
         await client.config.apply(payload, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
@@ -839,6 +955,38 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           );
           onSuperseded();
           return;
+        }
+
+        const rosterDrop = parseRosterDropRejection(message);
+        // Only OpenClaw's placeholder "main" is left to drop: the implicit
+        // agent of a fresh install's seed, never one of Pinchy's (their ids
+        // are UUIDs). agents.delete refuses it on every Pinchy install — it
+        // owns OpenClaw's legacy shared auth store, which only `openclaw
+        // doctor --fix` migrates — so Pinchy writes the file the way OpenClaw's
+        // own onboarding replaces main, and OpenClaw's reloader hot-applies
+        // it. Once: the next attempt's config.apply confirms the runtime holds
+        // the target; until it does, the file-only delivery stays pending.
+        if (
+          rosterDrop?.length === 1 &&
+          rosterDrop[0] === PLACEHOLDER_AGENT_ID &&
+          !placeholderRetired &&
+          lastSent
+        ) {
+          placeholderRetired = true;
+          console.log(
+            `[openclaw-config] push gen=${String(generation)}: retiring OpenClaw's placeholder agent "${PLACEHOLDER_AGENT_ID}" by writing openclaw.json`
+          );
+          if (!writeFallback(lastSent, { transient: true })) return;
+          i--;
+          continue;
+        }
+        if (rosterDrop && rosterRemovalRounds < MAX_ROSTER_REMOVAL_ROUNDS) {
+          console.warn(
+            `[openclaw-config] push gen=${String(generation)}: OpenClaw refused to drop ${rosterDrop.join(", ")} from its agent roster; removing via agents.delete`
+          );
+          rosterRemoval = rosterDrop;
+          i--;
+          continue;
         }
 
         // Size-drop: OpenClaw refused the write as a >50% shrink of its current

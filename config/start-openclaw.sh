@@ -88,14 +88,14 @@ fi
 #
 # Also fixes the telegram-pairing.json file (OpenClaw 2026.4.12 writes it as
 # root:0600, but Pinchy needs to read it to look up Telegram user IDs from
-# pairing codes) and the per-agent directory OWNERSHIP that lets Pinchy write
-# agents/<id>/agent/auth-profiles.json at all (#934).
+# pairing codes) and the per-agent directory ownership of #934.
 #
 # Extracted to config/fix-config-permissions.sh (same pattern as
 # install-plugin-deps.sh / stage-llama-cpp-provider.sh) so each of those
 # cross-uid invariants is unit-testable — see
 # packages/web/src/__tests__/lib/fix-config-permissions.test.ts. Defines
-# fix_config_permissions() into this shell; it reads $SECRETS_FILE from above.
+# fix_config_permissions() and remove_retired_auth_profiles() into this shell;
+# it reads $SECRETS_FILE from above.
 # shellcheck source=fix-config-permissions.sh
 source /fix-config-permissions.sh
 fix_config_permissions
@@ -275,6 +275,7 @@ auto_approve_devices &
 # daemonize), so without `&` the script would block here and the loop below
 # would never run — a crashed gateway would never get restarted.
 ensure_secrets_root_owned
+remove_retired_auth_profiles
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 &
 mark_bootstrap_when_ready
@@ -303,6 +304,7 @@ while true; do
             install_plugin_deps
             stage_llama_cpp_provider
             ensure_secrets_root_owned
+            remove_retired_auth_profiles
             openclaw gateway --port 18789 &
             mark_bootstrap_when_ready
         fi

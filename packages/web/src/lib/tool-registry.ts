@@ -368,7 +368,7 @@ export type EmailOperation = (typeof EMAIL_OPERATIONS)[number];
 export const EMAIL_READ_OPERATIONS = ["read", "search", "list"] as const;
 
 /**
- * Display order for rendering granted operations (TOOLS.md mailbox context).
+ * Display order for rendering granted operations (the mailbox context in IDENTITY.md).
  * Superset of EMAIL_OPERATIONS: includes the legacy "search" and "list" slots
  * so old permission rows still render in a stable position.
  */

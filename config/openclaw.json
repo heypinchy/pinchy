@@ -18,10 +18,40 @@
   "update": {
     "checkOnStart": false
   },
-  "canvasHost": {
-    "enabled": false
+  "plugins": {
+    "entries": {
+      "memory-core": {
+        "config": {
+          "dreaming": {
+            "enabled": false
+          }
+        }
+      },
+      "canvas": {
+        "config": {
+          "host": {
+            "enabled": false
+          }
+        }
+      }
+    }
   },
-  "media": {
+  "skills": {
+    "workshop": {
+      "autonomous": {
+        "mode": "off"
+      }
+    }
+  },
+  "attachments": {
     "ttlHours": 48
+  },
+  "memory": {
+    "search": {
+      "provider": "local",
+      "local": {
+        "modelPath": "/opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf"
+      }
+    }
   }
 }

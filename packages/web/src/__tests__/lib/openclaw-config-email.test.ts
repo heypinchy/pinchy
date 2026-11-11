@@ -103,7 +103,7 @@ const mockedExistsSync = vi.mocked(existsSync);
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
-// The regenerate writes more than one file (TOOLS.md mailbox context precedes
+// The regenerate writes more than one file (the IDENTITY.md mailbox context precedes
 // the config write for email agents), so locate the openclaw.json write by
 // path instead of assuming it is the first writeFileSync call.
 function getWrittenConfigString(): string {

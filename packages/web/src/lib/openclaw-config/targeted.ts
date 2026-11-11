@@ -1,12 +1,14 @@
 import { readFileSync, existsSync } from "fs";
 import {
   CONFIG_PATH,
+  MEMORY_EMBEDDING_MODEL_PATH,
   OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS,
   OPENCLAW_GATEWAY_BIND,
   OPENCLAW_GATEWAY_MODE,
   OPENCLAW_MEDIA_TTL_HOURS,
 } from "./paths";
 import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
+import { migrateRetiredOpenClawKeys } from "./retired-keys";
 import { restartState } from "@/server/restart-state";
 import { getOrCreateGatewayToken } from "@/lib/gateway-token-source";
 
@@ -40,10 +42,10 @@ export function sanitizeOpenClawConfig(): boolean {
 
 /**
  * Result of a targeted Telegram channel update. "agent-not-in-config" means
- * the on-disk agents.list does not (yet) contain the agent the new binding
- * would reference — the caller must run `regenerateOpenClawConfig()` instead,
- * which emits agents.list, the account, and the binding from the DB in one
- * consistent write.
+ * the on-disk roster (`agents.entries`) does not (yet) contain the agent the
+ * new binding would reference — the caller must run `regenerateOpenClawConfig()`
+ * instead, which emits the roster, the account, and the binding from the DB in
+ * one consistent write.
  */
 export type UpdateTelegramChannelConfigResult = "applied" | "agent-not-in-config";
 
@@ -83,21 +85,17 @@ export function updateTelegramChannelConfig(
   }
 
   if (accountId && account) {
-    // OpenClaw ≥2026.7.1 cross-validates the whole config: every
-    // bindings[].agentId must exist in agents.list (skipped only when
-    // agents.list is empty/absent). The on-disk agents.list can predate a
+    // OpenClaw cross-validates the whole config: every bindings[].agentId
+    // must exist in the roster (`agents.entries` since 2026.9; skipped only
+    // while the roster is empty). The on-disk roster can predate a
     // just-created agent because the create-regen is fire-and-forget, and a
-    // binding patched on top of that stale list produces a config OpenClaw
+    // binding patched on top of that stale roster produces a config OpenClaw
     // rejects on BOTH transports — the config.apply RPC (INVALID_REQUEST)
     // and the file-watcher reload ("config reload skipped (invalid
     // config)") — silently stranding the new account with no polling.
     // Signal the caller to run the full regeneration instead.
-    const agentsList = (existing.agents as { list?: Array<{ id?: string }> } | undefined)?.list;
-    if (
-      Array.isArray(agentsList) &&
-      agentsList.length > 0 &&
-      !agentsList.some((a) => a?.id === accountId)
-    ) {
+    const roster = (existing.agents as { entries?: Record<string, unknown> } | undefined)?.entries;
+    if (roster && Object.keys(roster).length > 0 && !(accountId in roster)) {
       return "agent-not-in-config";
     }
 
@@ -313,8 +311,9 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
  * Ensure Pinchy's restart-class overrides are present in openclaw.json BEFORE
  * OpenClaw starts. Writes ONLY the fields that, when missing-then-added later
  * via WS config.apply, OpenClaw's reload planner classifies as restart-class —
- * `gateway` / `discovery` (explicit `kind:"restart"` rules) and `canvasHost` /
- * `update` / `media` (no rule at all, which defaults to restart) — and trigger
+ * `gateway` / `discovery` (explicit `kind:"restart"` rules), `update` /
+ * `attachments` / `memory` (no rule at all, which defaults to restart) and the
+ * `canvas` plugin's host — and trigger
  * a SIGUSR1 → in-process restart that crashes with
  * `ConfigMutationConflictError: config changed since last load` (OC 5.3
  * stale-snapshot bug in `prepareGatewayStartupConfig → ensureGatewayStartupAuth →
@@ -329,7 +328,7 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
  * apparently because the bootInits-time regenerate's models/agents block
  * (built from an empty DB) interfered with later setup-wizard regenerate +
  * OC's model registry refresh on hot-reload. Restricting the bootInits write
- * to ONLY the gateway/discovery/canvasHost/update/media fields avoids that
+ * to ONLY the gateway/discovery/canvas/update/attachments/memory fields avoids that
  * interaction while still aligning OC's compare baseline.
  *
  * This function is idempotent: if the file already has all the overrides
@@ -339,6 +338,10 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
  * gets that file (pinchy mounts the shared volume first); it starts from
  * entrypoint.sh's minimal `{gateway:{mode,bind}}` seed, and this function
  * supplies the rest of its baseline.
+ *
+ * It first moves the keys OpenClaw 2026.8/9 retired (`migrateRetiredOpenClawKeys`):
+ * on an install upgraded from an earlier Pinchy, OpenClaw refuses to start on
+ * the file as it is, and this boot seed is the last write before it starts.
  */
 export function seedRestartClassOverridesIfMissing(): boolean {
   let existing: Record<string, unknown>;
@@ -363,14 +366,25 @@ export function seedRestartClassOverridesIfMissing(): boolean {
     existing = {};
   }
 
+  const migrated = migrateRetiredOpenClawKeys(existing);
+  const needsMigration = migrated !== existing;
+  existing = migrated;
+
   const gateway = (existing.gateway as Record<string, unknown>) || {};
   const controlUi = (gateway.controlUi as Record<string, unknown>) || {};
   const terminal = (gateway.terminal as Record<string, unknown>) || {};
   const discovery = (existing.discovery as Record<string, unknown>) || {};
   const mdns = (discovery.mdns as Record<string, unknown>) || {};
   const update = (existing.update as Record<string, unknown>) || {};
-  const canvasHost = (existing.canvasHost as Record<string, unknown>) || {};
-  const media = (existing.media as Record<string, unknown>) || {};
+  const plugins = (existing.plugins as Record<string, unknown>) || {};
+  const pluginEntries = (plugins.entries as Record<string, unknown>) || {};
+  const canvas = (pluginEntries.canvas as Record<string, unknown>) || {};
+  const canvasConfig = (canvas.config as Record<string, unknown>) || {};
+  const canvasHost = (canvasConfig.host as Record<string, unknown>) || {};
+  const attachments = (existing.attachments as Record<string, unknown>) || {};
+  const memory = (existing.memory as Record<string, unknown>) || {};
+  const memorySearch = (memory.search as Record<string, unknown>) || {};
+  const memorySearchLocal = (memorySearch.local as Record<string, unknown>) || {};
 
   // The production image's entrypoint.sh already writes mode/bind into an empty
   // volume. The dev image and a host-run Pinchy do not, and OpenClaw refuses to
@@ -394,14 +408,22 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   const needsMdnsOff = mdns.mode !== "off";
   const needsUpdateCheck = update.checkOnStart !== false;
   const needsCanvasHostOff = canvasHost.enabled !== false;
-  // OpenClaw has no reload rule for `media`, so it falls back to a gateway
-  // restart — and the in-process restart aborts any run in flight ("Agent run
-  // belongs to a stale gateway lifecycle"). build.ts always writes ttlHours;
-  // without it on disk first, the setup wizard's regenerate restarts the gateway
-  // right when a new user sends their first message.
-  const needsMediaTtl = media.ttlHours !== OPENCLAW_MEDIA_TTL_HOURS;
+  // OpenClaw has no reload rule for `attachments` (root `media` until 2026.7),
+  // so it falls back to a gateway restart — and the in-process restart aborts
+  // any run in flight ("Agent run belongs to a stale gateway lifecycle").
+  // build.ts always writes ttlHours; without it on disk first, the setup
+  // wizard's regenerate restarts the gateway right when a new user sends their
+  // first message.
+  const needsAttachmentsTtl = attachments.ttlHours !== OPENCLAW_MEDIA_TTL_HOURS;
+  // `memory.search` is restart-class in OpenClaw 2026.9 (as
+  // `agents.defaults.memorySearch` it reloaded hot). build.ts always pins the
+  // bundled local embedding model; on disk first, the regenerate is a no-op.
+  const needsLocalMemorySearch =
+    memorySearch.provider !== "local" ||
+    memorySearchLocal.modelPath !== MEMORY_EMBEDDING_MODEL_PATH;
 
   if (
+    !needsMigration &&
     !needsGatewayMode &&
     !needsControlUi &&
     !needsAllowedOrigins &&
@@ -409,7 +431,8 @@ export function seedRestartClassOverridesIfMissing(): boolean {
     !needsMdnsOff &&
     !needsUpdateCheck &&
     !needsCanvasHostOff &&
-    !needsMediaTtl
+    !needsAttachmentsTtl &&
+    !needsLocalMemorySearch
   ) {
     return false;
   }
@@ -431,8 +454,22 @@ export function seedRestartClassOverridesIfMissing(): boolean {
     },
     discovery: { ...discovery, mdns: { ...mdns, mode: "off" } },
     update: { ...update, checkOnStart: false },
-    canvasHost: { ...canvasHost, enabled: false },
-    media: { ...media, ttlHours: OPENCLAW_MEDIA_TTL_HOURS },
+    plugins: {
+      ...plugins,
+      entries: {
+        ...pluginEntries,
+        canvas: { ...canvas, config: { ...canvasConfig, host: { ...canvasHost, enabled: false } } },
+      },
+    },
+    attachments: { ...attachments, ttlHours: OPENCLAW_MEDIA_TTL_HOURS },
+    memory: {
+      ...memory,
+      search: {
+        ...memorySearch,
+        provider: "local",
+        local: { ...memorySearchLocal, modelPath: MEMORY_EMBEDDING_MODEL_PATH },
+      },
+    },
   };
 
   writeConfigAtomic(JSON.stringify(updated, null, 2).trimEnd() + "\n");

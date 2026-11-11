@@ -42,10 +42,11 @@ fix_config_permissions() {
         chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
     fi
 
-    # Per-agent auth-profiles.json files are written by Pinchy (uid 999) into
-    # agents/<id>/agent/. OpenClaw (root) reads uid-999-owned files fine, so the
-    # files themselves only need tightening — but the DIRECTORIES have to be
-    # pinchy-OWNED, and that is the whole of issue #934.
+    # agents/<id>/agent has to be pinchy-OWNED — the whole of issue #934. Up to
+    # OpenClaw 2026.7 Pinchy (uid 999) wrote each agent's auth-profiles.json
+    # there; OpenClaw 2026.9 retired that file (see remove_retired_auth_profiles
+    # below), so Pinchy writes nothing there any more and this repair is only
+    # kept until that is confirmed on a released install.
     #
     # The trap: agents/<id>/agent is not exclusively Pinchy's. OpenClaw derives
     # each agent's models.json there, creating the directory with
@@ -56,7 +57,7 @@ fix_config_permissions() {
     #   Pinchy first → 999-owned, and OpenClaw's 0700 reads as "pinchy rwx".
     #                  Both sides keep working; root ignores mode bits anyway.
     #   OpenClaw first → root-owned 0700, and Pinchy is locked out FOREVER.
-    #                  writeAgentAuthProfiles() gets EACCES, which aborts
+    #                  writeAgentAuthProfiles() got EACCES, which aborted
     #                  regenerateOpenClawConfig() before it pushes openclaw.json,
     #                  so OpenClaw never learns the provider and every dispatch
     #                  dies with `Unknown model: <provider>/<model>`. What the
@@ -80,8 +81,6 @@ fix_config_permissions() {
         -exec chown "$PINCHY_UID:$PINCHY_GID" {} \; 2>/dev/null || true
     find "$OPENCLAW_STATE_DIR/agents" -mindepth 2 -maxdepth 2 -type d -name agent ! -uid "$PINCHY_UID" \
         -exec chown "$PINCHY_UID:$PINCHY_GID" {} \; 2>/dev/null || true
-    find "$OPENCLAW_STATE_DIR/agents" -name "auth-profiles.json" -type f -not -perm 0600 \
-        -exec chmod 0600 {} \; 2>/dev/null || true
 
     # The same trap, one directory over: workspaces/<id>/ holds the bootstrap
     # files (AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, HEARTBEAT.md)
@@ -89,11 +88,14 @@ fix_config_permissions() {
     # regenerateOpenClawConfig(); OpenClaw creates any that are missing from its
     # own bundled template, as root, when it boots the agent.
     #
-    # Pinchy opens the race itself. writeToolsFile() DELETES TOOLS.md for an
-    # agent with no mailbox (rmSync — so a revoked permission cannot leave a
-    # stale mailbox identity behind), and the next agent start finds the file
-    # missing and re-creates it root-owned. Grant that agent an email connection
-    # afterwards and Pinchy's writeFileSync gets EACCES forever.
+    # Pinchy opened the race itself. Up to OpenClaw 2026.7 the mailbox context
+    # lived in TOOLS.md, which Pinchy DELETED for an agent with no mailbox
+    # (rmSync — so a revoked permission cannot leave a stale mailbox identity
+    # behind), and the next agent start found the file missing and re-created
+    # it root-owned. Grant that agent an email connection afterwards and
+    # Pinchy's writeFileSync got EACCES forever. Since 2026.9 the context lives
+    # in IDENTITY.md (writeMailboxContext) and Pinchy only ever removes the old
+    # TOOLS.md; IDENTITY.md is one of the files OpenClaw still seeds root-owned.
     #
     # This reached production (#1095): `pinchy.heypinchy.com` carried two
     # root-owned TOOLS.md files on 2026-08-04 and had rejected every agent save
@@ -144,4 +146,18 @@ fix_config_permissions() {
     find "$OPENCLAW_STATE_DIR/agents" -mindepth 1 -maxdepth 1 -type d -not -perm 0755 -exec chmod 0755 {} \; 2>/dev/null || true
     find "$OPENCLAW_STATE_DIR/agents" -type d -name sessions -not -perm 0755 -exec chmod 0755 {} \; 2>/dev/null || true
     find "$OPENCLAW_STATE_DIR/agents" \( -name "sessions.json" -o -name "*.trajectory.jsonl" \) -type f -not -perm 0644 -exec chmod 0644 {} \; 2>/dev/null || true
+}
+
+# OpenClaw 2026.9 retired the per-agent auth-profiles.json: auth profiles live
+# in its SQLite store now, and the file is only ever read to detect an
+# unmigrated install. One an earlier Pinchy wrote, next to an empty store, gets
+# that agent marked AuthProfileMigrationRequiredError ("run openclaw doctor
+# --fix"), which refuses every dispatch for it. Nothing in a Pinchy deployment
+# runs doctor, and there is nothing to migrate: the file held only a keyRef to
+# the provider key that openclaw.json already passes to OpenClaw as a
+# SecretRef. Pinchy no longer writes the file, so start-openclaw.sh runs this
+# once before each gateway start rather than on the 50 ms tick.
+remove_retired_auth_profiles() {
+    find "$OPENCLAW_STATE_DIR/agents" -mindepth 3 -maxdepth 3 -type f -path "*/agent/auth-profiles.json" \
+        -delete 2>/dev/null || true
 }
