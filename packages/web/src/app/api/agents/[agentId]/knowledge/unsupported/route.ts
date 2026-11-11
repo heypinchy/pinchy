@@ -4,27 +4,11 @@ import { withAdmin } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { type AgentPluginConfig } from "@/db/schema";
 import { grantedDataPaths } from "@/lib/agent-granted-paths";
-import { csvField } from "@/lib/csv";
+import { csvField, csvFileStem } from "@/lib/csv";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { listUnsupportedFiles } from "@/lib/knowledge/unsupported-files";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
-
-/**
- * The agent's name as a file-name stem: ASCII letters, digits and dashes, so
- * the Content-Disposition header never needs quoting rules or an encoded
- * variant. "Wissensdatenbank Prüfung" becomes "wissensdatenbank-prufung".
- */
-function fileStem(agentName: string): string {
-  const slug = agentName
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
-  return slug || "agent";
-}
 
 /**
  * GET /api/agents/[agentId]/knowledge/unsupported — a CSV of the files under
@@ -97,7 +81,7 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
   return new NextResponse(stream, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${fileStem(agent.name)}-unsupported-files.csv"`,
+      "Content-Disposition": `attachment; filename="${csvFileStem(agent.name)}-unsupported-files.csv"`,
       "Cache-Control": "no-store",
     },
   });

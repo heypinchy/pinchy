@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
 import { KnowledgeUnsearchableList } from "@/components/knowledge-unsearchable-list";
@@ -14,55 +15,227 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
 
 const mockGet = vi.mocked(apiGet);
 
-/** The route's response; every document a scan unless the test says otherwise. */
-function response(
-  documents: { sourcePath: string; status: "active" | "archived"; reason?: string }[],
+const URL = "/api/agents/a1/knowledge/unsearchable";
+
+type Cause =
+  "ocr_off" | "no_vision_model" | "read_next_run" | "read_refused" | "vision_failed" | "read_blank";
+type Group = { root: string; folder: string | null; count: number };
+type Doc = {
+  sourcePath: string;
+  name: string;
+  root: string;
+  folder: string;
+  status: "active" | "archived";
+  reason: "no_text" | "awaiting_conversion";
+  cause: Cause | null;
+};
+
+/** The route's summary. Every no-text document has `cause` unless the test says otherwise. */
+function summary(
   overrides: {
-    total?: number;
-    totals?: { no_text: number; awaiting_conversion: number };
+    noText?: number;
+    awaiting?: number;
+    causes?: Partial<Record<Cause, number>>;
+    groups?: Group[];
     searchesIndex?: boolean;
   } = {}
 ) {
-  const rows = documents.map((doc) => ({ reason: "no_text", ...doc }));
-  const awaiting = rows.filter((doc) => doc.reason === "awaiting_conversion").length;
-  const total = overrides.total ?? rows.length;
+  const noText = overrides.noText ?? 0;
+  const awaiting = overrides.awaiting ?? 0;
+  const total = noText + awaiting;
   return {
-    documents: rows,
     total,
-    totals: overrides.totals ?? { no_text: total - awaiting, awaiting_conversion: awaiting },
+    totals: { no_text: noText, awaiting_conversion: awaiting },
+    causes: {
+      ocr_off: 0,
+      no_vision_model: 0,
+      read_next_run: 0,
+      read_refused: 0,
+      vision_failed: 0,
+      read_blank: 0,
+      ...(overrides.causes ?? { no_vision_model: noText }),
+    },
+    groups:
+      overrides.groups ?? (total > 0 ? [{ root: "/data/certs", folder: null, count: total }] : []),
     searchesIndex: overrides.searchesIndex ?? true,
   };
 }
 
+function doc(overrides: Partial<Doc>): Doc {
+  return {
+    sourcePath: "/data/certs/Scan.pdf",
+    name: "Scan.pdf",
+    root: "/data/certs",
+    folder: "",
+    status: "active",
+    reason: "no_text",
+    cause: "no_vision_model",
+    ...overrides,
+  };
+}
+
+/** Answers the summary at the bare URL and each group's documents at its query. */
+function serve(
+  sum: ReturnType<typeof summary>,
+  groups: Record<string, { documents: Doc[]; total?: number }> = {}
+) {
+  mockGet.mockImplementation(async (url: string) => {
+    if (url === URL) return sum;
+    const query = url.slice(URL.length);
+    const page = groups[query];
+    if (!page) throw new Error(`unexpected request ${url}`);
+    return { documents: page.documents, total: page.total ?? page.documents.length };
+  });
+}
+
+const groupQuery = (root: string, folder?: string) =>
+  `?root=${encodeURIComponent(root)}${folder ? `&folder=${encodeURIComponent(folder)}` : ""}`;
+
 describe("KnowledgeUnsearchableList", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGet.mockResolvedValue(response([]));
+    serve(summary());
   });
 
-  it("names the documents that can't be searched, by full path", async () => {
-    mockGet.mockResolvedValue(
-      response([
-        { sourcePath: "/data/certs/AFNOR validation.pdf", status: "active" },
-        { sourcePath: "/data/certs/NordVal certificate.pdf", status: "active" },
-      ])
-    );
+  // Thousands of documents (#1364): the count leads, the list waits behind it.
+  it("keeps the list collapsed behind the count until asked", async () => {
+    serve(summary({ noText: 2 }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
-    await waitFor(() =>
-      expect(screen.getByText("/data/certs/AFNOR validation.pdf")).toBeInTheDocument()
+    const toggle = await screen.findByRole("button", { name: /show the 2 documents/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
+    expect(mockGet).toHaveBeenCalledTimes(1);
+    expect(mockGet).toHaveBeenCalledWith(URL);
+  });
+
+  // The file name is what an admin recognizes; the folder is where to look.
+  it("names each document by file name first, with its folder beside it", async () => {
+    serve(summary({ noText: 2, groups: [{ root: "/data/certs", folder: "Food", count: 2 }] }), {
+      [groupQuery("/data/certs", "Food")]: {
+        documents: [
+          doc({
+            sourcePath: "/data/certs/Food/2024/AFNOR validation.pdf",
+            name: "AFNOR validation.pdf",
+            folder: "Food/2024",
+          }),
+          doc({
+            sourcePath: "/data/certs/Food/NordVal certificate.pdf",
+            name: "NordVal certificate.pdf",
+            folder: "Food",
+          }),
+        ],
+      },
+    });
+    const user = userEvent.setup();
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+    await user.click(await screen.findByRole("button", { name: /show the 2 documents/i }));
+
+    const item = (await screen.findByText("AFNOR validation.pdf")).closest("li")!;
+    expect(within(item).getByText("Food/2024")).toBeInTheDocument();
+    expect(screen.getByText("NordVal certificate.pdf")).toBeInTheDocument();
+    // Never the mount point: the path below the grant is all an admin needs.
+    expect(screen.queryByText(/\/data\/certs/)).not.toBeInTheDocument();
+  });
+
+  it("groups the documents by folder, with a count per folder, and loads a folder when opened", async () => {
+    serve(
+      summary({
+        noText: 21,
+        groups: [
+          { root: "/data/certs", folder: "Food", count: 19 },
+          { root: "/data/certs", folder: null, count: 2 },
+        ],
+      }),
+      {
+        [groupQuery("/data/certs", "Food")]: {
+          documents: [doc({ sourcePath: "/data/certs/Food/A.pdf", name: "A.pdf", folder: "Food" })],
+        },
+      }
     );
-    expect(screen.getByText("/data/certs/NordVal certificate.pdf")).toBeInTheDocument();
-    expect(mockGet).toHaveBeenCalledWith("/api/agents/a1/knowledge/unsearchable");
+    const user = userEvent.setup();
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+    await user.click(await screen.findByRole("button", { name: /show the 21 documents/i }));
+
+    const food = screen.getByRole("button", { name: /Food.*19/ });
+    expect(food).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /directly in certs.*2/i })).toBeInTheDocument();
+    // Nothing loads for a folder nobody opened.
+    expect(mockGet).toHaveBeenCalledTimes(1);
+
+    await user.click(food);
+
+    expect(await screen.findByText("A.pdf")).toBeInTheDocument();
+    expect(food).toHaveAttribute("aria-expanded", "true");
+    expect(mockGet).toHaveBeenLastCalledWith(URL + groupQuery("/data/certs", "Food"));
+  });
+
+  it("opens the only folder there is right away", async () => {
+    serve(summary({ noText: 1 }), {
+      [groupQuery("/data/certs")]: { documents: [doc({})] },
+    });
+    const user = userEvent.setup();
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+    await user.click(await screen.findByRole("button", { name: /show the document/i }));
+
+    expect(await screen.findByText("Scan.pdf")).toBeInTheDocument();
+  });
+
+  // Two grants can hold folders of the same name.
+  it("names the granted folder too when the agent has more than one", async () => {
+    serve(
+      summary({
+        noText: 3,
+        groups: [
+          { root: "/data/hr", folder: "2024", count: 2 },
+          { root: "/data/legal", folder: "2024", count: 1 },
+        ],
+      })
+    );
+    const user = userEvent.setup();
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+    await user.click(await screen.findByRole("button", { name: /show the 3 documents/i }));
+
+    expect(screen.getByRole("button", { name: /hr\/2024.*2/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /legal\/2024.*1/ })).toBeInTheDocument();
+  });
+
+  // The page shows a hundred per folder; the download is the whole list.
+  it("offers the whole list as a CSV download", async () => {
+    serve(summary({ noText: 2 }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    const link = await screen.findByRole("link", { name: /download the list/i });
+    expect(link).toHaveAttribute("href", `${URL}/csv`);
+    expect(link).toHaveAttribute("download");
+  });
+
+  // A truncated folder that doesn't say it's truncated understates exactly
+  // the gap this exists to expose — and says where the rest is.
+  it("says how many of a folder it is showing, and that the download has all of them", async () => {
+    serve(summary({ noText: 250 }), {
+      [groupQuery("/data/certs")]: { documents: [doc({})], total: 250 },
+    });
+    const user = userEvent.setup();
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+    await user.click(await screen.findByRole("button", { name: /show the 250 documents/i }));
+
+    expect(
+      await screen.findByText(/showing 1 of 250.*the download has all of them/i)
+    ).toBeInTheDocument();
   });
 
   // The whole point of the panel: a reader must learn that "nothing found" can
   // be a fact about the INDEX, not about the documents.
   it("says why it matters — the agent will answer 'nothing found' for these", async () => {
-    mockGet.mockResolvedValue(
-      response([{ sourcePath: "/data/certs/AFNOR validation.pdf", status: "active" }])
-    );
+    serve(summary({ noText: 1 }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
@@ -71,20 +244,141 @@ describe("KnowledgeUnsearchableList", () => {
   });
 
   // This number counts the whole scope; the per-run counts it renders beside
-  // only count what that run processed (an unchanged document is `skipped`, not
-  // recounted). Naming the window is what stops "4 unsearchable" above "25
-  // documents…" from reading as a contradiction — so it is asserted, not left
-  // to survive the next copy edit by luck.
+  // only count what that run processed. Naming the window is what stops "4
+  // unsearchable" above "25 documents…" from reading as a contradiction.
   it("names the window it is counting, so it can't be read against the run counts", async () => {
-    mockGet.mockResolvedValue(
-      response([{ sourcePath: "/data/certs/Scan.pdf", status: "active" }], { total: 25 })
-    );
+    serve(summary({ noText: 25 }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
     await waitFor(() =>
       expect(screen.getByText(/25 documents in this agent's folders/i)).toBeInTheDocument()
     );
+  });
+
+  // #1362: with OCR switched off, "no vision model was available" sends an
+  // admin to configure a model that would change nothing.
+  it("says reading scans is switched off when it is, and doesn't blame a vision model", async () => {
+    serve(summary({ noText: 4, causes: { ocr_off: 4 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/reading scans is switched off on this server/i)).toBeInTheDocument()
+    );
+    expect(screen.getByText("PINCHY_KB_OCR")).toBeInTheDocument();
+    expect(screen.getByText(/once it's switched on, the next run reads them/i)).toBeInTheDocument();
+    expect(screen.queryByText(/vision model/i)).not.toBeInTheDocument();
+  });
+
+  it("says a vision model is missing when reading scans is on but none is available", async () => {
+    serve(summary({ noText: 1, causes: { no_vision_model: 1 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/no vision model is available to read scans/i)).toBeInTheDocument()
+    );
+    expect(screen.getByText(/make one available and the next run reads it/i)).toBeInTheDocument();
+    expect(screen.queryByText(/switched off/i)).not.toBeInTheDocument();
+  });
+
+  // The cause covers a scan a vision model can read now AND a read that did
+  // not finish (a refused Office file in its first runs) — the sentence must
+  // not claim a vision model is the reason for both.
+  it("says the next run reads documents it owes another read, without blaming OCR", async () => {
+    serve(summary({ noText: 2, causes: { read_next_run: 2 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/they will be read on the next run/i)).toBeInTheDocument()
+    );
+    expect(screen.getByText(/or the last attempt didn't finish/i)).toBeInTheDocument();
+    expect(screen.queryByText(/weren't read by a vision model/i)).not.toBeInTheDocument();
+  });
+
+  // Refused by the converter or the workbook reader: no OCR setting fixes it,
+  // and the server log is where the reason is.
+  it("says a refused document is named in the server log, not waiting on OCR", async () => {
+    serve(summary({ noText: 1, causes: { read_refused: 1 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/it couldn't be read: the file is too large, damaged/i)
+      ).toBeInTheDocument()
+    );
+    expect(screen.getByText(/the server log names each refused file/i)).toBeInTheDocument();
+    expect(screen.queryByText(/vision model/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/switched off/i)).not.toBeInTheDocument();
+  });
+
+  it("speaks of each file when several were refused", async () => {
+    serve(summary({ noText: 2, causes: { read_refused: 2 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/they couldn't be read: each file is too large, damaged/i)
+      ).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/the file is too large/i)).not.toBeInTheDocument();
+  });
+
+  // Every vision read failed. Nothing in the server log names the file for
+  // these, so the sentence must not send an admin there; what helps is a
+  // different vision model, or a new copy of the file.
+  it("says a document the vision model kept failing on is read again with a different model", async () => {
+    serve(summary({ noText: 1, causes: { vision_failed: 1 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/it couldn't be read: the vision model failed on every attempt/i)
+      ).toBeInTheDocument()
+    );
+    expect(screen.getByText(/a different vision model/i)).toBeInTheDocument();
+    expect(screen.queryByText(/server log/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/too large, damaged/i)).not.toBeInTheDocument();
+  });
+
+  // Read and still empty: nothing to configure, and saying so stops the hunt.
+  // Not "by a vision model": an empty Word file or a drawing without a single
+  // scanned page is on the same record, and no vision model ever saw it.
+  it("says a document read in full holds no text, without promising another run", async () => {
+    serve(summary({ noText: 1, causes: { read_blank: 1 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/was read in full and holds no text/i)).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/next run/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/by a vision model/i)).not.toBeInTheDocument();
+  });
+
+  it("gives each cause its own share when the documents differ", async () => {
+    serve(summary({ noText: 5, causes: { ocr_off: 3, read_blank: 2 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/3 of them can't be read yet/i)).toBeInTheDocument()
+    );
+    expect(screen.getByText(/2 of them were read in full/i)).toBeInTheDocument();
+  });
+
+  it("hands the no-text count to the section, so its badge agrees with this list", async () => {
+    const onNoTextCount = vi.fn();
+    serve(summary({ noText: 3, awaiting: 2 }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone onNoTextCount={onNoTextCount} />);
+
+    await waitFor(() => expect(onNoTextCount).toHaveBeenCalledWith(3));
   });
 
   it("reads as good news when every document has text", async () => {
@@ -95,7 +389,7 @@ describe("KnowledgeUnsearchableList", () => {
     );
     // Good news, not a warning: no alert role, nothing to act on.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.queryByRole("list")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
   // Before a run has ever finished, "every document has searchable text" is
@@ -103,7 +397,7 @@ describe("KnowledgeUnsearchableList", () => {
   // indexed" — a reassurance about nothing.
   it("stays silent about zero when no run has finished yet", async () => {
     const load = holdResults();
-    mockGet.mockImplementation(() => load.resolveWith({ documents: [], total: 0 }));
+    mockGet.mockImplementation(() => load.resolveWith(summary()));
     const { container } = render(<KnowledgeUnsearchableList agentId="a1" announceNone={false} />);
 
     await load.release();
@@ -114,43 +408,59 @@ describe("KnowledgeUnsearchableList", () => {
   // corpus-wide, so this agent's scope can hold unsearchable documents without
   // this agent ever having run an index itself.
   it("lists documents even when this agent has never finished a run", async () => {
-    mockGet.mockResolvedValue(response([{ sourcePath: "/data/certs/Scan.pdf", status: "active" }]));
+    serve(summary({ noText: 1 }), { [groupQuery("/data/certs")]: { documents: [doc({})] } });
+    const user = userEvent.setup();
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone={false} />);
+    await user.click(await screen.findByRole("button", { name: /show the document/i }));
 
-    await waitFor(() => expect(screen.getByText("/data/certs/Scan.pdf")).toBeInTheDocument());
+    expect(await screen.findByText("Scan.pdf")).toBeInTheDocument();
   });
 
   it("marks archived documents as archived", async () => {
-    mockGet.mockResolvedValue(
-      response([{ sourcePath: "/data/certs/OLD/Expired ISO.pdf", status: "archived" }])
-    );
+    serve(summary({ noText: 1 }), {
+      [groupQuery("/data/certs")]: {
+        documents: [
+          doc({
+            sourcePath: "/data/certs/OLD/Expired ISO.pdf",
+            name: "Expired ISO.pdf",
+            folder: "OLD",
+            status: "archived",
+          }),
+        ],
+      },
+    });
+    const user = userEvent.setup();
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+    await user.click(await screen.findByRole("button", { name: /show the document/i }));
 
-    await waitFor(() =>
-      expect(screen.getByText("/data/certs/OLD/Expired ISO.pdf")).toBeInTheDocument()
-    );
-    expect(screen.getByText(/archived/i)).toBeInTheDocument();
+    const item = (await screen.findByText("Expired ISO.pdf")).closest("li")!;
+    expect(within(item).getByText(/archived/i)).toBeInTheDocument();
   });
 
   // Such a document has text, so "holds no searchable text" alone would send
   // an admin looking at the wrong problem.
   it("marks a document search leaves out until it is converted again, and says why", async () => {
-    mockGet.mockResolvedValue(
-      response([
-        {
-          sourcePath: "/data/offers/Angebot.docx",
-          status: "active",
-          reason: "awaiting_conversion",
-        },
-        { sourcePath: "/data/offers/Scan.pdf", status: "active", reason: "no_text" },
-      ])
-    );
+    serve(summary({ noText: 1, awaiting: 1 }), {
+      [groupQuery("/data/certs")]: {
+        documents: [
+          doc({
+            sourcePath: "/data/certs/Angebot.docx",
+            name: "Angebot.docx",
+            reason: "awaiting_conversion",
+            cause: null,
+          }),
+          doc({}),
+        ],
+      },
+    });
+    const user = userEvent.setup();
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+    await user.click(await screen.findByRole("button", { name: /show the 2 documents/i }));
 
-    await waitFor(() => expect(screen.getByText("/data/offers/Angebot.docx")).toBeInTheDocument());
+    await screen.findByText("Angebot.docx");
     const items = screen.getAllByRole("listitem");
     expect(items[0]).toHaveTextContent(/waiting to be converted again/i);
     expect(items[1]).not.toHaveTextContent(/converted again/i);
@@ -161,12 +471,7 @@ describe("KnowledgeUnsearchableList", () => {
   // searchable text — nearly always scans" would send an admin looking for a
   // vision model that would change nothing for it.
   it("counts only the documents without text as having no searchable text", async () => {
-    mockGet.mockResolvedValue(
-      response([{ sourcePath: "/data/certs/Scan.pdf", status: "active" }], {
-        total: 5,
-        totals: { no_text: 3, awaiting_conversion: 2 },
-      })
-    );
+    serve(summary({ noText: 3, awaiting: 2 }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
@@ -177,19 +482,11 @@ describe("KnowledgeUnsearchableList", () => {
         )
       ).toBeInTheDocument()
     );
-    expect(screen.queryByText(/5 documents/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/5 documents in/i)).not.toBeInTheDocument();
   });
 
-  // The list is capped and sorted by path, so the files waiting to be
-  // converted can all sit past the first page. The count comes from the
-  // route's per-reason total, never from the rows that happen to be shown.
-  it("says how many files wait to be converted again, even when none of them is on the page", async () => {
-    mockGet.mockResolvedValue(
-      response([{ sourcePath: "/data/certs/Scan.pdf", status: "active" }], {
-        total: 3,
-        totals: { no_text: 1, awaiting_conversion: 2 },
-      })
-    );
+  it("says how many files wait to be converted again, from the route's count", async () => {
+    serve(summary({ noText: 1, awaiting: 2 }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
@@ -204,19 +501,13 @@ describe("KnowledgeUnsearchableList", () => {
   });
 
   it("doesn't talk about scans when every listed file only waits to be converted again", async () => {
-    mockGet.mockResolvedValue(
-      response([
-        {
-          sourcePath: "/data/offers/Angebot.docx",
-          status: "active",
-          reason: "awaiting_conversion",
-        },
-      ])
-    );
+    serve(summary({ awaiting: 1 }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
-    await waitFor(() => expect(screen.getByText("/data/offers/Angebot.docx")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/waiting to be converted again/i)).toBeInTheDocument()
+    );
     expect(screen.queryByText(/no searchable text/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/scans/i)).not.toBeInTheDocument();
   });
@@ -225,18 +516,7 @@ describe("KnowledgeUnsearchableList", () => {
   // searches the index (office-format-upgrade.ts); for any other agent, only a
   // reindex converts these files.
   it("says Pinchy converts them on its own for an agent that searches the index", async () => {
-    mockGet.mockResolvedValue(
-      response(
-        [
-          {
-            sourcePath: "/data/offers/Angebot.docx",
-            status: "active",
-            reason: "awaiting_conversion",
-          },
-        ],
-        { searchesIndex: true }
-      )
-    );
+    serve(summary({ awaiting: 1, searchesIndex: true }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
@@ -247,18 +527,7 @@ describe("KnowledgeUnsearchableList", () => {
   });
 
   it("says a reindex converts them for an agent that doesn't search the index", async () => {
-    mockGet.mockResolvedValue(
-      response(
-        [
-          {
-            sourcePath: "/data/offers/Angebot.docx",
-            status: "active",
-            reason: "awaiting_conversion",
-          },
-        ],
-        { searchesIndex: false }
-      )
-    );
+    serve(summary({ awaiting: 1, searchesIndex: false }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
@@ -266,33 +535,13 @@ describe("KnowledgeUnsearchableList", () => {
     expect(screen.queryByText(/on its own/i)).not.toBeInTheDocument();
   });
 
-  it("says nothing about conversion when no listed document is waiting for one", async () => {
-    mockGet.mockResolvedValue(
-      response([{ sourcePath: "/data/certs/Scan.pdf", status: "active", reason: "no_text" }])
-    );
+  it("says nothing about conversion when no document is waiting for one", async () => {
+    serve(summary({ noText: 1 }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
-    await waitFor(() => expect(screen.getByText("/data/certs/Scan.pdf")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/no searchable text/i)).toBeInTheDocument());
     expect(screen.queryByText(/converted again/i)).not.toBeInTheDocument();
-  });
-
-  // A truncated list that doesn't say it's truncated understates exactly the
-  // gap it exists to expose.
-  it("says how many it is not showing when the list is capped", async () => {
-    mockGet.mockResolvedValue(
-      response(
-        [
-          { sourcePath: "/data/certs/Scan 1.pdf", status: "active" },
-          { sourcePath: "/data/certs/Scan 2.pdf", status: "active" },
-        ],
-        { total: 25 }
-      )
-    );
-
-    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
-
-    await waitFor(() => expect(screen.getByText(/showing 2 of 25/i)).toBeInTheDocument());
   });
 
   it("reloads when the reload key changes, and not otherwise", async () => {
@@ -321,5 +570,16 @@ describe("KnowledgeUnsearchableList", () => {
     expect(mockGet).toHaveBeenCalled();
     await read.release();
     expect(container).toBeEmptyDOMElement();
+  });
+
+  // A folder that fails to load must say so, not read as an empty folder.
+  it("says when a folder's documents couldn't be loaded", async () => {
+    serve(summary({ noText: 1 }));
+    const user = userEvent.setup();
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+    await user.click(await screen.findByRole("button", { name: /show the document/i }));
+
+    expect(await screen.findByText(/couldn't load these documents/i)).toBeInTheDocument();
   });
 });

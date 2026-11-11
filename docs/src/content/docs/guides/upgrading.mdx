@@ -197,6 +197,10 @@ The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint f
 
 The endpoint used to store any key you sent it, which let an admin write provider, domain-lock, enterprise-key or Telegram settings around the routes that own them — skipping their validation, side effects and audit entry. It now accepts `org.timezone` and answers every other key with `400`. The Settings UI only ever sent the timezone, so nothing changes there. If a script of yours posted other keys here, use the dedicated endpoint instead; the [API reference](/reference/api/) lists them.
 
+#### `GET /api/agents/:agentId/knowledge/unsearchable` returns counts, not the document list
+
+The endpoint used to return the first 100 documents and stop. It now returns the counts — per reason, per cause and per folder — and lists one folder's documents when you pass `root` (and `folder`). The full list is a CSV at `GET /api/agents/:agentId/knowledge/unsearchable/csv`. The Index section in the agent's settings uses the new shape, so nothing changes there. If a script of yours read `documents` from this endpoint, switch it to the CSV or to the per-folder query; the [API reference](/reference/api/#get-apiagentsagentidknowledgeunsearchable) has both.
+
 ### Upgrade notes
 
 This release adds a service to `docker-compose.yml` — the [Office converter](#word-and-powerpoint-files-are-converted-in-a-container-of-their-own) — so fetch the new file along with the version bump. Fetching the file replaces it: if you edited `docker-compose.yml` itself, move those changes into a `docker-compose.override.yml` first — see [Customizing your deployment](/guides/customizing-deployment/).
