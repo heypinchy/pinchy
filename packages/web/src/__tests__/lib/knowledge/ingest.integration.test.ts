@@ -634,7 +634,7 @@ it("reports a text-less scan as unsearchable rather than indexed, and leaves it 
   const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docsAfter).toHaveLength(1);
   expect(docsAfter[0].id).toBe(docs[0].id);
-  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot], { state: "off" });
   expect(listed.documents.map((doc) => doc.sourcePath)).toEqual([pdfPath]);
 });
 
@@ -2073,7 +2073,7 @@ it("books a workbook refused as too large as unsearchable — listed, final, and
     warn.mockRestore();
   }
 
-  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot], { state: "off" });
   expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
 });
 
@@ -2103,7 +2103,7 @@ it("books a workbook refused for its content as unsearchable, and leaves it alon
     warn.mockRestore();
   }
 
-  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot], { state: "off" });
   expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
 });
 
