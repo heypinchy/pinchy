@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
+import { useEffect, useState } from "react";
 import { renderHook, act } from "@testing-library/react";
 import {
   ChatSessionProvider,
@@ -7,6 +8,7 @@ import {
   useAgentActivity,
   useChatSession,
   useChatSessionHasInlineError,
+  useTouchChatSession,
   useVisitedAgentIds,
   useVisitedSessions,
   type RuntimeBundle,
@@ -333,12 +335,10 @@ describe("ChatSessionProvider", () => {
       expect([...result.current].sort()).toEqual(expectedSurvivors);
     });
 
-    it("re-publishing an existing agent moves it to the most-recently-used position", () => {
-      // Sequence: publish A, publish B..(MAX-1), re-publish A, publish a new id.
-      // Without LRU, A would be evicted (it was first). With LRU, the
-      // newest of the original B..(MAX-1) gets evicted instead because
-      // re-publishing A bumped it to MRU.
-
+    it("re-publishing an existing agent keeps its place in the eviction order", () => {
+      // A background chat republishes whenever its socket does anything (a
+      // reconnect, a finished run). That is not the user looking at it, so it
+      // must not push a long-unviewed chat back to the front of the line.
       const publishers = new Map<string, (b: RuntimeBundle) => void>();
 
       function PublishHarness({ id }: { id: string }) {
@@ -362,26 +362,19 @@ describe("ChatSessionProvider", () => {
         ),
       });
 
-      // Step 1: publish a, then all fillers — store now has MAX entries
-      // (a + MAX_LIVE_BUNDLES - 1 fillers).
       act(() => {
         publishers.get("a")!(fakeBundle());
         for (const id of filler) publishers.get(id)!(fakeBundle());
       });
       expect(result.current.length).toBe(MAX_LIVE_BUNDLES);
-      expect(result.current).toContain("a");
 
-      // Step 2: re-publish "a" — moves it to MRU. Now oldest is filler-0.
+      // "a" republishes from the background, then a new chat opens.
       act(() => publishers.get("a")!(fakeBundle()));
-
-      // Step 3: publish "overflow" — exceeds cap, evicts oldest. Without
-      // the bump on "a", "a" would be the oldest and would get evicted.
-      // With the bump, "filler-0" is oldest and gets evicted instead.
       act(() => publishers.get("overflow")!(fakeBundle()));
 
       expect(result.current.length).toBe(MAX_LIVE_BUNDLES);
-      expect(result.current).toContain("a"); // "a" survived because it was bumped
-      expect(result.current).not.toContain("filler-0"); // oldest got evicted
+      expect(result.current).not.toContain("a"); // still the least recently viewed
+      expect(result.current).toContain("filler-0");
       expect(result.current).toContain("overflow");
     });
 
@@ -394,6 +387,19 @@ describe("ChatSessionProvider", () => {
         publishers.set(id, session.publish);
         return null;
       }
+      // Stands in for <Chat>: the chat on screen touches its session.
+      function Touch({ id }: { id: string }) {
+        useTouchChatSession(id);
+        return null;
+      }
+      const viewer = { set: (_id: string) => {} };
+      function Viewer() {
+        const [viewed, setState] = useState<string | null>(null);
+        useEffect(() => {
+          viewer.set = setState;
+        }, []);
+        return viewed ? <Touch key={viewed} id={viewed} /> : null;
+      }
       const ids = ["a", "b", "c", "d", "e", "f"];
       const { result } = renderHook(() => useVisitedAgentIds(), {
         wrapper: ({ children }) => (
@@ -401,29 +407,38 @@ describe("ChatSessionProvider", () => {
             {ids.map((id) => (
               <Harness key={id} id={id} />
             ))}
+            <Viewer />
             {children}
           </ChatSessionProvider>
         ),
       });
+      const view = (id: string) => act(() => viewer.set(id));
       const pub = (id: string, isRunning = false) =>
         act(() => publishers.get(id)!(fakeBundle({ agentId: id, isRunning })));
       const pubWith = (id: string, overrides: Partial<RuntimeBundle> = {}) =>
         act(() => publishers.get(id)!(fakeBundle({ agentId: id, ...overrides })));
-      return { result, pub, pubWith };
+      return { result, pub, pubWith, view };
     }
 
     it("caps a tab at three live bundles", () => {
       expect(MAX_LIVE_BUNDLES).toBe(3);
     });
 
-    it("evicts the least-recently-published bundle first", () => {
-      const { result, pub } = setup();
+    it("evicts the least recently viewed chat first", () => {
+      const { result, pub, view } = setup();
       pub("a");
       pub("b");
       pub("c");
-      pub("a"); // a becomes most recent, b is now the oldest
+      view("a"); // the user goes back to a, so b is now the least recently viewed
       pub("d");
       expect([...result.current].sort()).toEqual(["a", "c", "d"]);
+    });
+
+    it("viewing a chat that is not mounted changes nothing", () => {
+      const { result, pub, view } = setup();
+      pub("a");
+      view("f");
+      expect(result.current).toEqual(["a"]);
     });
 
     it("never evicts a running bundle, even when it is the oldest", () => {
