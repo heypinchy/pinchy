@@ -887,6 +887,8 @@ describe("DELETE /api/integrations/[connectionId]", () => {
     });
 
     expect(response.status).toBe(200);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalled();
     expect(mockAppendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: "integration.deleted", outcome: "success" })
     );
