@@ -39,6 +39,8 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
 
 2. **Bump the version pin**
 
+   A release is about 10 GB of images, and the pull downloads them while the old ones are still on disk. Check that you have at least that much free with `df -h /` first. On a small disk, run `docker image prune -a -f` before pulling — [Disk space](/guides/hardening/#disk-space) explains what that removes and what else grows on the disk.
+
    Edit `/opt/pinchy/.env` and update `PINCHY_VERSION` to the new release tag (e.g. `PINCHY_VERSION=%%PINCHY_VERSION%%`), then pull the matching images:
 
    ```bash
@@ -58,7 +60,7 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
    docker compose up -d && docker image prune -f
    ```
 
-   `up -d` applies any pending database migrations, regenerates the OpenClaw configuration, and restarts all services. `docker image prune -f` then removes the previous image layer for each Pinchy service that `pull` left dangling — without this, every upgrade keeps the prior `pinchy` and `pinchy-openclaw` layers on disk and a long-running deployment eventually fills its root volume.
+   `up -d` applies any pending database migrations, regenerates the OpenClaw configuration, and restarts all services. `docker image prune -f` then removes the image layers no tag points to. It does not remove the release you upgraded from: that image keeps its version tag, so every upgrade leaves one more `pinchy` and `pinchy-openclaw` pair on disk, and a long-running deployment eventually fills its root volume. The tip below says how to reclaim them.
 
    <Aside type="tip">
      `prune -f` removes layers that no tag and no container references —
@@ -272,9 +274,17 @@ A reindex that can read none of an agent's folders now names them in the **Index
 
 A symbolic link directly under `/data/` is no longer offered as a mount, the same rule that already applied to the folders inside one. Agents couldn't read through such a link anyway. If you mounted a share by linking it into `/data/`, mount it with a Compose volume instead — see [Mount Data Directories](/guides/mount-data-directories/).
 
+#### Pinchy warns before the disk fills up
+
+Pinchy now measures the free disk space where it writes. When any of those places drops below 15 GB free, admins see a banner in the app, and [`/api/health`](/reference/api/#get-apihealth) reports it in a new `disk` field. Members never see the banner, and the health check keeps returning `status: "ok"`, so Docker won't restart Pinchy over it. If your uptime monitor reads the health response, add an alert on `disk.status == "warning"`. [Disk space](/guides/hardening/#disk-space) explains what the warning measures, what fills the disk over time, and how much an upgrade needs. Nothing to configure.
+
 #### Very long documents are indexed instead of failing every night
 
 A document that came to more than about 8,000 passages — a long manual, a large scanned archive — could not be saved to the knowledge base: the reindex report counted it `failed`, it kept whatever it had in the index, and the next run read it again, scanned pages included, and failed the same way. Since v0.10.2 [cuts passages too long for the embedding model](#one-file-the-embedding-model-refuses-no-longer-stops-a-reindex) into smaller ones, more documents reach that size. They are now saved like any other. Nothing to do on upgrade: the next reindex picks them up.
+
+#### A knowledge base inside an archive folder is no longer hidden
+
+The archive rule (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)) read the whole path of a document, including the folders above the one an agent is granted. An agent granted a folder that is itself called `Archiv`, or sits below one — `/data/Archiv/Projekte` — therefore had every document marked archived, and everyday search found nothing. The rule now reads only the path inside the granted folder. Nothing to do on upgrade: the next index run — the nightly one, or **Reindex now** — marks those documents current again without reading them a second time. When two agents are granted nested folders, the folder granted further down decides for both.
 
 ### Database migrations
 

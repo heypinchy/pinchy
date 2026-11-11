@@ -139,6 +139,38 @@ describe("kb index worker", () => {
     expect(docs).toHaveLength(1);
   });
 
+  // #1420: a document's status is one value for the whole org, so a run must
+  // classify it against the folders EVERY searching agent has, not only its
+  // own — or two agents with nested grants would flip it on every run.
+  it("classifies archive folders against every searching agent's folders, not only the job's", async () => {
+    const shareAgent = await makeAgent("Share");
+    const archiveFolder = join(tmpRoot, "Archiv");
+    await db.insert(agents).values({
+      name: "Archive search",
+      model: "test-model",
+      greetingMessage: "Hi",
+      allowedTools: ["knowledge_search"],
+      pluginConfig: { "pinchy-files": { allowed_paths: [archiveFolder] } },
+    });
+    writePdf(archiveFolder, "certificate-2013.pdf");
+    writePdf(join(tmpRoot, "OLD"), "binder.pdf", "binder");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: shareAgent.id,
+      agentName: shareAgent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+    const statusOf = (name: string) =>
+      docs.find((doc) => basename(doc.sourcePath) === name)?.status;
+    expect(statusOf("certificate-2013.pdf")).toBe("active");
+    expect(statusOf("binder.pdf")).toBe("archived");
+  });
+
   // The folder status (#1386) reads a folder's expected file count from this
   // plan instead of walking the share on every request.
   it("records which folder each queued file belongs to", async () => {

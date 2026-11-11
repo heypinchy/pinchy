@@ -4,13 +4,15 @@ import { orderForIngest } from "@/lib/knowledge/ingest-order";
 
 const paths = (items: { absPath: string }[]) => items.map((item) => item.absPath);
 const files = (...absPaths: string[]) => absPaths.map((absPath) => ({ absPath }));
+const ROOTS = ["/data"];
 
 describe("orderForIngest", () => {
   it("puts every archived file after every current one", () => {
     // Retrieval hides archived documents unless asked, so a first index that
     // reaches them last has the searchable part of the corpus complete first.
     const ordered = orderForIngest(
-      files("/data/OLD/a.pdf", "/data/Current/b.pdf", "/data/Archiv/c.pdf", "/data/z.pdf")
+      files("/data/OLD/a.pdf", "/data/Current/b.pdf", "/data/Archiv/c.pdf", "/data/z.pdf"),
+      ROOTS
     );
 
     expect(paths(ordered)).toEqual([
@@ -31,7 +33,8 @@ describe("orderForIngest", () => {
         "/data/Supplier B/a.pdf",
         "/data/Supplier A/b.pdf",
         "/data/Supplier A-Z/c.pdf"
-      )
+      ),
+      ROOTS
     );
 
     expect(paths(ordered)).toEqual([
@@ -45,7 +48,8 @@ describe("orderForIngest", () => {
 
   it("orders archived files by folder too", () => {
     const ordered = orderForIngest(
-      files("/data/b/OLD/2.pdf", "/data/a/OLD/9.pdf", "/data/b/OLD/1.pdf")
+      files("/data/b/OLD/2.pdf", "/data/a/OLD/9.pdf", "/data/b/OLD/1.pdf"),
+      ROOTS
     );
 
     expect(paths(ordered)).toEqual(["/data/a/OLD/9.pdf", "/data/b/OLD/1.pdf", "/data/b/OLD/2.pdf"]);
@@ -57,12 +61,28 @@ describe("orderForIngest", () => {
       { absPath: "/data/a.pdf", bytes: 2 },
     ];
 
-    const ordered = orderForIngest(input);
+    const ordered = orderForIngest(input, ROOTS);
 
     expect(ordered).toEqual([
       { absPath: "/data/a.pdf", bytes: 2 },
       { absPath: "/data/OLD/a.pdf", bytes: 1 },
     ]);
     expect(paths(input)).toEqual(["/data/OLD/a.pdf", "/data/a.pdf"]);
+  });
+
+  it("classifies relative to the root, so a root below an archive folder is not sent last", () => {
+    // #1420: a share mounted under /data/Archiv/ is current material; only an
+    // archive folder INSIDE it holds archived files.
+    const root = "/data/Archiv/Projekte";
+    const ordered = orderForIngest(files(`${root}/OLD/a.pdf`, `${root}/b.pdf`, "/data/c.pdf"), [
+      root,
+      "/data",
+    ]);
+
+    expect(paths(ordered)).toEqual([
+      "/data/Archiv/Projekte/b.pdf",
+      "/data/c.pdf",
+      `${root}/OLD/a.pdf`,
+    ]);
   });
 });

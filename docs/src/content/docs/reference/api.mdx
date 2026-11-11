@@ -29,13 +29,48 @@ Service health check. **Public — no authentication required.** Suitable for lo
     "db_password": "default"
   },
   "openclaw": { "connected": true },
-  "configRegeneration": { "ok": true }
+  "configRegeneration": { "ok": true },
+  "disk": {
+    "status": "ok",
+    "volumes": [
+      {
+        "name": "system",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      },
+      {
+        "name": "workspaces",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      },
+      {
+        "name": "knowledgeBaseArtifacts",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      },
+      {
+        "name": "data",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      }
+    ]
+  }
 }
 ```
 
 `openclaw.connected` reflects whether the web process currently has a live WebSocket connection to the OpenClaw gateway — the dependency chat relies on. Top-level `status` deliberately stays `"ok"` even when `openclaw.connected` is `false`: brief disconnects during OpenClaw restarts (for example while applying a config change) are expected and self-heal, and flipping `status` would make the Docker healthcheck restart-loop the container during normal operation. Monitor `openclaw.connected` directly (or poll `/api/health/openclaw`) if you need alerting on gateway reachability specifically.
 
 `configRegeneration` reports the outcome of the most recent boot-time OpenClaw config regeneration. It is `{ "ok": true }` in normal operation. When a startup regeneration fails — most commonly because an image-only upgrade dropped the `openclaw-secrets` volume (see [Upgrading Pinchy](/guides/upgrading/)) — it becomes `{ "ok": false, "error": "<actionable message>", "at": "<ISO timestamp>" }`. This is the one signal that catches a **frozen config**: Pinchy still marks itself healthy so the OpenClaw container can start and hot-reload a fixed config later, so `status` stays `"ok"` and `openclaw.connected` can be `true` while new providers, agents, and model changes silently never take effect. `error` carries operator guidance only — never secret material. Alert on `configRegeneration.ok == false`. A later successful regeneration (for example after you fix the compose file and restart) clears it back to `{ "ok": true }`.
+
+`disk` reports the free space where Pinchy writes, by role rather than by path: `system` is the container's own filesystem, which sits on Docker's storage (where pulled images land and temporary files are written); `workspaces` holds agent files and chat uploads; `knowledgeBaseArtifacts` holds the PDFs the knowledge base converts Office documents into; `data` is the `/data` mount agents read from. On a default install they all share one disk, so the numbers repeat. A volume is `"warning"` below 15 GB free, and `disk.status` is `"warning"` if any volume is. Numbers are whole gigabytes (10⁹ bytes), rounded down for `freeGb` and `freePercent`, so a reported value never sits above the line it is compared to. A location that can't be measured — missing on this machine, or not answering within a second — is left out, and if none can be measured `disk` is `{ "status": "unknown", "volumes": [] }`. The database volume isn't mounted in the Pinchy container and isn't measured. Like `openclaw.connected`, a disk warning leaves top-level `status` at `"ok"` and the response at `200`, so the Docker healthcheck never restarts a container over it. Alert on `disk.status == "warning"`; [Disk space](/guides/hardening/#disk-space) explains the threshold and what to free up.
 
 ### `GET /api/version`
 

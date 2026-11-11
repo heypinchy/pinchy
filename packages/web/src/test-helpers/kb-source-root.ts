@@ -9,11 +9,14 @@ const MAX_DRAWS = 20;
  * A fresh temp directory to index as a knowledge-base source root in a test.
  *
  * Use this instead of a bare `mkdtempSync` for any root whose files get
- * ingested. The archive rule (`archive-paths.ts`) reads every directory segment
- * of a document's ABSOLUTE path, so the random six-character suffix is part of
- * what it classifies: a draw like `a7old2` holds the token `old`, every file
- * under the root becomes `archived`, and any test expecting `archived: 0` or
- * `status: "active"` fails at random.
+ * ingested. Until #1420 the archive rule (`archive-paths.ts`) read every
+ * directory segment of a document's ABSOLUTE path, so the random six-character
+ * suffix was part of what it classified: a draw like `a7old2` holds the token
+ * `old`, every file under the root became `archived`, and any test expecting
+ * `archived: 0` or `status: "active"` failed at random. Ingest now reads the
+ * path inside the root, so the root's own name no longer counts. The helper
+ * stays so that no test depends on that: a regression back to the whole-path
+ * rule should fail the tests written for it, not random ones.
  *
  * The rule itself is the oracle, so a word added to ARCHIVE_TOKENS later is
  * covered without touching this file. A parent or prefix that is archived on
