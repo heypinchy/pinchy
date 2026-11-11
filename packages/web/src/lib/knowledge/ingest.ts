@@ -62,7 +62,7 @@ import {
   isDenylistedFileName,
   isHiddenSegment,
 } from "./exclude-globs";
-import { isArchivedPath, statusForPath } from "./archive-paths";
+import { statusForPath } from "./archive-paths";
 import { orderForIngest } from "./ingest-order";
 import { buildPathFilter } from "./path-filter";
 import { recordUnsupportedFiles, unsupportedFileType } from "./unsupported-files";
@@ -196,6 +196,15 @@ export interface IngestOptions {
    * folder the run is in without a write per file (folder-plan.ts, #1386).
    */
   onQueue?: (paths: readonly string[]) => void | Promise<void>;
+  /**
+   * Further knowledge-base folders the archive rule reads paths relative to,
+   * besides this run's own roots (archive-paths.ts, #1420). A document's
+   * status is one value for the whole org while runs go agent by agent, so
+   * the index worker passes every folder any agent searches: otherwise a
+   * document under two nested grants would be classified differently by each
+   * agent's run, and flip every night. Not ingested, not removed from.
+   */
+  archiveRoots?: readonly string[];
   /**
    * Called for every root the run left out: `unreadable` (it could not be
    * looked at — missing, unmounted, a read error mid-walk) or `emptied` (see
@@ -1081,6 +1090,7 @@ async function ingestFile(
   orgId: string,
   absPath: string,
   realPath: string,
+  status: "active" | "archived",
   deps: IngestDeps,
   resolveArtifact: ResolveArtifact,
   onChunkProgress?: ChunkProgressCallback
@@ -1122,11 +1132,11 @@ async function ingestFile(
   // Set when a rebuild in place read bytes other than the ones it hashed.
   let reread: Awaited<ReturnType<typeof extract>> | undefined;
   if (existing && existing.contentHash === contentHash) {
-    // Self-healing status: the status is a pure function of the path
-    // (archive-paths.ts), so a stored value can only disagree after a rule
-    // change or a pre-backfill row. The content-hash skip below would
-    // otherwise freeze that disagreement forever.
-    const status = statusForPath(absPath);
+    // Self-healing status: the status is a pure function of the path and the
+    // searched folders (archive-paths.ts), so a stored value can only disagree
+    // after a rule change, a grant change, or a pre-backfill row — including
+    // every row the whole-path rule archived before #1420. The content-hash
+    // skip below would otherwise freeze that disagreement forever.
     if (existing.status !== status) {
       await db.update(kbDocuments).set({ status }).where(eq(kbDocuments.id, existing.id));
     }
@@ -1237,7 +1247,7 @@ async function ingestFile(
           orgId,
           contentHash: readHash,
           sourcePath: absPath,
-          status: statusForPath(absPath),
+          status,
           pageCount: extracted.pageCount,
           mtime,
           lang: detectLang(extracted.text),
@@ -1423,7 +1433,13 @@ export async function ingestPaths(
       if (!unique.has(absPath)) unique.set(absPath, file);
     }
   }
-  const queue = orderForIngest([...unique].map(([absPath, file]) => ({ absPath, ...file })));
+  // Every folder the archive rule may cut a path at: this run's roots, and the
+  // ones other agents search (see `archiveRoots`).
+  const classifyRoots = [...rootDirs, ...(opts.archiveRoots ?? [])];
+  const queue = orderForIngest(
+    [...unique].map(([absPath, file]) => ({ absPath, ...file })),
+    classifyRoots
+  );
 
   // Converts in queue order, in batches, as the loop below reaches Office
   // documents — see officeArtifacts for why this is not a pre-pass.
@@ -1460,11 +1476,13 @@ export async function ingestPaths(
   await report();
 
   for (const { absPath, bytes, realPath } of queue) {
+    const status = statusForPath(absPath, classifyRoots);
     try {
       const outcome = await ingestFile(
         orgId,
         absPath,
         realPath,
+        status,
         deps,
         resolveArtifact,
         async (embedded, chunkTotal) => {
@@ -1483,7 +1501,7 @@ export async function ingestPaths(
         }
       );
       tally[outcome]++;
-      if (isArchivedPath(absPath)) archived++;
+      if (status === "archived") archived++;
     } catch (err) {
       // One unreadable or corrupt file, one chunk the embedder refuses, one
       // row the database will not take — each is a normal property of a real

@@ -128,7 +128,7 @@ async function seedCorpus(
         // axis exercises the actual ingest wiring (statusForPath), not a
         // hand-set status: the OLD/ cert lands `archived` exactly as a real
         // ingest would mark it.
-        status: statusForPath(doc.sourcePath),
+        status: statusForPath(doc.sourcePath, ["/data"]),
       })
       .returning();
 
