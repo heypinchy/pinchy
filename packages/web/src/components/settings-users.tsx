@@ -35,7 +35,8 @@ import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
 import { SALES_MAILTO, CALENDLY_URL } from "@/lib/conversion-links";
-import { apiPost, apiDelete, errorMessage } from "@/lib/api-client";
+import { apiGet, apiPost, apiDelete, errorMessage } from "@/lib/api-client";
+import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
 import type { AcknowledgeUserOriginInput, InviteUserInput } from "@/lib/schemas/users";
 
 interface SettingsUsersProps {
@@ -183,6 +184,10 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [inviteOpen, setInviteOpen] = useState(false);
   const [seatLimitOpen, setSeatLimitOpen] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
+  const [resendDelivery, setResendDelivery] = useState<{
+    email: string;
+    delivery: EmailDelivery;
+  } | null>(null);
   const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
   const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
   // Refreshed with the list (fetchUsers), since seat usage moves with it.
@@ -282,6 +287,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     // email became required gets Revoke instead (#1263).
     const email = item.email;
     if (!email) return; // unreachable: such a row shows Revoke; narrows the type
+    setResendDelivery(null);
     try {
       await apiDelete(`/api/users/invites/${item.id}`);
     } catch (e) {
@@ -289,12 +295,18 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
       fetchUsers();
       return;
     }
+    // With a system mailer (#1309) the fresh invite is emailed too, like one
+    // from the invite dialog. Unknown status means "don't promise an email".
+    const mailConfigured = await apiGet<SystemMailStatus>("/api/settings/mail")
+      .then((s) => s.configured === true)
+      .catch(() => false);
     try {
-      const data = await apiPost<{ token: string }, InviteUserInput>("/api/users/invite", {
-        email,
-        role: item.role,
-      });
+      const data = await apiPost<{ token: string; emailDelivery?: EmailDelivery }, InviteUserInput>(
+        "/api/users/invite",
+        { email, role: item.role, ...(mailConfigured ? { sendEmail: true } : {}) }
+      );
       setResetLink(buildInviteUrl(window.location.origin, data.token));
+      setResendDelivery(data.emailDelivery ? { email, delivery: data.emailDelivery } : null);
     } catch (e) {
       toast.error(errorMessage(e, "Failed to create the new invite. Please try again."));
     }
@@ -356,6 +368,17 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
           </Button>
         </CardHeader>
         <CardContent>
+          {resendDelivery?.delivery.sent === true && (
+            <p role="status" className="mb-2 text-sm">
+              Invitation sent to {resendDelivery.email}.
+            </p>
+          )}
+          {resendDelivery?.delivery.sent === false && (
+            <p role="alert" className="mb-2 text-sm text-destructive">
+              We couldn&apos;t send the email ({resendDelivery.delivery.error}). Copy the link below
+              and send it yourself.
+            </p>
+          )}
           {resetLink && (
             <div className="mb-4 space-y-1 rounded border p-3">
               <p id="resent-invite-link-label" className="text-sm font-medium">

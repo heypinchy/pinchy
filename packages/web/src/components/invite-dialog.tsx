@@ -4,7 +4,8 @@ import { useState, useEffect } from "react";
 import { useLicenseStatus } from "@/hooks/use-license-status";
 import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
-import { apiPost, errorMessage } from "@/lib/api-client";
+import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
+import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
 import { inviteUserSchema, type InviteUserInput } from "@/lib/schemas/users";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -80,6 +81,10 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
       : null;
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  // With a system mailer (#1309) the dialog emails the invitation; the link
+  // is still shown either way, so copying it always works.
+  const [mailConfigured, setMailConfigured] = useState(false);
+  const [emailDelivery, setEmailDelivery] = useState<EmailDelivery | null>(null);
 
   const form = useForm<InviteFormValues>({
     resolver: zodResolver(inviteSchema),
@@ -98,9 +103,18 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
       form.reset();
       setCreated(null);
       setError(null);
+      setEmailDelivery(null);
       setSelectedGroupIds([]);
     }
   }
+
+  useEffect(() => {
+    if (!open) return;
+    apiGet<SystemMailStatus>("/api/settings/mail")
+      .then((s) => setMailConfigured(s.configured === true))
+      // Unknown means "don't promise an email": the link path always works.
+      .catch(() => setMailConfigured(false));
+  }, [open]);
 
   useEffect(() => {
     if (!open || !isEnterprise) return;
@@ -114,19 +128,21 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     setError(null);
     setCreating(true);
     try {
-      const data = await apiPost<{ token: string; expiresAt?: string }, InviteUserInput>(
-        "/api/users/invite",
-        {
-          email: values.email,
-          role: values.role,
-          ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
-        }
-      );
+      const data = await apiPost<
+        { token: string; expiresAt?: string; emailDelivery?: EmailDelivery },
+        InviteUserInput
+      >("/api/users/invite", {
+        email: values.email,
+        role: values.role,
+        ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
+        ...(mailConfigured ? { sendEmail: true } : {}),
+      });
       setCreated({
         url: buildInviteUrl(window.location.origin, data.token),
         email: values.email,
         expiresAt: data.expiresAt ?? null,
       });
+      setEmailDelivery(data.emailDelivery ?? null);
     } catch (e) {
       // Seat-cap 403s carry an actionable message beside the terse headline
       // (quote path, § 5); ApiError.message already joins the two.
@@ -160,6 +176,17 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
 
         {inviteLink ? (
           <div className="space-y-4">
+            {emailDelivery?.sent === true && (
+              <p role="status" className="text-sm">
+                Invitation sent to {created?.email}.
+              </p>
+            )}
+            {emailDelivery?.sent === false && (
+              <p role="alert" className="text-sm text-destructive">
+                We couldn&apos;t send the email ({emailDelivery.error}). Copy the link below and
+                send it yourself.
+              </p>
+            )}
             <p className="text-sm font-medium">Invite link created:</p>
             <CopyField
               value={inviteLink}
@@ -168,13 +195,17 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
               share={{ title: "Pinchy invite" }}
               autoFocus
             />
-            {/* An email field reads as if Pinchy mails the invite. It
-                doesn't — the admin delivers the link (#1265). */}
+            {/* Without email delivery (#1309), an email field reads as if
+                Pinchy mails the invite. It doesn't — the admin delivers the
+                link (#1265). With a mailer, the status line above says what
+                happened instead. */}
             <div className="space-y-1 text-sm text-muted-foreground">
-              <p>
-                Pinchy doesn&apos;t email this link. Copy it and send it to {created?.email}{" "}
-                yourself.
-              </p>
+              {!emailDelivery && (
+                <p>
+                  Pinchy doesn&apos;t email this link. Copy it and send it to {created?.email}{" "}
+                  yourself.
+                </p>
+              )}
               {created?.expiresAt && (
                 <p>The link works once and expires on {formatExpiry(created.expiresAt)}.</p>
               )}
@@ -247,7 +278,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
               )}
               {error && <p className="text-destructive text-sm">{error}</p>}
               <Button type="submit" disabled={creating}>
-                Create Invite
+                {mailConfigured ? "Send invitation" : "Create Invite"}
               </Button>
             </form>
           </Form>
