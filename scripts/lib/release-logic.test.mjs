@@ -9,6 +9,7 @@ import {
   bumpPackageJson,
   buildTagName,
   buildCommitMessage,
+  buildPushCommand,
   assertUpgradingSectionExists,
   extractUpgradeNotes,
   bumpEnvExample,
@@ -167,6 +168,17 @@ test("assertVersionMatchesTag rejects a malformed tag", () => {
 
 test("buildCommitMessage follows conventional commit format", () => {
   assert.equal(buildCommitMessage("0.3.0"), "chore: release v0.3.0");
+});
+
+// buildPushCommand
+
+test("buildPushCommand pushes the branch and the tag in one atomic push", () => {
+  // Two separate pushes could land the tag without the -dev commit (or the
+  // reverse) when the second one fails — a release half-published.
+  assert.equal(
+    buildPushCommand("v0.10.3"),
+    "git push --atomic origin HEAD refs/tags/v0.10.3",
+  );
 });
 
 // assertUpgradingSectionExists
