@@ -9,7 +9,7 @@
 // comment saying "tracked separately", and then no issue ever filed. The
 // outcome was a production-breaking password-reset bug that sat behind four
 // silent `.skip()`s for weeks. See `feedback_no_unilateral_skips.md` in the
-// user's memory and AGENTS.md § "No untracked test skips" for the policy.
+// user's memory and agent-rules/testing.md § "No untracked test skips" for the policy.
 //
 // Companion to the ESLint rule at
 // `packages/web/eslint-rules/no-untracked-skips.js`. When you add a new skip
@@ -194,7 +194,7 @@ describe("no-untracked-skips", () => {
           "`cond ? describe : describe.skip` form) counts too — aliasing it hides",
           "it from every checker. Write `describe.skipIf(<condition>)` instead.",
           "",
-          'Conditional gates (`.skipIf(...)`) are exempt. See AGENTS.md § "No untracked test skips".',
+          'Conditional gates (`.skipIf(...)`) are exempt. See agent-rules/testing.md § "No untracked test skips".',
         ].join("\n")
       : "";
 

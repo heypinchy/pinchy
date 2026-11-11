@@ -1,6 +1,6 @@
 /**
  * Pure logic for the plugin typecheck gate (see scripts/typecheck-plugins.mjs
- * for the CLI/CI wrapper and AGENTS.md § "Plugin Integration Contract").
+ * for the CLI/CI wrapper and agent-rules/plugins.md § "Plugin Integration Contract").
  *
  * Plugins in packages/plugins/pinchy-* run via tsx at runtime with no
  * ahead-of-time type checking anywhere — no `tsc` in CI, no build step in

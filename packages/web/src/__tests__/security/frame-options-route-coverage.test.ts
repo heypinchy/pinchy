@@ -17,7 +17,7 @@
 // This guard closes the class rather than the instance: add a serving route,
 // forget the config entry, and CI fails here with the exact line to add.
 //
-// See AGENTS.md § "Embeddable Serving Routes Need A next.config Entry".
+// See agent-rules/web-routes.md § "Embeddable Serving Routes Need A next.config Entry".
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";

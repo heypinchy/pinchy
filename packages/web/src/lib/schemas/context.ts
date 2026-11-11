@@ -26,5 +26,5 @@ export const contextContentSchema = z.object({
 });
 
 /** The PUT body, so `settings-context.tsx` types its payload against the same
- * shape the routes parse (AGENTS.md § "Shared Schemas And Typed Client"). */
+ * shape the routes parse (agent-rules/web-routes.md § "Shared Schemas And Typed Client"). */
 export type ContextContentInput = z.infer<typeof contextContentSchema>;

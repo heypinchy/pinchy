@@ -33,7 +33,7 @@ export const webSearchEditSchema = z.object({
 
 // IMAP reconnect/edit contract. Single source of truth — imported by BOTH the
 // client edit dialog (edit-credentials-dialog.tsx) and the PATCH route
-// ([connectionId]/route.ts) so the two sides can't drift (AGENTS.md "Shared
+// ([connectionId]/route.ts) so the two sides can't drift (agent-rules/web-routes.md "Shared
 // Schemas And Typed Client"). All fields optional ("leave empty to keep
 // current"); the submit handler strips empty strings before validating, so
 // any field that IS present must be non-empty. Ports are coerced so the form

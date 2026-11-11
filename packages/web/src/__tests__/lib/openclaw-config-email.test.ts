@@ -560,7 +560,7 @@ describe("pinchy-email config generation", () => {
     expect(written).not.toContain("secret-password");
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // pre-#328 agent template creation stored raw per-tool operations (list,
   // read, search, draft) directly as agent_connection_permissions rows (see
   // ebe6b47a2's "Operation vocabulary mismatch" fix, which corrected the
@@ -630,7 +630,7 @@ describe("pinchy-email config generation", () => {
     expect(agentConfig.permissions).toEqual({ email: ["search"] });
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // "list" is the OTHER legacy per-tool operation pre-#328 template creation
   // stored directly as agent_connection_permissions rows (see
   // ebe6b47a2's "Operation vocabulary mismatch" fix, which corrected the

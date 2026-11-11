@@ -22,7 +22,7 @@ export const DEFAULT_CONFIRM_TTL_MS = 10 * 60 * 1000;
  * adjusting an argument therefore opens one confirmation per attempt: a wall of
  * cards in the requester's inbox now, and one `approval.expired` audit row per
  * request at the next sweep, each taking the audit log's single advisory lock
- * (AGENTS.md §"An audit row … needs a bound").
+ * (agent-rules/web-routes.md §"An audit row … needs a bound").
  *
  * Generous for a human — nobody works through twenty cards and wants a
  * twenty-first — and small enough that the burst stays a burst.

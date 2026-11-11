@@ -2318,7 +2318,7 @@ Summary counts of integration connection health (active, `auth_failed`, and conn
 
 ### `GET /api/internal/integrations/:connectionId/credentials`
 
-**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `AGENTS.md`), not a user session. Called by Pinchy plugins at runtime, never by the browser.
+**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `agent-rules/secrets.md`), not a user session. Called by Pinchy plugins at runtime, never by the browser.
 
 Returns the decrypted credentials for a connection, auto-refreshing an expired OAuth access token first (Google and Microsoft rotate refresh tokens differently — see the plugin cache/refetch behavior in the Secret Handling section of `AGENTS.md`). Called by `pinchy-email`, `pinchy-odoo` and `pinchy-web` with the gateway token as Bearer auth; the plugin caches the response, typically with a 5-minute TTL, and invalidates that cache when the third-party service answers `401`. A `401` from this route itself is retried for a few seconds instead: it means Pinchy briefly could not read the gateway token during a configuration change.
 
@@ -2730,7 +2730,7 @@ A failed delivery is still a `200`: the decision itself is persisted, and retryi
 
 ### `POST /api/internal/approvals/gate-check`
 
-**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `AGENTS.md`), not a user session. Called by the `pinchy-approvals` plugin's `before_tool_call` hook, never by the browser.
+**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `agent-rules/secrets.md`), not a user session. Called by the `pinchy-approvals` plugin's `before_tool_call` hook, never by the browser.
 
 This is the server-side security boundary for the whole feature. The plugin asks it about every tool call; the route loads the agent's policy, allows anything ungated without recording a thing, and otherwise either spends an approved single-use grant (`allow`) or records a pending confirmation and blocks (`block`). Keeping the policy here rather than in plugin config is what makes a permission change take effect on the next call instead of after a cache expires.
 

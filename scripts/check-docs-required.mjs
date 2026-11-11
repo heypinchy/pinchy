@@ -20,7 +20,7 @@
  *   - Add a commit trailer stating what makes the change invisible to a reader:
  *       Docs-not-needed: gateway-only ingress, no reader-facing path
  *
- * See AGENTS.md § "A User-Visible Change Needs A Docs Change".
+ * See agent-rules/docs.md § "A User-Visible Change Needs A Docs Change".
  */
 
 import { execFileSync } from "node:child_process";

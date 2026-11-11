@@ -195,7 +195,7 @@ describe("shouldPersistDurableError", () => {
   // user might have MISSED after a reload/reconnect. Two families qualify (#882):
   //   - retryable/intermittent failures whose live bubble died on reload, and
   //   - permanent AND ACTIONABLE failures (a retired model, a bad provider
-  //     config, an account-side provider rejection) — the exact case AGENTS.md's
+  //     config, an account-side provider rejection) — the exact case agent-rules/ui.md's
   //     error-UI guidance prescribes a persistent, dismissible banner for. The
   //     banner is dismissible and auto-superseded on the next successful turn, so
   //     it can't linger past the fix.

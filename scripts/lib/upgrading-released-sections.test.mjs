@@ -518,7 +518,7 @@ test("formatProblems names both authorization routes and excludes stale entries 
 test("formatProblems warns that a label does not survive the merge queue", () => {
   // A merge_group run carries no PR labels, so a label-only authorization is
   // green on the PR and rejected by the queue — the message has to say so where
-  // the person reading it is, not only in AGENTS.md.
+  // the person reading it is, not only in agent-rules/release.md.
   const message = formatProblems([
     { kind: "drift", tag: "v0.9.0", message: "something drifted" },
   ]);

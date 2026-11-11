@@ -1,6 +1,6 @@
 /**
  * Shared credential/HTTP client for the Pinchy plugins that fetch third-party
- * credentials through Pinchy's internal API (AGENTS.md, Secret Handling
+ * credentials through Pinchy's internal API (agent-rules/secrets.md, Secret Handling
  * Pattern B): pinchy-odoo, pinchy-email, pinchy-web.
  *
  * DUPLICATED ON PURPOSE, byte-for-byte, one copy per plugin. Each plugin

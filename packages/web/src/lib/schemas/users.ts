@@ -4,7 +4,7 @@ import { INVITE_ROLES } from "@/db/enums";
 /**
  * Request schemas for the user-management routes, shared with the admin UI
  * (`invite-dialog.tsx`, `settings-users.tsx`, `user-detail-sheet.tsx`) so a
- * payload rename is a compile error rather than a runtime 400 (AGENTS.md
+ * payload rename is a compile error rather than a runtime 400 (agent-rules/web-routes.md
  * § "Shared Schemas And Typed Client").
  *
  * `@/db/enums` carries no database import — it is the const list the CHECK

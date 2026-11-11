@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * `POST /api/settings/telegram` — redeem a pairing code. Shared with
- * `telegram-link-settings.tsx` (AGENTS.md § "Shared Schemas And Typed Client").
+ * `telegram-link-settings.tsx` (agent-rules/web-routes.md § "Shared Schemas And Typed Client").
  */
 export const linkTelegramSchema = z.object({ code: z.string().min(1) });
 export type LinkTelegramInput = z.infer<typeof linkTelegramSchema>;

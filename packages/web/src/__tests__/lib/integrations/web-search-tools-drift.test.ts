@@ -22,7 +22,7 @@
  * one `build.ts` loads the plugin for, otherwise the grant names a tool no
  * agent can ever be configured with.
  *
- * Same contract as the other paired-list guards in this repo (see AGENTS.md
+ * Same contract as the other paired-list guards in this repo (see agent-rules/plugins.md
  * § "Tool dispatch coverage"): the extractors throw rather than returning a
  * short list, because a walker that quietly finds nothing turns this file into
  * decoration.
