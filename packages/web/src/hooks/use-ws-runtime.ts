@@ -438,6 +438,8 @@ export function useWsRuntime(
   hasInlineError: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
+  /** A message waits for the next connection; only this instance holds it (#957). */
+  hasQueuedMessage: boolean;
   pendingUploads: PendingUpload[];
   addPendingUpload: (file: File) => void;
   removePendingUpload: (localId: string) => void;
