@@ -67,6 +67,8 @@ import {
 } from "./src/lib/encryption";
 import { exitOnStartupFailure } from "./src/server/startup-failure";
 import { getTrustedProxies, stampClientIp, TRUSTED_PROXIES_ENV_VAR } from "./src/server/client-ip";
+import { answerAppHeartbeat, startWsHeartbeat } from "./src/server/ws-heartbeat";
+import { rejectUpgrade } from "./src/server/ws-reject";
 
 logCapture.install();
 
@@ -232,6 +234,10 @@ const startup = app.prepare().then(async () => {
     },
   });
 
+  // Cuts off sockets whose peer vanished without a close frame, so they stop
+  // holding a per-user connection slot (#1422). Stops itself when `wss` closes.
+  startWsHeartbeat(wss);
+
   function broadcastToClients(message: Record<string, unknown>) {
     const payload = JSON.stringify(message);
     for (const [clientWs] of sessionMap) {
@@ -264,9 +270,11 @@ const startup = app.prepare().then(async () => {
       // a single reconnect-looping tab could lock everyone else out of chat
       // (#825).
       const ip = client.address ?? "unknown";
+      //
+      // Refused with a close code rather than a raw HTTP 429, which the browser
+      // only ever sees as 1006 — "server down" — and cannot explain (#1422).
       if (!wsRateLimiter.allowUpgrade(ip)) {
-        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
-        socket.destroy();
+        rejectUpgrade(wss, request, socket, head, "rate_limited");
         return;
       }
 
@@ -317,8 +325,7 @@ const startup = app.prepare().then(async () => {
       // Limit concurrent connections per user
       const { userId, userRole } = sessionInfo;
       if (!wsRateLimiter.allowConnection(userId)) {
-        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
-        socket.destroy();
+        rejectUpgrade(wss, request, socket, head, "too_many_connections");
         return;
       }
 
@@ -359,6 +366,9 @@ const startup = app.prepare().then(async () => {
     clientWs.on("message", (data) => {
       try {
         const parsed = JSON.parse(data.toString());
+        // Before the router check: the client's liveness probe must be
+        // answered even while OpenClaw is not configured.
+        if (answerAppHeartbeat(clientWs, parsed)) return;
         if (!router) {
           clientWs.send(JSON.stringify({ type: "error", message: "OpenClaw not configured" }));
           return;
