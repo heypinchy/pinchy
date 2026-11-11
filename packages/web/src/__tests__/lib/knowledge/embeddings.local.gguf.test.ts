@@ -85,6 +85,33 @@ describe.skipIf(!process.env.KB_EMBED_GGUF_PATH)(
       for (const vec of vectors) expect(vec).toHaveLength(768);
     }, 120_000);
 
+    // A rare code point the vocabulary knows only as bytes: cutting between two
+    // of its tokens and decoding stored U+FFFD, and the citation viewer then
+    // could not find the chunk on its page. Pieces are cut from the text itself.
+    it("cuts a byte-fallback text into substrings of the original, without U+FFFD", async () => {
+      const cfg = {
+        baseUrl: "unused",
+        provider: "local" as const,
+        modelPath: process.env.KB_EMBED_GGUF_PATH as string,
+        expectedDim: 768,
+      };
+      // CJK Extension B, dense and rare — not emoji, which the vocabulary likely
+      // has. Four byte tokens per character; the leading letter shifts every
+      // window off a character boundary, which a budget divisible by four would
+      // otherwise hide.
+      const rare =
+        "A" +
+        Array.from({ length: 900 }, (_, i) =>
+          String.fromCodePoint(0x20000 + ((i * 37) % 0xa6d0))
+        ).join("");
+
+      const [pieces] = await fitTextsForEmbedding([rare], cfg);
+      expect(pieces.length).toBeGreaterThan(1);
+      for (const piece of pieces) expect(piece).not.toContain("\uFFFD");
+      expect(pieces.join("")).toBe(rare);
+      await expect(embedTexts(pieces, cfg)).resolves.toHaveLength(pieces.length);
+    }, 120_000);
+
     // The context takes this text whole, but its batch does not: decoded in
     // several calls, the vector would reflect only the last batch, so the head
     // of the text would be missing from its own embedding (#1380). The library
