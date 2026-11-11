@@ -160,17 +160,6 @@ export function currentPlanFolder(
 }
 
 /**
- * Of a folder's not-searchable documents, the archived ones the active run
- * will still convert again — on their way, not failed. Only as many as there
- * are archived files still to come: the others were already read.
- */
-export function archivedToReconvert(
-  input: Pick<FolderStateInput, "rereadArchived" | "pendingArchived">
-): number {
-  return Math.min(input.rereadArchived, input.pendingArchived);
-}
-
-/**
  * What a reader sees for one folder.
  *
  * - `indexing`: the run is working in this folder right now.
@@ -234,7 +223,10 @@ export function deriveFolderState(input: FolderStateInput): FolderState {
     if (reached === 0) return "empty";
     return "has_errors";
   }
-  if (input.notSearchable - archivedToReconvert(input) > 0) return "has_errors";
+  // Archived documents the run will still convert again are on their way, not
+  // failed — but only as many as there are archived files still to come.
+  const toReconvert = Math.min(input.rereadArchived, input.pendingArchived);
+  if (input.notSearchable - toReconvert > 0) return "has_errors";
   if (reached !== null && input.indexed < reached) return "has_errors";
   return "searchable";
 }

@@ -30,7 +30,8 @@ function folder(overrides: Partial<FolderStatus> & { path: string }): FolderStat
     pending: 0,
     pendingArchived: 0,
     expectedArchived: 0,
-    archivedToReconvert: 0,
+    archivedSearchable: 0,
+    archivedNotSearchable: 0,
     indexingArchive: false,
     lastIndexedAt: null,
     ...overrides,
@@ -378,6 +379,7 @@ describe("countText", () => {
           state: "searchable",
           indexed: 680,
           searchable: 680,
+          archivedSearchable: 3,
           expected: 1105,
           pending: 425,
           pendingArchived: 425,
@@ -385,11 +387,12 @@ describe("countText", () => {
           indexingArchive: true,
         })
       )
-    ).toBe("680 of 680 files searchable · indexing archived files, 425 left");
+    ).toBe("677 of 677 files searchable · indexing archived files, 425 left");
   });
 
-  // A later run re-reads an archive the index already holds: never "1105 of 677".
-  it("does not count more searchable files than the folder holds on a re-run", () => {
+  // A later run re-reads an archive the index already holds. Until it gets
+  // there, the archive is counted as queued, not among the current files too.
+  it("counts only the current files on a re-run that hasn't reached the archive", () => {
     expect(
       countText(
         folder({
@@ -397,13 +400,55 @@ describe("countText", () => {
           state: "searchable",
           indexed: 1105,
           searchable: 1105,
+          archivedSearchable: 428,
           expected: 1105,
           pending: 428,
           pendingArchived: 428,
           expectedArchived: 428,
         })
       )
-    ).toBe("1105 of 1105 files searchable · 428 archived files queued");
+    ).toBe("677 of 677 files searchable · 428 archived files queued");
+  });
+
+  // The count must not grow with the archive the index already holds: never
+  // "39 of 42" for a folder of 40 current files, 3 of them without text.
+  it("counts the current files that hold no text against the current files", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "has_errors",
+          indexed: 45,
+          searchable: 42,
+          notSearchable: 3,
+          archivedSearchable: 5,
+          expected: 45,
+          pending: 5,
+          pendingArchived: 5,
+          expectedArchived: 5,
+        })
+      )
+    ).toBe("37 of 40 files searchable · 5 archived files queued");
+  });
+
+  it("does not take archived files without text off the current files", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "has_errors",
+          indexed: 45,
+          searchable: 43,
+          notSearchable: 2,
+          archivedSearchable: 3,
+          archivedNotSearchable: 2,
+          expected: 45,
+          pending: 5,
+          pendingArchived: 5,
+          expectedArchived: 5,
+        })
+      )
+    ).toBe("40 of 40 files searchable · 5 archived files queued");
   });
 
   // Documents of files deleted since the last run stay in the index until the
@@ -416,13 +461,14 @@ describe("countText", () => {
           state: "searchable",
           indexed: 1105,
           searchable: 1105,
+          archivedSearchable: 427,
           expected: 1102,
           pending: 427,
           pendingArchived: 427,
           expectedArchived: 427,
         })
       )
-    ).toBe("1102 of 1102 files searchable · 427 archived files queued");
+    ).toBe("675 of 675 files searchable · 427 archived files queued");
     expect(
       countText(
         folder({ path: "/a", state: "searchable", indexed: 42, searchable: 42, expected: 40 })
@@ -456,7 +502,7 @@ describe("countText", () => {
           indexed: 45,
           searchable: 40,
           notSearchable: 5,
-          archivedToReconvert: 5,
+          archivedNotSearchable: 5,
           expected: 45,
           pending: 5,
           pendingArchived: 5,

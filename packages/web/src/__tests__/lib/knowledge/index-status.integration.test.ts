@@ -238,16 +238,33 @@ describe("getKnowledgeFolderStatus", () => {
     const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
     const byName = Object.fromEntries(folders[0].children.map((c) => [c.name, c]));
 
-    expect(byName.certs).toMatchObject({
-      state: "searchable",
-      notSearchable: 1,
-      archivedToReconvert: 1,
+    expect(byName.certs).toMatchObject({ state: "searchable", notSearchable: 1 });
+    expect(byName.legal).toMatchObject({ state: "has_errors", notSearchable: 1 });
+  });
+
+  // While the archive is still to come, the tree counts the current files
+  // alone, so it needs to know which documents are archived.
+  it("counts archived documents apart from the current ones", async () => {
+    const agent = await makeAgent();
+    await seedDoc("/kb/certs/iso.pdf");
+    await seedDoc("/kb/certs/scan.pdf", { chunks: false });
+    await seedDoc("/kb/certs/OLD/2019.pdf", { status: "archived" });
+    await seedDoc("/kb/certs/OLD/2018.pdf", { status: "archived" });
+    await seedDoc("/kb/certs/OLD/fax.pdf", { status: "archived", chunks: false });
+    // Waits for conversion: not searchable either.
+    await seedDoc("/kb/certs/OLD/2017.docx", { status: "archived" });
+
+    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+    const certs = folders[0].children.find((c) => c.name === "certs")!;
+
+    expect(certs).toMatchObject({
+      indexed: 6,
+      searchable: 3,
+      notSearchable: 3,
+      archivedSearchable: 2,
+      archivedNotSearchable: 2,
     });
-    expect(byName.legal).toMatchObject({
-      state: "has_errors",
-      notSearchable: 1,
-      archivedToReconvert: 0,
-    });
+    expect(folders[0]).toMatchObject({ archivedSearchable: 2, archivedNotSearchable: 2 });
   });
 
   it("shows a folder as queued while an active run has not finished discovery", async () => {
