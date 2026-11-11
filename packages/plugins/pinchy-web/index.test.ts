@@ -322,6 +322,26 @@ describe("pinchy-web plugin", () => {
       expect(braveSearchMock).not.toHaveBeenCalled();
     });
 
+    // The credentials route refuses the Brave key to an agent that may only
+    // fetch (WEB_SEARCH_KEY_TOOLS in packages/web). So fetch must never ask
+    // for it, even with a web-search connection configured — if it did, every
+    // fetch-only agent would fail with a 403. Run the code rather than read
+    // it, so a key request routed through any helper is caught too.
+    it("fetches pages for a fetch-only agent without asking for credentials", async () => {
+      const fetchMock = stubCredentialsFetch("brave-key-123");
+      webFetchMock.mockResolvedValue({ content: "Example Domain" });
+      const factories = collectFactories(
+        credentialsPluginConfig({ "agent-1": { tools: ["pinchy_web_fetch"] } })
+      );
+
+      const fetchTool = factories.pinchy_web_fetch({ agentId: "agent-1" })!;
+      const fetched = await fetchTool.execute("call-1", { url: "https://example.com" });
+
+      expect(fetched.isError).toBeFalsy();
+      expect(fetched.content[0].text).toBe("Example Domain");
+      expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual([]);
+    });
+
     it("returns isError when braveSearch throws", async () => {
       braveSearchMock.mockRejectedValue(new Error("API rate limit"));
       stubCredentialsFetch("brave-key-123");
