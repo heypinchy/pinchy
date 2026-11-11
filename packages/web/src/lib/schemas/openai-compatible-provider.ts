@@ -4,7 +4,7 @@ import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 // Request schemas for the generic "OpenAI-compatible" provider write paths
 // (#894). Single source of truth, imported by BOTH the route handlers
 // (parseRequestBody) and the client components (typed bodies via z.infer) so
-// the two sides can't drift — AGENTS.md "Shared Schemas And Typed Client".
+// the two sides can't drift — agent-rules/web-routes.md "Shared Schemas And Typed Client".
 
 /**
  * A single persisted model definition. Field-for-field mirror of

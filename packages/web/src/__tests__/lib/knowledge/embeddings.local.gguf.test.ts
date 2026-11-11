@@ -8,7 +8,7 @@ import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
  * embed in-process via this same node-llama-cpp path, no Ollama).
  *
  * Gated with describe.skipIf (not an untracked test.skip — an allowed
- * env/OS conditional gate per AGENTS.md) so CI and contributors without the
+ * env/OS conditional gate per agent-rules/testing.md) so CI and contributors without the
  * multi-hundred-MB model file locally skip cleanly instead of failing.
  *
  * Set KB_EMBED_GGUF_PATH to a local GGUF file to run this, e.g.:

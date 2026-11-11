@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * `POST /api/setup` — the first-run admin. Shared with `setup-form.tsx`
- * (AGENTS.md § "Shared Schemas And Typed Client").
+ * (agent-rules/web-routes.md § "Shared Schemas And Typed Client").
  *
  * `password` is shape-only: the length/breach-list policy is enforced
  * post-parse via `validatePassword()`, so setup, invite-claim and

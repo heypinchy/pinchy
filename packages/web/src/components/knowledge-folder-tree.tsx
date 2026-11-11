@@ -275,14 +275,42 @@ export function countText(folder: FolderStatus): string {
     // Nothing pending while queued means the new run has not listed its files
     // yet: `expected` is still the last run's count, so "N of N done" would lie.
     if (folder.expected !== null && (folder.pending > 0 || folder.state === "indexing")) {
-      const done = Math.max(0, folder.expected - folder.pending);
-      return `${done} of ${folder.expected} ${plural(folder.expected, "file")} done`;
+      // A run reads archived subfolders last (#1405): count the current files,
+      // and the archive apart — unless archive is all the folder holds.
+      const current = folder.expected - folder.expectedArchived;
+      if (current === 0) {
+        const done = Math.max(0, folder.expected - folder.pending);
+        return `${done} of ${folder.expected} archived ${plural(folder.expected, "file")} done`;
+      }
+      const done = Math.max(0, current - (folder.pending - folder.pendingArchived));
+      const text = `${done} of ${current} ${plural(current, "file")} done`;
+      const archive = folder.pendingArchived;
+      return archive === 0
+        ? text
+        : `${text} · ${archive} archived ${plural(archive, "file")} queued`;
     }
     return "Waiting for the run to list its files";
   }
-  const of = folder.expected ?? folder.indexed;
+  // A run reads archived subfolders last (#1405). With only archive left, the
+  // state speaks for the current files; the archive is counted apart.
+  const archive = folder.pendingArchived;
+  // A re-run re-reads an archive the index already holds, so what is
+  // searchable can reach past the current files, never past the folder.
+  const of =
+    folder.expected === null
+      ? folder.indexed
+      : Math.max(folder.expected - archive, Math.min(folder.searchable, folder.expected));
   if (of === 0) return folder.state === "empty" ? "Nothing to index here" : "No files indexed yet";
-  return `${folder.searchable} of ${of} ${plural(of, "file")} searchable`;
+  // Documents of files deleted since the last run stay in the index until a
+  // run succeeds, so the index can hold more than the folder does. Count down
+  // from the folder by what fails here instead: archived files the run will
+  // convert again are on their way, everything else not searchable is missing.
+  const failing = Math.max(0, folder.notSearchable - folder.archivedToReconvert);
+  const done = Math.max(0, Math.min(folder.searchable, of - failing));
+  const searchable = `${done} of ${of} ${plural(of, "file")} searchable`;
+  if (archive === 0) return searchable;
+  if (folder.indexingArchive) return `${searchable} · indexing archived files, ${archive} left`;
+  return `${searchable} · ${archive} archived ${plural(archive, "file")} queued`;
 }
 
 function FolderFiles({

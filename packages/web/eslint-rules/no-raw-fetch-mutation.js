@@ -3,7 +3,7 @@
 // through the typed helpers in `@/lib/api-client` (`apiPost`, `apiPut`,
 // `apiPatch`, `apiDelete`).
 //
-// Why: AGENTS.md § "Shared Schemas And Typed Client" promises that a drift
+// Why: agent-rules/web-routes.md § "Shared Schemas And Typed Client" promises that a drift
 // between the client's payload and the route's Zod schema is a compile-time
 // error rather than a runtime 400 — a promise a raw `fetch` cannot keep,
 // because `JSON.stringify(anything)` type-checks. The 2026-08-04 repo review
@@ -128,7 +128,7 @@ module.exports = {
     },
     messages: {
       rawFetchMutation:
-        'Do not call `fetch(url, { method: "{{method}}" })` here. Use `{{helper}}` from `@/lib/api-client`: it types the request body against the route\'s shared schema (so payload drift is a compile error, not a runtime 400) and raises an `ApiError` carrying the server\'s own message instead of a generic toast. If this call genuinely cannot use the helper — a multipart upload, a streamed response, a raw `Response` you need — put `// raw-fetch-exempt: <reason>` directly above the statement. See AGENTS.md § "Shared Schemas And Typed Client".',
+        'Do not call `fetch(url, { method: "{{method}}" })` here. Use `{{helper}}` from `@/lib/api-client`: it types the request body against the route\'s shared schema (so payload drift is a compile error, not a runtime 400) and raises an `ApiError` carrying the server\'s own message instead of a generic toast. If this call genuinely cannot use the helper — a multipart upload, a streamed response, a raw `Response` you need — put `// raw-fetch-exempt: <reason>` directly above the statement. See agent-rules/web-routes.md § "Shared Schemas And Typed Client".',
     },
     schema: [],
   },

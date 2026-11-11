@@ -508,6 +508,8 @@ export function useWsRuntime(
   hasInlineError: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
+  /** A message waits for the next connection; only this instance holds it (#957). */
+  hasQueuedMessage: boolean;
   pendingUploads: PendingUpload[];
   addPendingUpload: (file: File) => void;
   removePendingUpload: (localId: string) => void;
@@ -607,6 +609,10 @@ export function useWsRuntime(
   const shouldRecoverFromHistoryRef = useRef(false);
   const lifecycleSuspendedRef = useRef(false);
   const pendingMessageRef = useRef<string | null>(null);
+  // Mirrors `pendingMessageRef` for consumers (#957): a queued payload lives
+  // only in this instance, so the chat must not be unmounted while one waits.
+  const [hasQueuedMessage, setHasQueuedMessage] = useState(false);
+
   // The socket the server has answered on (#1422). `open` only means the
   // handshake finished; a refused connection is opened and then closed. Every
   // accepted connection gets a first frame, so only that frame makes a socket
@@ -2148,6 +2154,7 @@ export function useWsRuntime(
           if (pendingMessageRef.current) {
             ws.send(pendingMessageRef.current);
             pendingMessageRef.current = null;
+            setHasQueuedMessage(false);
           }
         }
         try {
@@ -2297,6 +2304,7 @@ export function useWsRuntime(
         ws.send(payload);
       } else {
         pendingMessageRef.current = payload;
+        setHasQueuedMessage(true);
         if (
           ws?.readyState === WebSocket.CONNECTING ||
           ws?.readyState === WebSocket.CLOSING ||
@@ -2861,6 +2869,7 @@ export function useWsRuntime(
     hasInlineError: messages.some((m) => m.error),
     onRetryContinue,
     onRetryResend,
+    hasQueuedMessage,
     pendingUploads,
     addPendingUpload,
     removePendingUpload,

@@ -343,7 +343,7 @@ export function finalizeUpgradeSection(mdx, prevVersion, targetVersion) {
  * of the release that already shipped. Measured on main on 2026-08-01, seven
  * released sections had drifted from their tag that way, three of them by
  * gaining a whole `####` note describing behaviour that release does not have.
- * See AGENTS.md § "A Released Upgrade Section Is Immutable".
+ * See agent-rules/release.md § "A Released Upgrade Section Is Immutable".
  *
  * The skeleton is not headings-only, deliberately. Two existing guards read the
  * newest section: the #370 prune guard requires `docker image prune` in it, and

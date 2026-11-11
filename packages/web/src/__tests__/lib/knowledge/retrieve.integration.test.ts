@@ -533,7 +533,7 @@ it("keeps byte-identical documents at different paths independently cap-counted 
 });
 
 describe("an Office document whose chunks came from an earlier artifact format", () => {
-  // AGENTS.md § "Test Migrations Against Pre-Existing Data". After a bump of
+  // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data". After a bump of
   // OFFICE_ARTIFACT_FORMAT_VERSION the rows the upgrade finds were read from
   // PDFs the earlier, weaker conversion made — which may hold text a planted
   // document drew in from the server's disk. Until the document is converted

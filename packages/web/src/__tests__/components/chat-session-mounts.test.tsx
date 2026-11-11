@@ -11,6 +11,7 @@ let mockIsRunning = false;
 let mockConnectionRejection: "too_many_connections" | "rate_limited" | null = null;
 let mockIsOffline = false;
 let mockPayloadRejected = false;
+let mockHasQueuedMessage = false;
 let mockPathname = "/agents";
 
 // Hoisted so tests can assert on navigation — the `/compact` and `/reset`
@@ -50,6 +51,7 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
       isOffline: mockIsOffline,
       connectionRejection: mockConnectionRejection,
       payloadRejected: mockPayloadRejected,
+      hasQueuedMessage: mockHasQueuedMessage,
       onRetryContinue: vi.fn(),
       onRetryResend: vi.fn(),
     };
@@ -81,6 +83,7 @@ describe("ChatSessionMounts", () => {
     mockConnectionRejection = null;
     mockIsOffline = false;
     mockPayloadRejected = false;
+    mockHasQueuedMessage = false;
     mockPathname = "/agents";
     routerPushSpy.mockClear();
   });
@@ -436,6 +439,15 @@ describe("ChatSessionMounts", () => {
       expect(bundle?.lastError).toMatch(/retry|trying/i);
       // Retrying is automatic: no copy may say reload is the only way out.
       expect(bundle?.lastError).not.toMatch(/reload/i);
+    });
+
+    it("publishes a message still queued in the instance (#957)", () => {
+      // The store exempts such a chat from eviction; it can only do that if
+      // the flag reaches the bundle.
+      const bundle = lastBundleFor("agent-queued", () => {
+        mockHasQueuedMessage = true;
+      });
+      expect(bundle?.hasQueuedMessage).toBe(true);
     });
 
     it("names the rate limit when that is what refused the connection", () => {

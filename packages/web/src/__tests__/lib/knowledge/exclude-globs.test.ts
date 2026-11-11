@@ -33,6 +33,7 @@ describe("isAllowedExtension", () => {
       ".tif",
       ".tiff",
       ".txt",
+      ".msg",
     ]);
     expect(isAllowedExtension("handbook.pdf")).toBe(true);
     expect(isAllowedExtension("handbook.PDF")).toBe(true);
@@ -41,9 +42,10 @@ describe("isAllowedExtension", () => {
     // `.xls` stays out: LibreOffice would convert it, but a sheet has no page
     // for a citation to point at, and the direct reader is OOXML-only.
     expect(isAllowedExtension("Preise.xls")).toBe(false);
-    // Scans and plain text are read since #1409; a format nothing reads is not.
+    // Scans, plain text and Outlook messages are read since #1409; a format nothing reads is not.
     expect(isAllowedExtension("Typenschild.TIF")).toBe(true);
     expect(isAllowedExtension("Liesmich.txt")).toBe(true);
+    expect(isAllowedExtension("Angebot.msg")).toBe(true);
     expect(isAllowedExtension("Notiz.rtf")).toBe(false);
   });
 

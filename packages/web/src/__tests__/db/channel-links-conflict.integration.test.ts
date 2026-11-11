@@ -11,7 +11,7 @@
 // with postgres.js's `PostgresError` hidden on `.cause`. Every unit test was
 // green; the 409 branch was unreachable in production.
 //
-// Same lesson as the X-Frame-Options gate in AGENTS.md: assert what a concrete
+// Same lesson as the X-Frame-Options gate in agent-rules/web-routes.md: assert what a concrete
 // request resolves to, not what the code asked for.
 
 import { describe, it, expect } from "vitest";

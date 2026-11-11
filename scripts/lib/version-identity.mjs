@@ -53,7 +53,7 @@
  * fetched, and it is already the thing a release must update — so a release
  * that forgets it fails here too.
  *
- * See AGENTS.md § "Two Version Numbers, And Which Question Each Answers".
+ * See agent-rules/release.md § "Two Version Numbers, And Which Question Each Answers".
  */
 
 import { parseUpgradeSections } from "./upgrading-released-sections.mjs";

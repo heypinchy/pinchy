@@ -65,7 +65,7 @@ describe("MemberAccessSettings", () => {
   });
 
   // Neither failure is tied to a field the admin could correct — two checkboxes
-  // cannot be "wrong" — so both are system errors, which AGENTS.md § "Error And
+  // cannot be "wrong" — so both are system errors, which agent-rules/ui.md § "Error And
   // Notification UI" routes to a toast.
   it("reports a failed save with a toast carrying the server's reason", async () => {
     vi.mocked(global.fetch)

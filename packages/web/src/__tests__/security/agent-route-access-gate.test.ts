@@ -16,7 +16,7 @@
 // Closing those four made the prefix uniform. Nothing kept it that way, and the
 // docs now state the property outright ("its ID answers 'not found' on every
 // management endpoint" — concepts/user-roles.mdx, concepts/agent-permissions.mdx,
-// architecture.mdx). A claim in prose that nothing checks is the drift AGENTS.md
+// architecture.mdx). A claim in prose that nothing checks is the drift agent-rules/docs.md
 // § "A Hand-Maintained List That Mirrors Code Will Be Wrong" catalogues: the one
 // list that stayed correct is the one with a guard. The next handler added under
 // this prefix inherits the rule, or names itself here.

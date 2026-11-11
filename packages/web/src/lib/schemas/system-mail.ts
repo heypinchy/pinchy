@@ -5,7 +5,7 @@ import { senderNameSchema } from "@/lib/schemas/sender-name";
 /**
  * Schemas for the system mailer (Settings → Organization → Email delivery,
  * #1309), shared by `/api/settings/mail` and the settings card so a payload
- * rename is a compile error (AGENTS.md § "Shared Schemas And Typed Client").
+ * rename is a compile error (agent-rules/web-routes.md § "Shared Schemas And Typed Client").
  *
  * Client-safe: neither import reaches the database or nodemailer.
  */

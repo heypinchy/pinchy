@@ -79,6 +79,9 @@ function fakeDeps(): IngestDeps {
     convertOffice: vi.fn(async () => {
       throw new Error("convertOffice must not be called for a PDF");
     }),
+    readEmail: vi.fn(async () => {
+      throw new Error("readEmail must not be called for a PDF");
+    }),
     convertScan: vi.fn(async () => {
       throw new Error("convertScan must not be called for a PDF");
     }),
@@ -201,6 +204,31 @@ describe("kb index worker", () => {
       [tmpRoot]: 1,
       [join(tmpRoot, "certs")]: 2,
     });
+  });
+
+  // #1405: the run reads archived files last, so the plan must say which
+  // segment is archive — otherwise the folder status counts a folder's archive
+  // as current files still to come, and the folder reads "Queued" for hours.
+  it("marks the archived part of a folder in the plan it records", async () => {
+    const agent = await makeAgent();
+    writePdf(join(tmpRoot, "certs"), "iso.pdf");
+    writePdf(join(tmpRoot, "certs", "OLD"), "iso-2019.pdf");
+    writePdf(join(tmpRoot, "certs", "OLD"), "iso-2018.pdf");
+    await enqueueIndexJob({
+      orgId: ORG_ID,
+      agentId: agent.id,
+      agentName: agent.name,
+      requestedBy: "admin-1",
+      paths: [tmpRoot],
+    });
+
+    await runNextIndexJob({ deps: fakeDeps() });
+
+    const job = await getLatestIndexJobForAgent(agent.id);
+    expect(job?.folderPlan).toEqual([
+      { folder: join(tmpRoot, "certs"), files: 1 },
+      { folder: join(tmpRoot, "certs"), files: 2, archived: true },
+    ]);
   });
 
   // The run lands hours after the request, in a context with no request behind
@@ -947,7 +975,7 @@ describe("kb index worker tick", () => {
   });
 
   describe("Office documents an earlier artifact format indexed", () => {
-    // AGENTS.md § "Test Migrations Against Pre-Existing Data". After a bump
+    // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data". After a bump
     // of OFFICE_ARTIFACT_FORMAT_VERSION, the rows the upgrade finds were read
     // from PDFs the earlier conversion made. The ingest converts them again
     // on its next run — but the nightly run can be switched off, and until

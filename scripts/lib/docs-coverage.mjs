@@ -380,7 +380,7 @@ const UPGRADING_PAGE = "docs/src/content/docs/guides/upgrading.mdx";
  * `guides/upgrading.mdx` keeps one `## Upgrading from …` section per release,
  * newest first. The newest one is the only place the next migration may go:
  * every older section describes a release that already shipped and must not
- * change (AGENTS.md § "A Released Upgrade Section Is Immutable").
+ * change (agent-rules/release.md § "A Released Upgrade Section Is Immutable").
  *
  * Its `Database migrations` subsection opens with the range in its first
  * paragraph (`` `0056`–`0078` ``, or a single `` `0079` ``), and each bullet

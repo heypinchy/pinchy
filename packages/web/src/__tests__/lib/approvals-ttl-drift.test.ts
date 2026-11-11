@@ -18,7 +18,7 @@ import { DEFAULT_CONFIRM_TTL_MS } from "@/lib/approvals/service";
  * resume path reporting it. Keeping the two equal removes the window.
  *
  * The plugin value is read as TEXT rather than imported: `packages/web` must not
- * pull a plugin module into its build graph (AGENTS.md § "The Pre-Push Build …"),
+ * pull a plugin module into its build graph (agent-rules/tooling.md § "The Pre-Push Build …"),
  * and this only needs to compare two numbers.
  */
 const GATE_TS = path.join(process.cwd(), "../plugins/pinchy-approvals/gate.ts");

@@ -72,7 +72,7 @@ export interface IngestResult {
   archived: number;
   /**
    * Documents under the run's folders whose type the indexer cannot read yet —
-   * an Outlook `.msg`, an `.xlsb`, an `.rtf` (#1267). Files that are not
+   * an `.rtf`, a binary `.xlsb` (#1267). Files that are not
    * documents at all are `ignored` instead (#1410). They are not documents in
    * the index at all, so they sit OUTSIDE the outcome partition above: before
    * this was counted, a folder of 13 files reported 11 and the other two

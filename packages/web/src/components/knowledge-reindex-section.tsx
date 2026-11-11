@@ -738,8 +738,8 @@ function UnavailableFoldersNote({ count }: { count: number }) {
 }
 
 /**
- * Files on the share whose type Pinchy can't read (#1267) — an Outlook `.msg`,
- * an old `.xls`. Not documents in the index at all, so nothing else on this page
+ * Files on the share whose type Pinchy can't read (#1267) — an `.rtf`, a binary
+ * `.xlsb`. Not documents in the index at all, so nothing else on this page
  * mentions them, and without this line a gap in the agent's answers reads as
  * the model's fault.
  *
@@ -769,10 +769,10 @@ function UnsupportedFilesNote({
   const files = count === 1 ? "1 file is" : `${count} files are`;
   return (
     <p className="text-sm text-muted-foreground">
-      {files} of a type Pinchy can&apos;t read yet, like Outlook .msg emails or old .xls
-      spreadsheets. Your agent can&apos;t answer from {count === 1 ? "it" : "them"}. Saved as PDF,
-      Word, PowerPoint or .xlsx, or unpacked from an archive, {count === 1 ? "it's" : "they're"}{" "}
-      picked up by the next run.
+      {files} of a type Pinchy can&apos;t read yet, like .rtf documents or .xlsb spreadsheets. Your
+      agent can&apos;t answer from {count === 1 ? "it" : "them"}. Saved as PDF, Word, PowerPoint or
+      .xlsx, or unpacked from an archive, {count === 1 ? "it's" : "they're"} picked up by the next
+      run.
       {ignored > 0 && (
         <>
           {" "}
