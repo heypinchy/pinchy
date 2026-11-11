@@ -20,6 +20,10 @@
  * the interval is a poll for NEW work, not a run cadence: the re-entrancy guard
  * keeps overlapping ticks from starting a second run.
  */
+import { randomUUID } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
 import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
@@ -29,12 +33,13 @@ import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
 import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
-import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
-import { extractXlsxIsolated } from "@/lib/knowledge/xlsx-isolated";
+import { DEFAULT_MAX_OCR_PAGES, extractPdfPages } from "@/lib/knowledge/pdf-extract";
+import { extractXlsxIsolated, tiffToPdfIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
 import { clearSpoolBatches } from "@/lib/knowledge/office-converter-sidecar";
 import {
   clearStagedBatches,
+  getScanArtifactStore,
   OFFICE_ARTIFACT_FORMAT_VERSION,
   pruneOtherFormatVersions,
   stagingDirOf,
@@ -45,7 +50,7 @@ import {
   queueReconversion,
 } from "@/lib/knowledge/office-format-upgrade";
 import { buildFolderPlan } from "@/lib/knowledge/folder-plan";
-import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
+import { ingestPaths, type IngestDeps, type ScanConversion } from "@/lib/knowledge/ingest";
 import {
   agentsOwedFirstIndex,
   anyAgentSearchesTheIndex,
@@ -81,6 +86,27 @@ interface OcrTally {
   skippedPages: number;
   inputTokens: number;
   outputTokens: number;
+}
+
+/**
+ * Converts a scanned TIFF in the fenced child, at most as many frames as the
+ * OCR reads of a scanned PDF, and commits the PDF to the scan store under the
+ * file's content hash — where a citation opens it.
+ */
+async function convertScan(copyPath: string, contentHash: string): Promise<ScanConversion> {
+  const dir = join(stagingDirOf(), `scan-${randomUUID()}`);
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- a fresh directory inside the artifact volume's staging area.
+  await mkdir(dir, { recursive: true });
+  try {
+    const staged = join(dir, "scan.pdf");
+    const { frames, converted } = await tiffToPdfIsolated(copyPath, staged, {
+      maxFrames: DEFAULT_MAX_OCR_PAGES,
+    });
+    const pdfPath = await getScanArtifactStore().put(contentHash, staged);
+    return { pdfPath, frames, converted };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 /** Resolves the production embedder + extractor, or null if the bundled embedding model is missing (a broken image, not a config choice). */
@@ -136,6 +162,14 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
     // every nightly reindex (xlsx-isolated.ts).
     extractXlsx: (absPath) => extractXlsxIsolated(absPath),
     convertOffice: (sources) => convertOfficeFiles(sources),
+    convertScan: async (copyPath, contentHash) => {
+      const conversion = await convertScan(copyPath, contentHash);
+      // Frames past the OCR budget are never pages of the PDF, so the OCR
+      // tally never sees them; they are skipped pages all the same.
+      const t = tally.current;
+      if (t) t.skippedPages += conversion.frames - conversion.converted;
+      return conversion;
+    },
     ocrModel: ocr?.model ?? null,
     // The artifact volume, not the container's /tmp: see IngestDeps.stagingDir.
     stagingDir: stagingDirOf(),

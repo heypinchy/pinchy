@@ -74,14 +74,17 @@ import {
   isOfficeFile,
   OfficeFileRejectedError,
   isPresentationFile,
+  isScanFile,
   isSpreadsheetFile,
+  isTextFile,
   isWordFile,
   OFFICE_CONVERT_BATCH_SIZE,
 } from "./office-formats";
 import type { ChunkLocator } from "./locator";
-import { OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
+import { OFFICE_ARTIFACT_FORMAT_VERSION, SCAN_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
+import { readTextFile } from "./text-extract";
 import { isContentRejection, toStorableLocator, toStorableText } from "./stored-text";
 import { databaseErrorBehind, systemicIngestError } from "./ingest-errors";
 import type { IngestPage, IngestResult } from "./types";
@@ -98,6 +101,16 @@ import {
 // this file — it is what this file imports. Re-exported here so callers can
 // keep treating the ingest module as the contract's home.
 export type { IngestPage, IngestResult } from "./types";
+
+/** What `IngestDeps.convertScan` made of a scanned TIFF. */
+export interface ScanConversion {
+  /** The PDF of its frames, one page each, where a citation will find it. */
+  pdfPath: string;
+  /** How many frames the TIFF has. */
+  frames: number;
+  /** How many of them are pages of `pdfPath`: the first `converted`, in order. */
+  converted: number;
+}
 
 export interface IngestDeps {
   /** Batch-embeds chunk texts into dense vectors (embeddinggemma-300m, 768-dim). Prod: `(t) => embedTexts(t, embedCfg)`. */
@@ -149,6 +162,21 @@ export interface IngestDeps {
    * time.
    */
   convertOffice: (sources: readonly OfficeSource[]) => Promise<ConversionOutcome[]>;
+  /**
+   * Turns a scanned TIFF into a PDF of its frames, stored under `contentHash`
+   * where a citation opens it (#1409). Prod: `tiffToPdfIsolated` into the scan
+   * artifact store (kb-index-worker.ts). Called only when `ocrModel` is set —
+   * a scan has no text layer, so without OCR there is nothing to convert for.
+   *
+   * A refusal of the file (not a TIFF inside, too large) is an
+   * `OfficeFileRejectedError`; anything else is about the machine, and the
+   * file counts as failed.
+   *
+   * Required for the same reason `convertOffice` is: once
+   * `DEFAULT_ALLOWED_EXTENSIONS` names `.tif`, every caller's ingest WILL meet
+   * one.
+   */
+  convertScan: (copyPath: string, contentHash: string) => Promise<ScanConversion>;
   /**
    * The vision model `extractPdf` reads scanned pages with this run, or null
    * when it reads the text layer only (no vision model, or `PINCHY_KB_OCR=off`).
@@ -511,16 +539,17 @@ interface ExtractedDocument {
   incomplete: boolean;
   /**
    * What read it, for the record of an empty read: OCR can change what a PDF
-   * page yields, and nothing about a spreadsheet's hidden sheets or a document
-   * the converter could not convert.
+   * page yields, and nothing about a spreadsheet's hidden sheets, a document
+   * the converter could not convert, a scan whose bytes were refused, or a
+   * text file.
    */
-  reader: "pdf" | "sheets" | "converter";
+  reader: "pdf" | "sheets" | "converter" | "image" | "text";
 }
 
 /**
  * The artifact format version a document's chunks are read from: the current
- * one for an Office document the converter turns into a PDF, none for every
- * other format.
+ * one for an Office document the converter turns into a PDF, the scan store's
+ * own for a TIFF, none for every other format.
  *
  * Recorded on the row (`kb_documents.artifact_format_version`) and compared on
  * every run, because the artifact store alone cannot carry a change of rules
@@ -530,7 +559,9 @@ interface ExtractedDocument {
  * from the current rules.
  */
 function artifactFormatVersionFor(absPath: string): number | null {
-  return isOfficeFile(absPath) ? OFFICE_ARTIFACT_FORMAT_VERSION : null;
+  if (isOfficeFile(absPath)) return OFFICE_ARTIFACT_FORMAT_VERSION;
+  if (isScanFile(absPath)) return SCAN_ARTIFACT_FORMAT_VERSION;
+  return null;
 }
 
 /** The fields every page-shaped extraction derives from its pages alike. */
@@ -709,6 +740,9 @@ function logRefusal(absPath: string, verdict: string, reason: string): void {
  *   Word          the converted PDF's outline, heading path — never a page,
  *                 which the renderer decides and the reader's Word disagrees
  *                 with
+ *   TIFF scan     the PDF of its frames, through the PDF path: frame N =
+ *                 page N
+ *   plain text    no locator — it has no pages, so a citation opens the file
  *
  * `absPath` is the document's identity and decides the dispatch; `copyPath`
  * is what the readers open — a private copy of the verified bytes, so none of
@@ -775,7 +809,19 @@ async function readDocument(
     };
   }
 
-  const pages = await deps.extractPdf(copyPath);
+  if (isScanFile(absPath)) {
+    return extractScan(absPath, copyPath, deps, contentHash);
+  }
+
+  if (isTextFile(absPath)) {
+    return extractTextFile(absPath, copyPath);
+  }
+
+  return readPdfPages(await deps.extractPdf(copyPath));
+}
+
+/** A PDF's pages as chunks, each anchored on the page its text came from. */
+function readPdfPages(pages: IngestPage[]): ExtractedDocument {
   return {
     chunks: chunkPages(pages).map((chunk) => ({
       text: chunk.text,
@@ -784,6 +830,64 @@ async function readDocument(
     pageCount: pages.length,
     ...fromPages(pages),
     reader: "pdf",
+  };
+}
+
+/**
+ * Reads a scanned TIFF through the PDF its frames make (#1409): the scanned-PDF
+ * path's OCR, page budget, retry rule and page citations, without a second OCR
+ * path. Frame N is page N, and the citation opens that PDF on it.
+ */
+async function extractScan(
+  absPath: string,
+  copyPath: string,
+  deps: IngestDeps,
+  contentHash: string
+): Promise<ExtractedDocument> {
+  // A scan has no text layer, so a run without OCR would decode it for
+  // nothing. Recorded as an empty PDF read without OCR — exactly a blank
+  // scanned PDF's record — so the first run with a vision model reads it.
+  if (!deps.ocrModel) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "pdf" };
+  }
+
+  const conversion = await deps.convertScan(copyPath, contentHash).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    // Not a TIFF inside, or over a limit: a verdict on these bytes, as final
+    // as a refused workbook — and no vision model reads them differently.
+    logRefusal(absPath, "not read", err.message);
+    return null;
+  });
+  if (conversion === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "image" };
+  }
+
+  const read = readPdfPages(await deps.extractPdf(conversion.pdfPath));
+  // The frames past the OCR budget are not pages of the PDF, but they are
+  // pages of the document.
+  return { ...read, pageCount: conversion.frames };
+}
+
+/**
+ * Reads a plain-text file in the encoding its author saved it in
+ * (text-extract.ts). It has no pages, so its chunks carry no locator, and the
+ * citation names the file without linking it: the viewer shows PDFs only.
+ */
+async function extractTextFile(absPath: string, copyPath: string): Promise<ExtractedDocument> {
+  const text = await readTextFile(copyPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    logRefusal(absPath, "not read", err.message);
+    return null;
+  });
+  if (text === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "text" };
+  }
+  return {
+    chunks: chunkPages([{ page: 1, text }]).map((chunk) => ({ text: chunk.text, locator: null })),
+    pageCount: null,
+    text,
+    incomplete: false,
+    reader: "text",
   };
 }
 

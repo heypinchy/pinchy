@@ -27,7 +27,7 @@ import {
   parseSourceHref,
   buildPassageRequest,
 } from "@/lib/knowledge/source-links";
-import { OFFICE_EXTENSIONS } from "@/lib/knowledge/office-formats";
+import { OFFICE_EXTENSIONS, SCAN_EXTENSIONS } from "@/lib/knowledge/office-formats";
 
 /** Minimal mdast subset — the plugin only ever walks children and rewrites text nodes. */
 type Node = { type: string; value?: string; url?: string; children?: Node[] };
@@ -200,6 +200,27 @@ describe("buildSourceDownloads", () => {
     }
   });
 
+  it("offers the scan as filed AND the PDF it was read from for a TIFF (#1409)", () => {
+    // A browser renders no TIFF, so the viewer shows the PDF the ingest made
+    // of it; the original is still the file on the reader's drive.
+    const downloads = buildSourceDownloads(hrefFor("archive/Lieferschein 0815.tif"))!;
+
+    expect(downloads.map((d) => d.label)).toEqual(["Original (.tif)", "PDF"]);
+    expect(downloads.map((d) => d.filename)).toEqual([
+      "Lieferschein 0815.tif",
+      "Lieferschein 0815.pdf",
+    ]);
+    expect(new URL(downloads[1].url, "http://localhost").searchParams.get("variant")).toBe(
+      "converted"
+    );
+  });
+
+  it("offers a pair for every scan format the knowledge base converts", () => {
+    for (const ext of SCAN_EXTENSIONS) {
+      expect(buildSourceDownloads(hrefFor(`archive/scan${ext}`))).toHaveLength(2);
+    }
+  });
+
   it("says nothing about a link that is not a citation", () => {
     expect(buildSourceDownloads("/some/other/link")).toBeNull();
     expect(buildSourceDownloads("https://evil.example/workspace-file?path=%2Fx.docx")).toBeNull();
@@ -234,6 +255,18 @@ describe("buildSourceViewerUrl", () => {
 
     expect(url.pathname).toBe("/api/agents/agent-1/workspace-file/Vorlage_Wartung.pdf");
     expect(url.searchParams.get("path")).toBe("/data/customer/Vorlage_Wartung.docx");
+  });
+
+  it("names a TIFF after the PDF the viewer is shown, and keeps its page (#1409)", () => {
+    const href = buildSourceHref(AGENT, "archive/Lieferschein 0815.tiff", {
+      kind: "page",
+      page: 3,
+    });
+    const url = new URL(buildSourceViewerUrl(href)!, "http://localhost");
+
+    expect(decodeURIComponent(url.pathname.split("/").pop()!)).toBe("Lieferschein 0815.pdf");
+    expect(url.searchParams.get("path")).toBe("/data/archive/Lieferschein 0815.tiff");
+    expect(url.hash).toBe("#page=3");
   });
 
   it("encodes a name that would otherwise end the path segment early", () => {
@@ -346,6 +379,31 @@ describe("remarkSourceLinks", () => {
       expect(links(tree).map((l) => l.text)).toEqual([`customer/Angebot${inner}.pdf`]);
     }
   );
+
+  it.each(["scan.tif", "scan.TIFF", "Lieferschein 0815.tiff"])(
+    "links the scanned TIFF %s and keeps its page (#1409)",
+    (file) => {
+      const tree = run(paragraph(`- [1] archive/${file} — S. 2`));
+
+      expect(links(tree).map((l) => l.text)).toEqual([`archive/${file}`]);
+      expect(parseSourceHref(links(tree)[0].url)).toEqual({
+        path: `archive/${file}`,
+        locator: { kind: "page", page: 2 },
+      });
+    }
+  );
+
+  it("links a whole .docm rather than stopping at the .doc inside it (#1409)", () => {
+    const tree = run(paragraph("siehe quality/Pruefplan.docm hier"));
+    expect(links(tree).map((l) => l.text)).toEqual(["quality/Pruefplan.docm"]);
+  });
+
+  it("leaves a .txt as plain text, because the viewer cannot show one", () => {
+    // Indexed (#1409), not linkable: the route serves a text file as a
+    // download, so a link would open a pane that only saves a file.
+    const tree = run(paragraph("siehe notes/Protokoll.txt hier"));
+    expect(links(tree)).toEqual([]);
+  });
 
   it("still stops at an extension followed by a full stop", () => {
     // The chained-extension rule must not swallow the sentence: `.doc.` is a
@@ -775,6 +833,15 @@ describe("buildPassageRequest", () => {
     // Its passages are anchored on headings, not pages of the converted PDF.
     const href = buildSourceHref(AGENT, "quality/Vorlage.docx", { kind: "page", page: 2 });
     expect(buildPassageRequest(href, "x")).toBeNull();
+  });
+
+  it("asks about the cited page of a scanned TIFF, which is read page by page (#1409)", () => {
+    const href = buildSourceHref(AGENT, "archive/scan.tif", { kind: "page", page: 2 });
+    expect(buildPassageRequest(href, "x")?.body).toEqual({
+      path: "/data/archive/scan.tif",
+      page: 2,
+      claim: "x",
+    });
   });
 
   it("asks nothing for something that is not a citation", () => {
