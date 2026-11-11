@@ -119,6 +119,9 @@ it("streams every source through the server one chunk at a time, and hands reade
         hiddenRows: 0,
       };
     },
+    convertScan: async () => {
+      throw new Error("this run holds no scan");
+    },
     convertOffice: async (sources): Promise<ConversionOutcome[]> =>
       sources.map((source) => {
         look(source.absPath);

@@ -392,6 +392,32 @@ describe("prepareOfficeSource", () => {
     expect((await prepareOfficeSource(file("a.doc", pkg))).data.equals(pkg)).toBe(true);
   });
 
+  it("hands LibreOffice a macro-enabled .docm with its VBA project cut away (#1409)", async () => {
+    // A `.docm` is a `.docx` whose package also carries `vbaProject.bin`. The
+    // conversion never runs a macro — the soffice profile disables macro
+    // execution (office-soffice.ts, asserted in office-convert.adapter.test.ts)
+    // — and the package LibreOffice reads does not even reference one.
+    const pkg = docxWith({
+      text: "Wartungsplan",
+      documentRels: relationships(
+        rel(
+          "rId1",
+          "http://schemas.microsoft.com/office/2006/relationships/vbaProject",
+          "vbaProject.bin"
+        )
+      ),
+      parts: { "word/vbaProject.bin": randomBytes(64) },
+    });
+
+    const prepared = await prepareOfficeSource(file("Wartungsplan.docm", pkg));
+
+    expect(prepared.relationshipsRemoved).toBe(1);
+    const rels = readZipEntries(prepared.data).find(
+      (e) => e.name === "word/_rels/document.xml.rels"
+    )!;
+    expect(inflatePart(prepared.data, rels, 1 << 20).toString("utf8")).not.toContain("vbaProject");
+  });
+
   it.each([
     ["html.doc", "<html><body><img src='http://10.0.0.5/x.png'></body></html>"],
     ["html.docx", "<!DOCTYPE html><html><body>hi</body></html>"],

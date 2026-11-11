@@ -99,6 +99,7 @@ import {
   type IngestPage,
   type IngestProgress,
   type IngestResult,
+  type ScanConversion,
 } from "@/lib/knowledge/ingest";
 import { OfficeFileRejectedError, StagedCopyWriteError } from "@/lib/knowledge/office-formats";
 import { extractXlsx as realExtractXlsx, type XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
@@ -113,10 +114,12 @@ import {
 import {
   OFFICE_ARTIFACT_FORMAT_VERSION,
   OfficeArtifactStore,
+  SCAN_ARTIFACT_FORMAT_VERSION,
 } from "@/lib/knowledge/office-artifacts";
 import { stageOfficeSourceIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 import { listUnsupportedFiles, type UnsupportedFile } from "@/lib/knowledge/unsupported-files";
+import { DEFAULT_ALLOWED_EXTENSIONS } from "@/lib/knowledge/exclude-globs";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -167,6 +170,11 @@ const neverCalledConvert = async (): Promise<ConversionOutcome[]> => {
   throw new Error("convertOffice must not be called for a PDF");
 };
 
+/** And for the scan converter: only a .tif may reach it. */
+const neverCalledScan = async (): Promise<ScanConversion> => {
+  throw new Error("convertScan must not be called for anything but a TIFF");
+};
+
 function fakeDeps(
   pages: IngestPage[] = [
     { page: 1, text: PAGE_1_TEXT },
@@ -199,6 +207,7 @@ function fakeDeps(
       embed,
       extractPdf,
       extractXlsx,
+      convertScan: neverCalledScan,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -262,7 +271,7 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
   // Non-allowlisted file alongside the PDF: proves the extension allowlist
   // (exclude-globs.ts) actually filters discovery, not just that a lone PDF
   // happens to work.
-  writeFileSync(join(tmpRoot, "notes.txt"), "not indexed");
+  writeFileSync(join(tmpRoot, "notes.rtf"), "not indexed");
 
   const { deps, embed, extractPdf, handed } = fakeDeps();
 
@@ -298,7 +307,7 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
     chunks.map((c) => (c.locator?.kind === "page" ? c.locator.page : null))
   );
   expect([...anchoredPages].sort()).toEqual([1, 2]);
-  // notes.txt must never have reached extraction/embedding.
+  // notes.rtf must never have reached extraction/embedding.
   expect(embed).toHaveBeenCalledTimes(1);
 
   // ── Second run, no changes on disk ──────────────────────────────────────
@@ -519,6 +528,7 @@ it("stores the hash of the bytes it re-read when a chunkless document is saved b
       { page: 1, text: `Version on disk: ${readFileSync(copy, "utf8")}. ${PAGE_1_TEXT}` },
     ],
     extractXlsx: neverCalledXlsx,
+    convertScan: neverCalledScan,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -579,11 +589,11 @@ it("accepts a single-file root path (not just a directory) and indexes that one 
 });
 
 it("does not ingest a single-file root whose extension is not on the allowlist, and counts it", async () => {
-  const txtPath = join(tmpRoot, "notes.txt");
-  writeFileSync(txtPath, "not a pdf");
+  const rtfPath = join(tmpRoot, "notes.rtf");
+  writeFileSync(rtfPath, "{\\rtf1 not a pdf}");
 
   const { deps, extractPdf } = fakeDeps();
-  const result = await ingestDirectory(ORG_ID, txtPath, deps);
+  const result = await ingestDirectory(ORG_ID, rtfPath, deps);
 
   expect(result).toEqual(counts({ unsupported: 1 }));
   expect(extractPdf).not.toHaveBeenCalled();
@@ -988,6 +998,206 @@ it("does not read an empty workbook again when a vision model appears", async ()
   expect(extractXlsx).toHaveBeenCalledTimes(1);
 });
 
+// ---------------------------------------------------------------------------
+// Scanned TIFFs and plain-text files (#1409)
+// ---------------------------------------------------------------------------
+//
+// A TIFF is a scan: the ingest hands it to `convertScan`, which turns its
+// frames into pages of a PDF, and reads that PDF through the scanned-PDF path
+// — the same OCR, the same retry rule, the same page citations. The fake
+// converter below writes a stand-in PDF; tiff-pdf.test.ts proves the real one.
+
+/** A `convertScan` that "converts" by writing a stand-in PDF beside the run's staging. */
+function fakeScanConverter(frames = 2, converted = frames) {
+  const handed: Array<{ path: string; bytes: string; contentHash: string }> = [];
+  const convertScan = vi.fn(async (copyPath: string, contentHash: string) => {
+    handed.push({ path: copyPath, bytes: readFileSync(copyPath, "utf8"), contentHash });
+    const pdfPath = join(stagingDir, `scan-${contentHash}.pdf`);
+    writeFileSync(pdfPath, "converted-scan");
+    return { pdfPath, frames, converted };
+  });
+  return { convertScan, handed };
+}
+
+const SCAN_PAGES: IngestPage[] = [
+  { page: 1, text: PAGE_1_TEXT },
+  { page: 2, text: PAGE_2_TEXT },
+];
+
+it("reads a multi-page TIFF through OCR, one page locator per frame", async () => {
+  const tifPath = join(tmpRoot, "delivery-note.tif");
+  writeFileSync(tifPath, "fake-tiff-bytes");
+  const { deps, extractPdf } = fakeDeps(SCAN_PAGES);
+  const { convertScan, handed } = fakeScanConverter(2);
+
+  const result = await ingestDirectory(ORG_ID, tmpRoot, {
+    ...deps,
+    convertScan,
+    ocrModel: VISION_MODEL,
+  });
+
+  expect(result).toEqual(counts({ indexed: 1 }));
+  // Handed the private copy, never the path on the share, and keyed on the
+  // hash the ingest already has — the key a citation finds the PDF under.
+  expect(handed).toHaveLength(1);
+  expect(dirname(dirname(handed[0].path))).toBe(stagingDir);
+  expect(handed[0].bytes).toBe("fake-tiff-bytes");
+  expect(handed[0].contentHash).toBe(createHash("sha256").update("fake-tiff-bytes").digest("hex"));
+  // The PDF that came out is what OCR reads.
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+  expect(extractPdf.mock.calls[0][0]).toBe(join(stagingDir, `scan-${handed[0].contentHash}.pdf`));
+
+  const doc = await onlyDocument();
+  expect(doc.sourcePath).toBe(tifPath);
+  expect(doc.pageCount).toBe(2);
+  const pages = (await chunksFor(doc.id)).map((chunk) => chunk.locator);
+  expect(new Set(pages.map((locator) => JSON.stringify(locator)))).toEqual(
+    new Set([JSON.stringify({ kind: "page", page: 1 }), JSON.stringify({ kind: "page", page: 2 })])
+  );
+});
+
+it("leaves a TIFF unconverted without OCR, and reads it once a vision model is configured", async () => {
+  // A scan has no text layer, so without OCR there is nothing to read — and
+  // nothing worth decoding. It is recorded like a blank scanned PDF read
+  // without OCR, which is exactly what makes turning OCR on read it.
+  writeFileSync(join(tmpRoot, "certificate.tiff"), "fake-tiff-bytes");
+  const { deps, extractPdf } = fakeDeps(SCAN_PAGES);
+  const { convertScan } = fakeScanConverter(2);
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, convertScan })).toEqual(
+    counts({ unsearchable: 1 })
+  );
+  expect(convertScan).not.toHaveBeenCalled();
+  expect(extractPdf).not.toHaveBeenCalled();
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker("no-ocr"));
+
+  // Unchanged and still no OCR: left alone.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, convertScan })).toEqual(
+    counts({ skipped: 1 })
+  );
+
+  expect(
+    await ingestDirectory(ORG_ID, tmpRoot, { ...deps, convertScan, ocrModel: VISION_MODEL })
+  ).toEqual(counts({ indexed: 1 }));
+  expect(convertScan).toHaveBeenCalledTimes(1);
+  expect(await chunksFor((await onlyDocument()).id)).not.toHaveLength(0);
+});
+
+it("retries a TIFF whose vision call failed, like a scanned PDF", async () => {
+  writeFileSync(join(tmpRoot, "scan.tif"), "fake-tiff-bytes");
+  const { deps, extractPdf } = fakeDeps(FAILED_SCAN);
+  const { convertScan } = fakeScanConverter(1);
+  const withOcr = { ...deps, convertScan, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect((await onlyDocument()).emptyExtractionBy).toBeNull();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(2);
+});
+
+it("converts an unchanged TIFF again once the scan artifact format has moved on", async () => {
+  // A new SCAN_ARTIFACT_FORMAT_VERSION moves the scan store to a new
+  // directory, and an unchanged TIFF never asks the store for anything — so
+  // without the version on the row its citation would open nothing.
+  writeFileSync(join(tmpRoot, "delivery-note.tif"), "fake-tiff-bytes");
+  const { deps } = fakeDeps(SCAN_PAGES);
+  const { convertScan } = fakeScanConverter(2);
+  const withOcr = { ...deps, convertScan, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+  expect((await onlyDocument()).artifactFormatVersion).toBe(SCAN_ARTIFACT_FORMAT_VERSION);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ skipped: 1 }));
+  expect(convertScan).toHaveBeenCalledTimes(1);
+
+  await db
+    .update(kbDocuments)
+    .set({ artifactFormatVersion: SCAN_ARTIFACT_FORMAT_VERSION - 1 })
+    .where(eq(kbDocuments.orgId, ORG_ID));
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+  expect(convertScan).toHaveBeenCalledTimes(2);
+});
+
+it("records a TIFF the converter refuses as read, and does not convert it again", async () => {
+  // Not a TIFF inside, or too large: a verdict on these bytes, final for them.
+  writeFileSync(join(tmpRoot, "not-really.tif"), "fake-tiff-bytes");
+  const { deps, extractPdf } = fakeDeps(SCAN_PAGES);
+  const convertScan = vi.fn(async (): Promise<ScanConversion> => {
+    throw new OfficeFileRejectedError(
+      "unexpected_content",
+      "the file does not start with a TIFF header"
+    );
+  });
+  const withOcr = { ...deps, convertScan, ocrModel: VISION_MODEL };
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+    expect(extractPdf).not.toHaveBeenCalled();
+    expect((await onlyDocument()).emptyExtractionBy).toBe(marker("image"));
+    expect(warn.mock.calls.map((call) => format(...call)).join("\n")).toContain(
+      "does not start with a TIFF header"
+    );
+
+    // A different vision model cannot change a refusal of the bytes.
+    expect(
+      await ingestDirectory(ORG_ID, tmpRoot, { ...withOcr, ocrModel: "openai/gpt-5.5-mini" })
+    ).toEqual(counts({ skipped: 1 }));
+    expect(convertScan).toHaveBeenCalledTimes(1);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it("counts a TIFF the converter could not get to as failed, and leaves no row", async () => {
+  // A crashed decoder child or a full volume says nothing about the file.
+  writeFileSync(join(tmpRoot, "scan.tif"), "fake-tiff-bytes");
+  const { deps } = fakeDeps(SCAN_PAGES);
+  const convertScan = vi.fn(async (): Promise<ScanConversion> => {
+    throw new Error("isolated child exited with signal SIGKILL");
+  });
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(
+      await ingestDirectory(ORG_ID, tmpRoot, { ...deps, convertScan, ocrModel: VISION_MODEL })
+    ).toEqual(counts({ failed: 1 }));
+  } finally {
+    error.mockRestore();
+  }
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
+});
+
+it("reads a Windows-1252 text file with its umlauts intact", async () => {
+  // Notepad's "ANSI": one byte per character, which UTF-8 would turn into
+  // U+FFFD — and a search for the word into no result.
+  const text = "Prüfbericht für die Übergabe: Maße geprüft, Größe 3.";
+  const txtPath = join(tmpRoot, "notes.txt");
+  writeFileSync(txtPath, Buffer.from(text, "latin1"));
+  const { deps, extractPdf } = fakeDeps();
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  expect(extractPdf).not.toHaveBeenCalled();
+
+  const doc = await onlyDocument();
+  expect(doc.pageCount).toBeNull();
+  const chunks = await chunksFor(doc.id);
+  expect(chunks.map((chunk) => chunk.chunkText).join(" ")).toContain(
+    "Prüfbericht für die Übergabe"
+  );
+  // A text file has no page to point at; the citation opens the file.
+  expect(chunks.every((chunk) => chunk.locator === null)).toBe(true);
+});
+
+it("records an empty text file as read, and leaves it alone after", async () => {
+  writeFileSync(join(tmpRoot, "empty.txt"), "");
+  const { deps } = fakeDeps();
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker("text"));
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL })).toEqual(
+    counts({ skipped: 1 })
+  );
+});
+
 // A corpus is not a curated fixture: one corrupt or unreadable PDF is normal.
 // Without a per-file boundary it aborts the entire reindex, so a single bad
 // file costs every other file its update — and under a retrying job runner it
@@ -1008,6 +1218,7 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
       embed,
       extractPdf,
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -1051,6 +1262,7 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
       embed,
       extractPdf,
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -1080,6 +1292,7 @@ it("keeps indexing the next file when the embedder refuses one file's text", asy
       { page: 1, text: path.endsWith("a-dense.pdf") ? TOO_LONG : PAGE_1_TEXT },
     ]),
     extractXlsx: neverCalledXlsx,
+    convertScan: neverCalledScan,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -1277,6 +1490,7 @@ it("counts a file whose staging copy hits a full disk as failed and goes on", as
       embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.1))),
       extractPdf,
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -1316,6 +1530,7 @@ it("keeps the last indexed version searchable when a file changes into one that 
     embed,
     extractPdf,
     extractXlsx: neverCalledXlsx,
+    convertScan: neverCalledScan,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -1397,6 +1612,7 @@ function rejectingDeps(rejectedText: string, pagesFor: (path: string) => IngestP
     embed,
     extractPdf: vi.fn(async (path: string) => pagesFor(path)),
     extractXlsx: neverCalledXlsx,
+    convertScan: neverCalledScan,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -2376,6 +2592,7 @@ function officeDeps(
       extractPdf,
       extractXlsx: neverCalledXlsx,
       convertOffice,
+      convertScan: neverCalledScan,
       ocrModel: null,
       stagingDir,
     } as IngestDeps,
@@ -2579,6 +2796,7 @@ describe("the converter's log lines about a document", () => {
       embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05))),
       extractPdf: vi.fn(async () => WORD_PAGES),
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store: new OfficeArtifactStore(storeRoot),
@@ -2688,6 +2906,7 @@ it("keeps a failed file's log entry to one bounded line, whatever its name holds
       embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.1))),
       extractPdf,
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -2726,6 +2945,7 @@ it.skipIf(process.getuid?.() === 0)(
           throw new Error("extractPdf reached a file it could not have read");
         }),
         extractXlsx: neverCalledXlsx,
+        convertScan: neverCalledScan,
         convertOffice: neverCalledConvert,
         ocrModel: null,
         stagingDir,
@@ -2828,6 +3048,7 @@ describe("an artifact volume that cannot be written", () => {
       embed,
       extractPdf: vi.fn(async () => WORD_PAGES),
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store: new OfficeArtifactStore(storeRoot),
@@ -3092,6 +3313,7 @@ it("converts a batch mate again when it was saved between its batch and its own 
     ],
     extractXlsx: neverCalledXlsx,
     convertOffice,
+    convertScan: neverCalledScan,
     ocrModel: null,
     stagingDir,
   };
@@ -3148,6 +3370,7 @@ it("spends one converter attempt per batch when the converter never answers at a
     extractPdf,
     extractXlsx: neverCalledXlsx,
     convertOffice,
+    convertScan: neverCalledScan,
     ocrModel: null,
     stagingDir,
   } as IngestDeps;
@@ -3211,6 +3434,7 @@ describe("an Office document converted under an earlier artifact format", () => 
         { page: 1, text: readFileSync(artifact, "utf8").replace("%PDF-1.4", "").trim() },
       ]),
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store,
@@ -3393,6 +3617,7 @@ function recordingDeps() {
         hiddenRows: 0,
       };
     }),
+    convertScan: neverCalledScan,
     convertOffice: vi.fn(async (sources: readonly { absPath: string }[]) =>
       sources.map((source) => {
         read(source.absPath);
@@ -3630,8 +3855,8 @@ describe("files whose type the indexer cannot read (#1267)", () => {
   // other two nowhere. They must be counted and named, with their type.
   it("counts and records them with path and type, beside the documents it indexes", async () => {
     writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
-    mkdirSync(join(tmpRoot, "scans"));
-    writeFileSync(join(tmpRoot, "scans", "Nameplate.TIF"), "tiff");
+    mkdirSync(join(tmpRoot, "word"));
+    writeFileSync(join(tmpRoot, "word", "Offer.RTF"), "rtf");
     writeFileSync(join(tmpRoot, "Budget 2019.xls"), "biff");
     writeFileSync(join(tmpRoot, "README"), "no extension");
 
@@ -3642,9 +3867,37 @@ describe("files whose type the indexer cannot read (#1267)", () => {
       [
         { sourcePath: join(tmpRoot, "Budget 2019.xls"), type: ".xls" },
         { sourcePath: join(tmpRoot, "README"), type: "" },
-        { sourcePath: join(tmpRoot, "scans", "Nameplate.TIF"), type: ".tif" },
+        { sourcePath: join(tmpRoot, "word", "Offer.RTF"), type: ".rtf" },
       ].sort((a, b) => (a.sourcePath < b.sourcePath ? -1 : 1))
     );
+  });
+
+  // An install that upgrades already has these on its list: the version
+  // before #1409 read neither scans nor text files. The next run must read
+  // them and take them off the list — not leave them listed as unreadable
+  // beside the documents they became.
+  it("reads the scans and text files an earlier version listed, and drops them from the list", async () => {
+    const tifPath = join(tmpRoot, "delivery-note.tif");
+    const txtPath = join(tmpRoot, "notes.txt");
+    writeFileSync(tifPath, "fake-tiff-bytes");
+    writeFileSync(txtPath, "Every delivery is checked against the order.");
+    const before = DEFAULT_ALLOWED_EXTENSIONS.filter(
+      (ext) => ![".tif", ".tiff", ".txt"].includes(ext)
+    );
+    await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, { allowedExtensions: before });
+    expect((await unsupportedUnder(tmpRoot)).map((f) => f.type).sort()).toEqual([".tif", ".txt"]);
+
+    const { deps } = fakeDeps(SCAN_PAGES);
+    const { convertScan } = fakeScanConverter(2);
+    const result = await ingestDirectory(ORG_ID, tmpRoot, {
+      ...deps,
+      convertScan,
+      ocrModel: VISION_MODEL,
+    });
+
+    expect(result).toEqual(counts({ indexed: 2 }));
+    expect(convertScan).toHaveBeenCalledTimes(1);
+    expect(await unsupportedUnder(tmpRoot)).toEqual([]);
   });
 
   // Never documents: listing them would bury the scans in noise. Same for
@@ -3657,7 +3910,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     mkdirSync(join(tmpRoot, ".git"));
     writeFileSync(join(tmpRoot, ".git", "config"), "x");
     mkdirSync(join(tmpRoot, "$RECYCLE.BIN"));
-    writeFileSync(join(tmpRoot, "$RECYCLE.BIN", "deleted.tif"), "x");
+    writeFileSync(join(tmpRoot, "$RECYCLE.BIN", "deleted.rtf"), "x");
 
     const result = await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
 
@@ -3670,7 +3923,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
   // discovery on, not only from a return value a throw would skip.
   it("reports the count from the first progress report on", async () => {
     writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
-    writeFileSync(join(tmpRoot, "notes.txt"), "plain text");
+    writeFileSync(join(tmpRoot, "notes.rtf"), "plain text");
     const reports: IngestProgress[] = [];
 
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, {
@@ -3694,18 +3947,18 @@ describe("files whose type the indexer cannot read (#1267)", () => {
   });
 
   it("counts a granted single file of an unsupported type", async () => {
-    const tif = join(tmpRoot, "Plate.tif");
-    writeFileSync(tif, "tiff");
+    const rtf = join(tmpRoot, "Plate.rtf");
+    writeFileSync(rtf, "rtf");
 
-    const result = await ingestPaths(ORG_ID, [tif], fakeDeps().deps);
+    const result = await ingestPaths(ORG_ID, [rtf], fakeDeps().deps);
 
     expect(result).toEqual(counts({ unsupported: 1 }));
-    expect(await unsupportedUnder(tif)).toEqual([{ sourcePath: tif, type: ".tif" }]);
+    expect(await unsupportedUnder(rtf)).toEqual([{ sourcePath: rtf, type: ".rtf" }]);
   });
 
   it("counts a file under two overlapping roots once", async () => {
     mkdirSync(join(tmpRoot, "hr"));
-    writeFileSync(join(tmpRoot, "hr", "Plate.tif"), "tiff");
+    writeFileSync(join(tmpRoot, "hr", "Plate.rtf"), "rtf");
 
     const result = await ingestPaths(ORG_ID, [tmpRoot, join(tmpRoot, "hr")], fakeDeps().deps);
 
@@ -3719,36 +3972,36 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     const share = join(tmpRoot, "share");
     mkdirSync(share);
     writeFileSync(join(share, "contract.pdf"), "fake-pdf-bytes");
-    writeFileSync(join(share, "Plate.tif"), "tiff");
+    writeFileSync(join(share, "Plate.rtf"), "rtf");
     writeFileSync(join(tmpRoot, "other.pdf"), "fake-pdf-bytes-2");
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, { keepEmptiedFolders: true });
 
     rmSync(join(share, "contract.pdf"));
-    rmSync(join(share, "Plate.tif"));
+    rmSync(join(share, "Plate.rtf"));
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, { keepEmptiedFolders: true });
 
     expect(await unsupportedUnder(tmpRoot)).toEqual([
-      { sourcePath: join(share, "Plate.tif"), type: ".tif" },
+      { sourcePath: join(share, "Plate.rtf"), type: ".rtf" },
     ]);
   });
 
   it("keeps the list of a granted folder it could not read", async () => {
     const share = join(tmpRoot, "share");
     mkdirSync(share);
-    writeFileSync(join(share, "Plate.tif"), "tiff");
+    writeFileSync(join(share, "Plate.rtf"), "rtf");
     await ingestDirectory(ORG_ID, share, fakeDeps().deps);
 
     rmSync(share, { recursive: true });
     await ingestDirectory(ORG_ID, share, fakeDeps().deps);
 
     expect(await unsupportedUnder(share)).toEqual([
-      { sourcePath: join(share, "Plate.tif"), type: ".tif" },
+      { sourcePath: join(share, "Plate.rtf"), type: ".rtf" },
     ]);
   });
 
   // Written at the end, like the removal pass: half a walk is not the share.
   it("leaves the previous list in place when a run dies halfway", async () => {
-    writeFileSync(join(tmpRoot, "Plate.tif"), "tiff");
+    writeFileSync(join(tmpRoot, "Plate.rtf"), "rtf");
     writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
 
@@ -3761,7 +4014,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     await expect(ingestDirectory(ORG_ID, tmpRoot, deps)).rejects.toThrow("embedder down");
 
     expect((await unsupportedUnder(tmpRoot)).map((f) => f.sourcePath)).toEqual([
-      join(tmpRoot, "Plate.tif"),
+      join(tmpRoot, "Plate.rtf"),
     ]);
   });
 });
