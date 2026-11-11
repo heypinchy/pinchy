@@ -292,11 +292,18 @@ repeated.
 }
 ```
 
-The change **is** stored; only the runtime has not caught up. A later save or a
-restart applies it. Retrying is safe — the update is idempotent — but treating
+The change **is** stored; only the runtime has not caught up. That includes a
+`groupIds` change sent in the same request: the group assignment is written
+before Pinchy answers. If writing it fails too, the message says so with a
+second sentence, `The group assignment was not saved: <cause>`, and only the
+group change needs to be sent again. Any other step that fails after the
+group assignment is written adds `A follow-up step also failed: <cause>`
+instead; the group change is then stored. A later save or a restart brings the
+runtime up to date. Retrying is safe — the update is idempotent — but treating
 the change as discarded is not. Pinchy records this case in the audit trail as
 an `agent.updated` entry with outcome `failure`, so a change that reached the
-database but not the runtime still leaves a trace.
+database but not the runtime still leaves a trace — including the
+`allowedGroups` diff when the request changed the agent's groups.
 
 ### `DELETE /api/agents/:id`
 
@@ -737,17 +744,21 @@ Runs a hybrid (vector + full-text) search over the requesting agent's indexed, g
 
 ### `POST /api/agents/:agentId/knowledge/passage`
 
-Which indexed passage on a cited page an answer drew on — what the citation viewer asks before it highlights one. Read-only: it isn't audited itself, because it accompanies a document view that `workspace-file` already records as `knowledge.source_viewed`.
+Which indexed passage of a cited page, slide or Word section an answer drew on — what the citation viewer asks before it highlights one. Read-only: it isn't audited itself, because it accompanies a document view that `workspace-file` already records as `knowledge.source_viewed`.
 
 It returns text from a document, so it applies the same two gates as `workspace-file`, in the same order, before the index is read: the agent check (`404` for an agent you can't use, `403` for a paused one), then the agent's granted folders (`403` for a path outside them, `404` for a file that isn't there).
 
 **Request body:**
 
-| Field   | Type   | Required | Description                                                                                                                                   |
-| ------- | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `path`  | string | Yes      | The document's full path — the `path` a citation link carries.                                                                                |
-| `page`  | number | Yes      | The cited page, from 1.                                                                                                                       |
-| `claim` | string | No       | The answer's sentences that cite the source, at most 2000 characters. Used only to choose between the passages on the page, and never stored. |
+| Field     | Type   | Required     | Description                                                                                                                                                      |
+| --------- | ------ | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`    | string | Yes          | The document's full path — the `path` a citation link carries.                                                                                                   |
+| `page`    | number | One of three | A PDF's cited page, from 1.                                                                                                                                      |
+| `slide`   | number | One of three | A slide deck's cited slide, from 1.                                                                                                                              |
+| `heading` | string | One of three | A Word document's cited heading path, levels joined by a space, `>` and a space, as the citation shows it — `Quality > Incoming goods`. At most 2000 characters. |
+| `claim`   | string | No           | The answer's sentences that cite the source, at most 2000 characters. Used only to choose between the passages of the page, slide or section, and never stored.  |
+
+Send exactly one of `page`, `slide` and `heading`; a body with none or more than one is a `400`. A heading matches only the whole path: `Quality` does not match a passage filed under `Quality > Incoming goods`.
 
 **Response:**
 
@@ -759,7 +770,7 @@ It returns text from a document, so it applies the same two gates as `workspace-
 }
 ```
 
-`passage` is the indexed text of the passage, or `null` when there is none to show: the page holds no indexed text, or it holds several passages and nothing says which — no `claim`, or the embedding model isn't available. With several, the one nearest to `claim` in meaning wins, which also works when the answer is in a different language than the document.
+`passage` is the indexed text of the passage, or `null` when there is none to show: the page, slide or section holds no indexed text, or it holds several passages and nothing says which — no `claim`, or the embedding model isn't available. The response names no page: for a Word section, the viewer finds the passage's page in the converted PDF itself. With several, the one nearest to `claim` in meaning wins, which also works when the answer is in a different language than the document.
 
 **Errors:** `400` invalid body, `401` not authenticated, `403` path outside the agent's granted folders or agent paused, `404` agent not found or not accessible, or file not found, `502` the lookup failed.
 

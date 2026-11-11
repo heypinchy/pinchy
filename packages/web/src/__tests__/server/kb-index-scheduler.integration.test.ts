@@ -10,9 +10,9 @@
  * every case says exactly which wall-clock moment it is about.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { makeKbSourceRoot } from "@/test-helpers/kb-source-root";
 import { asc, eq } from "drizzle-orm";
 
 import { db } from "@/db";
@@ -52,7 +52,7 @@ beforeEach(async () => {
   // (see runKbIndexSchedulerTick below).
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-10-01T00:00:00Z"));
-  tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-scheduler-test-"));
+  tmpRoot = makeKbSourceRoot("pinchy-kb-scheduler-test-");
   _resetKbIndexSchedulerForTest();
   _resetKbIndexWorkerForTest();
   mockKbEmbedderAvailable.mockReturnValue(true);

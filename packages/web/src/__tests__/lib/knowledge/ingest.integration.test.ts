@@ -46,8 +46,9 @@ import {
 import { chmod } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { makeKbSourceRoot } from "@/test-helpers/kb-source-root";
 import { format } from "node:util";
-import { and, eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import ExcelJS from "exceljs";
 
 /**
@@ -67,6 +68,21 @@ vi.mock("@/lib/knowledge/verified-source", async (importOriginal) => {
       verifiedSourceHooks.afterHash?.();
       return hashed;
     },
+  };
+});
+
+/**
+ * A pass-through, with one seam: `rows` shrinks the batch a kb_chunks INSERT
+ * is cut into, so a test can span several batches with a handful of chunks.
+ */
+const insertBatchOverride = vi.hoisted(() => ({ rows: undefined as number | undefined }));
+
+vi.mock("@/db/insert-batches", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/db/insert-batches")>();
+  return {
+    ...actual,
+    rowsPerInsert: (table: Parameters<typeof actual.rowsPerInsert>[0]) =>
+      insertBatchOverride.rows ?? actual.rowsPerInsert(table),
   };
 });
 
@@ -116,11 +132,12 @@ let tmpRoot: string;
 let stagingDir: string;
 
 beforeEach(() => {
-  tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-test-"));
+  tmpRoot = makeKbSourceRoot("pinchy-kb-ingest-test-");
   stagingDir = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-staging-"));
 });
 
 afterEach(() => {
+  insertBatchOverride.rows = undefined;
   rmSync(tmpRoot, { recursive: true, force: true });
   rmSync(stagingDir, { recursive: true, force: true });
 });
@@ -390,7 +407,7 @@ it("removes the document and its chunks when the source file disappears from dis
 });
 
 it("does not touch documents indexed from a different root directory for the same org", async () => {
-  const otherRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-other-"));
+  const otherRoot = makeKbSourceRoot("pinchy-kb-ingest-other-");
   try {
     const otherPdfPath = join(otherRoot, "other.pdf");
     writeFileSync(otherPdfPath, "other-root-bytes");
@@ -416,7 +433,7 @@ it("reads every current file before any archived one, folder by folder, across r
   // A first index of a large share runs for days and people search it while it
   // runs: what retrieval shows by default must be complete first, and whole
   // folders must finish one after another for the per-folder status (#1386).
-  const otherRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-order-"));
+  const otherRoot = makeKbSourceRoot("pinchy-kb-ingest-order-");
   try {
     const files: Array<[string, string]> = [
       [tmpRoot, "OLD/old-1.pdf"],
@@ -1120,6 +1137,108 @@ it("stores a chunk too long for the embedder as several chunks under the same lo
     PAGE_1_TEXT.slice(0, 40),
     PAGE_1_TEXT.slice(40),
   ]);
+});
+
+// postgres.js refuses a statement once it binds 65,534 parameters, and a
+// kb_chunks row binds 8 — so one INSERT holds at most 8,191 chunks, counted
+// after `fitForEmbedding` has split them. A document above that failed as a
+// file, rolled back, left no row behind to count its failed reads against, and
+// was read (OCR included) and embedded again on every run.
+it("writes a document with more chunks than one INSERT can bind", async () => {
+  writeFileSync(join(tmpRoot, "long.pdf"), "long-bytes");
+  const { deps } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  const pieces = 8_200;
+  const fitForEmbedding = async (texts: string[]) =>
+    texts.map(() => Array.from({ length: pieces }, (_, i) => `piece ${i}`));
+  const vector = Array(768).fill(0.001);
+  const embed = async (texts: string[]) => texts.map(() => vector);
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, fitForEmbedding, embed })).toEqual(
+    counts({ indexed: 1 })
+  );
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const [{ stored }] = await db
+    .select({ stored: count() })
+    .from(kbChunks)
+    .where(eq(kbChunks.documentId, doc.id));
+  expect(stored).toBe(pieces);
+});
+
+/**
+ * Counts the kb_chunks INSERT statements issued inside `db.transaction`, so a
+ * test can tell one statement from several. Everything else passes through.
+ */
+function countChunkInserts() {
+  const original = db.transaction.bind(db);
+  let inserts = 0;
+  const spy = vi.spyOn(db, "transaction").mockImplementation(((
+    fn: (tx: unknown) => Promise<unknown>,
+    config?: unknown
+  ) =>
+    original(async (tx) => {
+      const insert = tx.insert.bind(tx);
+      tx.insert = ((table: Parameters<typeof tx.insert>[0]) => {
+        if (table === kbChunks) inserts++;
+        return insert(table);
+      }) as typeof tx.insert;
+      return fn(tx);
+    }, config as never)) as never);
+  return { inserts: () => inserts, restore: () => spy.mockRestore() };
+}
+
+it("writes a document's chunks in several INSERTs when they outnumber one batch", async () => {
+  insertBatchOverride.rows = 2;
+  writeFileSync(join(tmpRoot, "split.pdf"), "split-bytes");
+  const { deps } = fakeDeps([{ page: 4, text: PAGE_1_TEXT }]);
+  const pieces = ["one", "two", "three", "four", "five"];
+  const fitForEmbedding = async (texts: string[]) => texts.map(() => pieces);
+
+  const counter = countChunkInserts();
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, fitForEmbedding })).toEqual(
+      counts({ indexed: 1 })
+    );
+    expect(counter.inserts()).toBe(3);
+  } finally {
+    counter.restore();
+  }
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const rows = await chunksFor(doc.id);
+  expect(rows.map((r) => r.chunkText).sort()).toEqual([...pieces].sort());
+  expect(new Set(rows.map((r) => JSON.stringify(r.locator)))).toEqual(
+    new Set([JSON.stringify({ kind: "page", page: 4 })])
+  );
+});
+
+// Batches are statements, not transactions: a refusal in the second leaves the
+// first unwritten too, and the stored document exactly as it was.
+it("leaves the stored document unchanged when a later batch is refused", async () => {
+  const path = join(tmpRoot, "handbook.pdf");
+  writeFileSync(path, "first-bytes");
+  const { deps } = fakeDeps();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  const [before] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(before.id);
+  expect(chunksBefore.length).toBeGreaterThan(0);
+
+  insertBatchOverride.rows = 2;
+  writeFileSync(path, "second-bytes");
+  const fitForEmbedding = async (texts: string[]) =>
+    texts.map((_, i) => (i === 0 ? ["a", "b", "c", "d", "e"] : []));
+  // pgvector refuses a vector with a NaN in it; piece 4 sits in batch 2.
+  const embed = async (texts: string[]) =>
+    texts.map((t) => Array(768).fill(t === "d" ? Number.NaN : 0.002));
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, fitForEmbedding, embed })).toEqual(
+    counts({ failed: 1 })
+  );
+
+  const [after] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(after).toEqual(before);
+  const sortById = (rows: { id: string }[]) => [...rows].sort((a, b) => a.id.localeCompare(b.id));
+  expect(sortById(await chunksFor(before.id))).toEqual(sortById(chunksBefore));
 });
 
 it("stops the run when the database connection is lost mid-run", async () => {

@@ -22,7 +22,7 @@
  *   4. Commits, tags, then opens the next cycle in a follow-up commit — the
  *      next upgrade-notes section and the next `-dev` version in both
  *      package.json files (X.Y.(Z+1)-dev on release/X.Y, X.(Y+1).0-dev on
- *      main) — and pushes both
+ *      main) — and pushes branch and tag in one atomic push
  *
  * What to do manually first (see CONTRIBUTING.md):
  *   - Update docs/src/content/docs/guides/upgrading.mdx (enforced)
@@ -42,6 +42,7 @@ import {
   bumpEnvExample,
   buildTagName,
   buildCommitMessage,
+  buildPushCommand,
   assertUpgradingSectionExists,
   assertUpgradeNotesWritten,
   finalizeUpgradeSection,
@@ -382,8 +383,7 @@ exec(`git commit -m "chore(release): open ${devVersion} after v${version}"`);
 log(`  ✔ Committed ${devVersion}`);
 
 log("Pushing...");
-exec("git push origin HEAD");
-exec(`git push origin ${tag}`);
+exec(buildPushCommand(tag));
 log(`  ✔ Pushed\n`);
 
 log(

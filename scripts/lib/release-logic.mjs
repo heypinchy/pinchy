@@ -141,6 +141,17 @@ export function buildCommitMessage(version) {
 }
 
 /**
+ * The one push that publishes a release: the branch (release commit plus the
+ * follow-up -dev commit) and the tag, atomically. As two pushes, a failure of
+ * the second left the tag published without the branch commits, or the branch
+ * moved on with no tag. `refs/tags/` keeps a branch of the same name from
+ * being pushed instead.
+ */
+export function buildPushCommand(tag) {
+  return `git push --atomic origin HEAD refs/tags/${tag}`;
+}
+
+/**
  * Asserts that both package.json versions match the release tag.
  *
  * Regression guard for the v0.5.5 release: it was cut with `gh release create`
