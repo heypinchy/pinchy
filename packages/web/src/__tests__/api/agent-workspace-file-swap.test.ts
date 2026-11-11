@@ -40,6 +40,10 @@ vi.mock("@/lib/file-serve-roots", async () => {
   return { FILE_SERVE_ROOTS: [tmpdir()] };
 });
 
+// Same move for the grant boundary: a grant outside /data is a pre-lockdown
+// leftover the route ignores (#1272), and these fixtures live in a temp dir.
+vi.mock("@/lib/agent-granted-paths", () => import("@/test-helpers/granted-paths-under-tmpdir"));
+
 /** Runs after the real containment check has answered, before the route reads. */
 let afterContainmentCheck: (() => void) | null = null;
 vi.mock("@/lib/agent-file-access", async (importOriginal) => {

@@ -8,6 +8,7 @@ import { parseRequestBody } from "@/lib/api-validation";
 import { knowledgeSearchSchema } from "@/lib/schemas/knowledge-base";
 import { db } from "@/db";
 import { activeAgents, type AgentPluginConfig } from "@/db/schema";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 import { retrieve, type RetrievedChunk } from "@/lib/knowledge/retrieve";
 import { embedTexts } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
@@ -105,8 +106,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   }
 
-  const allowedPaths =
-    (agent.pluginConfig as AgentPluginConfig | null)?.["pinchy-files"]?.allowed_paths ?? [];
+  const allowedPaths = grantedDataPaths(agent.pluginConfig as AgentPluginConfig | null);
 
   // The embedding model is fixed (embeddinggemma-300m) and independent of any
   // agent's chat model — and runs IN-PROCESS via node-llama-cpp, so the KB no
