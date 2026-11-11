@@ -178,6 +178,7 @@ describe("deriveFolderState", () => {
     expectedArchived: 0,
     current: false,
     currentArchived: false,
+    rereadArchived: 0,
     awaitingDiscovery: false,
   };
 
@@ -242,6 +243,20 @@ describe("deriveFolderState", () => {
     it("needs attention when a current file did not make it in", () => {
       expect(deriveFolderState({ ...archiveLeft, indexed: 670 })).toBe("has_errors");
       expect(deriveFolderState({ ...archiveLeft, notSearchable: 1 })).toBe("has_errors");
+    });
+
+    // A reconversion run re-reads archived Office files last. Until it gets to
+    // them they wait for conversion — not an error, the run is on its way.
+    it("stays searchable while archived files it will re-read wait for conversion", () => {
+      expect(deriveFolderState({ ...archiveLeft, notSearchable: 40, rereadArchived: 40 })).toBe(
+        "searchable"
+      );
+    });
+
+    it("needs attention when an archived file holds no text", () => {
+      expect(deriveFolderState({ ...archiveLeft, notSearchable: 41, rereadArchived: 40 })).toBe(
+        "has_errors"
+      );
     });
 
     it("is still queued while current files are to come as well", () => {

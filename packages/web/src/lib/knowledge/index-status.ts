@@ -102,20 +102,29 @@ interface CountRow extends Record<string, unknown> {
   in_sub: boolean;
   indexed: string | number;
   not_searchable: string | number;
+  reread_archived: string | number;
   last_created: Date | string | null;
 }
 
 interface Counts {
   indexed: number;
   notSearchable: number;
+  /** Of `notSearchable`, archived documents a reconversion will read again. */
+  rereadArchived: number;
   lastCreated: Date | null;
 }
 
-const zero = (): Counts => ({ indexed: 0, notSearchable: 0, lastCreated: null });
+const zero = (): Counts => ({
+  indexed: 0,
+  notSearchable: 0,
+  rereadArchived: 0,
+  lastCreated: null,
+});
 
 function addCounts(into: Counts, row: Counts): void {
   into.indexed += row.indexed;
   into.notSearchable += row.notSearchable;
+  into.rereadArchived += row.rereadArchived;
   if (row.lastCreated && (!into.lastCreated || row.lastCreated > into.lastCreated)) {
     into.lastCreated = row.lastCreated;
   }
@@ -154,6 +163,7 @@ async function countsUnderRoot(
              WHERE NOT EXISTS (SELECT 1 FROM kb_chunks c WHERE c.document_id = d.id)
                 OR ${superseded}
            ) AS not_searchable,
+           COUNT(*) FILTER (WHERE d.status = 'archived' AND ${superseded}) AS reread_archived,
            MAX(d.created_at) AT TIME ZONE 'UTC' AS last_created
     FROM kb_documents d
     WHERE d.org_id = ${orgId}
@@ -167,6 +177,7 @@ async function countsUnderRoot(
     const counts: Counts = {
       indexed: Number(row.indexed),
       notSearchable: Number(row.not_searchable),
+      rereadArchived: Number(row.reread_archived),
       lastCreated: row.last_created ? new Date(row.last_created) : null,
     };
     if (!row.in_sub) {
@@ -289,6 +300,7 @@ export async function getKnowledgeFolderStatus(
       state: deriveFolderState({
         indexed: counts.indexed,
         notSearchable: counts.notSearchable,
+        rereadArchived: counts.rereadArchived,
         expected: progress.expected,
         pending: progress.pending,
         pendingArchived: progress.pendingArchived,

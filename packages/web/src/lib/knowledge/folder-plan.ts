@@ -194,6 +194,12 @@ export interface FolderStateInput {
   current: boolean;
   /** Whether the file it is on is an archived one. */
   currentArchived: boolean;
+  /**
+   * Of `notSearchable`, archived documents waiting to be converted again. The
+   * run re-reads them with the rest of the archive, so while archive is still
+   * to come they aren't an error yet.
+   */
+  rereadArchived: number;
   /** An active run covers this folder but has not finished discovery yet. */
   awaitingDiscovery: boolean;
 }
@@ -217,7 +223,8 @@ export function deriveFolderState(input: FolderStateInput): FolderState {
     if (reached === 0) return "empty";
     return "has_errors";
   }
-  if (input.notSearchable > 0) return "has_errors";
+  const owed = input.pendingArchived > 0 ? input.rereadArchived : 0;
+  if (input.notSearchable - owed > 0) return "has_errors";
   if (reached !== null && input.indexed < reached) return "has_errors";
   return "searchable";
 }

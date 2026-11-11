@@ -29,7 +29,7 @@ async function makeAgent() {
 
 async function seedDoc(
   sourcePath: string,
-  opts: { chunks?: boolean; mtime?: Date } = {}
+  opts: { chunks?: boolean; mtime?: Date; status?: "active" | "archived" } = {}
 ): Promise<void> {
   const [doc] = await db
     .insert(kbDocuments)
@@ -38,6 +38,7 @@ async function seedDoc(
       contentHash: `hash-${sourcePath}`,
       sourcePath,
       mtime: opts.mtime ?? null,
+      ...(opts.status ? { status: opts.status } : {}),
     })
     .returning();
   if (opts.chunks ?? true) {
@@ -212,6 +213,33 @@ describe("getKnowledgeFolderStatus", () => {
       indexingArchive: true,
     });
     expect(folders[0]).toMatchObject({ state: "searchable", indexingArchive: true });
+  });
+
+  // A reconversion run re-reads archived Office files last. Their documents
+  // wait for conversion until it gets there: the run is on its way, so the
+  // folder is not in trouble. An archived scan with no text is.
+  it("doesn't flag archived files a run will still convert again", async () => {
+    const agent = await makeAgent();
+    await seedDoc("/kb/certs/iso.pdf");
+    // No artifact format recorded: read from an earlier conversion.
+    await seedDoc("/kb/certs/OLD/2019.docx", { status: "archived" });
+    await seedDoc("/kb/legal/nda.pdf");
+    await seedDoc("/kb/legal/OLD/scan.pdf", { status: "archived", chunks: false });
+    await seedJob(agent.id, ["/kb"], "running", {
+      processed: 2,
+      plan: [
+        { folder: "/kb/certs", files: 1 },
+        { folder: "/kb/legal", files: 1 },
+        { folder: "/kb/certs", files: 1, archived: true },
+        { folder: "/kb/legal", files: 1, archived: true },
+      ],
+    });
+
+    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+    const byName = Object.fromEntries(folders[0].children.map((c) => [c.name, c]));
+
+    expect(byName.certs).toMatchObject({ state: "searchable", notSearchable: 1 });
+    expect(byName.legal).toMatchObject({ state: "has_errors", notSearchable: 1 });
   });
 
   it("shows a folder as queued while an active run has not finished discovery", async () => {
