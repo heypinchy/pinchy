@@ -585,6 +585,32 @@ describe("a spreadsheet citation", () => {
     });
   });
 
+  it("links a legacy `.xls` workbook the same way, range and all (#1373)", () => {
+    // It is indexed through its converted `.xlsx`, but the reader is cited the
+    // file they own — and that file opens in the same rows pane.
+    const tree = run(paragraph("- [1] lieferanten/Preisliste.XLS (Preise, rows 2-3)"));
+
+    expect(links(tree).map((l) => l.text)).toEqual(["lieferanten/Preisliste.XLS"]);
+    expect(parseSourceHref(links(tree)[0].url)).toEqual({
+      path: "lieferanten/Preisliste.XLS",
+      locator: { kind: "sheet", sheet: "Preise", startRow: 2, endRow: 3 },
+    });
+  });
+
+  it("offers a legacy workbook as itself, with no converted second download", () => {
+    // The converted `.xlsx` is an indexing intermediate, not a rendering a
+    // reader asked for: nothing about it is easier to open than the original.
+    const href = buildSourceHref(AGENT, "lieferanten/Preisliste.xls", null);
+
+    expect(buildSourceDownloads(href)).toEqual([
+      {
+        label: "Preisliste.xls",
+        filename: "Preisliste.xls",
+        url: expect.stringContaining("variant=original"),
+      },
+    ]);
+  });
+
   it("leaves the range in the visible text, so the reader still sees it", () => {
     // Same contract the page hint has always had: the link opens there, the
     // sentence still says where "there" is.

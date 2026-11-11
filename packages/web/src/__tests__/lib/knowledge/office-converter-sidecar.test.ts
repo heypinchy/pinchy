@@ -154,6 +154,14 @@ describe("office-converter sidecar protocol", () => {
     });
   });
 
+  it("takes a legacy workbook, which the converter turns into a workbook (#1373)", async () => {
+    await startServer();
+    const { converter, run } = await stagedBatch(["0.xls", "1.xls"]);
+
+    expect((await converter.runConverter(run)).code).toBe(0);
+    expect(seen).toEqual([run]);
+  });
+
   it("carries a timeout across", async () => {
     await startServer();
     answer = async () => ({ code: null, signal: "SIGKILL", stderr: "", timedOut: true });
@@ -185,6 +193,7 @@ describe("office-converter sidecar protocol", () => {
   it.each([
     ["a path instead of an index name", { inputs: ["../../../etc/passwd"] }],
     ["a name that is not an Office file", { inputs: ["0.html"] }],
+    ["a workbook the reader opens without converting", { inputs: ["0.xlsx"] }],
     ["a nested name", { inputs: ["in/0.docx"] }],
     ["no inputs at all", { inputs: [] }],
     ["a batch that is not a staging id", { batch: "../profile" }],

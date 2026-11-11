@@ -1086,6 +1086,50 @@ describe("kb index worker tick", () => {
       }
     });
 
+    it("converts a legacy workbook again too, through the workbook it converts into (#1373)", async () => {
+      // A `.xls` is read from the `.xlsx` the converter made of it, under the
+      // same artifact format version as a PDF. A bump owes it the same run —
+      // a recogniser that knew only the page-shaped formats would leave its
+      // chunks on record from rules that no longer hold.
+      const corpus = join(tmpRoot, "corpus");
+      mkdirSync(corpus, { recursive: true });
+      writeFileSync(join(corpus, "Preise.xls"), "biff-bytes");
+      const workbookDeps = (text: string) => {
+        const deps = fakeDeps();
+        deps.convertOffice = vi.fn(async (sources: readonly { absPath: string }[]) =>
+          sources.map((source) => ({
+            sourcePath: source.absPath,
+            status: "converted" as const,
+            artifactPath: join(tmpRoot, "artifact.xlsx"),
+          }))
+        );
+        deps.extractXlsx = vi.fn(async () => ({
+          chunks: [{ text, sheet: "Preise", startRow: 1, endRow: 2 }],
+          sheets: ["Preise"],
+          hiddenSheets: [],
+          hiddenRows: 0,
+        }));
+        return deps;
+      };
+      await ingestPaths(DEFAULT_ORG_ID, [corpus], workbookDeps(LEAKED));
+      await db.update(kbDocuments).set({ artifactFormatVersion: null });
+      const agent = await knowledgeAgent(corpus);
+
+      await runKbIndexWorkerTick({
+        deps: workbookDeps(CLEAN),
+        artifactDir: join(tmpRoot, "artifacts"),
+      });
+
+      expect(await getLatestIndexJobForAgent(agent.id)).toMatchObject({
+        status: "succeeded",
+        trigger: "upgrade",
+        counts: expect.objectContaining({ indexed: 1 }),
+      });
+      const [doc] = await db.select().from(kbDocuments);
+      expect(doc.artifactFormatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
+      expect(await documentText()).not.toContain(LEAKED);
+    });
+
     it("queues nothing when every Office document is already current", async () => {
       const corpus = join(tmpRoot, "corpus");
       mkdirSync(corpus, { recursive: true });

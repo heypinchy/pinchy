@@ -126,7 +126,11 @@ function fakeConverter(options: FakeConverterOptions): FakeConverter {
         stderr += "Error: source file could not be loaded\n";
         continue;
       }
-      const outName = basename(staged, extname(staged)) + ".pdf";
+      // LibreOffice names the output after the input and the target format,
+      // and the target follows the inputs (office-soffice.ts,
+      // `convertTargetFor`): a legacy workbook comes out as a workbook.
+      const outExt = extname(staged).toLowerCase() === ".xls" ? ".xlsx" : ".pdf";
+      const outName = basename(staged, extname(staged)) + outExt;
       await writeFile(join(call.outDir, outName), `%PDF-1.4\n${text}\n`);
     }
     return { code: options.exitCode ?? 0, signal: options.signal ?? null, stderr };
@@ -860,6 +864,160 @@ describe("convertOfficeFiles", () => {
 
     expect(onProgress.mock.calls.map(([p]) => p.processed)).toEqual([2, 4, 5]);
     expect(onProgress.mock.calls.every(([p]) => p.total === 5)).toBe(true);
+  });
+});
+
+describe("legacy workbooks (#1373)", () => {
+  /** A count that must never be asked: a converted workbook is not a PDF. */
+  const noPdfCount = async (): Promise<number> => {
+    throw new Error("a converted workbook was handed to the PDF reader");
+  };
+
+  it("stores a legacy workbook as the workbook it converts to, not as a PDF", async () => {
+    const sources = [await corpusFile("lieferanten/Preise.xls", "biff bytes")];
+    const converter = fakeConverter({ outputs: { "Preise.xls": "Artikel Preis" } });
+    const store = new OfficeArtifactStore(storeDir);
+
+    const outcomes = await convertOfficeFiles(
+      sources,
+      deps(converter, { store, countPdfWords: noPdfCount })
+    );
+
+    expect(outcomes[0].status).toBe("converted");
+    expect(outcomes[0].artifactPath).toMatch(/\.xlsx$/);
+    const hash = createHash("sha256").update("biff bytes").digest("hex");
+    expect(await store.get(hash, ".xlsx")).toBe(outcomes[0].artifactPath);
+    expect(await store.get(hash)).toBeNull();
+  });
+
+  it("says plainly that nothing checked the workbook, rather than calling it ok", async () => {
+    // The word-count tripwire compares the converted PDF against an
+    // independent extractor. A workbook has no PDF, and the spreadsheet reader
+    // skips hidden sheets, rows and columns the source still holds — a count
+    // would fail on exactly the files it should pass.
+    const sources = [await corpusFile("Preise.xls", "biff bytes")];
+    const converter = fakeConverter({ outputs: { "Preise.xls": "Artikel Preis" } });
+    const countSourceWords = vi.fn(async () => 999);
+
+    const [outcome] = await convertOfficeFiles(
+      sources,
+      deps(converter, { countPdfWords: noPdfCount, countSourceWords })
+    );
+
+    expect(outcome.verification).toMatchObject({
+      status: "unverified",
+      sourceWords: null,
+      pdfWords: null,
+    });
+    expect(countSourceWords).not.toHaveBeenCalled();
+  });
+
+  it("never hands a workbook and a page-shaped document to the same converter run", async () => {
+    // One LibreOffice process converts to one target format.
+    const sources = [
+      await corpusFile("a.doc", "word"),
+      await corpusFile("b.xls", "sheet"),
+      await corpusFile("c.pptx", "slides"),
+      await corpusFile("d.xls", "another sheet"),
+    ];
+    const converter = fakeConverter({
+      outputs: { "a.doc": "one", "b.xls": "two", "c.pptx": "three", "d.xls": "four" },
+    });
+
+    const outcomes = await convertOfficeFiles(
+      sources,
+      deps(converter, {
+        countPdfWords: async (path) => {
+          expect(path).not.toMatch(/\.xlsx$/);
+          return fakeCountPdfWords(path);
+        },
+      })
+    );
+
+    expect(outcomes.map((o) => o.status)).toEqual([
+      "converted",
+      "converted",
+      "converted",
+      "converted",
+    ]);
+    expect(outcomes.map((o) => extname(o.artifactPath!))).toEqual([
+      ".pdf",
+      ".xlsx",
+      ".pdf",
+      ".xlsx",
+    ]);
+    const kinds = converter.calls.map((call) => [
+      ...new Set(call.inputs.map((input) => extname(input) === ".xls")),
+    ]);
+    expect(kinds.every((k) => k.length === 1)).toBe(true);
+  });
+
+  it("finds a workbook converted on an earlier run without converting it again", async () => {
+    const sources = [await corpusFile("Preise.xls", "biff bytes")];
+    const store = new OfficeArtifactStore(storeDir);
+    const first = fakeConverter({ outputs: { "Preise.xls": "Artikel Preis" } });
+    await convertOfficeFiles(sources, deps(first, { store, countPdfWords: noPdfCount }));
+
+    const second = fakeConverter({ outputs: {} });
+    const [outcome] = await convertOfficeFiles(
+      sources,
+      deps(second, { store, countPdfWords: noPdfCount })
+    );
+
+    expect(second.calls).toEqual([]);
+    expect(outcome.status).toBe("converted");
+    expect(outcome.verification?.status).toBe("cached");
+    expect(outcome.artifactPath).toMatch(/\.xlsx$/);
+  });
+
+  it("converts the same bytes once per target, not once for both", async () => {
+    // A `.doc` renamed to `.xls` keeps its bytes. Its PDF is no answer to a
+    // request for a workbook, nor the other way round.
+    const sources = [
+      await corpusFile("a.doc", "same bytes"),
+      await corpusFile("a.xls", "same bytes"),
+    ];
+    const converter = fakeConverter({ outputs: { "a.doc": "one", "a.xls": "two" } });
+
+    const outcomes = await convertOfficeFiles(sources, deps(converter));
+
+    expect(outcomes.map((o) => extname(o.artifactPath!))).toEqual([".pdf", ".xlsx"]);
+  });
+
+  it("reports a workbook LibreOffice could not open as this document's failure", async () => {
+    const sources = [await corpusFile("kaputt.xls", "not biff")];
+    const converter = fakeConverter({ outputs: { "kaputt.xls": null } });
+
+    const [outcome] = await convertOfficeFiles(sources, deps(converter));
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.reason).toMatch(/no artifact produced/);
+  });
+
+  it("runs the workbooks of a killed batch one at a time, and collects each one's workbook", async () => {
+    const sources = [await corpusFile("a.xls", "x"), await corpusFile("b.xls", "y")];
+    const inner = fakeConverter({ outputs: { "a.xls": "one", "b.xls": "two" } });
+    const converter: FakeConverter = {
+      calls: inner.calls,
+      run: async (call) => {
+        if (call.inputs.length === 1) return inner.run(call);
+        inner.calls.push(call);
+        // Half a workbook from the process that died.
+        await writeFile(join(call.outDir, "0.xlsx"), "half");
+        return { code: null, signal: "SIGKILL", stderr: "" };
+      },
+    };
+
+    const outcomes = await convertOfficeFiles(
+      sources,
+      deps(converter, { countPdfWords: noPdfCount })
+    );
+
+    expect(converter.calls.map((c) => c.inputs.length)).toEqual([2, 1, 1]);
+    expect(outcomes.map((o) => o.status)).toEqual(["converted", "converted"]);
+    for (const outcome of outcomes) {
+      expect(await readFile(outcome.artifactPath!, "utf8")).not.toBe("half");
+    }
   });
 });
 

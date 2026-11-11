@@ -3,7 +3,7 @@
 // the ESLint require-audit-log rule only gates POST/PUT/PATCH/DELETE, so this
 // comment documents intent for a human reader rather than satisfying the rule.
 import { NextResponse } from "next/server";
-import { open, type FileHandle } from "node:fs/promises";
+import { open, stat, type FileHandle } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { basename } from "node:path";
 
@@ -22,10 +22,13 @@ import {
   liveStagingDirOf,
 } from "@/lib/knowledge/office-artifacts";
 import {
+  convertedExtensionOf,
   convertedPdfName,
+  isLegacyWorkbook,
   isOfficeFile,
   isScanFile,
   isSpreadsheetFile,
+  needsConversion,
   OfficeFileRejectedError,
 } from "@/lib/knowledge/office-formats";
 import { SHEET_RANGE_MAX_ROWS, XlsxExtractionError } from "@/lib/knowledge/xlsx-extract";
@@ -197,16 +200,19 @@ async function resolveConvertedArtifact(
   source: VerifiedSource,
   realPath: string
 ): Promise<string | null> {
-  // A scanned TIFF has its own store (#1409): both are keyed on the source's
-  // content hash, and a scan must open the pages its citations count.
-  const storeFor = isOfficeFile(realPath)
-    ? getOfficeArtifactStore
-    : isScanFile(realPath)
-      ? getScanArtifactStore
+  // Each converted form is keyed on the source's content hash, in the store
+  // that wrote it: an Office document's PDF and a legacy workbook's `.xlsx` in
+  // the office store (#1373), a scanned TIFF's PDF in the scan store (#1409),
+  // so a scan opens the pages its citations count.
+  const storeFor = isScanFile(realPath)
+    ? getScanArtifactStore
+    : needsConversion(realPath)
+      ? getOfficeArtifactStore
       : null;
   if (!storeFor) return null;
+  const ext = isScanFile(realPath) ? ".pdf" : convertedExtensionOf(realPath);
   try {
-    return await storeFor().get(await hashOpenFile(source.handle));
+    return await storeFor().get(await hashOpenFile(source.handle), ext);
   } catch {
     // An unreadable source, or an artifact volume that is missing, full or not
     // mounted. Neither is a verdict on this document and neither is worth a
@@ -440,7 +446,12 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
 
     const source = await openSource();
     if (!source) return new NextResponse("Not found", { status: 404 });
-    let copy: VerifiedCopy;
+    // What the reader opens: a private copy of the workbook — or, for a legacy
+    // `.xls` exceljs cannot parse, the `.xlsx` the converter made of it (#1373).
+    // That one is the store's own file, keyed on the source's content, so it
+    // needs no copy; and it is the workbook the indexer read, so the sheet and
+    // rows a citation names are the ones it holds.
+    let copy: Pick<VerifiedCopy, "path" | "dispose">;
     try {
       // Both refusals come before the copy, which writes the workbook to the
       // staging volume. A workbook past the reader's limit is refused unopened
@@ -448,19 +459,40 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       // reload, and on a volume too full to take it, answer "reader
       // unavailable" about a workbook that is simply too large. A preview the
       // queue will turn away would leave a copy for a read that never happens.
-      // The descriptor's own size: the bytes the copy would read.
-      if (source.stat.size > BigInt(XLSX_MAX_FILE_BYTES)) return tooLarge();
+      let artifactPath: string | null = null;
+      if (isLegacyWorkbook(realPath)) {
+        artifactPath = await resolveConvertedArtifact(source, realPath);
+        if (artifactPath === null) {
+          // Not converted yet, or refused by the converter. Nothing is wrong
+          // with the document, so not a 422 — and the original download
+          // keeps working.
+          auditFailure("no_converted_artifact");
+          return NextResponse.json(
+            { error: "This workbook has not been converted for preview yet" },
+            { status: 404 }
+          );
+        }
+        // The same limit as any workbook: the converted one is what is read.
+        if ((await stat(artifactPath)).size > XLSX_MAX_FILE_BYTES) return tooLarge();
+      } else if (source.stat.size > BigInt(XLSX_MAX_FILE_BYTES)) {
+        // The descriptor's own size: the bytes the copy would read.
+        return tooLarge();
+      }
       try {
         checkSheetReaderQueue(SHEET_PREVIEW_MAX_QUEUED);
       } catch (err) {
         if (err instanceof SheetReaderBusyError) return busy();
         throw err;
       }
-      // A file still being written can grow past that check while the copy
-      // runs. One byte past the limit is all the reader needs to refuse it.
-      copy = await copyOpenSource(source, realPath, liveStagingDirOf(), {
-        maxBytes: XLSX_MAX_FILE_BYTES + 1,
-      });
+      copy =
+        artifactPath !== null
+          ? { path: artifactPath, dispose: async () => {} }
+          : // A file still being written can grow past that check while the
+            // copy runs. One byte past the limit is all the reader needs to
+            // refuse it.
+            await copyOpenSource(source, realPath, liveStagingDirOf(), {
+              maxBytes: XLSX_MAX_FILE_BYTES + 1,
+            });
     } catch (err) {
       // The workbook was opened; only the copy could not be written — the
       // staging volume is full, read-only or missing. A fact about the
@@ -562,10 +594,12 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const source = await openSource();
   if (!source) return new NextResponse("Not found", { status: 404 });
 
-  const wantsConverted =
-    variant === "converted" ||
-    (variant === null && (isOfficeFile(realPath) || isScanFile(realPath)));
-  const artifactPath = wantsConverted ? await resolveConvertedArtifact(source, realPath) : null;
+  const showsConvertedPdf = isOfficeFile(realPath) || isScanFile(realPath);
+  const wantsConverted = variant === "converted" || (variant === null && showsConvertedPdf);
+  // Only a page-shaped document or a scan has a converted PDF to serve. A
+  // legacy workbook's `.xlsx` is read through `variant=rows`, never handed out.
+  const artifactPath =
+    wantsConverted && showsConvertedPdf ? await resolveConvertedArtifact(source, realPath) : null;
   if (wantsConverted && artifactPath === null) {
     // Falling back to the original here would be worse than answering nothing:
     // it is served `attachment`, so a viewer's <embed> would turn an

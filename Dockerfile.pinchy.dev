@@ -11,7 +11,7 @@ RUN corepack enable
 # "converter did not run", which looks nothing like production.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       libreoffice-writer libreoffice-impress fonts-liberation catdoc \
+       libreoffice-writer libreoffice-impress libreoffice-calc fonts-liberation catdoc \
     && rm -rf /var/lib/apt/lists/*
 
 # python3 + build-essential make better-sqlite3's DOCUMENTED fallback real.

@@ -76,7 +76,7 @@ import {
  * "the citation starts at a word" is a rule a reader can predict.
  */
 const SOURCE_PATH_ENDING_HERE =
-  /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docm|docx?|pptx?|xlsx|xlsm|tiff?)$/i;
+  /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docm|docx?|pptx?|xlsx?|xlsm|tiff?)$/i;
 
 /** What may follow a path so that "…/doc.pdf." links the file and not the full stop. */
 const PATH_BOUNDARY = /[\s,.;:)\]]/;
@@ -98,7 +98,7 @@ const PATH_BOUNDARY = /[\s,.;:)\]]/;
  * branch that matches, and `docx?` would end the hit at the `.doc` inside
  * `.docm`, where the boundary check then rejects it.
  */
-const EXTENSION = /\.(?:pdf|docm|docx?|pptx?|xlsx|xlsm|tiff?)/gi;
+const EXTENSION = /\.(?:pdf|docm|docx?|pptx?|xlsx?|xlsm|tiff?)/gi;
 
 /**
  * Whether the viewer is shown a PDF the knowledge base made of this file rather
