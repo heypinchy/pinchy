@@ -238,6 +238,14 @@ Creating a Knowledge Base agent, or granting an existing one a folder, used to i
 
 At the upgrade itself, every agent that has the `knowledge_search` permission and a granted folder no run has gone through yet gets its first index when Pinchy starts, one after another. Coming from a v0.10 release, that is usually nobody: its runs already count. Coming straight from v0.9.1, it is every such agent, because the index is empty after that upgrade (see [Knowledge Base agents need one reindex after upgrading](#knowledge-base-agents-need-one-reindex-after-upgrading)) — so you don't have to wait for the nightly run or click **Reindex now**. The runs are audited as reindexes with `trigger: "initial"`, requested by `kb-index-worker`.
 
+#### Security: file access outside `/data` is removed from older agents
+
+Since v0.9.0, an agent's **Allowed Directories** (under **Knowledge Base** in its permissions) can only be directories under `/data`, and only admins can change them. Before that, the settings API accepted any path, and a member could point their own personal agent at a folder outside `/data` — for example the directory that holds every agent's uploads, workbench files and memory. v0.9.0 refused new paths like that but left existing ones in place, and they kept working.
+
+This release no longer honours them anywhere: file tools, knowledge-base search, reindexing and file previews only use **Allowed Directories** under `/data`. Each agent's own uploads, workbench and memory are unaffected. On its first start, Pinchy also removes those paths from the agents that still have them, and writes one `agent.updated` row per agent to the [audit trail](/concepts/audit-trail/) with the actor `allowed-paths-cleanup`, `reason: "allowed_paths_outside_data_root"`, and how many paths the agent had before and after. The paths themselves aren't recorded, because a path can contain a person's name and an audit row can't be erased. The agent's other folders and settings stay as they were. A fresh install, or one where nobody set such a path, gets no rows.
+
+To see whether any agent lost access, filter the audit trail by `agent.updated` and look for entries whose actor is **Folder access cleanup**; their detail says `reason: "allowed_paths_outside_data_root"`. If a shared agent needs one of those folders, put the files under `/data` and grant the folder in its **Permissions** tab, under **Knowledge Base → Allowed Directories**. Personal agents have no folder settings; to give people access to such files, grant the folder to a shared Knowledge Base agent instead.
+
 ### Database migrations
 
 The migration `0082` runs automatically on startup — no manual steps. It is additive.
@@ -454,14 +462,6 @@ Apart from your setup admin, every row deserves a look; `banned = t` means it is
 Then find out what each account did. Its sign-up left no trace — registering wrote no audit row, and neither did the session it opened — but everything after it is recorded like any member's activity, with the account as the actor: its later sign-ins as `auth.login`, and every tool call an agent made in its chats as `tool.<name>` (`tool.odoo_write`, `tool.email_send`, …). The audit trail filters by account through the API — the user id is in the SQL output above, and in the `resource` of each `user.unknown_origin_detected` row: `GET /api/audit?actorId=<user id>`, or `GET /api/audit/export?actorId=<user id>` for a CSV of everything. If your instance was reachable from the internet, treat what those agents could read and do as possibly exposed.
 
 The API-key list in **Settings → API Keys** also now flags keys created by an admin who has since been demoted, not just one who was banned or deleted — consider rotating those.
-
-#### Security: file access outside `/data` is removed from older agents
-
-Since v0.9.0, an agent's **Allowed Directories** (under **Knowledge Base** in its permissions) can only be directories under `/data`, and only admins can change them. Before that, the settings API accepted any path, and a member could point their own personal agent at a folder outside `/data` — for example the directory that holds every agent's uploads, workbench files and memory. v0.9.0 refused new paths like that but left existing ones in place, and they kept working.
-
-This release no longer honours them anywhere: file tools, knowledge-base search, reindexing and file previews only use **Allowed Directories** under `/data`. Each agent's own uploads, workbench and memory are unaffected. On its first start, Pinchy also removes those paths from the agents that still have them, and writes one `agent.updated` row per agent to the [audit trail](/concepts/audit-trail/) with the actor `allowed-paths-cleanup`, `reason: "allowed_paths_outside_data_root"`, and how many paths the agent had before and after. The paths themselves aren't recorded, because a path can contain a person's name and an audit row can't be erased. The agent's other folders and settings stay as they were. A fresh install, or one where nobody set such a path, gets no rows.
-
-To see whether any agent lost access, filter the audit trail by `agent.updated` and look for entries whose actor is **Folder access cleanup**; their detail says `reason: "allowed_paths_outside_data_root"`. If a shared agent needs one of those folders, put the files under `/data` and grant the folder in its **Permissions** tab, under **Knowledge Base → Allowed Directories**. Personal agents have no folder settings; to give people access to such files, grant the folder to a shared Knowledge Base agent instead.
 
 #### Memory is now its own permission — and most agents gain it on upgrade
 
