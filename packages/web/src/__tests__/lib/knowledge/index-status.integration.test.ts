@@ -238,8 +238,16 @@ describe("getKnowledgeFolderStatus", () => {
     const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
     const byName = Object.fromEntries(folders[0].children.map((c) => [c.name, c]));
 
-    expect(byName.certs).toMatchObject({ state: "searchable", notSearchable: 1 });
-    expect(byName.legal).toMatchObject({ state: "has_errors", notSearchable: 1 });
+    expect(byName.certs).toMatchObject({
+      state: "searchable",
+      notSearchable: 1,
+      archivedToReconvert: 1,
+    });
+    expect(byName.legal).toMatchObject({
+      state: "has_errors",
+      notSearchable: 1,
+      archivedToReconvert: 0,
+    });
   });
 
   it("shows a folder as queued while an active run has not finished discovery", async () => {

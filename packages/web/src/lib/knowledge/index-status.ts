@@ -35,6 +35,7 @@ import {
   isHiddenSegment,
 } from "./exclude-globs";
 import {
+  archivedToReconvert,
   currentPlanFolder,
   deriveFolderState,
   folderPlanProgress,
@@ -58,6 +59,11 @@ export interface FolderStatus {
   searchable: number;
   /** Of `indexed`, the ones it cannot: no text, or waiting to be converted again. */
   notSearchable: number;
+  /**
+   * Of `notSearchable`, archived documents the active run will still convert
+   * again. They are on their way, so `state` doesn't count them as errors.
+   */
+  archivedToReconvert: number;
   /**
    * Files the last run found here; null when no run's plan covers the folder:
    * none recorded one, the folder was granted since, the plan counted it only as
@@ -312,6 +318,10 @@ export async function getKnowledgeFolderStatus(
       indexed: counts.indexed,
       searchable: counts.indexed - counts.notSearchable,
       notSearchable: counts.notSearchable,
+      archivedToReconvert: archivedToReconvert({
+        rereadArchived: counts.rereadArchived,
+        pendingArchived: progress.pendingArchived,
+      }),
       expected: progress.expected,
       pending: progress.pending,
       pendingArchived: progress.pendingArchived,

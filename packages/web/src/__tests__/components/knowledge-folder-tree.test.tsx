@@ -30,6 +30,7 @@ function folder(overrides: Partial<FolderStatus> & { path: string }): FolderStat
     pending: 0,
     pendingArchived: 0,
     expectedArchived: 0,
+    archivedToReconvert: 0,
     indexingArchive: false,
     lastIndexedAt: null,
     ...overrides,
@@ -427,6 +428,42 @@ describe("countText", () => {
         folder({ path: "/a", state: "searchable", indexed: 42, searchable: 42, expected: 40 })
       )
     ).toBe("40 of 40 files searchable");
+  });
+
+  // A failed run removes nothing, so documents of deleted files outlive it.
+  // They must not make up for the files that hold no text.
+  it("never counts a folder that needs attention as fully searchable", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "has_errors",
+          indexed: 45,
+          searchable: 42,
+          notSearchable: 3,
+          expected: 40,
+        })
+      )
+    ).toBe("37 of 40 files searchable");
+  });
+
+  it("counts archived files the run will convert again as on their way", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "searchable",
+          indexed: 45,
+          searchable: 40,
+          notSearchable: 5,
+          archivedToReconvert: 5,
+          expected: 45,
+          pending: 5,
+          pendingArchived: 5,
+          expectedArchived: 5,
+        })
+      )
+    ).toBe("40 of 40 files searchable · 5 archived files queued");
   });
 
   // While a folder's current files are still being read, count against them:

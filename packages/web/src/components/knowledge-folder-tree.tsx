@@ -299,9 +299,13 @@ export function countText(folder: FolderStatus): string {
       ? folder.indexed
       : Math.max(folder.expected - archive, Math.min(folder.searchable, folder.expected));
   if (of === 0) return folder.state === "empty" ? "Nothing to index here" : "No files indexed yet";
-  // Documents of files deleted since the last run stay in the index until the
-  // run ends, so the index can hold more than the folder does.
-  const searchable = `${Math.min(folder.searchable, of)} of ${of} ${plural(of, "file")} searchable`;
+  // Documents of files deleted since the last run stay in the index until a
+  // run succeeds, so the index can hold more than the folder does. Count down
+  // from the folder by what fails here instead: archived files the run will
+  // convert again are on their way, everything else not searchable is missing.
+  const failing = Math.max(0, folder.notSearchable - folder.archivedToReconvert);
+  const done = Math.max(0, Math.min(folder.searchable, of - failing));
+  const searchable = `${done} of ${of} ${plural(of, "file")} searchable`;
   if (archive === 0) return searchable;
   if (folder.indexingArchive) return `${searchable} · indexing archived files, ${archive} left`;
   return `${searchable} · ${archive} archived ${plural(archive, "file")} queued`;
