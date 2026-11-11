@@ -41,7 +41,7 @@ import { basename, sep } from "node:path";
 
 import { db } from "@/db";
 
-import { EXTRACTION_VERSION } from "./ingest";
+import { EXTRACTION_VERSION, MAX_INCOMPLETE_READS } from "./ingest";
 import type { KbOcrAvailability } from "./kb-ocr";
 import { readFromSupersededArtifact } from "./office-format-upgrade";
 import { buildPathFilter } from "./path-filter";
@@ -58,20 +58,19 @@ export type UnsearchableReason = "no_text" | "awaiting_conversion";
  * - `ocr_off`: not read by a vision model, and reading scans is switched off
  *   on this server (`PINCHY_KB_OCR`).
  * - `no_vision_model`: not read by a vision model, and none is available.
- * - `read_next_run`: a vision model is available that has not read it yet;
- *   the next run does.
- * - `read_blank`: read in full and nothing found — a vision model looked, or
- *   the file is no scan at all (a spreadsheet, a converted Office file).
+ * - `read_next_run`: the next run reads it again — a vision model is
+ *   available that has not read it yet, or its last read did not finish.
+ * - `read_failed`: Pinchy could not read it, and reading the same file again
+ *   would not change that — the converter or the workbook reader refused it
+ *   (too large, damaged, not what its name says; the server log names the
+ *   file and the reason), or every vision read of it failed. A workbook with
+ *   no cells at all lands here too: its record looks the same as a refused
+ *   one's.
+ * - `read_blank`: a vision model read it in full and found nothing.
  *   Changing the OCR setup changes nothing for it.
  */
-export type NoTextCause = "ocr_off" | "no_vision_model" | "read_next_run" | "read_blank";
-
-export const NO_TEXT_CAUSES: readonly NoTextCause[] = [
-  "ocr_off",
-  "no_vision_model",
-  "read_next_run",
-  "read_blank",
-];
+export type NoTextCause =
+  "ocr_off" | "no_vision_model" | "read_next_run" | "read_failed" | "read_blank";
 
 export interface UnsearchableDocument {
   /** Absolute path of the source file, as indexed. */
@@ -125,18 +124,28 @@ export const DEFAULT_UNSEARCHABLE_LIMIT = 100;
 const DEFAULT_PAGE_SIZE = 1000;
 
 /**
- * Why a `no_text` document holds no text, from its record and the OCR a run
- * started now would have. Mirrors ingest's own decision to read a document
- * again (ingest.ts, `couldReadDifferently` and the skip before it), so the
- * page never promises a read the next run won't do.
+ * Why a `no_text` document holds no text, from its record, how many reads in
+ * a row did not finish, and the OCR a run started now would have. Mirrors
+ * ingest's own decision to read a document again (ingest.ts, `retryOwed`,
+ * `couldReadDifferently` and the skip between them), so the page never
+ * promises a read the next run won't do, nor blames the OCR setup for a file
+ * no OCR setting would read.
  */
-export function noTextCause(record: string | null, ocr: KbOcrAvailability): NoTextCause {
+export function noTextCause(
+  record: string | null,
+  incompleteReads: number,
+  ocr: KbOcrAvailability
+): NoTextCause {
+  // A read that did not finish is owed another one, whatever OCR the server
+  // has — and its record is not written until it settles.
+  if (incompleteReads > 0 && incompleteReads < MAX_INCOMPLETE_READS) return "read_next_run";
+
   const separator = record?.indexOf("|") ?? -1;
   const current =
     record !== null && separator >= 0 && record.slice(0, separator) === String(EXTRACTION_VERSION);
-  // No record (a read that did not settle, or one from before the record
-  // existed) or one an older extractor wrote: ingest reads it again, with
-  // whatever OCR the run has — the same as a scan read without OCR.
+  // No record (one from before the record existed) or one an older extractor
+  // wrote: ingest reads it again, with whatever OCR the run has — the same as
+  // a scan read without OCR.
   const reader = current ? record.slice(separator + 1) : "no-ocr";
 
   if (reader === "no-ocr") {
@@ -144,10 +153,14 @@ export function noTextCause(record: string | null, ocr: KbOcrAvailability): NoTe
     if (ocr.state === "no_model") return "no_vision_model";
     return "read_next_run";
   }
-  if (reader.startsWith("ocr:") && ocr.state === "on" && `ocr:${ocr.model}` !== reader) {
-    return "read_next_run";
+  if (reader.startsWith("ocr:")) {
+    if (ocr.state === "on" && `ocr:${ocr.model}` !== reader) return "read_next_run";
+    // Out of retries: every vision read failed, so it was never read in full.
+    return incompleteReads >= MAX_INCOMPLETE_READS ? "read_failed" : "read_blank";
   }
-  return "read_blank";
+  // The converter and the workbook reader are never tried again on the same
+  // bytes, and they come back empty when they refuse a file.
+  return "read_failed";
 }
 
 /**
@@ -188,6 +201,7 @@ function scopedDocuments(orgId: string, roots: string[]): SQL {
         SELECT d.source_path,
                d.status,
                d.empty_extraction_by,
+               d.incomplete_reads,
                (${superseded}) AS awaiting,
                CASE ${rootCase} END AS root
         FROM kb_documents d
@@ -209,6 +223,7 @@ interface DocumentRow extends Record<string, unknown> {
   source_path: string;
   status: "active" | "archived";
   empty_extraction_by: string | null;
+  incomplete_reads: number;
   awaiting: boolean;
   root: string;
 }
@@ -226,7 +241,8 @@ function toDocument(row: DocumentRow, ocr: KbOcrAvailability): UnsearchableDocum
     folder: cut < 0 ? "" : rel.slice(0, cut),
     status: row.status,
     reason,
-    cause: reason === "no_text" ? noTextCause(row.empty_extraction_by, ocr) : null,
+    cause:
+      reason === "no_text" ? noTextCause(row.empty_extraction_by, row.incomplete_reads, ocr) : null,
   };
 }
 
@@ -234,6 +250,7 @@ const emptyCauses = (): Record<NoTextCause, number> => ({
   ocr_off: 0,
   no_vision_model: 0,
   read_next_run: 0,
+  read_failed: 0,
   read_blank: 0,
 });
 
@@ -260,19 +277,20 @@ export async function summarizeUnsearchableDocuments(
   };
   if (allowedPaths.length === 0) return summary;
 
-  // Grouped by the record as well, because the cause is derived from it in
-  // code: the record has a handful of values per corpus, so this stays a
-  // short list however many documents it counts.
+  // Grouped by the record and the retry count as well, because the cause is
+  // derived from them in code: they take a handful of values per corpus, so
+  // this stays a short list however many documents it counts.
   const rows = await db.execute<{
     root: string;
     top_folder: string | null;
     awaiting: boolean;
     empty_extraction_by: string | null;
+    incomplete_reads: number;
     n: string | number;
   }>(sql`
-    SELECT root, top_folder, awaiting, empty_extraction_by, COUNT(*) AS n
+    SELECT root, top_folder, awaiting, empty_extraction_by, incomplete_reads, COUNT(*) AS n
     FROM (${scopedDocuments(orgId, grantRoots(allowedPaths))}) scoped
-    GROUP BY root, top_folder, awaiting, empty_extraction_by
+    GROUP BY root, top_folder, awaiting, empty_extraction_by, incomplete_reads
   `);
 
   const groups = new Map<string, UnsearchableGroup>();
@@ -283,7 +301,7 @@ export async function summarizeUnsearchableDocuments(
       summary.totals.awaiting_conversion += n;
     } else {
       summary.totals.no_text += n;
-      summary.causes[noTextCause(row.empty_extraction_by, ocr)] += n;
+      summary.causes[noTextCause(row.empty_extraction_by, row.incomplete_reads, ocr)] += n;
     }
     const key = JSON.stringify([row.root, row.top_folder]);
     const group = groups.get(key) ?? { root: row.root, folder: row.top_folder, count: 0 };
@@ -331,7 +349,7 @@ export async function listUnsearchableDocuments(
   }
 
   const rows = await db.execute<DocumentRow & { total: string | number }>(sql`
-    SELECT source_path, status, empty_extraction_by, awaiting, root,
+    SELECT source_path, status, empty_extraction_by, incomplete_reads, awaiting, root,
            -- The pre-LIMIT count, in the same pass: the cap truncates the
            -- list, never the number. A separate COUNT can disagree with the
            -- page it labels.
@@ -371,7 +389,7 @@ export async function* unsearchableDocumentPages(
 
   for (;;) {
     const rows: DocumentRow[] = await db.execute<DocumentRow>(sql`
-      SELECT source_path, status, empty_extraction_by, awaiting, root
+      SELECT source_path, status, empty_extraction_by, incomplete_reads, awaiting, root
       FROM (${scopedDocuments(orgId, roots)}) scoped
       WHERE ${after === null ? sql`TRUE` : sql`source_path > ${after}`}
       ORDER BY source_path

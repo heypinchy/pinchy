@@ -36,7 +36,8 @@ const OCR_ON: KbOcrAvailability = { state: "on", model: "anthropic/claude-haiku-
 async function seedUnsearchable(
   sourcePath: string,
   status: "active" | "archived" = "active",
-  emptyExtractionBy: string | null = null
+  emptyExtractionBy: string | null = null,
+  incompleteReads = 0
 ): Promise<string> {
   const [doc] = await db
     .insert(kbDocuments)
@@ -46,6 +47,7 @@ async function seedUnsearchable(
       sourcePath,
       status,
       emptyExtractionBy,
+      incompleteReads,
     })
     .returning();
   return doc.id;
@@ -174,7 +176,7 @@ it("returns nothing when the agent is granted no directories", async () => {
   expect(await summarizeUnsearchableDocuments(ORG_ID, [], NO_MODEL)).toEqual({
     total: 0,
     totals: { no_text: 0, awaiting_conversion: 0 },
-    causes: { ocr_off: 0, no_vision_model: 0, read_next_run: 0, read_blank: 0 },
+    causes: { ocr_off: 0, no_vision_model: 0, read_next_run: 0, read_failed: 0, read_blank: 0 },
     groups: [],
   });
   const pages = [];
@@ -459,21 +461,64 @@ it("says the next run reads it again when a different vision model is available 
   expect(result.documents[0].cause).toBe("read_next_run");
 });
 
-it("says a spreadsheet or converted Office file read in full holds no text", async () => {
-  await seedUnsearchable("/data/share/Empty.xlsx", "active", readBy("sheets"));
+// The converter and the workbook reader come back empty when they REFUSE a
+// file — too large, damaged, not what its name says (ingest.ts, readDocument
+// and extractOfficeDocument; the reason is in the server log). A converted
+// Office file is read as a PDF, so its record never names the converter. And
+// neither reader is ever tried again on the same bytes, so no OCR setting
+// changes anything for them: the honest answer is that it could not be read.
+it("says a file the converter or the workbook reader refused could not be read", async () => {
+  await seedUnsearchable("/data/share/Broken.xlsx", "active", readBy("sheets"));
   // Converted under the current rules — an older artifact would be waiting
   // for a conversion instead, which is the other reason.
   await db.insert(kbDocuments).values({
     orgId: ORG_ID,
-    contentHash: "hash-empty-docx",
-    sourcePath: "/data/share/Empty.docx",
+    contentHash: "hash-refused-docx",
+    sourcePath: "/data/share/Refused.docx",
     emptyExtractionBy: readBy("converter"),
+    incompleteReads: 5,
     artifactFormatVersion: OFFICE_ARTIFACT_FORMAT_VERSION,
   });
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_OFF);
+  for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
+    const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
+    expect(result.documents.map((d) => d.cause)).toEqual(["read_failed", "read_failed"]);
+  }
+});
 
-  expect(result.documents.map((d) => d.cause)).toEqual(["read_blank", "read_blank"]);
+// A read that did not finish carries no record until it settles, and ingest
+// owes it another read (retryOwed) whatever OCR the server has: a refused
+// .docx in its first runs, a scan whose vision calls failed last night. Blaming
+// the OCR setup for it would send an admin to fix the wrong thing.
+it("says the next run reads again a document whose last read did not finish, whatever OCR is", async () => {
+  await seedUnsearchable("/data/share/Scan.pdf", "active", null, 2);
+
+  for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
+    const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
+    expect(result.documents[0].cause).toBe("read_next_run");
+  }
+});
+
+// Out of retries, the record names the vision model — but every call failed,
+// so "read in full, holds no text" would be false. Ingest tries it again only
+// with a different model (couldReadDifferently).
+it("says a scan whose vision reads kept failing could not be read, not that it holds no text", async () => {
+  await seedUnsearchable(
+    "/data/share/Oversized.pdf",
+    "active",
+    readBy("ocr:anthropic/claude-haiku-4-5"),
+    5
+  );
+
+  for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
+    const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
+    expect(result.documents[0].cause).toBe("read_failed");
+  }
+  const otherModel = await listUnsearchableDocuments(ORG_ID, ["/data/share"], {
+    state: "on",
+    model: "some/newer-model",
+  });
+  expect(otherModel.documents[0].cause).toBe("read_next_run");
 });
 
 // No record: a document indexed before the record existed, or one whose read
@@ -513,6 +558,7 @@ it("counts each cause over the whole scope", async () => {
     "active",
     readBy("ocr:anthropic/claude-haiku-4-5")
   );
+  await seedUnsearchable("/data/share/Broken.xlsx", "active", readBy("sheets"));
   await seedReadable("/data/share/Angebot.docx");
 
   const summary = await summarizeUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_OFF);
@@ -521,9 +567,10 @@ it("counts each cause over the whole scope", async () => {
     ocr_off: 3,
     no_vision_model: 0,
     read_next_run: 0,
+    read_failed: 1,
     read_blank: 1,
   });
-  expect(summary.totals).toEqual({ no_text: 4, awaiting_conversion: 1 });
+  expect(summary.totals).toEqual({ no_text: 5, awaiting_conversion: 1 });
 });
 
 // ── The full list, for the download (#1364) ────────────────────────────────

@@ -17,7 +17,7 @@ const mockGet = vi.mocked(apiGet);
 
 const URL = "/api/agents/a1/knowledge/unsearchable";
 
-type Cause = "ocr_off" | "no_vision_model" | "read_next_run" | "read_blank";
+type Cause = "ocr_off" | "no_vision_model" | "read_next_run" | "read_failed" | "read_blank";
 type Group = { root: string; folder: string | null; count: number };
 type Doc = {
   sourcePath: string;
@@ -49,6 +49,7 @@ function summary(
       ocr_off: 0,
       no_vision_model: 0,
       read_next_run: 0,
+      read_failed: 0,
       read_blank: 0,
       ...(overrides.causes ?? { no_vision_model: noText }),
     },
@@ -280,15 +281,32 @@ describe("KnowledgeUnsearchableList", () => {
     expect(screen.queryByText(/switched off/i)).not.toBeInTheDocument();
   });
 
-  it("says the next run reads a scan a vision model hasn't read yet", async () => {
+  // The cause covers a scan a vision model can read now AND a read that did
+  // not finish (a refused Office file in its first runs) — the sentence must
+  // not claim a vision model is the reason for both.
+  it("says the next run reads documents it owes another read, without blaming OCR", async () => {
     serve(summary({ noText: 2, causes: { read_next_run: 2 } }));
 
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
     await waitFor(() =>
-      expect(screen.getByText(/weren't read by a vision model yet/i)).toBeInTheDocument()
+      expect(screen.getByText(/they will be read on the next run/i)).toBeInTheDocument()
     );
-    expect(screen.getByText(/the next run reads them/i)).toBeInTheDocument();
+    expect(screen.getByText(/or the last attempt didn't finish/i)).toBeInTheDocument();
+    expect(screen.queryByText(/weren't read by a vision model/i)).not.toBeInTheDocument();
+  });
+
+  // Refused by the converter or the workbook reader, or every vision read
+  // failed: no OCR setting fixes it, and the server log is where the reason is.
+  it("says a document Pinchy couldn't read is named in the server log, not waiting on OCR", async () => {
+    serve(summary({ noText: 1, causes: { read_failed: 1 } }));
+
+    render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
+
+    await waitFor(() => expect(screen.getByText(/it couldn't be read/i)).toBeInTheDocument());
+    expect(screen.getByText(/the server log names each file and the reason/i)).toBeInTheDocument();
+    expect(screen.queryByText(/vision model is available/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/switched off/i)).not.toBeInTheDocument();
   });
 
   // Read and still empty: nothing to configure, and saying so stops the hunt.
@@ -298,7 +316,9 @@ describe("KnowledgeUnsearchableList", () => {
     render(<KnowledgeUnsearchableList agentId="a1" announceNone />);
 
     await waitFor(() =>
-      expect(screen.getByText(/was read in full and holds no text/i)).toBeInTheDocument()
+      expect(
+        screen.getByText(/was read in full by a vision model and holds no text/i)
+      ).toBeInTheDocument()
     );
     expect(screen.queryByText(/next run/i)).not.toBeInTheDocument();
   });

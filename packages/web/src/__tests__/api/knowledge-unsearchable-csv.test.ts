@@ -186,6 +186,12 @@ describe("GET /api/agents/[agentId]/knowledge/unsearchable/csv", () => {
           root: "/data/legal",
           cause: "read_next_run",
         }),
+        doc({
+          sourcePath: "/data/legal/C.xlsx",
+          name: "C.xlsx",
+          root: "/data/legal",
+          cause: "read_failed",
+        }),
       ],
     ];
 
@@ -195,10 +201,11 @@ describe("GET /api/agents/[agentId]/knowledge/unsearchable/csv", () => {
       BOM +
         '"name","folder","reason","status","path"\n' +
         '"Prüfbericht.pdf","hr/Zertifikate","No text layer; reading scans is switched off on this server","active","/data/hr/Zertifikate/Prüfbericht.pdf"\n' +
-        '"Blank.pdf","hr/OLD","Read in full; no text found","archived","/data/hr/OLD/Blank.pdf"\n' +
+        '"Blank.pdf","hr/OLD","Read in full by a vision model; no text found","archived","/data/hr/OLD/Blank.pdf"\n' +
         '"Vertrag.docx","legal","Waiting to be converted again","active","/data/legal/Vertrag.docx"\n' +
         '"A.pdf","legal","No text layer; no vision model is available to read it","active","/data/legal/A.pdf"\n' +
-        '"B.pdf","legal","No text layer; the next run reads it with a vision model","active","/data/legal/B.pdf"\n'
+        '"B.pdf","legal","Not read yet; the next run reads it","active","/data/legal/B.pdf"\n' +
+        '"C.xlsx","legal","Couldn\'t be read; the server log names the reason","active","/data/legal/C.xlsx"\n'
     );
   });
 

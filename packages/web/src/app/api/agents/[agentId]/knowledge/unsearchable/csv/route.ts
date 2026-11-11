@@ -21,10 +21,12 @@ function reasonText(doc: UnsearchableDocument): string {
     case "no_vision_model":
       return "No text layer; no vision model is available to read it";
     case "read_next_run":
-      return "No text layer; the next run reads it with a vision model";
+      return "Not read yet; the next run reads it";
+    case "read_failed":
+      return "Couldn't be read; the server log names the reason";
     case "read_blank":
     default:
-      return "Read in full; no text found";
+      return "Read in full by a vision model; no text found";
   }
 }
 

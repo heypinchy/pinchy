@@ -198,6 +198,7 @@ const CAUSE_ORDER: readonly NoTextCause[] = [
   "ocr_off",
   "no_vision_model",
   "read_next_run",
+  "read_failed",
   "read_blank",
 ];
 
@@ -227,15 +228,24 @@ function CauseSentence({ cause, count, of }: { cause: NoTextCause; count: number
     case "read_next_run":
       return (
         <p>
-          {subject} {one ? "wasn't" : "weren't"} read by a vision model yet. One is available now,
-          so the next run reads {them}.
+          {subject} will be read on the next run: a vision model can read {them} now, or the last
+          attempt didn&apos;t finish.
+        </p>
+      );
+    case "read_failed":
+      return (
+        <p>
+          {subject} couldn&apos;t be read: the file was refused — too large, damaged, or not what
+          its name says — or every attempt to read {them} failed. The server log names each file and
+          the reason. A file that&apos;s replaced is read again on the next run.
         </p>
       );
     case "read_blank":
       return (
         <p>
-          {subject} {one ? "was" : "were"} read in full and {one ? "holds" : "hold"} no text — a
-          blank page, a picture without words, or a scan too faint to make out.
+          {subject} {one ? "was" : "were"} read in full by a vision model and{" "}
+          {one ? "holds" : "hold"} no text — a blank page, a picture without words, or a scan too
+          faint to make out.
         </p>
       );
   }
