@@ -485,12 +485,16 @@ describe("PATCH /api/agents/[agentId] — group change alongside a failed runtim
     adminSession();
     mockAgent(EXISTING);
     vi.mocked(updateAgent).mockRejectedValueOnce(err);
-    // The group-name lookup for the audit diff.
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue([{ id: "group-sales", name: "Sales" }]),
-      }),
-    } as never);
+    // The group-name lookup for the audit diff. Queued only when the route
+    // gets that far: an unconsumed once-value survives vi.clearAllMocks and
+    // would answer the next test's first query.
+    if (err instanceof AgentRuntimeUpdateError) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: "group-sales", name: "Sales" }]),
+        }),
+      } as never);
+    }
 
     const res = await PATCH(patchToolsAndGroups(), {
       params: Promise.resolve({ agentId: "agent-1" }),
@@ -611,6 +615,41 @@ describe("PATCH /api/agents/[agentId] — a later step fails after a held runtim
     });
     // No group diff: nothing about the groups changed.
     expect(rows[0].detail).not.toHaveProperty("allowedGroups");
+  });
+
+  it("keeps the group diff and the Telegram recalc when only the identity write fails", async () => {
+    // The settings page sends the General and Access tabs in one PATCH. A full
+    // or unwritable workspace breaks the runtime push AND the IDENTITY.md
+    // write, while the group replace commits on its own volume — so the
+    // committed membership change must still reach the audit row and the
+    // Telegram allow-stores.
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", allowedTools: [] });
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
+    vi.mocked(writeIdentityFile).mockImplementationOnce(() => {
+      throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "group-sales", name: "Sales" }]),
+      }),
+    } as never);
+
+    const res = await PATCH(patch({ name: "Penelope", groupIds: ["group-sales"] }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    await flushAfter();
+
+    expect(res.status).toBe(500);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/ENOSPC/);
+    expect(error).not.toMatch(/group.*not saved/i);
+    expect(recalculateTelegramAllowStores).toHaveBeenCalledTimes(1);
+    const rows = vi.mocked(appendAuditLog).mock.calls.map(([entry]) => entry);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].detail).toMatchObject({
+      allowedGroups: { added: [{ id: "group-sales", name: "Sales" }], removed: [] },
+    });
   });
 
   it("still answers readably and audits when the identity file write fails", async () => {

@@ -319,13 +319,6 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
       groupsWritten = true;
     }
 
-    if (data.name !== undefined || data.tagline !== undefined) {
-      writeIdentityFile(agentId, {
-        name: agent.name,
-        tagline: agent.tagline,
-      });
-    }
-
     // Build audit detail with group diffs — only for groups that were written
     if (groupsWritten && body.groupIds !== undefined) {
       const newIds = body.groupIds;
@@ -354,6 +347,16 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     // an access rule the database no longer has.
     if (body.visibility !== undefined || body.groupIds !== undefined) {
       await recalculateTelegramAllowStores();
+    }
+
+    // Last of the follow-up steps: a full or unwritable workspace is also what
+    // breaks the runtime push, so this is the step most likely to throw — and
+    // it must not take the committed group diff and the Telegram recalc with it.
+    if (data.name !== undefined || data.tagline !== undefined) {
+      writeIdentityFile(agentId, {
+        name: agent.name,
+        tagline: agent.tagline,
+      });
     }
   } catch (err) {
     if (!runtimeError) throw err;
