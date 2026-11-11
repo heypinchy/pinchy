@@ -334,6 +334,10 @@ OpenClaw 2026.9 no longer computes memory embeddings inside its own process. The
 
 OpenClaw 2026.9 no longer loads an agent's `TOOLS.md`, where Pinchy wrote which mailboxes an agent works with. That section is now part of the agent's `IDENTITY.md`, and Pinchy removes the old `TOOLS.md` the next time it writes the agent's configuration. Nothing to do.
 
+#### Group chats really don't see a shared agent's memory now
+
+The v0.9.0 notes say a shared agent's `MEMORY.md` stays out of Telegram group chats. It didn't: the filter we shipped for that was never loaded by OpenClaw, so a group chat could still receive what the agent had learned in one-to-one conversations. OpenClaw 2026.9 filters it out itself — for group chats, channels, and background runs alike — and we removed our filter. Shared agents may now appear to "know less" in groups; that is the privacy fix working.
+
 ### Database migrations
 
 The migration `0082` runs automatically on startup — no manual steps. It is additive.

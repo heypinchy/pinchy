@@ -820,11 +820,20 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   const existingMemory = (existing.memory as Record<string, unknown>) || {};
   const existingMemorySearch = (existingMemory.search as Record<string, unknown>) || {};
   const existingHooks = (existing.hooks as Record<string, unknown>) || {};
-  const existingHooksInternal = (existingHooks.internal as Record<string, unknown>) || {};
-  const existingHooksInternalLoad = (existingHooksInternal.load as Record<string, unknown>) || {};
-  const existingHooksExtraDirs = Array.isArray(existingHooksInternalLoad.extraDirs)
-    ? (existingHooksInternalLoad.extraDirs as string[])
-    : [];
+  const { load: rawHooksInternalLoad, ...existingHooksInternal } =
+    (existingHooks.internal as Record<string, unknown>) || {};
+  const existingHooksInternalLoad = (rawHooksInternalLoad as Record<string, unknown>) || {};
+  // Pinchy ≤ v0.10 pointed OpenClaw at /opt/pinchy-hooks for its #369 memory
+  // filter; the image no longer ships that dir, so the entry goes too.
+  const { extraDirs: rawHooksExtraDirs, ...existingHooksInternalLoadRest } =
+    existingHooksInternalLoad;
+  const existingHooksExtraDirs = (Array.isArray(rawHooksExtraDirs) ? rawHooksExtraDirs : []).filter(
+    (dir) => dir !== "/opt/pinchy-hooks"
+  ) as string[];
+  const hooksInternalLoad = {
+    ...existingHooksInternalLoadRest,
+    ...(existingHooksExtraDirs.length > 0 ? { extraDirs: existingHooksExtraDirs } : {}),
+  };
 
   // #508: identityLinks is no longer Pinchy-owned. Purge any stale value left by
   // a pre-per-task version so UPGRADES actually un-unify Telegram. We only
@@ -944,35 +953,21 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       ...existingSessionPurged,
       reset: { mode: "idle" as const, idleMinutes: 525600 },
     },
-    // Enable OpenClaw's internal-hook loader and point it at the hook package
-    // Pinchy ships in the OpenClaw image at /opt/pinchy-hooks. Today that dir
-    // holds one hook, bootstrap-memory-group-filter, which strips MEMORY.md
-    // from the bootstrap set for channel GROUP sessions so a shared agent's
-    // per-user memory is never pushed into a group (heypinchy/pinchy#369).
+    // OpenClaw's internal hooks stay on: every install a Pinchy ≤ v0.10 wrote
+    // has run the bundled ones (session-memory, boot-md, command-logger, …)
+    // with this forced on, so turning it off now would silently change them.
+    // Sibling fields (entries, other load.* keys) are preserved via the spreads.
     //
-    // Immediate mitigation for the upstream defect openclaw/openclaw#108881
-    // (filterBootstrapFilesForSession special-cases subagent + cron but not
-    // channel-group sessions). Remove this block — and the hook package — once
-    // that upstream fix ships.
-    //
-    // /opt (image, never volume-mounted) not /root/.openclaw/hooks (the default
-    // managed dir), because ~/.openclaw is a persisted volume that would shadow
-    // anything the image bakes into it. extraDirs is deduped and merged with any
-    // OpenClaw-enriched hooks state so a regenerate is idempotent and lossless.
-    //
-    // `enabled: true` is a deliberate OVERRIDE, not a merge: the #369 leak
-    // protection depends on the internal-hook loader being on, so Pinchy forces
-    // it back on every regenerate even if something set it to false. Sibling
-    // fields (entries, other load.* keys) are preserved via the spreads.
+    // Pinchy used to add /opt/pinchy-hooks here for its own MEMORY.md group
+    // filter (#369). OpenClaw keeps MEMORY.md out of group and channel
+    // sessions natively since openclaw/openclaw#108881, so the hook and its
+    // dir are gone (openclaw-config-hooks.test.ts pins the native behaviour).
     hooks: {
       ...existingHooks,
       internal: {
         ...existingHooksInternal,
         enabled: true,
-        load: {
-          ...existingHooksInternalLoad,
-          extraDirs: Array.from(new Set([...existingHooksExtraDirs, "/opt/pinchy-hooks"])),
-        },
+        ...(Object.keys(hooksInternalLoad).length > 0 ? { load: hooksInternalLoad } : {}),
       },
     },
     // OpenClaw 2026.8.1 made Skill Workshop's autonomous self-learning `auto`

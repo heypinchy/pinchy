@@ -80,6 +80,7 @@ vi.mock("@/lib/provider-models", () => ({
 
 import { writeFileSync, readFileSync, existsSync } from "fs";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { loadOpenClawDistExport } from "../helpers/openclaw-dist";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
@@ -94,55 +95,37 @@ function writtenConfig() {
   return JSON.parse(written);
 }
 
-describe("openclaw config: internal hooks for the memory group filter", () => {
+describe("openclaw config: internal hooks", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedExistsSync.mockReturnValue(true);
     mockedReadFileSync.mockReturnValue(JSON.stringify(gatewayConfig));
   });
 
-  it("enables internal hooks and loads the /opt/pinchy-hooks dir", async () => {
+  it("keeps OpenClaw's internal hooks on", async () => {
+    // The bundled internal hooks (session-memory, boot-md, command-logger, …)
+    // run on every install that came from a Pinchy which forced this on.
     await regenerateOpenClawConfig();
-    const config = writtenConfig();
 
-    expect(config.hooks?.internal?.enabled).toBe(true);
-    expect(config.hooks?.internal?.load?.extraDirs).toContain("/opt/pinchy-hooks");
+    expect(writtenConfig().hooks?.internal?.enabled).toBe(true);
   });
 
-  it("preserves OpenClaw-enriched hooks fields across a regenerate", async () => {
-    mockedReadFileSync.mockReturnValue(
-      JSON.stringify({
-        ...gatewayConfig,
-        hooks: {
-          internal: {
-            entries: { "some-other-hook": { enabled: true } },
-            load: { extraDirs: ["/somewhere/else"] },
-          },
-        },
-      })
+  it("no longer loads hooks from /opt/pinchy-hooks", async () => {
+    await regenerateOpenClawConfig();
+
+    expect(writtenConfig().hooks?.internal?.load?.extraDirs ?? []).not.toContain(
+      "/opt/pinchy-hooks"
     );
-
-    await regenerateOpenClawConfig();
-    const config = writtenConfig();
-
-    // Pinchy owns enabled + its own extraDir, but must not drop sibling state.
-    expect(config.hooks.internal.enabled).toBe(true);
-    expect(config.hooks.internal.entries?.["some-other-hook"]).toEqual({
-      enabled: true,
-    });
-    expect(config.hooks.internal.load.extraDirs).toContain("/opt/pinchy-hooks");
-    expect(config.hooks.internal.load.extraDirs).toContain("/somewhere/else");
   });
 
-  it("does not duplicate /opt/pinchy-hooks when it is already present", async () => {
-    // A repeated regenerate reads back its own previous output, so the merge
-    // must stay idempotent — no growing extraDirs list across restarts.
+  it("removes /opt/pinchy-hooks from a file an earlier Pinchy wrote, keeping everything else", async () => {
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
         ...gatewayConfig,
         hooks: {
           internal: {
             enabled: true,
+            entries: { "some-other-hook": { enabled: true } },
             load: { extraDirs: ["/opt/pinchy-hooks", "/somewhere/else"] },
           },
         },
@@ -152,8 +135,46 @@ describe("openclaw config: internal hooks for the memory group filter", () => {
     await regenerateOpenClawConfig();
     const config = writtenConfig();
 
-    const dirs: string[] = config.hooks.internal.load.extraDirs;
-    expect(dirs.filter((d) => d === "/opt/pinchy-hooks")).toHaveLength(1);
-    expect(dirs).toContain("/somewhere/else");
+    expect(config.hooks.internal.load.extraDirs).toEqual(["/somewhere/else"]);
+    expect(config.hooks.internal.entries?.["some-other-hook"]).toEqual({ enabled: true });
   });
+
+  it("drops the load block when /opt/pinchy-hooks was its only entry", async () => {
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        ...gatewayConfig,
+        hooks: { internal: { enabled: true, load: { extraDirs: ["/opt/pinchy-hooks"] } } },
+      })
+    );
+
+    await regenerateOpenClawConfig();
+
+    expect(writtenConfig().hooks.internal.load).toBeUndefined();
+  });
+
+  it(
+    "OpenClaw itself keeps MEMORY.md out of group, channel, subagent and cron sessions",
+    { timeout: 30_000 },
+    async () => {
+      // #369: a shared agent's MEMORY.md holds what individual users told it in
+      // private chats, so it must never be pushed into a session other people
+      // read. Pinchy used to ship an `agent:bootstrap` hook for this; OpenClaw's
+      // own bootstrap filter covers it since openclaw/openclaw#108881, and this
+      // test is what turns red if that ever stops being true.
+      const filter = (await loadOpenClawDistExport(
+        /^workspace-.*\.js$/,
+        "filterBootstrapFilesForSession"
+      )) as (files: { name: string; path: string }[], sessionKey: string) => { name: string }[];
+      const files = ["MEMORY.md", "AGENTS.md"].map((name) => ({ name, path: `/ws/${name}` }));
+      const names = (sessionKey: string) => filter(files, sessionKey).map((f) => f.name);
+
+      expect(names("agent:a1:telegram:group:-100123")).not.toContain("MEMORY.md");
+      expect(names("agent:a1:telegram:channel:-100999")).not.toContain("MEMORY.md");
+      expect(names("agent:a1:subagent:s1")).not.toContain("MEMORY.md");
+      expect(names("agent:a1:cron:j1")).not.toContain("MEMORY.md");
+      // Direct chats keep it: that is where the memory belongs.
+      expect(names("agent:a1:telegram:direct:42")).toContain("MEMORY.md");
+      expect(names("agent:a1:direct:u1")).toContain("MEMORY.md");
+    }
+  );
 });
