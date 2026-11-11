@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
 // ─────────────────────────────────────────────────────────────────────────
-// MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data")
+// MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data")
 //
 // IMAP is a NEW connection `type` this feature introduces. Every unit test
 // elsewhere in the suite creates its imap fixtures fresh, in-process, inside

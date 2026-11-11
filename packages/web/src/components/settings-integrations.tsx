@@ -119,7 +119,7 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
   // redirect. It's a PERMANENT, actionable config error (e.g. a wrong Client
   // Secret) — so it must persist as an inline banner until dismissed, not a
   // transient toast that vanishes before the user (whose attention is still on
-  // the provider's redirect) can read it. See AGENTS.md "Error And Notification
+  // the provider's redirect) can read it. See agent-rules/ui.md "Error And Notification
   // UI". Seed local state from the prop ONCE so stripping the URL below doesn't
   // also clear the banner; the dismiss button clears it.
   const [oauthErrorState, setOauthErrorState] = useState<string | undefined>(oauthError);

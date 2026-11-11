@@ -17,12 +17,14 @@ import { parseRangeHeader } from "@/lib/http-range";
 import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
 import {
   getOfficeArtifactStore,
+  getScanArtifactStore,
   hashOpenFile,
   liveStagingDirOf,
 } from "@/lib/knowledge/office-artifacts";
 import {
   convertedPdfName,
   isOfficeFile,
+  isScanFile,
   isSpreadsheetFile,
   OfficeFileRejectedError,
 } from "@/lib/knowledge/office-formats";
@@ -43,6 +45,7 @@ import {
   type VerifiedSource,
 } from "@/lib/knowledge/verified-source";
 import type { AgentPluginConfig } from "@/db/schema";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 import {
   ifNoneMatchHits,
   rangeAllowedByIfRange,
@@ -194,9 +197,16 @@ async function resolveConvertedArtifact(
   source: VerifiedSource,
   realPath: string
 ): Promise<string | null> {
-  if (!isOfficeFile(realPath)) return null;
+  // A scanned TIFF has its own store (#1409): both are keyed on the source's
+  // content hash, and a scan must open the pages its citations count.
+  const storeFor = isOfficeFile(realPath)
+    ? getOfficeArtifactStore
+    : isScanFile(realPath)
+      ? getScanArtifactStore
+      : null;
+  if (!storeFor) return null;
   try {
-    return await getOfficeArtifactStore().get(await hashOpenFile(source.handle));
+    return await storeFor().get(await hashOpenFile(source.handle));
   } catch {
     // An unreadable source, or an artifact volume that is missing, full or not
     // mounted. Neither is a verdict on this document and neither is worth a
@@ -320,8 +330,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // /api/internal/knowledge/search/route.ts): an agent's file-serving scope
   // is exactly the folders an admin has granted it, no separate allowlist to
   // drift. An empty/missing list denies by default.
-  const allowedPaths =
-    (agent.pluginConfig as AgentPluginConfig | null)?.["pinchy-files"]?.allowed_paths ?? [];
+  const allowedPaths = grantedDataPaths(agent.pluginConfig as AgentPluginConfig | null);
 
   const resolved = await resolveAllowedFile(requestedPath, allowedPaths);
   if (!resolved.ok) {
@@ -548,12 +557,14 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
 
   // Which representation is actually served. `converted` is asked for
   // explicitly by the second download control, and implicitly by any viewer
-  // opening an Office source — a `.doc` renders in no browser, so the document
-  // a reader was promised IS the converted PDF.
+  // opening an Office source or a scanned TIFF — a `.doc` or a `.tif` renders
+  // in no browser, so the document a reader was promised IS the converted PDF.
   const source = await openSource();
   if (!source) return new NextResponse("Not found", { status: 404 });
 
-  const wantsConverted = variant === "converted" || (variant === null && isOfficeFile(realPath));
+  const wantsConverted =
+    variant === "converted" ||
+    (variant === null && (isOfficeFile(realPath) || isScanFile(realPath)));
   const artifactPath = wantsConverted ? await resolveConvertedArtifact(source, realPath) : null;
   if (wantsConverted && artifactPath === null) {
     // Falling back to the original here would be worse than answering nothing:

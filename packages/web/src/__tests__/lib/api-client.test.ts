@@ -259,7 +259,7 @@ describe("errorMessage", () => {
 });
 
 /**
- * The inline-vs-toast split from AGENTS.md § "Error And Notification UI" hangs
+ * The inline-vs-toast split from agent-rules/ui.md § "Error And Notification UI" hangs
  * off this helper's null: a field the user can correct gets an inline message,
  * anything else gets a toast. It lived as an untested copy inside two settings
  * components until #1087 pulled it here, so its contract is pinned now.

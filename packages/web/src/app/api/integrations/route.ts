@@ -9,7 +9,7 @@ import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { parseRequestBody } from "@/lib/api-validation";
 import { createIntegrationSchema } from "@/lib/schemas/integrations";
-import { refreshWebPluginConfig } from "@/lib/integrations/refresh-web-plugin-config";
+import { refreshPluginConfig } from "@/lib/integrations/refresh-plugin-config";
 
 export const GET = withAdmin(async () => {
   const connections = await db.select().from(integrationConnections);
@@ -89,7 +89,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     })
     .returning();
 
-  if (type === "web-search") await refreshWebPluginConfig();
+  await refreshPluginConfig();
 
   deferAuditLog({
     actorType: "user",

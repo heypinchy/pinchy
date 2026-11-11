@@ -201,7 +201,7 @@ describe("api-key-rate-limiter", () => {
     });
 
     it("is GLOBAL, not keyed by IP — a second address inside the open window is suppressed", () => {
-      // AGENTS.md § "`/api/internal/` Is A Security Claim, Not A Folder Name":
+      // agent-rules/web-routes.md § "`/api/internal/` Is A Security Claim, Not A Folder Name":
       // the remote address is caller-supplied, so a window keyed on it grows
       // per request and the throttle stops throttling. Keying this one would
       // hand an unauthenticated caller one audit row per source address.

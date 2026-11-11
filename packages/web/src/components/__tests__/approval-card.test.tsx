@@ -253,12 +253,12 @@ describe("ApprovalCard shows what will actually run", () => {
   });
 
   it("shows recipients in full, address first", () => {
-    const to = `${"Raimund Korber Geschaeftsfuehrung ".repeat(8)}<attacker@evil.com>`;
+    const to = `${"Anna Berger Geschaeftsfuehrung ".repeat(8)}<attacker@evil.com>`;
     renderCard(summarizeArgs({ to, subject: "Rechnung" }));
     const address = screen.getByText("attacker@evil.com");
     // The display name is drawn after the address, beside it — not in it.
     const name = address.closest("dd")!.querySelector('[data-annotation="name"]')!;
-    expect(name.textContent).toMatch(/^name Raimund Korber Geschaeftsfuehrung/);
+    expect(name.textContent).toMatch(/^name Anna Berger Geschaeftsfuehrung/);
     expect(address.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole("button", { name: /show full text/i })).not.toBeInTheDocument();
   });

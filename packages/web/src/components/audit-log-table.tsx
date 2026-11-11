@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, type MouseEvent } from "react";
 import Prism from "prismjs";
 import "prismjs/components/prism-json";
 import "./json-highlight.css";
@@ -208,9 +208,11 @@ export function AuditLogTable() {
     [selectedEntry]
   );
 
-  async function handleCopyDetail() {
+  async function handleCopyDetail(event: MouseEvent<HTMLButtonElement>) {
     if (!selectedEntry) return;
-    const ok = await copy(detailJson);
+    // Anchor the fallback inside the sheet: its focus trap would otherwise
+    // pull focus off the hidden textarea and the copy would silently do nothing.
+    const ok = await copy(detailJson, { anchor: event.currentTarget.parentElement });
     if (!ok) toast.error("Failed to copy to clipboard");
   }
 

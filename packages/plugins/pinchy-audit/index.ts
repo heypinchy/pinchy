@@ -363,7 +363,7 @@ async function postToolAuditEvent(
       // reason instead of a bare status code.
       //
       // Except a 401, which this hook retries, on the longer budget. The
-      // Bearer token is the one gateway token Pinchy and every plugin share (AGENTS.md,
+      // Bearer token is the one gateway token Pinchy and every plugin share (agent-rules/secrets.md,
       // Pattern C), and Pinchy answers 401 while it momentarily cannot read
       // it — OpenClaw rewrites openclaw.json root-only on every config apply.
       // Stopping at the first 401 blocked the tool call of whichever agent hit

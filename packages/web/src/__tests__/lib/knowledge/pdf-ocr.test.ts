@@ -15,11 +15,12 @@
  */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import PDFDocument from "pdfkit";
 import sharp from "sharp";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
 
@@ -136,7 +137,7 @@ it("does no OCR at all when none is configured", async () => {
 });
 
 it("stops rendering after the page budget, and says how many it skipped", async () => {
-  // A 1159-page scan is real (issue #941, the Noack corpus). Without a bound,
+  // A 1159-page scan is real (issue #941, the customer corpus). Without a bound,
   // one document would spend 1159 vision calls at index time.
   const path = await writePdf("huge.pdf", ["scan", "scan", "scan", "scan"]);
   const ocrPage = vi.fn(async () => "PAGE TEXT");
@@ -219,4 +220,117 @@ it("does not mark a page the vision model read as empty, or one the budget left 
   const pages = await extractPdfPages(path, { ocr: { ocrPage: async () => "", maxPages: 1 } });
 
   expect(pages.map((page) => page.ocrFailed)).toEqual([undefined, undefined]);
+});
+
+it("reads up to three scanned pages at once, and keeps them in page order (#1385)", async () => {
+  // One page at a time, a long scan held a run for minutes while the vision
+  // provider — not this machine — did the work. Three at once is the bound:
+  // more would trade a slow document for provider rate limits.
+  const path = await writePdf("long-scan.pdf", ["scan", "scan", "scan", "scan", "scan", "scan"]);
+  const waiting: Array<() => void> = [];
+  let active = 0;
+  let peak = 0;
+  let calls = 0;
+  const ocrPage = vi.fn(async () => {
+    const call = calls++;
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise<void>((release) => waiting.push(release));
+    active--;
+    return `READ ${call}`;
+  });
+
+  let done = false;
+  const run = extractPdfPages(path, { ocr: { ocrPage } }).finally(() => {
+    done = true;
+  });
+
+  await vi.waitFor(() => expect(active).toBe(3), { timeout: 15_000 });
+  // Release the NEWEST call each time, so answers come back out of page order.
+  while (!done) {
+    await vi.waitFor(() => expect(waiting.length > 0 || done).toBe(true), { timeout: 15_000 });
+    waiting.pop()?.();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const pages = await run;
+
+  expect(peak).toBe(3);
+  expect(ocrPage).toHaveBeenCalledTimes(6);
+  expect(pages.map((page) => page.text)).toEqual([
+    "READ 0",
+    "READ 1",
+    "READ 2",
+    "READ 3",
+    "READ 4",
+    "READ 5",
+  ]);
+});
+
+it("marks only the page whose read failed when pages are read at once", async () => {
+  const path = await writePdf("three-scans.pdf", ["scan", "scan", "scan"]);
+  let calls = 0;
+  const ocrPage = vi.fn(async (): Promise<string | null> => {
+    const call = calls++;
+    if (call === 1) throw new Error("socket hang up");
+    return `READ ${call}`;
+  });
+  const onDocumentOcr = vi.fn();
+
+  const pages = await extractPdfPages(path, { ocr: { ocrPage, onDocumentOcr } });
+
+  expect(pages.map((page) => [page.text, page.ocrFailed])).toEqual([
+    ["READ 0", undefined],
+    ["", true],
+    ["READ 2", undefined],
+  ]);
+  expect(onDocumentOcr).toHaveBeenCalledWith({ rendered: 3, skipped: 0 });
+});
+
+it("lets the pages already with the vision model finish before a later page's error ends the document", async () => {
+  // A page that can't be opened ends the document. The reads still out must
+  // land first: their usage is counted against this document, and nothing may
+  // reach the provider after the run has moved on to the next file.
+  const path = await writePdf("breaks-on-page-three.pdf", ["scan", "scan", "text page"]);
+  const probeTask = getDocument({ data: new Uint8Array(await readFile(path)) });
+  const proto = Object.getPrototypeOf(await probeTask.promise) as {
+    getPage(n: number): Promise<unknown>;
+  };
+  await probeTask.destroy();
+  const getPage = proto.getPage;
+  const spy = vi.spyOn(proto, "getPage").mockImplementation(function (this: unknown, n: number) {
+    if (n === 3) return Promise.reject(new Error("page 3 is broken"));
+    return getPage.call(this, n);
+  });
+
+  const waiting: Array<() => void> = [];
+  const finished: number[] = [];
+  let calls = 0;
+  const ocrPage = vi.fn(async () => {
+    const call = calls++;
+    await new Promise<void>((release) => waiting.push(release));
+    finished.push(call);
+    return `READ ${call}`;
+  });
+
+  let settled = false;
+  const run = extractPdfPages(path, { ocr: { ocrPage } }).then(
+    () => {
+      settled = true;
+    },
+    (err: unknown) => {
+      settled = true;
+      throw err;
+    }
+  );
+  try {
+    await vi.waitFor(() => expect(waiting).toHaveLength(2), { timeout: 15_000 });
+    // Give the loop every chance to reach page 3 and throw.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+    for (const release of waiting) release();
+    await expect(run).rejects.toThrow("page 3 is broken");
+    expect(finished.sort()).toEqual([0, 1]);
+  } finally {
+    spy.mockRestore();
+  }
 });

@@ -21,6 +21,8 @@ import { getConfirmMap, type ConfirmMap } from "@/lib/approvals/policy";
 import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 import type { AgentPluginConfig } from "@/db/schema";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
+import { useGrantedFolders } from "@/hooks/use-granted-folders";
 
 export interface PermissionsValues {
   allowedTools: string[];
@@ -114,9 +116,7 @@ export function AgentSettingsPermissions({
   );
 
   const [allowedKbTools, setAllowedKbTools] = useState<string[]>(initialKbTools);
-  const [allowedPaths, setAllowedPaths] = useState<string[]>(
-    agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []
-  );
+  const [allowedPaths, setAllowedPaths] = useState<string[]>(grantedDataPaths(agent.pluginConfig));
   const [odooIntegration, setOdooIntegration] = useState<{
     connectionId: string;
     permissions: Array<{ model: string; operation: string }>;
@@ -137,7 +137,7 @@ export function AgentSettingsPermissions({
   const [confirm, setConfirm] = useState<ConfirmMap>(() => getConfirmMap(agent.pluginConfig));
 
   const initialKbToolsRef = useRef(initialKbTools);
-  const initialAllowedPaths = useRef(agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []);
+  const initialAllowedPaths = useRef(grantedDataPaths(agent.pluginConfig));
   const initialWebSearchConfig = useRef(agent.pluginConfig?.["pinchy-web"] ?? {});
   const initialConfirm = useRef<ConfirmMap>(getConfirmMap(agent.pluginConfig));
 
@@ -152,7 +152,7 @@ export function AgentSettingsPermissions({
     initialKbToolsRef.current = agent.allowedTools.filter(
       (id) => !id.startsWith("odoo_") && !id.startsWith("email_")
     );
-    initialAllowedPaths.current = agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
+    initialAllowedPaths.current = grantedDataPaths(agent.pluginConfig);
     initialWebSearchConfig.current = agent.pluginConfig?.["pinchy-web"] ?? {};
     initialConfirm.current = getConfirmMap(agent.pluginConfig);
   }, [agent.allowedTools, agent.pluginConfig]);
@@ -166,8 +166,12 @@ export function AgentSettingsPermissions({
   // the reindex section is gated on the persisted paths — never on the picker's
   // unsaved selection, which the server cannot see yet. The parent refetches
   // the agent after a save, so this recomputes to the new truth on its own.
-  const savedAllowedPaths = agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
+  const savedAllowedPaths = grantedDataPaths(agent.pluginConfig);
   const hasUnsavedPathChanges = !sameDirectorySet(allowedPaths, savedAllowedPaths);
+  const savedPathsKey = savedAllowedPaths.map(directoryKey).sort().join("|");
+  // Which saved grants still name a folder that exists (#1363). Admin-only,
+  // like the route it reads.
+  const grantedFolders = useGrantedFolders(agent.id, savedPathsKey, isAdmin);
 
   // Check if the agent has sensitive data access (any allowed paths or odoo/email tools)
   const hasSensitiveDataAccess =
@@ -362,6 +366,7 @@ export function AgentSettingsPermissions({
             onChange={handlePathsChange}
             label="Allowed Directories"
             browseSubfolders={isAdmin}
+            grantedFolders={grantedFolders}
           />
           {/* Beside the checkboxes that made the change, not in the index
               block below: it is a fact about this form, and only an admin has
@@ -384,7 +389,7 @@ export function AgentSettingsPermissions({
             agentId={agent.id}
             allowedPathCount={savedAllowedPaths.length}
             hasUnsavedPathChanges={hasUnsavedPathChanges}
-            savedPathsKey={savedAllowedPaths.map(directoryKey).sort().join("|")}
+            savedPathsKey={savedPathsKey}
           />
         )}
 

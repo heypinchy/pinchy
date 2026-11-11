@@ -69,7 +69,7 @@
  * fail without the apt line and succeed with it.
  *
  * Read-side sibling of the node-version-pin / format-gate / plugin-typecheck
- * guards (see AGENTS.md).
+ * guards (see agent-rules/).
  */
 
 import { posix } from "node:path";

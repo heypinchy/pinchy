@@ -133,7 +133,7 @@ const eslintConfig = defineConfig([
   // Pinchy custom rules — client components, hooks and client pages:
   // - no-raw-fetch-mutation: a state-changing call goes through the typed
   //   helpers in @/lib/api-client (apiPost/apiPut/apiPatch/apiDelete), never
-  //   raw `fetch(url, { method: "POST" })`. AGENTS.md § "Shared Schemas And
+  //   raw `fetch(url, { method: "POST" })`. agent-rules/web-routes.md § "Shared Schemas And
   //   Typed Client" promises that payload drift is a compile-time error rather
   //   than a runtime 400 — a promise `JSON.stringify(anything)` cannot keep —
   //   and the helper is also what surfaces the route's own error wording

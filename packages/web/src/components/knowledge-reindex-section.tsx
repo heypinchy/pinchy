@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { KnowledgeFolderTree } from "@/components/knowledge-folder-tree";
 import { KnowledgeUnsearchableList } from "@/components/knowledge-unsearchable-list";
 import { apiGet, apiPost, errorMessage } from "@/lib/api-client";
 import {
@@ -344,6 +345,19 @@ export function KnowledgeReindexSection({
             ) : job?.status === "failed" ? (
               <FailedState job={job} />
             ) : null}
+
+            {/* Where the run is and what each folder holds (#1386). Shown while
+                a run is in flight too: that is when "which folder is it in?" is
+                asked. The tree polls on its own while a run is active. */}
+            {allowedPathCount > 0 && !hasUnsavedPathChanges && (
+              <div className="space-y-2">
+                <h5 className="text-sm font-medium">Folders</h5>
+                <KnowledgeFolderTree
+                  agentId={agentId}
+                  reloadKey={`${savedPathsKey ?? allowedPathCount}:${job?.id ?? "none"}:${job?.status ?? "none"}`}
+                />
+              </div>
+            )}
 
             {/* Which documents the counts above mean by "unsearchable" (#935).
                 Hidden while a run is in flight — the list is about to change —
@@ -713,8 +727,8 @@ function UnavailableFoldersNote({ count }: { count: number }) {
 }
 
 /**
- * Files on the share whose type Pinchy can't read (#1267) — a `.tif` scan, an
- * old `.xls`. Not documents in the index at all, so nothing else on this page
+ * Files on the share whose type Pinchy can't read (#1267) — an Outlook `.msg`,
+ * an old `.xls`. Not documents in the index at all, so nothing else on this page
  * mentions them, and without this line a gap in the agent's answers reads as
  * the model's fault.
  *
@@ -736,7 +750,7 @@ function UnsupportedFilesNote({ agentId, count }: { agentId: string; count: numb
   const files = count === 1 ? "1 file is" : `${count} files are`;
   return (
     <p className="text-sm text-muted-foreground">
-      {files} of a type Pinchy can&apos;t read, like scans saved as .tif or old .xls spreadsheets.
+      {files} of a type Pinchy can&apos;t read, like Outlook .msg emails or old .xls spreadsheets.
       Your agent can&apos;t answer from {count === 1 ? "it" : "them"}. Saved as PDF, Word,
       PowerPoint or .xlsx, {count === 1 ? "it's" : "they're"} picked up by the next run.{" "}
       <a

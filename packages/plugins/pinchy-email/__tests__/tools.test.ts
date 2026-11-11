@@ -371,7 +371,7 @@ describe("permission checks at execution", () => {
   });
 });
 
-// MIGRATION TESTS (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+// MIGRATION TESTS (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
 // pre-Pinchy-#328 agent template creation could persist a standalone
 // (model="email", operation="search") permission row with NO accompanying
 // "read" row. build.ts passes DB permission rows through into the plugin
@@ -1855,7 +1855,7 @@ describe("audit PII curation for email_send / email_draft", () => {
   // non-error field — then it deletes detail.params (curatesNonErrorFields).
   // email_send/email_draft params hold the recipient address and the full body:
   // PII that must never land in the append-only, HMAC-signed audit in plaintext
-  // (AGENTS.md § Secret Handling: "Never write plaintext email addresses or
+  // (agent-rules/secrets.md § Secret Handling: "Never write plaintext email addresses or
   // other PII into audit detail"). These tests pin the curation — masked
   // recipient, subject kept, body reduced to a byte count — on every return
   // path so a regression re-exposes the leak loudly.

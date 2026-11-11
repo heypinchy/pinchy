@@ -46,8 +46,9 @@ import {
 import { chmod } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { makeKbSourceRoot } from "@/test-helpers/kb-source-root";
 import { format } from "node:util";
-import { and, eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import ExcelJS from "exceljs";
 
 /**
@@ -70,8 +71,24 @@ vi.mock("@/lib/knowledge/verified-source", async (importOriginal) => {
   };
 });
 
+/**
+ * A pass-through, with one seam: `rows` shrinks the batch a kb_chunks INSERT
+ * is cut into, so a test can span several batches with a handful of chunks.
+ */
+const insertBatchOverride = vi.hoisted(() => ({ rows: undefined as number | undefined }));
+
+vi.mock("@/db/insert-batches", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/db/insert-batches")>();
+  return {
+    ...actual,
+    rowsPerInsert: (table: Parameters<typeof actual.rowsPerInsert>[0]) =>
+      insertBatchOverride.rows ?? actual.rowsPerInsert(table),
+  };
+});
+
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
+import { EmbedderUnavailableError } from "@/lib/knowledge/embeddings";
 import {
   EMBED_PROGRESS_BATCH,
   EXTRACTION_VERSION,
@@ -82,6 +99,7 @@ import {
   type IngestPage,
   type IngestProgress,
   type IngestResult,
+  type ScanConversion,
 } from "@/lib/knowledge/ingest";
 import { OfficeFileRejectedError, StagedCopyWriteError } from "@/lib/knowledge/office-formats";
 import { extractXlsx as realExtractXlsx, type XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
@@ -96,10 +114,12 @@ import {
 import {
   OFFICE_ARTIFACT_FORMAT_VERSION,
   OfficeArtifactStore,
+  SCAN_ARTIFACT_FORMAT_VERSION,
 } from "@/lib/knowledge/office-artifacts";
 import { stageOfficeSourceIsolated } from "@/lib/knowledge/xlsx-isolated";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 import { listUnsupportedFiles, type UnsupportedFile } from "@/lib/knowledge/unsupported-files";
+import { DEFAULT_ALLOWED_EXTENSIONS } from "@/lib/knowledge/exclude-globs";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -115,11 +135,12 @@ let tmpRoot: string;
 let stagingDir: string;
 
 beforeEach(() => {
-  tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-test-"));
+  tmpRoot = makeKbSourceRoot("pinchy-kb-ingest-test-");
   stagingDir = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-staging-"));
 });
 
 afterEach(() => {
+  insertBatchOverride.rows = undefined;
   rmSync(tmpRoot, { recursive: true, force: true });
   rmSync(stagingDir, { recursive: true, force: true });
 });
@@ -147,6 +168,11 @@ const neverCalledXlsx = async (): Promise<XlsxExtraction> => {
 /** Same reasoning for the converter: no PDF-only test may reach LibreOffice. */
 const neverCalledConvert = async (): Promise<ConversionOutcome[]> => {
   throw new Error("convertOffice must not be called for a PDF");
+};
+
+/** And for the scan converter: only a .tif may reach it. */
+const neverCalledScan = async (): Promise<ScanConversion> => {
+  throw new Error("convertScan must not be called for anything but a TIFF");
 };
 
 function fakeDeps(
@@ -181,6 +207,7 @@ function fakeDeps(
       embed,
       extractPdf,
       extractXlsx,
+      convertScan: neverCalledScan,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -244,7 +271,7 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
   // Non-allowlisted file alongside the PDF: proves the extension allowlist
   // (exclude-globs.ts) actually filters discovery, not just that a lone PDF
   // happens to work.
-  writeFileSync(join(tmpRoot, "notes.txt"), "not indexed");
+  writeFileSync(join(tmpRoot, "notes.rtf"), "not indexed");
 
   const { deps, embed, extractPdf, handed } = fakeDeps();
 
@@ -280,7 +307,7 @@ it("indexes a PDF into kb_documents + kb_chunks with real embeddings, then skips
     chunks.map((c) => (c.locator?.kind === "page" ? c.locator.page : null))
   );
   expect([...anchoredPages].sort()).toEqual([1, 2]);
-  // notes.txt must never have reached extraction/embedding.
+  // notes.rtf must never have reached extraction/embedding.
   expect(embed).toHaveBeenCalledTimes(1);
 
   // ── Second run, no changes on disk ──────────────────────────────────────
@@ -389,7 +416,7 @@ it("removes the document and its chunks when the source file disappears from dis
 });
 
 it("does not touch documents indexed from a different root directory for the same org", async () => {
-  const otherRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-other-"));
+  const otherRoot = makeKbSourceRoot("pinchy-kb-ingest-other-");
   try {
     const otherPdfPath = join(otherRoot, "other.pdf");
     writeFileSync(otherPdfPath, "other-root-bytes");
@@ -406,6 +433,43 @@ it("does not touch documents indexed from a different root directory for the sam
     expect(result).toEqual(counts({ indexed: 1 }));
     const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
     expect(docs.map((d) => d.sourcePath).sort()).toEqual([otherPdfPath, pdfPath].sort());
+  } finally {
+    rmSync(otherRoot, { recursive: true, force: true });
+  }
+});
+
+it("reads every current file before any archived one, folder by folder, across roots (#1385)", async () => {
+  // A first index of a large share runs for days and people search it while it
+  // runs: what retrieval shows by default must be complete first, and whole
+  // folders must finish one after another for the per-folder status (#1386).
+  const otherRoot = makeKbSourceRoot("pinchy-kb-ingest-order-");
+  try {
+    const files: Array<[string, string]> = [
+      [tmpRoot, "OLD/old-1.pdf"],
+      [tmpRoot, "Supplier B/b-1.pdf"],
+      [tmpRoot, "Supplier A/a-2.pdf"],
+      [tmpRoot, "Supplier A/a-1.pdf"],
+      [otherRoot, "Archiv/archiv-1.pdf"],
+      [otherRoot, "Certificates/cert-1.pdf"],
+    ];
+    for (const [root, rel] of files) {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), `bytes of ${rel}`);
+    }
+    const { deps, extractPdf } = fakeDeps();
+
+    await ingestPaths(ORG_ID, [tmpRoot, otherRoot], deps);
+
+    // Both roots sit in the same temp dir, and `pinchy-kb-ingest-order-…`
+    // sorts before `pinchy-kb-ingest-test-…`, so the whole order is fixed.
+    expect(extractPdf.mock.calls.map(([path]) => basename(path as string))).toEqual([
+      "cert-1.pdf",
+      "a-1.pdf",
+      "a-2.pdf",
+      "b-1.pdf",
+      "archiv-1.pdf",
+      "old-1.pdf",
+    ]);
   } finally {
     rmSync(otherRoot, { recursive: true, force: true });
   }
@@ -464,6 +528,7 @@ it("stores the hash of the bytes it re-read when a chunkless document is saved b
       { page: 1, text: `Version on disk: ${readFileSync(copy, "utf8")}. ${PAGE_1_TEXT}` },
     ],
     extractXlsx: neverCalledXlsx,
+    convertScan: neverCalledScan,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -524,11 +589,11 @@ it("accepts a single-file root path (not just a directory) and indexes that one 
 });
 
 it("does not ingest a single-file root whose extension is not on the allowlist, and counts it", async () => {
-  const txtPath = join(tmpRoot, "notes.txt");
-  writeFileSync(txtPath, "not a pdf");
+  const rtfPath = join(tmpRoot, "notes.rtf");
+  writeFileSync(rtfPath, "{\\rtf1 not a pdf}");
 
   const { deps, extractPdf } = fakeDeps();
-  const result = await ingestDirectory(ORG_ID, txtPath, deps);
+  const result = await ingestDirectory(ORG_ID, rtfPath, deps);
 
   expect(result).toEqual(counts({ unsupported: 1 }));
   expect(extractPdf).not.toHaveBeenCalled();
@@ -579,8 +644,10 @@ it("reports a text-less scan as unsearchable rather than indexed, and leaves it 
   const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docsAfter).toHaveLength(1);
   expect(docsAfter[0].id).toBe(docs[0].id);
-  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
-  expect(listed.documents.map((doc) => doc.sourcePath)).toEqual([pdfPath]);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot], { state: "off" });
+  expect(listed.documents.map((doc) => [doc.sourcePath, doc.cause])).toEqual([
+    [pdfPath, "ocr_off"],
+  ]);
 });
 
 // ---------------------------------------------------------------------------
@@ -702,7 +769,7 @@ it("still recovers a row a crash left without chunks", async () => {
 });
 
 it("reads an empty document indexed before the marker existed once, then leaves it alone", async () => {
-  // AGENTS.md § Test Migrations Against Pre-Existing Data. A row the previous
+  // agent-rules/testing.md § Test Migrations Against Pre-Existing Data. A row the previous
   // pipeline wrote for a blank scan has zero chunks and, after the migration,
   // no `emptyExtractionBy` — the same shape as a crash leftover. It is read
   // once more (the new code cannot know what found it empty), and from then
@@ -871,7 +938,7 @@ it("keeps a partly indexed scan's chunks when the embedder goes down during its 
     { page: 1, text: PAGE_1_TEXT },
     { page: 2, text: PAGE_2_TEXT },
   ]);
-  embed.mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
+  embed.mockRejectedValueOnce(new EmbedderUnavailableError("connect ECONNREFUSED"));
   await expect(ingestDirectory(ORG_ID, tmpRoot, withOcr)).rejects.toThrow(/ECONNREFUSED/);
 
   expect(await chunksFor(doc.id)).toEqual(stored);
@@ -889,7 +956,7 @@ it("changes a scan's record and its chunks together, so a re-read that dies is s
   await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL });
 
   extractPdf.mockResolvedValue([{ page: 1, text: PAGE_1_TEXT }]);
-  embed.mockRejectedValueOnce(new Error("connect ECONNREFUSED"));
+  embed.mockRejectedValueOnce(new EmbedderUnavailableError("connect ECONNREFUSED"));
   const otherModel = { ...deps, ocrModel: "openai/gpt-5.5-mini" };
   await expect(ingestDirectory(ORG_ID, tmpRoot, otherModel)).rejects.toThrow(/ECONNREFUSED/);
   expect((await onlyDocument()).emptyExtractionBy).toBe(marker(`ocr:${VISION_MODEL}`));
@@ -933,6 +1000,206 @@ it("does not read an empty workbook again when a vision model appears", async ()
   expect(extractXlsx).toHaveBeenCalledTimes(1);
 });
 
+// ---------------------------------------------------------------------------
+// Scanned TIFFs and plain-text files (#1409)
+// ---------------------------------------------------------------------------
+//
+// A TIFF is a scan: the ingest hands it to `convertScan`, which turns its
+// frames into pages of a PDF, and reads that PDF through the scanned-PDF path
+// — the same OCR, the same retry rule, the same page citations. The fake
+// converter below writes a stand-in PDF; tiff-pdf.test.ts proves the real one.
+
+/** A `convertScan` that "converts" by writing a stand-in PDF beside the run's staging. */
+function fakeScanConverter(frames = 2, converted = frames) {
+  const handed: Array<{ path: string; bytes: string; contentHash: string }> = [];
+  const convertScan = vi.fn(async (copyPath: string, contentHash: string) => {
+    handed.push({ path: copyPath, bytes: readFileSync(copyPath, "utf8"), contentHash });
+    const pdfPath = join(stagingDir, `scan-${contentHash}.pdf`);
+    writeFileSync(pdfPath, "converted-scan");
+    return { pdfPath, frames, converted };
+  });
+  return { convertScan, handed };
+}
+
+const SCAN_PAGES: IngestPage[] = [
+  { page: 1, text: PAGE_1_TEXT },
+  { page: 2, text: PAGE_2_TEXT },
+];
+
+it("reads a multi-page TIFF through OCR, one page locator per frame", async () => {
+  const tifPath = join(tmpRoot, "delivery-note.tif");
+  writeFileSync(tifPath, "fake-tiff-bytes");
+  const { deps, extractPdf } = fakeDeps(SCAN_PAGES);
+  const { convertScan, handed } = fakeScanConverter(2);
+
+  const result = await ingestDirectory(ORG_ID, tmpRoot, {
+    ...deps,
+    convertScan,
+    ocrModel: VISION_MODEL,
+  });
+
+  expect(result).toEqual(counts({ indexed: 1 }));
+  // Handed the private copy, never the path on the share, and keyed on the
+  // hash the ingest already has — the key a citation finds the PDF under.
+  expect(handed).toHaveLength(1);
+  expect(dirname(dirname(handed[0].path))).toBe(stagingDir);
+  expect(handed[0].bytes).toBe("fake-tiff-bytes");
+  expect(handed[0].contentHash).toBe(createHash("sha256").update("fake-tiff-bytes").digest("hex"));
+  // The PDF that came out is what OCR reads.
+  expect(extractPdf).toHaveBeenCalledTimes(1);
+  expect(extractPdf.mock.calls[0][0]).toBe(join(stagingDir, `scan-${handed[0].contentHash}.pdf`));
+
+  const doc = await onlyDocument();
+  expect(doc.sourcePath).toBe(tifPath);
+  expect(doc.pageCount).toBe(2);
+  const pages = (await chunksFor(doc.id)).map((chunk) => chunk.locator);
+  expect(new Set(pages.map((locator) => JSON.stringify(locator)))).toEqual(
+    new Set([JSON.stringify({ kind: "page", page: 1 }), JSON.stringify({ kind: "page", page: 2 })])
+  );
+});
+
+it("leaves a TIFF unconverted without OCR, and reads it once a vision model is configured", async () => {
+  // A scan has no text layer, so without OCR there is nothing to read — and
+  // nothing worth decoding. It is recorded like a blank scanned PDF read
+  // without OCR, which is exactly what makes turning OCR on read it.
+  writeFileSync(join(tmpRoot, "certificate.tiff"), "fake-tiff-bytes");
+  const { deps, extractPdf } = fakeDeps(SCAN_PAGES);
+  const { convertScan } = fakeScanConverter(2);
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, convertScan })).toEqual(
+    counts({ unsearchable: 1 })
+  );
+  expect(convertScan).not.toHaveBeenCalled();
+  expect(extractPdf).not.toHaveBeenCalled();
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker("no-ocr"));
+
+  // Unchanged and still no OCR: left alone.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, convertScan })).toEqual(
+    counts({ skipped: 1 })
+  );
+
+  expect(
+    await ingestDirectory(ORG_ID, tmpRoot, { ...deps, convertScan, ocrModel: VISION_MODEL })
+  ).toEqual(counts({ indexed: 1 }));
+  expect(convertScan).toHaveBeenCalledTimes(1);
+  expect(await chunksFor((await onlyDocument()).id)).not.toHaveLength(0);
+});
+
+it("retries a TIFF whose vision call failed, like a scanned PDF", async () => {
+  writeFileSync(join(tmpRoot, "scan.tif"), "fake-tiff-bytes");
+  const { deps, extractPdf } = fakeDeps(FAILED_SCAN);
+  const { convertScan } = fakeScanConverter(1);
+  const withOcr = { ...deps, convertScan, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect((await onlyDocument()).emptyExtractionBy).toBeNull();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+  expect(extractPdf).toHaveBeenCalledTimes(2);
+});
+
+it("converts an unchanged TIFF again once the scan artifact format has moved on", async () => {
+  // A new SCAN_ARTIFACT_FORMAT_VERSION moves the scan store to a new
+  // directory, and an unchanged TIFF never asks the store for anything — so
+  // without the version on the row its citation would open nothing.
+  writeFileSync(join(tmpRoot, "delivery-note.tif"), "fake-tiff-bytes");
+  const { deps } = fakeDeps(SCAN_PAGES);
+  const { convertScan } = fakeScanConverter(2);
+  const withOcr = { ...deps, convertScan, ocrModel: VISION_MODEL };
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+  expect((await onlyDocument()).artifactFormatVersion).toBe(SCAN_ARTIFACT_FORMAT_VERSION);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ skipped: 1 }));
+  expect(convertScan).toHaveBeenCalledTimes(1);
+
+  await db
+    .update(kbDocuments)
+    .set({ artifactFormatVersion: SCAN_ARTIFACT_FORMAT_VERSION - 1 })
+    .where(eq(kbDocuments.orgId, ORG_ID));
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ indexed: 1 }));
+  expect(convertScan).toHaveBeenCalledTimes(2);
+});
+
+it("records a TIFF the converter refuses as read, and does not convert it again", async () => {
+  // Not a TIFF inside, or too large: a verdict on these bytes, final for them.
+  writeFileSync(join(tmpRoot, "not-really.tif"), "fake-tiff-bytes");
+  const { deps, extractPdf } = fakeDeps(SCAN_PAGES);
+  const convertScan = vi.fn(async (): Promise<ScanConversion> => {
+    throw new OfficeFileRejectedError(
+      "unexpected_content",
+      "the file does not start with a TIFF header"
+    );
+  });
+  const withOcr = { ...deps, convertScan, ocrModel: VISION_MODEL };
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, withOcr)).toEqual(counts({ unsearchable: 1 }));
+    expect(extractPdf).not.toHaveBeenCalled();
+    expect((await onlyDocument()).emptyExtractionBy).toBe(marker("image"));
+    expect(warn.mock.calls.map((call) => format(...call)).join("\n")).toContain(
+      "does not start with a TIFF header"
+    );
+
+    // A different vision model cannot change a refusal of the bytes.
+    expect(
+      await ingestDirectory(ORG_ID, tmpRoot, { ...withOcr, ocrModel: "openai/gpt-5.5-mini" })
+    ).toEqual(counts({ skipped: 1 }));
+    expect(convertScan).toHaveBeenCalledTimes(1);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it("counts a TIFF the converter could not get to as failed, and leaves no row", async () => {
+  // A crashed decoder child or a full volume says nothing about the file.
+  writeFileSync(join(tmpRoot, "scan.tif"), "fake-tiff-bytes");
+  const { deps } = fakeDeps(SCAN_PAGES);
+  const convertScan = vi.fn(async (): Promise<ScanConversion> => {
+    throw new Error("isolated child exited with signal SIGKILL");
+  });
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(
+      await ingestDirectory(ORG_ID, tmpRoot, { ...deps, convertScan, ocrModel: VISION_MODEL })
+    ).toEqual(counts({ failed: 1 }));
+  } finally {
+    error.mockRestore();
+  }
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
+});
+
+it("reads a Windows-1252 text file with its umlauts intact", async () => {
+  // Notepad's "ANSI": one byte per character, which UTF-8 would turn into
+  // U+FFFD — and a search for the word into no result.
+  const text = "Prüfbericht für die Übergabe: Maße geprüft, Größe 3.";
+  const txtPath = join(tmpRoot, "notes.txt");
+  writeFileSync(txtPath, Buffer.from(text, "latin1"));
+  const { deps, extractPdf } = fakeDeps();
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  expect(extractPdf).not.toHaveBeenCalled();
+
+  const doc = await onlyDocument();
+  expect(doc.pageCount).toBeNull();
+  const chunks = await chunksFor(doc.id);
+  expect(chunks.map((chunk) => chunk.chunkText).join(" ")).toContain(
+    "Prüfbericht für die Übergabe"
+  );
+  // A text file has no page to point at; the citation opens the file.
+  expect(chunks.every((chunk) => chunk.locator === null)).toBe(true);
+});
+
+it("records an empty text file as read, and leaves it alone after", async () => {
+  writeFileSync(join(tmpRoot, "empty.txt"), "");
+  const { deps } = fakeDeps();
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  expect((await onlyDocument()).emptyExtractionBy).toBe(marker("text"));
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, ocrModel: VISION_MODEL })).toEqual(
+    counts({ skipped: 1 })
+  );
+});
+
 // A corpus is not a curated fixture: one corrupt or unreadable PDF is normal.
 // Without a per-file boundary it aborts the entire reindex, so a single bad
 // file costs every other file its update — and under a retrying job runner it
@@ -953,6 +1220,7 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
       embed,
       extractPdf,
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -977,17 +1245,17 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
   expect(await chunksFor(docs[0].id)).not.toHaveLength(0);
 });
 
-// The counterpart to the test above, and the reason the per-file boundary is
-// scoped to extraction only: Ollama being unreachable is ONE outage, not N
-// corrupt files. Swallowing it per file would report "193 failed" for a
-// systemic problem, bury the actual cause, and pointlessly parse the whole
-// corpus on the way. Embedding and DB errors abort the run and surface.
+// The counterpart to the test above: an embedder that cannot embed anything is
+// ONE outage, not N corrupt files. Swallowing it per file would report "193
+// failed" for a systemic problem, bury the actual cause, and pointlessly parse
+// the whole corpus on the way. The embedder says which it is by type
+// (`EmbedderUnavailableError`), so the run stops on it and surfaces it.
 it("surfaces an embedding outage as a run failure instead of blaming every file", async () => {
   writeFileSync(join(tmpRoot, "a.pdf"), "bytes-a");
   writeFileSync(join(tmpRoot, "b.pdf"), "bytes-b");
 
   const embed = vi.fn(async () => {
-    throw new Error("connect ECONNREFUSED 127.0.0.1:11434");
+    throw new EmbedderUnavailableError("connect ECONNREFUSED 127.0.0.1:11434");
   });
   const extractPdf = vi.fn(async () => [{ page: 1, text: PAGE_1_TEXT }]);
 
@@ -996,6 +1264,7 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
       embed,
       extractPdf,
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -1003,6 +1272,236 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
   ).rejects.toThrow(/ECONNREFUSED/);
   // Bailed on the first file rather than walking the rest of the corpus.
   expect(embed).toHaveBeenCalledTimes(1);
+});
+
+// #1380. The embedder refusing ONE file's text says nothing about the next
+// file: a first reindex of 14,000 documents stopped at file 2,285 on every run
+// because one chunk was longer than the local context, and the error took the
+// whole job down with it.
+it("keeps indexing the next file when the embedder refuses one file's text", async () => {
+  const TOO_LONG = "Part numbers 4711-0815-2342 that tokenize far denser than prose.";
+  writeFileSync(join(tmpRoot, "a-dense.pdf"), "dense-bytes");
+  writeFileSync(join(tmpRoot, "b-good.pdf"), "good-bytes");
+  const embed = vi.fn(async (texts: string[]) => {
+    if (texts.some((t) => t.includes(TOO_LONG))) {
+      throw new Error("Input is longer than the context size. Try to increase the context size");
+    }
+    return texts.map(() => Array(768).fill(0.1));
+  });
+  const deps: IngestDeps = {
+    embed,
+    extractPdf: vi.fn(async (path: string) => [
+      { page: 1, text: path.endsWith("a-dense.pdf") ? TOO_LONG : PAGE_1_TEXT },
+    ]),
+    extractXlsx: neverCalledXlsx,
+    convertScan: neverCalledScan,
+    convertOffice: neverCalledConvert,
+    ocrModel: null,
+    stagingDir,
+  };
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  let result: IngestResult;
+  try {
+    result = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+    // The server log says which file and why — never what it contains.
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    const logged = consoleError.mock.calls[0].map(String).join(" ");
+    expect(logged).toContain(join(tmpRoot, "a-dense.pdf"));
+    expect(logged).toContain("longer than the context size");
+    expect(logged).not.toContain(TOO_LONG);
+  } finally {
+    consoleError.mockRestore();
+  }
+  expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
+
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs.map((d) => d.sourcePath)).toEqual([join(tmpRoot, "b-good.pdf")]);
+
+  // And it is owed, not forgotten: the next run tries it again.
+  const { deps: healthy } = fakeDeps([{ page: 1, text: TOO_LONG }]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, healthy)).toEqual(
+    counts({ indexed: 1, skipped: 1 })
+  );
+});
+
+// The other half of #1380: a chunk the embedder cannot take whole is cut into
+// pieces it can, each stored as a chunk of its own under the same locator, so
+// a citation still points at the page the text came from.
+it("stores a chunk too long for the embedder as several chunks under the same locator", async () => {
+  writeFileSync(join(tmpRoot, "dense.pdf"), "dense-bytes");
+  const { deps, embed } = fakeDeps([{ page: 3, text: PAGE_1_TEXT }]);
+  const fitForEmbedding = vi.fn(async (texts: string[]) =>
+    texts.map((t) => [t.slice(0, 40), t.slice(40)])
+  );
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, fitForEmbedding })).toEqual(
+    counts({ indexed: 1 })
+  );
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const rows = await chunksFor(doc.id);
+  expect(rows.map((r) => r.chunkText)).toEqual([PAGE_1_TEXT.slice(0, 40), PAGE_1_TEXT.slice(40)]);
+  expect(rows.map((r) => r.locator)).toEqual([
+    { kind: "page", page: 3 },
+    { kind: "page", page: 3 },
+  ]);
+  // One vector per stored piece: what is embedded is exactly what is written.
+  expect(embed.mock.calls.flatMap(([texts]) => texts)).toEqual([
+    PAGE_1_TEXT.slice(0, 40),
+    PAGE_1_TEXT.slice(40),
+  ]);
+});
+
+// postgres.js refuses a statement once it binds 65,534 parameters, and a
+// kb_chunks row binds 8 — so one INSERT holds at most 8,191 chunks, counted
+// after `fitForEmbedding` has split them. A document above that failed as a
+// file, rolled back, left no row behind to count its failed reads against, and
+// was read (OCR included) and embedded again on every run.
+it("writes a document with more chunks than one INSERT can bind", async () => {
+  writeFileSync(join(tmpRoot, "long.pdf"), "long-bytes");
+  const { deps } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  const pieces = 8_200;
+  const fitForEmbedding = async (texts: string[]) =>
+    texts.map(() => Array.from({ length: pieces }, (_, i) => `piece ${i}`));
+  const vector = Array(768).fill(0.001);
+  const embed = async (texts: string[]) => texts.map(() => vector);
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, fitForEmbedding, embed })).toEqual(
+    counts({ indexed: 1 })
+  );
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const [{ stored }] = await db
+    .select({ stored: count() })
+    .from(kbChunks)
+    .where(eq(kbChunks.documentId, doc.id));
+  expect(stored).toBe(pieces);
+});
+
+/**
+ * Counts the kb_chunks INSERT statements issued inside `db.transaction`, so a
+ * test can tell one statement from several. Everything else passes through.
+ */
+function countChunkInserts() {
+  const original = db.transaction.bind(db);
+  let inserts = 0;
+  const spy = vi.spyOn(db, "transaction").mockImplementation(((
+    fn: (tx: unknown) => Promise<unknown>,
+    config?: unknown
+  ) =>
+    original(async (tx) => {
+      const insert = tx.insert.bind(tx);
+      tx.insert = ((table: Parameters<typeof tx.insert>[0]) => {
+        if (table === kbChunks) inserts++;
+        return insert(table);
+      }) as typeof tx.insert;
+      return fn(tx);
+    }, config as never)) as never);
+  return { inserts: () => inserts, restore: () => spy.mockRestore() };
+}
+
+it("writes a document's chunks in several INSERTs when they outnumber one batch", async () => {
+  insertBatchOverride.rows = 2;
+  writeFileSync(join(tmpRoot, "split.pdf"), "split-bytes");
+  const { deps } = fakeDeps([{ page: 4, text: PAGE_1_TEXT }]);
+  const pieces = ["one", "two", "three", "four", "five"];
+  const fitForEmbedding = async (texts: string[]) => texts.map(() => pieces);
+
+  const counter = countChunkInserts();
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, fitForEmbedding })).toEqual(
+      counts({ indexed: 1 })
+    );
+    expect(counter.inserts()).toBe(3);
+  } finally {
+    counter.restore();
+  }
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const rows = await chunksFor(doc.id);
+  expect(rows.map((r) => r.chunkText).sort()).toEqual([...pieces].sort());
+  expect(new Set(rows.map((r) => JSON.stringify(r.locator)))).toEqual(
+    new Set([JSON.stringify({ kind: "page", page: 4 })])
+  );
+});
+
+// Batches are statements, not transactions: a refusal in the second leaves the
+// first unwritten too, and the stored document exactly as it was.
+it("leaves the stored document unchanged when a later batch is refused", async () => {
+  const path = join(tmpRoot, "handbook.pdf");
+  writeFileSync(path, "first-bytes");
+  const { deps } = fakeDeps();
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  const [before] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(before.id);
+  expect(chunksBefore.length).toBeGreaterThan(0);
+
+  insertBatchOverride.rows = 2;
+  writeFileSync(path, "second-bytes");
+  const fitForEmbedding = async (texts: string[]) =>
+    texts.map((_, i) => (i === 0 ? ["a", "b", "c", "d", "e"] : []));
+  // pgvector refuses a vector with a NaN in it; piece 4 sits in batch 2.
+  const embed = async (texts: string[]) =>
+    texts.map((t) => Array(768).fill(t === "d" ? Number.NaN : 0.002));
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, { ...deps, fitForEmbedding, embed })).toEqual(
+    counts({ failed: 1 })
+  );
+
+  const [after] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(after).toEqual(before);
+  const sortById = (rows: { id: string }[]) => [...rows].sort((a, b) => a.id.localeCompare(b.id));
+  expect(sortById(await chunksFor(before.id))).toEqual(sortById(chunksBefore));
+});
+
+it("stops the run when the database connection is lost mid-run", async () => {
+  writeFileSync(join(tmpRoot, "a-first.pdf"), "first-bytes");
+  writeFileSync(join(tmpRoot, "b-second.pdf"), "second-bytes");
+  const { deps, embed } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  const lost = Object.assign(new Error("write CONNECTION_CLOSED db:5432"), {
+    code: "CONNECTION_CLOSED",
+  });
+  const wrapped = new Error("Failed query: insert into kb_documents … params: …", { cause: lost });
+  const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(wrapped);
+  try {
+    await expect(ingestDirectory(ORG_ID, tmpRoot, deps)).rejects.toBe(lost);
+  } finally {
+    transaction.mockRestore();
+  }
+  // Stopped at the first file instead of embedding the rest of the corpus.
+  expect(embed).toHaveBeenCalledTimes(1);
+});
+
+// A full disk while one file is copied to staging costs that file, not the
+// run: one file larger than the space left would otherwise stop every run at
+// the same place, which is the failure #1380 removes.
+it("counts a file whose staging copy hits a full disk as failed and goes on", async () => {
+  writeFileSync(join(tmpRoot, "a-first.pdf"), "first-bytes");
+  writeFileSync(join(tmpRoot, "b-second.pdf"), "second-bytes");
+  const extractPdf = vi.fn(async (absPath: string) => {
+    if (absPath.endsWith("a-first.pdf")) {
+      throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    }
+    return [{ page: 1, text: PAGE_1_TEXT }];
+  });
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const result = await ingestDirectory(ORG_ID, tmpRoot, {
+      embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.1))),
+      extractPdf,
+      extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
+      convertOffice: neverCalledConvert,
+      ocrModel: null,
+      stagingDir,
+    });
+    expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+  expect(extractPdf).toHaveBeenCalledTimes(2);
 });
 
 // The replace path must not destroy before it can rebuild: a previously
@@ -1033,6 +1532,7 @@ it("keeps the last indexed version searchable when a file changes into one that 
     embed,
     extractPdf,
     extractXlsx: neverCalledXlsx,
+    convertScan: neverCalledScan,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -1046,6 +1546,204 @@ it("keeps the last indexed version searchable when a file changes into one that 
   expect(docsAfter[0].id).toBe(docBefore.id);
   expect(docsAfter[0].contentHash).toBe(docBefore.contentHash);
   expect(await chunksFor(docBefore.id)).toHaveLength(chunksBefore.length);
+});
+
+// #1366. Postgres `text` and `jsonb` cannot hold U+0000, and a PDF text layer
+// with a broken font encoding emits it routinely. Only Postgres rejects it, so
+// only a real-DB test sees it: the batched chunk insert failed and took the
+// whole run down — on the same file, on every run, forever.
+it("indexes a document whose extracted text holds NUL and other control characters", async () => {
+  const pdfPath = join(tmpRoot, "supplier-sheet.pdf");
+  writeFileSync(pdfPath, "pdf-with-nul-bytes");
+
+  const { deps } = fakeDeps([
+    { page: 1, text: `Quality cert\u0000ificate for incoming goods.\u0001\u001fValid until 2027.` },
+    { page: 2, text: "Line one\tcolumn\r\nLine two\fafter a form feed." },
+  ]);
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const texts = (await chunksFor(doc.id)).map((chunk) => chunk.chunkText).join("\n");
+  // NUL goes without a trace — it sits between the letters of a word.
+  expect(texts).toContain("Quality certificate for incoming goods.");
+  // The other C0 controls become a space, so the words either side stay apart.
+  expect(texts).toContain("goods.  Valid until 2027.");
+  // Tab, CR and LF are text, not noise.
+  expect(texts).toContain("Line one\tcolumn");
+  expect(texts).toContain("Line two after a form feed.");
+  expect(texts).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/);
+});
+
+it("indexes a workbook whose sheet name holds a NUL, which the locator carries into jsonb", async () => {
+  writeFileSync(join(tmpRoot, "suppliers.xlsx"), "fake-xlsx-bytes");
+  const { deps } = fakeDeps(undefined, {
+    chunks: [{ text: SHEET_ROWS_TEXT, sheet: "Supp\u0000liers", startRow: 2, endRow: 3 }],
+    sheets: ["Supp\u0000liers"],
+    hiddenSheets: [],
+    hiddenRows: 0,
+  });
+
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const [chunk] = await chunksFor(doc.id);
+  expect(chunk.locator).toEqual({ kind: "sheet", sheet: "Suppliers", startRow: 2, endRow: 3 });
+});
+
+it("does not write a chunk that held nothing but control characters", async () => {
+  writeFileSync(join(tmpRoot, "binary-noise.pdf"), "noise");
+  const { deps, embed } = fakeDeps([{ page: 1, text: "\u0000\u0001\u0000\u0002\u0000" }]);
+
+  // Nothing readable is left, so it is listed as unreadable — not indexed with
+  // an empty chunk the embedder was asked to vectorise.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+  expect(embed).not.toHaveBeenCalled();
+});
+
+/**
+ * Deps whose embedder hands back a vector of the wrong width for the chunks of
+ * `rejectedText` — a value `vector(768)` refuses on insert, which is how a test
+ * gets a real Postgres rejection for one file's rows and not the next file's.
+ */
+function rejectingDeps(rejectedText: string, pagesFor: (path: string) => IngestPage[]) {
+  const embed = vi.fn(async (texts: string[]) =>
+    texts.map((text) => Array(text.includes(rejectedText) ? 3 : 768).fill(0.01))
+  );
+  const deps: IngestDeps = {
+    embed,
+    extractPdf: vi.fn(async (path: string) => pagesFor(path)),
+    extractXlsx: neverCalledXlsx,
+    convertScan: neverCalledScan,
+    convertOffice: neverCalledConvert,
+    ocrModel: null,
+    stagingDir,
+  };
+  return { deps, embed };
+}
+
+const REJECTED_TEXT = "These rows are refused by the database for one reason or another.";
+
+// #1366, the containment half. Whatever the next thing a database refuses about
+// one document's content turns out to be, it is a property of THAT document —
+// like a PDF that does not parse — and costs that document only.
+it("counts a file whose rows the database refuses as failed, and indexes the next one", async () => {
+  writeFileSync(join(tmpRoot, "a-refused.pdf"), "refused-bytes");
+  writeFileSync(join(tmpRoot, "b-good.pdf"), "good-bytes");
+  const { deps } = rejectingDeps(REJECTED_TEXT, (path) => [
+    { page: 1, text: path.endsWith("a-refused.pdf") ? REJECTED_TEXT : PAGE_1_TEXT },
+  ]);
+
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  let result: IngestResult;
+  try {
+    result = await ingestDirectory(ORG_ID, tmpRoot, deps);
+
+    // One line naming the file and what the database said. Not the failed
+    // query: drizzle's message quotes every parameter — the document's text
+    // and its vectors — and would push the reason past the line's bound.
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    const logged = consoleError.mock.calls[0].map(String).join(" ");
+    expect(logged).toContain(join(tmpRoot, "a-refused.pdf"));
+    expect(logged).toMatch(/expected 768 dimensions/);
+    expect(logged).not.toContain(REJECTED_TEXT);
+    expect(logged).not.toContain("Failed query");
+  } finally {
+    consoleError.mockRestore();
+  }
+  expect(result).toEqual(counts({ indexed: 1, failed: 1 }));
+
+  // No half-written row: a document row without its chunks would read as
+  // "indexed, nothing found" in the unreadable list.
+  const docs = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docs.map((d) => d.sourcePath)).toEqual([join(tmpRoot, "b-good.pdf")]);
+  expect(await chunksFor(docs[0].id)).not.toHaveLength(0);
+});
+
+it("tries a file the database refused again on the next run", async () => {
+  writeFileSync(join(tmpRoot, "refused.pdf"), "refused-bytes");
+  const refusing = rejectingDeps(REJECTED_TEXT, () => [{ page: 1, text: REJECTED_TEXT }]);
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, refusing.deps)).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  // Same bytes, and this time the write goes through: nothing on record made
+  // the file look done.
+  const { deps } = fakeDeps([{ page: 1, text: REJECTED_TEXT }]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+});
+
+it("keeps the last indexed version when the database refuses a changed file's new rows", async () => {
+  const pdfPath = join(tmpRoot, "policy.pdf");
+  writeFileSync(pdfPath, "good-bytes-v1");
+  const { deps } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  const [docBefore] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  const chunksBefore = await chunksFor(docBefore.id);
+
+  writeFileSync(pdfPath, "changed-bytes-v2");
+  const refusing = rejectingDeps(REJECTED_TEXT, () => [{ page: 1, text: REJECTED_TEXT }]);
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, refusing.deps)).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+
+  // Same rule as a changed file that fails to parse: the old version is
+  // deleted only together with writing the new one.
+  const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  expect(docsAfter).toHaveLength(1);
+  expect(docsAfter[0].id).toBe(docBefore.id);
+  expect(docsAfter[0].contentHash).toBe(docBefore.contentHash);
+  expect(await chunksFor(docBefore.id)).toHaveLength(chunksBefore.length);
+});
+
+// The other half: an error that says nothing about the file must still stop
+// the run. Counted per file instead, a database restart mid-reindex would read
+// as one "failed" document for every file still to come, and the job as done.
+it("stops the run when the database fails for a reason that is not the file", async () => {
+  writeFileSync(join(tmpRoot, "a-first.pdf"), "first-bytes");
+  writeFileSync(join(tmpRoot, "b-second.pdf"), "second-bytes");
+  const { deps, embed } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  const shutdown = Object.assign(new Error("terminating connection due to administrator command"), {
+    code: "57P01",
+  });
+  const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(shutdown);
+  try {
+    await expect(ingestDirectory(ORG_ID, tmpRoot, deps)).rejects.toBe(shutdown);
+  } finally {
+    transaction.mockRestore();
+  }
+
+  expect(embed).toHaveBeenCalledTimes(1);
+  expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toEqual([]);
+});
+
+it("keeps a chunkless document's record when the database refuses its rebuilt rows", async () => {
+  writeFileSync(join(tmpRoot, "policy.pdf"), "bytes");
+  const { deps } = fakeDeps([{ page: 1, text: PAGE_1_TEXT }]);
+  await ingestDirectory(ORG_ID, tmpRoot, deps);
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  await db.delete(kbChunks).where(eq(kbChunks.documentId, doc.id));
+
+  const refusing = rejectingDeps(PAGE_1_TEXT, () => [{ page: 1, text: PAGE_1_TEXT }]);
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, refusing.deps)).toEqual(counts({ failed: 1 }));
+  } finally {
+    consoleError.mockRestore();
+  }
+  // The record is rewritten only together with its rows, so a refusal leaves
+  // it exactly as it was.
+  const [docAfter] = await db.select().from(kbDocuments).where(eq(kbDocuments.id, doc.id));
+  expect(docAfter).toEqual(doc);
+  // Still owed: the next run rebuilds it.
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+  expect(await chunksFor(doc.id)).not.toHaveLength(0);
 });
 
 // ── ingestPaths: many roots, one honest progress total ───────────────────
@@ -1199,8 +1897,28 @@ it("tells the caller about a root it could not read", async () => {
 
   await ingestPaths(ORG_ID, [missing], fakeDeps().deps, { onSkippedRoot });
 
-  expect(onSkippedRoot).toHaveBeenCalledWith(missing, "unreadable");
+  expect(onSkippedRoot).toHaveBeenCalledWith(missing, "missing");
 });
+
+// A folder that is gone and one Pinchy may not open need different fixes —
+// remove the grant, or fix the share's permissions — so the caller has to be
+// able to tell them apart (#1363).
+it.skipIf(process.getuid?.() === 0)(
+  "tells a root it may not open apart from one that is gone",
+  async () => {
+    const locked = join(tmpRoot, "locked");
+    writePdf(locked, "handbook.pdf");
+    await chmod(locked, 0o000);
+    const onSkippedRoot = vi.fn();
+    try {
+      await ingestPaths(ORG_ID, [locked], fakeDeps().deps, { onSkippedRoot });
+    } finally {
+      await chmod(locked, 0o755);
+    }
+
+    expect(onSkippedRoot).toHaveBeenCalledWith(locked, "unreadable");
+  }
+);
 
 // A failed network mount under Docker is not an error, it is an EMPTY
 // directory: the bind mount shows the bare mountpoint. From inside the
@@ -1345,7 +2063,7 @@ it("reports the running tally alongside progress, so a caller keeps it when the 
   const { deps } = fakeDeps();
   let embedCalls = 0;
   (deps.embed as ReturnType<typeof vi.fn>).mockImplementation(async (texts: string[]) => {
-    if (++embedCalls > 2) throw new Error("connect ECONNREFUSED");
+    if (++embedCalls > 2) throw new EmbedderUnavailableError("connect ECONNREFUSED");
     return texts.map(() => Array(768).fill(0.01));
   });
   const recorder = progressRecorder();
@@ -1519,6 +2237,123 @@ it("heals a stored status that disagrees with the archive rule on the next skip 
   expect(doc.status).toBe("archived");
 });
 
+// --- the archive rule reads the path BELOW the knowledge-base folder (#1420) ---
+
+async function statusOf(sourcePath: string): Promise<string> {
+  const [doc] = await db
+    .select({ status: kbDocuments.status })
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, sourcePath)));
+  return doc.status;
+}
+
+it("keeps current documents current when the folder itself sits below an archive folder", async () => {
+  // A share mounted at /data/Archiv/Projekte: its parents are the mount
+  // layout, not the documents' age. Only folders inside the root count.
+  const root = join(tmpRoot, "Archiv", "Projekte");
+  const currentPath = writePdf(root, "plan.pdf", "plan");
+  const nestedPath = writePdf(join(root, "2024", "Angebote"), "angebot.pdf", "angebot");
+  const archivedPath = writePdf(join(root, "OLD"), "plan-2013.pdf", "plan-2013");
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, root, deps);
+
+  expect(result).toEqual(counts({ indexed: 3, archived: 1 }));
+  expect(await statusOf(currentPath)).toBe("active");
+  expect(await statusOf(nestedPath)).toBe("active");
+  expect(await statusOf(archivedPath)).toBe("archived");
+});
+
+it("does not archive the contents of a folder that is itself called Archiv", async () => {
+  const root = join(tmpRoot, "Archiv");
+  const directPath = writePdf(root, "a.pdf", "a");
+  const nestedPath = writePdf(join(root, "2013"), "b.pdf", "b");
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, root, deps);
+
+  expect(result).toEqual(counts({ indexed: 2 }));
+  expect(await statusOf(directPath)).toBe("active");
+  expect(await statusOf(nestedPath)).toBe("active");
+});
+
+it("reads a folder granted with a trailing slash the same as without", async () => {
+  const root = join(tmpRoot, "Archiv", "Projekte");
+  const currentPath = writePdf(root, "plan.pdf", "plan");
+  writePdf(join(root, "OLD"), "alt.pdf", "alt");
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, `${root}/`, deps);
+
+  expect(result).toEqual(counts({ indexed: 2, archived: 1 }));
+  expect(await statusOf(currentPath)).toBe("active");
+});
+
+it("classifies a folder reached through a symlink by the path below the link", async () => {
+  // The link sits under OLD/ and points into Archiv/: neither name is part of
+  // the knowledge base, which starts at the link.
+  const target = join(tmpRoot, "Archiv", "Projekte");
+  writePdf(target, "plan.pdf", "plan");
+  writePdf(join(target, "OLD"), "alt.pdf", "alt");
+  mkdirSync(join(tmpRoot, "OLD"), { recursive: true });
+  const link = join(tmpRoot, "OLD", "projects");
+  symlinkSync(target, link);
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, link, deps);
+
+  expect(result).toEqual(counts({ indexed: 2, archived: 1 }));
+  expect(await statusOf(join(link, "plan.pdf"))).toBe("active");
+  expect(await statusOf(join(link, "OLD", "alt.pdf"))).toBe("archived");
+});
+
+it("never archives a single file granted on its own", async () => {
+  const filePath = writePdf(join(tmpRoot, "OLD"), "handbook.pdf", "handbook");
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, filePath, deps);
+
+  expect(result).toEqual(counts({ indexed: 1 }));
+  expect(await statusOf(filePath)).toBe("active");
+});
+
+it("makes a document archived by the old whole-path rule current again on the next run", async () => {
+  // Rows written before #1420 were classified against the absolute path, so a
+  // share below an archive folder came out entirely archived. The next run —
+  // content unchanged, so the skip path — must correct them without a re-read.
+  const root = join(tmpRoot, "Archiv", "Projekte");
+  const currentPath = writePdf(root, "plan.pdf", "plan");
+  const { deps } = fakeDeps();
+  await ingestDirectory(ORG_ID, root, deps);
+  await db
+    .update(kbDocuments)
+    .set({ status: "archived" })
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, currentPath)));
+
+  const rerun = await ingestDirectory(ORG_ID, root, deps);
+
+  expect(rerun).toEqual(counts({ skipped: 1 }));
+  expect(await statusOf(currentPath)).toBe("active");
+});
+
+it("classifies against the innermost folder any agent searches, not just this run's", async () => {
+  // Status is one row per document for the whole org, but runs go agent by
+  // agent. One agent searching the share and another searching only its
+  // Archiv/ folder must not flip the same document back and forth each night,
+  // so a run is told the other searched folders too (`archiveRoots`).
+  const archivePath = writePdf(join(tmpRoot, "Archiv"), "x.pdf", "x");
+  const oldPath = writePdf(join(tmpRoot, "OLD"), "y.pdf", "y");
+  const { deps } = fakeDeps();
+
+  const result = await ingestPaths(ORG_ID, [tmpRoot], deps, {
+    archiveRoots: [join(tmpRoot, "Archiv")],
+  });
+
+  expect(result).toEqual(counts({ indexed: 2, archived: 1 }));
+  expect(await statusOf(archivePath)).toBe("active");
+  expect(await statusOf(oldPath)).toBe("archived");
+});
+
 it("indexes a spreadsheet with sheet + row-range locators, and never converts it", async () => {
   const xlsxPath = join(tmpRoot, "suppliers.xlsx");
   writeFileSync(xlsxPath, "fake-xlsx-bytes-v1");
@@ -1593,8 +2428,11 @@ it("books a workbook refused as too large as unsearchable — listed, final, and
     warn.mockRestore();
   }
 
-  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
-  expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot], { state: "off" });
+  // Refused, not waiting on OCR: the page names it as such, end to end.
+  expect(listed.documents.map((d) => [d.sourcePath, d.cause])).toEqual([
+    [xlsxPath, "read_refused"],
+  ]);
 });
 
 it("books a workbook refused for its content as unsearchable, and leaves it alone while it is unchanged", async () => {
@@ -1623,8 +2461,11 @@ it("books a workbook refused for its content as unsearchable, and leaves it alon
     warn.mockRestore();
   }
 
-  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
-  expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot], { state: "off" });
+  // Refused, not waiting on OCR: the page names it as such, end to end.
+  expect(listed.documents.map((d) => [d.sourcePath, d.cause])).toEqual([
+    [xlsxPath, "read_refused"],
+  ]);
 });
 
 it("keeps a changed workbook's indexed version when its reader is killed without a verdict, and reads it again", async () => {
@@ -1674,7 +2515,7 @@ it("keeps a changed workbook's indexed version when its reader is killed without
 });
 
 it("keeps PDFs indexed before spreadsheets existed working, untouched", async () => {
-  // AGENTS.md § Test Migrations Against Pre-Existing Data. Every other test
+  // agent-rules/testing.md § Test Migrations Against Pre-Existing Data. Every other test
   // here starts from a clean slate where the dispatch is live from the first
   // write, so none of them can see what an UPGRADE produces: rows written by
   // the PDF-only pipeline, read by code that now dispatches on extension.
@@ -1759,6 +2600,7 @@ function officeDeps(
       extractPdf,
       extractXlsx: neverCalledXlsx,
       convertOffice,
+      convertScan: neverCalledScan,
       ocrModel: null,
       stagingDir,
     } as IngestDeps,
@@ -1798,6 +2640,25 @@ it("indexes a Word document through its converted PDF, anchored on the heading p
   expect(chunks).not.toHaveLength(0);
   expect(chunks.every((chunk) => chunk.sourcePath === docPath)).toBe(true);
   for (const chunk of chunks) {
+    expect(chunk.locator).toEqual({ kind: "heading", headings: ["Quality management"] });
+  }
+});
+
+it("stores a Word heading that carried NUL without it (#1366)", async () => {
+  // The Office branch reads through its own dispatch; the cleaning has to
+  // cover it as well as the PDF and spreadsheet readers.
+  writeFileSync(join(tmpRoot, "Handbuch.docx"), "fake-docx-bytes");
+  const pages: IngestPage[] = [
+    {
+      ...WORD_PAGES[0],
+      headings: [{ charStart: 0, headings: ["Quality\u0000 management"] }],
+    },
+  ];
+  const { deps } = officeDeps(convertedTo("/artifacts/ab/ef.pdf"), () => pages);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+  const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+  for (const chunk of await chunksFor(doc.id)) {
     expect(chunk.locator).toEqual({ kind: "heading", headings: ["Quality management"] });
   }
 });
@@ -1943,6 +2804,7 @@ describe("the converter's log lines about a document", () => {
       embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05))),
       extractPdf: vi.fn(async () => WORD_PAGES),
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store: new OfficeArtifactStore(storeRoot),
@@ -2052,6 +2914,7 @@ it("keeps a failed file's log entry to one bounded line, whatever its name holds
       embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.1))),
       extractPdf,
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -2090,6 +2953,7 @@ it.skipIf(process.getuid?.() === 0)(
           throw new Error("extractPdf reached a file it could not have read");
         }),
         extractXlsx: neverCalledXlsx,
+        convertScan: neverCalledScan,
         convertOffice: neverCalledConvert,
         ocrModel: null,
         stagingDir,
@@ -2192,6 +3056,7 @@ describe("an artifact volume that cannot be written", () => {
       embed,
       extractPdf: vi.fn(async () => WORD_PAGES),
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store: new OfficeArtifactStore(storeRoot),
@@ -2456,6 +3321,7 @@ it("converts a batch mate again when it was saved between its batch and its own 
     ],
     extractXlsx: neverCalledXlsx,
     convertOffice,
+    convertScan: neverCalledScan,
     ocrModel: null,
     stagingDir,
   };
@@ -2512,6 +3378,7 @@ it("spends one converter attempt per batch when the converter never answers at a
     extractPdf,
     extractXlsx: neverCalledXlsx,
     convertOffice,
+    convertScan: neverCalledScan,
     ocrModel: null,
     stagingDir,
   } as IngestDeps;
@@ -2529,7 +3396,7 @@ it("spends one converter attempt per batch when the converter never answers at a
 });
 
 describe("an Office document converted under an earlier artifact format", () => {
-  // AGENTS.md § "Test Migrations Against Pre-Existing Data". Changing the
+  // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data". Changing the
   // conversion rules bumps OFFICE_ARTIFACT_FORMAT_VERSION, which moves the
   // store to a new directory — but an UNCHANGED document never asks the store
   // for anything: its hash matches and it has chunks. The upgrade state is a
@@ -2575,6 +3442,7 @@ describe("an Office document converted under an earlier artifact format", () => 
         { page: 1, text: readFileSync(artifact, "utf8").replace("%PDF-1.4", "").trim() },
       ]),
       extractXlsx: neverCalledXlsx,
+      convertScan: neverCalledScan,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store,
@@ -2663,7 +3531,7 @@ describe("an Office document converted under an earlier artifact format", () => 
 });
 
 it("leaves PDFs indexed before Office support was added exactly as they were", async () => {
-  // AGENTS.md § "Test Migrations Against Pre-Existing Data": the upgrade state
+  // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data": the upgrade state
   // is old rows plus new code, and every test that starts from an empty
   // database is blind to it. Simulated by indexing the PDF alone — which is
   // what the old pipeline did — and then dropping a Word file beside it.
@@ -2757,6 +3625,7 @@ function recordingDeps() {
         hiddenRows: 0,
       };
     }),
+    convertScan: neverCalledScan,
     convertOffice: vi.fn(async (sources: readonly { absPath: string }[]) =>
       sources.map((source) => {
         read(source.absPath);
@@ -2994,8 +3863,8 @@ describe("files whose type the indexer cannot read (#1267)", () => {
   // other two nowhere. They must be counted and named, with their type.
   it("counts and records them with path and type, beside the documents it indexes", async () => {
     writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
-    mkdirSync(join(tmpRoot, "scans"));
-    writeFileSync(join(tmpRoot, "scans", "Nameplate.TIF"), "tiff");
+    mkdirSync(join(tmpRoot, "word"));
+    writeFileSync(join(tmpRoot, "word", "Offer.RTF"), "rtf");
     writeFileSync(join(tmpRoot, "Budget 2019.xls"), "biff");
     writeFileSync(join(tmpRoot, "README"), "no extension");
 
@@ -3006,9 +3875,37 @@ describe("files whose type the indexer cannot read (#1267)", () => {
       [
         { sourcePath: join(tmpRoot, "Budget 2019.xls"), type: ".xls" },
         { sourcePath: join(tmpRoot, "README"), type: "" },
-        { sourcePath: join(tmpRoot, "scans", "Nameplate.TIF"), type: ".tif" },
+        { sourcePath: join(tmpRoot, "word", "Offer.RTF"), type: ".rtf" },
       ].sort((a, b) => (a.sourcePath < b.sourcePath ? -1 : 1))
     );
+  });
+
+  // An install that upgrades already has these on its list: the version
+  // before #1409 read neither scans nor text files. The next run must read
+  // them and take them off the list — not leave them listed as unreadable
+  // beside the documents they became.
+  it("reads the scans and text files an earlier version listed, and drops them from the list", async () => {
+    const tifPath = join(tmpRoot, "delivery-note.tif");
+    const txtPath = join(tmpRoot, "notes.txt");
+    writeFileSync(tifPath, "fake-tiff-bytes");
+    writeFileSync(txtPath, "Every delivery is checked against the order.");
+    const before = DEFAULT_ALLOWED_EXTENSIONS.filter(
+      (ext) => ![".tif", ".tiff", ".txt"].includes(ext)
+    );
+    await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, { allowedExtensions: before });
+    expect((await unsupportedUnder(tmpRoot)).map((f) => f.type).sort()).toEqual([".tif", ".txt"]);
+
+    const { deps } = fakeDeps(SCAN_PAGES);
+    const { convertScan } = fakeScanConverter(2);
+    const result = await ingestDirectory(ORG_ID, tmpRoot, {
+      ...deps,
+      convertScan,
+      ocrModel: VISION_MODEL,
+    });
+
+    expect(result).toEqual(counts({ indexed: 2 }));
+    expect(convertScan).toHaveBeenCalledTimes(1);
+    expect(await unsupportedUnder(tmpRoot)).toEqual([]);
   });
 
   // Never documents: listing them would bury the scans in noise. Same for
@@ -3021,7 +3918,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     mkdirSync(join(tmpRoot, ".git"));
     writeFileSync(join(tmpRoot, ".git", "config"), "x");
     mkdirSync(join(tmpRoot, "$RECYCLE.BIN"));
-    writeFileSync(join(tmpRoot, "$RECYCLE.BIN", "deleted.tif"), "x");
+    writeFileSync(join(tmpRoot, "$RECYCLE.BIN", "deleted.rtf"), "x");
 
     const result = await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
 
@@ -3034,7 +3931,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
   // discovery on, not only from a return value a throw would skip.
   it("reports the count from the first progress report on", async () => {
     writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
-    writeFileSync(join(tmpRoot, "notes.txt"), "plain text");
+    writeFileSync(join(tmpRoot, "notes.rtf"), "plain text");
     const reports: IngestProgress[] = [];
 
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, {
@@ -3058,18 +3955,18 @@ describe("files whose type the indexer cannot read (#1267)", () => {
   });
 
   it("counts a granted single file of an unsupported type", async () => {
-    const tif = join(tmpRoot, "Plate.tif");
-    writeFileSync(tif, "tiff");
+    const rtf = join(tmpRoot, "Plate.rtf");
+    writeFileSync(rtf, "rtf");
 
-    const result = await ingestPaths(ORG_ID, [tif], fakeDeps().deps);
+    const result = await ingestPaths(ORG_ID, [rtf], fakeDeps().deps);
 
     expect(result).toEqual(counts({ unsupported: 1 }));
-    expect(await unsupportedUnder(tif)).toEqual([{ sourcePath: tif, type: ".tif" }]);
+    expect(await unsupportedUnder(rtf)).toEqual([{ sourcePath: rtf, type: ".rtf" }]);
   });
 
   it("counts a file under two overlapping roots once", async () => {
     mkdirSync(join(tmpRoot, "hr"));
-    writeFileSync(join(tmpRoot, "hr", "Plate.tif"), "tiff");
+    writeFileSync(join(tmpRoot, "hr", "Plate.rtf"), "rtf");
 
     const result = await ingestPaths(ORG_ID, [tmpRoot, join(tmpRoot, "hr")], fakeDeps().deps);
 
@@ -3083,36 +3980,36 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     const share = join(tmpRoot, "share");
     mkdirSync(share);
     writeFileSync(join(share, "contract.pdf"), "fake-pdf-bytes");
-    writeFileSync(join(share, "Plate.tif"), "tiff");
+    writeFileSync(join(share, "Plate.rtf"), "rtf");
     writeFileSync(join(tmpRoot, "other.pdf"), "fake-pdf-bytes-2");
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, { keepEmptiedFolders: true });
 
     rmSync(join(share, "contract.pdf"));
-    rmSync(join(share, "Plate.tif"));
+    rmSync(join(share, "Plate.rtf"));
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps, { keepEmptiedFolders: true });
 
     expect(await unsupportedUnder(tmpRoot)).toEqual([
-      { sourcePath: join(share, "Plate.tif"), type: ".tif" },
+      { sourcePath: join(share, "Plate.rtf"), type: ".rtf" },
     ]);
   });
 
   it("keeps the list of a granted folder it could not read", async () => {
     const share = join(tmpRoot, "share");
     mkdirSync(share);
-    writeFileSync(join(share, "Plate.tif"), "tiff");
+    writeFileSync(join(share, "Plate.rtf"), "rtf");
     await ingestDirectory(ORG_ID, share, fakeDeps().deps);
 
     rmSync(share, { recursive: true });
     await ingestDirectory(ORG_ID, share, fakeDeps().deps);
 
     expect(await unsupportedUnder(share)).toEqual([
-      { sourcePath: join(share, "Plate.tif"), type: ".tif" },
+      { sourcePath: join(share, "Plate.rtf"), type: ".rtf" },
     ]);
   });
 
   // Written at the end, like the removal pass: half a walk is not the share.
   it("leaves the previous list in place when a run dies halfway", async () => {
-    writeFileSync(join(tmpRoot, "Plate.tif"), "tiff");
+    writeFileSync(join(tmpRoot, "Plate.rtf"), "rtf");
     writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
 
@@ -3120,12 +4017,12 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     writeFileSync(join(tmpRoot, "handbook.pdf"), "changed-bytes");
     const { deps } = fakeDeps();
     deps.embed = async () => {
-      throw new Error("embedder down");
+      throw new EmbedderUnavailableError("embedder down");
     };
     await expect(ingestDirectory(ORG_ID, tmpRoot, deps)).rejects.toThrow("embedder down");
 
     expect((await unsupportedUnder(tmpRoot)).map((f) => f.sourcePath)).toEqual([
-      join(tmpRoot, "Plate.tif"),
+      join(tmpRoot, "Plate.rtf"),
     ]);
   });
 });

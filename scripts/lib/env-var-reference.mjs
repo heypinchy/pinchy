@@ -17,7 +17,7 @@
  * hypothetical here. `AUDIT_HMAC_SECRET` was documented in `installation.mdx`
  * as something to set in `.env`; the app read it, but the production Compose
  * file never forwarded it, so setting it did exactly nothing. That is the
- * `findGhostEndpoints` lesson from AGENTS.md in a different file: an
+ * `findGhostEndpoints` lesson from agent-rules/docs.md in a different file: an
  * undocumented variable costs a grep, a documented one that isn't wired costs
  * an afternoon. It is forwarded now — the ghost check is what would catch the
  * next one.

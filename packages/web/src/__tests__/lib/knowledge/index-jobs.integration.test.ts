@@ -14,7 +14,9 @@ import {
   enqueueIndexJob,
   finishIndexJob,
   getLatestIndexJobForAgent,
+  getLatestPlannedIndexJobForAgent,
   recordIndexJobProgress,
+  recordIndexJobFolderPlan,
   requeueOrphanedIndexJobs,
 } from "@/lib/knowledge/index-jobs";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
@@ -302,6 +304,7 @@ describe("kb index job store", () => {
       totalBytes: 42_000_000,
       counts: { ...zeroCounts(), indexed: 30 },
     });
+    await recordIndexJobFolderPlan(job!.id, [{ folder: "/data/hr", files: 42 }]);
 
     const requeued = await requeueOrphanedIndexJobs();
 
@@ -318,6 +321,8 @@ describe("kb index job store", () => {
     // re-derived yet would put the progress bar somewhere it has not been.
     expect(latest).toMatchObject({ processedBytes: 0, totalBytes: null });
     expect(latest?.counts).toBeNull();
+    // The plan goes too: the resumed run re-discovers, and its queue may differ.
+    expect(latest?.folderPlan).toBeNull();
     expect(await claimNextIndexJob()).not.toBeNull();
   });
 
@@ -342,6 +347,27 @@ describe("kb index job store", () => {
 
     expect((await getLatestIndexJobForAgent(agent.id))?.id).toBe(second.job.id);
     expect(await getLatestIndexJobForAgent(other.id)).toBeNull();
+  });
+});
+
+describe("getLatestPlannedIndexJobForAgent", () => {
+  beforeEach(async () => {
+    await db.delete(kbIndexJobs);
+  });
+
+  // A pending job has no plan yet; the folder counts then come from the run before.
+  it("skips a newer job that has not recorded a plan", async () => {
+    const agent = await makeAgent();
+    await enqueueIndexJob(enqueueArgs(agent.id));
+    const first = await claimNextIndexJob();
+    await recordIndexJobFolderPlan(first!.id, [{ folder: "/data/hr", files: 3 }]);
+    await finishIndexJob(first!.id, { outcome: "succeeded", counts: zeroCounts() });
+    await enqueueIndexJob(enqueueArgs(agent.id));
+
+    const planned = await getLatestPlannedIndexJobForAgent(agent.id);
+
+    expect(planned?.id).toBe(first!.id);
+    expect(planned?.folderPlan).toEqual([{ folder: "/data/hr", files: 3 }]);
   });
 });
 

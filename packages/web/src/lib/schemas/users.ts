@@ -4,7 +4,7 @@ import { INVITE_ROLES } from "@/db/enums";
 /**
  * Request schemas for the user-management routes, shared with the admin UI
  * (`invite-dialog.tsx`, `settings-users.tsx`, `user-detail-sheet.tsx`) so a
- * payload rename is a compile error rather than a runtime 400 (AGENTS.md
+ * payload rename is a compile error rather than a runtime 400 (agent-rules/web-routes.md
  * § "Shared Schemas And Typed Client").
  *
  * `@/db/enums` carries no database import — it is the const list the CHECK
@@ -18,8 +18,18 @@ export const inviteUserSchema = z.object({
   email: z.string().trim().pipe(z.email()),
   role: z.enum(INVITE_ROLES),
   groupIds: z.array(z.string()).optional(),
+  // Email the invitation through the system mailer (#1309). Ignored-safe: the
+  // invite is created either way, and the link comes back in the response.
+  sendEmail: z.boolean().optional(),
 });
 export type InviteUserInput = z.infer<typeof inviteUserSchema>;
+
+/**
+ * `POST /api/users/[userId]/reset`. The body is optional (the route predates
+ * it), so this is parsed with `parseOptionalRequestBody`.
+ */
+export const resetPasswordSchema = z.object({ sendEmail: z.boolean().optional() }).strict();
+export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 
 /** `PATCH /api/users/[userId]` — role change only. */
 export const updateUserSchema = z.object({

@@ -2,7 +2,7 @@
 // the chat "paused" banner (Concern 1). Uses the real Postgres test database
 // (provisioned by global-setup.ts, emptied between tests by the integration reset).
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 import { db } from "@/db";
 import { users, agents, chatSessionErrors, auditLog } from "@/db/schema";
@@ -83,9 +83,50 @@ describe("chat session errors persistence", () => {
     // The user moved on to m2 and got an answer: the banner about m1 is no
     // longer where the conversation stands (#1301). Superseding only on m1's
     // own success left it on top of every later answer, reload after reload.
-    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: new Date() });
+    // The bound sits a second ahead, not at `new Date()`: created_at is the
+    // database's now() in microseconds, a JS Date has milliseconds, so a row
+    // written in the same millisecond reads as after `new Date()` and stays.
+    const later = new Date(Date.now() + 1_000);
+    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: later });
 
     expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
+  });
+
+  // The bound is inclusive and app-clock time, so an error stamped at exactly
+  // `before` is cleared. When Postgres stamped `created_at` with `now()` it kept
+  // microseconds a JS Date cannot hold: the row sat a fraction of a millisecond
+  // AFTER its own timestamp as the app reads it, and survived the supersede.
+  it("clears an error recorded at exactly the bound", async () => {
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+    const input = { ...base(user, agent), clientMessageId: "m1" };
+    const row = await recordChatSessionError(input);
+
+    await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: row.createdAt });
+
+    expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
+  });
+
+  // Every caller passes app time (`dispatchedAt`), so `created_at` must be app
+  // time too. A database clock ahead of the app's left an error recorded before
+  // a successful turn looking newer than that turn, and its banner stayed on top
+  // of the answer (#1301). Simulated by running the app clock behind the
+  // database's.
+  it("clears an earlier error even when the database clock runs ahead of the app's", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() - 5_000 });
+    try {
+      const user = await seedUser();
+      const agent = await seedAgent(user.id);
+      const input = { ...base(user, agent), clientMessageId: "m1" };
+      await recordChatSessionError(input);
+      vi.setSystemTime(Date.now() + 1_000);
+
+      await supersedeChatSessionErrors({ sessionKey: input.sessionKey, before: new Date() });
+
+      expect(await getActiveChatSessionError(input.sessionKey)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does NOT clear an error recorded after the successful turn's bound", async () => {
@@ -294,7 +335,7 @@ describe("resolveRetryGate (#1013)", () => {
   });
 
   it("falls back to the stored flag for a row written before the window existed", async () => {
-    // Pre-existing data (AGENTS.md §"Test Migrations Against Pre-Existing
+    // Pre-existing data (agent-rules/testing.md §"Test Migrations Against Pre-Existing
     // Data"): rows written before 0064 have no `runStartedAt`. There is no
     // honest window to re-derive over, so the gate must report exactly what the
     // old code decided — not invent a bound and answer over the wrong range.

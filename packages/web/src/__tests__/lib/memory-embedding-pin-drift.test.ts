@@ -79,7 +79,7 @@ function downloadCommand(dockerfile: string): string {
  * and restored exponential backoff is the entire fix.
  *
  * This is the same failure shape as the X-Frame-Options gate documented in
- * AGENTS.md — assert the behaviour a command resolves to, not the flag a file
+ * agent-rules/web-routes.md — assert the behaviour a command resolves to, not the flag a file
  * asked for.
  */
 function expectPatientBackoff(download: string): void {

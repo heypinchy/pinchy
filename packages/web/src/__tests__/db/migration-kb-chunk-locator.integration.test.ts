@@ -1,6 +1,6 @@
 /**
  * Migration-against-populated-data test for 0061_kb_chunk_locator (#933), in
- * the spirit AGENTS.md § "Test Migrations Against Pre-Existing Data" asks for:
+ * the spirit agent-rules/testing.md § "Test Migrations Against Pre-Existing Data" asks for:
  * every kb_chunks row that exists BEFORE this migration was written by code
  * that stored a bare `page` integer, so a fresh-DB run proves nothing. The
  * column swap only matters for the state a real upgrade produces — old rows,
@@ -127,14 +127,14 @@ describe("0061 kb chunk locator (populated pre-#933 data)", () => {
       const documentId = crypto.randomUUID();
       await client`
         INSERT INTO kb_documents (id, org_id, content_hash, source_path)
-        VALUES (${documentId}, 'org-locator-test', 'hash-locator', '/data/noack/QM/handbook.pdf')
+        VALUES (${documentId}, 'org-locator-test', 'hash-locator', '/data/customer/QM/handbook.pdf')
       `;
       for (const { chunkText, page } of FIXTURE_CHUNKS) {
         await client`
           INSERT INTO kb_chunks (id, document_id, org_id, source_path, chunk_text, page)
           VALUES (
             ${crypto.randomUUID()}, ${documentId}, 'org-locator-test',
-            '/data/noack/QM/handbook.pdf', ${chunkText}, ${page}
+            '/data/customer/QM/handbook.pdf', ${chunkText}, ${page}
           )
         `;
       }

@@ -11,6 +11,7 @@ import {
   incompletePermissionsWarning,
 } from "@/lib/agent-permission-gaps";
 import { getVisibleAgents } from "@/lib/visible-agents";
+import { queueFirstIndex } from "@/lib/knowledge/first-index";
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const visibleAgents = await getVisibleAgents(session.user.id!, session.user.role ?? "member");
@@ -126,6 +127,21 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       },
       outcome: "failure",
     });
+  }
+
+  // A Knowledge Base agent finds nothing until its folders are indexed, and an
+  // admin who creates one and asks it something straight away would take the
+  // "nothing found" for a broken agent (#1280). So the first index is queued
+  // here, as this admin's request. When another run holds the instance's one
+  // job slot it is not queued now; the index worker queues it the moment the
+  // slot frees. Never a reason to fail the create: the agent exists, and the
+  // worker's next look catches what this could not do.
+  try {
+    await queueFirstIndex(agent.id, { actorType: "user", actorId: session.user.id! }, (entry) =>
+      deferAuditLog(entry)
+    );
+  } catch (err) {
+    console.error(`[agents] could not queue the first index of agent ${agent.id}:`, err);
   }
 
   revalidatePath("/", "layout");

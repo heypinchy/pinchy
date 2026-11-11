@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { toast } from "sonner";
@@ -938,6 +938,52 @@ describe("AuditLogTable", () => {
       await waitFor(() => {
         expect(toast.error).toHaveBeenCalled();
       });
+    } finally {
+      document.execCommand = originalExec;
+      restoreClipboard?.();
+    }
+  });
+
+  it("copies the JSON detail through the fallback from inside the sheet's focus trap", async () => {
+    // Plain-HTTP install: no Clipboard API, so the hook copies from a hidden
+    // textarea via execCommand, which only works while that textarea holds
+    // focus. The detail sheet traps focus, and Radix portals it straight into
+    // <body>. Safari and Firefox on macOS leave focus on the sheet when the
+    // button is clicked, so a textarea placed by focus landed on <body>, the
+    // trap pulled focus back, nothing was copied and the button said "Copied".
+    let copiedText: string | null = null;
+    const originalExec = document.execCommand;
+    document.execCommand = vi.fn(() => {
+      const active = document.activeElement;
+      copiedText = active instanceof HTMLTextAreaElement ? active.value : null;
+      return true;
+    });
+    let restoreClipboard: (() => void) | undefined;
+
+    try {
+      renderWithEntriesLoaded();
+      await openFirstEntryDetail();
+
+      // Same restore contract as the toast test above.
+      const previousClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+      restoreClipboard = previousClipboard
+        ? () => Object.defineProperty(navigator, "clipboard", previousClipboard)
+        : () => {
+            delete (navigator as { clipboard?: unknown }).clipboard;
+          };
+      Object.defineProperty(navigator, "clipboard", {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
+
+      const sheet = screen.getByRole("dialog");
+      sheet.focus();
+      // fireEvent.click doesn't move focus — what a mouse click does there.
+      fireEvent.click(screen.getByRole("button", { name: /copy json/i }));
+
+      expect(copiedText).toBe(JSON.stringify({ email: "admin@example.com" }, null, 2));
+      expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
     } finally {
       document.execCommand = originalExec;
       restoreClipboard?.();

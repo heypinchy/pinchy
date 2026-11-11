@@ -12,7 +12,7 @@
 // added it (#1097) picked four such gaps by inspection, fixed three of them, and
 // introduced a fifth: the `set null` rule it added to `email_workflows.created_by`
 // needs exactly the same index a cascade does, and had none. That is the failure
-// mode AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong"
+// mode agent-rules/docs.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong"
 // describes — so the list is now derived from the live database instead of from
 // somebody reading the schema.
 //

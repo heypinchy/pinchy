@@ -10,7 +10,7 @@ import type { OpenClawModelDefinition } from "@/lib/openclaw-builtin-models";
 
 // These schemas are the single source of truth for the OpenAI-compatible
 // provider write paths, imported by BOTH the route handlers (parseRequestBody)
-// and the client components (typed bodies via z.infer). AGENTS.md "Shared
+// and the client components (typed bodies via z.infer). agent-rules/web-routes.md "Shared
 // Schemas And Typed Client".
 
 const validModel = {
@@ -118,7 +118,7 @@ describe("modelDefinitionSchema", () => {
     expect(parsed.success).toBe(false);
   });
 
-  // Compile-time parity guard (real check via tsconfig.typecheck.json, AGENTS.md
+  // Compile-time parity guard (real check via tsconfig.typecheck.json, agent-rules/testing.md
   // "Web Test Files Are Type-Checked"): the inferred model type must stay
   // structurally equal to the OpenClawModelDefinition interface this schema
   // validates. A field added to one but not the other breaks typecheck in CI

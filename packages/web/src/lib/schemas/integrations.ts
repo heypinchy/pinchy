@@ -7,7 +7,7 @@ import {
 
 /**
  * Request schemas for the integration-connect wizard's four routes, shared
- * with `add-integration-dialog.tsx` (AGENTS.md § "Shared Schemas And Typed
+ * with `add-integration-dialog.tsx` (agent-rules/web-routes.md § "Shared Schemas And Typed
  * Client"). `@/lib/integrations/odoo-schema` imports nothing but zod, so it is
  * safe in a client bundle.
  */

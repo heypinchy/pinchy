@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
+import { kbOcrAvailability, resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 
 vi.mock("@/lib/settings", () => ({ getSetting: vi.fn() }));
 vi.mock("@/lib/openclaw-config/default-media-models", () => ({
@@ -172,5 +172,52 @@ describe("when it runs", () => {
     mockChain.mockResolvedValue([]);
 
     expect(await resolveKbOcr()).toBeNull();
+  });
+});
+
+// What the Index section tells an admin about a scan nobody could read
+// depends on WHY nobody could (#1362): a server with OCR switched off on
+// purpose and a server with no vision model need different fixes, and naming
+// the wrong one sends the admin to change a provider that changes nothing.
+describe("kbOcrAvailability", () => {
+  it("says off when the operator switched it off, even with a working vision model", async () => {
+    mockChain.mockResolvedValue(["anthropic/claude-haiku-4-5-20251001"]);
+    mockGetSetting.mockResolvedValue("sk-ant-test");
+    process.env.PINCHY_KB_OCR = "off";
+
+    expect(await kbOcrAvailability()).toEqual({ state: "off" });
+  });
+
+  it.each(["false", "0", " OFF "])("reads %j as off, like the ingest does", async (value) => {
+    mockChain.mockResolvedValue(["anthropic/claude-haiku-4-5-20251001"]);
+    mockGetSetting.mockResolvedValue("sk-ant-test");
+    process.env.PINCHY_KB_OCR = value;
+
+    expect(await kbOcrAvailability()).toEqual({ state: "off" });
+  });
+
+  it("says no model when no vision model is configured", async () => {
+    mockChain.mockResolvedValue([]);
+
+    expect(await kbOcrAvailability()).toEqual({ state: "no_model" });
+  });
+
+  // From the admin's side a model whose key is gone is no model: the fix is
+  // the same (make one available), and a run would read nothing with it.
+  it("says no model when the chosen provider has no key", async () => {
+    mockChain.mockResolvedValue(["anthropic/claude-haiku-4-5-20251001"]);
+    mockGetSetting.mockResolvedValue(null);
+
+    expect(await kbOcrAvailability()).toEqual({ state: "no_model" });
+  });
+
+  it("names the model a run would read scans with", async () => {
+    mockChain.mockResolvedValue(["anthropic/claude-haiku-4-5-20251001"]);
+    mockGetSetting.mockResolvedValue("sk-ant-test");
+
+    expect(await kbOcrAvailability()).toEqual({
+      state: "on",
+      model: "anthropic/claude-haiku-4-5-20251001",
+    });
   });
 });

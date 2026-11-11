@@ -44,7 +44,7 @@ import {
   extractFieldErrors,
 } from "@/lib/api-client";
 import type { CreateGroupInput } from "@/lib/schemas/groups";
-import type { LicenseState } from "@/lib/license-state";
+import { useLicenseStatus } from "@/hooks/use-license-status";
 
 interface Group {
   id: string;
@@ -78,9 +78,9 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
   const [createOpen, setCreateOpen] = useState(false);
   const [editGroup, setEditGroup] = useState<Group | null>(null);
   const [deleteGroupId, setDeleteGroupId] = useState<string | null>(null);
-  const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
-  const [licenseState, setLicenseState] = useState<LicenseState>("community");
-  const [licensePeriodEnd, setLicensePeriodEnd] = useState<string | null>(null);
+  const { license } = useLicenseStatus({ refreshKey, notifyOnFailure: true });
+  // null = unknown: stay in the loading state rather than show the upgrade card.
+  const isEnterprise = license?.enterprise ?? null;
 
   // Form state
   const [formName, setFormName] = useState("");
@@ -90,17 +90,6 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
   // with `details.fieldErrors` (Zod flatten()). Cleared on dialog open and
   // before each save attempt so stale errors never linger.
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    fetch("/api/enterprise/status")
-      .then((res) => (res.ok ? res.json() : { enterprise: false }))
-      .then((data) => {
-        setIsEnterprise(data.enterprise);
-        if (data.state) setLicenseState(data.state);
-        setLicensePeriodEnd(data.paidUntil ?? data.expiresAt ?? null);
-      })
-      .catch(() => setIsEnterprise(false));
-  }, [refreshKey]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -265,8 +254,8 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
         description="Create groups to control which users can access which agents. Organize your team into departments like Engineering, Marketing, or HR, and assign agent access per group."
         campaign="groups"
         isAdmin={isAdmin}
-        licenseState={licenseState}
-        periodEnd={licensePeriodEnd}
+        licenseState={license?.state ?? "community"}
+        periodEnd={license?.paidUntil ?? license?.expiresAt ?? null}
       />
     );
   }

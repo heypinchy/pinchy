@@ -659,6 +659,126 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
       })
     );
   });
+
+  // Folder grants can name a person (`/data/hr/personnel/<name>` since
+  // subfolder grants, #1269) and the audit row is immutable and HMAC-chained,
+  // so GDPR erasure cannot reach it. The row records what changed — how many
+  // grants were added and removed — never the paths themselves.
+  it("logs folder grant changes as added/removed counts, never the paths", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const oldConfig = {
+      "pinchy-files": { allowed_paths: ["/data/hr", "/data/hr/personnel/Alice Example"] },
+    };
+    const newConfig = {
+      "pinchy-files": {
+        allowed_paths: [
+          "/data/hr",
+          "/data/hr/personnel/Maria Musterfrau",
+          "/data/hr/personnel/Maria Musterfrau/reviews",
+        ],
+        write_paths: ["/data/hr/personnel/Maria Musterfrau"],
+      },
+    };
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+      pluginConfig: oldConfig,
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      pluginConfig: newConfig,
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ pluginConfig: newConfig }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    const serialized = JSON.stringify(entry.detail);
+    expect(serialized).not.toContain("/data");
+    expect(serialized).not.toContain("Alice");
+    expect(serialized).not.toContain("Musterfrau");
+
+    expect(entry).toMatchObject({
+      eventType: "agent.updated",
+      outcome: "success",
+      detail: {
+        changes: {
+          pluginConfig: {
+            from: { "pinchy-files": { allowedPathCount: 2 } },
+            to: { "pinchy-files": { allowedPathCount: 3 } },
+          },
+        },
+        folderAccess: { added: 2, removed: 1, count: 3 },
+      },
+    });
+  });
+
+  it("audits a folder swap even though the redacted from/to look the same", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const oldConfig = { "pinchy-files": { allowed_paths: ["/data/hr/alice"] } };
+    const newConfig = { "pinchy-files": { allowed_paths: ["/data/hr/bob"] } };
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+      pluginConfig: oldConfig,
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      pluginConfig: newConfig,
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ pluginConfig: newConfig }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "agent.updated",
+        detail: {
+          changes: {},
+          folderAccess: { added: 1, removed: 1, count: 1 },
+        },
+      })
+    );
+  });
 });
 
 // ── DELETE /api/agents/[agentId] — agent.deleted audit ──────────────────

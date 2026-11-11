@@ -111,6 +111,14 @@ vi.mock("@/components/knowledge-reindex-section", () => ({
   },
 }));
 
+// Which saved grants still exist is the server's answer (#1363); the hook has
+// its own tests. Here it only matters that the tab asks for it and hands the
+// answer to the picker.
+const mockUseGrantedFolders = vi.fn();
+vi.mock("@/hooks/use-granted-folders", () => ({
+  useGrantedFolders: (...args: unknown[]) => mockUseGrantedFolders(...args),
+}));
+
 vi.mock("@/components/email-permission-section", () => ({
   EmailPermissionSection: ({
     onChange,
@@ -125,6 +133,8 @@ vi.mock("@/components/email-permission-section", () => ({
 }));
 
 beforeEach(() => {
+  mockUseGrantedFolders.mockReset();
+  mockUseGrantedFolders.mockReturnValue(undefined);
   capturedOdooOnChange = null;
   capturedWebSearchOnChange = null;
   capturedReindexProps = null;
@@ -207,6 +217,59 @@ describe("AgentSettingsPermissions", () => {
       />
     );
     expect(screen.queryByRole("button", { name: /^Show subfolders of / })).not.toBeInTheDocument();
+  });
+
+  it("marks a saved grant whose folder is gone, for admins (#1363)", () => {
+    mockUseGrantedFolders.mockReturnValue([
+      { path: "/data/docs", status: "available" },
+      { path: "/data/old-docs", status: "missing" },
+    ]);
+    const agent = {
+      ...defaultAgent,
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs", "/data/old-docs"] } },
+    };
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <AgentSettingsPermissions
+        agent={agent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={onChange}
+      />
+    );
+
+    expect(mockUseGrantedFolders).toHaveBeenLastCalledWith(
+      "agent-1",
+      "/data/docs|/data/old-docs",
+      true
+    );
+    expect(screen.getByText(/Folder not found/)).toBeInTheDocument();
+
+    // Removing it is an ordinary unsaved change: Save sends it through the
+    // agent update route, which audits the change in folder access.
+    act(() => {
+      screen.getByRole("button", { name: "Remove /data/old-docs" }).click();
+    });
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ allowedPaths: ["/data/docs"] }),
+      true
+    );
+
+    rerender(
+      <AgentSettingsPermissions
+        agent={agent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={false}
+        onChange={vi.fn()}
+      />
+    );
+    expect(mockUseGrantedFolders).toHaveBeenLastCalledWith(
+      "agent-1",
+      "/data/docs|/data/old-docs",
+      false
+    );
   });
 
   it("keeps the memory toggle out of the Knowledge Base section", () => {

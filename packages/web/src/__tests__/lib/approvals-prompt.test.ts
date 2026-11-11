@@ -168,7 +168,7 @@ describe("buildApprovalPrompt", () => {
       connectionId: "c1",
       model: "res.partner",
       id: 7,
-      label: "Raimund Korber",
+      label: "Anna Berger",
     });
     const { description } = promptFor(
       "email_send",
@@ -201,10 +201,10 @@ describe("buildApprovalPrompt", () => {
 
   it("names the recipient's address before a padded display name", () => {
     const { description } = promptFor("email_send", {
-      to: `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`,
+      to: `Anna Berger${"\u2800".repeat(190)} <attacker@evil.com>`,
       subject: "Rechnung",
     });
-    expect(description).toContain('to: "attacker@evil.com" (name: "Raimund Korber');
+    expect(description).toContain('to: "attacker@evil.com" (name: "Anna Berger');
   });
   // The prompt reaches chat surfaces too, and it reads the same summary as the
   // card. Once the summary keeps real arrays/objects, flattening them with

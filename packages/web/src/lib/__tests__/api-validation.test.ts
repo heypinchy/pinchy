@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { parseRequestBody } from "../api-validation";
+import { parseRequestBody, parseOptionalRequestBody } from "../api-validation";
 
 function makeRequest(body: string | object | undefined, contentType = "application/json") {
   // NextRequest's constructor takes Next's own RequestInit (not the global
@@ -90,5 +90,34 @@ describe("parseRequestBody", () => {
       const json = await result.error.json();
       expect(json.error).toBe("Invalid JSON body");
     }
+  });
+});
+
+describe("parseOptionalRequestBody", () => {
+  const schema = z.object({ sendEmail: z.boolean().optional() });
+
+  it("treats a request with no body as an empty object", async () => {
+    const result = await parseOptionalRequestBody(schema, makeRequest(undefined));
+    expect(result).toEqual({ data: {} });
+  });
+
+  it("treats a whitespace-only body as an empty object", async () => {
+    const result = await parseOptionalRequestBody(schema, makeRequest("  "));
+    expect(result).toEqual({ data: {} });
+  });
+
+  it("parses a body when there is one", async () => {
+    const result = await parseOptionalRequestBody(schema, makeRequest({ sendEmail: true }));
+    expect(result).toEqual({ data: { sendEmail: true } });
+  });
+
+  it("still rejects malformed JSON", async () => {
+    const result = await parseOptionalRequestBody(schema, makeRequest("{nope"));
+    expect("error" in result && result.error.status).toBe(400);
+  });
+
+  it("still rejects a body that fails the schema", async () => {
+    const result = await parseOptionalRequestBody(schema, makeRequest({ sendEmail: "yes" }));
+    expect("error" in result && result.error.status).toBe(400);
   });
 });

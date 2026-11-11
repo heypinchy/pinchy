@@ -14,7 +14,7 @@ describe("getConfirmMap", () => {
     expect(getConfirmMap({})).toEqual({});
   });
 
-  // AGENTS.md § "Test Migrations Against Pre-Existing Data". Every agent whose
+  // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data". Every agent whose
   // admin turned confirmation on before #1133 carries `confirmTools`, and this
   // is the read side of the switch: without the fallback the map comes back
   // empty, the gate allows, and a policy an admin set silently stops applying.

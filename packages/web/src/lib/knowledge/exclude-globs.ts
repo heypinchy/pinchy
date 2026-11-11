@@ -21,7 +21,12 @@
  * Kept as plain data + small predicates (no glob DSL) so it's easy to read,
  * test, and override.
  */
-import { OFFICE_EXTENSIONS, SPREADSHEET_EXTENSIONS } from "./office-formats";
+import {
+  OFFICE_EXTENSIONS,
+  SCAN_EXTENSIONS,
+  SPREADSHEET_EXTENSIONS,
+  TEXT_EXTENSIONS,
+} from "./office-formats";
 
 /**
  * File extensions eligible for ingest.
@@ -37,11 +42,16 @@ import { OFFICE_EXTENSIONS, SPREADSHEET_EXTENSIONS } from "./office-formats";
  * allowlist ends up naming a format nothing can open. `.xls` is absent for
  * exactly that reason and stays absent — LibreOffice would convert it, but a
  * sheet has no page to cite (see `SPREADSHEET_EXTENSIONS`).
+ *
+ * Scanned TIFFs and plain text joined in #1409: a TIFF is read through the
+ * scanned-PDF path's OCR, a `.txt` as it is.
  */
 export const DEFAULT_ALLOWED_EXTENSIONS: readonly string[] = [
   ".pdf",
   ...SPREADSHEET_EXTENSIONS,
   ...OFFICE_EXTENSIONS,
+  ...SCAN_EXTENSIONS,
+  ...TEXT_EXTENSIONS,
 ];
 
 /** Exact (case-insensitive) file names that are always OS artifacts. */

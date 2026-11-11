@@ -52,7 +52,7 @@ const ISSUER = "heypinchy.com";
  * Two rules hang off it, and together they are the fix for #1083. Only the
  * second is enforced here — say which is which, because a comment that claims
  * coverage the code lacks is how the unbounded Gmail fetch survived a review
- * (AGENTS.md § "Every plugin `fetch()` passes a signal"):
+ * (agent-rules/plugins.md § "Every plugin `fetch()` passes a signal"):
  *
  *   - CONVENTION: we mint development licenses for this subject and no other.
  *     Nothing checks it, and nothing needs to — the development private key is

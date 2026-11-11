@@ -16,7 +16,7 @@ import { resolve } from "node:path";
 import { toCitationPath, fromCitationPath, DATA_ROOT } from "@/lib/knowledge/citation-path";
 
 const CORPUS = [
-  "/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf",
+  "/data/customer/OLD/archive-2012/datasheets/product-insert.pdf",
   "/data/handbook-2011/policy.md",
   "/data/kb/2011/spec.pdf",
   "/data/kb/2012/spec.pdf",
@@ -25,8 +25,8 @@ const CORPUS = [
 
 describe("toCitationPath", () => {
   it("drops the data root so the citation reads as the customer's own tree", () => {
-    expect(toCitationPath("/data/noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf")).toBe(
-      "noack/OLD/QF_2012/PrintingFiles_QF/PI_EColi.pdf"
+    expect(toCitationPath("/data/customer/OLD/archive-2012/datasheets/product-insert.pdf")).toBe(
+      "customer/OLD/archive-2012/datasheets/product-insert.pdf"
     );
   });
 

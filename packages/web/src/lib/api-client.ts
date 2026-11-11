@@ -134,7 +134,7 @@ export const apiGet = <R = unknown>(url: string, opts?: { signal?: AbortSignal }
  *
  * Returns null when the error is not a structured field-level validation
  * failure — the caller should fall back to a toast in that case, which is the
- * split AGENTS.md "Error And Notification UI" describes: a field the user can
+ * split agent-rules/ui.md "Error And Notification UI" describes: a field the user can
  * correct gets an inline message, anything else gets a toast.
  *
  * Lives beside ApiError because it reads `ApiError.details`, whose shape is

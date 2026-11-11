@@ -29,13 +29,48 @@ Service health check. **Public — no authentication required.** Suitable for lo
     "db_password": "default"
   },
   "openclaw": { "connected": true },
-  "configRegeneration": { "ok": true }
+  "configRegeneration": { "ok": true },
+  "disk": {
+    "status": "ok",
+    "volumes": [
+      {
+        "name": "system",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      },
+      {
+        "name": "workspaces",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      },
+      {
+        "name": "knowledgeBaseArtifacts",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      },
+      {
+        "name": "data",
+        "status": "ok",
+        "freeGb": 61,
+        "totalGb": 100,
+        "freePercent": 61
+      }
+    ]
+  }
 }
 ```
 
 `openclaw.connected` reflects whether the web process currently has a live WebSocket connection to the OpenClaw gateway — the dependency chat relies on. Top-level `status` deliberately stays `"ok"` even when `openclaw.connected` is `false`: brief disconnects during OpenClaw restarts (for example while applying a config change) are expected and self-heal, and flipping `status` would make the Docker healthcheck restart-loop the container during normal operation. Monitor `openclaw.connected` directly (or poll `/api/health/openclaw`) if you need alerting on gateway reachability specifically.
 
 `configRegeneration` reports the outcome of the most recent boot-time OpenClaw config regeneration. It is `{ "ok": true }` in normal operation. When a startup regeneration fails — most commonly because an image-only upgrade dropped the `openclaw-secrets` volume (see [Upgrading Pinchy](/guides/upgrading/)) — it becomes `{ "ok": false, "error": "<actionable message>", "at": "<ISO timestamp>" }`. This is the one signal that catches a **frozen config**: Pinchy still marks itself healthy so the OpenClaw container can start and hot-reload a fixed config later, so `status` stays `"ok"` and `openclaw.connected` can be `true` while new providers, agents, and model changes silently never take effect. `error` carries operator guidance only — never secret material. Alert on `configRegeneration.ok == false`. A later successful regeneration (for example after you fix the compose file and restart) clears it back to `{ "ok": true }`.
+
+`disk` reports the free space where Pinchy writes, by role rather than by path: `system` is the container's own filesystem, which sits on Docker's storage (where pulled images land and temporary files are written); `workspaces` holds agent files and chat uploads; `knowledgeBaseArtifacts` holds the PDFs the knowledge base converts Office documents into; `data` is the `/data` mount agents read from. On a default install they all share one disk, so the numbers repeat. A volume is `"warning"` below 15 GB free, and `disk.status` is `"warning"` if any volume is. Numbers are whole gigabytes (10⁹ bytes), rounded down for `freeGb` and `freePercent`, so a reported value never sits above the line it is compared to. A location that can't be measured — missing on this machine, or not answering within a second — is left out, and if none can be measured `disk` is `{ "status": "unknown", "volumes": [] }`. The database volume isn't mounted in the Pinchy container and isn't measured. Like `openclaw.connected`, a disk warning leaves top-level `status` at `"ok"` and the response at `200`, so the Docker healthcheck never restarts a container over it. Alert on `disk.status == "warning"`; [Disk space](/guides/hardening/#disk-space) explains the threshold and what to free up.
 
 ### `GET /api/version`
 
@@ -292,11 +327,18 @@ repeated.
 }
 ```
 
-The change **is** stored; only the runtime has not caught up. A later save or a
-restart applies it. Retrying is safe — the update is idempotent — but treating
+The change **is** stored; only the runtime has not caught up. That includes a
+`groupIds` change sent in the same request: the group assignment is written
+before Pinchy answers. If writing it fails too, the message says so with a
+second sentence, `The group assignment was not saved: <cause>`, and only the
+group change needs to be sent again. Any other step that fails after the
+group assignment is written adds `A follow-up step also failed: <cause>`
+instead; the group change is then stored. A later save or a restart brings the
+runtime up to date. Retrying is safe — the update is idempotent — but treating
 the change as discarded is not. Pinchy records this case in the audit trail as
 an `agent.updated` entry with outcome `failure`, so a change that reached the
-database but not the runtime still leaves a trace.
+database but not the runtime still leaves a trace — including the
+`allowedGroups` diff when the request changed the agent's groups.
 
 ### `DELETE /api/agents/:id`
 
@@ -610,7 +652,7 @@ The agent's most recent index run — in flight or last finished — and whether
 | Field                           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `status`                        | `pending`, `running`, `succeeded`, or `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `trigger`                       | `manual` when an admin started the run, `scheduled` when the [nightly reindex](#get-apisettingsknowledge-index-schedule) did, `upgrade` when Pinchy started it after an update changed how Word and PowerPoint files are converted.                                                                                                                                                                                                                                                                          |
+| `trigger`                       | `manual` when an admin started the run, `scheduled` when the [nightly reindex](#get-apisettingsknowledge-index-schedule) did, `upgrade` when Pinchy started it after an update changed how Word and PowerPoint files are converted, `initial` when Pinchy started an agent's [first index](#get-apiagentsagentidknowledgefirst-index) because it was granted a folder nothing had indexed yet.                                                                                                               |
 | `unavailableFolders`            | Folders the run had to leave as they were: ones it could not read, and ones that came up empty while the index still held their documents (a network share that failed to mount looks like that). Their documents are kept, not removed. Counted, never named; `0` when every folder was read.                                                                                                                                                                                                               |
 | `processed` / `total`           | Documents done, and documents found. `total` is `null` until discovery has walked every folder; it never changes after that. `processed` advances per whole document, so a long one can hold it still for minutes.                                                                                                                                                                                                                                                                                           |
 | `processedBytes` / `totalBytes` | The same progress weighed by the bytes of the files involved. This is the pair to build a progress bar or a time-to-completion estimate on: documents are not equal units of work — one compilation PDF can be a third of a corpus — while bytes track the actual work and are known in full before the first document is read. `totalBytes` is `null` until discovery has finished, and `processedBytes` moves _inside_ a long document as its pages are embedded, so a slow document still shows movement. |
@@ -621,8 +663,8 @@ The agent's most recent index run — in flight or last finished — and whether
 | `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved — a workbook whose sheets are all hidden, or a scan that no vision model was available to read.                                                                                                                                                                                                                                                                                                     |
 | `counts.failed`                 | The file could not be read or parsed, or was refused because it had been [swapped for a symbolic link](/guides/mount-data-directories/#links-inside-a-mounted-folder) during the run. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                             |
 | `counts.archived`               | Documents in this run that sit under an archive folder (`OLD`, `Archiv` and the like) and are therefore left out of everyday search. Not a separate outcome: an archived document is also `indexed` or `skipped`.                                                                                                                                                                                                                                                                                            |
-| `counts.unsupported`            | Files in the granted folders whose type the index can't read — a `.tif` scan, an old `.xls`, a `.txt`. Not part of the counts above, because they never become documents. Known from the moment discovery finishes. Absent on a run that stopped before discovery finished, and on one that finished before Pinchy counted them. [`GET …/knowledge/unsupported`](#get-apiagentsagentidknowledgeunsupported) lists them.                                                                                      |
-| `error`                         | Why the run failed. `null` unless `status` is `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `counts.unsupported`            | Files in the granted folders whose type the index can't read — an Outlook `.msg`, an old `.xls`, an `.rtf` note. Not part of the counts above, because they never become documents. Known from the moment discovery finishes. Absent on a run that stopped before discovery finished, and on one that finished before Pinchy counted them. [`GET …/knowledge/unsupported`](#get-apiagentsagentidknowledgeunsupported) lists them.                                                                            |
+| `error`                         | Why the run failed. `null` unless `status` is `failed`. When none of the agent's folders could be read, it names them and says, per folder, whether it is gone (remove the grant or mount it again), can't be opened (a permissions problem on the server), or came up empty while the index still holds its documents (a share that didn't mount). The matching audit entry gives the same failure without folder paths.                                                                                    |
 
 `schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
 
@@ -640,13 +682,38 @@ The agent's most recent index run — in flight or last finished — and whether
 
 A run interrupted by a restart is picked up again automatically: indexing is idempotent, so the resumed run skips everything already done.
 
-Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the request — the admin's, the nightly scheduler's, or Pinchy's own after an update — and the outcome (recorded by the background worker, with the counts). Both carry `trigger`.
+Every run writes two `knowledge.reindex` audit entries, correlated by `jobId`: the request — the admin's, the nightly scheduler's, Pinchy's own after an update, or a first index's (the admin whose grant started it, or the background worker when it had to wait) — and the outcome (recorded by the background worker, with the counts). Both carry `trigger`.
 
 **Errors:**
 
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/first-index`
+
+Whether the agent's first index is still to come, and how far it has got. This is what the agent's chat shows above the message box, so a new Knowledge Base agent doesn't quietly answer "nothing found" while its documents are still being read. Open to **anyone who can see the agent**, not only admins: the answer is a state and two counts, never folders or run details.
+
+Pinchy queues the first index on its own when an agent that has the `knowledge_search` permission is granted a folder no run has gone through yet: on [`POST /api/agents`](#post-apiagents), on [`PATCH /api/agents/:id`](#patch-apiagentsid) when the permissions change, and through its background worker for every other grant — one that found another run in the way (as soon as that run finishes), or an agent created with an API key. Those runs are requested by `kb-index-worker`. Only those folders are indexed, not the agent's others. The run is an ordinary reindex with `trigger: "initial"`, behind the same [one-run-at-a-time rule](#post-apiagentsagentidknowledgereindex).
+
+**Response:**
+
+```json
+{ "state": "indexing", "processed": 120, "total": 505, "partial": false }
+```
+
+| Field       | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `state`     | `none` once every granted folder has had a run that finished (or for an agent that doesn't search the index), `queued` while the first index is about to start, `waiting` while another run holds the one job slot and the first index starts after it, and `indexing` while a run goes through a folder still waiting for its first index — whichever agent's run it is. Later runs (nightly, **Reindex now**) report `none`, and so does an instance whose bundled embedding model is missing, since no run can start there. |
+| `processed` | Documents done so far. `indexing` only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `total`     | Documents found. `null` until discovery has walked every folder. `indexing` only.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `partial`   | `true` when some of the agent's folders are indexed already, so it answers from them while only the newly granted ones wait. Every state but `none`.                                                                                                                                                                                                                                                                                                                                                                           |
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` with `code: "personal_agent_disabled"` — an admin has turned members' personal agents off, and this is yours
+- `404` — agent not found, or not visible to you
 
 ### `GET /api/settings/knowledge-index-schedule`
 
@@ -712,17 +779,21 @@ Runs a hybrid (vector + full-text) search over the requesting agent's indexed, g
 
 ### `POST /api/agents/:agentId/knowledge/passage`
 
-Which indexed passage on a cited page an answer drew on — what the citation viewer asks before it highlights one. Read-only: it isn't audited itself, because it accompanies a document view that `workspace-file` already records as `knowledge.source_viewed`.
+Which indexed passage of a cited page, slide or Word section an answer drew on — what the citation viewer asks before it highlights one. Read-only: it isn't audited itself, because it accompanies a document view that `workspace-file` already records as `knowledge.source_viewed`.
 
 It returns text from a document, so it applies the same two gates as `workspace-file`, in the same order, before the index is read: the agent check (`404` for an agent you can't use, `403` for a paused one), then the agent's granted folders (`403` for a path outside them, `404` for a file that isn't there).
 
 **Request body:**
 
-| Field   | Type   | Required | Description                                                                                                                                   |
-| ------- | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `path`  | string | Yes      | The document's full path — the `path` a citation link carries.                                                                                |
-| `page`  | number | Yes      | The cited page, from 1.                                                                                                                       |
-| `claim` | string | No       | The answer's sentences that cite the source, at most 2000 characters. Used only to choose between the passages on the page, and never stored. |
+| Field     | Type   | Required     | Description                                                                                                                                                      |
+| --------- | ------ | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`    | string | Yes          | The document's full path — the `path` a citation link carries.                                                                                                   |
+| `page`    | number | One of three | A PDF's cited page, from 1.                                                                                                                                      |
+| `slide`   | number | One of three | A slide deck's cited slide, from 1.                                                                                                                              |
+| `heading` | string | One of three | A Word document's cited heading path, levels joined by a space, `>` and a space, as the citation shows it — `Quality > Incoming goods`. At most 2000 characters. |
+| `claim`   | string | No           | The answer's sentences that cite the source, at most 2000 characters. Used only to choose between the passages of the page, slide or section, and never stored.  |
+
+Send exactly one of `page`, `slide` and `heading`; a body with none or more than one is a `400`. A heading matches only the whole path: `Quality` does not match a passage filed under `Quality > Incoming goods`.
 
 **Response:**
 
@@ -734,7 +805,7 @@ It returns text from a document, so it applies the same two gates as `workspace-
 }
 ```
 
-`passage` is the indexed text of the passage, or `null` when there is none to show: the page holds no indexed text, or it holds several passages and nothing says which — no `claim`, or the embedding model isn't available. With several, the one nearest to `claim` in meaning wins, which also works when the answer is in a different language than the document.
+`passage` is the indexed text of the passage, or `null` when there is none to show: the page, slide or section holds no indexed text, or it holds several passages and nothing says which — no `claim`, or the embedding model isn't available. The response names no page: for a Word section, the viewer finds the passage's page in the converted PDF itself. With several, the one nearest to `claim` in meaning wins, which also works when the answer is in a different language than the document.
 
 **Errors:** `400` invalid body, `401` not authenticated, `403` path outside the agent's granted folders or agent paused, `404` agent not found or not accessible, or file not found, `502` the lookup failed.
 
@@ -746,36 +817,105 @@ The counter answers for the last run; `totals.no_text` answers for everything cu
 
 Scoped to the folders that agent is granted, exactly like search itself, so the list never names a document the agent isn't allowed to know about.
 
-**Response:**
+A corpus can hold thousands of these documents, so the route answers in two steps. Without a query it returns the counts — per reason, per cause and per folder — and no document names. With `root` (and optionally `folder`) it returns one folder's documents. [`GET …/knowledge/unsearchable/csv`](#get-apiagentsagentidknowledgeunsearchablecsv) has all of them in one file.
+
+**Query parameters:**
+
+| Parameter | Description                                                                                                                                                                                                      |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `root`    | One of the agent's granted folders, as `groups[].root` names it. Lists that group's documents. A folder the agent isn't granted lists nothing.                                                                   |
+| `folder`  | A folder directly inside `root`, as `groups[].folder` names it: one name, no `/`. Lists the documents anywhere under it. Leave it out to list the documents directly in `root`. Only valid together with `root`. |
+
+**Response without a query:**
+
+```json
+{
+  "total": 21,
+  "totals": { "no_text": 20, "awaiting_conversion": 1 },
+  "causes": {
+    "ocr_off": 19,
+    "no_vision_model": 0,
+    "read_next_run": 0,
+    "read_refused": 0,
+    "vision_failed": 0,
+    "read_blank": 1
+  },
+  "groups": [
+    { "root": "/data/certs", "folder": "Food", "count": 19 },
+    { "root": "/data/offers", "folder": null, "count": 2 }
+  ],
+  "searchesIndex": true
+}
+```
+
+| Field           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `total`         | How many documents there are, never capped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `totals`        | `total` per reason. `no_text` — indexed, but it produced no searchable text (a scan nothing has read, a file refused for its size or content). `awaiting_conversion` — a Word or PowerPoint file search leaves out until it has been converted again after an update changed how such files are converted.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `causes`        | The `no_text` documents by why they have no text, as this server stands now. `ocr_off` — reading scans is switched off (`PINCHY_KB_OCR=off`); switching it on lets the next run read them. `no_vision_model` — it's on, but no vision model is available. `read_next_run` — the next run reads them again: a vision model is available that hasn't read them, an older version of Pinchy read them, or their last read didn't finish. `vision_failed` — every vision read failed, five runs in a row; a different vision model or a replaced file gets them read again. `read_refused` — the converter or the workbook reader refused the file (too large, damaged, not what its name says), or it's a workbook with nothing visible in it; the server log names each refused file and the reason, and a file that's replaced is read again. `read_blank` — read in full, and nothing found. Sums to `totals.no_text`. |
+| `groups`        | The documents per folder: a granted folder (`root`) and one folder directly inside it (`folder`), or `folder: null` for the files directly in `root`. Largest first; the counts sum to `total`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `searchesIndex` | Whether the agent has `knowledge_search`. Pinchy converts the `awaiting_conversion` files again on its own only for an agent that searches the index; for any other agent, a reindex converts them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+
+**Response with `root`:**
 
 ```json
 {
   "documents": [
     {
-      "sourcePath": "/data/offers/Angebot.docx",
+      "sourcePath": "/data/certs/Food/2024/AFNOR validation.pdf",
+      "name": "AFNOR validation.pdf",
+      "root": "/data/certs",
+      "folder": "Food/2024",
       "status": "active",
-      "reason": "awaiting_conversion"
-    },
-    {
-      "sourcePath": "/data/certs/AFNOR validation.pdf",
-      "status": "active",
-      "reason": "no_text"
+      "reason": "no_text",
+      "cause": "ocr_off"
     }
   ],
-  "total": 2,
-  "totals": { "no_text": 1, "awaiting_conversion": 1 },
-  "searchesIndex": true
+  "total": 19
 }
 ```
 
-| Field                    | Description                                                                                                                                                                                                                                                                                |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `documents[].sourcePath` | The document's full path, as indexed.                                                                                                                                                                                                                                                      |
-| `documents[].status`     | `archived` for a document under an archive folder, already out of everyday search; `active` otherwise. Archived documents come last.                                                                                                                                                       |
-| `documents[].reason`     | `no_text` — indexed, but it produced no searchable text (a scan no vision model read, a file refused for its size or content). `awaiting_conversion` — a Word or PowerPoint file search leaves out until it has been converted again after an update changed how such files are converted. |
-| `total`                  | How many there are. `documents` holds at most 100; `total` is never capped.                                                                                                                                                                                                                |
-| `totals`                 | `total` per reason, `no_text` and `awaiting_conversion`. Never capped either, so it counts documents `documents` doesn't show.                                                                                                                                                             |
-| `searchesIndex`          | Whether the agent has `knowledge_search`. Pinchy converts the `awaiting_conversion` files again on its own only for an agent that searches the index; for any other agent, a reindex converts them.                                                                                        |
+| Field                    | Description                                                                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `documents[].sourcePath` | The document's full path, as indexed.                                                                                                |
+| `documents[].name`       | The file name.                                                                                                                       |
+| `documents[].root`       | The granted folder it is in.                                                                                                         |
+| `documents[].folder`     | The path from `root` to the file, without the file name. Empty for a file directly in `root`.                                        |
+| `documents[].status`     | `archived` for a document under an archive folder, already out of everyday search; `active` otherwise. Archived documents come last. |
+| `documents[].reason`     | `no_text` or `awaiting_conversion`, as in `totals`.                                                                                  |
+| `documents[].cause`      | For a `no_text` document, one of the `causes` above. `null` for `awaiting_conversion`.                                               |
+| `total`                  | How many documents the group holds. `documents` holds at most 100; `total` is never capped.                                          |
+
+**Errors:**
+
+- `400` — `folder` without `root`, an empty value, or a `folder` containing `/`
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/unsearchable/csv`
+
+A CSV of every document `GET …/knowledge/unsearchable` counts, not only the first 100 of a folder. **Admin only.**
+
+The answer is a download (`Content-Disposition: attachment`), streamed, so thousands of documents work as well as three. Scoped to the agent's granted folders, exactly like search itself.
+
+**Response:** `text/csv; charset=utf-8`, UTF-8 with a byte-order mark, one row per document, ordered by path:
+
+```csv
+"name","folder","reason","status","path"
+"AFNOR validation.pdf","certs/Food/2024","No text layer; reading scans is switched off on this server","active","/data/certs/Food/2024/AFNOR validation.pdf"
+"Angebot.docx","offers","Waiting to be converted again","active","/data/offers/Angebot.docx"
+```
+
+| Column   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`   | The file name.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `folder` | The granted folder's own name, then the path below it.                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `reason` | Why search can't reach it, in words: `Waiting to be converted again`, or for a document without text one of `No text layer; reading scans is switched off on this server`, `No text layer; no vision model is available to read it`, `Will be read on the next run`, `Couldn't be read; the vision model failed on every attempt`, `Couldn't be read; too large, damaged, not what its name says, or nothing visible in it`, `Read in full; no text found`. |
+| `status` | `active` or `archived`.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `path`   | The document's full path, as indexed.                                                                                                                                                                                                                                                                                                                                                                                                                       |
+
+A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed with `'`, because a file name is text anyone who can write to the share chose.
 
 **Errors:**
 
@@ -795,7 +935,7 @@ The answer is a download (`Content-Disposition: attachment`), streamed, so a sha
 "path","type"
 "/data/hr/Budget 2019.xls",".xls"
 "/data/hr/README",""
-"/data/hr/scans/Nameplate.tif",".tif"
+"/data/hr/mail/Offer.msg",".msg"
 ```
 
 | Column | Description                                                            |
@@ -810,6 +950,132 @@ A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed w
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/folders`
+
+Which of the agent's granted folders are searchable, being indexed, queued, or incomplete. It covers each granted folder and the folders directly inside it. Open to **everyone who can chat with the agent**, not only admins.
+
+Scoped to the agent's saved granted folders, exactly like search itself. Nothing here walks the share: the counts come from the index and from the folder list the agent's latest run recorded.
+
+**Response:**
+
+```json
+{
+  "job": {
+    "status": "running",
+    "processed": 12,
+    "total": 60,
+    "currentFolder": "/data/kb/certificates",
+    "finishedAt": null
+  },
+  "folders": [
+    {
+      "path": "/data/kb",
+      "name": "/data/kb",
+      "state": "indexing",
+      "indexed": 0,
+      "searchable": 0,
+      "notSearchable": 0,
+      "archivedToReconvert": 0,
+      "expected": 60,
+      "pending": 48,
+      "pendingArchived": 6,
+      "expectedArchived": 6,
+      "indexingArchive": false,
+      "lastIndexedAt": null,
+      "children": [
+        {
+          "path": "/data/kb/hr",
+          "name": "hr",
+          "state": "has_errors",
+          "indexed": 10,
+          "searchable": 8,
+          "notSearchable": 2,
+          "archivedToReconvert": 0,
+          "expected": 10,
+          "pending": 0,
+          "pendingArchived": 0,
+          "expectedArchived": 0,
+          "indexingArchive": false,
+          "lastIndexedAt": "2026-11-01T10:00:00.000Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Field                           | Description                                                                                                                                                                                                                                                                                                 |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `job`                           | The agent's latest run, or `null` if it never had one. `status` is `pending`, `running`, `succeeded` or `failed`. `currentFolder` is the folder an active run is in, or `null` when the run hasn't recorded its folder list.                                                                                |
+| `folders[]`                     | One entry per granted folder. `children` holds the folders directly inside it, with the same fields.                                                                                                                                                                                                        |
+| `folders[].state`               | `indexing` (the active run is in this folder), `queued` (the active run hasn't reached it yet), `searchable`, `has_errors` (some files can't be searched, or fewer files are in the index than the run found), `not_indexed` (no run has read it) or `empty` (the last run found nothing to index).         |
+| `folders[].indexed`             | Documents from this folder in the index.                                                                                                                                                                                                                                                                    |
+| `folders[].searchable`          | Of those, how many search can use.                                                                                                                                                                                                                                                                          |
+| `folders[].notSearchable`       | Of those, how many it can't: no readable text, or waiting to be converted again.                                                                                                                                                                                                                            |
+| `folders[].archivedToReconvert` | Of `notSearchable`, archived documents the active run will convert again before it ends. They are on their way, so `state` doesn't count them as errors. `0` when no run is active.                                                                                                                         |
+| `folders[].expected`            | Files the latest run found in this folder. `null` when no run has recorded a folder list that covers it: the folder was granted after that run, the run counted it only as part of a larger folder, or the run kept the folder's documents without reading it (a share below the grant that came up empty). |
+| `folders[].pending`             | Files the active run still has to read here. `0` when no run is active.                                                                                                                                                                                                                                     |
+| `folders[].pendingArchived`     | Of `pending`, the files in [archived folders](/guides/create-knowledge-base-agent/#current-documents-first). A run reads those last, so while only archived files are left here, `state` speaks for the current files alone: `searchable` once they're all in.                                              |
+| `folders[].expectedArchived`    | Of `expected`, the files in archived folders. A folder that holds nothing else stays `indexing` or `queued` until the run is through all of them. `0` when the run's folder list doesn't mark archived files (a run started before this field existed).                                                     |
+| `folders[].indexingArchive`     | `true` while the active run is reading an archived file in this folder.                                                                                                                                                                                                                                     |
+| `folders[].lastIndexedAt`       | When the last successful run that covered this folder finished. Before any such run, when a document from this folder last entered the index, or `null`. A failed run doesn't count.                                                                                                                        |
+
+**Errors:**
+
+- `401` — not authenticated
+- `404` — agent not found, or the user can't chat with it
+
+### `GET /api/agents/:agentId/knowledge/files`
+
+One folder's files and whether search can use each one. Open to **everyone who can chat with the agent**, not only admins.
+
+**Query parameters:**
+
+| Parameter | Description                                                                                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `folder`  | Required. A granted folder, or a folder inside one.                                                                                                         |
+| `scope`   | `direct` (only the files in `folder` itself) or `tree` (everything below it). Defaults to `direct` for a granted folder and `tree` for a folder inside one. |
+| `filter`  | `all` (default) or `not_searchable`, which keeps only the files an answer can't come from.                                                                  |
+| `q`       | Optional. Keeps only files whose `name` contains this text, ignoring case.                                                                                  |
+| `offset`  | Default `0`.                                                                                                                                                |
+| `limit`   | Default `50`, at most `100`.                                                                                                                                |
+
+**Response** (for `?folder=/data/kb/hr&filter=not_searchable`):
+
+```json
+{
+  "folder": "/data/kb/hr",
+  "files": [
+    {
+      "path": "/data/kb/hr/scan.pdf",
+      "name": "scan.pdf",
+      "state": "no_text",
+      "archived": false,
+      "indexedAt": "2026-11-01T10:00:00.000Z",
+      "modifiedAt": "2026-10-28T08:12:00.000Z"
+    }
+  ],
+  "total": 1,
+  "totals": { "all": 2, "searchable": 1, "notSearchable": 1, "unsupported": 0 },
+  "truncated": false
+}
+```
+
+| Field              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `files[].state`    | `searchable`, `changed` (searchable, but modified since it was indexed), `no_text` (indexed, nothing readable in it), `awaiting_conversion` (an Office file waiting to be converted again), `pending` (the active run will read it), `failed` (the file was there before the last successful run started and it isn't in the index), `new` (added after the last successful run) or `unsupported` (a file type the index can't read). Only `searchable` and `changed` count as searchable. |
+| `files[].name`     | The path below `folder`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `files[].archived` | `true` for a file in an [archive folder](/guides/create-knowledge-base-agent/#current-documents-first), which everyday search leaves out.                                                                                                                                                                                                                                                                                                                                                  |
+| `total`            | Files matching `filter` and `q`, before `offset` and `limit`.                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `totals`           | Counts for everything `scope` lists, regardless of `filter` and `q`. `all` counts the files the index reads; `unsupported` counts the rest, which `not_searchable` leaves out.                                                                                                                                                                                                                                                                                                             |
+| `truncated`        | `true` when the listing stopped at 20,000 files; the folder may hold more, and `totals` cover only those listed.                                                                                                                                                                                                                                                                                                                                                                           |
+
+**Errors:**
+
+- `400` — `folder` is missing
+- `401` — not authenticated
+- `404` — agent not found, the user can't chat with it, or `folder` doesn't exist or isn't inside a granted folder (the same answer for both, so the share can't be probed for names)
 
 ## Automations
 
@@ -953,7 +1219,7 @@ List directories available under `/data/` for agent configuration.
 
 Returns an empty array if `/data/` does not exist or contains no subdirectories. Hidden directories (starting with `.`) are excluded.
 
-These are the top-level mounts, as the `openclaw` container found them when it started. To grant a folder inside one, list its subfolders with [`GET /api/data-directories/children`](#get-apidata-directorieschildren).
+These are the top-level mounts, read from `/data/` on every request, so a mount that was renamed or removed is gone from the list straight away. Symbolic links are left out. To grant a folder inside one, list its subfolders with [`GET /api/data-directories/children`](#get-apidata-directorieschildren).
 
 ### `GET /api/data-directories/children`
 
@@ -990,6 +1256,37 @@ The folder is read in the `pinchy` container, so a share mounted only on `opencl
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — the folder doesn't exist, isn't a folder, can't be read, or is reached through a symbolic link
+
+### `GET /api/agents/:agentId/granted-folders`
+
+Whether each folder the agent is granted still exists. The directory picker uses it to mark a grant whose folder was renamed, moved or deleted, instead of showing it as an ordinary ticked box. **Admin only.**
+
+It checks the agent's **saved** grants under `/data/` and nothing else: it takes no path from the request, so it can't be used to ask about an arbitrary folder. Nothing outside `/data/` is touched, and a symbolic link is reported as one rather than followed.
+
+**Response:**
+
+```json
+{
+  "folders": [
+    { "path": "/data/suppliers", "status": "available" },
+    { "path": "/data/old-suppliers", "status": "missing" }
+  ]
+}
+```
+
+| `status`       | Meaning                                                                                                                                  |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `available`    | The folder is there and Pinchy can open it.                                                                                              |
+| `missing`      | Nothing is there any more, or a file is. Remove the grant with [`PATCH /api/agents/:id`](#patch-apiagentsid), or mount the folder again. |
+| `unreadable`   | Something is there, but Pinchy isn't allowed to open it. A permissions problem on the server — removing the grant is not the fix.        |
+| `link`         | The path runs through a symbolic link. Agents can't read through one.                                                                    |
+| `outside_data` | Not a path under `/data/`. Never checked.                                                                                                |
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent
 
 ## Settings
 
@@ -1324,6 +1621,85 @@ Unlock the domain. Same restart behaviour as `POST`.
 - `401` — not authenticated
 - `403` — not an admin
 
+## Email delivery (admin only)
+
+The optional system mailer that sends invitations and password reset links (see [Send Invitations by Email](/guides/email-delivery/)). Off by default: with nothing configured, Pinchy sends no email.
+
+### `GET /api/settings/mail`
+
+**Response:** `{ "configured": false }`, or:
+
+```json
+{
+  "configured": true,
+  "config": {
+    "host": "smtp.example.com",
+    "port": 587,
+    "security": "starttls",
+    "username": "pinchy@example.com",
+    "fromAddress": "pinchy@example.com",
+    "fromName": "Acme IT",
+    "hasPassword": true
+  }
+}
+```
+
+The password is never returned; `hasPassword` says whether one is stored.
+
+### `PUT /api/settings/mail`
+
+Save the mailer configuration. Pinchy first connects, negotiates encryption and logs in; only a configuration that passes is saved.
+
+**Request body:**
+
+| Field         | Type   | Required | Description                                                                                       |
+| ------------- | ------ | -------- | ------------------------------------------------------------------------------------------------- |
+| `host`        | string | Yes      | SMTP server host name or IP address                                                               |
+| `port`        | number | Yes      | Usually `587` (STARTTLS) or `465` (TLS)                                                           |
+| `security`    | string | Yes      | `starttls`, `tls` or `none`. `starttls` refuses to continue if the server doesn't offer it.       |
+| `username`    | string | No       | Leave out for a relay that accepts mail without logging in                                        |
+| `password`    | string | No       | Leave out to keep the stored password. It is not kept when `host` changes or `username` is empty. |
+| `fromAddress` | string | Yes      | The sender address                                                                                |
+| `fromName`    | string | No       | The sender name; defaults to `Pinchy`                                                             |
+
+**Response:** the same shape as `GET`.
+
+The host goes through the same check as a mailbox connection: a host on a private network needs `ALLOW_PRIVATE_MAIL_HOSTS=1` (see [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network)).
+
+**Errors:**
+
+- `400` — invalid body, or the connection check failed. `error` says what to fix, e.g. `"Authentication failed — check the username and password"`. Nothing is saved.
+- `401` — not authenticated
+- `403` — not an admin
+
+Writes `settings.updated` with resource `settings:mail` — on failure too.
+
+### `DELETE /api/settings/mail`
+
+Turn the mailer off. Invite and reset links are shown for copying again.
+
+**Response:** `{ "configured": false }`
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — no mailer is configured
+
+### `POST /api/settings/mail/test`
+
+Send a test email with the saved configuration to the signed-in admin's own address. Takes an empty body (`{}`); the recipient can't be chosen.
+
+**Response:** `{ "sent": true, "to": "admin@example.com" }`
+
+**Errors:**
+
+- `400` — the body is not `{}`
+- `401` — not authenticated
+- `403` — not an admin
+- `409` — no mailer is configured
+- `502` — the mail server refused or couldn't be reached; `error` says why
+
 ## Organization Context (admin only)
 
 ### `GET /api/settings/context`
@@ -1473,16 +1849,26 @@ Reactivate a deactivated user. **Admin only.**
 
 Generate a password reset token for a user. The admin constructs the reset URL from the returned token: `{origin}/invite/{token}`.
 
+**Request body (optional):** the route also accepts no body at all.
+
+| Field       | Type    | Required | Description                                                                                                                 |
+| ----------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `sendEmail` | boolean | No       | Email the reset link to the user through the [system mailer](#email-delivery-admin-only). The token is returned either way. |
+
 **Response:** `201 Created`
 
 ```json
 {
-  "token": "abc123..."
+  "token": "abc123...",
+  "emailDelivery": { "sent": true }
 }
 ```
 
+`emailDelivery` is present only when `sendEmail` was `true` and the user has an email address. It is `{ "sent": true }` or `{ "sent": false, "error": "<what went wrong>" }` — including `"Email delivery isn't set up."` when no mailer is configured. A failed send never fails the request: the token is created first and always returned, so the link can still be copied. Every attempt writes a `mail.sent` audit row.
+
 **Errors:**
 
+- `400` — the body is not JSON or carries an unknown field
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — user not found
@@ -1495,11 +1881,12 @@ Create an invite for a new user. Returns the full invite object including a plai
 
 **Request body:**
 
-| Field      | Type     | Required | Description                                                          |
-| ---------- | -------- | -------- | -------------------------------------------------------------------- |
-| `email`    | string   | Yes      | Email address of the invited user. Their account is created with it. |
-| `role`     | string   | Yes      | Role for the invited user (`admin` or `member`)                      |
-| `groupIds` | string[] | No       | Group IDs to assign the user to on account creation                  |
+| Field       | Type     | Required | Description                                                                                                     |
+| ----------- | -------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| `email`     | string   | Yes      | Email address of the invited user. Their account is created with it.                                            |
+| `role`      | string   | Yes      | Role for the invited user (`admin` or `member`)                                                                 |
+| `groupIds`  | string[] | No       | Group IDs to assign the user to on account creation                                                             |
+| `sendEmail` | boolean  | No       | Email the invitation through the [system mailer](#email-delivery-admin-only). The invite is created either way. |
 
 **Response:** `201 Created`
 
@@ -1517,6 +1904,8 @@ Create an invite for a new user. Returns the full invite object including a plai
 ```
 
 The admin constructs the invite URL from the returned token: `{origin}/invite/{token}`.
+
+With `sendEmail: true` the response also carries `emailDelivery`: `{ "sent": true }`, or `{ "sent": false, "error": "<what went wrong>" }` when the mail server refused or couldn't be reached, or no mailer is configured (`"Email delivery isn't set up."`). The status stays `201` and the token is returned in both cases, because the invite already exists — a failed send never loses it. The link in the email uses the locked domain when one is set (`https://<domain>`), otherwise the host the request arrived on.
 
 **Errors:**
 
@@ -1941,11 +2330,11 @@ Summary counts of integration connection health (active, `auth_failed`, and conn
 
 ### `GET /api/internal/integrations/:connectionId/credentials`
 
-**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `AGENTS.md`), not a user session. Called by Pinchy plugins at runtime, never by the browser.
+**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `agent-rules/secrets.md`), not a user session. Called by Pinchy plugins at runtime, never by the browser.
 
 Returns the decrypted credentials for a connection, auto-refreshing an expired OAuth access token first (Google and Microsoft rotate refresh tokens differently — see the plugin cache/refetch behavior in the Secret Handling section of `AGENTS.md`). Called by `pinchy-email`, `pinchy-odoo` and `pinchy-web` with the gateway token as Bearer auth; the plugin caches the response, typically with a 5-minute TTL, and invalidates that cache when the third-party service answers `401`. A `401` from this route itself is retried for a few seconds instead: it means Pinchy briefly could not read the gateway token during a configuration change.
 
-**The calling plugin must name its agent**: `?agentId=<id>` is required, and the request is refused unless that agent was actually granted the connection. The gateway token is one shared secret written into every plugin's config block, so on its own it identifies the container, not the caller — without this check any plugin could name any `connectionId` and receive a decrypted password. Odoo and mailbox connections are checked against the agent's integration grants; the instance-wide web-search connection is checked against the agent's `pinchy_web_search` / `pinchy_web_fetch` tool grant, because it is deliberately shared by every agent and has no per-agent grant rows.
+**The calling plugin must name its agent**: `?agentId=<id>` is required, and the request is refused unless that agent was actually granted the connection. The gateway token is one shared secret written into every plugin's config block, so on its own it identifies the container, not the caller — without this check any plugin could name any `connectionId` and receive a decrypted password. Odoo and mailbox connections are checked against the agent's integration grants; the instance-wide web-search connection is checked against the agent's `pinchy_web_search` tool grant, because it is deliberately shared by every agent and has no per-agent grant rows. `pinchy_web_fetch` alone does not grant it: fetching a page needs no key, so a fetch-only agent is refused the Brave Search key like any other agent without a grant.
 
 | Query parameter | Required | Description                                |
 | --------------- | -------- | ------------------------------------------ |
@@ -2353,7 +2742,7 @@ A failed delivery is still a `200`: the decision itself is persisted, and retryi
 
 ### `POST /api/internal/approvals/gate-check`
 
-**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `AGENTS.md`), not a user session. Called by the `pinchy-approvals` plugin's `before_tool_call` hook, never by the browser.
+**Internal** — authenticated with the shared OpenClaw gateway token (Pattern C in `agent-rules/secrets.md`), not a user session. Called by the `pinchy-approvals` plugin's `before_tool_call` hook, never by the browser.
 
 This is the server-side security boundary for the whole feature. The plugin asks it about every tool call; the route loads the agent's policy, allows anything ungated without recording a thing, and otherwise either spends an approved single-use grant (`allow`) or records a pending confirmation and blocks (`block`). Keeping the policy here rather than in plugin config is what makes a permission change take effect on the next call instead of after a cache expires.
 

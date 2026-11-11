@@ -3,7 +3,7 @@ import { PROVIDERS, type ProviderName } from "@/lib/providers";
 
 /**
  * Request schemas for the built-in provider routes, shared with
- * `provider-key-form.tsx` (AGENTS.md § "Shared Schemas And Typed Client").
+ * `provider-key-form.tsx` (agent-rules/web-routes.md § "Shared Schemas And Typed Client").
  *
  * `@/lib/providers` is a const table plus one pure URL helper — no database,
  * no settings — so it is safe in a client bundle, and the form already imports

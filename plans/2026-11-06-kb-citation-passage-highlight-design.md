@@ -106,9 +106,9 @@ exposed to screen readers, since a canvas has none.
 
 ## Out of scope (follow-ups)
 
-- **Office documents.** Their citations carry a heading path, not a page, so the
-  viewer has no page to start from. Finding a chunk across all pages of the
-  converted PDF is possible but a separate cost decision.
+- **Office documents.** Their citations carry a heading path or a slide, not a
+  page, so the viewer has no page to start from. Decided and built in the
+  addendum below.
 - **Sentence-level focus within the chunk.** A chunk is roughly a third of a
   dense page; narrowing to the sentence would need per-sentence embeddings at
   view time.
@@ -126,3 +126,110 @@ exposed to screen readers, since a canvas has none.
 - `PdfDialog`: page citations render the pdf.js viewer (renderer mocked),
   highlight + accessible passage, prev/next, fallback to `<embed>` on load
   failure, non-page/Office citations keep the `<embed>`.
+
+## Addendum: Office documents (Word, PowerPoint)
+
+The first cut highlighted PDF page citations only. An Office citation opens as
+its converted PDF, but it names a slide (`deck.pptx — slide 4`) or a heading
+path (`Handbook.docx — § Quality > Incoming goods`), not a page, so the viewer
+had no page to draw and kept the browser's `<embed>`. This addendum closes that.
+
+### What the index already knows
+
+Office documents are indexed from the PDF LibreOffice makes of them
+(`ingest.ts` → `extractOfficeDocument`), with the same `pdf-extract.ts` and the
+same per-page `chunkPages` as a PDF. Two consequences:
+
+- **Every Office chunk lies on exactly one page of the converted PDF**, and its
+  text matches that page's pdf.js runs once whitespace is removed — the premise
+  `locatePassage` rests on holds unchanged.
+- **The page is not stored.** A presentation chunk carries `{kind: "slide",
+slide: chunk.page}`, so for slides the page is the slide number: the
+  converter maps them one to one (`ingest.ts`, `pageCount` comment) and the
+  locator is literally the artifact page. A Word chunk carries only
+  `{kind: "heading", headings}`; the page is the renderer's, deliberately
+  dropped (`locator.ts`).
+
+So slides need nothing new: slide N is page N, and the existing page flow
+applies. The question is Word: which page of the converted PDF holds a chunk
+filed under a heading path?
+
+### Options for Word
+
+| Option                                                                             | Verdict                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Store the artifact page on each chunk (new column)                                 | Rejected. A migration plus a backfill that only a re-conversion of every Office document can do; until then every existing chunk has no page, so the fallback is needed anyway. Pre-existing data is the normal state after an upgrade (agent-rules/testing.md, "Test Migrations Against Pre-Existing Data").                                                                                                                                                                                  |
+| Client scans the whole converted PDF's text layer for the chunk                    | Rejected. O(document): on a 400-page manual that is every page's content stream over Range requests plus 400 `getTextContent` calls before anything is highlighted — seconds to tens of seconds, and the whole file downloaded for one passage. It also degrades worst exactly where a highlight helps most.                                                                                                                                                                                   |
+| Server finds the page in the artifact and returns it with the passage              | Rejected. It needs pdf.js parsing of the artifact on the server per citation click (CPU and memory in the web process, multiplied by concurrent readers), a second place that resolves an Office source to its artifact, and a server-side copy of the matching the browser already does over the document it already opened.                                                                                                                                                                  |
+| **Client resolves the heading through the PDF's outline, scans only that section** | **Chosen.** LibreOffice exports Word's outline as PDF bookmarks, and the index's heading paths ARE that outline (`pdf-extract.ts` → `readOutline`). The outline sits in the document catalog, so resolving a heading to its page costs a few small Range requests, independent of document length. A chunk filed under a section lies between the page the section starts on and the page the next outline entry starts on (inclusive) — `headingLocatorAt` files by "latest section started". |
+
+The scan is bounded twice: by the section's own pages, and by a hard cap
+(`MAX_SECTION_SCAN_PAGES`, 25). A long section that exhausts the cap opens at
+its first page without a highlight, which is still "opens at the cited
+section". Cost on a large document is therefore the size of one section, not
+of the document.
+
+To guarantee the browser reads the outline exactly as the indexer did, the
+flattening moves into one shared, pdf.js-free module (`lib/pdf/outline.ts`)
+that both `pdf-extract.ts` and the browser use — same trimming, same rule that
+an untitled entry adds no level. Two copies would drift on the first change,
+and a drift here shows up only as silently missing highlights.
+
+### Carrying the slide or heading to the viewer
+
+The citation href does not change: `WORKSPACE_FILE_HREF` and the `#page=` /
+`#sheet=` fragments stay exactly as they are. The slide or heading the citation
+names is read from the citation text (`— slide 4`, `— § A > B`, also in
+parentheses) and attached to the link as hast properties (`data-cited-slide`,
+`data-cited-heading`), the same channel as `data-cited-claim` and for the same
+reason: markdown has no syntax for them, so a model cannot author one, and they
+are only ever a hint to our own endpoint and viewer. They are honoured only for
+the matching format — a slide on a presentation, a heading on a Word document.
+
+### Endpoint
+
+`POST /api/agents/:agentId/knowledge/passage` takes exactly one anchor:
+`{ path, page }`, `{ path, slide }` or `{ path, heading }` (heading as the path
+joined with " > ", the spelling the citation shows), plus the optional `claim`.
+Same gates, same order, same `audit-exempt` reasoning.
+
+- `slide` matches `locator @> {kind: "slide", slide}`.
+- `heading` matches by **equality of the joined path**, not by `@>`: jsonb
+  containment on arrays ignores order and accepts subsets, so `["Quality"]`
+  would match every chunk under "Quality > Incoming goods". Comparing the
+  joined string also sidesteps a heading title that itself contains " > ".
+- Ranking is unchanged. A section often holds many chunks (a page holds 1–3),
+  so the claim matters more here; without a claim or embedder and with more
+  than one candidate, the answer stays `null`.
+
+### Viewer
+
+- Slide: identical to a page citation, starting at page = slide.
+- Heading: open the converted PDF, read its outline, find the entry whose
+  joined path equals the heading. Not found (no outline, heading renamed since
+  indexing, model misspelled it) → the browser's `<embed>`, exactly as today.
+  Found → open at the section's first page at once, without waiting for the
+  passage lookup: with several candidates the lookup embeds the claim, which
+  takes seconds on a cold embedding model, and waiting for it left a Word
+  citation on a spinner for that long. Once the passage arrives, scan
+  the section's pages for it and move the highlight to the page that holds it;
+  the reader moves with it only if they are still on the section's first page.
+  No passage, or not found within the cap → stay at the section's first page.
+- Any load, outline or render failure → the `<embed>`, as for PDFs.
+
+### Tests (addendum)
+
+- `outline.ts`: flattening (paths, untitled entries, unresolvable destinations),
+  section page ranges (next entry, last entry, out-of-order outline), the
+  bounded section scan; plus a real-PDF test against the committed LibreOffice
+  fixture that every heading chunk the real ingest builds is found by the scan
+  on the page it came from.
+- `pdf-headings.test.ts` stays green after `pdf-extract.ts` moves onto the
+  shared flattening.
+- `source-links`: slide/heading parsed from the citation text into hast
+  properties, href unchanged, honoured per format only; `buildPassageRequest`
+  for slide and heading.
+- Route + `cited-passage.integration`: slide and heading anchors, heading
+  equality (not containment), body with zero or two anchors → 400.
+- Viewer / dialog: slide opens at the slide; heading resolves to the section,
+  highlights the scanned page; unknown heading → `<embed>`.

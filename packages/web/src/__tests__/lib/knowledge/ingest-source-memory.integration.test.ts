@@ -37,6 +37,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { makeKbSourceRoot } from "@/test-helpers/kb-source-root";
 import { join, sep } from "node:path";
 
 import { ingestDirectory, type IngestDeps } from "@/lib/knowledge/ingest";
@@ -49,7 +50,7 @@ let tmpRoot: string;
 let stagingDir: string;
 
 beforeEach(() => {
-  tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-memory-"));
+  tmpRoot = makeKbSourceRoot("pinchy-kb-ingest-memory-");
   stagingDir = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-memory-staging-"));
 });
 
@@ -117,6 +118,9 @@ it("streams every source through the server one chunk at a time, and hands reade
         hiddenSheets: [],
         hiddenRows: 0,
       };
+    },
+    convertScan: async () => {
+      throw new Error("this run holds no scan");
     },
     convertOffice: async (sources): Promise<ConversionOutcome[]> =>
       sources.map((source) => {

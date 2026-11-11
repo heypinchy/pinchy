@@ -74,6 +74,7 @@ import { join } from "node:path";
 
 import { OfficeFileRejectedError, StagedCopyWriteError } from "./office-formats";
 import type { StagedSource } from "./office-preflight";
+import type { TiffConversion } from "./tiff-pdf";
 import {
   XlsxExtractionError,
   type SheetRange,
@@ -107,7 +108,9 @@ export type SheetReaderRequest =
   /** Words mammoth sees in the .docx at `path`, read through `readGuardedDocx`. */
   | { op: "docx-words"; path: string }
   /** The Office file at `path`, checked and written to `dest` (`stageOfficeSource`). */
-  | { op: "stage-office"; path: string; dest: string };
+  | { op: "stage-office"; path: string; dest: string }
+  /** The TIFF at `path`, one PDF page per frame, written to `dest` (`tiffToPdf`). */
+  | { op: "tiff-pdf"; path: string; dest: string; maxFrames: number };
 
 /** What the reader is called in its errors and log lines: the job it was doing. */
 function readerName(request: SheetReaderRequest): string {
@@ -116,6 +119,8 @@ function readerName(request: SheetReaderRequest): string {
       return "word-count reader";
     case "stage-office":
       return "Office preflight";
+    case "tiff-pdf":
+      return "TIFF reader";
     default:
       return "spreadsheet reader";
   }
@@ -492,4 +497,32 @@ export async function stageOfficeSourceIsolated(
     { op: "stage-office", path: absPath, dest },
     readerOptions
   )) as StagedSource;
+}
+
+/**
+ * How long a TIFF conversion may take. Measured on 2026-11-11: 50 A4 frames
+ * at 300 dpi took 6.3 s on a developer laptop, so the 200-frame budget is
+ * about 25 s there. A small container may be several times slower, and a
+ * timeout only turns a working read into a retry — so this is generous.
+ */
+export const TIFF_READER_TIMEOUT_MS = 600_000;
+
+/**
+ * `tiffToPdf`, in a child process. libtiff decodes untrusted bytes and has a
+ * long CVE history, so the decode runs behind the same fence as the
+ * spreadsheet reads: no secrets in its environment, the first process the
+ * OOM killer picks, one at a time. A refusal is `OfficeFileRejectedError`; a
+ * child that stopped any other way is a `SheetReaderStoppedError`, and the
+ * file is read again next run.
+ */
+export async function tiffToPdfIsolated(
+  absPath: string,
+  dest: string,
+  opts: { maxFrames: number },
+  readerOptions: SheetReaderOptions = {}
+): Promise<TiffConversion> {
+  return (await runSheetReader(
+    { op: "tiff-pdf", path: absPath, dest, maxFrames: opts.maxFrames },
+    { timeoutMs: TIFF_READER_TIMEOUT_MS, ...readerOptions }
+  )) as TiffConversion;
 }

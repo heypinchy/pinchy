@@ -3,21 +3,25 @@
 import { createContext, useContext, useEffect } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { AssistantRuntime } from "@assistant-ui/react";
-import type { PendingUpload } from "@/hooks/use-ws-runtime";
+import type { ConnectionRejection, PendingUpload } from "@/hooks/use-ws-runtime";
 import { Thread } from "@/components/assistant-ui/thread";
 import { ChatCrashBoundary } from "@/components/chat-crash-boundary";
 import { ChatErrorBanner } from "@/components/chat-error-banner";
-import { useChatSession } from "@/components/chat-session-provider";
+import { useChatSession, useTouchChatSession } from "@/components/chat-session-provider";
 import { useAgentsContext } from "@/components/agents-provider";
 import { getAgentAvatarSvg } from "@/lib/avatar";
 import Link from "next/link";
-import { Settings } from "lucide-react";
+import { RotateCw, Settings } from "lucide-react";
+import { KnowledgeSearchSheet } from "@/components/knowledge-search-sheet";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
 import { ChatSwitcher } from "@/components/chat-switcher";
 import { AiDisclosureLabel } from "@/components/ai-disclosure-label";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { type ChatStatus, useChatStatus } from "@/hooks/use-chat-status";
+import { useChatConnection } from "@/lib/chat-connection-store";
+import { ReportIssueLink } from "@/components/report-issue-link";
+import { Button } from "@/components/ui/button";
 import { usePendingApprovals } from "@/hooks/use-pending-approvals";
 import { directSessionChatId } from "@/lib/session-key";
 import { recordLastChat } from "@/lib/last-chat-store";
@@ -38,8 +42,14 @@ function getStatusIndicator(status: ChatStatus): { colorClass: string; label: st
           return { colorClass: "bg-yellow-500", label: "Applying changes..." };
         case "disconnected":
           return { colorClass: "bg-destructive", label: "Reconnecting..." };
-        case "exhausted":
-          return { colorClass: "bg-destructive", label: "Please reload the page" };
+        case "offline":
+          return { colorClass: "bg-destructive", label: "Offline" };
+        case "rejected":
+          return { colorClass: "bg-destructive", label: "Too many connections" };
+        case "upstreamDown":
+          return { colorClass: "bg-destructive", label: "The agent isn't reachable" };
+        case "unreachable":
+          return { colorClass: "bg-destructive", label: "Can't reach Pinchy" };
         case "historyTimeout":
           return { colorClass: "bg-destructive", label: "Chat didn't load" };
         default: {
@@ -129,34 +139,90 @@ function DelayHint() {
 interface ChatStatusBannerProps {
   status: ChatStatus;
   isDelayed: boolean;
+  rejection: ConnectionRejection | null;
+  onRetry: () => void;
 }
 
-function ChatStatusBanner({ status, isDelayed }: ChatStatusBannerProps) {
-  if (status.kind === "responding" && isDelayed) {
-    return <DelayHint />;
+const CONNECTION_COPY = {
+  disconnected: "Reconnecting to the agent. We'll keep trying.",
+  offline: "You're offline. We'll reconnect as soon as you're back.",
+  upstreamDown: "The agent isn't reachable right now. We're still trying.",
+  unreachable: "We can't reach Pinchy right now. We're still trying in the background.",
+} as const;
+
+const REJECTION_COPY: Record<ConnectionRejection, string> = {
+  too_many_connections:
+    "Too many open connections. We're still trying. Closing other Pinchy tabs helps.",
+  rate_limited: "Connecting too quickly. We're still trying, a bit more slowly.",
+};
+
+function connectionCopy(status: ChatStatus, rejection: ConnectionRejection | null) {
+  if (status.kind !== "unavailable") return null;
+  switch (status.reason) {
+    case "rejected":
+      return REJECTION_COPY[rejection ?? "too_many_connections"];
+    case "disconnected":
+    case "offline":
+    case "upstreamDown":
+    case "unreachable":
+      return CONNECTION_COPY[status.reason];
+    default:
+      return null;
   }
-  if (status.kind === "unavailable" && status.reason === "exhausted") {
-    return (
-      <div className="px-4 py-2 text-center text-xs text-destructive border-t bg-destructive/5">
-        Unable to reconnect. Please reload the page to resume chatting.
+}
+
+/**
+ * The one persistent live region under the thread. It stays mounted so a screen
+ * reader hears each change; the content swaps. Connection problems always say
+ * we are still retrying and offer a way to hurry it along (#1422).
+ */
+function ChatStatusBanner({ status, isDelayed, rejection, onRetry }: ChatStatusBannerProps) {
+  const connection = connectionCopy(status, rejection);
+  const escalated = status.kind === "unavailable" && status.escalated === true;
+  const showReload =
+    status.kind === "unavailable" &&
+    (status.reason === "unreachable" || (status.reason === "upstreamDown" && escalated));
+  const showReport = status.kind === "unavailable" && status.reason === "upstreamDown" && escalated;
+  const retryLabel = showReload ? "Try again" : "Try again now";
+
+  let content: React.ReactNode = null;
+  if (status.kind === "responding" && isDelayed) {
+    content = <DelayHint />;
+  } else if (connection) {
+    content = (
+      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-4 py-2 text-center text-xs text-red-700 dark:text-destructive border-t bg-destructive/5">
+        <span>{connection}</span>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          <RotateCw className="size-3" />
+          {retryLabel}
+        </Button>
+        {showReload && (
+          <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
+            Reload
+          </Button>
+        )}
+        {showReport && <ReportIssueLink error={connection} />}
       </div>
     );
-  }
-  if (status.kind === "unavailable" && status.reason === "configuring") {
-    return (
+  } else if (status.kind === "unavailable" && status.reason === "configuring") {
+    content = (
       <div className="px-4 py-2 text-center text-xs text-muted-foreground border-t">
         Applying your changes — this takes a moment...
       </div>
     );
-  }
-  if (status.kind === "payloadRejected") {
-    return (
-      <div className="px-4 py-2 text-center text-xs text-destructive border-t bg-destructive/5">
+  } else if (status.kind === "payloadRejected") {
+    content = (
+      <div className="px-4 py-2 text-center text-xs text-red-700 dark:text-destructive border-t bg-destructive/5">
         Image too large. Send a smaller file to keep chatting.
       </div>
     );
   }
-  return null;
+
+  return (
+    <div role="status" aria-live="polite">
+      {content}
+    </div>
+  );
 }
 
 // Sentinel used while ChatSessionMounts spins up the real runtime.
@@ -171,6 +237,8 @@ interface ChatProps {
   isPersonal?: boolean;
   avatarUrl?: string;
   canEdit?: boolean;
+  /** Offer "What can this agent search?" in the header (#1386). */
+  searchesKnowledge?: boolean;
 }
 
 export function Chat({
@@ -181,6 +249,7 @@ export function Chat({
   isPersonal = false,
   avatarUrl,
   canEdit = false,
+  searchesKnowledge = false,
 }: ChatProps) {
   const { getAgent } = useAgentsContext();
   const liveAgent = getAgent(agentId);
@@ -194,6 +263,8 @@ export function Chat({
   const keepsMemory = (liveAgent?.allowedTools ?? []).includes("pinchy_memory");
 
   const { bundle: chatBundle, publish } = useChatSession(agentId, chatId);
+  // The chat on screen is the last one the tab's socket cap may evict (#957).
+  useTouchChatSession(agentId, chatId);
 
   // Remember this as the chat the user last had open for this agent (#508), so
   // clicking the agent in the sidebar returns here instead of the oldest chat.
@@ -245,7 +316,8 @@ export function Chat({
   const isReconcilingMessages = chatBundle?.isReconcilingMessages ?? false;
   const hasInitialContent = chatBundle?.hasInitialContent ?? false;
   const isOpenClawConnected = chatBundle?.isOpenClawConnected ?? false;
-  const reconnectExhausted = chatBundle?.reconnectExhausted ?? false;
+  const { isOffline, rejection } = useChatConnection(agentId, chatId);
+  const retryHistory = chatBundle?.retryHistory ?? (() => {});
   const payloadRejected = chatBundle?.payloadRejected ?? false;
   const historyTimedOut = chatBundle?.historyTimedOut ?? false;
   const onRetryContinue = chatBundle?.onRetryContinue ?? (() => {});
@@ -261,7 +333,8 @@ export function Chat({
     isHistoryLoaded,
     hasInitialContent,
     isRunning,
-    reconnectExhausted,
+    isOffline,
+    connectionRejection: rejection,
     payloadRejected,
     historyTimedOut,
     configuring,
@@ -295,6 +368,7 @@ export function Chat({
                                     chatId={chatId ?? null}
                                     avatarUrl={displayAvatar}
                                     canEdit={canEdit}
+                                    searchesKnowledge={searchesKnowledge}
                                   />
                                   <header className="hidden md:flex px-4 py-2.5 border-b items-center justify-between shrink-0">
                                     <div className="flex items-center gap-2 min-w-0 flex-1 animate-in fade-in duration-300">
@@ -333,6 +407,9 @@ export function Chat({
                                       <AiDisclosureLabel />
                                     </div>
                                     <div className="flex items-center gap-3 shrink-0">
+                                      {searchesKnowledge && (
+                                        <KnowledgeSearchSheet agentId={agentId} />
+                                      )}
                                       {canEdit && (
                                         <Link
                                           href={`/chat/${agentId}/settings`}
@@ -348,6 +425,7 @@ export function Chat({
                                             <button
                                               type="button"
                                               aria-label={indicator.label}
+                                              data-error={indicator.colorClass === "bg-destructive"}
                                               className="cursor-default p-1.5 -m-1.5 inline-flex items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                             >
                                               <span
@@ -376,7 +454,12 @@ export function Chat({
                                       agent.
                                     </p>
                                   )}
-                                  <ChatStatusBanner status={chatStatus} isDelayed={isDelayed} />
+                                  <ChatStatusBanner
+                                    status={chatStatus}
+                                    isDelayed={isDelayed}
+                                    rejection={rejection}
+                                    onRetry={retryHistory}
+                                  />
                                 </div>
                               </AgentAvatarContext.Provider>
                             </RetryPendingUploadContext.Provider>

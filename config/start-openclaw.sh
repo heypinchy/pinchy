@@ -100,20 +100,6 @@ fi
 source /fix-config-permissions.sh
 fix_config_permissions
 
-# Scan /data/ for available directories and write to shared config
-# so Pinchy can read them without needing a /data mount
-scan_data_directories() {
-  if [ -d /data ]; then
-    ls -d /data/*/ 2>/dev/null | sed 's|/$||' | \
-      node -e "const lines=require('fs').readFileSync('/dev/stdin','utf8').trim().split('\n').filter(Boolean); \
-      const dirs=lines.map(p=>({path:p,name:require('path').basename(p)})); \
-      console.log(JSON.stringify({directories:dirs}))" \
-      > /root/.openclaw/data-directories.json
-  else
-    echo '{"directories":[]}' > /root/.openclaw/data-directories.json
-  fi
-}
-
 # Auto-approve pending device pairing requests (needed for Docker networking
 # where connections come from container IPs, not localhost).
 # Stops as soon as Pinchy signals successful connection (writes signal file).
@@ -210,7 +196,6 @@ mark_bootstrap_when_ready() {
 
 install_plugin_deps
 stage_llama_cpp_provider
-scan_data_directories
 
 # OpenClaw rewrites openclaw.json with root-only permissions on every startup
 # and internal restart. Run a tight background loop that fixes permissions
@@ -317,7 +302,6 @@ while true; do
             fix_config_permissions
             install_plugin_deps
             stage_llama_cpp_provider
-            scan_data_directories
             ensure_secrets_root_owned
             openclaw gateway --port 18789 &
             mark_bootstrap_when_ready
