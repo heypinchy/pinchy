@@ -16,22 +16,45 @@ import { expect, it } from "vitest";
 
 import { db } from "@/db";
 import { kbChunks, kbDocuments } from "@/db/schema";
+import { EXTRACTION_VERSION } from "@/lib/knowledge/ingest";
+import type { KbOcrAvailability } from "@/lib/knowledge/kb-ocr";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "@/lib/knowledge/office-artifacts";
-import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
+import {
+  listUnsearchableDocuments,
+  summarizeUnsearchableDocuments,
+  unsearchableDocumentPages,
+  type UnsearchableDocument,
+} from "@/lib/knowledge/unsearchable";
 
 const ORG_ID = "org-kb-unsearchable-test";
+
+const OCR_OFF: KbOcrAvailability = { state: "off" };
+const NO_MODEL: KbOcrAvailability = { state: "no_model" };
+const OCR_ON: KbOcrAvailability = { state: "on", model: "anthropic/claude-haiku-4-5" };
 
 /** Inserts a kb_documents row with NO chunks — what an unsearchable (or unconverted) document looks like in the database. */
 async function seedUnsearchable(
   sourcePath: string,
-  status: "active" | "archived" = "active"
+  status: "active" | "archived" = "active",
+  emptyExtractionBy: string | null = null,
+  incompleteReads = 0
 ): Promise<string> {
   const [doc] = await db
     .insert(kbDocuments)
-    .values({ orgId: ORG_ID, contentHash: `hash-${sourcePath}`, sourcePath, status })
+    .values({
+      orgId: ORG_ID,
+      contentHash: `hash-${sourcePath}`,
+      sourcePath,
+      status,
+      emptyExtractionBy,
+      incompleteReads,
+    })
     .returning();
   return doc.id;
 }
+
+/** What ingest records on an empty read by `reader` (ingest.ts, extractionRecord). */
+const readBy = (reader: string) => `${EXTRACTION_VERSION}|${reader}`;
 
 /** Inserts a kb_documents row WITH one chunk — a document that answers questions. */
 async function seedReadable(
@@ -54,11 +77,14 @@ async function seedReadable(
 const paths = (result: { documents: { sourcePath: string }[] }) =>
   result.documents.map((d) => d.sourcePath);
 
+const list = (allowedPaths: string[], opts?: Parameters<typeof listUnsearchableDocuments>[3]) =>
+  listUnsearchableDocuments(ORG_ID, allowedPaths, NO_MODEL, opts);
+
 it("lists exactly the documents that have a row and no chunks", async () => {
   await seedUnsearchable("/data/certs/AFNOR validation.pdf");
   await seedReadable("/data/certs/Datasheet.pdf");
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/certs"]);
+  const result = await list(["/data/certs"]);
 
   expect(paths(result)).toEqual(["/data/certs/AFNOR validation.pdf"]);
   expect(result.total).toBe(1);
@@ -93,7 +119,7 @@ it("never lists a document that has chunks, not even once per chunk", async () =
     },
   ]);
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/certs"]);
+  const result = await list(["/data/certs"]);
 
   expect(result.documents).toEqual([]);
   expect(result.total).toBe(0);
@@ -103,7 +129,7 @@ it("does not list unsearchable documents outside the agent's granted directories
   await seedUnsearchable("/data/hr/Scanned contract.pdf");
   await seedUnsearchable("/data/legal/Scanned NDA.pdf");
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/hr"]);
+  const result = await list(["/data/hr"]);
 
   expect(paths(result)).toEqual(["/data/hr/Scanned contract.pdf"]);
 });
@@ -115,7 +141,7 @@ it("treats a grant as a directory boundary, not a string prefix", async () => {
   await seedUnsearchable("/data/hr-archive/Scan.pdf");
   await seedUnsearchable("/data/hr/Scan.pdf");
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/hr"]);
+  const result = await list(["/data/hr"]);
 
   expect(paths(result)).toEqual(["/data/hr/Scan.pdf"]);
 });
@@ -127,7 +153,7 @@ it("escapes LIKE metacharacters in a granted path", async () => {
   await seedUnsearchable("/data/hr_eu/Scan.pdf");
   await seedUnsearchable("/data/hrxeu/Scan.pdf");
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/hr_eu"]);
+  const result = await list(["/data/hr_eu"]);
 
   expect(paths(result)).toEqual(["/data/hr_eu/Scan.pdf"]);
 });
@@ -136,7 +162,7 @@ it("lists a document granted by its exact path, not only by its parent directory
   await seedUnsearchable("/data/certs/AFNOR validation.pdf");
   await seedUnsearchable("/data/certs/NordVal.pdf");
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/certs/AFNOR validation.pdf"]);
+  const result = await list(["/data/certs/AFNOR validation.pdf"]);
 
   expect(paths(result)).toEqual(["/data/certs/AFNOR validation.pdf"]);
 });
@@ -146,13 +172,23 @@ it("lists a document granted by its exact path, not only by its parent directory
 it("returns nothing when the agent is granted no directories", async () => {
   await seedUnsearchable("/data/hr/Scan.pdf");
 
-  const result = await listUnsearchableDocuments(ORG_ID, []);
-
-  expect(result).toEqual({
-    documents: [],
+  expect(await list([])).toEqual({ documents: [], total: 0 });
+  expect(await summarizeUnsearchableDocuments(ORG_ID, [], NO_MODEL)).toEqual({
     total: 0,
     totals: { no_text: 0, awaiting_conversion: 0 },
+    causes: {
+      ocr_off: 0,
+      no_vision_model: 0,
+      read_next_run: 0,
+      read_refused: 0,
+      vision_failed: 0,
+      read_blank: 0,
+    },
+    groups: [],
   });
+  const pages = [];
+  for await (const page of unsearchableDocumentPages(ORG_ID, [], NO_MODEL)) pages.push(page);
+  expect(pages).toEqual([]);
 });
 
 it("never crosses the org boundary", async () => {
@@ -163,7 +199,7 @@ it("never crosses the org boundary", async () => {
     sourcePath: "/data/hr/Other org scan.pdf",
   });
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/hr"]);
+  const result = await list(["/data/hr"]);
 
   expect(paths(result)).toEqual(["/data/hr/Scan.pdf"]);
 });
@@ -192,7 +228,7 @@ it("decides per document, not per path", async () => {
   });
   await seedUnsearchable("/data/certs/Shared name.pdf");
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/certs"]);
+  const result = await list(["/data/certs"]);
 
   expect(paths(result)).toEqual(["/data/certs/Shared name.pdf"]);
 });
@@ -202,12 +238,12 @@ it("orders active documents before archived ones, then by path", async () => {
   await seedUnsearchable("/data/certs/NordVal.pdf");
   await seedUnsearchable("/data/certs/AFNOR.pdf");
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/certs"]);
+  const result = await list(["/data/certs"]);
 
-  expect(result.documents).toEqual([
-    { sourcePath: "/data/certs/AFNOR.pdf", status: "active", reason: "no_text" },
-    { sourcePath: "/data/certs/NordVal.pdf", status: "active", reason: "no_text" },
-    { sourcePath: "/data/certs/OLD/Expired ISO.pdf", status: "archived", reason: "no_text" },
+  expect(result.documents.map(({ sourcePath, status }) => ({ sourcePath, status }))).toEqual([
+    { sourcePath: "/data/certs/AFNOR.pdf", status: "active" },
+    { sourcePath: "/data/certs/NordVal.pdf", status: "active" },
+    { sourcePath: "/data/certs/OLD/Expired ISO.pdf", status: "archived" },
   ]);
 });
 
@@ -219,7 +255,7 @@ it("caps the returned list but reports the true total", async () => {
     await seedUnsearchable(`/data/certs/Scan ${n}.pdf`);
   }
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/certs"], { limit: 2 });
+  const result = await list(["/data/certs"], { limit: 2 });
 
   expect(paths(result)).toEqual(["/data/certs/Scan 1.pdf", "/data/certs/Scan 2.pdf"]);
   expect(result.total).toBe(5);
@@ -235,11 +271,11 @@ it("lists an Office document search leaves out until it is converted again, and 
   await seedReadable("/data/offers/Handbook.pdf");
   await seedUnsearchable("/data/offers/Scan.pdf");
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/offers"]);
+  const result = await list(["/data/offers"]);
 
-  expect(result.documents).toEqual([
-    { sourcePath: "/data/offers/Angebot.docx", status: "active", reason: "awaiting_conversion" },
-    { sourcePath: "/data/offers/Scan.pdf", status: "active", reason: "no_text" },
+  expect(result.documents.map(({ sourcePath, reason }) => ({ sourcePath, reason }))).toEqual([
+    { sourcePath: "/data/offers/Angebot.docx", reason: "awaiting_conversion" },
+    { sourcePath: "/data/offers/Scan.pdf", reason: "no_text" },
   ]);
   expect(result.total).toBe(2);
 });
@@ -256,9 +292,348 @@ it("counts each reason over the whole scope, not over the returned page", async 
   await seedReadable("/data/mixed/Z offer.docx");
   await seedReadable("/data/mixed/Z deck.pptx");
 
-  const result = await listUnsearchableDocuments(ORG_ID, ["/data/mixed"], { limit: 2 });
+  const page = await list(["/data/mixed"], { limit: 2 });
+  const summary = await summarizeUnsearchableDocuments(ORG_ID, ["/data/mixed"], NO_MODEL);
 
-  expect(paths(result)).toEqual(["/data/mixed/A scan 1.pdf", "/data/mixed/A scan 2.pdf"]);
-  expect(result.total).toBe(5);
-  expect(result.totals).toEqual({ no_text: 3, awaiting_conversion: 2 });
+  expect(paths(page)).toEqual(["/data/mixed/A scan 1.pdf", "/data/mixed/A scan 2.pdf"]);
+  expect(page.total).toBe(5);
+  expect(summary.total).toBe(5);
+  expect(summary.totals).toEqual({ no_text: 3, awaiting_conversion: 2 });
+});
+
+// ── Where a document sits (#1364) ──────────────────────────────────────────
+//
+// On a real share the full path is mostly the same long prefix — the mount —
+// and the file name, the part an admin recognizes, is at the far end. So each
+// document carries its name and its folder relative to the grant it sits
+// under, and the list can be grouped by the first folder below that grant.
+
+it("names each document and its folder relative to the grant it sits under", async () => {
+  await seedUnsearchable("/data/share/Quality/Certificates/2024/AFNOR.pdf");
+  await seedUnsearchable("/data/share/Readme scan.pdf");
+
+  const result = await list(["/data/share"]);
+
+  expect(result.documents.map(({ root, folder, name }) => ({ root, folder, name }))).toEqual([
+    { root: "/data/share", folder: "Quality/Certificates/2024", name: "AFNOR.pdf" },
+    { root: "/data/share", folder: "", name: "Readme scan.pdf" },
+  ]);
+});
+
+// Nested grants: "/data/share" and "/data/share/Quality" both cover a file in
+// Quality. It belongs to the narrower one — that is the folder the admin
+// granted with that file in mind, and counting it under both would make the
+// groups add up to more than the total.
+it("places a document under the narrowest grant that covers it", async () => {
+  await seedUnsearchable("/data/share/Quality/Certificates/AFNOR.pdf");
+
+  const result = await list(["/data/share", "/data/share/Quality"]);
+
+  expect(result.documents.map(({ root, folder }) => ({ root, folder }))).toEqual([
+    { root: "/data/share/Quality", folder: "Certificates" },
+  ]);
+});
+
+it("reads a grant written with a trailing slash as the same folder", async () => {
+  await seedUnsearchable("/data/share/Quality/AFNOR.pdf");
+
+  const result = await list(["/data/share/"]);
+
+  expect(result.documents.map(({ root, folder }) => ({ root, folder }))).toEqual([
+    { root: "/data/share", folder: "Quality" },
+  ]);
+});
+
+it("groups the scope by the first folder below each grant, with a count per group", async () => {
+  for (const n of [1, 2, 3]) await seedUnsearchable(`/data/share/Quality/Scan ${n}.pdf`);
+  await seedUnsearchable("/data/share/Quality/Deep/Nested/Scan.pdf");
+  await seedUnsearchable("/data/share/Sales/Scan.pdf");
+  await seedUnsearchable("/data/share/Loose scan.pdf");
+  await seedUnsearchable("/data/legal/NDA scan.pdf");
+  await seedReadable("/data/share/Sales/Datasheet.pdf");
+
+  const summary = await summarizeUnsearchableDocuments(
+    ORG_ID,
+    ["/data/share", "/data/legal"],
+    NO_MODEL
+  );
+
+  // Largest first: the folder holding most of the gap is where an admin looks.
+  expect(summary.groups).toEqual([
+    { root: "/data/share", folder: "Quality", count: 4 },
+    { root: "/data/legal", folder: null, count: 1 },
+    { root: "/data/share", folder: null, count: 1 },
+    { root: "/data/share", folder: "Sales", count: 1 },
+  ]);
+  expect(summary.total).toBe(7);
+});
+
+it("lists one group on request, with that group's own count", async () => {
+  for (const n of [1, 2, 3]) await seedUnsearchable(`/data/share/Quality/Scan ${n}.pdf`);
+  await seedUnsearchable("/data/share/Quality/Deep/Scan.pdf");
+  await seedUnsearchable("/data/share/Sales/Scan.pdf");
+  await seedUnsearchable("/data/share/Loose scan.pdf");
+
+  const quality = await list(["/data/share"], {
+    limit: 2,
+    group: { root: "/data/share", folder: "Quality" },
+  });
+  const topLevel = await list(["/data/share"], { group: { root: "/data/share", folder: null } });
+
+  expect(paths(quality)).toEqual([
+    "/data/share/Quality/Deep/Scan.pdf",
+    "/data/share/Quality/Scan 1.pdf",
+  ]);
+  expect(quality.total).toBe(4);
+  expect(paths(topLevel)).toEqual(["/data/share/Loose scan.pdf"]);
+  expect(topLevel.total).toBe(1);
+});
+
+// A group is named by its grant, and a grant the agent doesn't hold is no
+// group of this agent's: asking for one must not widen the scope past the
+// allow-list, whatever the caller passes.
+it("answers nothing for a group outside the agent's grants", async () => {
+  await seedUnsearchable("/data/legal/NDA scan.pdf");
+
+  const result = await list(["/data/share"], { group: { root: "/data/legal", folder: null } });
+
+  expect(result).toEqual({ documents: [], total: 0 });
+});
+
+// "_" and "%" in a folder name are ordinary characters in a group, not LIKE
+// wildcards: the group match is by equality, so "Q_A" never answers for "QxA".
+it("matches a group's folder exactly, not as a pattern", async () => {
+  await seedUnsearchable("/data/share/Q_A/Scan.pdf");
+  await seedUnsearchable("/data/share/QxA/Scan.pdf");
+
+  const result = await list(["/data/share"], { group: { root: "/data/share", folder: "Q_A" } });
+
+  expect(paths(result)).toEqual(["/data/share/Q_A/Scan.pdf"]);
+});
+
+// ── Why a document holds no text (#1362) ───────────────────────────────────
+//
+// The index records which reader came back empty (`empty_extraction_by`), and
+// the server knows whether a vision model would read scans right now. Together
+// they say what an admin can do about each document — so the server answers
+// it, rather than the page guessing one reason for all of them.
+
+it("says a scan read without a vision model waits on OCR being switched on, when it is off", async () => {
+  await seedUnsearchable("/data/share/Scan.pdf", "active", readBy("no-ocr"));
+
+  const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_OFF);
+
+  expect(result.documents[0].cause).toBe("ocr_off");
+});
+
+it("says a scan read without a vision model waits on one, when none is available", async () => {
+  await seedUnsearchable("/data/share/Scan.pdf", "active", readBy("no-ocr"));
+
+  const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], NO_MODEL);
+
+  expect(result.documents[0].cause).toBe("no_vision_model");
+});
+
+it("says the next run reads a scan once a vision model is available", async () => {
+  await seedUnsearchable("/data/share/Scan.pdf", "active", readBy("no-ocr"));
+
+  const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_ON);
+
+  expect(result.documents[0].cause).toBe("read_next_run");
+});
+
+// A vision model looked and found nothing: a blank page, a photo without
+// words. Switching anything on or off changes nothing for it, so none of the
+// OCR hints may claim it.
+it("says a document the vision model already read holds no text, whatever OCR is now", async () => {
+  await seedUnsearchable(
+    "/data/share/Blank.pdf",
+    "active",
+    readBy("ocr:anthropic/claude-haiku-4-5")
+  );
+
+  for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
+    const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
+    expect(result.documents[0].cause).toBe("read_blank");
+  }
+});
+
+// Ingest reads it again when the model changes (couldReadDifferently), so
+// "holds no text" would be premature.
+it("says the next run reads it again when a different vision model is available now", async () => {
+  await seedUnsearchable("/data/share/Faint.pdf", "active", readBy("ocr:some/older-model"));
+
+  const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_ON);
+
+  expect(result.documents[0].cause).toBe("read_next_run");
+});
+
+// The converter and the workbook reader come back empty when they REFUSE a
+// file — too large, damaged, not what its name says (ingest.ts, readDocument
+// and extractOfficeDocument; the reason is in the server log). A converted
+// Office file is read as a PDF, so its record never names the converter. Once
+// their record is written neither reader is tried again on the same bytes, so
+// no OCR setting changes anything for them — and no vision model was ever
+// involved, so the page must not say one failed.
+it("says a file the converter or the workbook reader refused was refused", async () => {
+  await seedUnsearchable("/data/share/Broken.xlsx", "active", readBy("sheets"));
+  // Converted under the current rules — an older artifact would be waiting
+  // for a conversion instead, which is the other reason.
+  await db.insert(kbDocuments).values({
+    orgId: ORG_ID,
+    contentHash: "hash-refused-docx",
+    sourcePath: "/data/share/Refused.docx",
+    emptyExtractionBy: readBy("converter"),
+    incompleteReads: 5,
+    artifactFormatVersion: OFFICE_ARTIFACT_FORMAT_VERSION,
+  });
+
+  for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
+    const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
+    expect(result.documents.map((d) => d.cause)).toEqual(["read_refused", "read_refused"]);
+  }
+});
+
+// A read that did not finish carries no record until it settles, and ingest
+// owes it another read (retryOwed) whatever OCR the server has: a refused
+// .docx in its first runs, a scan whose vision calls failed last night. Blaming
+// the OCR setup for it would send an admin to fix the wrong thing.
+it("says the next run reads again a document whose last read did not finish, whatever OCR is", async () => {
+  await seedUnsearchable("/data/share/Scan.pdf", "active", null, 2);
+
+  for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
+    const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
+    expect(result.documents[0].cause).toBe("read_next_run");
+  }
+});
+
+// Out of retries, the record names the vision model — but every call failed,
+// so "read in full, holds no text" would be false, and so would "refused": no
+// reader turned the file away. Ingest tries it again only with a different
+// model (couldReadDifferently).
+it("says a scan whose vision reads kept failing failed at the vision model, not that it holds no text", async () => {
+  await seedUnsearchable(
+    "/data/share/Oversized.pdf",
+    "active",
+    readBy("ocr:anthropic/claude-haiku-4-5"),
+    5
+  );
+
+  for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
+    const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
+    expect(result.documents[0].cause).toBe("vision_failed");
+  }
+  const otherModel = await listUnsearchableDocuments(ORG_ID, ["/data/share"], {
+    state: "on",
+    model: "some/newer-model",
+  });
+  expect(otherModel.documents[0].cause).toBe("read_next_run");
+});
+
+// No record: a document indexed before the record existed, or one whose read
+// did not finish. Ingest reads it again on the next run (it skips only a
+// document on record as empty), with whatever OCR the server has then — so
+// it waits on exactly what a scan read without OCR waits on. The same holds
+// for a scan's record an older extractor wrote.
+it("treats a document with no record, or an outdated one, like a scan read without OCR", async () => {
+  await seedUnsearchable("/data/share/A legacy.pdf", "active", null);
+  await seedUnsearchable(
+    "/data/share/B outdated.pdf",
+    "active",
+    `${EXTRACTION_VERSION - 1}|no-ocr`
+  );
+
+  const off = await listUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_OFF);
+  const on = await listUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_ON);
+
+  expect(off.documents.map((d) => d.cause)).toEqual(["ocr_off", "ocr_off"]);
+  expect(on.documents.map((d) => d.cause)).toEqual(["read_next_run", "read_next_run"]);
+});
+
+// An older extractor's record from the workbook reader or the converter: the
+// next run reads it with the current extractor (ingest reads every outdated
+// record again), and no vision model enters into it — so no OCR setting may
+// be blamed for it.
+it("says the next run reads a workbook or an Office file on an outdated record, whatever OCR is", async () => {
+  await seedUnsearchable("/data/share/Old.xlsx", "active", `${EXTRACTION_VERSION - 1}|sheets`);
+  // Converted under the current rules, or it would be waiting for a conversion.
+  await db.insert(kbDocuments).values({
+    orgId: ORG_ID,
+    contentHash: "hash-old-pptx",
+    sourcePath: "/data/share/Old.pptx",
+    emptyExtractionBy: `${EXTRACTION_VERSION - 1}|converter`,
+    artifactFormatVersion: OFFICE_ARTIFACT_FORMAT_VERSION,
+  });
+
+  for (const ocr of [OCR_OFF, NO_MODEL, OCR_ON]) {
+    const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], ocr);
+    expect(result.documents.map((d) => d.cause)).toEqual(["read_next_run", "read_next_run"]);
+  }
+});
+
+it("gives a document waiting to be converted again no OCR cause", async () => {
+  await seedReadable("/data/share/Angebot.docx");
+
+  const result = await listUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_OFF);
+
+  expect(result.documents[0]).toMatchObject({ reason: "awaiting_conversion", cause: null });
+});
+
+it("counts each cause over the whole scope", async () => {
+  for (const n of [1, 2, 3]) {
+    await seedUnsearchable(`/data/share/Scan ${n}.pdf`, "active", readBy("no-ocr"));
+  }
+  await seedUnsearchable(
+    "/data/share/Blank.pdf",
+    "active",
+    readBy("ocr:anthropic/claude-haiku-4-5")
+  );
+  await seedUnsearchable("/data/share/Broken.xlsx", "active", readBy("sheets"));
+  await seedUnsearchable(
+    "/data/share/Oversized.pdf",
+    "active",
+    readBy("ocr:anthropic/claude-haiku-4-5"),
+    5
+  );
+  await seedReadable("/data/share/Angebot.docx");
+
+  const summary = await summarizeUnsearchableDocuments(ORG_ID, ["/data/share"], OCR_OFF);
+
+  expect(summary.causes).toEqual({
+    ocr_off: 3,
+    no_vision_model: 0,
+    read_next_run: 0,
+    read_refused: 1,
+    vision_failed: 1,
+    read_blank: 1,
+  });
+  expect(summary.totals).toEqual({ no_text: 6, awaiting_conversion: 1 });
+});
+
+// ── The full list, for the download (#1364) ────────────────────────────────
+
+it("pages through the whole scope in path order, with nothing lost or repeated between pages", async () => {
+  const expected: string[] = [];
+  for (const n of [1, 2, 3, 4, 5, 6, 7]) {
+    const path = `/data/share/Folder ${n % 3}/Scan ${n}.pdf`;
+    await seedUnsearchable(path, n === 2 ? "archived" : "active", readBy("no-ocr"));
+    expected.push(path);
+  }
+  await seedReadable("/data/share/Readable.pdf");
+  await seedUnsearchable("/data/legal/Outside.pdf");
+
+  const pages: UnsearchableDocument[][] = [];
+  for await (const page of unsearchableDocumentPages(ORG_ID, ["/data/share"], OCR_OFF, {
+    pageSize: 3,
+  })) {
+    pages.push(page);
+  }
+
+  expect(pages.map((page) => page.length)).toEqual([3, 3, 1]);
+  expect(pages.flat().map((d) => d.sourcePath)).toEqual([...expected].sort());
+  expect(pages.flat().every((d) => d.cause === "ocr_off")).toBe(true);
+  expect(pages.flat().find((d) => d.name === "Scan 2.pdf")).toMatchObject({
+    status: "archived",
+    folder: "Folder 2",
+  });
 });

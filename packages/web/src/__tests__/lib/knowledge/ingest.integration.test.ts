@@ -644,8 +644,10 @@ it("reports a text-less scan as unsearchable rather than indexed, and leaves it 
   const docsAfter = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
   expect(docsAfter).toHaveLength(1);
   expect(docsAfter[0].id).toBe(docs[0].id);
-  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
-  expect(listed.documents.map((doc) => doc.sourcePath)).toEqual([pdfPath]);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot], { state: "off" });
+  expect(listed.documents.map((doc) => [doc.sourcePath, doc.cause])).toEqual([
+    [pdfPath, "ocr_off"],
+  ]);
 });
 
 // ---------------------------------------------------------------------------
@@ -2406,8 +2408,11 @@ it("books a workbook refused as too large as unsearchable — listed, final, and
     warn.mockRestore();
   }
 
-  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
-  expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot], { state: "off" });
+  // Refused, not waiting on OCR: the page names it as such, end to end.
+  expect(listed.documents.map((d) => [d.sourcePath, d.cause])).toEqual([
+    [xlsxPath, "read_refused"],
+  ]);
 });
 
 it("books a workbook refused for its content as unsearchable, and leaves it alone while it is unchanged", async () => {
@@ -2436,8 +2441,11 @@ it("books a workbook refused for its content as unsearchable, and leaves it alon
     warn.mockRestore();
   }
 
-  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot]);
-  expect(listed.documents.map((d) => d.sourcePath)).toEqual([xlsxPath]);
+  const listed = await listUnsearchableDocuments(ORG_ID, [tmpRoot], { state: "off" });
+  // Refused, not waiting on OCR: the page names it as such, end to end.
+  expect(listed.documents.map((d) => [d.sourcePath, d.cause])).toEqual([
+    [xlsxPath, "read_refused"],
+  ]);
 });
 
 it("keeps a changed workbook's indexed version when its reader is killed without a verdict, and reads it again", async () => {
