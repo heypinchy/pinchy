@@ -417,7 +417,7 @@ it("reads every current file before any archived one, folder by folder, across r
   // A first index of a large share runs for days and people search it while it
   // runs: what retrieval shows by default must be complete first, and whole
   // folders must finish one after another for the per-folder status (#1386).
-  const otherRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-order-"));
+  const otherRoot = makeKbSourceRoot("pinchy-kb-ingest-order-");
   try {
     const files: Array<[string, string]> = [
       [tmpRoot, "OLD/old-1.pdf"],
