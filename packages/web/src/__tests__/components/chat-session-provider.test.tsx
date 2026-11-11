@@ -384,6 +384,83 @@ describe("ChatSessionProvider", () => {
       expect(result.current).not.toContain("filler-0"); // oldest got evicted
       expect(result.current).toContain("overflow");
     });
+
+    // The server allows 10 sockets per user across all devices and tabs (#957),
+    // so one tab must hold only a few idle ones.
+    function setup() {
+      const publishers = new Map<string, (b: RuntimeBundle) => void>();
+      function Harness({ id }: { id: string }) {
+        const session = useChatSession(id);
+        publishers.set(id, session.publish);
+        return null;
+      }
+      const ids = ["a", "b", "c", "d", "e", "f"];
+      const { result } = renderHook(() => useVisitedAgentIds(), {
+        wrapper: ({ children }) => (
+          <ChatSessionProvider>
+            {ids.map((id) => (
+              <Harness key={id} id={id} />
+            ))}
+            {children}
+          </ChatSessionProvider>
+        ),
+      });
+      const pub = (id: string, isRunning = false) =>
+        act(() => publishers.get(id)!(fakeBundle({ agentId: id, isRunning })));
+      return { result, pub };
+    }
+
+    it("caps a tab at three live bundles", () => {
+      expect(MAX_LIVE_BUNDLES).toBe(3);
+    });
+
+    it("evicts the least-recently-published bundle first", () => {
+      const { result, pub } = setup();
+      pub("a");
+      pub("b");
+      pub("c");
+      pub("a"); // a becomes most recent, b is now the oldest
+      pub("d");
+      expect([...result.current].sort()).toEqual(["a", "c", "d"]);
+    });
+
+    it("never evicts a running bundle, even when it is the oldest", () => {
+      const { result, pub } = setup();
+      pub("a", true);
+      pub("b");
+      pub("c");
+      pub("d");
+      // a is the oldest but mid-run, so the next-oldest idle one (b) goes.
+      expect([...result.current].sort()).toEqual(["a", "c", "d"]);
+    });
+
+    it("overshoots the cap while every bundle is running, then trims once runs finish", () => {
+      const { result, pub } = setup();
+      pub("a", true);
+      pub("b", true);
+      pub("c", true);
+      pub("d", true);
+      expect(result.current.length).toBe(4);
+
+      // Runs finish and are republished idle; the next publish trims back down.
+      pub("a");
+      pub("b");
+      pub("c");
+      pub("d");
+      pub("e");
+      expect(result.current.length).toBe(MAX_LIVE_BUNDLES);
+      expect([...result.current].sort()).toEqual(["c", "d", "e"]);
+    });
+
+    it("keeps the bundle being published even when all others are running", () => {
+      const { result, pub } = setup();
+      pub("a", true);
+      pub("b", true);
+      pub("c", true);
+      pub("d");
+      expect(result.current).toContain("d");
+      expect(result.current.length).toBe(4);
+    });
   });
 });
 

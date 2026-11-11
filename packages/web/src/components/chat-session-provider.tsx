@@ -68,17 +68,14 @@ interface ChatSessionStoreActions {
 type Store = StoreApi<ChatSessionStoreState & ChatSessionStoreActions>;
 
 /**
- * Maximum number of live runtime bundles kept in the store. Each bundle
- * pins an open WebSocket (via the surviving <ChatSessionInstance>) plus
- * up to 200 cached messages. Without a cap, a long-lived tab that opens
- * many agents accumulates unbounded WebSockets and memory. When this cap
- * is exceeded, the least-recently-published bundle is evicted; the
- * evicted agent reconnects fresh when the user navigates back to it.
- *
- * 20 was chosen as a generous "many agents per session" number that
- * still bounds resource usage to a few MB and a few dozen WebSockets.
+ * Target number of live runtime bundles per tab. Each bundle pins an open
+ * WebSocket, and the server allows only 10 per user across all devices and
+ * tabs, so a higher cap locks a user out of chat (#957). The
+ * least-recently-published idle bundle is evicted first and reconnects cold
+ * when revisited. A running bundle is never evicted, so the store can exceed
+ * this while several runs are in flight and trims on a later publish.
  */
-export const MAX_LIVE_BUNDLES = 20;
+export const MAX_LIVE_BUNDLES = 3;
 
 /** Exported for internal use by ChatSessionMounts only — not part of public API. */
 export const ChatSessionStoreContext = createContext<Store | null>(null);
@@ -97,11 +94,15 @@ function createChatSessionStore(): Store {
           if (k !== key && v !== undefined) next[k] = v;
         }
         next[key] = bundle;
-        // Enforce the cap. Worst case: overshoot by exactly one (the new
-        // entry that just pushed us over). Drop the oldest until we fit.
-        const keys = Object.keys(next);
-        for (let i = 0; keys.length - i > MAX_LIVE_BUNDLES; i++) {
-          delete next[keys[i]];
+        // Enforce the cap: drop the oldest idle bundles. The one just
+        // published is last in order and is never a victim; running bundles
+        // are skipped, so the cap is a target rather than a guarantee.
+        let excess = Object.keys(next).length - MAX_LIVE_BUNDLES;
+        for (const k of Object.keys(next)) {
+          if (excess <= 0) break;
+          if (k === key || next[k]?.isRunning) continue;
+          delete next[k];
+          excess--;
         }
         return { bundles: next };
       }),
