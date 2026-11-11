@@ -228,6 +228,10 @@ The address checks for Odoo, mail servers and OpenAI-compatible providers resolv
 
 If you created an agent or changed a setting while OpenClaw was restarting or rate-limiting config changes, the change could land in `openclaw.json` and still never reach the running OpenClaw. Chats to that agent then failed with `unknown agent id` until some later, unrelated change happened to push the config again. We now push it again ourselves — when Pinchy reconnects to OpenClaw, or a minute later if OpenClaw stayed connected, backing off until OpenClaw has applied it, unless OpenClaw rejected the config itself. Restarting Pinchy in the meantime drops that retry; the next change you make delivers it. Nothing to configure.
 
+#### Deleting an integration reaches its agents right away
+
+Deleting an Odoo or mail connection in **Settings → Integrations** now updates the agents that used it straight away. Before, they kept the deleted connection until some later, unrelated change rewrote the agent configuration, so their Odoo or mail tools failed against a connection that no longer existed. Nothing to configure.
+
 #### Unsent drafts in the browser are cleared once
 
 Pinchy now remembers in each browser which person was signed in last. That way the next person on a shared computer never sees what the last one left behind: unsent drafts, attachments staged but not sent, files shared into the installed app but not sent, the last chat opened for each agent (#1286). After the upgrade, no browser has that record yet. So the first page load after the upgrade clears those things once. Only shares from the last 10 minutes are kept. Ask people to send any half-written message before you upgrade.
