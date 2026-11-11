@@ -72,7 +72,7 @@ export interface IngestResult {
   archived: number;
   /**
    * Files under the run's folders whose type the indexer cannot read — an
-   * Outlook `.msg`, a legacy `.xls`, an `.rtf` (#1267). They are not documents in
+   * `.rtf`, a binary `.xlsb` (#1267). They are not documents in
    * the index at all, so they sit OUTSIDE the outcome partition above: before
    * this was counted, a folder of 13 files reported 11 and the other two
    * appeared nowhere. The list behind the number is kb_unsupported_files

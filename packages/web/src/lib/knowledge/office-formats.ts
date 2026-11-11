@@ -80,6 +80,13 @@ export const SCAN_EXTENSIONS = [".tif", ".tiff"] as const;
 export const TEXT_EXTENSIONS = [".txt"] as const;
 
 /**
+ * Mail saved from Outlook, read as headers plus body (`msg-extract.ts`).
+ * `.eml` is not here: nothing on a file share writes it in volume, and it is
+ * a different format with a different parser.
+ */
+export const MSG_EXTENSIONS = [".msg"] as const;
+
+/**
  * The lowercased extension of `path`, or "" — `node:path`'s `extname` written
  * as string surgery, including its rule that a leading dot is a dotfile and
  * not an extension (`.doc` → "", never ".doc").
@@ -108,6 +115,11 @@ export function isScanFile(path: string): boolean {
 /** Is this a plain-text file? */
 export function isTextFile(path: string): boolean {
   return (TEXT_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this an Outlook message saved to disk? */
+export function isMsgFile(path: string): boolean {
+  return (MSG_EXTENSIONS as readonly string[]).includes(extensionOf(path));
 }
 
 /** Is this a Word document — the format anchored on its heading outline? */

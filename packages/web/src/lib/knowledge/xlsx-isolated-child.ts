@@ -12,6 +12,7 @@ import { writeFileSync } from "node:fs";
 
 import mammoth from "mammoth";
 
+import { parseMsg } from "./msg-extract";
 import { countWords, OfficeFileRejectedError, StagedCopyWriteError } from "./office-formats";
 import { readGuardedDocx, stageOfficeSource } from "./office-preflight";
 import { tiffToPdf } from "./tiff-pdf";
@@ -68,6 +69,8 @@ function read(request: SheetReaderRequest): Promise<unknown> {
       return stageOfficeSource(request.path, request.dest);
     case "tiff-pdf":
       return tiffToPdf(request.path, request.dest, { maxFrames: request.maxFrames });
+    case "msg":
+      return parseMsg(request.path);
   }
 }
 

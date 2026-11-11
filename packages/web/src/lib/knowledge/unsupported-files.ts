@@ -1,6 +1,6 @@
 /**
  * The files under an agent's granted folders whose type the indexer cannot
- * read (#1267) — an Outlook `.msg`, a legacy `.xls`, a `.rtf`.
+ * read (#1267) — an `.rtf`, a binary `.xlsb`.
  *
  * Discovery already sees them: it walks every file and drops the ones outside
  * the extension allowlist (exclude-globs.ts). Until this module it dropped them

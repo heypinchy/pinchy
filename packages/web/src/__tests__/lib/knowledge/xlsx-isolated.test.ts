@@ -26,10 +26,13 @@ import ExcelJS from "exceljs";
 
 import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
 import { declaredBomb } from "@/test-helpers/office-zip";
+import { buildMsg } from "@/test-helpers/msg-fixture";
+import { parseMsg } from "@/lib/knowledge/msg-extract";
 import { extractXlsx, readSheetRange, XlsxExtractionError } from "@/lib/knowledge/xlsx-extract";
 import {
   checkSheetReaderQueue,
   extractXlsxIsolated,
+  readMsgIsolated,
   readSheetRangeIsolated,
   runSheetReader,
   SHEET_READER_HEAP_MB,
@@ -107,6 +110,23 @@ describe("the isolated reader answers exactly what the in-process reader answers
       await readSheetRange(path, "S", 5, 9)
     );
     expect(await readSheetRangeIsolated(path, "Nope", 1, 2)).toBeNull();
+  });
+
+  // An Outlook message is parsed behind the same fence (#1409): the parser
+  // walks an untrusted Compound File and inflates RTF.
+  it("reads an Outlook message, and refuses one that is not, across the boundary", async () => {
+    const path = join(tmpRoot, "Angebot.msg");
+    writeFileSync(
+      path,
+      buildMsg({ subject: "Angebot Größe 3", body: "Text", senderName: "Jörg Müller" })
+    );
+    expect(await readMsgIsolated(path)).toEqual(await parseMsg(path));
+
+    const fake = join(tmpRoot, "fake.msg");
+    writeFileSync(fake, "From: a@b\n\nplain mime");
+    const refused = await rejection(readMsgIsolated(fake));
+    expect(refused).toBeInstanceOf(OfficeFileRejectedError);
+    expect((refused as OfficeFileRejectedError).code).toBe("unexpected_content");
   });
 
   it("carries the reader's own diagnoses across: unreadable stays unreadable, a refusal stays a refusal", async () => {
