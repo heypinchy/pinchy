@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * `POST /api/invite/claim` — redeem an invite or a password-reset link. Shared
- * with the claim page (AGENTS.md § "Shared Schemas And Typed Client").
+ * with the claim page (agent-rules/web-routes.md § "Shared Schemas And Typed Client").
  *
  * `name` is optional because the reset branch has no name to set; `password`
  * is shape-only, with the length/breach-list policy enforced post-parse via

@@ -258,8 +258,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
         counts = progress.counts;
         return recordIndexJobProgress(job.id, progress);
       },
-      onQueue: (queuePaths) =>
-        recordIndexJobFolderPlan(job.id, buildFolderPlan(job.paths, queuePaths)),
+      onQueue: (queue) => recordIndexJobFolderPlan(job.id, buildFolderPlan(job.paths, queue)),
       onSkippedRoot: (rootDir, reason) => {
         unavailableFolders++;
         skippedRoots.push({ path: rootDir, reason });

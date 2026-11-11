@@ -1,6 +1,6 @@
 /**
  * Migration-against-populated-data test for 0061_kb_chunk_locator (#933), in
- * the spirit AGENTS.md § "Test Migrations Against Pre-Existing Data" asks for:
+ * the spirit agent-rules/testing.md § "Test Migrations Against Pre-Existing Data" asks for:
  * every kb_chunks row that exists BEFORE this migration was written by code
  * that stored a bare `page` integer, so a fresh-DB run proves nothing. The
  * column swap only matters for the state a real upgrade produces — old rows,

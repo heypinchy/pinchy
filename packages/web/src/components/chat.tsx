@@ -7,7 +7,7 @@ import type { ConnectionRejection, PendingUpload } from "@/hooks/use-ws-runtime"
 import { Thread } from "@/components/assistant-ui/thread";
 import { ChatCrashBoundary } from "@/components/chat-crash-boundary";
 import { ChatErrorBanner } from "@/components/chat-error-banner";
-import { useChatSession } from "@/components/chat-session-provider";
+import { useChatSession, useTouchChatSession } from "@/components/chat-session-provider";
 import { useAgentsContext } from "@/components/agents-provider";
 import { getAgentAvatarSvg } from "@/lib/avatar";
 import Link from "next/link";
@@ -263,6 +263,8 @@ export function Chat({
   const keepsMemory = (liveAgent?.allowedTools ?? []).includes("pinchy_memory");
 
   const { bundle: chatBundle, publish } = useChatSession(agentId, chatId);
+  // The chat on screen is the last one the tab's socket cap may evict (#957).
+  useTouchChatSession(agentId, chatId);
 
   // Remember this as the chat the user last had open for this agent (#508), so
   // clicking the agent in the sidebar returns here instead of the oldest chat.

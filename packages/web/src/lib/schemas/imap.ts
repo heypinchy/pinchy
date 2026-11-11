@@ -33,7 +33,7 @@ export type ImapCreateInput = z.infer<typeof imapCreateSchema>;
 
 // Structured response of POST /api/integrations/imap/test, shared by the
 // route handler and the ImapConnectStep UI (typed client convention — see
-// AGENTS.md "Shared Schemas And Typed Client"). Consumed directly, not
+// agent-rules/web-routes.md "Shared Schemas And Typed Client"). Consumed directly, not
 // zod-validated on the client: this is a server-authored diagnostic, not
 // user input.
 export type ImapTestSuggestion =

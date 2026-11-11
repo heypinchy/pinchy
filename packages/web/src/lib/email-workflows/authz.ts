@@ -27,7 +27,7 @@
  * visibility gate and is not named there with a reason. The two workflow-id
  * handlers above are the whole exemption list, and it is checked in both
  * directions — a rule three docblocks state and nothing reads is the drift
- * AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong"
+ * agent-rules/docs.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong"
  * catalogues.
  */
 export interface WorkflowAgentScope {

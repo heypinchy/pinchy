@@ -769,7 +769,7 @@ it("still recovers a row a crash left without chunks", async () => {
 });
 
 it("reads an empty document indexed before the marker existed once, then leaves it alone", async () => {
-  // AGENTS.md § Test Migrations Against Pre-Existing Data. A row the previous
+  // agent-rules/testing.md § Test Migrations Against Pre-Existing Data. A row the previous
   // pipeline wrote for a blank scan has zero chunks and, after the migration,
   // no `emptyExtractionBy` — the same shape as a crash leftover. It is read
   // once more (the new code cannot know what found it empty), and from then
@@ -2515,7 +2515,7 @@ it("keeps a changed workbook's indexed version when its reader is killed without
 });
 
 it("keeps PDFs indexed before spreadsheets existed working, untouched", async () => {
-  // AGENTS.md § Test Migrations Against Pre-Existing Data. Every other test
+  // agent-rules/testing.md § Test Migrations Against Pre-Existing Data. Every other test
   // here starts from a clean slate where the dispatch is live from the first
   // write, so none of them can see what an UPGRADE produces: rows written by
   // the PDF-only pipeline, read by code that now dispatches on extension.
@@ -3564,7 +3564,7 @@ describe("a legacy .xls workbook (#1373)", () => {
 });
 
 describe("an Office document converted under an earlier artifact format", () => {
-  // AGENTS.md § "Test Migrations Against Pre-Existing Data". Changing the
+  // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data". Changing the
   // conversion rules bumps OFFICE_ARTIFACT_FORMAT_VERSION, which moves the
   // store to a new directory — but an UNCHANGED document never asks the store
   // for anything: its hash matches and it has chunks. The upgrade state is a
@@ -3699,7 +3699,7 @@ describe("an Office document converted under an earlier artifact format", () => 
 });
 
 it("leaves PDFs indexed before Office support was added exactly as they were", async () => {
-  // AGENTS.md § "Test Migrations Against Pre-Existing Data": the upgrade state
+  // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data": the upgrade state
   // is old rows plus new code, and every test that starts from an empty
   // database is blind to it. Simulated by indexing the PDF alone — which is
   // what the old pipeline did — and then dropping a Word file beside it.

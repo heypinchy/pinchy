@@ -13,7 +13,7 @@ import { join, relative, resolve } from "node:path";
  * The pairing convention (`PINCHY_INSECURE_MAIL_MOCK=1`,
  * `PINCHY_INSECURE_WEB_MOCK=1`) has been in `imap-adapter.ts` since that seam
  * was written, and three later overrides simply did not adopt it. Nothing
- * noticed, because nothing was looking: AGENTS.md's own lesson is that the one
+ * noticed, because nothing was looking: agent-rules/docs.md's own lesson is that the one
  * list with a guard (`contracts.tools`) is the one list that did not drift.
  *
  * This is that guard. It scans production source in `packages/web/src` and

@@ -2251,6 +2251,46 @@ describe("useWsRuntime", () => {
       expect(JSON.parse(sentMessages[0][0]).content).toBe("Sent while offline");
     });
 
+    it("reports a queued message until it is flushed, across failed reconnects", () => {
+      // The queued payload lives only in this instance. A chat holding one must
+      // say so, because a failed reconnect attempt drops isRunning and would
+      // otherwise make the chat look idle enough to unmount (#957).
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = wsInstances[0];
+      ws1.readyState = 1;
+      act(() => ws1.simulateOpen());
+      expect(result.current.hasQueuedMessage).toBe(false);
+
+      ws1.readyState = 3;
+      act(() => ws1.simulateClose());
+      act(() => {
+        store(result.current.runtime).onNew({
+          content: [{ type: "text", text: "Sent while offline" }],
+          parentId: "root",
+        });
+      });
+      expect(result.current.hasQueuedMessage).toBe(true);
+
+      // The next attempt fails too: the turn no longer counts as running, but
+      // the message is still waiting.
+      act(() => vi.advanceTimersByTime(1000));
+      const ws2 = wsInstances[1];
+      ws2.readyState = 3;
+      act(() => ws2.simulateClose());
+      expect(result.current.isRunning).toBe(false);
+      expect(result.current.hasQueuedMessage).toBe(true);
+
+      act(() => vi.advanceTimersByTime(30_000));
+      const ws3 = wsInstances[wsInstances.length - 1];
+      ws3.readyState = 1;
+      act(() => ws3.simulateOpen());
+      // Open is not enough: the message waits for the server's first frame
+      // (#1422), and the chat keeps saying so until then.
+      expect(result.current.hasQueuedMessage).toBe(true);
+      act(() => ws3.simulateMessage({ type: "openclaw_status", connected: true }));
+      expect(result.current.hasQueuedMessage).toBe(false);
+    });
+
     it("queues while the WebSocket is closing without opening an overlapping connection", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws1 = wsInstances[0];

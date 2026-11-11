@@ -300,6 +300,10 @@ The knowledge base now reads `.xls` workbooks, not just `.xlsx` and `.xlsm`. The
 
 Only a real legacy Excel file is converted. An HTML or XML table that an export tool saved under an `.xls` name is listed as `unsearchable` instead, and so is an `.xls` over 200 MB — see [Supported file types](/guides/mount-data-directories/#supported-file-types). The image grows by about 45 MB for the spreadsheet part of LibreOffice, which the converter needs for this.
 
+#### A tab no longer holds twenty chat connections open
+
+Each chat you visit keeps its own connection to Pinchy while you move on, and Pinchy allows ten per person across all devices and tabs. A few agents on a desktop and a few on a phone could use them all up, and chat then refused to connect. A tab now keeps at most three idle chats connected and closes the one you looked at longest ago first; a chat that is still answering is never closed. One you come back to after it was dropped reconnects and loads its history as usual. Nothing to configure.
+
 #### TIFF scans, plain text and macro-enabled Word files are indexed
 
 The knowledge base now indexes scanned TIFF images (`.tif`, `.tiff`, multi-page ones included), plain text files (`.txt`) and macro-enabled Word documents (`.docm`). Until now the **Index** section counted them as not supported and listed them in its download. Nothing to do on upgrade: the next reindex — the nightly one or **Reindex now** — reads them, and they drop off that list.

@@ -30,7 +30,7 @@ function readCopy(plugin: string): string {
 // match, so a plugin is counted for what it returns, not for what it names.
 const EMITS_FILE_BLOCK = /^\s*(\{\s*)?type:\s*"file",/m;
 
-// Discovered, not listed (AGENTS.md § "A Hand-Maintained List That Mirrors
+// Discovered, not listed (agent-rules/docs.md § "A Hand-Maintained List That Mirrors
 // Code Will Be Wrong"): a third plugin that starts returning a file block must
 // carry the copy and ask it, or this guard goes red. Plugins that carry a copy
 // are included too, so a copy left behind still has to match.

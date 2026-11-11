@@ -180,7 +180,7 @@ export async function validateUploadBuffer(buffer: Buffer, claimedMime: string):
  * extension already.
  *
  * This mirrors ALLOWED_ATTACHMENT_MIMES ∪ ALLOWED_TEXT_MIMES, which is the
- * shape AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong"
+ * shape agent-rules/docs.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong"
  * is about — so the drift guard in __tests__/lib/upload-validation.test.ts
  * pins it in both directions. That guard is what keeps the `?? "bin"` fallback
  * in `meaningfulUploadName` unreachable from the route: without it, a MIME

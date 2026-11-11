@@ -282,6 +282,6 @@ test("this repo's version declarations agree", () => {
   assert.deepEqual(
     problems,
     [],
-    `\n${problems.join("\n")}\n\nSee AGENTS.md § "Two Version Numbers, And Which Question Each Answers".`,
+    `\n${problems.join("\n")}\n\nSee agent-rules/release.md § "Two Version Numbers, And Which Question Each Answers".`,
   );
 });

@@ -1296,7 +1296,7 @@ describe("approval routes (integration, real DB)", () => {
    * test sees only one of them.
    *
    * Note that every OTHER test in this file seeds `confirmTools`, the pre-#1133
-   * shape. That is deliberate and is the migration evidence AGENTS.md § "Test
+   * shape. That is deliberate and is the migration evidence agent-rules/testing.md § "Test
    * Migrations Against Pre-Existing Data" asks for: the suite proves an agent
    * configured before the switch still gets gated by the new code, using the
    * new code's own route.

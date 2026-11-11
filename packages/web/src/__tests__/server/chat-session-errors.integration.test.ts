@@ -335,7 +335,7 @@ describe("resolveRetryGate (#1013)", () => {
   });
 
   it("falls back to the stored flag for a row written before the window existed", async () => {
-    // Pre-existing data (AGENTS.md §"Test Migrations Against Pre-Existing
+    // Pre-existing data (agent-rules/testing.md §"Test Migrations Against Pre-Existing
     // Data"): rows written before 0064 have no `runStartedAt`. There is no
     // honest window to re-derive over, so the gate must report exactly what the
     // old code decided — not invent a bound and answer over the wrong range.

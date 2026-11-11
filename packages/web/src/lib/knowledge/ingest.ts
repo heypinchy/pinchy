@@ -64,6 +64,7 @@ import {
 } from "./exclude-globs";
 import { statusForPath } from "./archive-paths";
 import { orderForIngest } from "./ingest-order";
+import type { QueuedFile } from "./folder-plan";
 import { buildPathFilter } from "./path-filter";
 import { recordUnsupportedFiles, unsupportedFileType } from "./unsupported-files";
 import { chunkPages } from "./chunk";
@@ -227,8 +228,10 @@ export interface IngestOptions {
    * the order the run will process them. `processed` in a later progress
    * report is a position in this list, which is what lets a caller say which
    * folder the run is in without a write per file (folder-plan.ts, #1386).
+   * Each entry says whether the archive rule put the file in an archived
+   * subfolder, which the run reads last (#1405).
    */
-  onQueue?: (paths: readonly string[]) => void | Promise<void>;
+  onQueue?: (queue: readonly QueuedFile[]) => void | Promise<void>;
   /**
    * Further knowledge-base folders the archive rule reads paths relative to,
    * besides this run's own roots (archive-paths.ts, #1420). A document's
@@ -1625,7 +1628,12 @@ export async function ingestPaths(
   // Reported before any work: "0 of N" is what tells a caller the run started
   // and how big it is. A caller that hears nothing until the first file lands
   // cannot tell a slow run from a dead one.
-  await opts.onQueue?.(queue.map((file) => file.absPath));
+  await opts.onQueue?.(
+    queue.map((file) => ({
+      path: file.absPath,
+      archived: statusForPath(file.absPath, classifyRoots) === "archived",
+    }))
+  );
   await report();
 
   for (const { absPath, bytes, realPath } of queue) {

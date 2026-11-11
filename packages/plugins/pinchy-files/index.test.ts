@@ -1369,7 +1369,7 @@ describe("pinchy_write tool", () => {
 // This can only reproduce on a normalization-sensitive filesystem (Linux/ext4,
 // where CI runs). macOS/APFS folds NFC and NFD onto the same file, so the mismatch
 // physically cannot occur and the block is gated off there — an OS-feature gate
-// (allowed by AGENTS.md), not a suppression: a real-tempfile test would pass even
+// (allowed by agent-rules/testing.md), not a suppression: a real-tempfile test would pass even
 // without the fix and prove nothing, which is why resolveOnDiskPath is injectable.
 function fsFoldsUnicode(): boolean {
   const probeDir = mkdtempSync(join(tmpdir(), "pinchy-fold-probe-"));
@@ -2101,7 +2101,7 @@ describe("pinchy_delete tool", () => {
   it("carries details.error on the failure path so the audit row is not a false success", async () => {
     // OpenClaw strips isError before forwarding a tool result to the audit
     // route, so details.error is the only remaining failure signal
-    // (AGENTS.md § "A Failing Tool Result Needs details.error").
+    // (agent-rules/plugins.md § "A Failing Tool Result Needs details.error").
     const api = createMockApi({
       "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
     });

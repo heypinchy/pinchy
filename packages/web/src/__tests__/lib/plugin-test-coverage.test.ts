@@ -18,7 +18,7 @@
 // silently fall outside CI. The root `pnpm test` script is
 // `pnpm --filter @pinchy/web test`, so plugin packages' own `vitest run`
 // scripts are never invoked in CI on their own — they only run by virtue
-// of being picked up by the include glob. See AGENTS.md § "Plugin
+// of being picked up by the include glob. See agent-rules/plugins.md § "Plugin
 // Integration Contract" for the broader plugin-coverage contract.
 import { describe, it, expect } from "vitest";
 import {

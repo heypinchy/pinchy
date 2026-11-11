@@ -48,7 +48,7 @@ interface SettingsUsersProps {
  * Accounts neither the setup wizard nor a claimed invite created — in
  * practice, self-registered through the sign-up endpoint earlier releases left
  * open (GET /api/users flags them, lib/user-provenance.ts decides). Persistent
- * and actionable, so an inline banner rather than a toast (AGENTS.md "Error And
+ * and actionable, so an inline banner rather than a toast (agent-rules/ui.md "Error And
  * Notification UI"); dismissing it hides it for this visit only, because the
  * accounts are still there until someone deactivates them.
  */

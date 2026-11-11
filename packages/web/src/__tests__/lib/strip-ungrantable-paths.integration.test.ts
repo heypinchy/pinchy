@@ -1,4 +1,4 @@
-// Pre-existing data, new code (AGENTS.md § "Test Migrations Against
+// Pre-existing data, new code (agent-rules/testing.md § "Test Migrations Against
 // Pre-Existing Data"), for #1272.
 //
 // Before v0.9.0 the agent PATCH accepted any `pinchy-files.allowed_paths`, from

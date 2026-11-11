@@ -11379,7 +11379,7 @@ describe("OpenAI-compatible custom providers (#894)", () => {
     expect(config.models.providers["swisscom-ai"].apiKey).toMatchObject({ source: "file" });
   });
 
-  // Upgrade invariance (AGENTS.md "Test Migrations Against Pre-Existing Data").
+  // Upgrade invariance (agent-rules/testing.md "Test Migrations Against Pre-Existing Data").
   // Config emission now ALSO walks the new `openai_compatible_providers` table.
   // On a real upgrade the deployment has ONLY built-in providers and that table
   // is EMPTY, so regenerating config in that state must be inert: the SAME
