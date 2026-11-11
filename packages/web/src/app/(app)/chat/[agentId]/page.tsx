@@ -23,7 +23,7 @@ export default async function ChatPage({
   searchParams?: Promise<{ keep?: string }>;
 }) {
   const { agentId } = await params;
-  const { agent, userId, avatarUrl, canEdit } = await loadChatPageAgent(agentId);
+  const { agent, userId, avatarUrl, canEdit, searchesKnowledge } = await loadChatPageAgent(agentId);
 
   // Where should a bare /chat/<agentId> land? (#508) The user's most-recently-
   // interacted chat — the sidebar links here when this device has no recorded
@@ -58,6 +58,7 @@ export default async function ChatPage({
       isPersonal={agent.isPersonal}
       avatarUrl={avatarUrl}
       canEdit={canEdit}
+      searchesKnowledge={searchesKnowledge}
     />
   );
 }

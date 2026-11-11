@@ -6,10 +6,9 @@ FROM mirror.gcr.io/library/node:22-slim
 RUN corepack enable
 
 # Same LibreOffice toolchain as the production image (see Dockerfile.pinchy for
-# why these exact packages). Dev needs it too: without it, indexing an Office
-# document in the dev stack reports every file as "converter did not run"
-# infrastructure failures, which looks nothing like the production behaviour it
-# is supposed to reproduce.
+# why these exact packages). Dev needs it too: the dev stack's office-converter
+# service runs THIS image, and without it every Office document would report
+# "converter did not run", which looks nothing like production.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        libreoffice-writer libreoffice-impress fonts-liberation catdoc \
@@ -48,7 +47,12 @@ RUN pnpm install --frozen-lockfile
 # but copying them here ensures the image also works standalone.
 COPY packages/web packages/web
 
-RUN mkdir -p /app/secrets
+RUN mkdir -p /app/secrets /var/spool/pinchy-office
+
+# Office conversion goes to the office-converter sidecar, exactly as in
+# production (see Dockerfile.pinchy) — the dev stack must not quietly convert
+# in-process, where the production boundary does not exist.
+ENV KB_OFFICE_SPOOL_DIR=/var/spool/pinchy-office
 
 EXPOSE 7777
 

@@ -90,8 +90,8 @@
  * it is a rewrite of formats LibreOffice reads in more ways than any list
  * here, and the next way LibreOffice draws something by its bytes is a gap
  * until someone finds it. What closes the family is isolating the converter
- * itself (no network, no view of the workspaces) — separate work, on branch
- * `feat/kb-office-convert-sidecar`.
+ * itself (no network, no view of the workspaces): the office-converter
+ * sidecar, `office-converter-sidecar.ts`.
  *
  * Every scan here is a single forward pass over the bytes: a regex that
  * backtracks on a hostile file blocks the web process the KB worker runs in.
@@ -1919,7 +1919,11 @@ export async function stageOfficeSource(
 ): Promise<StagedSource> {
   const { chunks, staged } = await checkedChunks(absPath, opts);
   try {
-    await writeFile(dest, chunks, { flag: "wx" });
+    // Exclusive and `0640`: in the office-converter's spool another uid
+    // shares this file's group and may make entries beside it. Whatever sits
+    // at this name already is refused, never written through, and a umask can
+    // only remove bits — the group can read the checked copy, never write it.
+    await writeFile(dest, chunks, { flag: "wx", mode: 0o640 });
   } catch (err) {
     throw new StagedCopyWriteError(err instanceof Error ? err.message : String(err));
   }

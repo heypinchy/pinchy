@@ -71,25 +71,25 @@ describe("parseSingleRecipient", () => {
   // A familiar name padded with characters that render blank (braille U+2800,
   // Hangul fillers) pushed the real address out of view.
   it.each([
-    ["braille pattern blanks", `Raimund Korber${"\u2800".repeat(190)} <attacker@evil.com>`],
-    ["a hangul filler", "Raimund\u3164Korber <attacker@evil.com>"],
-    ["a hangul choseong filler", "Raimund\u115FKorber <attacker@evil.com>"],
-    ["a hangul jungseong filler", "Raimund\u1160Korber <attacker@evil.com>"],
-    ["a halfwidth hangul filler", "Raimund\uFFA0Korber <attacker@evil.com>"],
+    ["braille pattern blanks", `Anna Berger${"\u2800".repeat(190)} <attacker@evil.com>`],
+    ["a hangul filler", "Anna\u3164Berger <attacker@evil.com>"],
+    ["a hangul choseong filler", "Anna\u115FBerger <attacker@evil.com>"],
+    ["a hangul jungseong filler", "Anna\u1160Berger <attacker@evil.com>"],
+    ["a halfwidth hangul filler", "Anna\uFFA0Berger <attacker@evil.com>"],
     // A single no-break or ideographic space is part of real names — Japanese
     // writes 山田\u3000太郎 — and the card prints it as ⟨U+3000⟩, as it does in
     // a path. A run of them is still blank space that pushes the address out
     // of view, so these rows test runs.
-    ["a run of no-break spaces", "Raimund\u00A0\u00A0Korber <attacker@evil.com>"],
-    ["a run of ideographic spaces", "Raimund\u3000\u3000Korber <attacker@evil.com>"],
-    ["a space next to an ideographic space", "Raimund \u3000Korber <attacker@evil.com>"],
+    ["a run of no-break spaces", "Anna\u00A0\u00A0Berger <attacker@evil.com>"],
+    ["a run of ideographic spaces", "Anna\u3000\u3000Berger <attacker@evil.com>"],
+    ["a space next to an ideographic space", "Anna \u3000Berger <attacker@evil.com>"],
     // This row is a zero-width SPACE (U+200B), not a zero-width JOINER: display
     // names accept a joiner — it sits inside ordinary emoji, takes no space,
     // and the card shows it as it is. The zero-width space stays refused, so
     // the row tests a zero-width refusal.
-    ["a zero-width space", "Raimund\u200BKorber <attacker@evil.com>"],
-    ["a paragraph separator", "Raimund\u2029Korber <attacker@evil.com>"],
-    ["a lone surrogate", "Raimund\uD83DKorber <attacker@evil.com>"],
+    ["a zero-width space", "Anna\u200BBerger <attacker@evil.com>"],
+    ["a paragraph separator", "Anna\u2029Berger <attacker@evil.com>"],
+    ["a lone surrogate", "Anna\uD83DBerger <attacker@evil.com>"],
   ])("rejects a display name with %s, and says why", (_label, input) => {
     const result = parseSingleRecipient(input);
     expect(result.ok).toBe(false);
@@ -105,15 +105,11 @@ describe("parseSingleRecipient", () => {
       '"山田\u3000太郎" <yamada@example.jp>',
       "山田\u3000太郎 <yamada@example.jp>",
     ],
-    [
-      "a no-break space",
-      "Raimund\u00A0Korber <rk@example.com>",
-      "Raimund\u00A0Korber <rk@example.com>",
-    ],
+    ["a no-break space", "Anna\u00A0Berger <rk@example.com>", "Anna\u00A0Berger <rk@example.com>"],
     [
       "a narrow no-break space",
-      "Raimund\u202FKorber <rk@example.com>",
-      "Raimund\u202FKorber <rk@example.com>",
+      "Anna\u202FBerger <rk@example.com>",
+      "Anna\u202FBerger <rk@example.com>",
     ],
   ])("accepts a display name with %s", (_label, input, address) => {
     expect(parseSingleRecipient(input)).toEqual({ ok: true, address });
@@ -125,7 +121,7 @@ describe("parseSingleRecipient", () => {
   });
 
   it("rejects a run of spaces, and says why", () => {
-    for (const input of ["Raimund   Korber <a@x.at>", "Raimund Korber      <a@x.at>"]) {
+    for (const input of ["Anna   Berger <a@x.at>", "Anna Berger      <a@x.at>"]) {
       const result = parseSingleRecipient(input);
       expect(result.ok, input).toBe(false);
       if (!result.ok) expect(result.error).toMatch(/run of spaces/i);
@@ -181,7 +177,7 @@ describe("parseSingleRecipient", () => {
 describe("parseSingleRecipient: names with commas, parentheses and emoji", () => {
   it.each([
     ['"M\u00FCller, Hans" <hans@x.de>', '"M\u00FCller, Hans" <hans@x.de>'],
-    ['"Raimund Korber (Noack)" <r@noack.at>', '"Raimund Korber (Noack)" <r@noack.at>'],
+    ['"Anna Berger (Example)" <anna@example.at>', '"Anna Berger (Example)" <anna@example.at>'],
     [' "Meier; Partner" <m@x.at> ', '"Meier; Partner" <m@x.at>'],
     ['"Ada Lovelace" <ada@example.com>', "Ada Lovelace <ada@example.com>"],
     ["\u2764\uFE0F Team <t@x.at>", "\u2764\uFE0F Team <t@x.at>"],
@@ -203,11 +199,11 @@ describe("parseSingleRecipient: names with commas, parentheses and emoji", () =>
   });
 
   it("tells the model to quote an unquoted name with parentheses", () => {
-    const result = parseSingleRecipient("Raimund Korber (Noack) <r@noack.at>");
+    const result = parseSingleRecipient("Anna Berger (Example) <anna@example.at>");
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/parenthes/i);
-    expect(result.error).toContain('"Raimund Korber (Noack)" <r@noack.at>');
+    expect(result.error).toContain('"Anna Berger (Example)" <anna@example.at>');
   });
 
   it.each([

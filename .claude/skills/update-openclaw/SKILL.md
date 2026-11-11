@@ -215,6 +215,16 @@ openclaw/openclaw --json state,closedAt`). But **"issue closed" is
    fires the hook. If the notes touched bootstrap/hook/session-key behavior,
    run the HOOK.md staging check before shipping.
 
+   **`pinchy-knowledge`'s language note pins the version too.** Its
+   `before_prompt_build` hook adds a per-turn note to the user's message,
+   which OpenClaw does not store, so later turns replay a different prefix
+   (#1296). That's safe only while Claude Haiku 5.5, the one preserved-thinking
+   model Pinchy offers, runs with thinking off. The test "is re-checked when
+   OpenClaw is bumped" in `packages/plugins/pinchy-knowledge/index.test.ts`
+   fails on a bump. Check on staging that a Haiku 5.5 KB agent with thinking
+   answers a second turn after a non-English first one, or drop the note,
+   before updating the pinned version in that test.
+
 7. **Don't commit automatically.** Report the diff (`git status --short`,
    `git diff --stat`) and let the user decide to commit/PR — this touches a
    runtime dependency, not just app code.

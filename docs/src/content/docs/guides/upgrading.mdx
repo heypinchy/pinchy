@@ -187,7 +187,143 @@ If you need to roll back after an upgrade:
 
 The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint files to; those live on the `pinchy-kb-artifacts` volume. When the version you upgraded to converts those files differently, it keeps the older PDFs until it has converted again every file a knowledge-base agent can search, and only then deletes them. Roll back before that and nothing is lost. Roll back after it, and the older version still finds every such file in the search, but a citation of one that hasn't changed since won't open its preview, because the PDF it looks for is gone; the original file downloads as usual. If you want previews to survive a rollback, back up that volume alongside the database, the way [Backup & recovery](/guides/hardening/#backup--recovery) describes for the other volumes, and restore it with the database.
 
-## Upgrading from v0.9.1 to %%PINCHY_VERSION%%
+## Upgrading from v0.10.3 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+#### `POST /api/settings` only accepts `org.timezone`
+
+The endpoint used to store any key you sent it, which let an admin write provider, domain-lock, enterprise-key or Telegram settings around the routes that own them — skipping their validation, side effects and audit entry. It now accepts `org.timezone` and answers every other key with `400`. The Settings UI only ever sent the timezone, so nothing changes there. If a script of yours posted other keys here, use the dedicated endpoint instead; the [API reference](/reference/api/) lists them.
+
+### Upgrade notes
+
+This release adds a service to `docker-compose.yml` — the [Office converter](#word-and-powerpoint-files-are-converted-in-a-container-of-their-own) — so fetch the new file along with the version bump. Fetching the file replaces it: if you edited `docker-compose.yml` itself, move those changes into a `docker-compose.override.yml` first — see [Customizing your deployment](/guides/customizing-deployment/).
+
+```bash
+cd /opt/pinchy
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+If you keep local changes in a `docker-compose.override.yml`, they carry over as usual.
+
+#### Word and PowerPoint files are converted in a container of their own
+
+Word documents and slide decks are converted to PDF in a service of their own, `office-converter`, not in the `pinchy` container: it has no network and none of Pinchy's secrets. Its only network interface is its own loopback, so there is no route to your Docker network, your host or the internet, and of your data it sees only a hand-over folder where Pinchy puts the copies to convert — no configuration, no secrets, no mounted documents. It runs as a user of its own: it can read those copies and write the converted PDFs back, but not change or remove anything Pinchy put there. If a conversion ever leaves a process running in it, the converter restarts itself and its documents are converted again one at a time; a document that does it on its own counts as `failed` in that reindex report and is tried again on the next one. The safeguards described in [Indexing no longer follows links inside Office files](#indexing-no-longer-follows-links-inside-office-files) stay in place. This is what still holds if a file ever gets past them: there is nowhere to send a request and nothing to read.
+
+There is nothing extra to pull: the converter runs from the same image as `pinchy`. It gets its own memory ceiling, `OFFICE_CONVERTER_MEM_LIMIT` (default `1g`), so a large conversion doesn't compete with the web app — see [Memory when the knowledge base indexes Office documents](/guides/customizing-deployment/#memory-when-the-knowledge-base-indexes-office-documents).
+
+It needs the new `docker-compose.yml` from the upgrade notes above. Without it, Pinchy does not fall back to converting on its own: Word and PowerPoint files are counted `failed` in the reindex report, keep whatever they had in the index, and the server log says `office converter is not reachable`. Fetch the file, run `docker compose up -d`, and the next reindex picks them up.
+
+#### Web agents can fetch pages without a search provider
+
+Agents created from a web template, such as the Market & News Monitor, used to get no web tools at all on an instance without a Brave Search API key: the tools were granted, but the plugin behind them never loaded, and nothing said so. They now load either way. **Fetch web pages** works without a key, and **Search the web** answers that web search isn't configured until an admin adds one in **Settings → Integrations**. The create form and the agent's **Web Search** section say when search isn't set up. Nothing to do on upgrade; existing web agents gain page fetching on their own.
+
+#### Pinchy's own requests after an address check pin the address
+
+The address checks for Odoo, mail servers and OpenAI-compatible providers resolve the hostname, and the client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool already pinned the address it checked. From this release, so do the requests Pinchy makes itself right after a check: the mail **Test connection**, listing Odoo databases, and an OpenAI-compatible provider's model discovery and key check. Those also no longer contact a name that doesn't resolve. Everything else still looks the name up again: the agent's Odoo and mail tools, the agent runtime's requests to a provider, and Pinchy's other Odoo requests (testing credentials, previewing and syncing the schema). Nothing to configure.
+
+#### A change made while OpenClaw restarts now reaches it
+
+If you created an agent or changed a setting while OpenClaw was restarting or rate-limiting config changes, the change could land in `openclaw.json` and still never reach the running OpenClaw. Chats to that agent then failed with `unknown agent id` until some later, unrelated change happened to push the config again. We now push it again ourselves — when Pinchy reconnects to OpenClaw, or a minute later if OpenClaw stayed connected, backing off until OpenClaw has applied it, unless OpenClaw rejected the config itself. Restarting Pinchy in the meantime drops that retry; the next change you make delivers it. Nothing to configure.
+
+#### Unsent drafts in the browser are cleared once
+
+Pinchy now remembers in each browser which person was signed in last. That way the next person on a shared computer never sees what the last one left behind: unsent drafts, attachments staged but not sent, files shared into the installed app but not sent, the last chat opened for each agent (#1286). After the upgrade, no browser has that record yet. So the first page load after the upgrade clears those things once. Only shares from the last 10 minutes are kept. Ask people to send any half-written message before you upgrade.
+
+## Upgrading from v0.10.2 to v0.10.3
+
+### Breaking changes
+
+None so far.
+
+### Upgrade notes
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.10.2/PINCHY_VERSION=v0.10.3/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### Files the knowledge base can't read are counted and listed
+
+A `.tif` scan, an old `.xls` or a `.txt` on a share used to vanish without a trace: no document, no counter, nothing to look up. A run now counts them as `N not supported` in the agent's **Index** section, and **Download the list** gives you a CSV with each one's path and type, so you can convert them or tell users what the agent can't see. Nothing to configure. The count and the list appear after each agent's next run. For an agent with knowledge search, the nightly run is enough; any other agent needs **Reindex now**. [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read) has the details.
+
+#### A first index reads current documents first
+
+A reindex used to read files in whatever order it found them, so on a large share the documents people ask about could come last. It now reads every file outside an [archived folder](/guides/create-knowledge-base-agent/#current-documents-first) first, one folder after another, and the archived ones after that. Most folders are searchable long before the run ends. Scanned PDFs are also sent to your vision model three pages at a time instead of one, which shortens a first index with many scans. Nothing to configure. To speed up embedding, raise `PINCHY_CPUS`: see [CPU when the knowledge base embeds](/guides/customizing-deployment/#cpu-when-the-knowledge-base-embeds).
+
+#### See which folders and files a knowledge-base agent can search
+
+The **Index** section of a knowledge-base agent now has a **Folders** list. It shows each granted folder and the folders directly inside it as searchable, being indexed, queued or needing attention, and **Files** lists a folder's files with the state of each. Members see the same list, read-only, from **What can this agent search?** in the chat. Two new read-only endpoints serve it: [`GET …/knowledge/folders`](/reference/api/#get-apiagentsagentidknowledgefolders) and [`GET …/knowledge/files`](/reference/api/#get-apiagentsagentidknowledgefiles). Nothing to configure. The count of how many files a run found in each folder appears after each agent's next run; until then a folder's count is measured against what is in the index. [See what the agent can search](/guides/create-knowledge-base-agent/#see-what-the-agent-can-search) has the details.
+
+### Database migrations
+
+The migrations `0080`–`0081` run automatically on startup — no manual steps. Both are additive.
+
+- `0080` — `kb_unsupported_files`, the list of files a run found but can't index, behind the new **Download the list** in the Index section. It starts empty and fills on each agent's next run.
+- `0081` — a `folder_plan` column on `kb_index_jobs`: how many files each run found per folder, behind the counts in the new **Folders** list. Empty for runs before the upgrade.
+
+## Upgrading from v0.10.1 to v0.10.2
+
+### Breaking changes
+
+None so far.
+
+### Upgrade notes
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.10.1/PINCHY_VERSION=v0.10.2/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### One file the embedding model refuses no longer stops a reindex
+
+A passage can be dense enough — a table full of numbers, say — that it holds more tokens than the embedding model takes at once. The model then answered `Input is longer than the context size`, and the whole reindex stopped at that file. The next run stopped at the same file again, so on a large share the first full index never finished. We now measure every passage with the model's own tokenizer before embedding it and split one that is too long into pieces the model takes. Each piece keeps the page or sheet it came from, so citations still open in the right place.
+
+More generally, anything that goes wrong with one file now costs only that file: it counts as `failed` in the reindex report, the server log names it, and the run goes on with the next file. Only a problem that would fail every file after it stops the run: the embedding model can't be loaded or reached, the connection to the database is lost or the database shuts down, or the run is stopped. Nothing to configure. If a reindex kept stopping at the same file, run **Reindex now** after the upgrade.
+
+## Upgrading from v0.10.0 to v0.10.1
+
+### Breaking changes
+
+None so far.
+
+### Upgrade notes
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.10.0/PINCHY_VERSION=v0.10.1/' .env
+docker compose pull && docker compose up -d && docker image prune -f
+```
+
+#### `PINCHY_KB_OCR=off` in `.env` now takes effect
+
+On v0.10.0, `PINCHY_KB_OCR=off` in your `.env` was ignored. We told you in the v0.10.0 notes to set it there to keep scanned pages away from your vision model, but our `docker-compose.yml` never passed it to the Pinchy container. So OCR stayed on: if you have an Anthropic, Google, OpenAI or Ollama Cloud key, Pinchy picked a vision model from it on its own, and indexing sent scanned pages to that provider. The `knowledge.reindex` entries in the [audit trail](/concepts/audit-trail/) show how many documents and pages went to which model since you upgraded. If you set it, scans read on v0.10.0 keep the text already in the index and are not sent again, and from this release on new and changed scans are not sent either. If you never set it, nothing changes: scans still go to your vision model.
+
+Eight more switches the docs tell you to set had the same gap, in every release so far: `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS`, `ALLOW_PRIVATE_URLS`, `ALLOW_PRIVATE_MAIL_HOSTS`, `PINCHY_USAGE_POLL_INTERVAL_MS`, `AUDIT_VERIFY_INTERVAL_MS`, and the three Telegram conflict switches `TELEGRAM_CONFLICT_AUTO_RESTART`, `TELEGRAM_CONFLICT_AUTO_DISABLE` and `TELEGRAM_CONFLICT_RECENT_WINDOW_MS`. The new `docker-compose.yml` passes all nine through. The upgrade commands above fetch it, and `docker compose up -d` recreates the container with your `.env` values. Every one of them is listed in [Environment variables](/reference/environment-variables/#behaviour-switches).
+
+**Check your `.env` before you upgrade.** Any of these lines you set once and forgot takes effect now:
+
+- `PINCHY_PROVIDER_BLOCK_PRIVATE_NETWORKS=1`: a custom (OpenAI-compatible) provider saved on a private address shows **Not in use** afterwards, and agents that use it get errors until you point it elsewhere. Until now, admins could save such addresses despite the setting.
+- `ALLOW_PRIVATE_URLS=1` or `ALLOW_PRIVATE_MAIL_HOSTS=1`: Odoo and mail connections can now reach your private network. Remove the line if that is not what you want.
+- `TELEGRAM_CONFLICT_AUTO_DISABLE=false`: if you set it to handle conflicts yourself, the watchdog may still have disabled a newly connected bot. Reconnect it from the agent's Telegram settings.
+
+If you added any of them to the `environment:` list of a `docker-compose.override.yml` as a workaround, you can keep it. The value there wins over `.env`.
+
+#### One file the database refuses no longer stops a reindex
+
+Some PDFs and workbooks carry a NUL character in their text or in a sheet name. PostgreSQL can't store that character, so it refused the file's rows, and the whole reindex stopped with an error starting `Failed query: insert into "kb_chunks"`. The database log said `invalid byte sequence for encoding "UTF8": 0x00`. The next run then stopped at the same file again, so documents after it never got indexed. We now remove NUL from what we read and turn the other invisible control characters into spaces before storing it. Tabs and line breaks stay. If the database still refuses a file's rows, that file counts as `failed` in the reindex report and the server log names it. If an earlier version of it was indexed, that version stays searchable. The run goes on with the next file, and the file is tried again on the next run. Nothing to configure. If a reindex stopped this way, run **Reindex now** after the upgrade.
+
+## Upgrading from v0.9.1 to v0.10.0
 
 ### Breaking changes
 
@@ -272,17 +408,13 @@ A call to a Pinchy tool that carries a field the tool doesn't take is now refuse
 
 Two calls change for agents you already run. `email_search` now refuses an empty `query` too — v0.9.1 refused only a non-empty one, with a message naming the filters to use. And `odoo_delete` refuses `ids` (see [above](#deleting-in-odoo-now-requires-reading-the-record-first)). Both tool descriptions now say what to use instead, so an agent doesn't need the error to find out.
 
-#### `POST /api/settings` only accepts `org.timezone`
-
-The endpoint used to store any key you sent it, which let an admin write provider, domain-lock, enterprise-key or Telegram settings around the routes that own them — skipping their validation, side effects and audit entry. It now accepts `org.timezone` and answers every other key with `400`. The Settings UI only ever sent the timezone, so nothing changes there. If a script of yours posted other keys here, use the dedicated endpoint instead; the [API reference](/reference/api/) lists them.
-
 ### Upgrade notes
 
 The standard flow applies:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/^PINCHY_VERSION=.*/PINCHY_VERSION=v0.10.0/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
@@ -345,7 +477,7 @@ It takes effect the first time you start with the new compose file, so nothing c
 
 ```bash
 cd /opt/pinchy
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.10.0/docker-compose.yml -o docker-compose.yml
 ```
 
 **If you already have a value in `.env`, that switches the key your audit trail is signed with.** Entries written before the switch keep their old signature, and they're neither lost nor damaged: Pinchy still holds the previous key in the `pinchy-secrets` volume, so integrity verification reports those rows as signed with an earlier secret instead of flagging them as tampered. The hash chain is unaffected either way — it links each row to its predecessor's stored signature, whichever key produced it.
@@ -401,7 +533,7 @@ The same now goes for a saved **OpenAI-compatible provider**. Its base URL is ch
 
 Two gaps remain, and we'd rather say so.
 
-- **DNS rebinding.** The check resolves the hostname, and the Odoo or mail client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool pins the address it checked, and so, from this release, do the requests Pinchy makes itself right after a check: the mail **Test connection**, listing Odoo databases, and an OpenAI-compatible provider's model discovery and key check. Those also no longer contact a name that doesn't resolve. Everything else still looks the name up again: the agent's Odoo and mail tools, the agent runtime's requests to a provider, and Pinchy's other Odoo requests (testing credentials, previewing and syncing the schema).
+- **DNS rebinding.** The check resolves the hostname, and the Odoo or mail client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool pins the address it checked; the Odoo and mail clients don't yet.
 - **A name the two containers resolve differently.** Pinchy runs the check in its own container; the Odoo and mail tools connect from the agent runtime's (`openclaw`). Our `docker-compose.yml` used to map `ollama.local` — the Docker host — in the runtime's container only, so for Pinchy that name didn't resolve, the check let it through, and an Odoo URL on `ollama.local` reached the Docker host. The compose file for this release maps it in both containers, so it's checked as the Docker host's address like any other. Re-fetch the compose file as [described above](#audit_hmac_secret-in-env-now-actually-does-something) to pick that up, and if you've added `extra_hosts` entries of your own to the `openclaw` service, add them to `pinchy` too.
 
 #### An Odoo URL that redirects now fails instead of being followed
@@ -482,10 +614,6 @@ Three things worth knowing before the first night:
 - **New scans are sent to your vision model during the night they arrive**, exactly as a manual reindex would send them, and recorded the same way in the audit trail and the Usage Dashboard. `PINCHY_KB_OCR=off` stops that for nightly runs too.
 
 [Keeping the index current](/guides/create-knowledge-base-agent/#keeping-the-index-current) has the details, including how a missed night is caught up.
-
-#### Files the knowledge base can't read are counted and listed
-
-A `.tif` scan, an old `.xls` or a `.txt` on a share used to vanish without a trace: no document, no counter, nothing to look up. A run now counts them as `N not supported` in the agent's **Index** section, and **Download the list** gives you a CSV with each one's path and type, so you can convert them or tell users what the agent can't see. Nothing to configure. The count and the list appear after each agent's next run. For an agent with knowledge search, the nightly run is enough; any other agent needs **Reindex now**. [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read) has the details.
 
 #### Stopping a reply keeps what it already said
 
@@ -579,17 +707,9 @@ The **Invite User** dialog used to call the email optional, but an invite withou
 
 An invite created without an email still can't be used, and its link now says so up front. Revoke it in **Settings → Users** and invite the person again with their email. An expired one shows **Revoke** instead of **Resend**, because a fresh invite needs an email.
 
-#### A change made while OpenClaw restarts now reaches it
-
-If you created an agent or changed a setting while OpenClaw was restarting or rate-limiting config changes, the change could land in `openclaw.json` and still never reach the running OpenClaw. Chats to that agent then failed with `unknown agent id` until some later, unrelated change happened to push the config again. We now push it again ourselves — when Pinchy reconnects to OpenClaw, or a minute later if OpenClaw stayed connected, backing off until OpenClaw has applied it, unless OpenClaw rejected the config itself. Restarting Pinchy in the meantime drops that retry; the next change you make delivers it. Nothing to configure.
-
-#### Unsent drafts in the browser are cleared once
-
-Pinchy now remembers in each browser which person was signed in last. That way the next person on a shared computer never sees what the last one left behind: unsent drafts, attachments staged but not sent, files shared into the installed app but not sent, the last chat opened for each agent (#1286). After the upgrade, no browser has that record yet. So the first page load after the upgrade clears those things once. Only shares from the last 10 minutes are kept. Ask people to send any half-written message before you upgrade.
-
 ### Database migrations
 
-The migrations `0056`–`0080` run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
+The migrations `0056`–`0079` run automatically on startup — no manual steps. Only `0056` is destructive, and only for the Knowledge Base tables (see the breaking change above); the rest are additive.
 
 - `0056` — recreates `kb_chunks.embedding` at 768 dimensions for the bundled in-process `embeddinggemma` embedder and clears the two Knowledge Base tables.
 - `0057` — backfills `kb_documents.status` so documents ingested before the archive rule existed are classified by it too.
@@ -612,7 +732,6 @@ The migrations `0056`–`0080` run automatically on startup — no manual steps.
 - `0077` — `artifact_format_version` on `kb_documents`: which version of the rules for converting Word and PowerPoint files a document's indexed text comes from, so a later change to those rules knows which documents to convert again.
 - `0078` — `upgrade` as a third `trigger` on `kb_index_jobs`, for the reindex Pinchy starts on its own after such a change.
 - `0079` — `artifact_format_version` on `kb_index_jobs`: the version of those rules a run converted under, so a run from before the upgrade doesn't count as one that already converted a folder's files under the new rules. Jobs that predate it carry nothing, and count as runs under earlier rules.
-- `0080` — `kb_unsupported_files`, the list of files a run found but can't index, behind the new **Download the list** in the Index section. It starts empty and fills on each agent's next run.
 
 ## Upgrading from v0.9.0 to v0.9.1
 

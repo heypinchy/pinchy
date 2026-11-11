@@ -41,7 +41,7 @@
  *   spaces, line breaks or tabs is shown as `⟨N spaces⟩` / `⟨N line breaks⟩` /
  *   `⟨N tabs⟩`, so padding cannot push text out of view. U+200C / U+200D
  *   (the joiners) and U+FE0E / U+FE0F (text / emoji presentation) are marked
- *   everywhere — "Noack\u200D GmbH" must not read as "Noack GmbH",
+ *   everywhere — "Acme\u200D GmbH" must not read as "Acme GmbH",
  *   nor `க்\u200Cம.md` as `க்ம.md`, nor
  *   `❤️\u200D🔥.md` as `❤️🔥.md`: whether a joiner draws anything, in a script
  *   or inside an emoji, depends on the approver's font, which the server

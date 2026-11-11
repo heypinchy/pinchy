@@ -290,7 +290,7 @@ describe("freshness axis (#858) — archived material is excluded by default, op
   // The mechanism proof behind the freshness axis's perfect numeric scores:
   // the archived 2013 AFNOR cert competes with the current 2024 cert for the
   // same query. Default retrieval must never surface the expired one (the
-  // exact dangerous answer the 2026-07-14 Noack live test produced), and the
+  // exact dangerous answer the 2026-07-14 customer live test produced), and the
   // explicit includeArchived opt-in must bring it back for "search the
   // archive too". Seeded via statusForPath, so a regression in the ingest
   // rule OR the retrieval filter turns this red.

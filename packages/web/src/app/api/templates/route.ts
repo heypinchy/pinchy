@@ -29,6 +29,16 @@ export const GET = withAuth(async () => {
 
   const hasEmailConnection = emailConnections.length > 0;
 
+  // Web templates do not need this to be creatable — pinchy_web_fetch works
+  // without a key — but the form says when search is not set up (#1297).
+  const webSearchConnections = await db
+    .select({ id: integrationConnections.id })
+    .from(integrationConnections)
+    .where(eq(integrationConnections.type, "web-search"))
+    .limit(1);
+
+  const hasWebSearchConnection = webSearchConnections.length > 0;
+
   // Load connection models for Odoo availability check
   const connectionModels = hasOdooConnection ? await getConnectionModels() : null;
 
@@ -79,6 +89,7 @@ export const GET = withAuth(async () => {
         requiresOdooConnection: template.requiresOdooConnection ?? false,
         requiresEmailConnection: template.requiresEmailConnection ?? false,
         requiresWeb: template.pluginId === "pinchy-web",
+        webSearchConfigured: hasWebSearchConnection,
         odooAccessLevel: template.odooConfig?.accessLevel,
         defaultTagline: template.defaultTagline,
         available,

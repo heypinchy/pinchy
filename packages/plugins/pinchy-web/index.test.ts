@@ -296,6 +296,32 @@ describe("pinchy-web plugin", () => {
       expect(result.details).toEqual({ error: result.content[0].text });
     });
 
+    // #1297: the config Pinchy emits when no web-search provider exists.
+    it("fetches pages without a web-search connection and never asks for credentials", async () => {
+      const fetchMock = stubCredentialsFetch("unused");
+      webFetchMock.mockResolvedValue({ content: "Example Domain" });
+      const factories = collectFactories({
+        apiBaseUrl: "https://pinchy.test",
+        gatewayToken: "gw-token",
+        agents: {
+          "agent-1": { tools: ["pinchy_web_search", "pinchy_web_fetch"] },
+        },
+      });
+
+      const fetchTool = factories.pinchy_web_fetch({ agentId: "agent-1" })!;
+      const fetched = await fetchTool.execute("call-1", { url: "https://example.com" });
+      expect(fetched.isError).toBeFalsy();
+      expect(fetched.content[0].text).toBe("Example Domain");
+
+      const searchTool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      const searched = await searchTool.execute("call-2", { query: "test" });
+      expect(searched.isError).toBe(true);
+      expect(searched.content[0].text).toContain("not configured");
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(braveSearchMock).not.toHaveBeenCalled();
+    });
+
     it("returns isError when braveSearch throws", async () => {
       braveSearchMock.mockRejectedValue(new Error("API rate limit"));
       stubCredentialsFetch("brave-key-123");
