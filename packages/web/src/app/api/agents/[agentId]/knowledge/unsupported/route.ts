@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { withAdmin } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { type AgentPluginConfig } from "@/db/schema";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 import { csvField } from "@/lib/csv";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { listUnsupportedFiles } from "@/lib/knowledge/unsupported-files";
@@ -59,8 +60,7 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
   if (agentOrError instanceof NextResponse) return agentOrError;
   const agent = agentOrError;
 
-  const allowedPaths =
-    (agent.pluginConfig as AgentPluginConfig | null)?.["pinchy-files"]?.allowed_paths ?? [];
+  const allowedPaths = grantedDataPaths(agent.pluginConfig as AgentPluginConfig | null);
 
   // Denies by default on an empty grant list: an agent granted nothing yields
   // a header and no rows.

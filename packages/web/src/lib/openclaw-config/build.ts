@@ -22,6 +22,7 @@ import { getSetting, getSettingsByPrefix } from "@/lib/settings";
 import { getInstancePolicy, isPausedPersonalAgent } from "@/lib/instance-policy";
 import { computeAllowedTools, EMAIL_OPERATION_DISPLAY_ORDER } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 import {
   TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
   OLLAMA_CLOUD_COST,
@@ -664,8 +665,9 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // Both are READABLE for every agent, so an agent can revisit what the user
     // gave it and what it produced earlier (#418). Only workbench/ is writable,
     // and only on the grant — see the write_paths block below.
-    const adminFilesConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-files"];
-    const adminPaths: string[] = adminFilesConfig?.allowed_paths ?? [];
+    // Only entries under /data: a row written before v0.9.0 confined the
+    // column can still name the workspaces root or `/` (#1272).
+    const adminPaths = grantedDataPaths(agent.pluginConfig as AgentPluginConfig | null);
     const workspaceUploads = `${getOpenClawWorkspacePath(agent.id)}/uploads`;
     const workspaceWorkbench = `${getOpenClawWorkspacePath(agent.id)}/workbench`;
     const allowedPaths = [...adminPaths, workspaceUploads, workspaceWorkbench];

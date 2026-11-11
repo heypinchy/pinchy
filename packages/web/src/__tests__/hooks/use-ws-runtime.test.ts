@@ -1579,7 +1579,8 @@ describe("useWsRuntime", () => {
           isHistoryLoaded: ws.isHistoryLoaded,
           hasInitialContent: ws.hasInitialContent,
           isRunning: ws.isRunning,
-          reconnectExhausted: ws.reconnectExhausted,
+          isOffline: ws.isOffline,
+          connectionRejection: ws.connectionRejection,
           payloadRejected: ws.payloadRejected,
           historyTimedOut: ws.historyTimedOut,
           configuring: false,
@@ -2007,7 +2008,8 @@ describe("useWsRuntime", () => {
       expect(wsInstances).toHaveLength(3);
     });
 
-    it("should cap backoff at 5 seconds", () => {
+    it("should cap backoff at 15 seconds", () => {
+      vi.spyOn(Math, "random").mockReturnValue(1); // top of the jitter range: exact delays
       renderHook(() => useWsRuntime("agent-1"));
       const ws1 = wsInstances[0];
 
@@ -2015,59 +2017,60 @@ describe("useWsRuntime", () => {
         ws1.simulateOpen();
       });
 
-      // Disconnect 4 times: delays are 1s, 2s, 4s, 5s (capped)
+      // Disconnect 4 times: delays are 1s, 2s, 4s, 8s
       for (let i = 0; i < 4; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
           ws.simulateClose();
         });
         act(() => {
-          vi.advanceTimersByTime(5000);
+          vi.advanceTimersByTime(8000);
         });
       }
 
-      // 5th disconnect: should still reconnect after 5s (not 16s or 32s)
+      // 5th disconnect: 16s is capped to 15s
       const ws5 = wsInstances[wsInstances.length - 1];
       act(() => {
         ws5.simulateClose();
       });
-
-      // After 5s the next reconnect should happen (capped, not 16s)
       act(() => {
-        vi.advanceTimersByTime(5000);
+        vi.advanceTimersByTime(14_999);
+      });
+      expect(wsInstances).toHaveLength(5);
+      act(() => {
+        vi.advanceTimersByTime(1);
       });
       expect(wsInstances).toHaveLength(6); // original + 5 reconnects
     });
 
-    it("should stop reconnecting after max attempts", () => {
+    it("should keep reconnecting past the old ten-attempt limit", () => {
       renderHook(() => useWsRuntime("agent-1"));
       const ws1 = wsInstances[0];
       act(() => {
         ws1.simulateOpen();
       });
 
-      // Simulate 10 disconnects without successful reconnect
       for (let i = 0; i < 10; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
           ws.simulateClose();
         });
         act(() => {
-          vi.advanceTimersByTime(5000);
-        }); // Max delay (capped at 5s)
+          vi.advanceTimersByTime(15_000);
+        });
       }
 
       expect(wsInstances).toHaveLength(11); // original + 10 reconnects
 
-      // 11th disconnect should NOT reconnect
+      // The 11th disconnect still reconnects: a visible tab never gives up.
       const lastWs = wsInstances[wsInstances.length - 1];
       act(() => {
         lastWs.simulateClose();
       });
       act(() => {
-        vi.advanceTimersByTime(60000);
+        vi.advanceTimersByTime(15_000);
       });
-      expect(wsInstances).toHaveLength(11); // No new connection
+      expect(wsInstances).toHaveLength(12);
     });
   });
 
@@ -2638,7 +2641,8 @@ describe("useWsRuntime", () => {
           isHistoryLoaded: ws.isHistoryLoaded,
           hasInitialContent: ws.hasInitialContent,
           isRunning: ws.isRunning,
-          reconnectExhausted: ws.reconnectExhausted,
+          isOffline: ws.isOffline,
+          connectionRejection: ws.connectionRejection,
           payloadRejected: ws.payloadRejected,
           historyTimedOut: ws.historyTimedOut,
           configuring: false,
@@ -2748,66 +2752,51 @@ describe("useWsRuntime", () => {
     });
   });
 
-  describe("reconnectExhausted", () => {
-    it("should return reconnectExhausted as false initially", () => {
+  // The ten-attempt "exhausted" dead end is gone (#1422): the connection state is
+  // reported as offline / refused, and the hook keeps dialing.
+  describe("no exhausted dead end", () => {
+    it("starts online and not refused", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
-      expect(result.current.reconnectExhausted).toBe(false);
+      expect(result.current.isOffline).toBe(false);
+      expect(result.current.connectionRejection).toBeNull();
     });
 
-    it("should set reconnectExhausted to true after all reconnect attempts fail", () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws1 = wsInstances[0];
-
+    it("keeps dialing after more failures than the old ten-attempt budget", () => {
+      renderHook(() => useWsRuntime("agent-1"));
       act(() => {
-        ws1.simulateOpen();
+        wsInstances[0].simulateOpen();
       });
-
-      // Exhaust all MAX_RECONNECT_ATTEMPTS (10) + the original connection
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 12; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
           ws.simulateClose();
         });
         act(() => {
-          vi.advanceTimersByTime(5000);
+          vi.advanceTimersByTime(15_000);
         });
       }
-
-      // 11th disconnect — no more reconnect attempts
-      const lastWs = wsInstances[wsInstances.length - 1];
-      act(() => {
-        lastWs.simulateClose();
-      });
-
-      expect(result.current.reconnectExhausted).toBe(true);
+      expect(wsInstances).toHaveLength(13);
     });
 
-    it("should reset reconnectExhausted to false when reconnect succeeds", () => {
+    it("is still connected and not refused after a few failures and a successful reconnect", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
-      const ws1 = wsInstances[0];
-
       act(() => {
-        ws1.simulateOpen();
+        wsInstances[0].simulateOpen();
       });
-
-      // Fail a few times (but not all)
       for (let i = 0; i < 3; i++) {
         const ws = wsInstances[wsInstances.length - 1];
         act(() => {
           ws.simulateClose();
         });
         act(() => {
-          vi.advanceTimersByTime(5000);
+          vi.advanceTimersByTime(15_000);
         });
       }
-
-      // Successful reconnect
-      const ws4 = wsInstances[wsInstances.length - 1];
       act(() => {
-        ws4.simulateOpen();
+        wsInstances[wsInstances.length - 1].simulateOpen();
       });
-
-      expect(result.current.reconnectExhausted).toBe(false);
+      expect(result.current.isConnected).toBe(true);
+      expect(result.current.connectionRejection).toBeNull();
     });
   });
 
@@ -3281,7 +3270,7 @@ describe("useWsRuntime", () => {
       await failLatestDial(2_000);
       await failLatestDial(4_000);
       const afterThird = wsInstances.length;
-      await failLatestDial(5_000);
+      await failLatestDial(8_000);
 
       expect(mockFetch).toHaveBeenCalled();
       expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();
@@ -3302,7 +3291,7 @@ describe("useWsRuntime", () => {
       await failLatestDial(2_000);
       await failLatestDial(4_000);
       const afterThird = wsInstances.length;
-      await failLatestDial(5_000);
+      await failLatestDial(8_000);
 
       expect(mockFetch).toHaveBeenCalled();
       expect(mockLeaveDeactivatedAccount).not.toHaveBeenCalled();

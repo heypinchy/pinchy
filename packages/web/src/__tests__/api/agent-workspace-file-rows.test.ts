@@ -48,6 +48,10 @@ vi.mock("@/lib/file-serve-roots", async () => {
   return { FILE_SERVE_ROOTS: [tmpdir()] };
 });
 
+// Same move for the grant boundary: a grant outside /data is a pre-lockdown
+// leftover the route ignores (#1272), and these fixtures live in a temp dir.
+vi.mock("@/lib/agent-granted-paths", () => import("@/test-helpers/granted-paths-under-tmpdir"));
+
 // The rows are read in a heap-capped CHILD process, never in the web process:
 // exceljs costs ~20× the sheet XML, and this route is reachable by any member,
 // uncached. The in-process reader is booby-trapped

@@ -48,6 +48,7 @@ import {
   agentsOwedReconversion,
   officeFormatVersionInUse,
   queueReconversion,
+  searchingAgents,
 } from "@/lib/knowledge/office-format-upgrade";
 import { buildFolderPlan } from "@/lib/knowledge/folder-plan";
 import { ingestPaths, type IngestDeps, type ScanConversion } from "@/lib/knowledge/ingest";
@@ -231,7 +232,12 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     const deps = opts.deps ?? (await resolveIngestDeps(ocrTally));
     if (!deps) throw new Error("embedding_model_missing");
 
+    // Read per run, like the job's own paths: a grant added or revoked since
+    // the last run moves where the archive rule cuts a path (#1420).
+    const archiveRoots = (await searchingAgents()).flatMap((searching) => searching.paths);
+
     counts = await ingestPaths(job.orgId, job.paths, deps, {
+      archiveRoots,
       onProgress: (progress) => {
         counts = progress.counts;
         return recordIndexJobProgress(job.id, progress);

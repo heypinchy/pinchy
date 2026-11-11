@@ -2215,6 +2215,123 @@ it("heals a stored status that disagrees with the archive rule on the next skip 
   expect(doc.status).toBe("archived");
 });
 
+// --- the archive rule reads the path BELOW the knowledge-base folder (#1420) ---
+
+async function statusOf(sourcePath: string): Promise<string> {
+  const [doc] = await db
+    .select({ status: kbDocuments.status })
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, sourcePath)));
+  return doc.status;
+}
+
+it("keeps current documents current when the folder itself sits below an archive folder", async () => {
+  // A share mounted at /data/Archiv/Projekte: its parents are the mount
+  // layout, not the documents' age. Only folders inside the root count.
+  const root = join(tmpRoot, "Archiv", "Projekte");
+  const currentPath = writePdf(root, "plan.pdf", "plan");
+  const nestedPath = writePdf(join(root, "2024", "Angebote"), "angebot.pdf", "angebot");
+  const archivedPath = writePdf(join(root, "OLD"), "plan-2013.pdf", "plan-2013");
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, root, deps);
+
+  expect(result).toEqual(counts({ indexed: 3, archived: 1 }));
+  expect(await statusOf(currentPath)).toBe("active");
+  expect(await statusOf(nestedPath)).toBe("active");
+  expect(await statusOf(archivedPath)).toBe("archived");
+});
+
+it("does not archive the contents of a folder that is itself called Archiv", async () => {
+  const root = join(tmpRoot, "Archiv");
+  const directPath = writePdf(root, "a.pdf", "a");
+  const nestedPath = writePdf(join(root, "2013"), "b.pdf", "b");
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, root, deps);
+
+  expect(result).toEqual(counts({ indexed: 2 }));
+  expect(await statusOf(directPath)).toBe("active");
+  expect(await statusOf(nestedPath)).toBe("active");
+});
+
+it("reads a folder granted with a trailing slash the same as without", async () => {
+  const root = join(tmpRoot, "Archiv", "Projekte");
+  const currentPath = writePdf(root, "plan.pdf", "plan");
+  writePdf(join(root, "OLD"), "alt.pdf", "alt");
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, `${root}/`, deps);
+
+  expect(result).toEqual(counts({ indexed: 2, archived: 1 }));
+  expect(await statusOf(currentPath)).toBe("active");
+});
+
+it("classifies a folder reached through a symlink by the path below the link", async () => {
+  // The link sits under OLD/ and points into Archiv/: neither name is part of
+  // the knowledge base, which starts at the link.
+  const target = join(tmpRoot, "Archiv", "Projekte");
+  writePdf(target, "plan.pdf", "plan");
+  writePdf(join(target, "OLD"), "alt.pdf", "alt");
+  mkdirSync(join(tmpRoot, "OLD"), { recursive: true });
+  const link = join(tmpRoot, "OLD", "projects");
+  symlinkSync(target, link);
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, link, deps);
+
+  expect(result).toEqual(counts({ indexed: 2, archived: 1 }));
+  expect(await statusOf(join(link, "plan.pdf"))).toBe("active");
+  expect(await statusOf(join(link, "OLD", "alt.pdf"))).toBe("archived");
+});
+
+it("never archives a single file granted on its own", async () => {
+  const filePath = writePdf(join(tmpRoot, "OLD"), "handbook.pdf", "handbook");
+  const { deps } = fakeDeps();
+
+  const result = await ingestDirectory(ORG_ID, filePath, deps);
+
+  expect(result).toEqual(counts({ indexed: 1 }));
+  expect(await statusOf(filePath)).toBe("active");
+});
+
+it("makes a document archived by the old whole-path rule current again on the next run", async () => {
+  // Rows written before #1420 were classified against the absolute path, so a
+  // share below an archive folder came out entirely archived. The next run —
+  // content unchanged, so the skip path — must correct them without a re-read.
+  const root = join(tmpRoot, "Archiv", "Projekte");
+  const currentPath = writePdf(root, "plan.pdf", "plan");
+  const { deps } = fakeDeps();
+  await ingestDirectory(ORG_ID, root, deps);
+  await db
+    .update(kbDocuments)
+    .set({ status: "archived" })
+    .where(and(eq(kbDocuments.orgId, ORG_ID), eq(kbDocuments.sourcePath, currentPath)));
+
+  const rerun = await ingestDirectory(ORG_ID, root, deps);
+
+  expect(rerun).toEqual(counts({ skipped: 1 }));
+  expect(await statusOf(currentPath)).toBe("active");
+});
+
+it("classifies against the innermost folder any agent searches, not just this run's", async () => {
+  // Status is one row per document for the whole org, but runs go agent by
+  // agent. One agent searching the share and another searching only its
+  // Archiv/ folder must not flip the same document back and forth each night,
+  // so a run is told the other searched folders too (`archiveRoots`).
+  const archivePath = writePdf(join(tmpRoot, "Archiv"), "x.pdf", "x");
+  const oldPath = writePdf(join(tmpRoot, "OLD"), "y.pdf", "y");
+  const { deps } = fakeDeps();
+
+  const result = await ingestPaths(ORG_ID, [tmpRoot], deps, {
+    archiveRoots: [join(tmpRoot, "Archiv")],
+  });
+
+  expect(result).toEqual(counts({ indexed: 2, archived: 1 }));
+  expect(await statusOf(archivePath)).toBe("active");
+  expect(await statusOf(oldPath)).toBe("archived");
+});
+
 it("indexes a spreadsheet with sheet + row-range locators, and never converts it", async () => {
   const xlsxPath = join(tmpRoot, "suppliers.xlsx");
   writeFileSync(xlsxPath, "fake-xlsx-bytes-v1");

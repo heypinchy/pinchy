@@ -39,6 +39,8 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
 
 2. **Bump the version pin**
 
+   A release is about 10 GB of images, and the pull downloads them while the old ones are still on disk. Check that you have at least that much free with `df -h /` first. On a small disk, run `docker image prune -a -f` before pulling — [Disk space](/guides/hardening/#disk-space) explains what that removes and what else grows on the disk.
+
    Edit `/opt/pinchy/.env` and update `PINCHY_VERSION` to the new release tag (e.g. `PINCHY_VERSION=%%PINCHY_VERSION%%`), then pull the matching images:
 
    ```bash
@@ -58,7 +60,7 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
    docker compose up -d && docker image prune -f
    ```
 
-   `up -d` applies any pending database migrations, regenerates the OpenClaw configuration, and restarts all services. `docker image prune -f` then removes the previous image layer for each Pinchy service that `pull` left dangling — without this, every upgrade keeps the prior `pinchy` and `pinchy-openclaw` layers on disk and a long-running deployment eventually fills its root volume.
+   `up -d` applies any pending database migrations, regenerates the OpenClaw configuration, and restarts all services. `docker image prune -f` then removes the image layers no tag points to. It does not remove the release you upgraded from: that image keeps its version tag, so every upgrade leaves one more `pinchy` and `pinchy-openclaw` pair on disk, and a long-running deployment eventually fills its root volume. The tip below says how to reclaim them.
 
    <Aside type="tip">
      `prune -f` removes layers that no tag and no container references —
@@ -228,6 +230,10 @@ An agent allowed only to **Fetch web pages** could ask Pinchy for the instance's
 
 The address checks for Odoo, mail servers and OpenAI-compatible providers resolve the hostname, and the client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool already pinned the address it checked. From this release, so do the requests Pinchy makes itself right after a check: the mail **Test connection**, listing Odoo databases, and an OpenAI-compatible provider's model discovery and key check. Those also no longer contact a name that doesn't resolve. Everything else still looks the name up again: the agent's Odoo and mail tools, the agent runtime's requests to a provider, and Pinchy's other Odoo requests (testing credentials, previewing and syncing the schema). Nothing to configure.
 
+#### A closed laptop no longer holds a chat connection for hours
+
+Each account can keep up to ten chat connections open at once, across all its devices. A browser that disappeared without saying goodbye — a laptop lid closed, a phone switching networks, a VPN reconnecting — used to keep its connection counted until the operating system gave up on it, which can take hours. Enough of those locked the account out of chat everywhere until someone reloaded. Pinchy now checks every chat connection every 30 seconds and closes the ones that stopped answering, which frees their place within a minute. Nothing to configure.
+
 #### A change made while OpenClaw restarts now reaches it
 
 If you created an agent or changed a setting while OpenClaw was restarting or rate-limiting config changes, the change could land in `openclaw.json` and still never reach the running OpenClaw. Chats to that agent then failed with `unknown agent id` until some later, unrelated change happened to push the config again. We now push it again ourselves — when Pinchy reconnects to OpenClaw, or a minute later if OpenClaw stayed connected, backing off until OpenClaw has applied it, unless OpenClaw rejected the config itself. Restarting Pinchy in the meantime drops that retry; the next change you make delivers it. Nothing to configure.
@@ -240,6 +246,10 @@ Deleting an Odoo or mail connection in **Settings → Integrations** now updates
 
 Pinchy now remembers in each browser which person was signed in last. That way the next person on a shared computer never sees what the last one left behind: unsent drafts, attachments staged but not sent, files shared into the installed app but not sent, the last chat opened for each agent (#1286). After the upgrade, no browser has that record yet. So the first page load after the upgrade clears those things once. Only shares from the last 10 minutes are kept. Ask people to send any half-written message before you upgrade.
 
+#### The chat no longer gets stuck on "Reconnecting"
+
+A chat used to give up after ten reconnect attempts and ask you to reload, and a server that refused connections left tabs spinning with no explanation. The browser now keeps retrying for as long as the tab is visible (every 15 seconds at most), cuts a connection attempt that hasn't opened after 10 seconds, and notices an open connection that went silent. The status message says why: offline, too many open connections, the agent not reachable, or Pinchy not reachable, and offers **Try again now**, or **Try again** and **Reload** once it has lasted about 30 seconds. A message you were typing stays in the composer. Nothing to configure. See [Chat connection states](/explanation/chat-states/).
+
 #### Audit entries for agent changes no longer list folder paths
 
 Whenever an agent's plugin configuration changed — its folders, web search settings or confirmation rules — the `agent.updated` entry in the audit trail stored the whole configuration before and after, every folder path included. A path can name a person, and audit entries can't be changed later. Above about twenty folders, the entry also outgrew the size limit and was cut short, losing what had changed. The entry now records `allowedPathCount` in place of the folder list, plus a `folderAccess` field that says how many folders were added and removed. [Audit Trail → `agent.updated`](/concepts/audit-trail/#agentupdated) shows the shape. Entries written before the upgrade keep the paths they recorded. If a script of yours reads `changes.pluginConfig` from these entries, switch it to the counts.
@@ -250,11 +260,23 @@ Creating a Knowledge Base agent, or granting an existing one a folder, used to i
 
 At the upgrade itself, every agent that has the `knowledge_search` permission and a granted folder no run has gone through yet gets its first index when Pinchy starts, one after another. Coming from a v0.10 release, that is usually nobody: its runs already count. Coming straight from v0.9.1, it is every such agent, because the index is empty after that upgrade (see [Knowledge Base agents need one reindex after upgrading](#knowledge-base-agents-need-one-reindex-after-upgrading)) — so you don't have to wait for the nightly run or click **Reindex now**. The runs are audited as reindexes with `trigger: "initial"`, requested by `kb-index-worker`.
 
+#### Security: file access outside `/data` is removed from older agents
+
+Since v0.9.0, an agent's **Allowed Directories** (under **Knowledge Base** in its permissions) can only be directories under `/data`, and only admins can change them. Before that, the settings API accepted any path, and a member could point their own personal agent at a folder outside `/data` — for example the directory that holds every agent's uploads, workbench files and memory. v0.9.0 refused new paths like that but left existing ones in place, and they kept working.
+
+This release no longer honours them anywhere: file tools, knowledge-base search, reindexing and file previews only use **Allowed Directories** under `/data`. Each agent's own uploads, workbench and memory are unaffected. On its first start, Pinchy also removes those paths from the agents that still have them, and writes one `agent.updated` row per agent to the [audit trail](/concepts/audit-trail/) with the actor **Folder access cleanup** (`allowed-paths-cleanup`), `reason: "allowed_paths_outside_data_root"`, and how many paths the agent had before and after. The paths themselves aren't recorded, because a path can contain a person's name and an audit row can't be erased. The agent's other folders and settings stay as they were. A fresh install, or one where nobody set such a path, gets no rows.
+
+To see whether any agent lost access, filter the audit trail by `agent.updated` and look for entries whose actor is **Folder access cleanup**; their detail says `reason: "allowed_paths_outside_data_root"`. If a shared agent needs one of those folders, put the files under `/data` and grant the folder in its **Permissions** tab, under **Knowledge Base → Allowed Directories**. Personal agents have no folder settings; to give people access to such files, grant the folder to a shared Knowledge Base agent instead.
+
 #### Split passages keep the document's own text
 
 Since v0.10.2, a passage too long for the embedding model is split into pieces (see [One file the embedding model refuses no longer stops a reindex](#one-file-the-embedding-model-refuses-no-longer-stops-a-reindex)). Those pieces were cut in the model's tokens and then turned back into text. A character the model only knows byte by byte — a rare CJK character, say — could be cut in half that way and stored as `�`, which is what an agent then read and quoted. Pieces are now cut from the document's own text, between paragraphs, lines, sentences or words, so each one is exactly the text it came from — and the cited-passage highlight in this release can find it on its page.
 
 Pieces already stored with a `�` stay as they are: the index no longer holds the character that was there, so the upgrade can't repair them. A reindex skips a document that hasn't changed, so they are replaced the next time the file itself changes. Until then, a citation of such a piece opens at the right page without a highlight. Most documents never had one — German text and part numbers don't go through the byte-by-byte path.
+
+#### Pinchy warns before the disk fills up
+
+Pinchy now measures the free disk space where it writes. When any of those places drops below 15 GB free, admins see a banner in the app, and [`/api/health`](/reference/api/#get-apihealth) reports it in a new `disk` field. Members never see the banner, and the health check keeps returning `status: "ok"`, so Docker won't restart Pinchy over it. If your uptime monitor reads the health response, add an alert on `disk.status == "warning"`. [Disk space](/guides/hardening/#disk-space) explains what the warning measures, what fills the disk over time, and how much an upgrade needs. Nothing to configure.
 
 #### Very long documents are indexed instead of failing every night
 
@@ -267,6 +289,10 @@ The knowledge base now indexes scanned TIFF images (`.tif`, `.tiff`, multi-page 
 A TIFF holds images only, so every page of one is sent to your vision model, exactly like a page of a scanned PDF — the one part of indexing that sends document content to your model provider, see [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider). On a share with many TIFF scans, the first reindex after the upgrade sends all of them, and the reindex entry in the audit trail counts them in `ocr`. If that isn't acceptable, set `PINCHY_KB_OCR=off` before you upgrade: the TIFFs are then listed as `unsearchable` instead. A citation from a TIFF opens on the page the passage came from.
 
 A `.txt` is read in the encoding it was saved in, so a file from Windows Notepad keeps its umlauts. A `.docm` is converted like a `.docx`, and its macros never run. See [Supported file types](/guides/mount-data-directories/#supported-file-types) for both, and for the size limits.
+
+#### A knowledge base inside an archive folder is no longer hidden
+
+The archive rule (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)) read the whole path of a document, including the folders above the one an agent is granted. An agent granted a folder that is itself called `Archiv`, or sits below one — `/data/Archiv/Projekte` — therefore had every document marked archived, and everyday search found nothing. The rule now reads only the path inside the granted folder. Nothing to do on upgrade: the next index run — the nightly one, or **Reindex now** — marks those documents current again without reading them a second time. When two agents are granted nested folders, the folder granted further down decides for both.
 
 ### Database migrations
 
