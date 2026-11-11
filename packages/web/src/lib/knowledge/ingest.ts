@@ -72,7 +72,9 @@ import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
 import { collectHeadingSections, headingLocatorAt } from "./heading-sections";
 import {
+  isLegacyWorkbook,
   isOfficeFile,
+  needsConversion,
   OfficeFileRejectedError,
   isPresentationFile,
   isMsgFile,
@@ -582,8 +584,9 @@ interface ExtractedDocument {
 
 /**
  * The artifact format version a document's chunks are read from: the current
- * one for an Office document the converter turns into a PDF, the scan store's
- * own for a TIFF, none for every other format.
+ * one for every format the converter turns into something else first (an
+ * Office document into a PDF, a legacy `.xls` into an `.xlsx`), the scan
+ * store's own for a TIFF, none for every other format.
  *
  * Recorded on the row (`kb_documents.artifact_format_version`) and compared on
  * every run, because the artifact store alone cannot carry a change of rules
@@ -593,9 +596,8 @@ interface ExtractedDocument {
  * from the current rules.
  */
 function artifactFormatVersionFor(absPath: string): number | null {
-  if (isOfficeFile(absPath)) return OFFICE_ARTIFACT_FORMAT_VERSION;
   if (isScanFile(absPath)) return SCAN_ARTIFACT_FORMAT_VERSION;
-  return null;
+  return needsConversion(absPath) ? OFFICE_ARTIFACT_FORMAT_VERSION : null;
 }
 
 /** The fields every page-shaped extraction derives from its pages alike. */
@@ -607,7 +609,8 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
 }
 
 /**
- * Hands out the converted PDF for an Office source, converting in batches as
+ * Hands out the converted artifact (a PDF, or an `.xlsx` for a legacy `.xls`)
+ * for a source the converter takes, converting in batches as
  * the queue reaches them.
  *
  * Lazy rather than a pre-pass over the whole corpus, and that is a progress
@@ -648,7 +651,7 @@ function officeArtifacts(
   deps: IngestDeps,
   batchSize = OFFICE_CONVERT_BATCH_SIZE
 ): ResolveArtifact {
-  const pending = queue.filter((file) => isOfficeFile(file.absPath));
+  const pending = queue.filter((file) => needsConversion(file.absPath));
   const positionOf = new Map(pending.map((file, i) => [file.absPath, i]));
   const done = new Map<string, { hash: string; outcome: ConversionOutcome }>();
 
@@ -770,6 +773,8 @@ function logRefusal(absPath: string, verdict: string, reason: string): void {
  *   PDF           `chunkPages` on the page the text came from
  *   spreadsheet   `extractXlsx`, sheet + row range — `XlsxChunk` IS the
  *                 locator field-for-field, so that half is a spread
+ *   legacy `.xls` the `.xlsx` the converter made of it, read like any other
+ *                 workbook — exceljs cannot parse BIFF (#1373)
  *   presentation  the converted PDF, slide N = page N
  *   Word          the converted PDF's outline, heading path — never a page,
  *                 which the renderer decides and the reader's Word disagrees
@@ -817,32 +822,17 @@ async function readDocument(
     return extractOfficeDocument(absPath, copyPath, deps, resolveArtifact, contentHash);
   }
 
-  if (isSpreadsheetFile(absPath)) {
-    const extraction = await deps.extractXlsx(copyPath).catch((err: unknown) => {
-      if (!(err instanceof OfficeFileRejectedError)) throw err;
-      // Refused unread: too large to load (a compressed bomb is the case that
-      // matters), or not the workbook its name says (a broken archive, a
-      // number format exceljs would choke on). That is a verdict on THIS file,
-      // and a final one — retrying reads the same bytes — so it becomes a row
-      // with no chunks, which is exactly how the unreadable list
-      // (unsearchable.ts) finds it, with its reason in the server log.
-      logRefusal(absPath, "not read", err.message);
-      return null;
-    });
-    if (extraction === null) {
-      return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "sheets" };
+  if (isLegacyWorkbook(absPath)) {
+    const artifactPath = await convertedArtifact(absPath, copyPath, resolveArtifact, contentHash);
+    if (artifactPath === null) {
+      return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
     }
-    return {
-      chunks: extraction.chunks.map(({ text, sheet, startRow, endRow }) => ({
-        text,
-        locator: { kind: "sheet", sheet, startRow, endRow },
-      })),
-      pageCount: null,
-      text: extraction.chunks.map((chunk) => chunk.text).join("\n"),
-      incomplete: false,
-      reader: "sheets",
-    };
+    // The converted workbook is untrusted input like any other: the same
+    // reader, behind the same limits, refuses it the same way.
+    return readWorkbook(absPath, artifactPath, deps);
   }
+
+  if (isSpreadsheetFile(absPath)) return readWorkbook(absPath, copyPath, deps);
 
   if (isScanFile(absPath)) {
     return extractScan(absPath, copyPath, deps, contentHash);
@@ -869,6 +859,43 @@ function readPdfPages(pages: IngestPage[]): ExtractedDocument {
     pageCount: pages.length,
     ...fromPages(pages),
     reader: "pdf",
+  };
+}
+
+/**
+ * Reads an OOXML workbook — the original, or the `.xlsx` the converter made of
+ * a legacy `.xls` — into chunks anchored on sheet and row range.
+ *
+ * `absPath` names the document in the log; `workbookPath` is what is opened.
+ */
+async function readWorkbook(
+  absPath: string,
+  workbookPath: string,
+  deps: IngestDeps
+): Promise<ExtractedDocument> {
+  const extraction = await deps.extractXlsx(workbookPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    // Refused unread: too large to load (a compressed bomb is the case that
+    // matters), or not the workbook its name says (a broken archive, a
+    // number format exceljs would choke on). That is a verdict on THIS file,
+    // and a final one — retrying reads the same bytes — so it becomes a row
+    // with no chunks, which is exactly how the unreadable list
+    // (unsearchable.ts) finds it, with its reason in the server log.
+    logRefusal(absPath, "not read", err.message);
+    return null;
+  });
+  if (extraction === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "sheets" };
+  }
+  return {
+    chunks: extraction.chunks.map(({ text, sheet, startRow, endRow }) => ({
+      text,
+      locator: { kind: "sheet", sheet, startRow, endRow },
+    })),
+    pageCount: null,
+    text: extraction.chunks.map((chunk) => chunk.text).join("\n"),
+    incomplete: false,
+    reader: "sheets",
   };
 }
 
@@ -928,6 +955,46 @@ async function extractTextFile(absPath: string, copyPath: string): Promise<Extra
     incomplete: false,
     reader: "text",
   };
+}
+
+/**
+ * The converter's artifact for a document, or `null` when the converter
+ * refused THIS document. Throws when the converter never got to judge it.
+ *
+ * - Unavailable (out of memory, timed out, binary missing): throwing keeps the
+ *   existing row and its chunks untouched and counts the file `failed`, so a
+ *   memory squeeze cannot brand a perfectly good document as permanently
+ *   unreadable (#936).
+ * - Refused: there is nothing to index. The caller returns an empty
+ *   extraction — rather than throwing — which gives it a row with no chunks,
+ *   exactly how the unreadable list finds it (unsearchable.ts). Incomplete
+ *   all the same: `failed` also covers causes that are not about the document
+ *   — a source briefly unreadable on a network share, LibreOffice exiting
+ *   without an artifact — so it is retried a few runs before it is taken as
+ *   final.
+ *
+ * The unreadable list never says why, and the admin-facing counts must not
+ * name paths, so the refusal log is the only place an operator learns which
+ * document was refused and for what — logged on every run that refuses it,
+ * not only the last. The reason holds no document text, but it can quote
+ * names read from the file and the file's own path, so `logRefusal` keeps it
+ * to one line.
+ */
+async function convertedArtifact(
+  absPath: string,
+  copyPath: string,
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
+): Promise<string | null> {
+  const outcome = await resolveArtifact(absPath, contentHash, copyPath);
+  if (outcome.status === "infrastructure") {
+    throw new Error(`office conversion unavailable: ${outcome.reason ?? "unknown"}`);
+  }
+  if (outcome.status !== "converted" || !outcome.artifactPath) {
+    logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
+    return null;
+  }
+  return outcome.artifactPath;
 }
 
 /**
@@ -994,39 +1061,13 @@ async function extractOfficeDocument(
   resolveArtifact: ResolveArtifact,
   contentHash: string
 ): Promise<ExtractedDocument> {
-  const outcome = await resolveArtifact(absPath, contentHash, copyPath);
-
-  if (outcome.status === "infrastructure") {
-    // The converter never got to judge this document (out of memory, timed
-    // out, binary missing). Throwing keeps the existing row and its chunks
-    // untouched and counts the file `failed`, so a memory squeeze cannot brand
-    // a perfectly good document as permanently unreadable (#936).
-    throw new Error(`office conversion unavailable: ${outcome.reason ?? "unknown"}`);
-  }
-
-  if (outcome.status !== "converted" || !outcome.artifactPath) {
-    // A verdict about THIS document: it cannot be converted, so there is
-    // nothing to index. Returning an empty extraction — rather than throwing —
-    // is what gives it a row with no chunks, which is exactly how the
-    // unreadable list finds it (unsearchable.ts), with nothing to wire up.
-    //
-    // Incomplete all the same: `failed` also covers causes that are not about
-    // the document — a source briefly unreadable on a network share,
-    // LibreOffice exiting without a PDF — so it is retried a few runs before
-    // it is taken as final.
-    //
-    // The unreadable list never says why, and the admin-facing counts must not
-    // name paths, so this is the only place an operator learns which document
-    // was refused and for what — logged on every run that refuses it, not only
-    // the last. The reason holds no document text, but it can quote names read
-    // from the file and the file's own path, so `logRefusal` keeps it to one
-    // line.
-    logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
+  const artifactPath = await convertedArtifact(absPath, copyPath, resolveArtifact, contentHash);
+  if (artifactPath === null) {
     return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
   }
 
   const word = isWordFile(absPath);
-  const pages = await deps.extractPdf(outcome.artifactPath, { outline: word });
+  const pages = await deps.extractPdf(artifactPath, { outline: word });
   const sections = word ? collectHeadingSections(pages) : [];
 
   return {

@@ -1,7 +1,8 @@
 /**
  * Converts page-shaped Office documents (.doc/.docx/.ppt/.pptx) to PDF for the
- * knowledge base (#936). Standalone: wiring this into the ingest pipeline is
- * #938's job, and serving the artifact as a preview is #939's.
+ * knowledge base (#936), and legacy `.xls` workbooks to `.xlsx` (#1373).
+ * Standalone: wiring this into the ingest pipeline is #938's job, and serving
+ * the artifact as a preview is #939's.
  *
  * ## Why convert instead of parsing natively
  *
@@ -13,8 +14,13 @@
  *
  * Conversion also buys what the citation chain depends on: ONE renderable
  * artifact whose pages agree with what the reader is shown, so a citation can
- * never point at something the user cannot see. Spreadsheets take a different
- * path (#937/#940) — `libreoffice-calc` is deliberately not installed.
+ * never point at something the user cannot see. OOXML spreadsheets take a
+ * different path (#937/#940): they are read directly, never converted. A
+ * legacy BIFF `.xls` is the one exception, because exceljs cannot parse it and
+ * the only maintained JavaScript reader that can (SheetJS) ships its security
+ * fixes outside npm. LibreOffice Calc turns it into an `.xlsx` — never a PDF,
+ * whose page breaks no sheet citation could point at — and that workbook is
+ * then read by the same isolated reader, behind the same limits, as any other.
  *
  * ## Three things this module exists to get right
  *
@@ -81,12 +87,14 @@ import { LOG_PATH_MAX, LOG_REASON_MAX, oneLine } from "../log-line";
 
 import { getOfficeArtifactStore, hashFileContents, OfficeArtifactStore } from "./office-artifacts";
 import {
+  convertedExtensionOf,
   countWords,
   OFFICE_CONVERT_BATCH_SIZE,
   OFFICE_EXTENSIONS,
   OfficeFileRejectedError,
   StagedCopyWriteError,
   isOfficeFile,
+  type ConvertedExtension,
 } from "./office-formats";
 import type { StagedSource } from "./office-preflight";
 import { extractPdfPages } from "./pdf-extract";
@@ -339,6 +347,8 @@ export interface ConvertOptions {
 /** One document's slot in the run, so results can be returned in input order. */
 interface WorkItem {
   absPath: string;
+  /** What the converter turns it into — a PDF, or for a legacy workbook an `.xlsx` (#1373). */
+  output: ConvertedExtension;
   /** See `OfficeSource.displayPath`. */
   displayPath: string;
   contentHash: string;
@@ -347,8 +357,8 @@ interface WorkItem {
 }
 
 /**
- * Converts `sources` to PDFs in the artifact store, returning one outcome per
- * source, in input order.
+ * Converts `sources` into the artifact store — a PDF each, or an `.xlsx` for a
+ * legacy workbook — returning one outcome per source, in input order.
  *
  * Documents already in the store are returned without running the converter,
  * and identical content at two paths converts once — the store is keyed on
@@ -397,7 +407,8 @@ export async function convertOfficeFiles(
       }
     }
 
-    const cached = await store.get(contentHash);
+    const output = convertedExtensionOf(source.absPath);
+    const cached = await store.get(contentHash, output);
     if (cached) {
       outcomes[position] = {
         sourcePath: source.absPath,
@@ -408,11 +419,15 @@ export async function convertOfficeFiles(
       continue;
     }
 
-    const existing = byHash.get(contentHash);
+    // Keyed on the target too: the same bytes under `.doc` and `.xls` are two
+    // conversions, and neither one's artifact answers for the other.
+    const key = `${output}:${contentHash}`;
+    const existing = byHash.get(key);
     if (existing) existing.positions.push(position);
     else {
-      byHash.set(contentHash, {
+      byHash.set(key, {
         absPath: source.absPath,
+        output,
         displayPath: source.displayPath ?? source.absPath,
         contentHash,
         positions: [position],
@@ -421,10 +436,18 @@ export async function convertOfficeFiles(
   }
 
   const work = [...byHash.values()];
+  // One converter process writes one target format (`convertTargetFor`), so a
+  // batch holds documents of one target only.
+  const batches: WorkItem[][] = [];
+  for (const output of new Set(work.map((item) => item.output))) {
+    const sameTarget = work.filter((item) => item.output === output);
+    for (let start = 0; start < sameTarget.length; start += batchSize) {
+      batches.push(sameTarget.slice(start, start + batchSize));
+    }
+  }
   let processed = 0;
 
-  for (let start = 0; start < work.length; start += batchSize) {
-    const batch = work.slice(start, start + batchSize);
+  for (const batch of batches) {
     const results = await convertBatch(batch, {
       store,
       runConverter,
@@ -545,6 +568,8 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
   const outDir = join(stagingDir, "out");
   const profileDir = join(stagingDir, "profile");
   const tmpDir = join(stagingDir, "tmp");
+  /** Every document in a batch shares its target (see `convertOfficeFiles`). */
+  const output = batch[0].output;
 
   try {
     await mkdir(inDir, { recursive: true });
@@ -609,7 +634,13 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
     if (inputs.size > 0) {
       let runs: Map<number, DocumentRun>;
       try {
-        runs = await runIsolatingKills(inputs, { outDir, profileDir, tmpDir }, deps, ownBatches);
+        runs = await runIsolatingKills(
+          inputs,
+          { outDir, profileDir, tmpDir },
+          output,
+          deps,
+          ownBatches
+        );
       } catch (err) {
         // The converter could not be started at all (a missing binary, a
         // permission problem). Nothing here says anything about the documents.
@@ -646,7 +677,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         if (outcomes[i]) continue;
         const stagedSource = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
         const run = runs.get(i) as RunAnswer;
-        const producedPdf = join(run.outDir, `${i}.pdf`);
+        const producedPdf = join(run.outDir, `${i}${output}`);
         const outcome = await collectOne(
           { ...item, contentHash: keys[i] },
           stagedSource,
@@ -677,7 +708,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         outcomes[i] = volumeFault
           ? infrastructureFailure(
               item.absPath,
-              `could not write the converted PDF: ${volumeFault}${storeLine ? ` (converter: ${storeLine})` : ""}`
+              `could not write the converted ${output === ".xlsx" ? "workbook" : "PDF"}: ${volumeFault}${storeLine ? ` (converter: ${storeLine})` : ""}`
             )
           : outcome;
       }
@@ -740,6 +771,7 @@ type DocumentRun = RunAnswer | { error: string };
 async function runIsolatingKills(
   inputs: ReadonlyMap<number, string>,
   dirs: { outDir: string; profileDir: string; tmpDir: string },
+  output: ConvertedExtension,
   deps: BatchDeps,
   ownBatches: string[]
 ): Promise<Map<number, DocumentRun>> {
@@ -761,7 +793,7 @@ async function runIsolatingKills(
   // free-space check use; it goes first. Unlinked by name: nothing here
   // walks into a directory the converter made.
   for (const i of inputs.keys()) {
-    await unlink(join(dirs.outDir, `${i}.pdf`)).catch(() => {});
+    await unlink(join(dirs.outDir, `${i}${output}`)).catch(() => {});
   }
   await deps.discardScratch(dirs.tmpDir).catch(() => {});
 
@@ -842,7 +874,7 @@ async function collectOne(
   try {
     let taken: Awaited<ReturnType<typeof takeOutput>>;
     try {
-      taken = await takeOutput(producedPdf, join(privateDir, "converted.pdf"));
+      taken = await takeOutput(producedPdf, join(privateDir, `converted${item.output}`));
     } catch (err) {
       // About this output, not the document: retry it rather than brand it
       // unreadable, and keep the rest of the batch.
@@ -909,6 +941,8 @@ async function verifyAndCommit(
   producedPdf: string,
   deps: BatchDeps
 ): Promise<ConversionOutcome> {
+  if (item.output === ".xlsx") return commitWorkbook(item, producedPdf, deps);
+
   let pdfWords: number;
   try {
     pdfWords = await deps.countPdfWords(producedPdf);
@@ -950,6 +984,43 @@ async function verifyAndCommit(
   }
 
   return { sourcePath: item.absPath, status: "converted", artifactPath, verification };
+}
+
+/**
+ * Stores a legacy workbook's conversion (#1373), deliberately unverified.
+ *
+ * The word-count tripwire compares a converted PDF against an independent
+ * extractor; a workbook has no PDF, and the spreadsheet reader that would
+ * count it skips the hidden sheets, rows and columns the source still holds,
+ * so a count would fail on exactly the files it should pass. What reads the
+ * workbook next is the isolated spreadsheet reader, with the same limits as
+ * any `.xlsx`: an output it cannot open fails there, as that document's.
+ */
+async function commitWorkbook(
+  item: WorkItem,
+  producedWorkbook: string,
+  deps: BatchDeps
+): Promise<ConversionOutcome> {
+  let artifactPath: string;
+  try {
+    artifactPath = await deps.store.put(item.contentHash, producedWorkbook, ".xlsx");
+  } catch (err) {
+    return infrastructureFailure(
+      item.absPath,
+      `artifact store rejected the workbook: ${reasonOf(err)}`
+    );
+  }
+  return {
+    sourcePath: item.absPath,
+    status: "converted",
+    artifactPath,
+    verification: {
+      status: "unverified",
+      sourceWords: null,
+      pdfWords: null,
+      epsilon: deps.epsilon,
+    },
+  };
 }
 
 /**

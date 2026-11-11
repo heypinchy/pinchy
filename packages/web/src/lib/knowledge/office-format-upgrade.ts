@@ -25,9 +25,11 @@
  * its folder — the worker's next hourly look queues that run — but it holds
  * back neither a run nor the removal of the directory it names.
  *
- * The rows are recognised by their path, with the same rule `isOfficeFile`
- * applies, because the version column alone cannot tell them apart: a row
- * written before the column existed carries null, exactly like a PDF does.
+ * The rows are recognised by their path, with the same rule `needsConversion`
+ * applies — every format the converter takes, the legacy `.xls` it turns into
+ * an `.xlsx` (#1373) as much as the documents it turns into PDFs — because the
+ * version column alone cannot tell them apart: a row written before the column
+ * existed carries null, exactly like a PDF does.
  */
 import { and, asc, eq, gt, inArray, isNull, not, or, sql, type SQL } from "drizzle-orm";
 
@@ -41,7 +43,7 @@ import { enqueueIndexJob, findActiveIndexJob } from "./index-jobs";
 import { grantedKnowledgePaths, isScheduledIndexAgent } from "./index-schedule";
 import { kbEmbedderAvailable } from "./kb-embedder";
 import { OFFICE_ARTIFACT_FORMAT_VERSION } from "./office-artifacts";
-import { OFFICE_EXTENSIONS } from "./office-formats";
+import { CONVERTED_EXTENSIONS } from "./office-formats";
 import { buildPathFilter } from "./path-filter";
 import { KB_INDEX_WORKER_ACTOR, reindexAuditEntry } from "./reindex-audit";
 
@@ -52,12 +54,12 @@ import { KB_INDEX_WORKER_ACTOR, reindexAuditEntry } from "./reindex-audit";
 export const UNRECORDED_ARTIFACT_FORMAT_VERSION = 1;
 
 /**
- * `isOfficeFile`, in SQL: the last path segment ends in an Office extension,
- * case-insensitively, and is more than that extension — a dotfile called
- * `.doc` is not one, exactly as `extensionOf` reads it.
+ * `needsConversion`, in SQL: the last path segment ends in an extension the
+ * converter takes, case-insensitively, and is more than that extension — a
+ * dotfile called `.doc` is not one, exactly as `extensionOf` reads it.
  */
 function isOfficePath(sourcePath: SQL): SQL {
-  const extensions = OFFICE_EXTENSIONS.map((ext) => ext.slice(1)).join("|");
+  const extensions = CONVERTED_EXTENSIONS.map((ext) => ext.slice(1)).join("|");
   return sql`${sourcePath} ~* ${`[^/]\\.(${extensions})$`}`;
 }
 
