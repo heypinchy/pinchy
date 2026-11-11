@@ -86,3 +86,30 @@ export const citedPassageSchema = z.union([
 ]);
 
 export type CitedPassageRequest = z.infer<typeof citedPassageSchema>;
+
+/**
+ * Query for `GET /api/agents/[agentId]/knowledge/unsearchable` when it lists
+ * one group of the unsearchable documents (#1364) rather than the summary.
+ *
+ * A group is one of the agent's grants (`root`) and ONE folder directly below
+ * it (`folder`); no folder means the files sitting directly in the grant. A
+ * folder that is itself a path is refused: it would ask for a subtree the
+ * summary never offered. The root is not checked against the grants here —
+ * the query answers nothing for a root outside them, so a request can pick a
+ * grant but never add one.
+ */
+export const unsearchableGroupQuerySchema = z
+  .object({
+    root: z.string().min(1).optional(),
+    folder: z
+      .string()
+      .min(1)
+      .refine((value) => !value.includes("/"), "folder is one folder name, not a path")
+      .optional(),
+  })
+  .refine((query) => query.folder === undefined || query.root !== undefined, {
+    message: "folder needs a root",
+    path: ["folder"],
+  });
+
+export type UnsearchableGroupQuery = z.infer<typeof unsearchableGroupQuerySchema>;

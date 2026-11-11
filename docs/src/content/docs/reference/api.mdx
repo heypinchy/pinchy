@@ -817,36 +817,105 @@ The counter answers for the last run; `totals.no_text` answers for everything cu
 
 Scoped to the folders that agent is granted, exactly like search itself, so the list never names a document the agent isn't allowed to know about.
 
-**Response:**
+A corpus can hold thousands of these documents, so the route answers in two steps. Without a query it returns the counts — per reason, per cause and per folder — and no document names. With `root` (and optionally `folder`) it returns one folder's documents. [`GET …/knowledge/unsearchable/csv`](#get-apiagentsagentidknowledgeunsearchablecsv) has all of them in one file.
+
+**Query parameters:**
+
+| Parameter | Description                                                                                                                                                                                                      |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `root`    | One of the agent's granted folders, as `groups[].root` names it. Lists that group's documents. A folder the agent isn't granted lists nothing.                                                                   |
+| `folder`  | A folder directly inside `root`, as `groups[].folder` names it: one name, no `/`. Lists the documents anywhere under it. Leave it out to list the documents directly in `root`. Only valid together with `root`. |
+
+**Response without a query:**
+
+```json
+{
+  "total": 21,
+  "totals": { "no_text": 20, "awaiting_conversion": 1 },
+  "causes": {
+    "ocr_off": 19,
+    "no_vision_model": 0,
+    "read_next_run": 0,
+    "read_refused": 0,
+    "vision_failed": 0,
+    "read_blank": 1
+  },
+  "groups": [
+    { "root": "/data/certs", "folder": "Food", "count": 19 },
+    { "root": "/data/offers", "folder": null, "count": 2 }
+  ],
+  "searchesIndex": true
+}
+```
+
+| Field           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `total`         | How many documents there are, never capped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `totals`        | `total` per reason. `no_text` — indexed, but it produced no searchable text (a scan nothing has read, a file refused for its size or content). `awaiting_conversion` — a Word or PowerPoint file search leaves out until it has been converted again after an update changed how such files are converted.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `causes`        | The `no_text` documents by why they have no text, as this server stands now. `ocr_off` — reading scans is switched off (`PINCHY_KB_OCR=off`); switching it on lets the next run read them. `no_vision_model` — it's on, but no vision model is available. `read_next_run` — the next run reads them again: a vision model is available that hasn't read them, an older version of Pinchy read them, or their last read didn't finish. `vision_failed` — every vision read failed, five runs in a row; a different vision model or a replaced file gets them read again. `read_refused` — the converter or the workbook reader refused the file (too large, damaged, not what its name says), or it's a workbook with nothing visible in it; the server log names each refused file and the reason, and a file that's replaced is read again. `read_blank` — read in full, and nothing found. Sums to `totals.no_text`. |
+| `groups`        | The documents per folder: a granted folder (`root`) and one folder directly inside it (`folder`), or `folder: null` for the files directly in `root`. Largest first; the counts sum to `total`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `searchesIndex` | Whether the agent has `knowledge_search`. Pinchy converts the `awaiting_conversion` files again on its own only for an agent that searches the index; for any other agent, a reindex converts them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+
+**Response with `root`:**
 
 ```json
 {
   "documents": [
     {
-      "sourcePath": "/data/offers/Angebot.docx",
+      "sourcePath": "/data/certs/Food/2024/AFNOR validation.pdf",
+      "name": "AFNOR validation.pdf",
+      "root": "/data/certs",
+      "folder": "Food/2024",
       "status": "active",
-      "reason": "awaiting_conversion"
-    },
-    {
-      "sourcePath": "/data/certs/AFNOR validation.pdf",
-      "status": "active",
-      "reason": "no_text"
+      "reason": "no_text",
+      "cause": "ocr_off"
     }
   ],
-  "total": 2,
-  "totals": { "no_text": 1, "awaiting_conversion": 1 },
-  "searchesIndex": true
+  "total": 19
 }
 ```
 
-| Field                    | Description                                                                                                                                                                                                                                                                                |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `documents[].sourcePath` | The document's full path, as indexed.                                                                                                                                                                                                                                                      |
-| `documents[].status`     | `archived` for a document under an archive folder, already out of everyday search; `active` otherwise. Archived documents come last.                                                                                                                                                       |
-| `documents[].reason`     | `no_text` — indexed, but it produced no searchable text (a scan no vision model read, a file refused for its size or content). `awaiting_conversion` — a Word or PowerPoint file search leaves out until it has been converted again after an update changed how such files are converted. |
-| `total`                  | How many there are. `documents` holds at most 100; `total` is never capped.                                                                                                                                                                                                                |
-| `totals`                 | `total` per reason, `no_text` and `awaiting_conversion`. Never capped either, so it counts documents `documents` doesn't show.                                                                                                                                                             |
-| `searchesIndex`          | Whether the agent has `knowledge_search`. Pinchy converts the `awaiting_conversion` files again on its own only for an agent that searches the index; for any other agent, a reindex converts them.                                                                                        |
+| Field                    | Description                                                                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `documents[].sourcePath` | The document's full path, as indexed.                                                                                                |
+| `documents[].name`       | The file name.                                                                                                                       |
+| `documents[].root`       | The granted folder it is in.                                                                                                         |
+| `documents[].folder`     | The path from `root` to the file, without the file name. Empty for a file directly in `root`.                                        |
+| `documents[].status`     | `archived` for a document under an archive folder, already out of everyday search; `active` otherwise. Archived documents come last. |
+| `documents[].reason`     | `no_text` or `awaiting_conversion`, as in `totals`.                                                                                  |
+| `documents[].cause`      | For a `no_text` document, one of the `causes` above. `null` for `awaiting_conversion`.                                               |
+| `total`                  | How many documents the group holds. `documents` holds at most 100; `total` is never capped.                                          |
+
+**Errors:**
+
+- `400` — `folder` without `root`, an empty value, or a `folder` containing `/`
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found, or it is another user's personal agent (admins cannot reach those either)
+
+### `GET /api/agents/:agentId/knowledge/unsearchable/csv`
+
+A CSV of every document `GET …/knowledge/unsearchable` counts, not only the first 100 of a folder. **Admin only.**
+
+The answer is a download (`Content-Disposition: attachment`), streamed, so thousands of documents work as well as three. Scoped to the agent's granted folders, exactly like search itself.
+
+**Response:** `text/csv; charset=utf-8`, UTF-8 with a byte-order mark, one row per document, ordered by path:
+
+```csv
+"name","folder","reason","status","path"
+"AFNOR validation.pdf","certs/Food/2024","No text layer; reading scans is switched off on this server","active","/data/certs/Food/2024/AFNOR validation.pdf"
+"Angebot.docx","offers","Waiting to be converted again","active","/data/offers/Angebot.docx"
+```
+
+| Column   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`   | The file name.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `folder` | The granted folder's own name, then the path below it.                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `reason` | Why search can't reach it, in words: `Waiting to be converted again`, or for a document without text one of `No text layer; reading scans is switched off on this server`, `No text layer; no vision model is available to read it`, `Will be read on the next run`, `Couldn't be read; the vision model failed on every attempt`, `Couldn't be read; too large, damaged, not what its name says, or nothing visible in it`, `Read in full; no text found`. |
+| `status` | `active` or `archived`.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `path`   | The document's full path, as indexed.                                                                                                                                                                                                                                                                                                                                                                                                                       |
+
+A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed with `'`, because a file name is text anyone who can write to the share chose.
 
 **Errors:**
 
