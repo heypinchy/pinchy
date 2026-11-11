@@ -1,7 +1,8 @@
 /**
  * pdf.js in the browser, behind the smallest surface the citation viewer needs
- * (#1268): open a document, draw one page onto a canvas, and say where each
- * text run on that page landed.
+ * (#1268): open a document, draw one page onto a canvas, say where each text
+ * run on that page landed — and, for a Word citation, read the outline and a
+ * page's text without drawing it.
  *
  * The only module that touches pdf.js on the client. Tests replace it, because
  * jsdom has neither a canvas nor workers; what it must get right is checked in
@@ -19,6 +20,8 @@
  *   route serves. A 500-page binder costs one page, not the binder.
  */
 import type { PDFDocumentLoadingTask, RenderTask } from "pdfjs-dist";
+
+import { flattenOutline, type OutlineEntry } from "./outline";
 
 /** A text run as pdf.js read it, and where it sits on the drawn page, in CSS pixels. */
 export interface PdfTextRun {
@@ -40,6 +43,16 @@ export interface PdfHandle {
     canvas: HTMLCanvasElement,
     cssWidth: number
   ): Promise<RenderedPdfPage>;
+  /**
+   * The document's outline, read exactly as the indexer read it — which is
+   * what lets a Word citation's heading path be found again (`outline.ts`).
+   */
+  outline(): Promise<OutlineEntry[]>;
+  /**
+   * The text runs of `pageNumber` without drawing it, for finding which page
+   * of a Word section holds a passage. Same runs, same order, as `renderPage`.
+   */
+  pageRuns(pageNumber: number): Promise<string[]>;
   destroy(): void;
 }
 
@@ -173,6 +186,18 @@ export async function openPdf(url: string): Promise<PdfHandle> {
       page.cleanup();
       if (call !== latest) throw cancelled();
       return { width: viewport.width, height: viewport.height, runs };
+    },
+    outline() {
+      return flattenOutline(doc);
+    },
+    async pageRuns(pageNumber) {
+      const page = await doc.getPage(pageNumber);
+      try {
+        const content = await page.getTextContent();
+        return content.items.flatMap((item) => ("str" in item ? [item.str] : []));
+      } finally {
+        page.cleanup();
+      }
     },
     destroy() {
       current?.cancel();

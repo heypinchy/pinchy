@@ -351,4 +351,67 @@ describe("PdfDialog with a passage to highlight", () => {
     expect(document.querySelector("embed")).toHaveAttribute("src", SOURCE_URL);
     expect(mockOpenPdf).not.toHaveBeenCalled();
   });
+
+  it("draws a slide citation at its slide, which is the converted PDF's page", async () => {
+    const renderPage = vi.fn(async (_page: number) => ({ width: 600, height: 800, runs: [] }));
+    mockOpenPdf.mockReset().mockResolvedValue({ numPages: 20, renderPage, destroy: vi.fn() });
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ passage: null }), { status: 200 }));
+    const deckUrl = "/api/agents/a1/workspace-file/Pitch.pdf?path=%2Fdata%2Fsales%2FPitch.pptx";
+
+    render(
+      <PdfDialog
+        url={deckUrl}
+        title="sales/Pitch.pptx"
+        page={null}
+        passage={{
+          url: "/api/agents/a1/knowledge/passage",
+          body: { path: "/data/sales/Pitch.pptx", slide: 7 },
+        }}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    expect(await screen.findByText("Page 7 of 20")).toBeInTheDocument();
+    expect(renderPage.mock.calls[0][0]).toBe(7);
+    expect(document.querySelector("embed")).toBeNull();
+    fetchSpy.mockRestore();
+  });
+
+  it("opens a Word citation as before when its heading cannot be found", async () => {
+    mockOpenPdf.mockReset().mockResolvedValue({
+      numPages: 20,
+      renderPage: vi.fn(),
+      outline: vi.fn(async () => []),
+      pageRuns: vi.fn(async () => []),
+      destroy: vi.fn(),
+    });
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ passage: null }), { status: 200 }));
+    const wordUrl = "/api/agents/a1/workspace-file/Handbuch.pdf?path=%2Fdata%2Fq%2FHandbuch.docx";
+
+    render(
+      <PdfDialog
+        url={wordUrl}
+        title="q/Handbuch.docx"
+        page={null}
+        passage={{
+          url: "/api/agents/a1/knowledge/passage",
+          body: { path: "/data/q/Handbuch.docx", heading: "Wartung" },
+        }}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    await waitFor(() => expect(document.querySelector("embed")).toHaveAttribute("src", wordUrl));
+    // No page to name: the browser's viewer opens at the top, as it did.
+    expect(screen.queryByText(/page \d/i)).not.toBeInTheDocument();
+    fetchSpy.mockRestore();
+  });
 });
