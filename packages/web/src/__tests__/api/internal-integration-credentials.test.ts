@@ -9,10 +9,14 @@ vi.mock("@/lib/gateway-auth", () => ({
 // `lib/integrations/authorize-agent-connection.test.ts` (pure branches) and
 // its `.integration.test.ts` sibling (the queries). Here it is mocked, so
 // these cases stay about the HTTP contract the plugins see: which status,
-// which body, and whether a denial leaves an audit row.
-vi.mock("@/lib/integrations/authorize-agent-connection", () => ({
-  authorizeAgentConnection: vi.fn(),
-}));
+// which body, and whether a denial leaves an audit row. The pure
+// `decideConnectionAccess` stays real, so a case can feed the route the
+// decision the rule actually makes for a given agent.
+vi.mock("@/lib/integrations/authorize-agent-connection", async (importActual) => {
+  const actual =
+    await importActual<typeof import("@/lib/integrations/authorize-agent-connection")>();
+  return { ...actual, authorizeAgentConnection: vi.fn() };
+});
 
 vi.mock("@/lib/audit-deferred", () => ({
   deferAuditLog: vi.fn(),
@@ -93,7 +97,10 @@ import { refreshAccessToken } from "@/lib/integrations/google-oauth";
 import { refreshAccessToken as refreshMsAccessToken } from "@/lib/integrations/microsoft-oauth";
 import { isTokenExpired } from "@/lib/integrations/oauth-token";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
-import { authorizeAgentConnection } from "@/lib/integrations/authorize-agent-connection";
+import {
+  authorizeAgentConnection,
+  decideConnectionAccess,
+} from "@/lib/integrations/authorize-agent-connection";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { checkStoredDestination } from "@/lib/integrations/stored-destination";
 import { GET } from "@/app/api/internal/integrations/[connectionId]/credentials/route";
@@ -276,6 +283,37 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
 
       expect(res.status).toBe(404);
       expect(deferAuditLog).not.toHaveBeenCalled();
+    });
+
+    it("refuses the Brave key to an agent that may only fetch pages, and audits it", async () => {
+      // pinchy_web_fetch needs no key — the plugin never asks for one on the
+      // fetch path. Granting the instance-wide web-search connection on that
+      // tool handed the Brave API key to every fetch-only agent.
+      const fetchOnly = { id: "agent-reader", name: "Reader", allowedTools: ["pinchy_web_fetch"] };
+      const webConn = { id: "conn-web", type: "web-search" as const, name: "Brave Search" };
+      vi.mocked(authorizeAgentConnection).mockResolvedValue({
+        ...decideConnectionAccess(fetchOnly, webConn, 0),
+        agent: fetchOnly,
+      });
+      mockDbSelectResult([
+        { id: "conn-web", type: "web-search", status: "active", credentials: "encrypted-blob" },
+      ]);
+
+      const res = await GET(makeRequest("conn-web", fetchOnly.id), makeParams("conn-web"));
+
+      expect(res.status).toBe(403);
+      expect(decrypt).not.toHaveBeenCalled();
+      expect(deferAuditLog).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(deferAuditLog).mock.calls[0][0]).toMatchObject({
+        actorId: fetchOnly.id,
+        eventType: "integration.credentials_denied",
+        outcome: "failure",
+        detail: {
+          agent: { id: fetchOnly.id, name: fetchOnly.name },
+          connection: { id: "conn-web" },
+          reason: "not-granted",
+        },
+      });
     });
 
     it("passes the agent id from the query string through to the check", async () => {

@@ -140,9 +140,11 @@ const plugin = {
     const cache = new Map<string, { apiKey: string; expiresAt: number }>();
 
     // The Brave key is instance-wide, so an entry could serve every agent —
-    // and that would be safe here, because an agent without
-    // `pinchy_web_search` / `pinchy_web_fetch` never gets the tool registered
-    // at all (see the factories below) and so never reaches this function.
+    // and that would be safe here, because only `pinchy_web_search` reaches
+    // this function, and an agent without it never gets that tool registered
+    // (see the factories below). `pinchy_web_fetch` needs no key and never
+    // asks for one; Pinchy's credentials route refuses the key to a
+    // fetch-only agent (WEB_SEARCH_KEY_TOOLS in packages/web).
     // It is still keyed per agent and connection, for the reason pinchy-odoo
     // was (#1077): a key that omits the connection outlives a connection
     // swap by a full TTL, and "this one happens to be instance-wide" is a
@@ -166,9 +168,11 @@ const plugin = {
     }
 
     /**
-     * Both tools that reach this are reads (a Brave search, a page GET), so
-     * there is no mutation to guard against — unlike pinchy-odoo and
-     * pinchy-email, this one does not wrap the closure in `trackMutations`.
+     * Only `pinchy_web_search` reaches this — `pinchy_web_fetch` needs no key,
+     * and routing it through here would get every fetch-only agent a 403 from
+     * the credentials route. A Brave search is a read, so there is no mutation
+     * to guard against — unlike pinchy-odoo and pinchy-email, this one does
+     * not wrap the closure in `trackMutations`.
      */
     async function withAuthRetry<T>(
       agentId: string,

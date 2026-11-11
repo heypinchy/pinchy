@@ -22,9 +22,11 @@
  *     `agent_connection_permissions` (rows per model+operation). A grant is
  *     "at least one row for this (agent, connection)".
  *   - The web-search connection is instance-wide: `build.ts` hands the SAME
- *     `webConn.id` to every agent and gates access on the agent's
- *     `allowedTools` instead. It has no permission rows at all, so requiring
- *     one would have revoked web search from every agent in the instance.
+ *     `webConn.id` to every web agent, and the rule gates the key on the
+ *     agent's `allowedTools` instead — `pinchy_web_search` only, because
+ *     fetching a page needs no key. It has no permission rows at all, so
+ *     requiring one would have revoked web search from every agent in the
+ *     instance.
  */
 
 import { describe, expect, it } from "vitest";
@@ -71,14 +73,22 @@ describe("decideConnectionAccess", () => {
   });
 
   describe("the instance-wide web-search connection", () => {
-    it.each(["pinchy_web_search", "pinchy_web_fetch"])(
-      "allows an agent granted %s, despite zero permission rows",
-      (tool) => {
-        const agent: AgentForAuth = { ...AGENT, allowedTools: [tool] };
+    it("allows an agent granted pinchy_web_search, despite zero permission rows", () => {
+      const agent: AgentForAuth = { ...AGENT, allowedTools: ["pinchy_web_search"] };
 
-        expect(decideConnectionAccess(agent, WEB_CONN, 0)).toEqual({ allowed: true });
-      }
-    );
+      expect(decideConnectionAccess(agent, WEB_CONN, 0)).toEqual({ allowed: true });
+    });
+
+    it("denies an agent granted only pinchy_web_fetch — fetching a page needs no key", () => {
+      // The plugin never asks for credentials on the fetch path, so a
+      // fetch-only agent has no use for the Brave API key. Least privilege.
+      const agent: AgentForAuth = { ...AGENT, allowedTools: ["pinchy_web_fetch"] };
+
+      expect(decideConnectionAccess(agent, WEB_CONN, 0)).toEqual({
+        allowed: false,
+        reason: "not-granted",
+      });
+    });
 
     it("denies an agent that has neither web tool", () => {
       expect(decideConnectionAccess(AGENT, WEB_CONN, 0)).toEqual({
