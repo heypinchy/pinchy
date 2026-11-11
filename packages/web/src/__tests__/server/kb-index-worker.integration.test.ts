@@ -1560,3 +1560,66 @@ describe("kb index worker tick", () => {
     expect(job?.startedAt).toEqual(startedAt);
   });
 });
+
+describe("a folder granted while the slot was taken (#1280)", () => {
+  async function searchingAgent(name: string, folder: string) {
+    const [agent] = await db
+      .insert(agents)
+      .values({
+        name,
+        model: "test-model",
+        greetingMessage: "Hi",
+        allowedTools: ["knowledge_search"],
+        pluginConfig: { "pinchy-files": { allowed_paths: [folder] } },
+      })
+      .returning();
+    return agent;
+  }
+
+  it("gets its first index once the run in the way has finished, without anyone asking again", async () => {
+    const legalDir = join(tmpRoot, "legal");
+    const hrDir = join(tmpRoot, "hr");
+    writePdf(legalDir, "contract.pdf");
+    writePdf(hrDir, "handbook.pdf", "other-bytes");
+    const legal = await searchingAgent("Legal", legalDir);
+    // Legal's run holds the slot when HR is created, so the route could not
+    // queue HR's first index.
+    await enqueueIndexJob({
+      orgId: DEFAULT_ORG_ID,
+      agentId: legal.id,
+      agentName: legal.name,
+      requestedBy: "admin-1",
+      paths: [legalDir],
+    });
+    const hr = await searchingAgent("HR", hrDir);
+
+    await runKbIndexWorkerTick({ deps: fakeDeps() });
+
+    const job = await getLatestIndexJobForAgent(hr.id);
+    expect(job).toMatchObject({
+      status: "succeeded",
+      trigger: "initial",
+      requestedBy: "kb-index-worker",
+      paths: [hrDir],
+    });
+    const requested = (await reindexAuditRows()).filter(
+      (row) =>
+        row.actorType === "system" && (row.detail as { trigger?: string }).trigger === "initial"
+    );
+    expect(requested.map((row) => row.actorId)).toContain("kb-index-worker");
+  });
+
+  it("queues nothing for a folder that has had its run, however often the worker looks", async () => {
+    const hrDir = join(tmpRoot, "hr");
+    writePdf(hrDir, "handbook.pdf");
+    const hr = await searchingAgent("HR", hrDir);
+
+    await runKbIndexWorkerTick({ deps: fakeDeps() });
+    await runKbIndexWorkerTick({ deps: fakeDeps() });
+    await runKbIndexWorkerTick({ deps: fakeDeps() });
+
+    const jobs = await db.select().from(kbIndexJobs).where(eq(kbIndexJobs.agentId, hr.id));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].trigger).toBe("initial");
+  });
+});
