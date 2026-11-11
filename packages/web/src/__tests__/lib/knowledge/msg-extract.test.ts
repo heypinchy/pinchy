@@ -123,6 +123,24 @@ describe("parseMsg", () => {
     expect((err as OfficeFileRejectedError).code).toBe("unexpected_content");
   });
 
+  // A mail cut short by an interrupted copy or a sync client still carries
+  // the signature, and the parser then throws RangeError/TypeError from deep
+  // inside the Compound File walk. That is a fact about the file, not about
+  // the machine: refused, so it lands in the unsearchable list instead of
+  // failing again on every run.
+  it.each([512, 1024, 512 * 8])(
+    "refuses a message truncated to %i bytes as unexpected content",
+    async (length) => {
+      const whole = buildMsg(OFFER);
+      expect(whole.length).toBeGreaterThan(length);
+      const err = await parseMsg(write("cut.msg", whole.subarray(0, length))).catch(
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(OfficeFileRejectedError);
+      expect((err as OfficeFileRejectedError).code).toBe("unexpected_content");
+    }
+  );
+
   it("refuses a file past the size cap before parsing it", async () => {
     const err = await parseMsg(write("big.msg", buildMsg(OFFER)), { maxBytes: 100 }).catch(
       (e: unknown) => e

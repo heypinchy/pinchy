@@ -184,7 +184,7 @@ export interface IngestDeps {
    * `readMsgIsolated`, the fenced reader child (kb-index-worker.ts) — the
    * parser walks an untrusted Compound File.
    *
-   * A refusal of the file (not a Compound File, too large) is an
+   * A refusal of the file (not a Compound File, too large, damaged) is an
    * `OfficeFileRejectedError`; anything else is about the machine, and the
    * file counts as failed. Required for the same reason `convertScan` is: once
    * `DEFAULT_ALLOWED_EXTENSIONS` names `.msg`, every caller's ingest WILL meet

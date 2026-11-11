@@ -92,11 +92,29 @@ export async function parseMsg(path: string, opts: ParseMsgOptions = {}): Promis
     );
   }
 
+  // A file that carries the signature but is cut short (an interrupted copy, a
+  // half-synced share) or damaged makes the parser throw RangeError or
+  // TypeError from deep inside the Compound File walk, and a binary-typed
+  // property makes the field mapping below throw. Both are facts about the
+  // file, not about the machine: refused, so the file lands in the
+  // unsearchable list instead of failing again on every run.
+  try {
+    return toParsedEmail(bytes, maxBodyChars);
+  } catch (err) {
+    if (err instanceof OfficeFileRejectedError) throw err;
+    throw new OfficeFileRejectedError(
+      "unexpected_content",
+      `the file is not a readable Outlook message: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+function toParsedEmail(bytes: Buffer, maxBodyChars: number): ParsedEmail {
   const data = new MsgReader(
     new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   ).getFileData();
   if (data.error) {
-    throw new OfficeFileRejectedError("unexpected_content", `${path}: ${data.error}`);
+    throw new OfficeFileRejectedError("unexpected_content", `the file: ${data.error}`);
   }
 
   const recipients = data.recipients ?? [];
