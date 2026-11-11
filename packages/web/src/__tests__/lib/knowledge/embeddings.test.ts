@@ -622,6 +622,28 @@ describe("splitToTokenBudget", () => {
     expect(pieces.join("")).toBe(text);
   });
 
+  // A flag is two regional indicators. Whether a boundary between them pairs
+  // correctly depends on where segmentation starts counting, so it must start at
+  // a real boundary — not at an arbitrary offset before the limit.
+  it("never cuts a flag between its two regional indicators", () => {
+    const text = "🇩🇪🇦🇹🇨🇭🇫🇷".repeat(40);
+    for (const budget of [41, 43, 77]) {
+      const pieces = splitToTokenBudget(text, charTokenizer, budget);
+      for (const piece of pieces) {
+        expect(piece).toMatch(/^(?:🇩🇪|🇦🇹|🇨🇭|🇫🇷)+$/u);
+      }
+      expectPiecesOfOriginal(text, pieces, charTokenizer, budget);
+      expect(pieces.join("")).toBe(text);
+    }
+  });
+
+  it("cuts before a grapheme longer than the look-back, not after it", () => {
+    const text = "x".repeat(60) + "a" + "́".repeat(80) + "y".repeat(100);
+    const pieces = splitToTokenBudget(text, charTokenizer, 130);
+    expect(pieces.map((p) => Array.from(p).length)).toEqual([60, 130, 51]);
+    expect(pieces.join("")).toBe(text);
+  });
+
   // One enormous line can be a whole page. Measuring the rest of the text for
   // every piece would make a long chunk quadratic.
   it("measures a bounded window per piece, not the rest of the text", () => {

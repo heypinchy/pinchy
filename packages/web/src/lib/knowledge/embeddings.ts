@@ -445,7 +445,10 @@ function findCut(text: string, start: number, limit: number): number {
 
   // No break in reach: the last grapheme boundary at or before the limit, or —
   // a single grapheme longer than the window — the first one after the start.
-  const from = Math.max(start, limit - 64);
+  // Segmentation starts at `start`, which is a real boundary: the segmenter
+  // treats a slice's start as one, so starting mid-text could pair a flag's
+  // regional indicators the wrong way or open inside a long combining cluster.
+  const from = start;
   let best = -1;
   for (const { index } of graphemes.segment(text.slice(from, Math.min(text.length, limit + 64)))) {
     if (index === 0) continue; // the slice's own start, which may sit inside a grapheme
