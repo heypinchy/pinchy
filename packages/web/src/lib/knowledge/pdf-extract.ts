@@ -87,7 +87,12 @@ export interface PdfOcrOptions {
   onDocumentOcr?: (stats: { rendered: number; skipped: number }) => void;
 }
 
-const DEFAULT_MAX_OCR_PAGES = 200;
+/**
+ * How many scanned pages of one document go to OCR. Exported because a TIFF
+ * is converted to PDF only up to this many frames (tiff-pdf.ts): a frame the
+ * budget will not read would only cost a decode.
+ */
+export const DEFAULT_MAX_OCR_PAGES = 200;
 
 /**
  * How many pages of one document are with the vision provider at once (#1385).

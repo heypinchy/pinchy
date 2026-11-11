@@ -347,6 +347,8 @@ The session cookie is checked once, at the handshake; an open connection is not 
 
 What this does not reach: a Telegram reply already running (OpenClaw's Telegram channel starts it, not Pinchy; new Telegram messages are refused at once), an automation run already handling an email on one of their personal agents (no new one starts), automations they created on shared agents, which keep running with the agent's permissions, and API keys they created. [User management](/guides/user-management/#what-deactivation-doesnt-stop) covers each one. The refusal is held in the Pinchy process, which is enough — a restart drops every connection, and a new one has to pass the handshake, whose session lookup the deactivation already emptied.
 
+Each account can hold up to ten chat connections at once, across all its devices, and each client address can open at most sixty per minute. A handshake over either limit is refused with HTTP `429`, and the chat retries with a growing delay. Pinchy pings every open chat connection every 30 seconds and closes one that has not answered since the previous ping, so a browser that vanished without closing its connection gives its place back within a minute instead of whenever the operating system drops it. The pings also keep a quiet chat from running into an idle timeout on your reverse proxy, as long as that timeout is longer than 30 seconds.
+
 ### Reverse proxy configuration
 
 The Origin check relies on knowing the public-facing host and scheme. If your reverse proxy strips or rewrites these headers, the check will reject legitimate requests. Set both headers explicitly:

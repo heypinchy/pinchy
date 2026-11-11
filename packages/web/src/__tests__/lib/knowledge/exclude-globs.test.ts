@@ -28,8 +28,12 @@ describe("isAllowedExtension", () => {
       ".xls",
       ".doc",
       ".docx",
+      ".docm",
       ".ppt",
       ".pptx",
+      ".tif",
+      ".tiff",
+      ".txt",
     ]);
     expect(isAllowedExtension("handbook.pdf")).toBe(true);
     expect(isAllowedExtension("handbook.PDF")).toBe(true);
@@ -37,7 +41,10 @@ describe("isAllowedExtension", () => {
     expect(isAllowedExtension("Schulung.PPTX")).toBe(true);
     // `.xls` is read through the `.xlsx` LibreOffice makes of it (#1373).
     expect(isAllowedExtension("Preise.XLS")).toBe(true);
-    expect(isAllowedExtension("handbook.txt")).toBe(false);
+    // Scans and plain text are read since #1409; a format nothing reads is not.
+    expect(isAllowedExtension("Typenschild.TIF")).toBe(true);
+    expect(isAllowedExtension("Liesmich.txt")).toBe(true);
+    expect(isAllowedExtension("Notiz.rtf")).toBe(false);
   });
 
   it("honors an overridden allowlist", () => {

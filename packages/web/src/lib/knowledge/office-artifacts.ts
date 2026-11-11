@@ -131,6 +131,26 @@ export const OFFICE_ARTIFACT_FORMAT_VERSION = 2;
  */
 export const DEFAULT_ARTIFACT_DIR = process.env.KB_ARTIFACT_DIR || "/var/cache/pinchy-kb-artifacts";
 
+/**
+ * The format of a converted scan (a TIFF turned into one PDF page per frame,
+ * tiff-pdf.ts). Its own number, in its own directory (`scanArtifactDirOf`):
+ * a scan is converted when it is read, and an unchanged one is skipped and
+ * never converted again, so an Office format bump that pruned it would leave
+ * its citations opening nothing.
+ */
+export const SCAN_ARTIFACT_FORMAT_VERSION = 1;
+
+const SCAN_DIR_NAME = "scans";
+
+/**
+ * Where converted scans live: a store of their own under the artifact root.
+ * `pruneOtherFormatVersions` deletes only `v<n>` directly under the root, so
+ * an Office format bump never reaches it.
+ */
+export function scanArtifactDirOf(rootDir: string = DEFAULT_ARTIFACT_DIR): string {
+  return join(rootDir, SCAN_DIR_NAME);
+}
+
 /** How long an artifact survives without being read. Mirrors PdfCache's 7 days. */
 export const DEFAULT_ARTIFACT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -405,4 +425,14 @@ let sharedStore: OfficeArtifactStore | null = null;
 export function getOfficeArtifactStore(): OfficeArtifactStore {
   sharedStore ??= new OfficeArtifactStore();
   return sharedStore;
+}
+
+let sharedScanStore: OfficeArtifactStore | null = null;
+
+/** The process-wide store of converted scans; lazy for the same reason. */
+export function getScanArtifactStore(): OfficeArtifactStore {
+  sharedScanStore ??= new OfficeArtifactStore(scanArtifactDirOf(), {
+    formatVersion: SCAN_ARTIFACT_FORMAT_VERSION,
+  });
+  return sharedScanStore;
 }

@@ -26,6 +26,7 @@ import {
   convertedPdfName,
   isOfficeFile,
   isPresentationFile,
+  isScanFile,
   isSpreadsheetFile,
   isWordFile,
 } from "./office-formats";
@@ -74,7 +75,8 @@ import {
  * rather than "a/one.pdf". A mount name with a space in it is the price, and
  * "the citation starts at a word" is a rule a reader can predict.
  */
-const SOURCE_PATH_ENDING_HERE = /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docx?|pptx?|xlsx?|xlsm)$/i;
+const SOURCE_PATH_ENDING_HERE =
+  /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docm|docx?|pptx?|xlsx?|xlsm|tiff?)$/i;
 
 /** What may follow a path so that "…/doc.pdf." links the file and not the full stop. */
 const PATH_BOUNDARY = /[\s,.;:)\]]/;
@@ -91,8 +93,22 @@ const PATH_BOUNDARY = /[\s,.;:)\]]/;
  * a new extension and not the other yields a link that never appears, with
  * nothing anywhere saying why — which is what `linkable-extensions-drift`
  * checks.
+ *
+ * `docm` comes before `docx?` on purpose: an alternation takes the first
+ * branch that matches, and `docx?` would end the hit at the `.doc` inside
+ * `.docm`, where the boundary check then rejects it.
  */
-const EXTENSION = /\.(?:pdf|docx?|pptx?|xlsx?|xlsm)/gi;
+const EXTENSION = /\.(?:pdf|docm|docx?|pptx?|xlsx?|xlsm|tiff?)/gi;
+
+/**
+ * Whether the viewer is shown a PDF the knowledge base made of this file rather
+ * than the file itself: an Office document (converted by LibreOffice) or a
+ * scanned TIFF (one PDF page per frame, #1409). No browser renders either, so
+ * the viewer url is named after that PDF and the downloads offer both.
+ */
+function shownAsConvertedPdf(path: string): boolean {
+  return isOfficeFile(path) || isScanFile(path);
+}
 
 /**
  * How far back from an extension a path may reasonably start. The longest path
@@ -564,7 +580,7 @@ export function parseSourceHref(
  * its own — Chrome reads nothing else, not even Content-Disposition. For every
  * citation that segment was the route, so the toolbar above a reader's
  * document said "workspace-file". It names the bytes SHOWN, which for an
- * Office source is the converted PDF: a `.docx` name on PDF bytes would title
+ * Office source or a scanned TIFF is the converted PDF: a `.docx` name on PDF bytes would title
  * a PDF as a Word file.
  *
  * Derived here rather than written into the markdown link, so the shape the
@@ -580,7 +596,7 @@ export function buildSourceViewerUrl(href: string): string | null {
   const [base, fragment] = splitFragment(href);
   const [routePath, query] = [base.slice(0, base.indexOf("?")), base.slice(base.indexOf("?"))];
   const name = leafName(source.path);
-  const shown = isOfficeFile(source.path) ? convertedPdfName(name) : name;
+  const shown = shownAsConvertedPdf(source.path) ? convertedPdfName(name) : name;
   return `${routePath}/${encodeURIComponent(shown)}${query}${fragment}`;
 }
 
@@ -680,7 +696,7 @@ function leafName(path: string): string {
  *
  * A PDF has one representation and yields one entry — today's behaviour,
  * spelled out rather than left to the dialog's default so the two cases are
- * decided in one place. An Office source has two, and they answer different
+ * decided in one place. An Office source or a scanned TIFF has two, and they answer different
  * needs: the ORIGINAL is the file that exists on the reader's drive and the one
  * they forward to a customer; the CONVERTED PDF is what the viewer just showed
  * them, and sometimes exactly what they wanted to send anyway — it saves them
@@ -710,7 +726,9 @@ export function buildSourceDownloads(
   const [base] = splitFragment(href);
   const name = leafName(source.path);
   const originalUrl = `${base}&download=1&variant=original`;
-  if (!isOfficeFile(source.path)) return [{ label: name, filename: name, url: originalUrl }];
+  if (!shownAsConvertedPdf(source.path)) {
+    return [{ label: name, filename: name, url: originalUrl }];
+  }
 
   const extension = name.slice(name.lastIndexOf("."));
   return [

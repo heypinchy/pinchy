@@ -18,11 +18,15 @@ import {
   isOfficeFile,
   isPresentationFile,
   isSpreadsheetFile,
+  isScanFile,
+  isTextFile,
   isWordFile,
   needsConversion,
   OFFICE_EXTENSIONS,
   PRESENTATION_EXTENSIONS,
+  SCAN_EXTENSIONS,
   SPREADSHEET_EXTENSIONS,
+  TEXT_EXTENSIONS,
   WORD_EXTENSIONS,
 } from "@/lib/knowledge/office-formats";
 
@@ -128,6 +132,9 @@ describe("the two halves of OFFICE_EXTENSIONS", () => {
     // both anchors come out of the converted PDF instead.
     expect(isWordFile("/data/archive-2012/Bericht.DOC")).toBe(true);
     expect(isWordFile("/data/Angebot.docx")).toBe(true);
+    // A macro-enabled Word document is a Word document: same converter, same
+    // heading anchor. Its macros never run (office-preflight.test.ts, .docm).
+    expect(isWordFile("/data/Wartungsplan.DOCM")).toBe(true);
     expect(isPresentationFile("/data/Schulung.PPT")).toBe(true);
     expect(isPresentationFile("/data/Schulung.pptx")).toBe(true);
   });
@@ -189,5 +196,33 @@ describe("CONVERTED_EXTENSIONS", () => {
   it("refuses to name a target for a format the converter does not take", () => {
     expect(() => convertedExtensionOf("/data/Preise.xlsx")).toThrow();
     expect(() => convertedExtensionOf("/data/report.pdf")).toThrow();
+  });
+});
+
+describe("isScanFile and isTextFile (#1409)", () => {
+  it("recognises a scanned TIFF under either spelling, whatever the case", () => {
+    expect(isScanFile("/data/plates/Typenschild.tif")).toBe(true);
+    expect(isScanFile("/data/plates/Typenschild.TIFF")).toBe(true);
+    expect(isScanFile("/data/plates/Typenschild.png")).toBe(false);
+    expect(isScanFile("/data/.tif")).toBe(false);
+  });
+
+  it("recognises a plain-text file", () => {
+    expect(isTextFile("/data/notes/Liesmich.TXT")).toBe(true);
+    expect(isTextFile("/data/notes/Liesmich.md")).toBe(false);
+    expect(isTextFile("/data/.txt")).toBe(false);
+  });
+
+  it("gives every readable extension exactly one reader", () => {
+    // `readDocument` dispatches on these lists in turn. An extension in two of
+    // them would take whichever branch is tested first, silently.
+    const all = [
+      ...OFFICE_EXTENSIONS,
+      ...SPREADSHEET_EXTENSIONS,
+      ...SCAN_EXTENSIONS,
+      ...TEXT_EXTENSIONS,
+      ".pdf",
+    ];
+    expect(new Set(all).size).toBe(all.length);
   });
 });

@@ -28,8 +28,8 @@ function fileStem(agentName: string): string {
 
 /**
  * GET /api/agents/[agentId]/knowledge/unsupported — a CSV of the files under
- * the agent's folders whose type the indexer cannot read (#1267): a `.tif`
- * scan, a legacy `.xls`, a `.txt`. The reindex status counts them
+ * the agent's folders whose type the indexer cannot read (#1267): an Outlook
+ * `.msg`, a legacy `.xls`, an `.rtf`. The reindex status counts them
  * (`counts.unsupported`); this names them, with path and type, so an admin can
  * convert them or tell users what the agent cannot see.
  *
@@ -73,7 +73,7 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
       if (!headerSent) {
         headerSent = true;
         // The BOM is what makes Excel read the file as UTF-8. Without it a
-        // German share's "Prüfbericht.tif" opens as "PrÃ¼fbericht.tif".
+        // German share's "Prüfbericht.msg" opens as "PrÃ¼fbericht.msg".
         controller.enqueue(encoder.encode(`\uFEFF${csvField("path")},${csvField("type")}\n`));
         return;
       }

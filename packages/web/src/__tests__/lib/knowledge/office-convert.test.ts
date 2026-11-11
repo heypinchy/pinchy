@@ -174,7 +174,8 @@ function deps(converter: FakeConverter, extra: Partial<ConvertOptions> = {}): Co
 
 describe("isOfficeFile", () => {
   it("recognises the page-shaped Office formats, modern and legacy", () => {
-    expect(OFFICE_EXTENSIONS).toEqual([".doc", ".docx", ".ppt", ".pptx"]);
+    // `.docm` is a `.docx` that also carries macros; it converts the same way (#1409).
+    expect(OFFICE_EXTENSIONS).toEqual([".doc", ".docx", ".docm", ".ppt", ".pptx"]);
     for (const ext of OFFICE_EXTENSIONS) {
       expect(isOfficeFile(`/data/report${ext}`)).toBe(true);
       expect(isOfficeFile(`/data/report${ext.toUpperCase()}`)).toBe(true);
