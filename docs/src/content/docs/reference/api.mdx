@@ -1474,6 +1474,85 @@ Unlock the domain. Same restart behaviour as `POST`.
 - `401` — not authenticated
 - `403` — not an admin
 
+## Email delivery (admin only)
+
+The optional system mailer that sends invitations and password reset links (see [Send Invitations by Email](/guides/email-delivery/)). Off by default: with nothing configured, Pinchy sends no email.
+
+### `GET /api/settings/mail`
+
+**Response:** `{ "configured": false }`, or:
+
+```json
+{
+  "configured": true,
+  "config": {
+    "host": "smtp.example.com",
+    "port": 587,
+    "security": "starttls",
+    "username": "pinchy@example.com",
+    "fromAddress": "pinchy@example.com",
+    "fromName": "Acme IT",
+    "hasPassword": true
+  }
+}
+```
+
+The password is never returned; `hasPassword` says whether one is stored.
+
+### `PUT /api/settings/mail`
+
+Save the mailer configuration. Pinchy first connects, negotiates encryption and logs in; only a configuration that passes is saved.
+
+**Request body:**
+
+| Field         | Type   | Required | Description                                                                                       |
+| ------------- | ------ | -------- | ------------------------------------------------------------------------------------------------- |
+| `host`        | string | Yes      | SMTP server host name or IP address                                                               |
+| `port`        | number | Yes      | Usually `587` (STARTTLS) or `465` (TLS)                                                           |
+| `security`    | string | Yes      | `starttls`, `tls` or `none`. `starttls` refuses to continue if the server doesn't offer it.       |
+| `username`    | string | No       | Leave out for a relay that accepts mail without logging in                                        |
+| `password`    | string | No       | Leave out to keep the stored password. It is not kept when `host` changes or `username` is empty. |
+| `fromAddress` | string | Yes      | The sender address                                                                                |
+| `fromName`    | string | No       | The sender name; defaults to `Pinchy`                                                             |
+
+**Response:** the same shape as `GET`.
+
+The host goes through the same check as a mailbox connection: a host on a private network needs `ALLOW_PRIVATE_MAIL_HOSTS=1` (see [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network)).
+
+**Errors:**
+
+- `400` — invalid body, or the connection check failed. `error` says what to fix, e.g. `"Authentication failed — check the username and password"`. Nothing is saved.
+- `401` — not authenticated
+- `403` — not an admin
+
+Writes `settings.updated` with resource `settings:mail` — on failure too.
+
+### `DELETE /api/settings/mail`
+
+Turn the mailer off. Invite and reset links are shown for copying again.
+
+**Response:** `{ "configured": false }`
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — no mailer is configured
+
+### `POST /api/settings/mail/test`
+
+Send a test email with the saved configuration to the signed-in admin's own address. Takes an empty body (`{}`); the recipient can't be chosen.
+
+**Response:** `{ "sent": true, "to": "admin@example.com" }`
+
+**Errors:**
+
+- `400` — the body is not `{}`
+- `401` — not authenticated
+- `403` — not an admin
+- `409` — no mailer is configured
+- `502` — the mail server refused or couldn't be reached; `error` says why
+
 ## Organization Context (admin only)
 
 ### `GET /api/settings/context`
@@ -1623,16 +1702,26 @@ Reactivate a deactivated user. **Admin only.**
 
 Generate a password reset token for a user. The admin constructs the reset URL from the returned token: `{origin}/invite/{token}`.
 
+**Request body (optional):** the route also accepts no body at all.
+
+| Field       | Type    | Required | Description                                                                                                                 |
+| ----------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `sendEmail` | boolean | No       | Email the reset link to the user through the [system mailer](#email-delivery-admin-only). The token is returned either way. |
+
 **Response:** `201 Created`
 
 ```json
 {
-  "token": "abc123..."
+  "token": "abc123...",
+  "emailDelivery": { "sent": true }
 }
 ```
 
+`emailDelivery` is present only when `sendEmail` was `true` and the user has an email address. It is `{ "sent": true }` or `{ "sent": false, "error": "<what went wrong>" }` — including `"Email delivery isn't set up."` when no mailer is configured. A failed send never fails the request: the token is created first and always returned, so the link can still be copied. Every attempt writes a `mail.sent` audit row.
+
 **Errors:**
 
+- `400` — the body is not JSON or carries an unknown field
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — user not found
@@ -1645,11 +1734,12 @@ Create an invite for a new user. Returns the full invite object including a plai
 
 **Request body:**
 
-| Field      | Type     | Required | Description                                                          |
-| ---------- | -------- | -------- | -------------------------------------------------------------------- |
-| `email`    | string   | Yes      | Email address of the invited user. Their account is created with it. |
-| `role`     | string   | Yes      | Role for the invited user (`admin` or `member`)                      |
-| `groupIds` | string[] | No       | Group IDs to assign the user to on account creation                  |
+| Field       | Type     | Required | Description                                                                                                     |
+| ----------- | -------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| `email`     | string   | Yes      | Email address of the invited user. Their account is created with it.                                            |
+| `role`      | string   | Yes      | Role for the invited user (`admin` or `member`)                                                                 |
+| `groupIds`  | string[] | No       | Group IDs to assign the user to on account creation                                                             |
+| `sendEmail` | boolean  | No       | Email the invitation through the [system mailer](#email-delivery-admin-only). The invite is created either way. |
 
 **Response:** `201 Created`
 
@@ -1667,6 +1757,8 @@ Create an invite for a new user. Returns the full invite object including a plai
 ```
 
 The admin constructs the invite URL from the returned token: `{origin}/invite/{token}`.
+
+With `sendEmail: true` the response also carries `emailDelivery`: `{ "sent": true }`, or `{ "sent": false, "error": "<what went wrong>" }` when the mail server refused or couldn't be reached, or no mailer is configured (`"Email delivery isn't set up."`). The status stays `201` and the token is returned in both cases, because the invite already exists — a failed send never loses it. The link in the email uses the locked domain when one is set (`https://<domain>`), otherwise the host the request arrived on.
 
 **Errors:**
 
@@ -2095,7 +2187,7 @@ Summary counts of integration connection health (active, `auth_failed`, and conn
 
 Returns the decrypted credentials for a connection, auto-refreshing an expired OAuth access token first (Google and Microsoft rotate refresh tokens differently — see the plugin cache/refetch behavior in the Secret Handling section of `AGENTS.md`). Called by `pinchy-email`, `pinchy-odoo` and `pinchy-web` with the gateway token as Bearer auth; the plugin caches the response, typically with a 5-minute TTL, and invalidates that cache when the third-party service answers `401`. A `401` from this route itself is retried for a few seconds instead: it means Pinchy briefly could not read the gateway token during a configuration change.
 
-**The calling plugin must name its agent**: `?agentId=<id>` is required, and the request is refused unless that agent was actually granted the connection. The gateway token is one shared secret written into every plugin's config block, so on its own it identifies the container, not the caller — without this check any plugin could name any `connectionId` and receive a decrypted password. Odoo and mailbox connections are checked against the agent's integration grants; the instance-wide web-search connection is checked against the agent's `pinchy_web_search` / `pinchy_web_fetch` tool grant, because it is deliberately shared by every agent and has no per-agent grant rows.
+**The calling plugin must name its agent**: `?agentId=<id>` is required, and the request is refused unless that agent was actually granted the connection. The gateway token is one shared secret written into every plugin's config block, so on its own it identifies the container, not the caller — without this check any plugin could name any `connectionId` and receive a decrypted password. Odoo and mailbox connections are checked against the agent's integration grants; the instance-wide web-search connection is checked against the agent's `pinchy_web_search` tool grant, because it is deliberately shared by every agent and has no per-agent grant rows. `pinchy_web_fetch` alone does not grant it: fetching a page needs no key, so a fetch-only agent is refused the Brave Search key like any other agent without a grant.
 
 | Query parameter | Required | Description                                |
 | --------------- | -------- | ------------------------------------------ |

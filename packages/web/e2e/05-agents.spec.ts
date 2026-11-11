@@ -1,7 +1,20 @@
 import { test, expect } from "@playwright/test";
-import { seedProviderConfig, loginAsAdmin } from "./helpers";
+import { seedProviderConfig, loginAsAdmin, apiSignInAsAdmin } from "./helpers";
 
 test.describe("Agent management", () => {
+  test.beforeAll(async ({ browser }) => {
+    // The E2E server runs Next in dev mode, which compiles a page on its first
+    // request. /agents/new measured 4.1s (next.js: 3.9s, application-code:
+    // 45ms) on a loaded runner, blowing the 5s URL assertion below. Pay that
+    // compile once here, untimed and signed in (the proxy redirects an
+    // anonymous request to /login before the page is compiled).
+    await seedProviderConfig();
+    const context = await browser.newContext();
+    await apiSignInAsAdmin(context.request);
+    await context.request.get("/agents/new");
+    await context.close();
+  });
+
   test.beforeEach(async ({ page }) => {
     await seedProviderConfig();
     await loginAsAdmin(page);

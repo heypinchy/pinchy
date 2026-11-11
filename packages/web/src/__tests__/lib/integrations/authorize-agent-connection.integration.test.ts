@@ -146,6 +146,16 @@ describe("authorizeAgentConnection against a real database", () => {
       });
     });
 
+    it("denies an agent that may only fetch pages — fetch needs no key", async () => {
+      const web = await seedConnection({ type: "web-search", name: "Brave" });
+      const reader = await seedAgent({ name: "Reader", allowedTools: ["pinchy_web_fetch"] });
+
+      await expect(authorizeAgentConnection(reader, web)).resolves.toMatchObject({
+        allowed: false,
+        reason: "not-granted",
+      });
+    });
+
     it("denies an agent without either web tool", async () => {
       const web = await seedConnection({ type: "web-search", name: "Brave" });
 

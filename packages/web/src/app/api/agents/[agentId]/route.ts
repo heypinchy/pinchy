@@ -20,11 +20,13 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { queueFirstIndex } from "@/lib/knowledge/first-index";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { updateAgentSchema } from "@/lib/schemas/agents";
+import { pluginConfigAuditChange, type FolderAccessDiff } from "@/lib/agent-plugin-config-audit";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
 /** What an `agent.updated` row carries, success or failure. */
 type AgentUpdateDetail = UpdateDetail & {
+  folderAccess?: FolderAccessDiff;
   allowedGroups?: {
     added: { id: string; name: string }[];
     removed: { id: string; name: string }[];
@@ -190,13 +192,19 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
       changes.starterPrompts = { from: oldPrompts, to: data.starterPrompts };
     }
   }
+  // Never the raw config: folder grants can name a person, and this row is
+  // immutable. See pluginConfigAuditChange for the shape.
+  let folderAccess: FolderAccessDiff | undefined;
   if (data.pluginConfig !== undefined) {
-    const oldConfig = existingAgent.pluginConfig ?? null;
-    const newConfig = data.pluginConfig ?? null;
-    if (JSON.stringify(oldConfig) !== JSON.stringify(newConfig)) {
-      changes.pluginConfig = { from: oldConfig, to: newConfig };
-    }
+    const audited = pluginConfigAuditChange(
+      existingAgent.pluginConfig ?? null,
+      data.pluginConfig ?? null
+    );
+    if (audited.change) changes.pluginConfig = audited.change;
+    folderAccess = audited.folderAccess;
   }
+  const baseDetail: AgentUpdateDetail = { changes, ...(folderAccess ? { folderAccess } : {}) };
+  const hasBaseChange = Object.keys(changes).length > 0 || folderAccess !== undefined;
 
   // updateAgent writes the row and THEN calls regenerateOpenClawConfig(); the
   // two are not in a transaction. Letting the throw escape hands Next.js a 500
@@ -290,7 +298,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     }
   }
 
-  const auditDetail: AgentUpdateDetail = { changes };
+  const auditDetail: AgentUpdateDetail = { ...baseDetail };
   const groupsRequested = body.groupIds !== undefined && session.user.role === "admin";
   let groupsWritten = false;
 
@@ -365,7 +373,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
     followUpError = err;
   }
 
-  const hasAuditableChange = Object.keys(changes).length > 0 || Boolean(auditDetail.allowedGroups);
+  const hasAuditableChange = hasBaseChange || Boolean(auditDetail.allowedGroups);
 
   // Rebuild OpenClaw config when tool permissions or plugin config change — these
   // fields affect the generated openclaw.json (e.g. write_paths for pinchy_write).

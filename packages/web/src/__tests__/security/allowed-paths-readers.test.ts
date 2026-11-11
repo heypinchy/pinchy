@@ -28,6 +28,8 @@ const ALLOWED_RAW_ACCESS: Record<string, string> = {
     "reads allowed_paths of the EMITTED pinchy-files config, which build.ts derived through the accessor",
   "lib/agents.ts":
     "validates a create request's INPUT with validateAllowedPaths and rejects it — a writer, not a reader of a stored row",
+  "lib/agent-plugin-config-audit.ts":
+    "counts how the STORED list changed for an agent.updated row and grants nothing; dropping a leftover outside /data must show up as removed",
 };
 
 /**

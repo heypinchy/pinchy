@@ -14,7 +14,12 @@
  * in sync by hand. See AGENTS.md, "A Hand-Maintained List That Mirrors Code
  * Will Be Wrong".
  */
-export const IMAP_ONLY_SPEC_FILES = ["email-imap.spec.ts", "inbox-sweep.spec.ts"] as const;
+export const IMAP_ONLY_SPEC_FILES = [
+  "email-imap.spec.ts",
+  "inbox-sweep.spec.ts",
+  // The system mailer (#1309) needs GreenMail too, and nothing else.
+  "system-mailer.spec.ts",
+] as const;
 
 /**
  * Escape a literal file name for embedding in a RegExp. A derived pattern must

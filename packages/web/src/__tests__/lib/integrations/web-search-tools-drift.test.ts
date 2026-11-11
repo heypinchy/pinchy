@@ -1,29 +1,31 @@
 /**
- * `WEB_SEARCH_TOOLS` must name exactly the tools `build.ts` emits the
- * web-search connection for (#987).
+ * `WEB_SEARCH_KEY_TOOLS` must name exactly the `pinchy-web` tools that spend
+ * the Brave Search API key (#987).
  *
- * These two lists are a pair, and until this guard only one of them was
- * enforced by anything. `openclaw-config/build.ts` writes the instance-wide
- * web-search `connectionId` into an agent's `pinchy-web` config when the agent
- * holds `pinchy_web_search` or `pinchy_web_fetch`; the credentials route then
- * re-asks that same tool-list question before it decrypts the Brave key,
- * because this connection has no `agent_connection_permissions` rows to count.
+ * The web-search connection is instance-wide: it has no
+ * `agent_connection_permissions` rows, so the credentials route decides from
+ * the agent's tool list whether it may decrypt the Brave key. The list it asks
+ * is `WEB_SEARCH_KEY_TOOLS`. The plugin is the other half of the pair: some of
+ * its tools request credentials, some (`pinchy_web_fetch`) never do.
  *
  * Drift in either direction is silent and lands in production:
  *
- *   - A third web tool added to the emission side alone gives that agent's
- *     plugin a connectionId whose credentials the server refuses. It surfaces
- *     as "web search stopped working", with an `integration.credentials_denied`
- *     row claiming the agent was never granted a connection the config just
- *     handed it.
- *   - A tool listed here that build.ts does not emit for is the opposite
- *     mistake: an agent allowed to read the Brave API key on the strength of a
- *     tool that was never wired to that connection.
+ *   - A plugin tool that starts requesting the key without being listed here
+ *     gets a 403 on its first call, reported as an agent reaching beyond a
+ *     grant it visibly has.
+ *   - A tool listed here that never requests the key grants the Brave key for
+ *     nothing. That was the shape before this guard was re-pinned: the list
+ *     mirrored every tool that loads the plugin, so a fetch-only agent could
+ *     read a key it has no use for.
+ *
+ * A second check keeps the emission side honest: every key tool must also be
+ * one `build.ts` loads the plugin for, otherwise the grant names a tool no
+ * agent can ever be configured with.
  *
  * Same contract as the other paired-list guards in this repo (see AGENTS.md
- * § "Tool dispatch coverage"): the pairing is the invariant, and the extractor
- * throws rather than returning a short list, because a walker that quietly
- * finds nothing turns this file into decoration.
+ * § "Tool dispatch coverage"): the extractors throw rather than returning a
+ * short list, because a walker that quietly finds nothing turns this file into
+ * decoration.
  */
 
 import { readFileSync } from "node:fs";
@@ -31,17 +33,20 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { WEB_SEARCH_TOOLS } from "@/lib/integrations/authorize-agent-connection";
+import { WEB_SEARCH_KEY_TOOLS } from "@/lib/integrations/authorize-agent-connection";
 
 const BUILD_TS = resolve(__dirname, "../../../lib/openclaw-config/build.ts");
+const PLUGIN_INDEX = resolve(__dirname, "../../../../../plugins/pinchy-web/index.ts");
 
 const BLOCK_START = "// Collect web search configs";
 const BLOCK_END = 'entries["pinchy-web"]';
 
+/** Calls in the plugin that mean "this tool needs the Brave key". */
+const KEY_REQUEST = /\b(withAuthRetry|getBraveApiKey|fetchBraveCredentials|requestCredentials)\(/;
+
 /**
- * The tools `build.ts` gates the web-search plugin entry on, read out of the
- * source rather than re-declared here — a copy would drift exactly like the
- * pair it is meant to pin.
+ * The tools `build.ts` loads the web plugin for, read out of the source rather
+ * than re-declared here — a copy would drift exactly like the pair it pins.
  */
 function extractEmissionTools(): string[] {
   const source = readFileSync(BUILD_TS, "utf8");
@@ -64,35 +69,84 @@ function extractEmissionTools(): string[] {
         `this guard so the pairing is still checked.`
     );
   }
-  return tools;
+  return [...new Set(tools)];
 }
 
-describe("web-search tool list drift (#987)", () => {
-  it("reads a real emission block out of build.ts", () => {
-    // The corpus probe. Without it a regex that silently matches nothing would
-    // make every assertion below vacuously true.
-    const tools = extractEmissionTools();
+/**
+ * Every tool `pinchy-web` registers, and whether its registration block asks
+ * for credentials. Split on `api.registerTool(`; each block ends with the
+ * `{ name: "…" }` options object that names the tool.
+ */
+function extractPluginTools(): { name: string; requestsKey: boolean }[] {
+  const source = readFileSync(PLUGIN_INDEX, "utf8");
+  const blocks = source.split("api.registerTool(").slice(1);
+  if (blocks.length === 0) {
+    throw new Error(
+      `web-search-tools-drift: found no api.registerTool( calls in pinchy-web/index.ts. ` +
+        `The plugin registers its tools some other way now — update this guard.`
+    );
+  }
 
-    expect(tools.length).toBeGreaterThan(0);
-    for (const tool of tools) {
-      expect(tool).toMatch(/^pinchy_web_/);
+  return blocks.map((block, i) => {
+    const names = [...block.matchAll(/\{\s*name:\s*"([^"]+)"\s*\}/g)].map((m) => m[1]);
+    const name = names.at(-1);
+    if (!name) {
+      throw new Error(
+        `web-search-tools-drift: registerTool block #${i + 1} in pinchy-web/index.ts has no ` +
+          `{ name: "…" } options object. The registration shape changed — update this guard.`
+      );
     }
+    return { name, requestsKey: KEY_REQUEST.test(block) };
+  });
+}
+
+describe("web-search key grant drift (#987)", () => {
+  it("reads real tool lists out of build.ts and the pinchy-web plugin", () => {
+    // The corpus probes. Without them a regex that silently matches nothing
+    // would make every assertion below vacuously true.
+    const emitted = extractEmissionTools();
+    const plugin = extractPluginTools();
+
+    expect(emitted.length).toBeGreaterThan(0);
+    for (const tool of emitted) expect(tool).toMatch(/^pinchy_web_/);
+
+    expect(plugin.map((t) => t.name).sort()).toEqual(["pinchy_web_fetch", "pinchy_web_search"]);
+    // At least one tool must request the key, or the KEY_REQUEST pattern has
+    // stopped recognising how the plugin asks for it.
+    expect(plugin.some((t) => t.requestsKey)).toBe(true);
   });
 
-  it("authorizes exactly the tools build.ts emits the connection for", () => {
-    const emitted = [...new Set(extractEmissionTools())].sort();
-    const authorized = [...WEB_SEARCH_TOOLS].sort();
+  it("grants the Brave key to exactly the plugin tools that request it", () => {
+    const needKey = extractPluginTools()
+      .filter((t) => t.requestsKey)
+      .map((t) => t.name)
+      .sort();
+    const granted = [...WEB_SEARCH_KEY_TOOLS].sort();
 
     expect(
-      authorized,
+      granted,
       [
-        `WEB_SEARCH_TOOLS and build.ts's web-search gate have drifted.`,
-        `  build.ts emits the connection for: [${emitted.join(", ")}]`,
-        `  WEB_SEARCH_TOOLS authorizes:        [${authorized.join(", ")}]`,
-        `A tool on the emission side alone gets a connectionId whose credentials`,
-        `the route then refuses (403 + integration.credentials_denied). A tool`,
-        `here alone grants the Brave key on a tool that was never wired to it.`,
+        `WEB_SEARCH_KEY_TOOLS and the pinchy-web tools that request the Brave key have drifted.`,
+        `  plugin tools that request the key: [${needKey.join(", ")}]`,
+        `  WEB_SEARCH_KEY_TOOLS grants:       [${granted.join(", ")}]`,
+        `A tool that requests the key but is not granted gets a 403 + integration.credentials_denied.`,
+        `A tool granted here that never requests the key hands out the Brave key for nothing.`,
       ].join("\n")
-    ).toEqual(emitted);
+    ).toEqual(needKey);
+  });
+
+  it("does not let pinchy_web_fetch read the key", () => {
+    // Pinned by name, not only through the pairing above: fetch needs no key,
+    // and a future refactor that has it call withAuthRetry would otherwise move
+    // both halves together and widen the grant without anyone deciding to.
+    expect(WEB_SEARCH_KEY_TOOLS).not.toContain("pinchy_web_fetch");
+  });
+
+  it("only grants the key on tools build.ts loads the plugin for", () => {
+    const emitted = extractEmissionTools();
+
+    for (const tool of WEB_SEARCH_KEY_TOOLS) {
+      expect(emitted, `${tool} grants the Brave key but build.ts never loads it`).toContain(tool);
+    }
   });
 });
