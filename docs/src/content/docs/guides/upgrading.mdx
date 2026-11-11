@@ -203,6 +203,12 @@ sed -i 's/PINCHY_VERSION=v0.10.3/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d && docker image prune -f
 ```
 
+#### Split passages keep their text intact
+
+Since v0.10.2, a passage too long for the embedding model is split into pieces (see [One file the embedding model refuses no longer stops a reindex](#one-file-the-embedding-model-refuses-no-longer-stops-a-reindex)). Those pieces were cut in the model's tokens and then turned back into text. A character the model only knows byte by byte — a rare CJK character, say — could be cut in half that way and stored as `�`, which is what an agent then read and quoted from that passage. Pieces are now cut from the document's own text, between paragraphs, lines, sentences or words, so each one is exactly the text it came from.
+
+Pieces already stored with a `�` stay as they are: the index no longer holds the character that was there, so the upgrade can't repair them. A reindex skips a document that hasn't changed, so they are replaced the next time the file itself changes. Most documents never had one — German text and part numbers don't go through the byte-by-byte path.
+
 #### Very long documents are indexed instead of failing every night
 
 A document that came to more than about 8,000 passages — a long manual, a large scanned archive — could not be saved to the knowledge base: the reindex report counted it `failed`, it kept whatever it had in the index, and the next run read it again, scanned pages included, and failed the same way. Since v0.10.2 [cuts passages too long for the embedding model](#one-file-the-embedding-model-refuses-no-longer-stops-a-reindex) into smaller ones, more documents reach that size. They are now saved like any other. Nothing to do on upgrade: the next reindex picks them up.
