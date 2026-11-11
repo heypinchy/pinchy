@@ -294,6 +294,10 @@ Pinchy now measures the free disk space where it writes. When any of those place
 
 A document that came to more than about 8,000 passages — a long manual, a large scanned archive — could not be saved to the knowledge base: the reindex report counted it `failed`, it kept whatever it had in the index, and the next run read it again, scanned pages included, and failed the same way. Since v0.10.2 [cuts passages too long for the embedding model](#one-file-the-embedding-model-refuses-no-longer-stops-a-reindex) into smaller ones, more documents reach that size. They are now saved like any other. Nothing to do on upgrade: the next reindex picks them up.
 
+#### A tab no longer holds twenty chat connections open
+
+Each chat you visit keeps its own connection to Pinchy while you move on, and Pinchy allows ten per person across all devices and tabs. A few agents on a desktop and a few on a phone could use them all up, and chat then refused to connect. A tab now keeps at most three idle chats connected and closes the one you looked at longest ago first; a chat that is still answering is never closed. One you come back to after it was dropped reconnects and loads its history as usual. Nothing to configure.
+
 #### TIFF scans, plain text and macro-enabled Word files are indexed
 
 The knowledge base now indexes scanned TIFF images (`.tif`, `.tiff`, multi-page ones included), plain text files (`.txt`) and macro-enabled Word documents (`.docm`). Until now the **Index** section counted them as not supported and listed them in its download. Nothing to do on upgrade: the next reindex — the nightly one or **Reindex now** — reads them, and they drop off that list.

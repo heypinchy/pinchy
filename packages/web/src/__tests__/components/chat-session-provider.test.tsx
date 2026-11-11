@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
+import { useEffect, useState } from "react";
 import { renderHook, act } from "@testing-library/react";
 import {
   ChatSessionProvider,
@@ -7,6 +8,7 @@ import {
   useAgentActivity,
   useChatSession,
   useChatSessionHasInlineError,
+  useTouchChatSession,
   useVisitedAgentIds,
   useVisitedSessions,
   type RuntimeBundle,
@@ -333,12 +335,10 @@ describe("ChatSessionProvider", () => {
       expect([...result.current].sort()).toEqual(expectedSurvivors);
     });
 
-    it("re-publishing an existing agent moves it to the most-recently-used position", () => {
-      // Sequence: publish A, publish B..(MAX-1), re-publish A, publish a new id.
-      // Without LRU, A would be evicted (it was first). With LRU, the
-      // newest of the original B..(MAX-1) gets evicted instead because
-      // re-publishing A bumped it to MRU.
-
+    it("re-publishing an existing agent keeps its place in the eviction order", () => {
+      // A background chat republishes whenever its socket does anything (a
+      // reconnect, a finished run). That is not the user looking at it, so it
+      // must not push a long-unviewed chat back to the front of the line.
       const publishers = new Map<string, (b: RuntimeBundle) => void>();
 
       function PublishHarness({ id }: { id: string }) {
@@ -362,27 +362,158 @@ describe("ChatSessionProvider", () => {
         ),
       });
 
-      // Step 1: publish a, then all fillers — store now has MAX entries
-      // (a + MAX_LIVE_BUNDLES - 1 fillers).
       act(() => {
         publishers.get("a")!(fakeBundle());
         for (const id of filler) publishers.get(id)!(fakeBundle());
       });
       expect(result.current.length).toBe(MAX_LIVE_BUNDLES);
-      expect(result.current).toContain("a");
 
-      // Step 2: re-publish "a" — moves it to MRU. Now oldest is filler-0.
+      // "a" republishes from the background, then a new chat opens.
       act(() => publishers.get("a")!(fakeBundle()));
-
-      // Step 3: publish "overflow" — exceeds cap, evicts oldest. Without
-      // the bump on "a", "a" would be the oldest and would get evicted.
-      // With the bump, "filler-0" is oldest and gets evicted instead.
       act(() => publishers.get("overflow")!(fakeBundle()));
 
       expect(result.current.length).toBe(MAX_LIVE_BUNDLES);
-      expect(result.current).toContain("a"); // "a" survived because it was bumped
-      expect(result.current).not.toContain("filler-0"); // oldest got evicted
+      expect(result.current).not.toContain("a"); // still the least recently viewed
+      expect(result.current).toContain("filler-0");
       expect(result.current).toContain("overflow");
+    });
+
+    // The server allows 10 sockets per user across all devices and tabs (#957),
+    // so one tab must hold only a few idle ones.
+    function setup() {
+      const publishers = new Map<string, (b: RuntimeBundle) => void>();
+      function Harness({ id }: { id: string }) {
+        const session = useChatSession(id);
+        publishers.set(id, session.publish);
+        return null;
+      }
+      // Stands in for <Chat>: the chat on screen touches its session.
+      function Touch({ id }: { id: string }) {
+        useTouchChatSession(id);
+        return null;
+      }
+      const viewer = { set: (_id: string) => {} };
+      function Viewer() {
+        const [viewed, setState] = useState<string | null>(null);
+        useEffect(() => {
+          viewer.set = setState;
+        }, []);
+        return viewed ? <Touch key={viewed} id={viewed} /> : null;
+      }
+      const ids = ["a", "b", "c", "d", "e", "f"];
+      const { result } = renderHook(() => useVisitedAgentIds(), {
+        wrapper: ({ children }) => (
+          <ChatSessionProvider>
+            {ids.map((id) => (
+              <Harness key={id} id={id} />
+            ))}
+            <Viewer />
+            {children}
+          </ChatSessionProvider>
+        ),
+      });
+      const view = (id: string) => act(() => viewer.set(id));
+      const pub = (id: string, isRunning = false) =>
+        act(() => publishers.get(id)!(fakeBundle({ agentId: id, isRunning })));
+      const pubWith = (id: string, overrides: Partial<RuntimeBundle> = {}) =>
+        act(() => publishers.get(id)!(fakeBundle({ agentId: id, ...overrides })));
+      return { result, pub, pubWith, view };
+    }
+
+    it("caps a tab at three live bundles", () => {
+      expect(MAX_LIVE_BUNDLES).toBe(3);
+    });
+
+    it("evicts the least recently viewed chat first", () => {
+      const { result, pub, view } = setup();
+      pub("a");
+      pub("b");
+      pub("c");
+      view("a"); // the user goes back to a, so b is now the least recently viewed
+      pub("d");
+      expect([...result.current].sort()).toEqual(["a", "c", "d"]);
+    });
+
+    it("viewing a chat that is not mounted changes nothing", () => {
+      const { result, pub, view } = setup();
+      pub("a");
+      view("f");
+      expect(result.current).toEqual(["a"]);
+    });
+
+    it("never evicts a running bundle, even when it is the oldest", () => {
+      const { result, pub } = setup();
+      pub("a", true);
+      pub("b");
+      pub("c");
+      pub("d");
+      // a is the oldest but mid-run, so the next-oldest idle one (b) goes.
+      expect([...result.current].sort()).toEqual(["a", "c", "d"]);
+    });
+
+    it("overshoots the cap while every bundle is running, then trims once runs finish", () => {
+      const { result, pub } = setup();
+      pub("a", true);
+      pub("b", true);
+      pub("c", true);
+      pub("d", true);
+      expect(result.current.length).toBe(4);
+
+      // Runs finish and are republished idle; the next publish trims back down.
+      pub("a");
+      pub("b");
+      pub("c");
+      pub("d");
+      pub("e");
+      expect(result.current.length).toBe(MAX_LIVE_BUNDLES);
+      expect([...result.current].sort()).toEqual(["c", "d", "e"]);
+    });
+
+    it("never evicts the chat on screen when a background run finishes", () => {
+      const { result, pub } = setup();
+      pub("a", true);
+      pub("b", true);
+      pub("c", true);
+      pub("e"); // the chat being opened, idle, newest
+      pub("a"); // a's run finished and its instance republishes it
+      expect(result.current).toContain("e");
+      expect(result.current.length).toBe(4);
+    });
+
+    it("never evicts a chat with a message queued for the next connection", () => {
+      // A failed reconnect drops isRunning, but the queued message exists only
+      // in the instance; evicting it would lose what the user sent.
+      const { result, pubWith } = setup();
+      pubWith("a", { hasQueuedMessage: true });
+      pubWith("b");
+      pubWith("c");
+      pubWith("d");
+      expect([...result.current].sort()).toEqual(["a", "c", "d"]);
+    });
+
+    it("never evicts a chat whose composer still holds attachments", () => {
+      // Staged uploads live only in the instance's state; nothing restores them
+      // on remount, so evicting the chat would silently drop the user's file.
+      const { result, pubWith } = setup();
+      pubWith("a", {
+        pendingUploads: [
+          { localId: "u1", state: "ready" } as RuntimeBundle["pendingUploads"][number],
+        ],
+      });
+      pubWith("b");
+      pubWith("c");
+      pubWith("d");
+      expect([...result.current].sort()).toEqual(["a", "c", "d"]);
+    });
+
+    it("keeps the bundle being published even when all others are running", () => {
+      const { result, pub } = setup();
+      pub("a", true);
+      pub("b", true);
+      pub("c", true);
+      pub("d");
+      expect(result.current).toContain("d");
+      expect(result.current.length).toBe(4);
     });
   });
 });

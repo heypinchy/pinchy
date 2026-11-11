@@ -13,12 +13,14 @@ const {
   mockUseChatSession,
   mockRecordLastChat,
   mockUsePendingApprovals,
+  mockUseTouchChatSession,
 } = vi.hoisted(() => ({
   mockGetAgent: vi.fn() as ReturnType<typeof vi.fn>,
   mockUseChatStatus: vi.fn(),
   mockUseChatSession: vi.fn(),
   mockRecordLastChat: vi.fn(),
   mockUsePendingApprovals: vi.fn(),
+  mockUseTouchChatSession: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-pending-approvals", () => ({
@@ -67,6 +69,7 @@ vi.mock("@/components/chat-session-provider", () => ({
   // ChatErrorBanner reads this to suppress itself when the thread already shows
   // the inline error (#583); no inline error in these tests.
   useChatSessionHasInlineError: () => false,
+  useTouchChatSession: mockUseTouchChatSession,
 }));
 
 vi.mock("@/hooks/use-chat-status", () => ({
@@ -185,6 +188,11 @@ describe("Chat", () => {
   it("passes the chatId through to useChatSession (#508)", () => {
     render(<Chat agentId="agent-1" agentName="Smithers" chatId="chat-x" />);
     expect(mockUseChatSession).toHaveBeenCalledWith("agent-1", "chat-x");
+  });
+
+  it("marks its chat as the most recently viewed one, so the tab's socket cap evicts others first (#957)", () => {
+    render(<Chat agentId="agent-1" agentName="Smithers" chatId="chat-x" />);
+    expect(mockUseTouchChatSession).toHaveBeenCalledWith("agent-1", "chat-x");
   });
 
   it("calls useChatSession without a chatId for the legacy/default chat", () => {
