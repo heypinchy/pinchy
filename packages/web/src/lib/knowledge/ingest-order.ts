@@ -26,7 +26,7 @@
  * `/`. Code-unit comparison, not `localeCompare`: the order must not depend on
  * the server's ICU data.
  */
-import { isArchivedPath } from "./archive-paths";
+import { isArchivedUnder } from "./archive-paths";
 
 function comparePaths(a: string, b: string): number {
   const left = a.split("/");
@@ -38,11 +38,20 @@ function comparePaths(a: string, b: string): number {
   return left.length - right.length;
 }
 
-/** `files` reordered for ingest: current before archived, each group folder by folder. */
-export function orderForIngest<T extends { absPath: string }>(files: readonly T[]): T[] {
+/**
+ * `files` reordered for ingest: current before archived, each group folder by
+ * folder. `roots` are the knowledge-base folders the archive rule reads paths
+ * relative to (archive-paths.ts).
+ */
+export function orderForIngest<T extends { absPath: string }>(
+  files: readonly T[],
+  roots: readonly string[]
+): T[] {
   const current: T[] = [];
   const archived: T[] = [];
-  for (const file of files) (isArchivedPath(file.absPath) ? archived : current).push(file);
+  for (const file of files) {
+    (isArchivedUnder(file.absPath, roots) ? archived : current).push(file);
+  }
   const byPath = (a: T, b: T) => comparePaths(a.absPath, b.absPath);
   return [...current.sort(byPath), ...archived.sort(byPath)];
 }

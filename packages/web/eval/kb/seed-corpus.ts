@@ -23,6 +23,7 @@ import { DEFAULT_ORG_ID } from "../../src/lib/knowledge/constants";
 import { statusForPath } from "../../src/lib/knowledge/archive-paths";
 import { KB_EVAL_CORPUS } from "./corpus/manifest";
 import { loadEmbeddings } from "./embeddings-fixture";
+import { KB_SWEEP_CORPUS_ROOT } from "./sweep-agent";
 
 export async function seedSyntheticCorpus(dbUrl: string): Promise<void> {
   const embeddings = loadEmbeddings();
@@ -46,12 +47,13 @@ export async function seedSyntheticCorpus(dbUrl: string): Promise<void> {
       // needs no separate re-select. And it re-derives the status of a row an
       // earlier run left behind — the crash this seeder shipped with stopped
       // mid-document and left exactly such a row. Re-deriving is safe because
-      // the status is a pure function of the path.
+      // the status is a pure function of the path and the folder the sweep
+      // agent searches.
       const [dbDoc] = await sql<{ id: string }[]>`
         INSERT INTO kb_documents (id, org_id, content_hash, source_path, status)
         VALUES (
           gen_random_uuid()::text, ${DEFAULT_ORG_ID}, ${`hash-${doc.sourcePath}`},
-          ${doc.sourcePath}, ${statusForPath(doc.sourcePath)}
+          ${doc.sourcePath}, ${statusForPath(doc.sourcePath, [KB_SWEEP_CORPUS_ROOT])}
         )
         ON CONFLICT (org_id, source_path)
         DO UPDATE SET status = EXCLUDED.status
