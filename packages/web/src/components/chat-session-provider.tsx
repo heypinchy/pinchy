@@ -72,8 +72,9 @@ type Store = StoreApi<ChatSessionStoreState & ChatSessionStoreActions>;
  * WebSocket, and the server allows only 10 per user across all devices and
  * tabs, so a higher cap locks a user out of chat (#957). The
  * least-recently-published idle bundle is evicted first and reconnects cold
- * when revisited. A running bundle is never evicted, so the store can exceed
- * this while several runs are in flight and trims on a later publish.
+ * when revisited. Only opening a new chat evicts; re-publishing an existing
+ * one never does. A running bundle is never evicted, so the store can exceed
+ * this while several runs are in flight and trims when the next chat opens.
  */
 export const MAX_LIVE_BUNDLES = 3;
 
@@ -89,14 +90,18 @@ function createChatSessionStore(): Store {
         // moves it to the most-recently-used (insertion-order last)
         // position. JS objects preserve string-key insertion order, so
         // the first key after this rebuild is the LRU candidate.
+        const isNewKey = s.bundles[key] === undefined;
         const next: Record<string, RuntimeBundle | undefined> = {};
         for (const [k, v] of Object.entries(s.bundles)) {
           if (k !== key && v !== undefined) next[k] = v;
         }
         next[key] = bundle;
-        // Enforce the cap: drop the oldest idle bundles. The one just
-        // published is last in order and is never a victim; running bundles
-        // are skipped, so the cap is a target rather than a guarantee.
+        // Enforce the cap only when this publish adds a key. A new key is
+        // always the chat being opened (on screen) and is never a victim.
+        // Re-publishing an existing key (a background run finishing, say)
+        // must not evict, or it could unmount the chat on screen. Running
+        // bundles are skipped, so the cap is a target, not a guarantee.
+        if (!isNewKey) return { bundles: next };
         let excess = Object.keys(next).length - MAX_LIVE_BUNDLES;
         for (const k of Object.keys(next)) {
           if (excess <= 0) break;

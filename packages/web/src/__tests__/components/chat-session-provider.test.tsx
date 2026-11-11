@@ -452,6 +452,17 @@ describe("ChatSessionProvider", () => {
       expect([...result.current].sort()).toEqual(["c", "d", "e"]);
     });
 
+    it("never evicts the chat on screen when a background run finishes", () => {
+      const { result, pub } = setup();
+      pub("a", true);
+      pub("b", true);
+      pub("c", true);
+      pub("e"); // the chat being opened, idle, newest
+      pub("a"); // a's run finished and its instance republishes it
+      expect(result.current).toContain("e");
+      expect(result.current.length).toBe(4);
+    });
+
     it("keeps the bundle being published even when all others are running", () => {
       const { result, pub } = setup();
       pub("a", true);
