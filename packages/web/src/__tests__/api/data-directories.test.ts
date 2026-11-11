@@ -16,14 +16,11 @@ vi.mock("@/lib/auth", () => {
   };
 });
 
-vi.mock("fs", () => {
-  const mocks = {
-    readFileSync: vi.fn(),
-  };
-  return { ...mocks, default: mocks };
-});
+const mockListDataMounts = vi.fn();
+vi.mock("@/lib/data-subdirectories", () => ({
+  listDataMounts: (...args: unknown[]) => mockListDataMounts(...args),
+}));
 
-import { readFileSync } from "fs";
 import { GET } from "@/app/api/data-directories/route";
 import { makeNextRequest, routeContext } from "@/test-helpers/route";
 
@@ -32,57 +29,42 @@ describe("GET /api/data-directories", () => {
     vi.clearAllMocks();
   });
 
-  it("should return directories from JSON file", async () => {
-    vi.mocked(readFileSync).mockReturnValue(
-      JSON.stringify({
-        directories: [
-          { path: "/data/documents", name: "documents" },
-          { path: "/data/hr-docs", name: "hr-docs" },
-        ],
-      })
-    );
+  it("returns the folders under /data as they are right now", async () => {
+    mockListDataMounts.mockResolvedValue([
+      { path: "/data/documents", name: "documents" },
+      { path: "/data/hr-docs", name: "hr-docs" },
+    ]);
 
     const response = await GET(makeNextRequest(), routeContext());
     const body = await response.json();
 
-    expect(readFileSync).toHaveBeenCalledWith("/openclaw-config/data-directories.json", "utf-8");
     expect(body.directories).toEqual([
       { path: "/data/documents", name: "documents" },
       { path: "/data/hr-docs", name: "hr-docs" },
     ]);
   });
 
-  it("should return empty array when JSON file does not exist", async () => {
-    vi.mocked(readFileSync).mockImplementation(() => {
-      throw new Error("ENOENT: no such file or directory");
-    });
+  // The list used to come from a file the OpenClaw container wrote at
+  // start-up, so a renamed or deleted mount stayed on offer until that
+  // container restarted (#1363). Asking on every request is the fix.
+  it("asks for the folders again on every request instead of caching them", async () => {
+    mockListDataMounts.mockResolvedValueOnce([{ path: "/data/old-name", name: "old-name" }]);
+    mockListDataMounts.mockResolvedValueOnce([{ path: "/data/new-name", name: "new-name" }]);
 
-    const response = await GET(makeNextRequest(), routeContext());
-    const body = await response.json();
+    await GET(makeNextRequest(), routeContext());
+    const second = await (await GET(makeNextRequest(), routeContext())).json();
 
-    expect(body.directories).toEqual([]);
+    expect(mockListDataMounts).toHaveBeenCalledTimes(2);
+    expect(second.directories).toEqual([{ path: "/data/new-name", name: "new-name" }]);
   });
 
-  it("should log a warning and return empty array when file is not readable due to EACCES", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const err = new Error(
-      "EACCES: permission denied, open '/openclaw-config/data-directories.json'"
-    );
-    (err as NodeJS.ErrnoException).code = "EACCES";
-    vi.mocked(readFileSync).mockImplementation(() => {
-      throw err;
-    });
+  it("returns an empty list when nothing is mounted", async () => {
+    mockListDataMounts.mockResolvedValue([]);
 
     const response = await GET(makeNextRequest(), routeContext());
     const body = await response.json();
 
     expect(body.directories).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("[data-directories]"),
-      expect.any(String),
-      expect.stringContaining("EACCES")
-    );
-    warn.mockRestore();
   });
 
   it("should return 401 without auth", async () => {
@@ -92,5 +74,6 @@ describe("GET /api/data-directories", () => {
     const response = await GET(makeNextRequest(), routeContext());
 
     expect(response.status).toBe(401);
+    expect(mockListDataMounts).not.toHaveBeenCalled();
   });
 });

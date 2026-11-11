@@ -6,6 +6,8 @@ import { ChevronRight, Folder, FolderOpen } from "lucide-react";
 import { apiGet } from "@/lib/api-client";
 import { directoryKey as key } from "@/lib/directory-path";
 import { DocsLink } from "@/components/docs-link";
+import { Button } from "@/components/ui/button";
+import type { GrantedFolder, GrantedFolderStatus } from "@/lib/granted-folder-status";
 
 interface Directory {
   path: string;
@@ -34,7 +36,20 @@ interface DirectoryPickerProps {
   browseSubfolders?: boolean;
   /** One level of subfolders. Defaults to `GET /api/data-directories/children`; tests inject it. */
   loadChildren?: (path: string) => Promise<DirectoryChildren>;
+  /**
+   * Whether each saved grant's folder still exists, from
+   * `GET /api/agents/:id/granted-folders`. Without it (a new agent, a member)
+   * grants are shown as they are stored.
+   */
+  grantedFolders?: GrantedFolder[];
 }
+
+/** What to say beside a grant whose folder isn't simply there (#1363). */
+const STATUS_NOTE: Partial<Record<GrantedFolderStatus, string>> = {
+  missing: "Folder not found. It may have been renamed or removed.",
+  unreadable: "Pinchy can't open this folder. Check its permissions on the server.",
+  link: "This is a symbolic link. Agents can't read through links.",
+};
 
 function fetchChildren(path: string): Promise<DirectoryChildren> {
   return apiGet<DirectoryChildren>(
@@ -67,6 +82,12 @@ type ChildState =
  * read is visible without anyone hunting for it. A grant the picker cannot
  * find at all (a share that is gone, a renamed folder) is listed separately
  * rather than hidden, so it can still be revoked.
+ *
+ * When the caller knows which grants still exist (`grantedFolders`), a grant
+ * whose folder is gone offers one action — Remove — instead of a ticked box
+ * that reads as working. One Pinchy can't open stays a checkbox with the
+ * reason beside it: removing the grant is the wrong fix for a share mounted
+ * with the wrong owner (#1363).
  */
 export function DirectoryPicker({
   directories,
@@ -75,6 +96,7 @@ export function DirectoryPicker({
   label,
   browseSubfolders = true,
   loadChildren = fetchChildren,
+  grantedFolders,
 }: DirectoryPickerProps) {
   const idPrefix = useId();
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -85,6 +107,10 @@ export function DirectoryPicker({
   const revealed = useRef(new Set<string>());
 
   const selectedKeys = useMemo(() => new Set(selected.map(key)), [selected]);
+  const statusByKey = useMemo(
+    () => new Map((grantedFolders ?? []).map((folder) => [key(folder.path), folder.status])),
+    [grantedFolders]
+  );
 
   function load(path: string) {
     const k = key(path);
@@ -228,6 +254,9 @@ export function DirectoryPicker({
     const checkboxId = `${idPrefix}-dir-${index}`;
     const pathId = `${checkboxId}-path`;
     const coverId = `${checkboxId}-cover`;
+    const noteId = `${checkboxId}-note`;
+    const note = selectedKeys.has(k) ? STATUS_NOTE[statusByKey.get(k) ?? "available"] : undefined;
+    const describedBy = [pathId, cover && coverId, note && noteId].filter(Boolean).join(" ");
 
     return (
       <div key={k}>
@@ -259,7 +288,7 @@ export function DirectoryPicker({
               disabled={cover !== undefined}
               onCheckedChange={() => toggle(dir.path)}
               aria-label={dir.name}
-              aria-describedby={cover ? `${pathId} ${coverId}` : pathId}
+              aria-describedby={describedBy}
             />
             <Folder
               className={`size-4 shrink-0 ${checked ? "text-foreground" : "text-muted-foreground"}`}
@@ -273,6 +302,11 @@ export function DirectoryPicker({
               {cover && (
                 <span id={coverId} className="block text-xs text-muted-foreground">
                   Included with {key(cover).split("/").pop()}
+                </span>
+              )}
+              {note && (
+                <span id={noteId} className="block text-xs text-destructive">
+                  {note}
                 </span>
               )}
             </span>
@@ -330,6 +364,32 @@ export function DirectoryPicker({
             {missing.map((grant, index) => {
               const grantKey = key(grant);
               const checkboxId = `${idPrefix}-missing-${index}`;
+              const noteId = `${checkboxId}-note`;
+              const status = statusByKey.get(grantKey);
+              const note = STATUS_NOTE[status ?? "available"];
+              if (status === "missing") {
+                return (
+                  <div key={grantKey} className="flex items-center gap-3 px-3 py-2.5">
+                    <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block break-all text-sm">{grantKey}</span>
+                      <span id={noteId} className="block text-xs text-destructive">
+                        {note}
+                      </span>
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-label={`Remove ${grantKey}`}
+                      aria-describedby={noteId}
+                      onClick={() => toggle(grant)}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                );
+              }
               return (
                 <label
                   key={grantKey}
@@ -341,9 +401,17 @@ export function DirectoryPicker({
                     checked
                     onCheckedChange={() => toggle(grant)}
                     aria-label={grantKey}
+                    aria-describedby={note ? noteId : undefined}
                   />
                   <Folder className="size-4 shrink-0 text-foreground" aria-hidden="true" />
-                  <span className="min-w-0 break-all text-sm">{grantKey}</span>
+                  <span className="min-w-0">
+                    <span className="block break-all text-sm">{grantKey}</span>
+                    {note && (
+                      <span id={noteId} className="block text-xs text-destructive">
+                        {note}
+                      </span>
+                    )}
+                  </span>
                 </label>
               );
             })}
