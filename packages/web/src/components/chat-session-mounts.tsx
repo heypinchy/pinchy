@@ -3,7 +3,8 @@
 import { useContext, useEffect, useRef, useCallback, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { useWsRuntime } from "@/hooks/use-ws-runtime";
+import { useWsRuntime, type ConnectionRejection } from "@/hooks/use-ws-runtime";
+import { clearChatConnection, publishChatConnection } from "@/lib/chat-connection-store";
 import {
   useVisitedSessions,
   chatSessionKey,
@@ -13,6 +14,11 @@ import { apiPost, errorMessage } from "@/lib/api-client";
 import { generateChatId } from "@/lib/chats/generate-chat-id";
 import { type SlashCommand } from "@/lib/slash-commands";
 import type { CompactSessionRequest, ResetSessionRequest } from "@/lib/schemas/sessions";
+
+const REJECTION_SIDEBAR_COPY: Record<ConnectionRejection, string> = {
+  too_many_connections: "Too many open connections. We're still trying to reconnect.",
+  rate_limited: "Connecting too quickly. We're still trying to reconnect.",
+};
 
 export function ChatSessionMounts() {
   const visitedSessions = useVisitedSessions();
@@ -159,12 +165,13 @@ function ChatSessionInstance({
   } = bundle;
 
   useEffect(() => {
-    // The only sidebar-surfaced error is reconnect exhaustion — the user can't
-    // recover without reloading. Per-turn failures are now authoritative
-    // `liveness: failed` verdicts rendered as a retryable bubble in the thread,
-    // not a client-side "agent did not respond" guess.
-    const lastError = bundle.reconnectExhausted
-      ? "Connection lost. Reload the page to resume."
+    // The only sidebar-surfaced error is a connection the server refused: it
+    // outlasts a blip and nothing the user does in the chat fixes it. A plain
+    // outage heals itself and says so inside the chat. Per-turn failures are
+    // authoritative `liveness: failed` verdicts rendered as a retryable bubble
+    // in the thread, not a client-side "agent did not respond" guess.
+    const lastError = bundle.connectionRejection
+      ? REJECTION_SIDEBAR_COPY[bundle.connectionRejection]
       : null;
     store.getState().publish(chatSessionKey(agentId, chatId), {
       agentId,
@@ -177,7 +184,8 @@ function ChatSessionInstance({
       hasInitialContent: bundle.hasInitialContent,
       isOpenClawConnected: bundle.isOpenClawConnected,
       isDelayed: bundle.isDelayed,
-      reconnectExhausted: bundle.reconnectExhausted,
+      // The provider's bundle still carries the field; nothing exhausts any more.
+      reconnectExhausted: false,
       payloadRejected: bundle.payloadRejected,
       historyTimedOut: bundle.historyTimedOut,
       hasInlineError: bundle.hasInlineError,
@@ -203,12 +211,22 @@ function ChatSessionInstance({
     bundle.hasInitialContent,
     bundle.isOpenClawConnected,
     bundle.isDelayed,
-    bundle.reconnectExhausted,
+    bundle.connectionRejection,
     bundle.payloadRejected,
     bundle.historyTimedOut,
     bundle.hasInlineError,
     bundle.pendingUploads,
   ]);
+
+  // Offline / refused are not part of RuntimeBundle: they go to their own small
+  // store, keyed the same way, for <Chat> to read (#1422).
+  useEffect(() => {
+    publishChatConnection(agentId, chatId, {
+      isOffline: bundle.isOffline,
+      rejection: bundle.connectionRejection,
+    });
+  }, [agentId, chatId, bundle.isOffline, bundle.connectionRejection]);
+  useEffect(() => () => clearChatConnection(agentId, chatId), [agentId, chatId]);
 
   return null;
 }

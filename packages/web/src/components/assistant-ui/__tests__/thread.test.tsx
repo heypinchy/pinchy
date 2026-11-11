@@ -438,9 +438,15 @@ describe("ThreadWelcome", () => {
     expect(screen.getByText(/just a moment/i)).toBeInTheDocument();
   });
 
-  it("renders the reload prompt when unavailable/exhausted", async () => {
-    await renderWith({ kind: "unavailable", reason: "exhausted" });
-    expect(screen.getByText(/please reload/i)).toBeInTheDocument();
+  it.each([
+    ["offline", /you're offline/i],
+    ["rejected", /waiting for a free connection/i],
+    ["upstreamDown", /waiting for the agent/i],
+    ["unreachable", /still trying to reach pinchy/i],
+  ])("renders its own message when unavailable/%s, never a reload demand", async (reason, text) => {
+    await renderWith({ kind: "unavailable", reason });
+    expect(screen.getByText(text)).toBeInTheDocument();
+    expect(screen.queryByText(/please reload/i)).not.toBeInTheDocument();
   });
 
   it("renders the image-too-large prompt when payloadRejected", async () => {
