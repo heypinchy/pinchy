@@ -40,8 +40,8 @@ vi.mock("next/headers", () => ({
 vi.mock("@/lib/audit-deferred", () => ({ deferAuditLog: vi.fn() }));
 
 // The stored list, unfiltered — see the header for why.
-vi.mock("@/lib/agent-granted-paths", () => ({
-  ALLOWED_PATHS_CLEANUP_ACTOR: "allowed-paths-cleanup",
+vi.mock("@/lib/agent-granted-paths", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/agent-granted-paths")>()),
   grantedDataPaths: (config: { "pinchy-files"?: { allowed_paths?: string[] } } | null) =>
     config?.["pinchy-files"]?.allowed_paths ?? [],
 }));

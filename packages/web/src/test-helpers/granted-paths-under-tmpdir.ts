@@ -13,6 +13,8 @@
  */
 import { tmpdir } from "node:os";
 
+import { vi } from "vitest";
+
 import type { AgentPluginConfig } from "@/db/schema";
 
 const ROOT = tmpdir().replace(/\/+$/, "") + "/";
@@ -34,4 +36,8 @@ export function ungrantablePaths(pluginConfig: AgentPluginConfig | null | undefi
   return stored(pluginConfig).filter((p) => !under(p));
 }
 
-export const ALLOWED_PATHS_CLEANUP_ACTOR = "allowed-paths-cleanup";
+const actual = await vi.importActual<typeof import("@/lib/agent-granted-paths")>(
+  "@/lib/agent-granted-paths"
+);
+
+export const ALLOWED_PATHS_CLEANUP_ACTOR = actual.ALLOWED_PATHS_CLEANUP_ACTOR;
