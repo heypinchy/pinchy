@@ -68,7 +68,7 @@ import {
 import { exitOnStartupFailure } from "./src/server/startup-failure";
 import { getTrustedProxies, stampClientIp, TRUSTED_PROXIES_ENV_VAR } from "./src/server/client-ip";
 import { answerAppHeartbeat, startWsHeartbeat } from "./src/server/ws-heartbeat";
-import { rejectUpgrade } from "./src/server/ws-reject";
+import { refuseUpgrade } from "./src/server/ws-reject";
 
 logCapture.install();
 
@@ -270,11 +270,8 @@ const startup = app.prepare().then(async () => {
       // a single reconnect-looping tab could lock everyone else out of chat
       // (#825).
       const ip = client.address ?? "unknown";
-      //
-      // Refused with a close code rather than a raw HTTP 429, which the browser
-      // only ever sees as 1006 — "server down" — and cannot explain (#1422).
       if (!wsRateLimiter.allowUpgrade(ip)) {
-        rejectUpgrade(wss, request, socket, head, "rate_limited");
+        refuseUpgrade(socket);
         return;
       }
 
@@ -325,7 +322,7 @@ const startup = app.prepare().then(async () => {
       // Limit concurrent connections per user
       const { userId, userRole } = sessionInfo;
       if (!wsRateLimiter.allowConnection(userId)) {
-        rejectUpgrade(wss, request, socket, head, "too_many_connections");
+        refuseUpgrade(socket);
         return;
       }
 

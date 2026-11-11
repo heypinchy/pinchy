@@ -14,15 +14,19 @@ const source = readFileSync(join(__dirname, "../../../server.ts"), "utf8")
   .replace(/^\s*\/\/.*$/gm, "");
 
 describe("server.ts /api/ws wiring", () => {
-  it("never answers a WebSocket upgrade with a raw HTTP 429", () => {
-    // The browser sees a refused upgrade as 1006 and cannot tell it from an
-    // outage; a limiter refusal must go through rejectUpgrade instead.
-    expect(source).not.toMatch(/HTTP\/1\.1 429/);
+  it("refuses both limiter cases before the handshake completes", () => {
+    // A completed handshake fires `open` in the browser, and the chat client
+    // resets its backoff on `open` — refused after it, it redials about once a
+    // second. Both refusals go through refuseUpgrade, which answers HTTP 429.
+    expect(source.match(/refuseUpgrade\(socket\)/g)).toHaveLength(2);
+    expect(source).not.toMatch(/4429/);
   });
 
-  it("refuses both limiter cases with a readable close code", () => {
-    expect(source).toMatch(/rejectUpgrade\([^)]*"rate_limited"\)/);
-    expect(source).toMatch(/rejectUpgrade\([^)]*"too_many_connections"\)/);
+  it("refuses the rate limit before reading the session", () => {
+    const rateLimit = source.indexOf("wsRateLimiter.allowUpgrade(ip)");
+    const connectionLimit = source.indexOf("wsRateLimiter.allowConnection(userId)");
+    expect(rateLimit).toBeGreaterThan(-1);
+    expect(connectionLimit).toBeGreaterThan(rateLimit);
   });
 
   it("runs the protocol heartbeat on the chat socket server", () => {
