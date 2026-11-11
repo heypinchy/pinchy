@@ -162,10 +162,6 @@ describe("GET /api/agents/[agentId]/knowledge/unsupported", () => {
   // that starts like a formula must open as text, not run in the admin's
   // spreadsheet (lib/csv.ts).
   it("neutralizes a file name that would start a formula", async () => {
-    mockGetAgentWithAccess.mockResolvedValueOnce({
-      ...agentRow,
-      pluginConfig: { "pinchy-files": { allowed_paths: ["=cmd"] } },
-    });
     pages = [[{ sourcePath: '=HYPERLINK("http://x")', type: "" }]];
 
     const res = await GET(makeRequest(), ctx as never);

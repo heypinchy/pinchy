@@ -139,7 +139,7 @@ A few things worth knowing:
 - **Hidden folders and operating-system folders** (`.snapshot`, `$RECYCLE.BIN` and the like) are left out. The index skips them anyway.
 - **A folder with more than 500 subfolders** shows the first 500 and says so.
 - **A grant the picker can't show** — a folder that was renamed or moved, or one beyond the first 500 — is listed below the folders, still ticked, so you can take it away.
-- **For a Knowledge Base agent, an archive folder stays archived wherever the grant sits.** Documents under a folder named `OLD`, `Archive`, `Archived` or `Archiv` are left out of everyday search, whether you grant that folder or the one above it. Grant only an archive folder and everyday search finds nothing in it: the agent searches it when asked for archived material (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)). Reading files is not affected.
+- **For a Knowledge Base agent, archive folders count inside the granted folder only.** Documents under a folder named `OLD`, `Archive`, `Archived` or `Archiv` _inside_ the folder you grant are left out of everyday search. The granted folder's own name and the folders above it don't count: grant `/data/Archiv` or `/data/Archiv/Projekte` and everyday search finds what's in it (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)). Reading files is not affected.
 
 ## Verifying your mounts
 
