@@ -106,7 +106,6 @@ interface CountRow extends Record<string, unknown> {
   in_sub: boolean;
   indexed: string | number;
   not_searchable: string | number;
-  reread_archived: string | number;
   archived: string | number;
   archived_not_searchable: string | number;
   last_created: Date | string | null;
@@ -115,8 +114,6 @@ interface CountRow extends Record<string, unknown> {
 interface Counts {
   indexed: number;
   notSearchable: number;
-  /** Of `notSearchable`, archived documents a reconversion will read again. */
-  rereadArchived: number;
   /** Of `indexed`, documents from archived subfolders. */
   archived: number;
   /** Of `notSearchable`, documents from archived subfolders. */
@@ -127,7 +124,6 @@ interface Counts {
 const zero = (): Counts => ({
   indexed: 0,
   notSearchable: 0,
-  rereadArchived: 0,
   archived: 0,
   archivedNotSearchable: 0,
   lastCreated: null,
@@ -136,7 +132,6 @@ const zero = (): Counts => ({
 function addCounts(into: Counts, row: Counts): void {
   into.indexed += row.indexed;
   into.notSearchable += row.notSearchable;
-  into.rereadArchived += row.rereadArchived;
   into.archived += row.archived;
   into.archivedNotSearchable += row.archivedNotSearchable;
   if (row.lastCreated && (!into.lastCreated || row.lastCreated > into.lastCreated)) {
@@ -175,7 +170,6 @@ async function countsUnderRoot(
            COUNT(*) AS indexed,
            -- "Has no chunk", correlated on document_id as in unsearchable.ts.
            COUNT(*) FILTER (WHERE ${noText} OR ${superseded}) AS not_searchable,
-           COUNT(*) FILTER (WHERE d.status = 'archived' AND ${superseded}) AS reread_archived,
            COUNT(*) FILTER (WHERE d.status = 'archived') AS archived,
            COUNT(*) FILTER (
              WHERE d.status = 'archived' AND (${noText} OR ${superseded})
@@ -193,7 +187,6 @@ async function countsUnderRoot(
     const counts: Counts = {
       indexed: Number(row.indexed),
       notSearchable: Number(row.not_searchable),
-      rereadArchived: Number(row.reread_archived),
       archived: Number(row.archived),
       archivedNotSearchable: Number(row.archived_not_searchable),
       lastCreated: row.last_created ? new Date(row.last_created) : null,
@@ -318,7 +311,8 @@ export async function getKnowledgeFolderStatus(
       state: deriveFolderState({
         indexed: counts.indexed,
         notSearchable: counts.notSearchable,
-        rereadArchived: counts.rereadArchived,
+        archived: counts.archived,
+        archivedNotSearchable: counts.archivedNotSearchable,
         expected: progress.expected,
         pending: progress.pending,
         pendingArchived: progress.pendingArchived,

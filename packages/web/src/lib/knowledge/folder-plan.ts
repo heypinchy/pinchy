@@ -170,7 +170,8 @@ export function currentPlanFolder(
  *   archive's progress is reported apart (`pendingArchived`).
  * - `has_errors`: the last run is over (or has only archived files left here),
  *   and some file here is not searchable — it holds no text, waits to be
- *   converted again, or never made it in.
+ *   converted again, or never made it in. With archived files left, only the
+ *   current files count.
  * - `not_indexed`: no run has looked at this folder, and the index holds nothing from it.
  * - `empty`: the last run looked and found no file it could index.
  */
@@ -194,12 +195,10 @@ export interface FolderStateInput {
   current: boolean;
   /** Whether the file it is on is an archived one. */
   currentArchived: boolean;
-  /**
-   * Of `notSearchable`, archived documents waiting to be converted again. The
-   * run re-reads them with the rest of the archive, so while archive is still
-   * to come they aren't an error yet.
-   */
-  rereadArchived: number;
+  /** Of `indexed`, documents from archived subfolders. */
+  archived: number;
+  /** Of `notSearchable`, documents from archived subfolders. */
+  archivedNotSearchable: number;
   /** An active run covers this folder but has not finished discovery yet. */
   awaitingDiscovery: boolean;
 }
@@ -217,16 +216,22 @@ export function deriveFolderState(input: FolderStateInput): FolderState {
     // finds the archive already in the index.
     return input.current ? "indexing" : "queued";
   }
-  const reached = input.expected === null ? null : input.expected - input.pending;
-  if (input.indexed === 0) {
+  // With archive still to come, judge the current files alone. The index may
+  // hold the archive from an earlier run; until the run is through it, its
+  // documents neither count as errors nor stand in for a missing current file.
+  const archiveLeft = input.pendingArchived > 0;
+  const indexed = input.indexed - (archiveLeft ? input.archived : 0);
+  const notSearchable = input.notSearchable - (archiveLeft ? input.archivedNotSearchable : 0);
+  const reached =
+    input.expected === null
+      ? null
+      : input.expected - (archiveLeft ? input.expectedArchived : input.pending);
+  if (indexed === 0) {
     if (reached === null) return "not_indexed";
     if (reached === 0) return "empty";
     return "has_errors";
   }
-  // Archived documents the run will still convert again are on their way, not
-  // failed — but only as many as there are archived files still to come.
-  const toReconvert = Math.min(input.rereadArchived, input.pendingArchived);
-  if (input.notSearchable - toReconvert > 0) return "has_errors";
-  if (reached !== null && input.indexed < reached) return "has_errors";
+  if (notSearchable > 0) return "has_errors";
+  if (reached !== null && indexed < reached) return "has_errors";
   return "searchable";
 }

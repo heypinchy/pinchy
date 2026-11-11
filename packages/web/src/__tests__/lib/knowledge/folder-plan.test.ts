@@ -178,7 +178,8 @@ describe("deriveFolderState", () => {
     expectedArchived: 0,
     current: false,
     currentArchived: false,
-    rereadArchived: 0,
+    archived: 0,
+    archivedNotSearchable: 0,
     awaitingDiscovery: false,
   };
 
@@ -245,43 +246,42 @@ describe("deriveFolderState", () => {
       expect(deriveFolderState({ ...archiveLeft, notSearchable: 1 })).toBe("has_errors");
     });
 
-    // A reconversion run re-reads archived Office files last. Until it gets to
-    // them they wait for conversion — not an error, the run is on its way.
-    it("stays searchable while archived files it will re-read wait for conversion", () => {
-      expect(deriveFolderState({ ...archiveLeft, notSearchable: 40, rereadArchived: 40 })).toBe(
-        "searchable"
-      );
-    });
-
-    it("needs attention when an archived file holds no text", () => {
-      expect(deriveFolderState({ ...archiveLeft, notSearchable: 41, rereadArchived: 40 })).toBe(
-        "has_errors"
-      );
-    });
-
-    // Only as many as are still to come can be on their way. The rest were
-    // already read and failed — under a parent, behind another folder's archive.
-    it("needs attention when more archived files wait than are still to come", () => {
+    // A re-run finds the archive already in the index. Until the run is
+    // through it, the state speaks for the current files alone, as the count
+    // beside it does: archived documents waiting for conversion, or without
+    // text, are the archive's to report once it has been read.
+    it("leaves the archive's documents out while the archive is still to come", () => {
       expect(
         deriveFolderState({
           ...archiveLeft,
-          indexed: 1100,
-          pending: 5,
-          pendingArchived: 5,
-          notSearchable: 7,
-          rereadArchived: 7,
-        })
-      ).toBe("has_errors");
-      expect(
-        deriveFolderState({
-          ...archiveLeft,
-          indexed: 1100,
-          pending: 5,
-          pendingArchived: 5,
-          notSearchable: 5,
-          rereadArchived: 5,
+          indexed: 1105,
+          archived: 428,
+          notSearchable: 41,
+          archivedNotSearchable: 41,
         })
       ).toBe("searchable");
+    });
+
+    it("needs attention for an archived file without text once the archive is read", () => {
+      expect(
+        deriveFolderState({
+          ...base,
+          indexed: 1105,
+          expected: 1105,
+          expectedArchived: 428,
+          archived: 428,
+          notSearchable: 1,
+          archivedNotSearchable: 1,
+        })
+      ).toBe("has_errors");
+    });
+
+    // The archive's documents from an earlier run must not stand in for a
+    // current file that never made it in.
+    it("needs attention when a current file is missing, whatever the archive holds", () => {
+      expect(deriveFolderState({ ...archiveLeft, indexed: 676 + 428, archived: 428 })).toBe(
+        "has_errors"
+      );
     });
 
     it("is still queued while current files are to come as well", () => {

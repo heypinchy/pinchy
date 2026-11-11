@@ -215,31 +215,34 @@ describe("getKnowledgeFolderStatus", () => {
     expect(folders[0]).toMatchObject({ state: "searchable", indexingArchive: true });
   });
 
-  // A reconversion run re-reads archived Office files last. Their documents
-  // wait for conversion until it gets there: the run is on its way, so the
-  // folder is not in trouble. An archived scan with no text is.
-  it("doesn't flag archived files a run will still convert again", async () => {
+  // A run re-reads archived files last. Until it is through them, the state
+  // speaks for the current files alone: an archived document waiting for
+  // conversion, or one without text, is the archive's to report once read.
+  it("leaves archived documents out of the state until the run has read them", async () => {
     const agent = await makeAgent();
     await seedDoc("/kb/certs/iso.pdf");
     // No artifact format recorded: read from an earlier conversion.
     await seedDoc("/kb/certs/OLD/2019.docx", { status: "archived" });
     await seedDoc("/kb/legal/nda.pdf");
     await seedDoc("/kb/legal/OLD/scan.pdf", { status: "archived", chunks: false });
-    await seedJob(agent.id, ["/kb"], "running", {
-      processed: 2,
-      plan: [
-        { folder: "/kb/certs", files: 1 },
-        { folder: "/kb/legal", files: 1 },
-        { folder: "/kb/certs", files: 1, archived: true },
-        { folder: "/kb/legal", files: 1, archived: true },
-      ],
-    });
+    const plan: FolderPlanSegment[] = [
+      { folder: "/kb/certs", files: 1 },
+      { folder: "/kb/legal", files: 1 },
+      { folder: "/kb/certs", files: 1, archived: true },
+      { folder: "/kb/legal", files: 1, archived: true },
+    ];
+    await seedJob(agent.id, ["/kb"], "running", { processed: 2, plan });
 
-    const { folders } = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
-    const byName = Object.fromEntries(folders[0].children.map((c) => [c.name, c]));
+    const during = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+    const duringByName = Object.fromEntries(during.folders[0].children.map((c) => [c.name, c]));
+    expect(duringByName.certs).toMatchObject({ state: "searchable", notSearchable: 1 });
+    expect(duringByName.legal).toMatchObject({ state: "searchable", notSearchable: 1 });
 
-    expect(byName.certs).toMatchObject({ state: "searchable", notSearchable: 1 });
-    expect(byName.legal).toMatchObject({ state: "has_errors", notSearchable: 1 });
+    // The run is over; the scan still holds no text.
+    await seedJob(agent.id, ["/kb"], "succeeded", { processed: 4, plan });
+    const after = await getKnowledgeFolderStatus(ORG_ID, agent.id, ["/kb"]);
+    const afterByName = Object.fromEntries(after.folders[0].children.map((c) => [c.name, c]));
+    expect(afterByName.legal).toMatchObject({ state: "has_errors", notSearchable: 1 });
   });
 
   // While the archive is still to come, the tree counts the current files
