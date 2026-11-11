@@ -407,7 +407,9 @@ describe("ChatSessionProvider", () => {
       });
       const pub = (id: string, isRunning = false) =>
         act(() => publishers.get(id)!(fakeBundle({ agentId: id, isRunning })));
-      return { result, pub };
+      const pubWith = (id: string, overrides: Partial<RuntimeBundle> = {}) =>
+        act(() => publishers.get(id)!(fakeBundle({ agentId: id, ...overrides })));
+      return { result, pub, pubWith };
     }
 
     it("caps a tab at three live bundles", () => {
@@ -461,6 +463,21 @@ describe("ChatSessionProvider", () => {
       pub("a"); // a's run finished and its instance republishes it
       expect(result.current).toContain("e");
       expect(result.current.length).toBe(4);
+    });
+
+    it("never evicts a chat whose composer still holds attachments", () => {
+      // Staged uploads live only in the instance's state; nothing restores them
+      // on remount, so evicting the chat would silently drop the user's file.
+      const { result, pubWith } = setup();
+      pubWith("a", {
+        pendingUploads: [
+          { localId: "u1", state: "ready" } as RuntimeBundle["pendingUploads"][number],
+        ],
+      });
+      pubWith("b");
+      pubWith("c");
+      pubWith("d");
+      expect([...result.current].sort()).toEqual(["a", "c", "d"]);
     });
 
     it("keeps the bundle being published even when all others are running", () => {

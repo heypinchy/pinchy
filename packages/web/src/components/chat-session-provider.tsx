@@ -78,6 +78,18 @@ type Store = StoreApi<ChatSessionStoreState & ChatSessionStoreActions>;
  */
 export const MAX_LIVE_BUNDLES = 3;
 
+/**
+ * Whether evicting this chat loses nothing. Its instance is the only holder of
+ * a running turn and of files staged in its composer — nothing restores those
+ * on remount — so such a chat stays mounted whatever the cap says.
+ */
+function isEvictable(bundle: RuntimeBundle | undefined): boolean {
+  if (!bundle) return true;
+  if (bundle.isRunning) return false;
+  if (bundle.pendingUploads.length > 0) return false;
+  return true;
+}
+
 /** Exported for internal use by ChatSessionMounts only — not part of public API. */
 export const ChatSessionStoreContext = createContext<Store | null>(null);
 
@@ -100,12 +112,13 @@ function createChatSessionStore(): Store {
         // always the chat being opened (on screen) and is never a victim.
         // Re-publishing an existing key (a background run finishing, say)
         // must not evict, or it could unmount the chat on screen. Running
-        // bundles are skipped, so the cap is a target, not a guarantee.
+        // bundles and chats with work only their instance holds are skipped,
+        // so the cap is a target, not a guarantee.
         if (!isNewKey) return { bundles: next };
         let excess = Object.keys(next).length - MAX_LIVE_BUNDLES;
         for (const k of Object.keys(next)) {
           if (excess <= 0) break;
-          if (k === key || next[k]?.isRunning) continue;
+          if (k === key || !isEvictable(next[k])) continue;
           delete next[k];
           excess--;
         }
