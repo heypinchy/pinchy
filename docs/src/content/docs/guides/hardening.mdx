@@ -572,6 +572,60 @@ trivy image ghcr.io/heypinchy/pinchy:latest
 
 Consider integrating this into a CI pipeline or running it on a schedule. See the [SBOM reference](/reference/sbom/) for information about Pinchy's software bill of materials.
 
+## Disk space
+
+Pinchy needs disk space in two ways: a short spike every time you upgrade, and steady growth while your team uses it. Both land on the same disk on a default install, so plan for them together.
+
+### What an upgrade needs
+
+A release is about 10 GB of images: the Pinchy image is around 6.5 GB and the OpenClaw image around 3.3 GB. `docker compose pull` downloads the new images while the old ones are still on disk, so you need about 10 GB free **before** you pull, on top of what Pinchy uses day to day. Check first:
+
+```bash
+df -h /
+docker system df
+```
+
+On a small disk, clear out old images before pulling rather than after:
+
+```bash
+docker image prune -a -f
+docker compose pull
+docker compose up -d
+```
+
+`docker image prune -a -f` removes every image no running container uses, which includes older Pinchy versions you could have rolled back to. That is usually what you want right before an upgrade — you are about to pull the version you are moving to anyway. The `docker image prune -f` in the standard upgrade is narrower: it removes only layers no tag points to. The release you upgraded from keeps its version tag, so it stays on disk until a `docker image prune -a -f` — releases pile up one per upgrade until you run one.
+
+### What grows over time
+
+| What                 | Where it lives                 | Grows with                                                              |
+| -------------------- | ------------------------------ | ----------------------------------------------------------------------- |
+| Knowledge-base index | The database volume (`pgdata`) | Every document the knowledge base indexes                               |
+| Converted documents  | `pinchy-kb-artifacts`          | Office files the knowledge base converts to PDF to cite                 |
+| PDF text cache       | `pinchy-pdf-cache`             | Text read out of PDFs agents open; safe to delete, it is rebuilt on use |
+| Agent workspaces     | `pinchy-workspaces`            | Files agents write and files people upload in chat                      |
+| Docker images        | Docker's own storage           | Every release you pull, until `docker image prune -a -f`                |
+
+To see which of these is taking the space:
+
+```bash
+docker system df -v
+```
+
+### Warnings before the disk is full
+
+Pinchy measures the free space where it writes — its own filesystem (which sits on Docker's storage, where images land), the agent workspaces, the converted documents and `/data`. When any of them drops below **15 GB free**, admins see a banner in the app and [`/api/health`](/reference/api/#get-apihealth) reports `"disk": { "status": "warning" }`. Members never see the banner.
+
+The line is an absolute number rather than a percentage because the thing that fills a disk suddenly is a fixed size: pulling a release. 15 GB leaves room for one pull plus a few days of growth. A percentage gets both ends wrong — 10% of a 40 GB disk is too little to upgrade, and 10% of 2 TB would warn for months about nothing.
+
+The database volume isn't visible from inside the Pinchy container, so Pinchy can't measure it directly. On a default install it shares a disk with the volumes Pinchy does measure, so the warning covers it. If you moved `pgdata` to its own disk, watch that disk separately.
+
+The warning never marks Pinchy unhealthy: the health check keeps returning `200` and `status: "ok"`, so Docker won't restart a container just because the disk is getting full. Alert on the field directly:
+
+```bash
+curl -fs https://pinchy.example.com/api/health | jq -e '.disk.status != "warning"' > /dev/null \
+  || echo "Pinchy is running low on disk space"
+```
+
 ## Monitoring & alerting
 
 ### Health endpoint
@@ -581,6 +635,8 @@ Monitor the Pinchy Web service by polling its health endpoint:
 ```bash
 curl -f https://pinchy.example.com/api/health || echo "Pinchy is down"
 ```
+
+The same response reports free disk space as `disk.status`. See [Disk space](#disk-space) for what it measures and how to alert on it.
 
 ### Docker health checks
 
