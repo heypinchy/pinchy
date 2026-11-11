@@ -198,6 +198,9 @@ export interface IngestDeps {
   stagingDir: string;
 }
 
+/** Why ingest left a granted root out of a run; see `IngestOptions.onSkippedRoot`. */
+export type SkippedRootReason = "missing" | "unreadable" | "emptied";
+
 export interface IngestOptions {
   /**
    * Overrides `DEFAULT_ALLOWED_EXTENSIONS` (exclude-globs.ts).
@@ -234,16 +237,19 @@ export interface IngestOptions {
    */
   archiveRoots?: readonly string[];
   /**
-   * Called for every root the run left out: `unreadable` (it could not be
-   * looked at — missing, unmounted, a read error mid-walk) or `emptied` (see
-   * `keepEmptiedFolders`). Such a root contributes no files AND no removal pass.
+   * Called for every root the run left out: `missing` (nothing is there — the
+   * folder was renamed or removed, or a link to it dangles), `unreadable`
+   * (something is there but could not be looked at — permissions, a read
+   * error mid-walk) or `emptied` (see `keepEmptiedFolders`). Such a root
+   * contributes no files AND no removal pass. `missing` and `unreadable` are
+   * apart because their fixes are: remove the grant, or fix the share (#1363).
    *
    * Ingest only reports; what a skipped root means for the run is the
    * caller's call. Without this, a run whose every root was skipped reads as
    * "0 indexed, success", which is exactly what an unmounted share looks like
    * night after night.
    */
-  onSkippedRoot?: (rootDir: string, reason: "unreadable" | "emptied") => void;
+  onSkippedRoot?: (rootDir: string, reason: SkippedRootReason) => void;
   /**
    * Treat a folder that turns up with nothing in it at all, while the index
    * still holds documents from under it, as unavailable rather than emptied:
@@ -401,7 +407,8 @@ async function walkDir(
 
 /**
  * Lists ingest-eligible files for a root that may be a directory OR a single
- * file, or returns null if the root could not be read at all.
+ * file, or says why the root could not be read at all: `missing` when nothing
+ * is there, `unreadable` when something is but could not be listed.
  *
  * An `allowed_paths` grant (pinchy-files) can point at either shape; a naive
  * `readdir(root)` throws ENOTDIR on a file root (surfacing as an opaque 500
@@ -420,7 +427,7 @@ async function walkDir(
 async function discoverFiles(
   rootDir: string,
   allowedExtensions: readonly string[]
-): Promise<RootListing | null> {
+): Promise<RootListing | "missing" | "unreadable"> {
   // The ROOT may be a link — it is the admin's grant, and a share mounted
   // elsewhere is a normal way to set one up — so it is resolved once, here.
   // Everything below it is walked by real path and never through a link.
@@ -429,8 +436,9 @@ async function discoverFiles(
   try {
     realRoot = await realpath(rootDir);
     rootStat = await stat(realRoot);
-  } catch {
-    return null;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unreadable";
   }
 
   const listing: RootListing = { files: new Map(), unsupported: new Map() };
@@ -450,7 +458,7 @@ async function discoverFiles(
   } catch {
     // The root vanished or turned unreadable mid-walk. Same reasoning as
     // above: a partial listing must not be mistaken for the whole truth.
-    return null;
+    return "unreadable";
   }
 }
 
@@ -1507,8 +1515,8 @@ export async function ingestPaths(
   }> = [];
   for (const rootDir of rootDirs) {
     const listing = await discoverFiles(rootDir, allowedExtensions);
-    if (listing === null) {
-      opts.onSkippedRoot?.(rootDir, "unreadable");
+    if (listing === "missing" || listing === "unreadable") {
+      opts.onSkippedRoot?.(rootDir, listing);
       continue;
     }
     const discovered = listing.files;

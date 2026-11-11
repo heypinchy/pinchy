@@ -278,6 +278,14 @@ Since v0.10.2, a passage too long for the embedding model is split into pieces (
 
 Pieces already stored with a `�` stay as they are: the index no longer holds the character that was there, so the upgrade can't repair them. A reindex skips a document that hasn't changed, so they are replaced the next time the file itself changes. Until then, a citation of such a piece opens at the right page without a highlight. Most documents never had one — German text and part numbers don't go through the byte-by-byte path.
 
+#### A granted folder that no longer exists is marked
+
+When a mount was renamed — `/data/old-name` became `/data/new-name`, say — the agent kept its grant for the old folder, and the permissions picker showed it as an ordinary ticked folder. The picker also went on offering the old mount until the `openclaw` container restarted, because the list of mounts was read once, when that container started. Now the list is read each time you open the **Permissions** tab, and a granted folder that is gone is marked **Folder not found**, with a **Remove** button. Removing it is an ordinary permission change: save, and the audit trail records it. A folder that is there but that Pinchy can't open is marked too, and keeps its tick: that is a permissions problem on the server, not a grant to remove. See [Granting a subfolder](/guides/mount-data-directories/#granting-a-subfolder).
+
+A reindex that can read none of an agent's folders now names them in the **Index** section, with what to check for each, instead of only saying that none could be read. The audit entry for that run still gives the reason without the paths.
+
+A symbolic link directly under `/data/` is no longer offered as a mount, the same rule that already applied to the folders inside one. Agents couldn't read through such a link anyway. If you mounted a share by linking it into `/data/`, mount it with a Compose volume instead — see [Mount Data Directories](/guides/mount-data-directories/).
+
 #### Pinchy warns before the disk fills up
 
 Pinchy now measures the free disk space where it writes. When any of those places drops below 15 GB free, admins see a banner in the app, and [`/api/health`](/reference/api/#get-apihealth) reports it in a new `disk` field. Members never see the banner, and the health check keeps returning `status: "ok"`, so Docker won't restart Pinchy over it. If your uptime monitor reads the health response, add an alert on `disk.status == "warning"`. [Disk space](/guides/hardening/#disk-space) explains what the warning measures, what fills the disk over time, and how much an upgrade needs. Nothing to configure.
