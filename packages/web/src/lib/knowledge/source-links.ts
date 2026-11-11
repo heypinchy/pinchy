@@ -74,7 +74,7 @@ import {
  * rather than "a/one.pdf". A mount name with a space in it is the price, and
  * "the citation starts at a word" is a rule a reader can predict.
  */
-const SOURCE_PATH_ENDING_HERE = /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docx?|pptx?|xlsx|xlsm)$/i;
+const SOURCE_PATH_ENDING_HERE = /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docx?|pptx?|xlsx?|xlsm)$/i;
 
 /** What may follow a path so that "…/doc.pdf." links the file and not the full stop. */
 const PATH_BOUNDARY = /[\s,.;:)\]]/;
@@ -92,7 +92,7 @@ const PATH_BOUNDARY = /[\s,.;:)\]]/;
  * nothing anywhere saying why — which is what `linkable-extensions-drift`
  * checks.
  */
-const EXTENSION = /\.(?:pdf|docx?|pptx?|xlsx|xlsm)/gi;
+const EXTENSION = /\.(?:pdf|docx?|pptx?|xlsx?|xlsm)/gi;
 
 /**
  * How far back from an extension a path may reasonably start. The longest path

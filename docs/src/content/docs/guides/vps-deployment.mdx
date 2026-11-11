@@ -36,12 +36,12 @@ You also need:
 
 Pinchy runs as four Docker containers:
 
-| Container            | Role                                                                                                                               |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| **pinchy**           | Web UI, REST API, and WebSocket bridge. This is what users interact with.                                                          |
-| **office-converter** | Converts Word and PowerPoint files to PDF for the knowledge base. No network at all; it talks to `pinchy` through a shared folder. |
-| **openclaw**         | The AI agent runtime — manages agents, sessions, plugins, and model calls. Only reachable internally.                              |
-| **db**               | PostgreSQL 17 database. Stores users, agents, settings, and audit logs. Only reachable internally.                                 |
+| Container            | Role                                                                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **pinchy**           | Web UI, REST API, and WebSocket bridge. This is what users interact with.                                                                                                |
+| **office-converter** | Converts Word and PowerPoint files to PDF, and old `.xls` workbooks to `.xlsx`, for the knowledge base. No network at all; it talks to `pinchy` through a shared folder. |
+| **openclaw**         | The AI agent runtime — manages agents, sessions, plugins, and model calls. Only reachable internally.                                                                    |
+| **db**               | PostgreSQL 17 database. Stores users, agents, settings, and audit logs. Only reachable internally.                                                                       |
 
 All four start together via Docker Compose. Only the `pinchy` container publishes a port; `openclaw` and `db` communicate over an internal Docker network, and `office-converter` has no network to communicate over.
 

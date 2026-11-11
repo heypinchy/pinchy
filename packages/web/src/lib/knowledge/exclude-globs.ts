@@ -34,9 +34,9 @@ import { OFFICE_EXTENSIONS, SPREADSHEET_EXTENSIONS } from "./office-formats";
  *
  * Both lists are spread rather than re-typed: this list and what the pipeline
  * can actually read are the same fact, and two spellings of one fact is how an
- * allowlist ends up naming a format nothing can open. `.xls` is absent for
- * exactly that reason and stays absent — LibreOffice would convert it, but a
- * sheet has no page to cite (see `SPREADSHEET_EXTENSIONS`).
+ * allowlist ends up naming a format nothing can open. A legacy `.xls` is in
+ * the spreadsheet list: LibreOffice turns it into `.xlsx` and the cell reader
+ * takes it from there (#1373).
  */
 export const DEFAULT_ALLOWED_EXTENSIONS: readonly string[] = [
   ".pdf",

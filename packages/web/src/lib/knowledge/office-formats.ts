@@ -53,18 +53,42 @@ export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
 export const OFFICE_CONVERT_BATCH_SIZE = 20;
 
 /**
- * The spreadsheet formats the knowledge base reads directly, cells and all,
- * instead of converting (see `xlsx-extract.ts` for the three reasons).
+ * The spreadsheet formats the knowledge base reads cell by cell, instead of
+ * rendering them to pages (see `xlsx-extract.ts` for the three reasons).
  *
- * OOXML only, and that is a capability statement rather than a preference:
- * `extractXlsx` reads through `workbook.xlsx.readFile`, which parses the
- * zipped XML formats and not legacy BIFF. Listing `.xls` here would index
- * every legacy workbook straight into the unreadable list (#935) — an
- * allowlist that names what we cannot read is a promise the extractor breaks
- * one file at a time. `.csv` is out for a different reason: it has no sheet,
- * so half of the `sheet + rows` anchor would have to be invented.
+ * `extractXlsx` reads through `workbook.xlsx.readFile`, which parses the zipped
+ * OOXML formats and not legacy BIFF. `.xls` is on this list anyway, because it
+ * never reaches that reader as itself: the office converter turns it into an
+ * `.xlsx` first (`LEGACY_WORKBOOK_EXTENSIONS`, #1373), and what the reader
+ * opens is that. What a legacy workbook IS does not change with the route —
+ * cited by sheet and rows, shown in the sheet pane, admitted by discovery.
+ *
+ * `.csv` is out for a different reason: it has no sheet, so half of the
+ * `sheet + rows` anchor would have to be invented.
  */
-export const SPREADSHEET_EXTENSIONS = [".xlsx", ".xlsm"] as const;
+export const SPREADSHEET_EXTENSIONS = [".xlsx", ".xlsm", ".xls"] as const;
+
+/**
+ * The spreadsheets the converter turns into `.xlsx` before they are read.
+ *
+ * Legacy BIFF8 workbooks: exceljs cannot parse them, and the JavaScript
+ * readers that can either carry open advisories on their npm release or ship
+ * fixes off-registry. LibreOffice Calc in the network-less converter sidecar
+ * reads them instead, and the spreadsheet reader then gets the same OOXML it
+ * gets from any other workbook — with the same limits.
+ */
+export const LEGACY_WORKBOOK_EXTENSIONS = [".xls"] as const;
+
+/**
+ * Every format the office converter takes: the page-shaped documents it turns
+ * into PDFs and the legacy workbooks it turns into `.xlsx`.
+ *
+ * One list, because the converter's queue, the sidecar's input check and the
+ * artifact version an indexed row records must all agree on it — a format the
+ * converter takes that one of them leaves out is converted and then never
+ * asked for, or asked for and refused.
+ */
+export const CONVERTED_EXTENSIONS = [...OFFICE_EXTENSIONS, ...LEGACY_WORKBOOK_EXTENSIONS] as const;
 
 /**
  * The lowercased extension of `path`, or "" — `node:path`'s `extname` written
@@ -85,6 +109,32 @@ export function isOfficeFile(path: string): boolean {
 /** Is this a spreadsheet the knowledge base reads directly, rather than converts? */
 export function isSpreadsheetFile(path: string): boolean {
   return (SPREADSHEET_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this a legacy BIFF workbook, read through its converted `.xlsx`? */
+export function isLegacyWorkbook(path: string): boolean {
+  return (LEGACY_WORKBOOK_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Does the office converter have to run before this file can be read? */
+export function needsConversion(path: string): boolean {
+  return (CONVERTED_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** The two formats the converter writes. */
+export const CONVERTED_OUTPUT_EXTENSIONS = [".pdf", ".xlsx"] as const;
+export type ConvertedExtension = (typeof CONVERTED_OUTPUT_EXTENSIONS)[number];
+
+/**
+ * What the converter turns `path` into: `.pdf` for a page-shaped document,
+ * `.xlsx` for a legacy workbook. Throws for anything it does not convert,
+ * because a guessed target would be stored, and looked up, under a name
+ * nothing ever writes.
+ */
+export function convertedExtensionOf(path: string): ConvertedExtension {
+  if (isOfficeFile(path)) return ".pdf";
+  if (isLegacyWorkbook(path)) return ".xlsx";
+  throw new Error(`not a format the office converter takes: ${path}`);
 }
 
 /** Is this a Word document — the format anchored on its heading outline? */

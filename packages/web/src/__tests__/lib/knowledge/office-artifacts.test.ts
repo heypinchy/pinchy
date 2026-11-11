@@ -107,6 +107,37 @@ describe("OfficeArtifactStore", () => {
     expect(readFileSync(stored, "utf8")).toBe("%PDF-1.4 new");
   });
 
+  describe("a converted workbook (#1373)", () => {
+    it("is stored and found under its own format, beside a PDF of the same content", async () => {
+      // A legacy `.xls` becomes an `.xlsx`, not a PDF. Its artifact carries that
+      // extension — the spreadsheet reader and a human running `ls` both read
+      // it — and a `.doc` that happens to share its bytes (a renamed file) must
+      // not be handed the workbook as its PDF, nor the reverse.
+      const store = new OfficeArtifactStore(join(tmpRoot, "store"));
+
+      const workbook = await store.put(HASH_A, stagedPdf("converted.xlsx", "PK workbook"), ".xlsx");
+
+      expect(workbook.endsWith(".xlsx")).toBe(true);
+      expect(await store.get(HASH_A, ".xlsx")).toBe(workbook);
+      expect(await store.get(HASH_A)).toBeNull();
+      expect(await store.get(HASH_A, ".pdf")).toBeNull();
+
+      const pdf = await store.put(HASH_A, stagedPdf("converted.pdf"), ".pdf");
+      expect(await store.get(HASH_A, ".pdf")).toBe(pdf);
+      expect(readFileSync(workbook, "utf8")).toBe("PK workbook");
+    });
+
+    it("refuses an extension the converter never writes", () => {
+      // The extension is part of a path on the artifact volume. Anything but
+      // the two the converter produces is a caller bug, and a value like
+      // "/../x" must not reach `join`.
+      const store = new OfficeArtifactStore(join(tmpRoot, "store"));
+
+      expect(() => store.pathFor(HASH_A, "/../escape" as ".pdf")).toThrow();
+      expect(() => store.pathFor(HASH_A, ".exe" as ".pdf")).toThrow();
+    });
+  });
+
   describe("sweep", () => {
     it("deletes artifacts untouched for longer than the max age, keeping fresh ones", async () => {
       const store = new OfficeArtifactStore(join(tmpRoot, "store"));

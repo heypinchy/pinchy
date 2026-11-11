@@ -11,7 +11,9 @@
  *  - Page-fitting is the step that silently clips: text too wide for its
  *    column is cut when the sheet is paginated. Reading cells skips that step
  *    entirely, so reading is HIGHER fidelity here, not lower.
- *  - It saves installing `libreoffice-calc` (~103 MB) in the image.
+ *  - It keeps LibreOffice out of the read. A legacy `.xls` does pass through
+ *    Calc, but only to become an `.xlsx` (#1373); this module reads that file
+ *    like any other workbook.
  *
  * The chunk shape follows current practice for tabular RAG (structure-aware
  * chunking): each row becomes a self-contained `Label: value` block, and whole

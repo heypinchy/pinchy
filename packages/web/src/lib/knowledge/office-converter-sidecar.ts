@@ -65,7 +65,7 @@ import { createServer, request, type IncomingMessage, type Server } from "node:h
 import { basename, dirname, join, resolve } from "node:path";
 
 import { errorLine } from "../log-line";
-import { OFFICE_EXTENSIONS } from "./office-formats";
+import { CONVERTED_EXTENSIONS } from "./office-formats";
 import type { ConverterResult, ConverterRun, RunConverter } from "./office-soffice";
 
 /** The socket's name inside the spool. */
@@ -115,7 +115,7 @@ const DEFAULT_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 const BATCH_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const INPUT_NAME = new RegExp(
-  `^\\d{1,4}(?:${OFFICE_EXTENSIONS.map((e) => e.replace(".", "\\.")).join("|")})$`
+  `^\\d{1,4}(?:${CONVERTED_EXTENSIONS.map((e) => e.replace(".", "\\.")).join("|")})$`
 );
 const MAX_INPUTS = 1000;
 const MAX_REQUEST_BYTES = 64 * 1024;
@@ -565,7 +565,7 @@ function parseRequest(text: string): ConvertRequest | string {
     return `inputs must list 1–${MAX_INPUTS} files`;
   }
   if (!inputs.every((name) => typeof name === "string" && INPUT_NAME.test(name))) {
-    return "inputs must be index-named Office files (<n>.doc|docx|ppt|pptx)";
+    return `inputs must be index-named Office files (<n>${CONVERTED_EXTENSIONS.join("|")})`;
   }
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     return "timeoutMs must be a positive number";

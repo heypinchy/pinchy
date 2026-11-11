@@ -87,7 +87,7 @@ vi.mock("@/db/insert-batches", async (importOriginal) => {
 });
 
 import { db } from "@/db";
-import { kbChunks, kbDocuments } from "@/db/schema";
+import { kbChunks, kbDocuments, kbUnsupportedFiles } from "@/db/schema";
 import { EmbedderUnavailableError } from "@/lib/knowledge/embeddings";
 import {
   EMBED_PROGRESS_BATCH,
@@ -3027,6 +3027,173 @@ it("spends one converter attempt per batch when the converter never answers at a
   expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(0);
 });
 
+describe("a legacy .xls workbook (#1373)", () => {
+  // exceljs reads OOXML only, so a BIFF workbook goes through the converter
+  // first — into an `.xlsx`, not a PDF — and the cell reader takes the
+  // converted workbook from there. The citation anchors on sheet and rows,
+  // exactly as for a workbook that arrived as `.xlsx`.
+  let artifactRoot: string;
+
+  beforeEach(() => {
+    artifactRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-ingest-xls-"));
+  });
+
+  afterEach(() => {
+    rmSync(artifactRoot, { recursive: true, force: true });
+  });
+
+  /** A two-sheet `.xlsx`, standing in for what LibreOffice makes of the `.xls`. */
+  async function convertedWorkbook(): Promise<string> {
+    const workbook = new ExcelJS.Workbook();
+    const prices = workbook.addWorksheet("Preise");
+    prices.addRows([
+      ["Artikel", "Bezeichnung", "Preis"],
+      ["A-100", "Schraube Größe M4", 0.12],
+    ]);
+    const stock = workbook.addWorksheet("Lager");
+    stock.addRows([
+      ["Artikel", "Bestand"],
+      ["A-100", 4200],
+    ]);
+    const path = join(artifactRoot, "converted.xlsx");
+    await workbook.xlsx.writeFile(path);
+    return path;
+  }
+
+  function xlsDeps(outcome: (absPath: string) => ConversionOutcome) {
+    const convertOffice = vi.fn(async (sources: readonly OfficeSource[]) =>
+      sources.map((source) => outcome(source.displayPath ?? source.absPath))
+    );
+    const extractXlsx = vi.fn((path: string) => realExtractXlsx(path));
+    const deps: IngestDeps = {
+      embed: vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05))),
+      extractPdf: vi.fn(async () => {
+        throw new Error("a workbook is never read as a PDF");
+      }),
+      extractXlsx,
+      convertOffice,
+      ocrModel: null,
+      stagingDir,
+    };
+    return { deps, convertOffice, extractXlsx };
+  }
+
+  it("is read from its converted workbook, one locator per sheet", async () => {
+    const xlsPath = join(tmpRoot, "Preisliste 2009.xls");
+    writeFileSync(xlsPath, "fake-biff-bytes");
+    const artifact = await convertedWorkbook();
+    const { deps, convertOffice, extractXlsx } = xlsDeps(convertedTo(artifact));
+
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+    expect(convertOffice).toHaveBeenCalledTimes(1);
+    // The converted workbook is what the cell reader opens — never the
+    // original, which exceljs cannot parse.
+    expect(extractXlsx).toHaveBeenCalledTimes(1);
+    expect(extractXlsx).toHaveBeenCalledWith(artifact);
+
+    const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+    expect(doc.sourcePath).toBe(xlsPath);
+    expect(doc.pageCount).toBeNull();
+    // Recorded like every converted format, so a change to the conversion
+    // rules converts it again.
+    expect(doc.artifactFormatVersion).toBe(OFFICE_ARTIFACT_FORMAT_VERSION);
+
+    const chunks = await chunksFor(doc.id);
+    expect(chunks.every((chunk) => chunk.sourcePath === xlsPath)).toBe(true);
+    const sheets = chunks.map((chunk) => (chunk.locator as { sheet?: string } | null)?.sheet);
+    expect(new Set(sheets)).toEqual(new Set(["Preise", "Lager"]));
+    for (const chunk of chunks) expect(chunk.locator).toMatchObject({ kind: "sheet" });
+    expect(chunks.map((chunk) => chunk.chunkText).join(" ")).toContain("Schraube Größe M4");
+  });
+
+  it("leaves the unreadable list once a run reads it, after an older version put it there", async () => {
+    // Before #1373 every `.xls` was recorded as a file of a type the indexer
+    // cannot read. An upgrade starts from those rows; the first run on the new
+    // version has to index the workbook AND take it off the list, or the admin
+    // goes on being told to convert files that are already searchable.
+    const xlsPath = join(tmpRoot, "Preisliste 2009.xls");
+    writeFileSync(xlsPath, "fake-biff-bytes");
+    await db
+      .insert(kbUnsupportedFiles)
+      .values({ orgId: ORG_ID, sourcePath: xlsPath, fileType: ".xls" });
+    const artifact = await convertedWorkbook();
+    const { deps } = xlsDeps(convertedTo(artifact));
+
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+
+    const remaining = await db
+      .select()
+      .from(kbUnsupportedFiles)
+      .where(eq(kbUnsupportedFiles.orgId, ORG_ID));
+    expect(remaining).toEqual([]);
+    const [doc] = await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID));
+    expect(doc.sourcePath).toBe(xlsPath);
+  });
+
+  it("is a document with nothing to search when the converter refuses it", async () => {
+    // A verdict about THIS file — a password-protected workbook, an HTML page
+    // named `.xls` — so it lands on the unreadable list, never in the reader.
+    const xlsPath = join(tmpRoot, "Export.xls");
+    writeFileSync(xlsPath, "<html><table></table></html>");
+    const { deps, extractXlsx } = xlsDeps((absPath) => ({
+      sourcePath: absPath,
+      status: "failed",
+      reason: "the content of this .xls file is not a legacy Excel workbook",
+    }));
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Export.xls"));
+    } finally {
+      warn.mockRestore();
+    }
+    expect(extractXlsx).not.toHaveBeenCalled();
+  });
+
+  it("keeps its row as it was when the converter is unavailable", async () => {
+    const xlsPath = join(tmpRoot, "Lager.xls");
+    writeFileSync(xlsPath, "fake-biff-bytes");
+    const { deps, extractXlsx } = xlsDeps((absPath) => ({
+      sourcePath: absPath,
+      status: "infrastructure",
+      reason: "converter timed out",
+    }));
+
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ failed: 1 }));
+    } finally {
+      error.mockRestore();
+    }
+    expect(extractXlsx).not.toHaveBeenCalled();
+    expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(
+      0
+    );
+  });
+
+  it("is refused unread when its converted workbook breaks the reader's limits", async () => {
+    // The converted `.xlsx` is untrusted input like any other workbook: the
+    // same reader, behind the same limits, refuses it the same way.
+    const xlsPath = join(tmpRoot, "Riesig.xls");
+    writeFileSync(xlsPath, "fake-biff-bytes");
+    const { deps, extractXlsx } = xlsDeps(convertedTo(join(artifactRoot, "huge.xlsx")));
+    extractXlsx.mockRejectedValue(
+      new OfficeFileRejectedError("too_large", "workbook too large to load")
+    );
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Riesig.xls"));
+    } finally {
+      warn.mockRestore();
+    }
+    expect(extractXlsx).toHaveBeenCalledWith(join(artifactRoot, "huge.xlsx"));
+  });
+});
+
 describe("an Office document converted under an earlier artifact format", () => {
   // AGENTS.md § "Test Migrations Against Pre-Existing Data". Changing the
   // conversion rules bumps OFFICE_ARTIFACT_FORMAT_VERSION, which moves the
@@ -3495,7 +3662,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
     mkdirSync(join(tmpRoot, "scans"));
     writeFileSync(join(tmpRoot, "scans", "Nameplate.TIF"), "tiff");
-    writeFileSync(join(tmpRoot, "Budget 2019.xls"), "biff");
+    writeFileSync(join(tmpRoot, "Budget 2019.xlsb"), "biff");
     writeFileSync(join(tmpRoot, "README"), "no extension");
 
     const result = await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
@@ -3503,7 +3670,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     expect(result).toEqual(counts({ indexed: 1, unsupported: 3 }));
     expect(await unsupportedUnder(tmpRoot)).toEqual(
       [
-        { sourcePath: join(tmpRoot, "Budget 2019.xls"), type: ".xls" },
+        { sourcePath: join(tmpRoot, "Budget 2019.xlsb"), type: ".xlsb" },
         { sourcePath: join(tmpRoot, "README"), type: "" },
         { sourcePath: join(tmpRoot, "scans", "Nameplate.TIF"), type: ".tif" },
       ].sort((a, b) => (a.sourcePath < b.sourcePath ? -1 : 1))
@@ -3544,11 +3711,11 @@ describe("files whose type the indexer cannot read (#1267)", () => {
   });
 
   it("drops a file from the list once it is gone or converted", async () => {
-    const xls = join(tmpRoot, "Budget.xls");
-    writeFileSync(xls, "biff");
+    const xlsb = join(tmpRoot, "Budget.xlsb");
+    writeFileSync(xlsb, "biff");
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
 
-    rmSync(xls);
+    rmSync(xlsb);
     writeFileSync(join(tmpRoot, "Budget.xlsx"), "converted");
     const { deps } = fakeDeps();
     await ingestDirectory(ORG_ID, tmpRoot, deps);
@@ -3615,7 +3782,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
     await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
 
-    writeFileSync(join(tmpRoot, "Budget.xls"), "biff");
+    writeFileSync(join(tmpRoot, "Budget.xlsb"), "biff");
     writeFileSync(join(tmpRoot, "handbook.pdf"), "changed-bytes");
     const { deps } = fakeDeps();
     deps.embed = async () => {

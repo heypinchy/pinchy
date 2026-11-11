@@ -18,7 +18,10 @@ import { join } from "node:path";
 export interface ConverterRun {
   /** Absolute paths of the staged inputs, in order. Their basenames are `<index>.<ext>`. */
   inputs: string[];
-  /** Where the converter must write `<index>.pdf`. */
+  /**
+   * Where the converter must write `<index>.pdf` — or `<index>.xlsx` for a
+   * batch of legacy workbooks (`convertTargetFor`).
+   */
   outDir: string;
   /** A private LibreOffice profile, so concurrent runs never fight over one user installation. */
   profileDir: string;
@@ -224,14 +227,37 @@ async function writeLockedDownProfile(profileDir: string): Promise<void> {
  * 422 MB LibreOffice installed, which is no machine CI runs on.
  */
 export const runSoffice: RunConverter = async (run) => {
+  convertTargetFor(run.inputs);
   // Before the process exists, and a failure here is a failure to convert: a
   // converter that cannot be locked down must not run at all.
   await writeLockedDownProfile(run.profileDir);
   return spawnSoffice(run);
 };
 
+/**
+ * What `--convert-to` asks for, read off the inputs' own extensions.
+ *
+ * A page-shaped document becomes a PDF. A legacy `.xls` becomes an `.xlsx`
+ * through Calc's OOXML export filter (#1373): the spreadsheet reader parses
+ * OOXML only, and a sheet rendered to pages would clip the very columns the
+ * cell-based reader keeps. One process takes one target, so a batch that
+ * mixes the two is refused rather than half of it converted into the wrong
+ * thing — the caller groups by target.
+ *
+ * Derived here rather than passed in, so the sidecar's protocol carries
+ * nothing new: it already names each input by its extension, and nothing a
+ * request says can pick a filter the inputs did not.
+ */
+export function convertTargetFor(inputs: readonly string[]): string {
+  const legacy = inputs.filter((input) => /\.xls$/i.test(input)).length;
+  if (legacy === 0) return "pdf";
+  if (legacy === inputs.length) return "xlsx:Calc MS Excel 2007 XML";
+  throw new Error("a conversion batch must not mix legacy workbooks with other documents");
+}
+
 const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, tmpDir, timeoutMs }) =>
   new Promise<ConverterResult>((resolve, reject) => {
+    const target = convertTargetFor(inputs);
     const child = spawn(
       process.env.KB_SOFFICE_BIN || "soffice",
       [
@@ -242,7 +268,7 @@ const spawnSoffice: RunConverter = ({ inputs, outDir, profileDir, tmpDir, timeou
         "--nofirststartwizard",
         `-env:UserInstallation=file://${profileDir}`,
         "--convert-to",
-        "pdf",
+        target,
         "--outdir",
         outDir,
         ...inputs,

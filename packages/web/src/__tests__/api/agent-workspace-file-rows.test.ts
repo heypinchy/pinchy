@@ -449,3 +449,87 @@ describe("when the reader is the problem, not the workbook", () => {
     expect(passed.signal.aborted).toBe(true);
   });
 });
+
+describe("a legacy .xls workbook (#1373)", () => {
+  // exceljs cannot parse BIFF, so the indexer reads a legacy workbook through
+  // the `.xlsx` the converter made of it. A citation into it points at sheet
+  // and rows of THAT workbook, so the preview has to read the same one — and
+  // never the `.xls` itself, which would answer 422 for every cited row.
+  const LEGACY_XLS = join(__dirname, "../fixtures/kb/office/legacy-workbook.xls");
+
+  async function writeLegacySource(name = "preise.xls"): Promise<{ path: string; bytes: Buffer }> {
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- checked-in fixture
+    const bytes = readFileSync(LEGACY_XLS);
+    const path = join(allowedRoot, name);
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- test-local path under a per-test temp dir
+    writeFileSync(path, bytes);
+    return { path, bytes };
+  }
+
+  /** Stores a converted workbook under the source's content key, as the converter does. */
+  async function storeConvertedWorkbook(sourceBytes: Buffer): Promise<string> {
+    const { createHash } = await import("node:crypto");
+    const { OfficeArtifactStore } = await import("@/lib/knowledge/office-artifacts");
+    const staged = await writeWorkbook(tmpRoot, "converted.xlsx");
+    return new OfficeArtifactStore(join(tmpRoot, "artifacts")).put(
+      createHash("sha256").update(sourceBytes).digest("hex"),
+      staged,
+      ".xlsx"
+    );
+  }
+
+  it("answers with the cited rows of the workbook it was converted into", async () => {
+    const { path, bytes } = await writeLegacySource();
+    await storeConvertedWorkbook(bytes);
+    const copy = await watchCopies();
+
+    const res = await callGET(path, ROWS);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.sheet).toBe("Suppliers");
+    expect(body.rows.map((r: { number: number }) => r.number)).toEqual([3, 4]);
+    // The artifact is the store's own file, so there is nothing to copy off
+    // the share — the `.xls` is opened only to be hashed.
+    expect(copy).not.toHaveBeenCalled();
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.eventType).toBe("knowledge.source_viewed");
+    expect(entry.outcome).toBe("success");
+    // The SOURCE's name, as for every converted representation.
+    expect(entry.detail.document.name).toBe("preise.xls");
+    expect(entry.detail.representation).toBe("rows");
+  });
+
+  it("answers 404 while the workbook has not been converted, and audits why", async () => {
+    // Not 422: nothing is wrong with the document, the indexer simply has not
+    // got to it (or the converter refused it). The original download stays
+    // available either way.
+    const { path } = await writeLegacySource();
+
+    const res = await callGET(path, ROWS);
+
+    expect(res.status).toBe(404);
+    const entry = mockDeferAuditLog.mock.calls[0][0];
+    expect(entry.outcome).toBe("failure");
+    expect(entry.detail.reason).toBe("no_converted_artifact");
+  });
+
+  it("does not read a converted PDF of the same bytes as the workbook", async () => {
+    // The format is part of the artifact's name: a `.doc` renamed to `.xls`
+    // hashes the same, and its PDF is not a workbook.
+    const { createHash } = await import("node:crypto");
+    const { writeFileSync } = await import("node:fs");
+    const { OfficeArtifactStore } = await import("@/lib/knowledge/office-artifacts");
+    const { path, bytes } = await writeLegacySource();
+    const staged = join(tmpRoot, "staged.pdf");
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- test-local path under a per-test temp dir
+    writeFileSync(staged, Buffer.from("%PDF-1.4\n%%EOF"));
+    await new OfficeArtifactStore(join(tmpRoot, "artifacts")).put(
+      createHash("sha256").update(bytes).digest("hex"),
+      staged
+    );
+
+    expect((await callGET(path, ROWS)).status).toBe(404);
+  });
+});
