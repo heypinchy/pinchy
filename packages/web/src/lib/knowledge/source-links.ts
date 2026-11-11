@@ -464,7 +464,7 @@ export const WORKSPACE_FILE_HREF = /^\/api\/agents\/[^/]+\/workspace-file\?path=
 /**
  * Recovers the CITATION path from an href built by `buildSourceHref`, for use
  * as the viewer's title. Citation and not absolute: this value is what the
- * reader sees above the document, and `/data/noack/…` there would put the
+ * reader sees above the document, and `/data/customer/…` there would put the
  * container path straight back in front of them (#933). Returns null for
  * anything else, which is how the renderer tells a citation from an ordinary
  * link. Kept beside the builder so the two cannot drift — a dialog whose

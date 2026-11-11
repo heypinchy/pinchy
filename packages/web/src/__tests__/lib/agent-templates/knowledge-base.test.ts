@@ -66,7 +66,7 @@ describe("knowledge-base template", () => {
 
   it("forbids listing a retrieved-but-uncited source", () => {
     // Live Block-A regression (2026-07-16): the answer cited only [1] inline
-    // but the Sources list also carried "[2] Quality File 2012_4.pdf — p. 169",
+    // but the Sources list also carried "[2] Quality Handbook 2012.pdf — p. 169",
     // a chunk that knowledge_search returned and the answer never used (it was
     // a table-of-contents page). That is worse than noise: it lends the
     // appearance of two independent sources to a single-source claim, which is
@@ -92,8 +92,8 @@ describe("knowledge-base template", () => {
   it("demonstrates the Sources list as markdown so entries render one per line", () => {
     // The answer text is rendered as markdown. Consecutive plain lines
     // collapse into ONE paragraph, so a multi-source list ran together into an
-    // unreadable wall: "Sources: [1] /data/…/Quality File 2012_4.pdf — p. 169
-    // [4] /data/…/Quality File 2012_4.pdf — p. 194". Long absolute paths (which
+    // unreadable wall: "Sources: [1] /data/…/Quality Handbook 2012.pdf — p. 169
+    // [4] /data/…/Quality Handbook 2012.pdf — p. 194". Long absolute paths (which
     // the sibling fix deliberately introduced) make that far worse. A list
     // marker forces one entry per rendered line.
     const example = md.slice(md.indexOf("Sources:"));

@@ -8,12 +8,19 @@ export interface TemplateItem {
   requiresOdooConnection?: boolean;
   requiresEmailConnection?: boolean;
   /**
-   * Template uses `pinchy-web` (public web search + page fetch). No
-   * external account or admin-managed credential is required — the plugin
-   * pulls its own credentials at runtime. Drives the access badge and the
-   * permission preview, parity with the other `requires*` flags.
+   * Template uses `pinchy-web` (public web search + page fetch). Drives the
+   * access badge and the permission preview, parity with the other
+   * `requires*` flags. Page fetch needs nothing; search needs a web-search
+   * provider, which `webSearchConfigured` reports.
    */
   requiresWeb?: boolean;
+  /**
+   * Whether a web-search provider (Brave) is configured. A web template stays
+   * creatable without one, because page fetch still works; the form and the
+   * preview mark search as not set up instead (#1297). Absent means unknown
+   * and is treated as configured.
+   */
+  webSearchConfigured?: boolean;
   odooAccessLevel?: string;
   defaultTagline: string | null;
   available?: boolean;
@@ -76,6 +83,7 @@ export function getPermissionPreviewItems(
     | "requiresOdooConnection"
     | "requiresEmailConnection"
     | "requiresWeb"
+    | "webSearchConfigured"
     | "odooAccessLevel"
   >
 ): PermissionItem[] {
@@ -113,7 +121,9 @@ export function getPermissionPreviewItems(
   }
   if (template.requiresWeb) {
     return [
-      { icon: "check", text: "Search the public web" },
+      template.webSearchConfigured === false
+        ? { icon: "warning", text: "Search the public web (not set up yet)" }
+        : { icon: "check", text: "Search the public web" },
       { icon: "check", text: "Fetch public web pages" },
       { icon: "cross", text: "Cannot access your private data or internal systems" },
     ];

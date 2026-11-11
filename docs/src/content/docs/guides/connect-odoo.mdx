@@ -251,11 +251,13 @@ read-write finance templates carry.
 
 Pinchy fetches the URL you enter from its own server, so an admin who can add a connection can point it at anything that server can reach. That's why we only connect to a URL that lands on a public address — and we check the address it actually resolves to, not just how the hostname reads. A name like `erp.yourcompany.com` pointing at `10.0.0.5` is the same request as typing `10.0.0.5` directly.
 
-If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale address (`100.x`), an IPv6 unique-local address, or any other of the [private ranges](/reference/network-address-checks/#private-ranges) — set the environment variable on the Pinchy container and restart it:
+If your Odoo genuinely lives on your own network — on `10.x`, `172.16–31.x`, `192.168.x`, a Tailscale address (`100.x`), an IPv6 unique-local address, or any other of the [private ranges](/reference/network-address-checks/#private-ranges) — add this line to your `.env`:
 
 ```bash
 ALLOW_PRIVATE_URLS=1
 ```
+
+Then run `docker compose up -d` so the Pinchy container picks it up.
 
 That opens your private network and nothing else. Loopback, link-local, the cloud metadata endpoints and the reserved ranges stay blocked either way — `localhost`, `127.0.0.1`, `::1`, `0.0.0.0/8`, `169.254.169.254`, the documentation ranges, multicast and the rest of the [always-refused list](/reference/network-address-checks/#always-refused). No Odoo server lives there, so there's nothing to trade off. It's the same two-tier switch [`ALLOW_PRIVATE_MAIL_HOSTS`](/guides/connect-email-imap/#mail-servers-on-your-own-network) is for mail servers, and a hostname is still resolved and checked with it set.
 

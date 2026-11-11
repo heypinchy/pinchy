@@ -55,7 +55,7 @@ export interface RetrieveOptions {
   includeArchived?: boolean;
   /**
    * Crowding cap: at most this many chunks per DOCUMENT survive the fused
-   * ranking before the top-k slice. Fixes the measured Noack failure where
+   * ranking before the top-k slice. Fixes the measured customer failure where
    * one 549-chunk compilation binder occupied the whole result list and
    * crowded the clean 8-page datasheet out of the top-k (#858). With k=8 and
    * the default cap of 3 the result list always spans ≥3 distinct documents.

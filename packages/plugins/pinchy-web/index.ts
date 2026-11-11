@@ -68,7 +68,8 @@ interface PluginConfig {
   /** ID of the web-search integration connection in Pinchy. The Brave
    * apiKey is fetched on-demand from Pinchy's internal credentials API
    * — never written into openclaw.json. See #209 for the bug class
-   * that prompted this pattern. */
+   * that prompted this pattern. Absent when no web-search provider is
+   * configured (#1297): fetch still works, search answers "not configured". */
   connectionId?: string;
   agents?: Record<string, AgentWebConfig>;
 }

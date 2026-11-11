@@ -110,31 +110,34 @@ Your `docker-compose.override.yml` survives upgrades unchanged. However, if a ne
 
 ## Resource limits and health checks
 
-Pinchy's `docker-compose.yml` caps memory and CPU for all three containers, and gives `pinchy` and `db` HTTP/TCP health checks so Docker can tell a wedged container from a healthy one. All six limits are overridable via `.env` — you never need to touch `docker-compose.yml` itself. For every other variable `.env` accepts, see the [Environment Variables reference](/reference/environment-variables/).
+Pinchy's `docker-compose.yml` caps memory and CPU for all four containers, and gives each of them a health check so Docker can tell a wedged container from a healthy one. All eight limits are overridable via `.env` — you never need to touch `docker-compose.yml` itself. For every other variable `.env` accepts, see the [Environment Variables reference](/reference/environment-variables/).
 
-| Variable             | Default | Caps                                                              |
-| -------------------- | ------- | ----------------------------------------------------------------- |
-| `PINCHY_MEM_LIMIT`   | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge) |
-| `PINCHY_CPUS`        | `1.5`   | CPU cores for `pinchy`                                            |
-| `OPENCLAW_MEM_LIMIT` | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)  |
-| `OPENCLAW_CPUS`      | `2`     | CPU cores for `openclaw`                                          |
-| `DB_MEM_LIMIT`       | `1g`    | Memory for the `db` container (PostgreSQL 17)                     |
-| `DB_CPUS`            | `1`     | CPU cores for `db`                                                |
+| Variable                     | Default | Caps                                                                     |
+| ---------------------------- | ------- | ------------------------------------------------------------------------ |
+| `PINCHY_MEM_LIMIT`           | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge)        |
+| `PINCHY_CPUS`                | `1.5`   | CPU cores for `pinchy`                                                   |
+| `OFFICE_CONVERTER_MEM_LIMIT` | `1g`    | Memory for the `office-converter` container (Word and PowerPoint to PDF) |
+| `OFFICE_CONVERTER_CPUS`      | `1`     | CPU cores for `office-converter`                                         |
+| `OPENCLAW_MEM_LIMIT`         | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)         |
+| `OPENCLAW_CPUS`              | `2`     | CPU cores for `openclaw`                                                 |
+| `DB_MEM_LIMIT`               | `1g`    | Memory for the `db` container (PostgreSQL 17)                            |
+| `DB_CPUS`                    | `1`     | CPU cores for `db`                                                       |
 
 ### Why these exist
 
-Without a limit, a single runaway container — a leaking process, a model call that buffers an oversized response, a query that goes wide — can exhaust all memory on the host and take down every other container (and often the host itself) with it. `mem_limit`/`cpus` contain that failure to the one container that caused it. Combined with `restart: unless-stopped` (already set on all three services and not something you should change), an OOM-killed container comes back on its own instead of leaving the deployment wedged until someone notices and runs `docker compose up -d` by hand.
+Without a limit, a single runaway container — a leaking process, a model call that buffers an oversized response, a query that goes wide — can exhaust all memory on the host and take down every other container (and often the host itself) with it. `mem_limit`/`cpus` contain that failure to the one container that caused it. Combined with `restart: unless-stopped` (already set on all four services and not something you should change), an OOM-killed container comes back on its own instead of leaving the deployment wedged until someone notices and runs `docker compose up -d` by hand.
 
 ### Sizing your host
 
-The defaults add up to roughly 4 GB of memory ceiling across the three containers (1 + 2 + 1). That's a ceiling, not a reservation — containers use less at idle — but your host needs headroom **above** that total for the OS, Docker itself, and any reverse proxy you run alongside Pinchy. We recommend a host with meaningfully more than 4 GB, e.g. **6–8 GB or more**, so the limits are a backstop rather than a wall you hit during normal operation.
+The defaults add up to roughly 5 GB of memory ceiling across the four containers (1 + 1 + 2 + 1). The Office converter's share is only ever used while the knowledge base converts a Word or PowerPoint file. That's a ceiling, not a reservation — containers use less at idle — but your host needs headroom **above** that total for the OS, Docker itself, and any reverse proxy you run alongside Pinchy. We recommend a host with meaningfully more than 5 GB, e.g. **8 GB or more**, so the limits are a backstop rather than a wall you hit during normal operation.
 
-If you're intentionally running on a constrained 4 GB VPS — a real scenario, not just a hypothetical — lower the limits in `.env` so the three containers leave the OS enough room to breathe:
+If you're intentionally running on a constrained 4 GB VPS — a real scenario, not just a hypothetical — lower the limits in `.env` so the containers leave the OS enough room to breathe:
 
 ```bash
 # .env — tuned for a 4 GB VPS
 PINCHY_MEM_LIMIT=768m
 PINCHY_CPUS=1
+OFFICE_CONVERTER_MEM_LIMIT=640m
 OPENCLAW_MEM_LIMIT=1.5g
 OPENCLAW_CPUS=1.5
 DB_MEM_LIMIT=512m
@@ -150,22 +153,22 @@ DB_CPUS=0.5
 
 ### Memory when the knowledge base indexes Office documents
 
-Word and PowerPoint files take a detour on their way into the knowledge base: Pinchy converts them to PDF first, with LibreOffice running inside the `pinchy` container. That's what lets it read the legacy `.doc` and `.ppt` formats at all — no modern parsing library can — and it gives every citation one rendered document that the index and the preview agree on.
+Word and PowerPoint files take a detour on their way into the knowledge base: Pinchy converts them to PDF first, with LibreOffice running in the `office-converter` container — one with no network and none of Pinchy's secrets, because it opens files that anyone with write access to a mounted folder can put there. That's what lets it read the legacy `.doc` and `.ppt` formats at all — no modern parsing library can — and it gives every citation one rendered document that the index and the preview agree on.
 
 Two things about that are worth knowing when you size the container.
 
-**LibreOffice is not a daemon.** It starts, converts a batch of documents, and exits. The memory it needs is transient: nothing stays resident between reindexes, and a deployment that never indexes an Office document never pays for it.
+**LibreOffice is not a daemon.** It starts, converts a batch of documents, and exits. The memory it needs is transient: nothing of LibreOffice stays resident between reindexes, and a deployment that never indexes an Office document never pays for it. What does stay up is the `office-converter` container itself, a small Node server waiting for the next batch.
 
-**It shares the container with the embedding model.** The knowledge base embeds in-process, so during a reindex the same container holds a ~300 MB model that is _actively working_ while the converter runs. We measured that overlap directly — 17 Word documents converting while the embedder kept embedding, at several ceilings:
+**It has a container to itself.** `OFFICE_CONVERTER_MEM_LIMIT` caps it, so a conversion doesn't compete with the web app or with the ~300 MB embedding model that keeps working in the `pinchy` container during a reindex. How much that overlap would cost, measured with both in one container — 17 Word documents converting while the embedder kept embedding, at several ceilings:
 
-| `PINCHY_MEM_LIMIT` | Result                                              |
-| ------------------ | --------------------------------------------------- |
-| `1g` (default)     | All 17 converted — the default has room to spare    |
-| `768m`             | All 17 converted, ~20 % slower                      |
-| `640m`             | All 17 converted, ~70 % slower                      |
-| `512m`             | **Out of memory.** The container was killed mid-run |
+| Memory for converter **and** embedder | Result                                              |
+| ------------------------------------- | --------------------------------------------------- |
+| `1g`                                  | All 17 converted, with room to spare                |
+| `768m`                                | All 17 converted, ~20 % slower                      |
+| `640m`                                | All 17 converted, ~70 % slower                      |
+| `512m`                                | **Out of memory.** The container was killed mid-run |
 
-So the **default `1g` is enough**, and the 4 GB VPS tuning above (`768m`) still works — but `512m` is below the floor once Office documents are in the corpus. Going the other way pays off in time rather than reliability: the converter is the one part of Pinchy that gets meaningfully faster with more memory, so `2g` is worth it for a large first-time index.
+The converter gets its `1g` default without the embedder beside it, so the **default has more room than that measurement needed**, and `640m` (the 4 GB VPS tuning above) is the lowest ceiling we've seen work. Going the other way pays off in time rather than reliability: the converter is the one part of Pinchy that gets meaningfully faster with more memory, so `2g` is worth it for a large first-time index.
 
 <Aside type="tip">
   If the container does run out of memory mid-conversion, Pinchy tells the two
@@ -181,7 +184,7 @@ So the **default `1g` is enough**, and the 4 GB VPS tuning above (`768m`) still 
 
 Converted PDFs live on their own volume, `pinchy-kb-artifacts`. Your source documents are never touched — `/data` stays read-only. The volume is a cache: every artifact is re-derivable from its source, so deleting it costs a reindex and nothing else. When an upgrade changes how Office files are converted, Pinchy converts the files again on its own, starting when it starts, and deletes the PDFs converted the old way once no file a knowledge-base agent can search is indexed from them any more, so the volume doesn't keep a generation nothing reads. Until then the volume holds both. [Upgrading](/guides/upgrading/#restoring-from-backup) says what that means for a rollback.
 
-Plan for some headroom on that volume beyond the PDFs themselves. Office files are converted 20 at a time, and while a batch runs, each of its files sits on the volume twice — the private copy it is read from (see below) and the checked copy the converter makes of that, each never larger than the file itself — so for 20 decks near the 200 MB limit, that's up to 8 GB — and the converter writes its PDFs right next to them before they're stored. LibreOffice also needs scratch space while it opens a document, about as much as the document unpacks to, and it gets that on this volume as well, not in the container's `/tmp`. A `.docx` or `.pptx` is a compressed archive and can unpack to far more than it weighs: one 150 KB Word file we tested needed 26 MB. The copies and the scratch space are deleted as soon as the batch finishes, and anything an interrupted run left behind (a restart or an upgrade mid-reindex) is cleared when Pinchy starts. If the volume fills up anyway, a file whose checked copy didn't fit, that LibreOffice couldn't open for lack of room, or whose converted PDF didn't fit counts as `failed` for that run: whatever was indexed from an earlier version of it stays searchable, and it's read again on the next run. Nothing is listed as unsearchable for it — with the one exception at the end of this paragraph. We ask the volume, not the converter, whether that happened, because LibreOffice reports a document it ran out of room for exactly as it reports one it can't read. A file that came out without a PDF is put down to the volume when the volume no longer takes a write, has fewer than 1,024 free inodes, or has less space left than the file needs: what it unpacks to (nothing for a file that isn't an archive, such as a classic `.doc` or `.ppt`), plus room for its PDF twice over, because LibreOffice writes the PDF to its scratch space first and then copies it out — 32 MiB, or four times the file's size for a large one. A file LibreOffice can't make a PDF of on a volume with that much room, such as a deck whose every slide is hidden, is listed as unsearchable as usual. That room for the PDF is an estimate, because the PDF was never written, and a file full of pictures can outgrow it: LibreOffice re-encodes pictures, and an 8.5 MB Word file of 200 screenshots we tested made an 82 MB PDF. Such a file whose PDF didn't fit, on a volume that still had the estimated room — for that file anywhere between 34 MB and 164 MB free — is the exception: we can't tell it from a deck of hidden slides, so it's listed as unsearchable, whatever was indexed from an earlier version of it is dropped, and it's read again on the next runs, five tries in all, the same as any Office file that couldn't be converted. It can't happen on a volume that keeps more room free than twice your largest PDF while a batch runs.
+Plan for some headroom beyond the PDFs themselves, on that volume and on `pinchy-office-spool`, the folder Pinchy hands documents to the converter in. Office files are converted 20 at a time, and while a batch runs, each of its files is copied twice — the private copy it is read from (see below), on `pinchy-kb-artifacts`, and the checked copy made of that for the converter, on `pinchy-office-spool`, each never larger than the file itself — so for 20 decks near the 200 MB limit, that's up to 4 GB on each — and the converter writes its PDFs next to the checked copies before they're stored. LibreOffice also needs scratch space while it opens a document, about as much as the document unpacks to, and it gets that on `pinchy-office-spool` as well, not in the container's `/tmp`. A `.docx` or `.pptx` is a compressed archive and can unpack to far more than it weighs: one 150 KB Word file we tested needed 26 MB. The copies and the scratch space are deleted as soon as the batch finishes, and anything an interrupted run left behind (a restart or an upgrade mid-reindex) is cleared when Pinchy starts. If `pinchy-office-spool` fills up anyway, a file whose checked copy didn't fit, that LibreOffice couldn't open for lack of room, or whose converted PDF didn't fit counts as `failed` for that run: whatever was indexed from an earlier version of it stays searchable, and it's read again on the next run. Nothing is listed as unsearchable for it — with the one exception at the end of this paragraph. We ask the volume, not the converter, whether that happened, because LibreOffice reports a document it ran out of room for exactly as it reports one it can't read. A file that came out without a PDF is put down to the volume when the volume no longer takes a write, has fewer than 1,024 free inodes, or has less space left than the file needs: what it unpacks to (nothing for a file that isn't an archive, such as a classic `.doc` or `.ppt`), plus room for its PDF twice over, because LibreOffice writes the PDF to its scratch space first and then copies it out — 32 MiB, or four times the file's size for a large one. A file LibreOffice can't make a PDF of on a volume with that much room, such as a deck whose every slide is hidden, is listed as unsearchable as usual. That room for the PDF is an estimate, because the PDF was never written, and a file full of pictures can outgrow it: LibreOffice re-encodes pictures, and an 8.5 MB Word file of 200 screenshots we tested made an 82 MB PDF. Such a file whose PDF didn't fit, on a volume that still had the estimated room — for that file anywhere between 34 MB and 164 MB free — is the exception: we can't tell it from a deck of hidden slides, so it's listed as unsearchable, whatever was indexed from an earlier version of it is dropped, and it's read again on the next runs, five tries in all, the same as any Office file that couldn't be converted. It can't happen on a volume that keeps more room free than twice your largest PDF while a batch runs.
 
 The volume also holds a private copy of each document while it is being read — by a reindex, or for a spreadsheet preview — so that no reader ever opens a path in a mounted folder that someone could have swapped for a link. Pinchy streams the file into the copy rather than holding it in memory, and deletes the copy as soon as the read is done; copies an interrupted run left behind are cleared when Pinchy starts. Office documents are converted in batches of 20, so during a conversion that can be 20 copies at once, next to the 20 checked copies above. A document whose private copy doesn't fit counts as `failed` for that run, like one whose checked copy didn't, and a spreadsheet preview answers that the reader is unavailable right now.
 
@@ -213,7 +216,7 @@ Any positive whole number works; anything else is ignored and Pinchy decides as 
 
 ### Health checks
 
-`db` and `pinchy` each have a Docker health check: `db` polls `pg_isready`, and `pinchy` polls its own `/api/internal/openclaw-config-ready` endpoint. `openclaw` has a lightweight **TCP liveness check** — a raw connect to the gateway's WebSocket port (`18789`) that succeeds as soon as the gateway is accepting connections. It doesn't inspect the gateway's internal state, only that something is listening; OpenClaw's own start script already respawns the gateway process if it dies internally, so this check exists to surface a fully stuck container (process alive, port not listening). Note that Compose does **not** restart a container just because it is `unhealthy` — `restart:` policies act on container _exit_, not health status. The check is diagnostic: a stuck container shows as `unhealthy` in `docker compose ps` so you can spot it and restart it yourself, rather than it silently sitting "up" but unreachable.
+`db` and `pinchy` each have a Docker health check: `db` polls `pg_isready`, and `pinchy` polls its own `/api/internal/openclaw-config-ready` endpoint. `office-converter` answers a health probe on the socket it shares with `pinchy` — it has no network port to probe. `openclaw` has a lightweight **TCP liveness check** — a raw connect to the gateway's WebSocket port (`18789`) that succeeds as soon as the gateway is accepting connections. It doesn't inspect the gateway's internal state, only that something is listening; OpenClaw's own start script already respawns the gateway process if it dies internally, so this check exists to surface a fully stuck container (process alive, port not listening). Note that Compose does **not** restart a container just because it is `unhealthy` — `restart:` policies act on container _exit_, not health status. The check is diagnostic: a stuck container shows as `unhealthy` in `docker compose ps` so you can spot it and restart it yourself, rather than it silently sitting "up" but unreachable.
 
 You can watch health status with:
 
