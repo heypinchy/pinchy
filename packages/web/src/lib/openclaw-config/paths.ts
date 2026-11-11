@@ -61,3 +61,12 @@ export const LLAMA_SERVER_COMMAND = "/opt/llama-server/llama-server";
  * provider's own default location in OpenClaw's state dir.
  */
 export const LLAMA_SERVER_PRESET_PATH = "/root/.openclaw/tools/llama.cpp/models.ini";
+
+/**
+ * Bundled OpenClaw plugins Pinchy needs in `plugins.allow` on every install
+ * (why each one: build.ts, where the full allow-list is assembled). The boot
+ * seed writes exactly these before the setup wizard: an allow-list keeps
+ * OpenClaw 2026.9 from enabling the globally installed pinchy-* plugins before
+ * Pinchy has written their config.
+ */
+export const REQUIRED_BUNDLED_PLUGINS = ["document-extract", LLAMA_CPP_PROVIDER_ID] as const;

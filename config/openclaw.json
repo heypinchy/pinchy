@@ -19,6 +19,7 @@
     "checkOnStart": false
   },
   "plugins": {
+    "allow": ["document-extract", "llama-cpp"],
     "entries": {
       "memory-core": {
         "config": {

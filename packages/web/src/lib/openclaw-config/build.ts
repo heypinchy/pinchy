@@ -54,6 +54,7 @@ import {
   LLAMA_SERVER_PRESET_PATH,
   MEMORY_EMBEDDING_MODEL_PATH,
   OPENCLAW_MEDIA_TTL_HOURS,
+  REQUIRED_BUNDLED_PLUGINS,
 } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import {
@@ -1355,7 +1356,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   //     the key-less, offline GGUF backend we pin in memory.search above. Installed + bundled in Dockerfile.openclaw; without it in
   //     plugins.allow the `local` provider never loads and memory_search resolves
   //     to nothing (the same silent-recall failure, one layer down).
-  const REQUIRED_BUNDLED_PLUGINS = ["document-extract", "llama-cpp"] as const;
+  // (REQUIRED_BUNDLED_PLUGINS lives in paths.ts: the boot seed writes it too.)
 
   const DISABLED_OPENCLAW_PLUGINS = new Set(["acpx", "bonjour", "device-pair", "phone-control"]);
   const isWanted = (p: string) =>

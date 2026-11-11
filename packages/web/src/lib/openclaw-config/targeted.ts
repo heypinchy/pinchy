@@ -6,6 +6,7 @@ import {
   OPENCLAW_GATEWAY_BIND,
   OPENCLAW_GATEWAY_MODE,
   OPENCLAW_MEDIA_TTL_HOURS,
+  REQUIRED_BUNDLED_PLUGINS,
 } from "./paths";
 import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
 import { migrateRetiredOpenClawKeys } from "./retired-keys";
@@ -421,6 +422,14 @@ export function seedRestartClassOverridesIfMissing(): boolean {
   const needsLocalMemorySearch =
     memorySearch.provider !== "local" ||
     memorySearchLocal.modelPath !== MEMORY_EMBEDDING_MODEL_PATH;
+  // Pinchy installs its plugins globally (~/.openclaw/extensions), and OpenClaw
+  // 2026.9 enables a global plugin when there is no allow-list, then validates
+  // its config. Before the setup wizard that config is `{}`, every pinchy-*
+  // plugin fails its required fields, and the gateway refuses to start. It
+  // checks as soon as the file has a `plugins` block — which this seed writes
+  // (`plugins.entries.canvas`). The regenerate extends the list with each
+  // plugin it writes a config for; a list already on disk is left to it.
+  const needsPluginsAllow = !Array.isArray(plugins.allow);
 
   if (
     !needsMigration &&
@@ -432,7 +441,8 @@ export function seedRestartClassOverridesIfMissing(): boolean {
     !needsUpdateCheck &&
     !needsCanvasHostOff &&
     !needsAttachmentsTtl &&
-    !needsLocalMemorySearch
+    !needsLocalMemorySearch &&
+    !needsPluginsAllow
   ) {
     return false;
   }
@@ -456,6 +466,7 @@ export function seedRestartClassOverridesIfMissing(): boolean {
     update: { ...update, checkOnStart: false },
     plugins: {
       ...plugins,
+      allow: Array.isArray(plugins.allow) ? plugins.allow : [...REQUIRED_BUNDLED_PLUGINS],
       entries: {
         ...pluginEntries,
         canvas: { ...canvas, config: { ...canvasConfig, host: { ...canvasHost, enabled: false } } },

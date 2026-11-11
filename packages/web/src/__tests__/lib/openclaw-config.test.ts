@@ -5601,6 +5601,9 @@ describe("seedRestartClassOverridesIfMissing", () => {
     // mode/bind in the first regenerate is a restart-class `gateway` diff.
     expect(written.gateway?.mode).toBe("local");
     expect(written.gateway?.bind).toBe("lan");
+    // Keeps the globally installed pinchy-* plugins off until the wizard's
+    // regenerate writes them with their config.
+    expect(written.plugins?.allow).toEqual(["document-extract", "llama-cpp"]);
   });
 
   it("seeds attachments.ttlHours when it is missing and keeps OpenClaw's attachments siblings", () => {
@@ -5646,7 +5649,10 @@ describe("seedRestartClassOverridesIfMissing", () => {
     },
     discovery: { mdns: { mode: "off" } },
     update: { checkOnStart: false },
-    plugins: { entries: { canvas: { config: { host: { enabled: false } } } } },
+    plugins: {
+      allow: ["document-extract", "llama-cpp"],
+      entries: { canvas: { config: { host: { enabled: false } } } },
+    },
     attachments: { ttlHours: 48 },
     memory: { search: { provider: "local", local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH } } },
   });
@@ -5685,6 +5691,15 @@ describe("seedRestartClassOverridesIfMissing", () => {
       field: "the canvas plugin's host.enabled",
       breakIt: (c) => (c.plugins.entries.canvas.config.host.enabled = true),
       expectFixed: (w) => expect(w.plugins.entries.canvas.config.host.enabled).toBe(false),
+    },
+    {
+      // OpenClaw 2026.9 enables every globally installed plugin when there is
+      // no allow-list, and validates its config — `{}` before the setup wizard,
+      // which fails each Pinchy plugin's required fields. The gateway then
+      // refuses to start, so the wizard is never reached.
+      field: "plugins.allow (missing)",
+      breakIt: (c) => delete (c.plugins as Partial<Fixture["plugins"]>).allow,
+      expectFixed: (w) => expect(w.plugins.allow).toEqual(["document-extract", "llama-cpp"]),
     },
     {
       field: "attachments.ttlHours",
@@ -5746,6 +5761,9 @@ describe("seedRestartClassOverridesIfMissing", () => {
     expect(written.media).toBeUndefined();
     expect(written.plugins.entries.canvas.config.host.enabled).toBe(false);
     expect(written.plugins.entries["pinchy-audit"]).toEqual({ enabled: true });
+    // An allow-list the file already has is the regenerate's to change: it
+    // orders it, and a reorder is a restart-class diff.
+    expect(written.plugins.allow).toEqual(["pinchy-audit"]);
     expect(written.attachments.ttlHours).toBe(48);
     // Moved, then pinned to the bundled model as every regenerate does.
     expect(written.memory).toEqual({
@@ -5803,7 +5821,10 @@ describe("seedRestartClassOverridesIfMissing", () => {
       },
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
-      plugins: { entries: { canvas: { config: { host: { enabled: false } } } } },
+      plugins: {
+        allow: ["document-extract", "llama-cpp"],
+        entries: { canvas: { config: { host: { enabled: false } } } },
+      },
       attachments: { ttlHours: 48 },
       memory: { search: { provider: "local", local: { modelPath: MEMORY_EMBEDDING_MODEL_PATH } } },
     };
