@@ -290,8 +290,8 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
 /**
  * A run that finished before #1410 stored one `unsupported` number for
  * documents Pinchy cannot read yet and for files that are not documents at
- * all. Shown as is, a share of drivers keeps the agent under "needs attention"
- * until its next run. The rows behind that number (kb_unsupported_files) carry
+ * all. Shown as is, a share of drivers reads as hundreds of documents Pinchy
+ * cannot read until its next run. The rows behind that number (kb_unsupported_files) carry
  * each file's type, so the split is read back from them, scoped to the folders
  * that run walked. The rows are current state, so this is the share as the
  * latest run under those folders found it — the same list the CSV download

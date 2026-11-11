@@ -163,7 +163,7 @@ it("pages through a large list without dropping or repeating a row", async () =>
 // #1410: a run that finished before the split stored one `unsupported` number
 // for documents and non-documents alike. The rows behind it carry each file's
 // type, so the split can be read back from them — without it, a share of
-// drivers keeps an agent under "needs attention" until the next run.
+// drivers reads as hundreds of documents Pinchy cannot read.
 it("counts documents not supported yet apart from files that are not documents", async () => {
   await recordUnsupportedFiles(
     ORG_ID,

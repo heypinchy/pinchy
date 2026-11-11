@@ -771,7 +771,8 @@ function UnsupportedFilesNote({
     <p className="text-sm text-muted-foreground">
       {files} of a type Pinchy can&apos;t read yet, like Outlook .msg emails or old .xls
       spreadsheets. Your agent can&apos;t answer from {count === 1 ? "it" : "them"}. Saved as PDF,
-      Word, PowerPoint or .xlsx, {count === 1 ? "it's" : "they're"} picked up by the next run.
+      Word, PowerPoint or .xlsx, or unpacked from an archive, {count === 1 ? "it's" : "they're"}{" "}
+      picked up by the next run.
       {ignored > 0 && (
         <>
           {" "}
@@ -793,8 +794,10 @@ function IgnoredFilesNote({ agentId, count }: { agentId: string; count: number }
   return (
     <p className="text-sm text-muted-foreground">
       {countFiles(count)} {count === 1 ? "was" : "were"} skipped because{" "}
-      {count === 1 ? "it isn't a document" : "they aren't documents"}: programs, data and system
-      files. <DownloadListLink agentId={agentId} />
+      {count === 1
+        ? "it isn't a document."
+        : "they aren't documents, such as programs, data or media files."}{" "}
+      <DownloadListLink agentId={agentId} />
     </p>
   );
 }

@@ -579,7 +579,7 @@ describe("GET /api/agents/[agentId]/knowledge/reindex", () => {
 
   // #1410: a run that finished before the split stored one `unsupported`
   // number for documents and non-documents alike. Shown as is, a share of
-  // drivers keeps the agent under "needs attention" until the next run. The
+  // drivers reads as hundreds of documents Pinchy cannot read. The
   // rows behind the number carry each file's type, so the split is read back
   // from them — scoped to the folders that run walked.
   it("splits a run's unsupported count recorded before #1410 into documents and ignored files", async () => {

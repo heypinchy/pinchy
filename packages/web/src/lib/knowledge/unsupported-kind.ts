@@ -46,6 +46,7 @@ export const DOCUMENT_LIKE_TYPES: readonly string[] = [
   // Mail
   ".msg",
   ".eml",
+  ".emlx",
   ".oft",
   ".pst",
   ".mbox",
@@ -60,8 +61,11 @@ export const DOCUMENT_LIKE_TYPES: readonly string[] = [
   ".dotm",
   ".pot",
   ".potx",
+  ".potm",
+  ".pptm",
   ".pps",
   ".ppsx",
+  ".ppsm",
   ".vsd",
   ".vsdx",
   ".pub",
@@ -71,6 +75,7 @@ export const DOCUMENT_LIKE_TYPES: readonly string[] = [
   ".ods",
   ".odp",
   ".odg",
+  ".sxw",
   ".rtf",
   ".wpd",
   ".wps",
@@ -84,6 +89,10 @@ export const DOCUMENT_LIKE_TYPES: readonly string[] = [
   ".eps",
   ".djvu",
   ".epub",
+  // Signed documents (e-invoices) and pages saved with their content
+  ".p7m",
+  ".mht",
+  ".mhtml",
   // Text a person wrote or a page a person reads
   ".md",
   ".html",

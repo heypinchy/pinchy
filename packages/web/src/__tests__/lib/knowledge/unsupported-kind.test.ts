@@ -24,6 +24,14 @@ describe("unsupportedFileKind", () => {
     ".zip",
     ".7z",
     ".dwg",
+    ".pptm",
+    ".ppsm",
+    ".potm",
+    ".mht",
+    ".mhtml",
+    ".emlx",
+    ".sxw",
+    ".p7m",
   ])("keeps a document-like %s as not supported yet", (type) => {
     expect(unsupportedFileKind(type)).toBe("unsupported");
   });

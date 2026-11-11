@@ -310,6 +310,37 @@ describe("KnowledgeReindexSection", () => {
       );
     });
 
+    // Video and audio are ignored too, so the note names kinds by example, not
+    // as a closed list — and a single file gets no list at all.
+    it("names the kinds of skipped files by example, and none for a single file", async () => {
+      mockGet.mockResolvedValue({
+        job: job({ counts: { ...counts, unsupported: 0, ignored: 400 } }),
+      });
+      const { unmount } = render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+      expect(
+        await screen.findByText(/aren't documents, such as programs, data or media files\./i)
+      ).toBeInTheDocument();
+      unmount();
+
+      mockGet.mockResolvedValue({
+        job: job({ counts: { ...counts, unsupported: 0, ignored: 1 } }),
+      });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+      const note = await screen.findByText(/1 file was skipped because it isn't a document\./i);
+      expect(note).not.toHaveTextContent(/programs/i);
+    });
+
+    // The group holds archives too; those need unpacking, not saving as PDF.
+    it("tells the admin an archive is picked up once unpacked", async () => {
+      mockGet.mockResolvedValue({
+        job: job({ counts: { ...counts, unsupported: 2, ignored: 0 } }),
+      });
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+      expect(
+        await screen.findByText(/2 files are of a type pinchy can't read yet/i)
+      ).toHaveTextContent(/or unpacked from an archive/i);
+    });
+
     it("names only the documents it can't read yet in the note, and the rest in passing", async () => {
       mockGet.mockResolvedValue({
         job: job({ counts: { ...counts, unsupported: 2, ignored: 400 } }),
