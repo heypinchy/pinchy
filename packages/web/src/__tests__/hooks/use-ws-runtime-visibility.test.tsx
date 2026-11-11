@@ -143,7 +143,7 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
     });
 
     expect(wsInstances).toHaveLength(1);
-    expect(result.current.reconnectExhausted).toBe(false);
+    expect(result.current.connectionRejection).toBeNull();
     expect(result.current.isConnected).toBe(false);
   });
 
@@ -307,48 +307,44 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
     });
 
     expect(wsInstances).toHaveLength(1);
-    expect(result.current.reconnectExhausted).toBe(false);
+    expect(result.current.connectionRejection).toBeNull();
   });
 
-  it("reconnects immediately with a reset counter when the tab becomes visible after reconnectExhausted", () => {
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
+  it("reconnects immediately with a reset backoff when the tab becomes visible after a long outage", () => {
+    renderHook(() => useWsRuntime("agent-1"));
     const ws1 = latestWs();
 
     act(() => {
       ws1.simulateOpen();
     });
 
-    // Exhaust all MAX_RECONNECT_ATTEMPTS (10) + the original connection,
-    // exactly like the canonical reconnectExhausted test — all while visible.
+    // A long outage while visible: the backoff has reached its cap.
     for (let i = 0; i < 10; i++) {
       const ws = latestWs();
       act(() => {
         ws.simulateClose();
       });
       act(() => {
-        vi.advanceTimersByTime(5000);
+        vi.advanceTimersByTime(15_000);
       });
     }
     const lastWs = latestWs();
     act(() => {
       lastWs.simulateClose();
     });
+    const countAtOutage = wsInstances.length;
 
-    expect(result.current.reconnectExhausted).toBe(true);
-    const countAtExhaustion = wsInstances.length;
-
-    // Tab becomes visible (e.g. the user switches back after the dead-end) —
-    // must recover instantly, not stay stuck.
+    // Tab becomes visible (the user switches back) — must dial instantly
+    // instead of waiting out the pending backoff.
     act(() => {
       setVisibility("visible");
     });
 
-    expect(result.current.reconnectExhausted).toBe(false);
-    expect(wsInstances.length).toBeGreaterThan(countAtExhaustion);
+    expect(wsInstances.length).toBeGreaterThan(countAtOutage);
   });
 
-  it("keeps retrying at the capped 5s interval through a simulated ~20s outage after becoming visible, without premature exhaustion", () => {
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
+  it("keeps retrying at the capped 15s interval through a simulated ~60s outage after becoming visible", () => {
+    renderHook(() => useWsRuntime("agent-1"));
     const ws1 = latestWs();
 
     act(() => {
@@ -369,26 +365,26 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
 
     expect(wsInstances.length).toBeGreaterThan(1);
 
-    // Simulate a ~20s outage: every reconnect attempt immediately fails.
+    // Simulate a ~60s outage: every reconnect attempt immediately fails.
+    const countBeforeOutage = wsInstances.length;
     let elapsed = 0;
-    while (elapsed < 20_000) {
+    while (elapsed < 60_000) {
       const ws = latestWs();
       act(() => {
         ws.simulateClose();
       });
-      // Capped backoff — never exceeds 5s regardless of attempt count.
+      // Capped backoff — never exceeds 15s regardless of attempt count.
       act(() => {
-        vi.advanceTimersByTime(5000);
+        vi.advanceTimersByTime(15_000);
       });
-      elapsed += 5000;
+      elapsed += 15_000;
     }
 
-    // 20s / 5s-cap is well within the 10-attempt budget — must not be
-    // exhausted yet.
-    expect(result.current.reconnectExhausted).toBe(false);
+    // Every failure was followed by another dial: there is no budget to spend.
+    expect(wsInstances.length).toBe(countBeforeOutage + 4);
   });
 
-  it("restarts the full backoff budget on return from a grace-period close, even if the counter was already exhausted before going hidden", () => {
+  it("restarts the backoff on return from a grace-period close, after a long outage", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws1 = latestWs();
 
@@ -396,22 +392,20 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
       ws1.simulateOpen();
     });
 
-    // Exhaust while visible, exactly like the canonical reconnectExhausted
-    // test — the counter is now pinned at MAX_RECONNECT_ATTEMPTS and the
-    // socket is gone (no ws instance left connected).
+    // A long outage while visible: the backoff sits at its cap and the
+    // socket is gone.
     for (let i = 0; i < 10; i++) {
       const ws = latestWs();
       act(() => {
         ws.simulateClose();
       });
       act(() => {
-        vi.advanceTimersByTime(5000);
+        vi.advanceTimersByTime(15_000);
       });
     }
     act(() => {
       latestWs().simulateClose();
     });
-    expect(result.current.reconnectExhausted).toBe(true);
     const countBeforeHidden = wsInstances.length;
 
     // Now the tab goes hidden past the grace period — suspendForPageLifecycle
@@ -425,35 +419,26 @@ describe("useWsRuntime — visibility-driven reconnect lifecycle (#895)", () => 
       vi.advanceTimersByTime(FIVE_MINUTES_MS);
     });
 
-    // Tab becomes visible again, but the server is STILL down. Without the
-    // counter reset, the very first reconnect attempt here would fail and
-    // immediately re-flip reconnectExhausted (stale count already at MAX).
+    // Tab becomes visible again, but the server is STILL down. The backoff
+    // restarted: the first failure here waits ~1s, not the stale 15s.
     act(() => {
       setVisibility("visible");
     });
-    expect(result.current.reconnectExhausted).toBe(false);
     expect(wsInstances.length).toBeGreaterThan(countBeforeHidden);
-
-    // Drive several more failed attempts at the capped 5s interval — the
-    // budget must have restarted from zero, so reconnectExhausted must stay
-    // false well past what a single stale attempt would have allowed.
-    for (let i = 0; i < 5; i++) {
-      const ws = latestWs();
-      act(() => {
-        ws.simulateClose();
-      });
-      act(() => {
-        vi.advanceTimersByTime(5000);
-      });
-      expect(result.current.reconnectExhausted).toBe(false);
-    }
+    const countAfterReturn = wsInstances.length;
+    act(() => {
+      latestWs().simulateClose();
+    });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(wsInstances.length).toBe(countAfterReturn + 1);
 
     // A successful open fully recovers the connection.
     act(() => {
       latestWs().simulateOpen();
     });
     expect(result.current.isConnected).toBe(true);
-    expect(result.current.reconnectExhausted).toBe(false);
   });
 
   it("visible just before the grace period elapses cancels the pending grace close", () => {

@@ -270,18 +270,27 @@ export const ThreadWelcome: FC = () => {
 
   if (chatStatus.kind === "unavailable") {
     const { reason } = chatStatus;
+    // The banner under the thread carries the detail and the buttons; this is
+    // the headline for an empty thread. Nothing here asks for a reload — we
+    // keep retrying (#1422).
     const message =
       reason === "disconnected"
         ? "Reconnecting to the agent..."
-        : reason === "configuring"
-          ? "Just a moment — getting things ready..."
-          : "We couldn't reconnect. Please reload to continue.";
+        : reason === "offline"
+          ? "You're offline."
+          : reason === "rejected"
+            ? "Waiting for a free connection..."
+            : reason === "upstreamDown"
+              ? "Waiting for the agent to come back..."
+              : reason === "unreachable"
+                ? "Still trying to reach Pinchy..."
+                : "Just a moment — getting things ready...";
 
     return (
       <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
         <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
           <div className="flex flex-col items-center gap-3">
-            {reason === "disconnected" && (
+            {reason !== "configuring" && reason !== "offline" && (
               <div
                 data-testid="loading-spinner"
                 className="size-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground"

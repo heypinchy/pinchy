@@ -54,12 +54,13 @@ type Paths = { chat: string; sharedAgent: string };
 type Target = { name: string; path: (paths: Paths) => string; ready: Ready };
 
 /**
- * This stack runs no OpenClaw, so the thread settles on "Reconnecting to the
- * agent..." about 2s after the composer appears (the disconnect hysteresis).
+ * This stack runs no OpenClaw: the socket opens, but the server reports the
+ * agent runtime down, so the thread settles on "Waiting for the agent to come
+ * back..." about 2s after the composer appears (the disconnect hysteresis).
  * Waiting for that end state scans the same page every run, instead of
- * whichever of "Starting agent..." and "Reconnecting..." axe happens to catch.
+ * whichever of "Starting..." and the outage state axe happens to catch.
  */
-const chatReady: Ready = (page) => page.getByText("Reconnecting to the agent...");
+const chatReady: Ready = (page) => page.getByText("Waiting for the agent to come back...");
 
 const ADMIN_PAGES: Target[] = [
   {
