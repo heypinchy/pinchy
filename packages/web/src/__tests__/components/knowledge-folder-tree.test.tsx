@@ -405,6 +405,30 @@ describe("countText", () => {
     ).toBe("1105 of 1105 files searchable · 428 archived files queued");
   });
 
+  // Documents of files deleted since the last run stay in the index until the
+  // run ends, so the index can hold more than the run found: never "1105 of 1102".
+  it("does not count documents of files the run no longer found", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "searchable",
+          indexed: 1105,
+          searchable: 1105,
+          expected: 1102,
+          pending: 427,
+          pendingArchived: 427,
+          expectedArchived: 427,
+        })
+      )
+    ).toBe("1102 of 1102 files searchable · 427 archived files queued");
+    expect(
+      countText(
+        folder({ path: "/a", state: "searchable", indexed: 42, searchable: 42, expected: 40 })
+      )
+    ).toBe("40 of 40 files searchable");
+  });
+
   // While a folder's current files are still being read, count against them:
   // the archive comes last and is counted apart, so the row doesn't sit at
   // "677 of 1105 files done" long after the last current file is in.
