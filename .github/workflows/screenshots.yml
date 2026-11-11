@@ -32,7 +32,11 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
 
+      # Rendered screenshots depend on the fonts `playwright install-deps`
+      # adds, so this job installs them even when Chromium would launch without.
       - uses: ./.github/actions/setup-playwright
+        with:
+          system-deps: always
 
       - name: Install Geist font
         run: |
