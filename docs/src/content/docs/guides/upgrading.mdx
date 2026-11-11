@@ -286,6 +286,14 @@ A document that came to more than about 8,000 passages — a long manual, a larg
 
 Each chat you visit keeps its own connection to Pinchy while you move on, and Pinchy allows ten per person across all devices and tabs. A few agents on a desktop and a few on a phone could use them all up, and chat then refused to connect. A tab now keeps at most three idle chats connected and closes the one you looked at longest ago first; a chat that is still answering is never closed. One you come back to after it was dropped reconnects and loads its history as usual. Nothing to configure.
 
+#### TIFF scans, plain text and macro-enabled Word files are indexed
+
+The knowledge base now indexes scanned TIFF images (`.tif`, `.tiff`, multi-page ones included), plain text files (`.txt`) and macro-enabled Word documents (`.docm`). Until now the **Index** section counted them as not supported and listed them in its download. Nothing to do on upgrade: the next reindex — the nightly one or **Reindex now** — reads them, and they drop off that list.
+
+A TIFF holds images only, so every page of one is sent to your vision model, exactly like a page of a scanned PDF — the one part of indexing that sends document content to your model provider, see [What indexing sends to your provider](/guides/mount-data-directories/#what-indexing-sends-to-your-provider). On a share with many TIFF scans, the first reindex after the upgrade sends all of them, and the reindex entry in the audit trail counts them in `ocr`. If that isn't acceptable, set `PINCHY_KB_OCR=off` before you upgrade: the TIFFs are then listed as `unsearchable` instead. A citation from a TIFF opens on the page the passage came from.
+
+A `.txt` is read in the encoding it was saved in, so a file from Windows Notepad keeps its umlauts. A `.docm` is converted like a `.docx`, and its macros never run. See [Supported file types](/guides/mount-data-directories/#supported-file-types) for both, and for the size limits.
+
 #### A knowledge base inside an archive folder is no longer hidden
 
 The archive rule (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)) read the whole path of a document, including the folders above the one an agent is granted. An agent granted a folder that is itself called `Archiv`, or sits below one — `/data/Archiv/Projekte` — therefore had every document marked archived, and everyday search found nothing. The rule now reads only the path inside the granted folder. Nothing to do on upgrade: the next index run — the nightly one, or **Reindex now** — marks those documents current again without reading them a second time. When two agents are granted nested folders, the folder granted further down decides for both.

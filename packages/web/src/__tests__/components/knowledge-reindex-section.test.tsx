@@ -216,6 +216,17 @@ describe("KnowledgeReindexSection", () => {
       expect(screen.getByText(/2 files are of a type pinchy can't read/i)).toBeInTheDocument();
     });
 
+    it("does not give a type the index reads as an example of one it can't (#1409)", async () => {
+      // Scans saved as .tif are read since #1409; naming them here would send
+      // an admin off converting files that already answer.
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 2 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      const note = await screen.findByText(/2 files are of a type pinchy can't read/i);
+      expect(note.textContent).not.toMatch(/\.tiff?\b|\.txt\b/i);
+    });
+
     it("speaks of one file in the singular", async () => {
       mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 1 } }) });
 
