@@ -81,6 +81,33 @@ describe("runSoffice", () => {
     expect(argv.slice(-2)).toEqual([join(tmpRoot, "0.doc"), join(tmpRoot, "1.pptx")]);
   });
 
+  it("asks for an OOXML workbook, not a PDF, for a batch of legacy workbooks (#1373)", async () => {
+    // A sheet has no pages: rendering one to PDF clips the columns the
+    // cell-based reader exists to keep. `.xls` becomes `.xlsx` instead, by
+    // Calc's own export filter, and the reader opens that.
+    const record = join(tmpRoot, "argv");
+    process.env.KB_SOFFICE_BIN = stub("soffice-argv", `printf '%s\\n' "$@" > ${record}\n`);
+
+    await run({ inputs: [join(tmpRoot, "0.xls"), join(tmpRoot, "1.XLS")] });
+
+    const argv = (await readFile(record, "utf8")).trim().split("\n");
+    expect(argv[argv.indexOf("--convert-to") + 1]).toBe("xlsx:Calc MS Excel 2007 XML");
+  });
+
+  it("refuses a batch that mixes workbooks with page-shaped documents", async () => {
+    // One `--convert-to` per process, so one target per batch. A mixed batch
+    // would turn the workbook into a PDF, or the document into a workbook —
+    // the converter's caller groups by target, and this is what holds it to
+    // that rather than a guess.
+    const record = join(tmpRoot, "argv");
+    process.env.KB_SOFFICE_BIN = stub("soffice-argv", `printf '%s\\n' "$@" > ${record}\n`);
+
+    await expect(run({ inputs: [join(tmpRoot, "0.doc"), join(tmpRoot, "1.xls")] })).rejects.toThrow(
+      /mix/
+    );
+    await expect(readFile(record, "utf8")).rejects.toThrow();
+  });
+
   it("hands the converter a minimal environment, not the server's secrets", async () => {
     // LibreOffice parses attacker-supplied legacy binary formats — a format
     // family with a long history of memory-safety bugs. It has no business

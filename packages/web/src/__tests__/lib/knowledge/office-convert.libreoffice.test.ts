@@ -32,6 +32,7 @@ import {
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
 import { assembleZip, deflatedPart, rawPart, readZipEntries } from "@/lib/knowledge/office-zip";
 import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
+import { extractXlsx } from "@/lib/knowledge/xlsx-extract";
 
 const SOFFICE = process.env.KB_SOFFICE_BIN || "soffice";
 const hasSoffice = spawnSync(SOFFICE, ["--version"], { stdio: "ignore" }).status === 0;
@@ -483,6 +484,39 @@ describe.skipIf(!hasSoffice)("convertOfficeFiles against a real LibreOffice", ()
     expect(stderr).toMatch(/impl_store <file:[^>]*\/0\.pdf> failed:.*Error Area:Io/);
     expect(outcomes[0].status).toBe("failed");
     expect(outcomes[0].artifactPath).toBeUndefined();
+  }, 180_000);
+
+  it("turns a legacy .xls into a workbook that keeps every sheet and cell (#1373)", async () => {
+    // The checked-in fixture is a real BIFF8 file with two sheets and
+    // diacritics in a cell. It was made with exceljs and then saved as `.xls`
+    // by LibreOffice itself (`soffice --headless --convert-to xls`), because
+    // no maintained npm package writes BIFF: SheetJS, the one that would, is
+    // the dependency this conversion exists to avoid.
+    mkdirSync(corpusDir, { recursive: true });
+    const legacy = join(corpusDir, "Preise.xls");
+    await writeFile(
+      legacy,
+      await readFile(join(__dirname, "../../fixtures/kb/office/legacy-workbook.xls"))
+    );
+    const store = new OfficeArtifactStore(join(tmpRoot, "artifacts-xls"));
+
+    const [outcome] = await convertOfficeFiles([{ absPath: legacy }], { store });
+
+    expect(outcome.status).toBe("converted");
+    // A workbook, not a PDF: a sheet citation needs sheets and rows, and a
+    // PDF's page breaks would cut wide rows apart.
+    expect(outcome.artifactPath!.endsWith(".xlsx")).toBe(true);
+    const workbook = await extractXlsx(outcome.artifactPath!);
+    expect(workbook.sheets).toEqual(["Preise", "Lager"]);
+    const preise = workbook.chunks.filter((chunk) => chunk.sheet === "Preise");
+    expect(preise.map((chunk) => chunk.text).join("\n")).toContain("Schraube Größe M4");
+    // Row 1 is the header the labels come from; the cited rows are the data
+    // rows below it, numbered as Excel's own gutter numbers them.
+    expect(preise.map(({ startRow, endRow }) => ({ startRow, endRow }))).toEqual([
+      { startRow: 2, endRow: 3 },
+    ]);
+    const lager = workbook.chunks.filter((chunk) => chunk.sheet === "Lager");
+    expect(lager.map((chunk) => chunk.text).join("\n")).toContain("4200");
   }, 180_000);
 
   it("serves the stored artifact on the second run without touching LibreOffice again", async () => {

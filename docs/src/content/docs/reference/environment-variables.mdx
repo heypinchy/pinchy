@@ -151,16 +151,16 @@ A change takes effect when the container is recreated. `docker compose up -d` do
 
 Every container carries a memory and CPU cap so one runaway agent cannot take the host down with it. The defaults add up to about 5 GB; on a smaller host, lower them as [Sizing your host](/guides/customizing-deployment/#sizing-your-host) describes.
 
-| Variable                     | Default | What it does                                                             |
-| ---------------------------- | ------- | ------------------------------------------------------------------------ |
-| `PINCHY_MEM_LIMIT`           | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge)        |
-| `PINCHY_CPUS`                | `1.5`   | CPU cores for `pinchy`                                                   |
-| `OFFICE_CONVERTER_MEM_LIMIT` | `1g`    | Memory for the `office-converter` container (Word and PowerPoint to PDF) |
-| `OFFICE_CONVERTER_CPUS`      | `1`     | CPU cores for `office-converter`                                         |
-| `OPENCLAW_MEM_LIMIT`         | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)         |
-| `OPENCLAW_CPUS`              | `2`     | CPU cores for `openclaw`                                                 |
-| `DB_MEM_LIMIT`               | `1g`    | Memory for the `db` container (PostgreSQL 17 + pgvector)                 |
-| `DB_CPUS`                    | `1`     | CPU cores for `db`                                                       |
+| Variable                     | Default | What it does                                                                                |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `PINCHY_MEM_LIMIT`           | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge)                           |
+| `PINCHY_CPUS`                | `1.5`   | CPU cores for `pinchy`                                                                      |
+| `OFFICE_CONVERTER_MEM_LIMIT` | `1g`    | Memory for the `office-converter` container (Word and PowerPoint to PDF, `.xls` to `.xlsx`) |
+| `OFFICE_CONVERTER_CPUS`      | `1`     | CPU cores for `office-converter`                                                            |
+| `OPENCLAW_MEM_LIMIT`         | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)                            |
+| `OPENCLAW_CPUS`              | `2`     | CPU cores for `openclaw`                                                                    |
+| `DB_MEM_LIMIT`               | `1g`    | Memory for the `db` container (PostgreSQL 17 + pgvector)                                    |
+| `DB_CPUS`                    | `1`     | CPU cores for `db`                                                                          |
 
 `PINCHY_CPUS` also decides how many threads the knowledge base's embedding model gets; [CPU when the knowledge base embeds](/guides/customizing-deployment/#cpu-when-the-knowledge-base-embeds) explains how, and how to set `KB_EMBEDDING_THREADS` through an override file when your host hides its CPU limit from the container.
 

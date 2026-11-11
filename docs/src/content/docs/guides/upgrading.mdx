@@ -216,7 +216,7 @@ If you keep local changes in a `docker-compose.override.yml`, they carry over as
 
 #### Files that aren't documents no longer count as "not supported"
 
-The knowledge-base **Index** section used to report every file it couldn't index as "not supported", including drivers, programs, `.json` exports and firmware images. It now counts those as `ignored (not documents)` and reports only documents it can't read yet as not supported — an `.rtf` note, an old `.xls`, a `.jpg` scan. Nothing is hidden: **Download the list** still names both, with a new `status` column (`not supported yet` or `ignored`). Runs from before the upgrade are split the same way when you open them, so you don't need to reindex. If a script reads the CSV by column position, it now gets three columns; the reindex API adds `counts.ignored`, and `counts.unsupported` no longer includes those files. See [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read).
+The knowledge-base **Index** section used to report every file it couldn't index as "not supported", including drivers, programs, `.json` exports and firmware images. It now counts those as `ignored (not documents)` and reports only documents it can't read yet as not supported — an `.rtf` note, a binary `.xlsb` workbook, a `.jpg` scan. Nothing is hidden: **Download the list** still names both, with a new `status` column (`not supported yet` or `ignored`). Runs from before the upgrade are split the same way when you open them, so you don't need to reindex. If a script reads the CSV by column position, it now gets three columns; the reindex API adds `counts.ignored`, and `counts.unsupported` no longer includes those files. See [Files Pinchy can't read](/guides/create-knowledge-base-agent/#files-pinchy-cant-read).
 
 #### Word and PowerPoint files are converted in a container of their own
 
@@ -224,7 +224,7 @@ Word documents and slide decks are converted to PDF in a service of their own, `
 
 There is nothing extra to pull: the converter runs from the same image as `pinchy`. It gets its own memory ceiling, `OFFICE_CONVERTER_MEM_LIMIT` (default `1g`), so a large conversion doesn't compete with the web app — see [Memory when the knowledge base indexes Office documents](/guides/customizing-deployment/#memory-when-the-knowledge-base-indexes-office-documents).
 
-It needs the new `docker-compose.yml` from the upgrade notes above. Without it, Pinchy does not fall back to converting on its own: Word and PowerPoint files are counted `failed` in the reindex report, keep whatever they had in the index, and the server log says `office converter is not reachable`. Fetch the file, run `docker compose up -d`, and the next reindex picks them up.
+It needs the new `docker-compose.yml` from the upgrade notes above. Without it, Pinchy does not fall back to converting on its own: Word, PowerPoint and `.xls` files are counted `failed` in the reindex report, keep whatever they had in the index, and the server log says `office converter is not reachable`. Fetch the file, run `docker compose up -d`, and the next reindex picks them up.
 
 #### Web agents can fetch pages without a search provider
 
@@ -297,6 +297,12 @@ Pinchy now measures the free disk space where it writes. When any of those place
 #### Very long documents are indexed instead of failing every night
 
 A document that came to more than about 8,000 passages — a long manual, a large scanned archive — could not be saved to the knowledge base: the reindex report counted it `failed`, it kept whatever it had in the index, and the next run read it again, scanned pages included, and failed the same way. Since v0.10.2 [cuts passages too long for the embedding model](#one-file-the-embedding-model-refuses-no-longer-stops-a-reindex) into smaller ones, more documents reach that size. They are now saved like any other. Nothing to do on upgrade: the next reindex picks them up.
+
+#### Older `.xls` workbooks are indexed
+
+The knowledge base now reads `.xls` workbooks, not just `.xlsx` and `.xlsm`. The `office-converter` container turns each one into an `.xlsx`, never a PDF, and from there it is read like any other workbook: citations name the sheet and the rows, and the original `.xls` stays where it is. Nothing to do on upgrade. Each agent's next run picks up the `.xls` files it used to count as not supported, and they drop off the **Download the list** CSV. For an agent with knowledge search, the nightly run is enough; any other agent needs **Reindex now**.
+
+Only a real legacy Excel file is converted. An HTML or XML table that an export tool saved under an `.xls` name is listed as `unsearchable` instead, and so is an `.xls` over 200 MB — see [Supported file types](/guides/mount-data-directories/#supported-file-types). The image grows by about 45 MB for the spreadsheet part of LibreOffice, which the converter needs for this.
 
 #### A tab no longer holds twenty chat connections open
 
