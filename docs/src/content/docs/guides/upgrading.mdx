@@ -220,6 +220,10 @@ It needs the new `docker-compose.yml` from the upgrade notes above. Without it, 
 
 Agents created from a web template, such as the Market & News Monitor, used to get no web tools at all on an instance without a Brave Search API key: the tools were granted, but the plugin behind them never loaded, and nothing said so. They now load either way. **Fetch web pages** works without a key, and **Search the web** answers that web search isn't configured until an admin adds one in **Settings → Integrations**. The create form and the agent's **Web Search** section say when search isn't set up. Nothing to do on upgrade; existing web agents gain page fetching on their own.
 
+#### Only web search can read the Brave Search key
+
+An agent allowed only to **Fetch web pages** could ask Pinchy for the instance's Brave Search API key, though fetching a page never uses it. Pinchy now hands the key only to agents allowed to **Search the web**. A fetch-only agent that asks is refused, and the audit trail records it as `integration.credentials_denied` with the reason `not-granted`. Fetching and searching work as before. Nothing to do on upgrade.
+
 #### Pinchy's own requests after an address check pin the address
 
 The address checks for Odoo, mail servers and OpenAI-compatible providers resolve the hostname, and the client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool already pinned the address it checked. From this release, so do the requests Pinchy makes itself right after a check: the mail **Test connection**, listing Odoo databases, and an OpenAI-compatible provider's model discovery and key check. Those also no longer contact a name that doesn't resolve. Everything else still looks the name up again: the agent's Odoo and mail tools, the agent runtime's requests to a provider, and Pinchy's other Odoo requests (testing credentials, previewing and syncing the schema). Nothing to configure.
