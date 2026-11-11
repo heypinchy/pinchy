@@ -113,6 +113,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
+import { writeIdentityFile } from "@/lib/workspace";
 
 function mockAgent(agent: Record<string, unknown>) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -521,5 +522,227 @@ describe("PATCH /api/agents/[agentId] — the permission-change config push", ()
       .filter((entry) => entry.eventType === "agent.updated");
     expect(rows).toHaveLength(1);
     expect(rows[0].outcome).toBe("success");
+  });
+});
+
+// The settings page saves the Permissions and Access tabs in ONE PATCH:
+// `allowedTools`/`pluginConfig` and `groupIds` together. The group replace ran
+// only after `updateAgent` returned, so when updateAgent's runtime push threw,
+// the handler answered "Settings were saved" and returned before the group
+// rows were touched. The admin was told the access change landed; it had not,
+// and the failure audit row could not say otherwise because it never knew.
+describe("PATCH /api/agents/[agentId] — group change alongside a failed runtime push", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  const EXISTING = {
+    id: "agent-1",
+    name: "Penny",
+    model: "old",
+    allowedTools: [],
+    isPersonal: false,
+    ownerId: null,
+  };
+
+  function patchToolsAndGroups() {
+    return new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ allowedTools: ["email_read"], groupIds: ["group-sales"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  async function runWithUpdateAgentRejecting(err: unknown) {
+    adminSession();
+    mockAgent(EXISTING);
+    vi.mocked(updateAgent).mockRejectedValueOnce(err);
+    // The group-name lookup for the audit diff. Queued only when the route
+    // gets that far: an unconsumed once-value survives vi.clearAllMocks and
+    // would answer the next test's first query.
+    if (err instanceof AgentRuntimeUpdateError) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: "group-sales", name: "Sales" }]),
+        }),
+      } as never);
+    }
+
+    const res = await PATCH(patchToolsAndGroups(), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    await flushAfter();
+    return res;
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  it("applies the group replace before answering 'Settings were saved'", async () => {
+    const res = await runWithUpdateAgentRejecting(runtimeFailure());
+
+    expect(res.status).toBe(500);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/saved/i);
+    // The claim above covers the groups only if they were really written.
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.insert).toHaveBeenCalled();
+    const values = vi.mocked(db.insert).mock.results[0].value.values as ReturnType<typeof vi.fn>;
+    expect(values).toHaveBeenCalledWith([{ agentId: "agent-1", groupId: "group-sales" }]);
+  });
+
+  it("records the group diff on the failure audit row", async () => {
+    await runWithUpdateAgentRejecting(runtimeFailure());
+
+    const rows = vi
+      .mocked(appendAuditLog)
+      .mock.calls.map(([entry]) => entry)
+      .filter((entry) => entry.eventType === "agent.updated");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].outcome).toBe("failure");
+    expect(rows[0].detail).toMatchObject({
+      changes: { allowedTools: { to: ["email_read"] } },
+      allowedGroups: { added: [{ id: "group-sales", name: "Sales" }], removed: [] },
+      runtimeUpdate: { applied: false },
+    });
+  });
+
+  it("recalculates the Telegram allow-stores for the committed group change", async () => {
+    await runWithUpdateAgentRejecting(runtimeFailure());
+
+    expect(recalculateTelegramAllowStores).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not try the second push once the first one has failed", async () => {
+    // One failure, one answer: a second attempt that happened to succeed would
+    // not make the first one's runtime state current, and a second failure
+    // would only repeat the message.
+    await runWithUpdateAgentRejecting(runtimeFailure());
+
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+  });
+
+  it("leaves the groups alone when the row write itself failed", async () => {
+    // The response then says nothing was stored — so nothing may be.
+    const res = await runWithUpdateAgentRejecting(new Error("connection terminated unexpectedly"));
+
+    expect(res.status).toBe(500);
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(recalculateTelegramAllowStores).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/agents/[agentId] — a later step fails after a held runtime failure", () => {
+  // The runtime failure is held so the group replace can still run. That
+  // means the steps between the hold and the answer run with a failure
+  // already owed to the caller — and if one of them throws, the held answer
+  // must still go out. Escaping instead hands Next.js a blank 500 with no
+  // audit row, for an agent row that is already committed.
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  function patch(body: Record<string, unknown>) {
+    return new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  it("still answers readably and audits when the group replace fails", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", allowedTools: [] });
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
+    // A group deleted since the page loaded: the FK rejects the insert.
+    vi.mocked(db.transaction).mockRejectedValueOnce(
+      new Error('insert violates foreign key constraint "agent_groups_group_id_fkey"')
+    );
+
+    const res = await PATCH(patch({ allowedTools: ["email_read"], groupIds: ["group-gone"] }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    await flushAfter();
+
+    expect(res.status).toBe(500);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/runtime was not updated/i);
+    // The group change did NOT land, so the answer must not imply it did.
+    expect(error).toMatch(/group.*not saved/i);
+
+    const rows = vi.mocked(appendAuditLog).mock.calls.map(([entry]) => entry);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ eventType: "agent.updated", outcome: "failure" });
+    expect(rows[0].detail).toMatchObject({
+      changes: { allowedTools: { to: ["email_read"] } },
+      runtimeUpdate: { applied: false },
+    });
+    // No group diff: nothing about the groups changed.
+    expect(rows[0].detail).not.toHaveProperty("allowedGroups");
+  });
+
+  it("keeps the group diff and the Telegram recalc when only the identity write fails", async () => {
+    // The settings page sends the General and Access tabs in one PATCH. A full
+    // or unwritable workspace breaks the runtime push AND the IDENTITY.md
+    // write, while the group replace commits on its own volume — so the
+    // committed membership change must still reach the audit row and the
+    // Telegram allow-stores.
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", allowedTools: [] });
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
+    vi.mocked(writeIdentityFile).mockImplementationOnce(() => {
+      throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "group-sales", name: "Sales" }]),
+      }),
+    } as never);
+
+    const res = await PATCH(patch({ name: "Penelope", groupIds: ["group-sales"] }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    await flushAfter();
+
+    expect(res.status).toBe(500);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/ENOSPC/);
+    expect(error).not.toMatch(/group.*not saved/i);
+    expect(recalculateTelegramAllowStores).toHaveBeenCalledTimes(1);
+    const rows = vi.mocked(appendAuditLog).mock.calls.map(([entry]) => entry);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].detail).toMatchObject({
+      allowedGroups: { added: [{ id: "group-sales", name: "Sales" }], removed: [] },
+    });
+  });
+
+  it("still answers readably and audits when the identity file write fails", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Penny", model: "old", allowedTools: [] });
+    vi.mocked(updateAgent).mockRejectedValueOnce(runtimeFailure());
+    vi.mocked(writeIdentityFile).mockImplementationOnce(() => {
+      throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    });
+
+    const res = await PATCH(patch({ name: "Penelope" }), {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    await flushAfter();
+
+    expect(res.status).toBe(500);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/runtime was not updated/i);
+    expect(error).toMatch(/ENOSPC/);
+
+    const rows = vi.mocked(appendAuditLog).mock.calls.map(([entry]) => entry);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ eventType: "agent.updated", outcome: "failure" });
+    expect(rows[0].detail).toMatchObject({ changes: { name: { from: "Penny", to: "Penelope" } } });
   });
 });
