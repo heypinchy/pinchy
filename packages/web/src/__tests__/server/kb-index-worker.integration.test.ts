@@ -514,13 +514,17 @@ describe("kb index worker", () => {
 
     const job = await getLatestIndexJobForAgent(agent.id);
     expect(job?.status).toBe("failed");
-    expect(job?.error).toMatch(/None of the granted folders could be read/);
+    // The admin reads which folder, and what is wrong with it (#1363) — not
+    // "none of the granted folders", which left them to work out which one.
+    expect(job?.error).toContain(`Folder not found: ${join(tmpRoot, "not-mounted")}`);
+    expect(job?.error).toMatch(/Allowed Directories/);
     const [row] = await reindexAuditRows();
     expect(row.outcome).toBe("failure");
     expect((row.detail as { reason?: string }).reason).toMatch(
       /None of the granted folders could be read/
     );
-    // A folder path can embed a username; the server log names it, the row does not.
+    // A folder path can embed a username; the job the admin reads names it,
+    // the HMAC-chained row — which can never be rewritten — does not.
     expect(JSON.stringify(row.detail)).not.toContain(tmpRoot);
   });
 
@@ -703,7 +707,7 @@ describe("kb index worker", () => {
       const ran = await runNextIndexJob({ deps: fakeDeps() });
 
       expect(ran?.status).toBe("failed");
-      expect(ran?.error).toMatch(/None of the granted folders could be read/);
+      expect(ran?.error).toContain(`${share} came up empty`);
       expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(
         1
       );
@@ -727,7 +731,7 @@ describe("kb index worker", () => {
       const ran = await runNextIndexJob({ deps: fakeDeps() });
 
       expect(ran?.status).toBe("failed");
-      expect(ran?.error).toMatch(/None of the granted folders could be read/);
+      expect(ran?.error).toContain(`${share} came up empty`);
       expect(await db.select().from(kbDocuments).where(eq(kbDocuments.orgId, ORG_ID))).toHaveLength(
         1
       );

@@ -26,6 +26,10 @@ import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
+import {
+  describeUnavailableFolders,
+  type UnavailableFolder,
+} from "@/lib/knowledge/unavailable-folders";
 import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
@@ -143,12 +147,23 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
 }
 
 /**
- * Why a run that found none of its folders failed. Shown to the admin as the
- * run's error and recorded as the audit reason, so it names what to check and
- * never a path.
+ * Why a run that found none of its folders failed, as the audit row records
+ * it: what to check, never a path — a folder name can embed a person's name,
+ * and the row can never be rewritten. The admin reads the run's own error
+ * instead, which names the folders (describeUnavailableFolders, #1363).
  */
 export const FOLDERS_UNAVAILABLE_ERROR =
   "None of the granted folders could be read — they were missing, unreadable, or came up empty while the index still holds their documents — so the index was left as it was. If they live on a network share, check that it is mounted.";
+
+/**
+ * Thrown when every root was skipped. Carries the text the admin reads, which
+ * names the folders, apart from the path-free audit reason.
+ */
+class FoldersUnavailableError extends Error {
+  constructor(readonly forAdmin: string) {
+    super(FOLDERS_UNAVAILABLE_ERROR);
+  }
+}
 
 export interface RunIndexJobOptions {
   /** Test seam: injects a deterministic embedder/extractor. Production resolves them from the bundled in-process embeddinggemma GGUF. */
@@ -179,11 +194,12 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   const ocrTally: { current: OcrTally | null } = { current: null };
   // Folders ingest left as they were: granted roots it could not read or that
   // came up emptied, and emptied folders below a root. Counted onto the job and
-  // the outcome row; the paths themselves go to the server log only, like
-  // every other path ingest reports. `skippedRoots` alone decides whether the
-  // run read anything at all.
+  // the outcome row, never named there. `skippedRoots` decides whether the run
+  // read anything at all, and when it read nothing, its roots are what the
+  // admin's error names — the job row, which the admin reads and which is
+  // replaced by the next run, not the audit row (#1363).
   let unavailableFolders = 0;
-  let skippedRoots = 0;
+  const skippedRoots: UnavailableFolder[] = [];
   // Files refused because their path no longer led to a regular file inside
   // the folder (swapped for a link or a non-file, or reached through a folder
   // swapped for a link) — never a file merely saved again since the walk.
@@ -206,7 +222,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
         recordIndexJobFolderPlan(job.id, buildFolderPlan(job.paths, queuePaths)),
       onSkippedRoot: (rootDir, reason) => {
         unavailableFolders++;
-        skippedRoots++;
+        skippedRoots.push({ path: rootDir, reason });
         console.warn(
           `[kb-index-worker] job ${job.id}: skipped ${oneLine(rootDir, LOG_PATH_MAX)} (${reason}); nothing under it was indexed or removed`
         );
@@ -233,8 +249,8 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     // Every folder skipped is not a run that found nothing — it is a run that
     // could not look. Reporting it as a success is how an unmounted share
     // would read "Last indexed automatically today" for weeks.
-    if (job.paths.length > 0 && skippedRoots === job.paths.length) {
-      throw new Error(FOLDERS_UNAVAILABLE_ERROR);
+    if (job.paths.length > 0 && skippedRoots.length === job.paths.length) {
+      throw new FoldersUnavailableError(describeUnavailableFolders(skippedRoots));
     }
   } catch (err) {
     // Ingest already absorbs a single unreadable file, or one whose values the
@@ -252,7 +268,8 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     // sweep) that the single-container design does not otherwise need — and a
     // database outage is already an operator's problem, not a queue's.
     const reason = safeProviderError(err instanceof Error ? err.message : "reindex_failed");
-    await finishIndexJob(job.id, { outcome: "failed", counts, error: reason, unavailableFolders });
+    const shown = err instanceof FoldersUnavailableError ? safeProviderError(err.forAdmin) : reason;
+    await finishIndexJob(job.id, { outcome: "failed", counts, error: shown, unavailableFolders });
     await recordOcrUsage(job, ocrTally.current);
     await auditOutcome({
       job,
@@ -264,7 +281,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
       unavailableFolders,
       refusedFiles,
     });
-    return { ...job, status: "failed", counts, error: reason, unavailableFolders };
+    return { ...job, status: "failed", counts, error: shown, unavailableFolders };
   }
 
   // `unsearchable` and `failed` files do not make this a failed run: the
