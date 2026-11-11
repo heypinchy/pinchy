@@ -3,7 +3,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { toast } from "sonner";
 import { AgentSettingsAccess } from "@/components/agent-settings-access";
+import { jsonResponse } from "@/test-helpers/fetch";
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() } }));
 
 describe("AgentSettingsAccess", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -19,12 +23,12 @@ describe("AgentSettingsAccess", () => {
 
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       if (String(url) === "/api/enterprise/status") {
-        return { ok: true, json: async () => ({ enterprise: true }) } as Response;
+        return jsonResponse({ enterprise: true });
       }
       if (String(url) === "/api/groups") {
-        return { ok: true, json: async () => mockGroups } as Response;
+        return jsonResponse(mockGroups);
       }
-      return { ok: false } as Response;
+      return jsonResponse(undefined, { status: 404 });
     });
   });
 
@@ -160,9 +164,9 @@ describe("AgentSettingsAccess", () => {
   it("should show enterprise feature card when enterprise is not active", async () => {
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       if (String(url) === "/api/enterprise/status") {
-        return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+        return jsonResponse({ enterprise: false });
       }
-      return { ok: false } as Response;
+      return jsonResponse(undefined, { status: 404 });
     });
 
     const onChange = vi.fn();
@@ -182,6 +186,42 @@ describe("AgentSettingsAccess", () => {
     expect(
       screen.getByText(/Control which users and groups can access this agent/)
     ).toBeInTheDocument();
+  });
+
+  // "Couldn't ask" is not "community": an enterprise admin whose status fetch
+  // was dropped by a restarting server must not be told to upgrade.
+  it.each([
+    ["the status fetch rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+    [
+      "the status fetch answers 500",
+      async () => jsonResponse({ error: "Internal Server Error" }, { status: 500 }),
+    ],
+  ])("does not render the upgrade card when %s", async (_label, statusResponse) => {
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/enterprise/status") return statusResponse();
+      return jsonResponse(undefined, { status: 404 });
+    });
+
+    render(
+      <AgentSettingsAccess
+        agent={{ visibility: "restricted" }}
+        currentGroupIds={[]}
+        onChange={vi.fn()}
+        isAdmin
+      />
+    );
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/license status/i),
+        expect.objectContaining({
+          id: expect.any(String),
+        })
+      );
+    });
+    expect(screen.queryByText("Access Control")).not.toBeInTheDocument();
+    expect(screen.queryByText("Pro")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
   });
 
   describe("Restricted with no group (#1278)", () => {
@@ -219,12 +259,12 @@ describe("AgentSettingsAccess", () => {
     it("points to both ways out when no group exists yet", async () => {
       vi.mocked(global.fetch).mockImplementation(async (url) => {
         if (String(url) === "/api/enterprise/status") {
-          return { ok: true, json: async () => ({ enterprise: true }) } as Response;
+          return jsonResponse({ enterprise: true });
         }
         if (String(url) === "/api/groups") {
-          return { ok: true, json: async () => [] } as Response;
+          return jsonResponse([]);
         }
-        return { ok: false } as Response;
+        return jsonResponse(undefined, { status: 404 });
       });
       render(
         <AgentSettingsAccess

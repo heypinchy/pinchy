@@ -38,7 +38,7 @@
  *  - the LIMITER map is still keyed per address (one noisy source must not
  *    lock out everyone else), but it evicts elapsed buckets and fails closed
  *    at a hard cap instead of growing per request;
- *  - the AUDIT window is GLOBAL, not keyed at all — AGENTS.md
+ *  - the AUDIT window is GLOBAL, not keyed at all — agent-rules/web-routes.md
  *    § "`/api/internal/` Is A Security Claim, Not A Folder Name" states the
  *    rule and `claimHostBlockSlot` (`@/server/host-check`) is the precedent:
  *    every `appendAuditLog` takes `pg_advisory_xact_lock` on one constant
@@ -175,7 +175,7 @@ export function trackedInvalidApiKeyIpCountForTest(): number {
  * `@/lib/api-auth`'s 401 branch — an unauthenticated caller must not get a
  * write into the audit table for free). Keying the window on the address
  * would reinstate exactly that: one row per source, and a distributed
- * key-guessing sweep mints as many sources as it likes. AGENTS.md
+ * key-guessing sweep mints as many sources as it likes. agent-rules/web-routes.md
  * § "`/api/internal/` Is A Security Claim, Not A Folder Name" writes the rule
  * down after `auth.host_blocked` hit it — a window keyed on a caller-supplied
  * value "grows per request and the throttle stops throttling" — and

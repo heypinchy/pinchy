@@ -30,11 +30,13 @@ import {
 import { toast } from "sonner";
 import { ShieldAlert, X } from "lucide-react";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
+import { useLicenseStatus } from "@/hooks/use-license-status";
 import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
 import { evaluateSeatPressure } from "@/lib/seat-grace";
 import { SALES_MAILTO, CALENDLY_URL } from "@/lib/conversion-links";
-import { apiPost, apiDelete, errorMessage } from "@/lib/api-client";
+import { apiGet, apiPost, apiDelete, errorMessage } from "@/lib/api-client";
+import type { EmailDelivery, SystemMailStatus } from "@/lib/schemas/system-mail";
 import type { AcknowledgeUserOriginInput, InviteUserInput } from "@/lib/schemas/users";
 
 interface SettingsUsersProps {
@@ -46,7 +48,7 @@ interface SettingsUsersProps {
  * Accounts neither the setup wizard nor a claimed invite created — in
  * practice, self-registered through the sign-up endpoint earlier releases left
  * open (GET /api/users flags them, lib/user-provenance.ts decides). Persistent
- * and actionable, so an inline banner rather than a toast (AGENTS.md "Error And
+ * and actionable, so an inline banner rather than a toast (agent-rules/ui.md "Error And
  * Notification UI"); dismissing it hides it for this visit only, because the
  * accounts are still there until someone deactivates them.
  */
@@ -182,10 +184,23 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [inviteOpen, setInviteOpen] = useState(false);
   const [seatLimitOpen, setSeatLimitOpen] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
+  const [resendDelivery, setResendDelivery] = useState<{
+    email: string;
+    delivery: EmailDelivery;
+  } | null>(null);
   const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
   const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
-  const [isEnterprise, setIsEnterprise] = useState(false);
-  const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
+  // Refreshed with the list (fetchUsers), since seat usage moves with it.
+  const { license, refetch: refetchLicense } = useLicenseStatus({
+    enabled: false,
+    notifyOnFailure: true,
+  });
+  // null = unknown: hide group features rather than claim there is no license.
+  const isEnterprise = license?.enterprise ?? null;
+  const seatInfo =
+    typeof license?.maxUsers === "number" && typeof license?.seatsUsed === "number"
+      ? { maxUsers: license.maxUsers, seatsUsed: license.seatsUsed }
+      : null;
   const [unknownOriginDismissed, setUnknownOriginDismissed] = useState(false);
   // "Mark as known" cannot be undone — the acknowledgement is an audit row and
   // nothing withdraws it — so it asks first, like Deactivate does.
@@ -202,15 +217,13 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
 
   const fetchUsers = useCallback(async () => {
     try {
-      const [usersRes, invitesRes, groupsData, enterpriseData] = await Promise.all([
+      const [usersRes, invitesRes, groupsData] = await Promise.all([
         fetch("/api/users"),
         fetch("/api/users/invites"),
         fetch("/api/groups")
           .then((r) => (r.ok ? r.json() : []))
           .catch(() => []),
-        fetch("/api/enterprise/status")
-          .then((r) => (r.ok ? r.json() : { enterprise: false }))
-          .catch(() => ({ enterprise: false })),
+        refetchLicense(),
       ]);
       if (usersRes.ok) {
         const usersData = await usersRes.json();
@@ -218,17 +231,10 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         setItems(mergeUserList(usersData.users, invitesData.invites));
       }
       setAllGroups(Array.isArray(groupsData) ? groupsData : []);
-      setIsEnterprise(enterpriseData?.enterprise ?? false);
-      if (
-        typeof enterpriseData?.maxUsers === "number" &&
-        typeof enterpriseData?.seatsUsed === "number"
-      ) {
-        setSeatInfo({ maxUsers: enterpriseData.maxUsers, seatsUsed: enterpriseData.seatsUsed });
-      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [refetchLicense]);
 
   useEffect(() => {
     fetchUsers();
@@ -281,6 +287,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
     // email became required gets Revoke instead (#1263).
     const email = item.email;
     if (!email) return; // unreachable: such a row shows Revoke; narrows the type
+    setResendDelivery(null);
     try {
       await apiDelete(`/api/users/invites/${item.id}`);
     } catch (e) {
@@ -288,12 +295,18 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
       fetchUsers();
       return;
     }
+    // With a system mailer (#1309) the fresh invite is emailed too, like one
+    // from the invite dialog. Unknown status means "don't promise an email".
+    const mailConfigured = await apiGet<SystemMailStatus>("/api/settings/mail")
+      .then((s) => s.configured === true)
+      .catch(() => false);
     try {
-      const data = await apiPost<{ token: string }, InviteUserInput>("/api/users/invite", {
-        email,
-        role: item.role,
-      });
+      const data = await apiPost<{ token: string; emailDelivery?: EmailDelivery }, InviteUserInput>(
+        "/api/users/invite",
+        { email, role: item.role, ...(mailConfigured ? { sendEmail: true } : {}) }
+      );
       setResetLink(buildInviteUrl(window.location.origin, data.token));
+      setResendDelivery(data.emailDelivery ? { email, delivery: data.emailDelivery } : null);
     } catch (e) {
       toast.error(errorMessage(e, "Failed to create the new invite. Please try again."));
     }
@@ -355,6 +368,17 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
           </Button>
         </CardHeader>
         <CardContent>
+          {resendDelivery?.delivery.sent === true && (
+            <p role="status" className="mb-2 text-sm">
+              Invitation sent to {resendDelivery.email}.
+            </p>
+          )}
+          {resendDelivery?.delivery.sent === false && (
+            <p role="alert" className="mb-2 text-sm text-destructive">
+              We couldn&apos;t send the email ({resendDelivery.delivery.error}). Copy the link below
+              and send it yourself.
+            </p>
+          )}
           {resetLink && (
             <div className="mb-4 space-y-1 rounded border p-3">
               <p id="resent-invite-link-label" className="text-sm font-medium">

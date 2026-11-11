@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { embedTexts } from "@/lib/knowledge/embeddings";
+import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
 
 /**
  * Exercises the real node-llama-cpp path end-to-end against a real GGUF
@@ -8,7 +8,7 @@ import { embedTexts } from "@/lib/knowledge/embeddings";
  * embed in-process via this same node-llama-cpp path, no Ollama).
  *
  * Gated with describe.skipIf (not an untracked test.skip — an allowed
- * env/OS conditional gate per AGENTS.md) so CI and contributors without the
+ * env/OS conditional gate per agent-rules/testing.md) so CI and contributors without the
  * multi-hundred-MB model file locally skip cleanly instead of failing.
  *
  * Set KB_EMBED_GGUF_PATH to a local GGUF file to run this, e.g.:
@@ -62,5 +62,73 @@ describe.skipIf(!process.env.KB_EMBED_GGUF_PATH)(
 
       expect(simRelevant).toBeGreaterThan(simUnrelated);
     }, 60_000);
+
+    it("splits a text the model cannot take in one piece into pieces it embeds (#1380)", async () => {
+      const cfg = {
+        baseUrl: "unused",
+        provider: "local" as const,
+        modelPath: process.env.KB_EMBED_GGUF_PATH as string,
+        expectedDim: 768,
+      };
+      // A number-dense table row costs far more tokens than characters suggest,
+      // which is how a chunk inside the character budget outgrew the context.
+      const dense = Array.from({ length: 1500 }, (_, i) => `${1000 + i},${i % 97}.${i % 13}`).join(
+        " | "
+      );
+
+      await expect(embedTexts([dense], cfg)).rejects.toThrow(/longer than the context size/);
+
+      const [pieces] = await fitTextsForEmbedding([dense], cfg);
+      expect(pieces.length).toBeGreaterThan(1);
+      const vectors = await embedTexts(pieces, cfg);
+      expect(vectors).toHaveLength(pieces.length);
+      for (const vec of vectors) expect(vec).toHaveLength(768);
+    }, 120_000);
+
+    // A rare code point the vocabulary knows only as bytes: cutting between two
+    // of its tokens and decoding stored U+FFFD, and the citation viewer then
+    // could not find the chunk on its page. Pieces are cut from the text itself.
+    it("cuts a byte-fallback text into substrings of the original, without U+FFFD", async () => {
+      const cfg = {
+        baseUrl: "unused",
+        provider: "local" as const,
+        modelPath: process.env.KB_EMBED_GGUF_PATH as string,
+        expectedDim: 768,
+      };
+      // CJK Extension B, dense and rare — not emoji, which the vocabulary likely
+      // has. Four byte tokens per character; the leading letter shifts every
+      // window off a character boundary, which a budget divisible by four would
+      // otherwise hide.
+      const rare =
+        "A" +
+        Array.from({ length: 900 }, (_, i) =>
+          String.fromCodePoint(0x20000 + ((i * 37) % 0xa6d0))
+        ).join("");
+
+      const [pieces] = await fitTextsForEmbedding([rare], cfg);
+      expect(pieces.length).toBeGreaterThan(1);
+      for (const piece of pieces) expect(piece).not.toContain("\uFFFD");
+      expect(pieces.join("")).toBe(rare);
+      await expect(embedTexts(pieces, cfg)).resolves.toHaveLength(pieces.length);
+    }, 120_000);
+
+    // The context takes this text whole, but its batch does not: decoded in
+    // several calls, the vector would reflect only the last batch, so the head
+    // of the text would be missing from its own embedding (#1380). The library
+    // does not throw for such a text — only the split shows the budget is right.
+    it("splits a text the context takes but the batch does not", async () => {
+      const cfg = {
+        baseUrl: "unused",
+        provider: "local" as const,
+        modelPath: process.env.KB_EMBED_GGUF_PATH as string,
+        expectedDim: 768,
+      };
+      const prose =
+        "The quarterly maintenance report lists every pump inspected this month. ".repeat(60);
+
+      await expect(embedTexts([prose], cfg)).resolves.toHaveLength(1);
+      const [pieces] = await fitTextsForEmbedding([prose], cfg);
+      expect(pieces.length).toBeGreaterThan(1);
+    }, 120_000);
   }
 );

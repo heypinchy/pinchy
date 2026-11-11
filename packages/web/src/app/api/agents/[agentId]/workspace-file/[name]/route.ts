@@ -9,7 +9,7 @@
  * name that is not the name of the bytes it serves.
  *
  * Embeddable, so it needs its own SAMEORIGIN entry in next.config.ts — the
- * handler's header loses to the global DENY (see AGENTS.md § "Embeddable
+ * handler's header loses to the global DENY (see agent-rules/web-routes.md § "Embeddable
  * Serving Routes Need A next.config Entry").
  */
 export { GET } from "../route";

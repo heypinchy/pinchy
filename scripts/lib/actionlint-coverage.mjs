@@ -24,7 +24,7 @@
  *
  * This module is the pure half: what to probe, and how to judge the results.
  *
- * See AGENTS.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong" —
+ * See agent-rules/docs.md § "A Hand-Maintained List That Mirrors Code Will Be Wrong" —
  * an accepted-list is only honest when it fails in BOTH directions.
  */
 
@@ -223,7 +223,7 @@ export function formatFailure(failures) {
     "",
     "actionlint only validates `with:` keys for action versions in its bundled",
     "schema database. For anything else it reports nothing, and a silent pass",
-    "looks exactly like a clean one. See AGENTS.md and the comment in",
+    "looks exactly like a clean one. See agent-rules/ci.md and the comment in",
     "scripts/lib/actionlint-coverage.mjs.",
   ].join("\n");
 }

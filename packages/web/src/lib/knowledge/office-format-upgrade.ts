@@ -78,8 +78,12 @@ const supersededDocument = readFromSupersededArtifact(
   sql`${kbDocuments.artifactFormatVersion}`
 );
 
-/** The agents that search the index, oldest first, each with its folders. */
-async function searchingAgents(): Promise<{ id: string; paths: string[] }[]> {
+/**
+ * The agents that search the index, oldest first, each with its folders. The
+ * index worker reads their folders too: the archive rule cuts a path at the
+ * innermost one (archive-paths.ts).
+ */
+export async function searchingAgents(): Promise<{ id: string; paths: string[] }[]> {
   const rows = await db
     .select({
       id: agents.id,

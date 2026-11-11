@@ -135,7 +135,7 @@ export function skippedRanges(source: string): Array<[number, number]> {
 
 /**
  * Tool names a spec's source proves are dispatched, via either of the two
- * assertion shapes AGENTS.md § "Tool dispatch coverage" prescribes:
+ * assertion shapes agent-rules/plugins.md § "Tool dispatch coverage" prescribes:
  *
  *   1. a literal audit query — `/api/audit?eventType=tool.<name>&limit=…`
  *   2. the shared helper — `pollAuditForTool(page, { toolName: "<name>", … })`

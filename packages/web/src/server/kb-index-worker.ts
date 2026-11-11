@@ -20,21 +20,34 @@
  * the interval is a poll for NEW work, not a run cadence: the re-entrancy guard
  * keeps overlapping ticks from starting a second run.
  */
+import { randomUUID } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { safeProviderError } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { errorLine, LOG_PATH_MAX, oneLine } from "@/lib/log-line";
-import { embedTexts } from "@/lib/knowledge/embeddings";
+import {
+  describeUnavailableFolders,
+  type UnavailableFolder,
+} from "@/lib/knowledge/unavailable-folders";
+import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
-import { extractPdfPages } from "@/lib/knowledge/pdf-extract";
-import { extractXlsxIsolated } from "@/lib/knowledge/xlsx-isolated";
+import { DEFAULT_MAX_OCR_PAGES, extractPdfPages } from "@/lib/knowledge/pdf-extract";
+import {
+  extractXlsxIsolated,
+  readMsgIsolated,
+  tiffToPdfIsolated,
+} from "@/lib/knowledge/xlsx-isolated";
 import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
 import { clearSpoolBatches } from "@/lib/knowledge/office-converter-sidecar";
 import {
   clearStagedBatches,
+  getScanArtifactStore,
   OFFICE_ARTIFACT_FORMAT_VERSION,
   pruneOtherFormatVersions,
   stagingDirOf,
@@ -43,11 +56,22 @@ import {
   agentsOwedReconversion,
   officeFormatVersionInUse,
   queueReconversion,
+  searchingAgents,
 } from "@/lib/knowledge/office-format-upgrade";
-import { ingestPaths, type IngestDeps } from "@/lib/knowledge/ingest";
+import { buildFolderPlan } from "@/lib/knowledge/folder-plan";
+import { ingestPaths, type IngestDeps, type ScanConversion } from "@/lib/knowledge/ingest";
+import {
+  agentsOwedFirstIndex,
+  anyAgentSearchesTheIndex,
+  loadRunPaths,
+  queueFirstIndex,
+} from "@/lib/knowledge/first-index";
+import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import {
   claimNextIndexJob,
+  findActiveIndexJob,
   finishIndexJob,
+  recordIndexJobFolderPlan,
   recordIndexJobProgress,
   requeueOrphanedIndexJobs,
   type KbIndexJob,
@@ -71,6 +95,27 @@ interface OcrTally {
   skippedPages: number;
   inputTokens: number;
   outputTokens: number;
+}
+
+/**
+ * Converts a scanned TIFF in the fenced child, at most as many frames as the
+ * OCR reads of a scanned PDF, and commits the PDF to the scan store under the
+ * file's content hash — where a citation opens it.
+ */
+async function convertScan(copyPath: string, contentHash: string): Promise<ScanConversion> {
+  const dir = join(stagingDirOf(), `scan-${randomUUID()}`);
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- a fresh directory inside the artifact volume's staging area.
+  await mkdir(dir, { recursive: true });
+  try {
+    const staged = join(dir, "scan.pdf");
+    const { frames, converted } = await tiffToPdfIsolated(copyPath, staged, {
+      maxFrames: DEFAULT_MAX_OCR_PAGES,
+    });
+    const pdfPath = await getScanArtifactStore().put(contentHash, staged);
+    return { pdfPath, frames, converted };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 /** Resolves the production embedder + extractor, or null if the bundled embedding model is missing (a broken image, not a config choice). */
@@ -102,6 +147,7 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
 
   return {
     embed: (texts) => embedTexts(texts, cfg),
+    fitForEmbedding: (texts) => fitTextsForEmbedding(texts, cfg),
     extractPdf: (absPath, opts) =>
       extractPdfPages(absPath, {
         outline: opts?.outline,
@@ -125,6 +171,16 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
     // every nightly reindex (xlsx-isolated.ts).
     extractXlsx: (absPath) => extractXlsxIsolated(absPath),
     convertOffice: (sources) => convertOfficeFiles(sources),
+    convertScan: async (copyPath, contentHash) => {
+      const conversion = await convertScan(copyPath, contentHash);
+      // Frames past the OCR budget are never pages of the PDF, so the OCR
+      // tally never sees them; they are skipped pages all the same.
+      const t = tally.current;
+      if (t) t.skippedPages += conversion.frames - conversion.converted;
+      return conversion;
+    },
+    // Behind the same fence: the parser walks an untrusted Compound File.
+    readEmail: (copyPath) => readMsgIsolated(copyPath),
     ocrModel: ocr?.model ?? null,
     // The artifact volume, not the container's /tmp: see IngestDeps.stagingDir.
     stagingDir: stagingDirOf(),
@@ -132,12 +188,23 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
 }
 
 /**
- * Why a run that found none of its folders failed. Shown to the admin as the
- * run's error and recorded as the audit reason, so it names what to check and
- * never a path.
+ * Why a run that found none of its folders failed, as the audit row records
+ * it: what to check, never a path — a folder name can embed a person's name,
+ * and the row can never be rewritten. The admin reads the run's own error
+ * instead, which names the folders (describeUnavailableFolders, #1363).
  */
 export const FOLDERS_UNAVAILABLE_ERROR =
   "None of the granted folders could be read — they were missing, unreadable, or came up empty while the index still holds their documents — so the index was left as it was. If they live on a network share, check that it is mounted.";
+
+/**
+ * Thrown when every root was skipped. Carries the text the admin reads, which
+ * names the folders, apart from the path-free audit reason.
+ */
+class FoldersUnavailableError extends Error {
+  constructor(readonly forAdmin: string) {
+    super(FOLDERS_UNAVAILABLE_ERROR);
+  }
+}
 
 export interface RunIndexJobOptions {
   /** Test seam: injects a deterministic embedder/extractor. Production resolves them from the bundled in-process embeddinggemma GGUF. */
@@ -168,11 +235,12 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
   const ocrTally: { current: OcrTally | null } = { current: null };
   // Folders ingest left as they were: granted roots it could not read or that
   // came up emptied, and emptied folders below a root. Counted onto the job and
-  // the outcome row; the paths themselves go to the server log only, like
-  // every other path ingest reports. `skippedRoots` alone decides whether the
-  // run read anything at all.
+  // the outcome row, never named there. `skippedRoots` decides whether the run
+  // read anything at all, and when it read nothing, its roots are what the
+  // admin's error names — the job row, which the admin reads and which is
+  // replaced by the next run, not the audit row (#1363).
   let unavailableFolders = 0;
-  let skippedRoots = 0;
+  const skippedRoots: UnavailableFolder[] = [];
   // Files refused because their path no longer led to a regular file inside
   // the folder (swapped for a link or a non-file, or reached through a folder
   // swapped for a link) — never a file merely saved again since the walk.
@@ -186,14 +254,20 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     const deps = opts.deps ?? (await resolveIngestDeps(ocrTally));
     if (!deps) throw new Error("embedding_model_missing");
 
+    // Read per run, like the job's own paths: a grant added or revoked since
+    // the last run moves where the archive rule cuts a path (#1420).
+    const archiveRoots = (await searchingAgents()).flatMap((searching) => searching.paths);
+
     counts = await ingestPaths(job.orgId, job.paths, deps, {
+      archiveRoots,
       onProgress: (progress) => {
         counts = progress.counts;
         return recordIndexJobProgress(job.id, progress);
       },
+      onQueue: (queue) => recordIndexJobFolderPlan(job.id, buildFolderPlan(job.paths, queue)),
       onSkippedRoot: (rootDir, reason) => {
         unavailableFolders++;
-        skippedRoots++;
+        skippedRoots.push({ path: rootDir, reason });
         console.warn(
           `[kb-index-worker] job ${job.id}: skipped ${oneLine(rootDir, LOG_PATH_MAX)} (${reason}); nothing under it was indexed or removed`
         );
@@ -220,12 +294,13 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     // Every folder skipped is not a run that found nothing — it is a run that
     // could not look. Reporting it as a success is how an unmounted share
     // would read "Last indexed automatically today" for weeks.
-    if (job.paths.length > 0 && skippedRoots === job.paths.length) {
-      throw new Error(FOLDERS_UNAVAILABLE_ERROR);
+    if (job.paths.length > 0 && skippedRoots.length === job.paths.length) {
+      throw new FoldersUnavailableError(describeUnavailableFolders(skippedRoots));
     }
   } catch (err) {
-    // Ingest already absorbs a single unreadable file (counting it `failed`),
-    // so reaching here means something systemic — the embedder (a missing GGUF
+    // Ingest already absorbs a single unreadable file, or one whose values the
+    // database refuses (counting it `failed`), so reaching here means something
+    // systemic — the embedder (a missing GGUF
     // or a node-llama-cpp load failure) or the database — took the run down.
     // Finishing the job (rather than leaving it `running`) is what frees the
     // org's active-job slot: without it, one transient failure would wedge the
@@ -238,7 +313,8 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
     // sweep) that the single-container design does not otherwise need — and a
     // database outage is already an operator's problem, not a queue's.
     const reason = safeProviderError(err instanceof Error ? err.message : "reindex_failed");
-    await finishIndexJob(job.id, { outcome: "failed", counts, error: reason, unavailableFolders });
+    const shown = err instanceof FoldersUnavailableError ? safeProviderError(err.forAdmin) : reason;
+    await finishIndexJob(job.id, { outcome: "failed", counts, error: shown, unavailableFolders });
     await recordOcrUsage(job, ocrTally.current);
     await auditOutcome({
       job,
@@ -250,7 +326,7 @@ export async function runNextIndexJob(opts: RunIndexJobOptions = {}): Promise<Kb
       unavailableFolders,
       refusedFiles,
     });
-    return { ...job, status: "failed", counts, error: reason, unavailableFolders };
+    return { ...job, status: "failed", counts, error: shown, unavailableFolders };
   }
 
   // `unsearchable` and `failed` files do not make this a failed run: the
@@ -441,6 +517,7 @@ export async function runKbIndexWorkerTick(opts: RunIndexJobOptions = {}): Promi
     // second org exists.
     for (;;) {
       await queueOwedReconversion();
+      await queueOwedFirstIndex();
       if (!(await runNextIndexJob(opts))) break;
       // A finished run may have converted the last document an earlier
       // format's directory was kept for.
@@ -475,6 +552,68 @@ async function queueOwedReconversion(): Promise<void> {
       "[kb-index-worker] could not queue the reconversion of Office documents:",
       errorLine(err)
     );
+  }
+}
+
+/**
+ * How long the first-index look pauses after it failed — a database problem,
+ * which asking again every ten seconds would only log ten times as often.
+ */
+const FIRST_INDEX_RETRY_MS = 5 * 60 * 1000;
+
+// When the first-index look last failed; null while it works.
+let _firstIndexFailedAt: number | null = null;
+
+/**
+ * Queues the first index of an agent granted a folder nothing has indexed yet
+ * (#1280), if the instance's one job slot is free.
+ *
+ * The route that granted the folder queues it already; this is for the grant
+ * that found the slot taken — by a nightly run, an admin's, or another
+ * agent's first index — and for one the route never got to (a restart in
+ * between). The folder being unindexed IS the record, so nothing is kept in
+ * memory and nothing is lost to a restart. Asked on every tick the slot is
+ * free, not hourly like the reconversion: a new agent answers "nothing found"
+ * until it has run. An idle look is three reads — the active job, the agents,
+ * and the distinct folders the runs went through (a handful of rows however
+ * many nights are recorded) — plus a document probe only for a folder no run
+ * has gone through.
+ */
+async function queueOwedFirstIndex(): Promise<void> {
+  if (_firstIndexFailedAt !== null && Date.now() - _firstIndexFailedAt < FIRST_INDEX_RETRY_MS) {
+    return;
+  }
+  // Without the bundled embedding model every run could only fail, so there
+  // is nothing to queue and nothing worth reading every tick to find out.
+  if (!kbEmbedderAvailable()) return;
+  try {
+    if (await findActiveIndexJob(DEFAULT_ORG_ID)) return;
+    // No agent searches the index: nothing can be owed, and the run folders
+    // need not be read on every idle tick to find that out.
+    if (!(await anyAgentSearchesTheIndex())) return;
+    const runs = await loadRunPaths();
+    for (const agentId of await agentsOwedFirstIndex(runs)) {
+      const outcome = await queueFirstIndex(
+        agentId,
+        { actorType: "system", actorId: KB_INDEX_WORKER_ACTOR },
+        recordAudit,
+        runs
+      );
+      if (outcome.status !== "skipped") return;
+    }
+    _firstIndexFailedAt = null;
+  } catch (err) {
+    _firstIndexFailedAt = Date.now();
+    console.warn("[kb-index-worker] could not queue a first index:", errorLine(err));
+  }
+}
+
+/** Writes an audit row outside any request — the AGENTS.md non-request pattern. */
+async function recordAudit(entry: AuditLogEntry): Promise<void> {
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
   }
 }
 
@@ -579,5 +718,6 @@ export function _resetKbIndexWorkerForTest(): void {
   _orphansRequeued = false;
   _reconversionsOwed = [];
   _reconversionLookedAt = null;
+  _firstIndexFailedAt = null;
   _runInFlight = false;
 }

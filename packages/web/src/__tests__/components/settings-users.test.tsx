@@ -6,7 +6,7 @@ import "@testing-library/jest-dom";
 import { SettingsUsers } from "@/components/settings-users";
 import { jsonResponse } from "@/test-helpers/fetch";
 
-const mockToast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+const mockToast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn(), dismiss: vi.fn() }));
 vi.mock("sonner", () => ({ toast: mockToast }));
 
 // Mock window.location.origin for invite link generation
@@ -254,6 +254,71 @@ describe("SettingsUsers", () => {
       expect(tableView.getByText("Marketing")).toBeInTheDocument();
       expect(tableView.getByText("+2 more")).toBeInTheDocument();
       expect(tableView.queryByText("Sales")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("license status the client could not read", () => {
+    const memberInGroup = [
+      {
+        id: "u1",
+        name: "Max",
+        email: "max@test.com",
+        role: "member",
+        banned: false,
+        groups: [{ id: "g1", name: "Engineering" }],
+      },
+    ];
+
+    function mockWithStatus(statusResponse: () => Promise<Response>) {
+      vi.mocked(global.fetch).mockImplementation(async (url) => {
+        if (String(url) === "/api/users") return jsonResponse({ users: memberInGroup });
+        if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (String(url) === "/api/groups") {
+          return jsonResponse([{ id: "g1", name: "Engineering", description: null }]);
+        }
+        if (String(url) === "/api/enterprise/status") return statusResponse();
+        return jsonResponse(undefined, { status: 400 });
+      });
+    }
+
+    async function openMaxSheet() {
+      const user = userEvent.setup();
+      render(<SettingsUsers currentUserId="admin-1" />);
+      await waitFor(() => {
+        expect(within(screen.getByRole("table")).getByText("Max")).toBeInTheDocument();
+      });
+      await user.click(within(screen.getByRole("table")).getByText("Max"));
+      await waitFor(() => expect(screen.getByRole("combobox")).toBeInTheDocument());
+    }
+
+    // "Couldn't ask" is not "no license": the sheet must not tell an admin
+    // that adding to groups needs a license they may well have.
+    it.each([
+      ["rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+      [
+        "answers 500",
+        async () => jsonResponse({ error: "Internal Server Error" }, { status: 500 }),
+      ],
+    ])("does not claim a missing license when the status fetch %s", async (_l, response) => {
+      mockWithStatus(response);
+      await openMaxSheet();
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith(
+          expect.stringMatching(/license status/i),
+          expect.objectContaining({
+            id: expect.any(String),
+          })
+        );
+      });
+      expect(screen.queryByText(/requires an active license/i)).not.toBeInTheDocument();
+    });
+
+    it("still says so for a real enterprise: false", async () => {
+      mockWithStatus(async () => jsonResponse({ enterprise: false, maxUsers: 0, seatsUsed: 0 }));
+      await openMaxSheet();
+
+      expect(await screen.findByText(/requires an active license/i)).toBeInTheDocument();
     });
   });
 
@@ -765,6 +830,59 @@ describe("SettingsUsers", () => {
           screen.getByText("http://localhost:7777/invite/resend-token-xyz")
         ).toBeInTheDocument();
       });
+    });
+
+    it("emails the fresh invite on Resend when email delivery is on (#1309)", async () => {
+      const user = userEvent.setup();
+      mockFetchForUsers(mockUsers, [expiredInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+      await waitFor(() => {
+        expect(screen.getAllByText("expired@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/settings/mail") {
+          return jsonResponse({
+            configured: true,
+            config: {
+              host: "smtp.example.com",
+              port: 587,
+              security: "starttls",
+              fromAddress: "pinchy@example.com",
+              hasPassword: true,
+            },
+          });
+        }
+        if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
+          return jsonResponse({ success: true });
+        }
+        if (String(url) === "/api/users/invite" && init?.method === "POST") {
+          return jsonResponse({ token: "resend-token-xyz", emailDelivery: { sent: true } });
+        }
+        if (String(url) === "/api/users") return jsonResponse({ users: mockUsers });
+        if (String(url) === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (String(url) === "/api/groups") return jsonResponse([]);
+        if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: false });
+        return jsonResponse(undefined, { status: 400 });
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("expired@example.com")[0].closest("tr")!;
+      await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "expired@example.com", role: "member", sendEmail: true }),
+        });
+      });
+      // CopyField has its own status region, so find the line by its text.
+      expect(await screen.findByText("Invitation sent to expired@example.com.")).toHaveAttribute(
+        "role",
+        "status"
+      );
+      expect(screen.getByText("http://localhost:7777/invite/resend-token-xyz")).toBeInTheDocument();
     });
 
     it("offers Revoke, not Resend, for an expired invite that has no email (#1263)", async () => {

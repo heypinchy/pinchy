@@ -3,7 +3,11 @@ import { mkdtemp, mkdir, rm, symlink, writeFile, realpath } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { listDataSubdirectories, MAX_LISTED_SUBDIRECTORIES } from "@/lib/data-subdirectories";
+import {
+  listDataMounts,
+  listDataSubdirectories,
+  MAX_LISTED_SUBDIRECTORIES,
+} from "@/lib/data-subdirectories";
 
 // The real data root is `/data/`, which does not exist on a developer machine.
 // The module takes the root as a parameter for exactly this reason; the
@@ -98,7 +102,7 @@ describe("listDataSubdirectories", () => {
     expect(result.ok && result.directories.map((d) => d.name)).toEqual(["food", "vet"]);
   });
 
-  it("refuses the root itself — top-level mounts come from the OpenClaw scan", async () => {
+  it("refuses the root itself — top-level mounts come from listDataMounts", async () => {
     expect(await listDataSubdirectories(root, { root })).toEqual({
       ok: false,
       reason: "invalid_path",
@@ -175,5 +179,39 @@ describe("listDataSubdirectories", () => {
       ok: false,
       reason: "invalid_path",
     });
+  });
+});
+
+describe("listDataMounts", () => {
+  it("lists the folders directly under the root, sorted, with absolute paths", async () => {
+    await mkdir(join(root, "hr"));
+    expect(await listDataMounts({ root })).toEqual([
+      { path: join(root, "hr"), name: "hr" },
+      { path: join(root, "suppliers"), name: "suppliers" },
+    ]);
+  });
+
+  it("reads the folder on every call, so a deleted or renamed mount is gone at once (#1363)", async () => {
+    await mkdir(join(root, "old-name"));
+    expect((await listDataMounts({ root })).map((d) => d.name)).toContain("old-name");
+
+    await rm(join(root, "old-name"), { recursive: true });
+    await mkdir(join(root, "new-name"));
+
+    const names = (await listDataMounts({ root })).map((d) => d.name);
+    expect(names).not.toContain("old-name");
+    expect(names).toContain("new-name");
+  });
+
+  it("skips files, symlinks, hidden folders and OS junk folders", async () => {
+    await writeFile(join(root, "notes.txt"), "x");
+    await symlink(outside, join(root, "escape"));
+    await mkdir(join(root, ".snapshot"));
+    await mkdir(join(root, "$RECYCLE.BIN"));
+    expect((await listDataMounts({ root })).map((d) => d.name)).toEqual(["suppliers"]);
+  });
+
+  it("answers an empty list when the root does not exist", async () => {
+    expect(await listDataMounts({ root: join(sandbox, "nope") })).toEqual([]);
   });
 });

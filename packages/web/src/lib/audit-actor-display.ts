@@ -7,6 +7,7 @@
  * Names are joined in at read time (`auditSelectWithJoins`), so a renamed agent
  * shows its current name and an erased user shows no name at all.
  */
+import { ALLOWED_PATHS_CLEANUP_ACTOR } from "@/lib/agent-granted-paths";
 import { apiKeyActorName } from "@/lib/api-key-identity";
 import { KB_INDEX_SCHEDULER_ACTOR, KB_INDEX_WORKER_ACTOR } from "@/lib/knowledge/reindex-audit";
 
@@ -23,6 +24,7 @@ export const SYSTEM_ACTOR_LABELS: Readonly<Record<string, string>> = {
   system: "System",
   [KB_INDEX_SCHEDULER_ACTOR]: "Scheduled reindex",
   [KB_INDEX_WORKER_ACTOR]: "Knowledge base indexer",
+  [ALLOWED_PATHS_CLEANUP_ACTOR]: "Folder access cleanup",
   "upload-gc": "Upload cleanup",
   "chat-error-gc": "Chat error cleanup",
   "approval-sweep": "Approval sweep",

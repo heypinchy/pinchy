@@ -86,8 +86,10 @@ export const KB_INDEX_JOB_ACTIVE_STATUSES = ["pending", "running"] as const;
 // What started a kb_index_jobs row: an admin's "Reindex now" (or the API), the
 // nightly schedule (src/server/kb-index-scheduler.ts), or Pinchy itself after
 // an update changed how Office documents are converted
-// (src/server/kb-index-worker.ts, `upgrade`). The audit rows and the status
+// (src/server/kb-index-worker.ts, `upgrade`), or Pinchy itself when a folder
+// nothing had indexed yet was granted (lib/knowledge/first-index.ts,
+// `initial`). The audit rows and the status
 // projection all carry it, so "who decided to run this?" has an answer on the
 // record rather than only in `requested_by`'s spelling.
-export const KB_INDEX_JOB_TRIGGERS = ["manual", "scheduled", "upgrade"] as const;
+export const KB_INDEX_JOB_TRIGGERS = ["manual", "scheduled", "upgrade", "initial"] as const;
 export type KbIndexJobTrigger = (typeof KB_INDEX_JOB_TRIGGERS)[number];

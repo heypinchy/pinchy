@@ -10,6 +10,7 @@ import { groups } from "@/db/schema";
 import { inArray } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
 import { inviteUserSchema } from "@/lib/schemas/users";
+import type { EmailDelivery } from "@/lib/schemas/system-mail";
 
 export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -18,7 +19,7 @@ export async function POST(request: NextRequest) {
 
   const parsed = await parseRequestBody(inviteUserSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { email, role, groupIds } = parsed.data;
+  const { email, role, groupIds, sendEmail } = parsed.data;
 
   const license = await getLicenseStatus();
   if (license.active && license.maxUsers > 0) {
@@ -84,5 +85,30 @@ export async function POST(request: NextRequest) {
     })
   );
 
-  return NextResponse.json(invite, { status: 201 });
+  // The invite exists from here on. Emailing it is a second, separate step:
+  // whatever the mail server does, the response still carries the token so
+  // the admin can copy the link (#1309).
+  let emailDelivery: EmailDelivery | undefined;
+  if (sendEmail) {
+    // Loaded only when an email is asked for: with the mailer off, this route
+    // must not pull in the mail stack (nodemailer, the domain lookup) at all.
+    emailDelivery = await import("@/lib/system-mail/deliver")
+      .then(({ deliverLinkEmail }) =>
+        deliverLinkEmail({
+          request,
+          kind: "invite",
+          to: email,
+          token: invite.token,
+          expiresAt: invite.expiresAt,
+          inviteId: invite.id,
+          actor: { id: session.user.id, name: session.user.name, email: session.user.email },
+        })
+      )
+      .catch((err: unknown): EmailDelivery => {
+        console.error("[invite] email delivery crashed:", err);
+        return { sent: false, error: "Something went wrong sending the email." };
+      });
+  }
+
+  return NextResponse.json(emailDelivery ? { ...invite, emailDelivery } : invite, { status: 201 });
 }

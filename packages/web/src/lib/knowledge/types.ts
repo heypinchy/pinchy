@@ -71,8 +71,8 @@ export interface IngestResult {
    */
   archived: number;
   /**
-   * Files under the run's folders whose type the indexer cannot read — a
-   * `.tif` scan, a legacy `.xls`, a `.txt` (#1267). They are not documents in
+   * Files under the run's folders whose type the indexer cannot read — an
+   * `.rtf`, a binary `.xlsb` (#1267). They are not documents in
    * the index at all, so they sit OUTSIDE the outcome partition above: before
    * this was counted, a folder of 13 files reported 11 and the other two
    * appeared nowhere. The list behind the number is kb_unsupported_files

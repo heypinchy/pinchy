@@ -45,7 +45,7 @@
  * config rather than a safety property.
  *
  * Read-side sibling of the node-version-pin / format-gate / ci-path-filter
- * guards (see AGENTS.md).
+ * guards (see agent-rules/).
  */
 
 import { splitWorkflowTextIntoJobs } from "./workflow-jobs.mjs";

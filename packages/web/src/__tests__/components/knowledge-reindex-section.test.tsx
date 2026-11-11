@@ -54,6 +54,18 @@ vi.mock("@/components/knowledge-unsearchable-list", async () => {
   };
 });
 
+// The folder tree owns its own reads too (knowledge-folder-tree.test.tsx).
+// Stubbed so it does not add calls to the conversation this file counts.
+vi.mock("@/components/knowledge-folder-tree", () => ({
+  KnowledgeFolderTree: (props: { agentId: string; reloadKey?: string }) => (
+    <div
+      data-testid="folder-tree"
+      data-agent-id={props.agentId}
+      data-reload-key={props.reloadKey}
+    />
+  ),
+}));
+
 const mockGet = vi.mocked(apiGet);
 const mockPost = vi.mocked(apiPost);
 
@@ -202,6 +214,17 @@ describe("KnowledgeReindexSection", () => {
       expect(link).toHaveAttribute("href", "/api/agents/a1/knowledge/unsupported");
       expect(link).toHaveAttribute("download");
       expect(screen.getByText(/2 files are of a type pinchy can't read/i)).toBeInTheDocument();
+    });
+
+    it("does not give a type the index reads as an example of one it can't (#1409)", async () => {
+      // Scans saved as .tif are read since #1409; naming them here would send
+      // an admin off converting files that already answer.
+      mockGet.mockResolvedValue({ job: job({ counts: { ...counts, unsupported: 2 } }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={1} />);
+
+      const note = await screen.findByText(/2 files are of a type pinchy can't read/i);
+      expect(note.textContent).not.toMatch(/\.tiff?\b|\.txt\b/i);
     });
 
     it("speaks of one file in the singular", async () => {
@@ -390,6 +413,29 @@ describe("KnowledgeReindexSection", () => {
 
       await waitFor(() => expect(screen.getByText(/indexing 3 of 10/i)).toBeInTheDocument());
       expect(screen.queryByTestId("unsearchable-list")).not.toBeInTheDocument();
+    });
+
+    // The folder tree (#1386) is the one detail that stays during a run:
+    // "which folder is it in?" is asked exactly then.
+    it("shows the folder tree while a run is in flight", async () => {
+      mockGet.mockResolvedValue({ job: job({ status: "running", processed: 3, total: 10 }) });
+
+      render(<KnowledgeReindexSection agentId="a1" allowedPathCount={2} />);
+
+      expect(await screen.findByTestId("folder-tree")).toHaveAttribute("data-agent-id", "a1");
+    });
+
+    it("hides the folder tree without a grant, and while directory changes are unsaved", async () => {
+      mockGet.mockResolvedValue({ job: null });
+      const view = render(<KnowledgeReindexSection agentId="a1" allowedPathCount={0} />);
+      await waitFor(() => expect(screen.getByRole("button", { name: /reindex/i })).toBeDisabled());
+      expect(screen.queryByTestId("folder-tree")).not.toBeInTheDocument();
+
+      view.rerender(
+        <KnowledgeReindexSection agentId="a1" allowedPathCount={2} hasUnsavedPathChanges />
+      );
+      await screen.findByText(/save your directory changes first/i);
+      expect(screen.queryByTestId("folder-tree")).not.toBeInTheDocument();
     });
 
     it("hides the list when no directory is granted", async () => {

@@ -10,9 +10,9 @@
  * every case says exactly which wall-clock moment it is about.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { makeKbSourceRoot } from "@/test-helpers/kb-source-root";
 import { asc, eq } from "drizzle-orm";
 
 import { db } from "@/db";
@@ -44,6 +44,12 @@ vi.mock("@/lib/knowledge/kb-embedder", async (importOriginal) => ({
   kbEmbedderAvailable: () => mockKbEmbedderAvailable(),
 }));
 
+// The agents' folders are temp directories, which are not under /data, so the
+// real accessor would treat every grant here as a pre-lockdown leftover and the
+// sweep would find nothing to index (#1272). These cases are about the sweep,
+// so the boundary is moved to the temp dir rather than switched off.
+vi.mock("@/lib/agent-granted-paths", () => import("@/test-helpers/granted-paths-under-tmpdir"));
+
 let tmpRoot: string;
 
 beforeEach(async () => {
@@ -52,7 +58,7 @@ beforeEach(async () => {
   // (see runKbIndexSchedulerTick below).
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-10-01T00:00:00Z"));
-  tmpRoot = mkdtempSync(join(tmpdir(), "pinchy-kb-scheduler-test-"));
+  tmpRoot = makeKbSourceRoot("pinchy-kb-scheduler-test-");
   _resetKbIndexSchedulerForTest();
   _resetKbIndexWorkerForTest();
   mockKbEmbedderAvailable.mockReturnValue(true);
@@ -131,6 +137,12 @@ function fakeDeps(): IngestDeps {
     },
     convertOffice: async () => {
       throw new Error("convertOffice must not be called for a PDF");
+    },
+    readEmail: async () => {
+      throw new Error("readEmail must not be called for a PDF");
+    },
+    convertScan: async () => {
+      throw new Error("convertScan must not be called for a PDF");
     },
     ocrModel: null,
     // Hidden, so a run over tmpRoot never lists its own copies.

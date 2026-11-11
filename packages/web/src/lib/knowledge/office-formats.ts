@@ -20,7 +20,7 @@
  * sheet is not a page, and rendering one to PDF produces arbitrary page breaks
  * that no citation can honestly point at (#937/#940).
  */
-export const OFFICE_EXTENSIONS = [".doc", ".docx", ".ppt", ".pptx"] as const;
+export const OFFICE_EXTENSIONS = [".doc", ".docx", ".docm", ".ppt", ".pptx"] as const;
 
 /**
  * The two halves of that list, because they are anchored differently and the
@@ -32,7 +32,7 @@ export const OFFICE_EXTENSIONS = [".doc", ".docx", ".ppt", ".pptx"] as const;
  * fifth format cannot be added to the list above and silently belong to
  * neither anchor — `office-formats.test.ts` pins the two halves to cover it.
  */
-export const WORD_EXTENSIONS = [".doc", ".docx"] as const;
+export const WORD_EXTENSIONS = [".doc", ".docx", ".docm"] as const;
 export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
 
 /**
@@ -67,6 +67,26 @@ export const OFFICE_CONVERT_BATCH_SIZE = 20;
 export const SPREADSHEET_EXTENSIONS = [".xlsx", ".xlsm"] as const;
 
 /**
+ * Scanned images the knowledge base reads through index-time OCR (#1409).
+ *
+ * TIFF only: it is what office scanners and fax servers file into a document
+ * archive, often several pages to a file. Each frame becomes a page of a PDF
+ * (`tiff-pdf.ts`) that the scanned-PDF path reads — so a TIFF is unreadable
+ * while OCR is off, exactly like a scanned PDF.
+ */
+export const SCAN_EXTENSIONS = [".tif", ".tiff"] as const;
+
+/** Plain text, read as it is, in whatever encoding it was saved in (`text-extract.ts`). */
+export const TEXT_EXTENSIONS = [".txt"] as const;
+
+/**
+ * Mail saved from Outlook, read as headers plus body (`msg-extract.ts`).
+ * `.eml` is not here: nothing on a file share writes it in volume, and it is
+ * a different format with a different parser.
+ */
+export const MSG_EXTENSIONS = [".msg"] as const;
+
+/**
  * The lowercased extension of `path`, or "" — `node:path`'s `extname` written
  * as string surgery, including its rule that a leading dot is a dotfile and
  * not an extension (`.doc` → "", never ".doc").
@@ -85,6 +105,21 @@ export function isOfficeFile(path: string): boolean {
 /** Is this a spreadsheet the knowledge base reads directly, rather than converts? */
 export function isSpreadsheetFile(path: string): boolean {
   return (SPREADSHEET_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this a scanned TIFF, read page by page through OCR? */
+export function isScanFile(path: string): boolean {
+  return (SCAN_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this a plain-text file? */
+export function isTextFile(path: string): boolean {
+  return (TEXT_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this an Outlook message saved to disk? */
+export function isMsgFile(path: string): boolean {
+  return (MSG_EXTENSIONS as readonly string[]).includes(extensionOf(path));
 }
 
 /** Is this a Word document — the format anchored on its heading outline? */

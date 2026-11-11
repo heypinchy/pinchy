@@ -92,7 +92,7 @@ test("parseFrontmatter unwraps a quoted value", () => {
 
 test("parseFrontmatter throws on a page without frontmatter", () => {
   // An extractor that returns a short list instead of throwing is how a
-  // generated list silently loses a page (AGENTS.md § hand-maintained lists).
+  // generated list silently loses a page (agent-rules/docs.md § hand-maintained lists).
   assert.throws(
     () => parseFrontmatter("Just a body\n", "a.mdx"),
     /frontmatter/i,

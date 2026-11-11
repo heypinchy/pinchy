@@ -26,6 +26,8 @@ import {
   liveStagingDirOf,
   OfficeArtifactStore,
   pruneOtherFormatVersions,
+  SCAN_ARTIFACT_FORMAT_VERSION,
+  scanArtifactDirOf,
 } from "@/lib/knowledge/office-artifacts";
 
 let tmpRoot: string;
@@ -214,6 +216,22 @@ describe("OfficeArtifactStore", () => {
 
       expect((await readdir(root)).sort()).toEqual(["notes", "staging", "v", "v1.old", "v2", "v3"]);
       expect(existsSync(join(batch, "0.pptx"))).toBe(true);
+    });
+
+    it("leaves the converted scans alone, whatever the Office format version", async () => {
+      // A scanned TIFF is converted once, when it is read; an unchanged one is
+      // skipped and never converted again. Pruning its PDF with an Office
+      // format bump would leave its citations opening nothing (#1409).
+      const root = join(tmpRoot, "store");
+      new OfficeArtifactStore(root, { formatVersion: 2 });
+      const scans = new OfficeArtifactStore(scanArtifactDirOf(root), {
+        formatVersion: SCAN_ARTIFACT_FORMAT_VERSION,
+      });
+      const scan = await scans.put(HASH_A, stagedPdf("scan.pdf"));
+
+      expect(await pruneOtherFormatVersions(root, 3, NOTHING_REFERENCED)).toBe(0);
+
+      expect(await scans.get(HASH_A)).toBe(scan);
     });
 
     it("never follows a symlink out of the store", async () => {

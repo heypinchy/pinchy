@@ -481,7 +481,11 @@ describe("POST /api/integrations", () => {
     consoleError.mockRestore();
   });
 
-  it("does not regenerate the OpenClaw config for a non-web-search connection", async () => {
+  // Every integration type feeds a plugin config (pinchy-odoo, pinchy-email,
+  // pinchy-web), so a create regenerates whatever the type. For an Odoo
+  // connection no agent holds a grant yet, so the push is a no-op — but the
+  // route need not know which types matter.
+  it("regenerates the OpenClaw config after creating an Odoo connection", async () => {
     const { POST } = await import("@/app/api/integrations/route");
 
     const response = await POST(
@@ -493,7 +497,10 @@ describe("POST /api/integrations", () => {
     );
 
     expect(response.status).toBe(201);
-    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(mockInsertValues.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]
+    );
   });
 
   it("should return 409 when creating a duplicate web-search connection", async () => {
@@ -846,6 +853,46 @@ describe("DELETE /api/integrations/[connectionId]", () => {
     expect(mockDeleteWhere.mock.invocationCallOrder[0]).toBeLessThan(
       mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]
     );
+  });
+
+  // Deleting a connection cascades its agent grants away, so pinchy-odoo and
+  // pinchy-email must drop the agents that held it. Without a regenerate they
+  // keep the deleted connectionId until some unrelated save rewrites the config.
+  it.each(["odoo", "imap", "google", "microsoft"])(
+    "regenerates the OpenClaw config after deleting a %s connection",
+    async (type) => {
+      selectOnce([{ ...mockConnection, id: "conn-1", type }]);
+      const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+
+      const response = await DELETE(makeRequest("/api/integrations/conn-1", { method: "DELETE" }), {
+        params: Promise.resolve({ connectionId: "conn-1" }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+      expect(mockDeleteWhere.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]
+      );
+    }
+  );
+
+  it("still deletes and audits an Odoo connection when the config regenerate fails", async () => {
+    selectOnce([{ ...mockConnection, id: "conn-1", type: "odoo" }]);
+    mockRegenerateOpenClawConfig.mockRejectedValueOnce(new Error("gateway down"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await DELETE(makeRequest("/api/integrations/conn-1", { method: "DELETE" }), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalled();
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "integration.deleted", outcome: "success" })
+    );
+    consoleError.mockRestore();
   });
 
   it("still deletes and audits the web-search connection when the config regenerate fails", async () => {

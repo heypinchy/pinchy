@@ -27,22 +27,26 @@ import { activeAgents, agentConnectionPermissions, integrationConnections } from
 import type { IntegrationConnectionType } from "@/db/enums";
 
 /**
- * The tools that grant an agent the instance-wide web-search connection.
+ * The tools that grant an agent the instance-wide web-search connection's
+ * credentials — the Brave Search API key.
  *
- * This list is one half of a pair. `openclaw-config/build.ts` writes the
- * web-search `connectionId` into an agent's `pinchy-web` config exactly when
- * the agent holds one of these tools, and the rule below re-asks that same
- * question when the plugin comes back for the key. The two must name the same
- * set: a tool added to the emission side alone hands a plugin a connectionId
- * whose credentials this route then refuses — a 403 on a key the config just
- * gave it, reported as an agent reaching beyond a grant it visibly has.
- * `web-search-tools-drift.test.ts` pins them together.
+ * Only the tools that actually spend the key belong here. `pinchy_web_fetch`
+ * loads the same plugin and sees the same `connectionId` in its config, but
+ * fetching a page needs no key and the plugin never asks for one on that path.
+ * Listing it handed the Brave key to every fetch-only agent, which is more
+ * than that agent can use — least privilege says refuse it.
+ *
+ * This list is one half of a pair. The other half is the set of `pinchy-web`
+ * tools whose code path requests credentials. A tool that needs the key but is
+ * missing here gets a 403 on its first call; a tool listed here that never
+ * uses the key grants the key for nothing. `web-search-tools-drift.test.ts`
+ * reads the plugin source and pins the two together.
  *
  * Kept beside the rule rather than imported from the tool registry on purpose:
  * this is the authorization list, and it must change only when someone means
  * to widen who can read the Brave API key.
  */
-export const WEB_SEARCH_TOOLS: readonly string[] = ["pinchy_web_search", "pinchy_web_fetch"];
+export const WEB_SEARCH_KEY_TOOLS: readonly string[] = ["pinchy_web_search"];
 
 export type ConnectionForAuth = {
   id: string;
@@ -89,12 +93,12 @@ export function decideConnectionAccess(
   if (!agent) return { allowed: false, reason: "agent-unknown" };
 
   // The web-search connection is instance-wide — `build.ts` writes the same
-  // connection id into every agent's plugin config and gates access on the
-  // agent's tool list, so there are no permission rows to count. Requiring one
-  // here would silently revoke web search across the whole instance; reading
-  // the tool list instead asks exactly the question the config emission asked.
+  // connection id into the shared `pinchy-web` config, so there are no
+  // permission rows to count. Requiring one here would silently revoke web
+  // search across the whole instance; reading the tool list instead asks
+  // whether this agent holds a tool that spends the key.
   if (connection.type === "web-search") {
-    const granted = agent.allowedTools.some((tool) => WEB_SEARCH_TOOLS.includes(tool));
+    const granted = agent.allowedTools.some((tool) => WEB_SEARCH_KEY_TOOLS.includes(tool));
     return granted ? { allowed: true } : { allowed: false, reason: "not-granted" };
   }
 

@@ -2,7 +2,8 @@
  * The spreadsheet reader's child process — the other half of
  * `xlsx-isolated.ts`, which forks this file with a capped heap and explains
  * why. It reads ONE request (a workbook, a range of rows, a .docx's word
- * count, or an Office file to stage for conversion), answers it, and exits.
+ * count, an Office file to stage for conversion, or a TIFF to turn into a
+ * PDF), answers it, and exits.
  *
  * Everything that is not the read lives in the parent; this file only makes
  * itself the expendable process and relays.
@@ -11,8 +12,10 @@ import { writeFileSync } from "node:fs";
 
 import mammoth from "mammoth";
 
+import { parseMsg } from "./msg-extract";
 import { countWords, OfficeFileRejectedError, StagedCopyWriteError } from "./office-formats";
 import { readGuardedDocx, stageOfficeSource } from "./office-preflight";
+import { tiffToPdf } from "./tiff-pdf";
 import { extractXlsx, readSheetRange, XlsxExtractionError } from "./xlsx-extract";
 import type { SheetReaderFailure, SheetReaderMessage, SheetReaderRequest } from "./xlsx-isolated";
 
@@ -64,6 +67,10 @@ function read(request: SheetReaderRequest): Promise<unknown> {
       return docxWords(request.path);
     case "stage-office":
       return stageOfficeSource(request.path, request.dest);
+    case "tiff-pdf":
+      return tiffToPdf(request.path, request.dest, { maxFrames: request.maxFrames });
+    case "msg":
+      return parseMsg(request.path);
   }
 }
 

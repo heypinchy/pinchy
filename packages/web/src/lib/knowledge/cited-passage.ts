@@ -1,11 +1,16 @@
 /**
- * Which indexed passage on a cited page an answer drew on (#1268).
+ * Which indexed passage on a cited page, slide or section an answer drew on (#1268).
  *
  * A citation names a document and a page; the reader wants the sentence.
  * Chunks never cross a page (chunk.ts chunks each page on its own), so the page
  * narrows the candidates to the one to three ~512-token passages of that page.
  * When there is more than one, the answer's claim — the sentences citing the
  * source — is embedded and the nearest passage wins.
+ *
+ * Office documents are anchored differently, and the same rule applies to
+ * their anchor: a presentation's slide (slide N is page N of its converted
+ * PDF, one to three passages), or a Word section's heading path. A section can
+ * hold many passages, which is where the claim matters most.
  *
  * Embedding rather than word overlap, because the knowledge-search skill tells
  * the model to answer in the USER's language: an English claim about a German
@@ -29,6 +34,36 @@ interface PassageRow extends Record<string, unknown> {
 }
 
 /**
+ * Where the citation points: a PDF page, a presentation slide, or a Word
+ * heading path joined with " > " (`joinHeadings`, lib/pdf/outline.ts).
+ */
+export type PassageAnchor = { page: number } | { slide: number } | { heading: string };
+
+/**
+ * The SQL condition selecting the chunks an anchor names.
+ *
+ * Page and slide use containment, as the page lookup always has. A heading
+ * must NOT: jsonb containment on arrays ignores order and accepts subsets, so
+ * `{headings: ["Quality"]}` would contain every chunk filed under "Quality >
+ * Incoming goods" — a parent section answering for all its children. The
+ * stored path is joined back into the string the citation shows and compared
+ * whole, which also keeps a title that itself contains " > " matchable.
+ */
+function anchorCondition(anchor: PassageAnchor) {
+  if ("page" in anchor) {
+    return sql`c.locator @> ${JSON.stringify({ kind: "page", page: anchor.page })}::jsonb`;
+  }
+  if ("slide" in anchor) {
+    return sql`c.locator @> ${JSON.stringify({ kind: "slide", slide: anchor.slide })}::jsonb`;
+  }
+  return sql`c.locator->>'kind' = 'heading'
+    AND (
+      SELECT string_agg(h.title, ' > ' ORDER BY h.n)
+      FROM jsonb_array_elements_text(c.locator->'headings') WITH ORDINALITY AS h(title, n)
+    ) = ${anchor.heading}`;
+}
+
+/**
  * Returns the passage, or null when there is none to show: the page has no
  * indexed text, or it has several and nothing says which (no claim, or no
  * embedder). Null is the honest answer there — a highlight is a statement that
@@ -40,20 +75,19 @@ interface PassageRow extends Record<string, unknown> {
 export async function findCitedPassage(
   orgId: string,
   sourcePaths: string[],
-  page: number,
+  anchor: PassageAnchor,
   claim: string | undefined,
   deps: CitedPassageDeps | null
 ): Promise<{ text: string } | null> {
   if (sourcePaths.length === 0) return null;
 
-  const locator = JSON.stringify({ kind: "page", page });
   const onPage = sql`
     c.org_id = ${orgId}
     AND c.source_path IN (${sql.join(
       sourcePaths.map((path) => sql`${path}`),
       sql`, `
     )})
-    AND c.locator @> ${locator}::jsonb`;
+    AND ${anchorCondition(anchor)}`;
 
   // DISTINCT on the text: one file reached through two granted paths is two
   // documents with the same passages, not a choice between them.

@@ -438,15 +438,49 @@ describe("ThreadWelcome", () => {
     expect(screen.getByText(/just a moment/i)).toBeInTheDocument();
   });
 
-  it("renders the reload prompt when unavailable/exhausted", async () => {
-    await renderWith({ kind: "unavailable", reason: "exhausted" });
-    expect(screen.getByText(/please reload/i)).toBeInTheDocument();
+  it.each([
+    ["offline", /you're offline/i],
+    ["rejected", /waiting for a free connection/i],
+    ["upstreamDown", /waiting for the agent/i],
+    ["unreachable", /still trying to reach pinchy/i],
+  ])("renders its own message when unavailable/%s, never a reload demand", async (reason, text) => {
+    await renderWith({ kind: "unavailable", reason });
+    expect(screen.getByText(text)).toBeInTheDocument();
+    expect(screen.queryByText(/please reload/i)).not.toBeInTheDocument();
   });
 
   it("renders the image-too-large prompt when payloadRejected", async () => {
     await renderWith({ kind: "payloadRejected" });
     expect(screen.getByText(/image too large/i)).toBeInTheDocument();
     expect(screen.queryByTestId("loading-spinner")).not.toBeInTheDocument();
+  });
+});
+
+describe("Thread first-index notice (#1280)", () => {
+  it("tells whoever opens the chat that the agent's documents are still being read", async () => {
+    const { apiGet } = await import("@/lib/api-client");
+    vi.mocked(apiGet).mockImplementation(async (url: string) =>
+      url.endsWith("/knowledge/first-index")
+        ? { state: "indexing", processed: 120, total: 505 }
+        : {}
+    );
+    const { AgentIdContext } = await import("@/components/chat");
+    const { Thread } = await import("@/components/assistant-ui/thread");
+
+    // The notice sits in the footer beside the composer, which renders even
+    // while the messages are held back — so the message list (and the mock
+    // state it would need) stays out of this test.
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <Thread isReconcilingMessages />
+      </AgentIdContext.Provider>
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent("120 of 505");
+    expect(apiGet).toHaveBeenCalledWith(
+      "/api/agents/agent-1/knowledge/first-index",
+      expect.anything()
+    );
   });
 });
 

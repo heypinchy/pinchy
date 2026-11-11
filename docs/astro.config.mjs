@@ -171,6 +171,10 @@ export default defineConfig({
             },
             { label: "User Management", slug: "guides/user-management" },
             {
+              label: "Send Invitations by Email",
+              slug: "guides/email-delivery",
+            },
+            {
               label: "Smithers Onboarding",
               slug: "guides/smithers-onboarding",
             },

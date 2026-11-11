@@ -7,7 +7,8 @@
 # Version sources (in priority order):
 # 1. PINCHY_VERSION env var (set by CI)
 # 2. Git tag on current commit (e.g., v0.2.1)
-# 3. packages/web/package.json
+# 3. The newest frozen release in upgrading.mdx (never package.json, which
+#    carries a -dev version between releases — see below)
 #
 # Each file we touch gets a sibling `.preinject` backup so that
 # restore-placeholders.sh can revert byte-for-byte, including legitimate

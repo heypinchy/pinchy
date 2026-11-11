@@ -1,6 +1,6 @@
 /**
  * The files under an agent's granted folders whose type the indexer cannot
- * read (#1267) — a `.tif` scan, a legacy `.xls`, a `.txt`, a `.rtf`.
+ * read (#1267) — an `.rtf`, a binary `.xlsb`.
  *
  * Discovery already sees them: it walks every file and drops the ones outside
  * the extension allowlist (exclude-globs.ts). Until this module it dropped them
@@ -23,6 +23,7 @@ import { sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import { kbUnsupportedFiles } from "@/db/schema";
+import { inBatches, rowsPerInsert } from "@/db/insert-batches";
 
 import { buildPathFilter } from "./path-filter";
 
@@ -47,9 +48,6 @@ export function unsupportedFileType(fileName: string): string {
   // never reach this list anyway (see the module docblock).
   return dot > 0 ? fileName.slice(dot).toLowerCase() : "";
 }
-
-/** Rows per INSERT. Three parameters each, far below Postgres's 65,535-parameter limit. */
-const INSERT_BATCH = 1000;
 
 /** Rows per page on the read side. */
 export const DEFAULT_UNSUPPORTED_PAGE_SIZE = 1000;
@@ -89,10 +87,10 @@ export async function recordUnsupportedFiles(
       WHERE org_id = ${orgId} AND (${walked}) ${kept}
     `);
     const values = [...rows].map(([sourcePath, fileType]) => ({ orgId, sourcePath, fileType }));
-    for (let i = 0; i < values.length; i += INSERT_BATCH) {
+    for (const batch of inBatches(values, rowsPerInsert(kbUnsupportedFiles))) {
       await tx
         .insert(kbUnsupportedFiles)
-        .values(values.slice(i, i + INSERT_BATCH))
+        .values(batch)
         // A kept folder's row and a fresh find of the same path (a kept folder
         // under one root, walked under another) are the same file.
         .onConflictDoNothing();

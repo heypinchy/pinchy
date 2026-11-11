@@ -17,12 +17,16 @@ import { validatePinchyWebConfig } from "@/lib/domain-validation";
 import { parseRequestBody } from "@/lib/api-validation";
 import { validateAgentModel } from "@/lib/agent-model-validation";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { queueFirstIndex } from "@/lib/knowledge/first-index";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { updateAgentSchema } from "@/lib/schemas/agents";
+import { pluginConfigAuditChange, type FolderAccessDiff } from "@/lib/agent-plugin-config-audit";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
 /** What an `agent.updated` row carries, success or failure. */
 type AgentUpdateDetail = UpdateDetail & {
+  folderAccess?: FolderAccessDiff;
   allowedGroups?: {
     added: { id: string; name: string }[];
     removed: { id: string; name: string }[];
@@ -188,13 +192,19 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
       changes.starterPrompts = { from: oldPrompts, to: data.starterPrompts };
     }
   }
+  // Never the raw config: folder grants can name a person, and this row is
+  // immutable. See pluginConfigAuditChange for the shape.
+  let folderAccess: FolderAccessDiff | undefined;
   if (data.pluginConfig !== undefined) {
-    const oldConfig = existingAgent.pluginConfig ?? null;
-    const newConfig = data.pluginConfig ?? null;
-    if (JSON.stringify(oldConfig) !== JSON.stringify(newConfig)) {
-      changes.pluginConfig = { from: oldConfig, to: newConfig };
-    }
+    const audited = pluginConfigAuditChange(
+      existingAgent.pluginConfig ?? null,
+      data.pluginConfig ?? null
+    );
+    if (audited.change) changes.pluginConfig = audited.change;
+    folderAccess = audited.folderAccess;
   }
+  const baseDetail: AgentUpdateDetail = { changes, ...(folderAccess ? { folderAccess } : {}) };
+  const hasBaseChange = Object.keys(changes).length > 0 || folderAccess !== undefined;
 
   // updateAgent writes the row and THEN calls regenerateOpenClawConfig(); the
   // two are not in a transaction. Letting the throw escape hands Next.js a 500
@@ -223,9 +233,22 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
    *
    * `detail` is null when there is nothing auditable to record.
    */
-  function runtimeUpdateFailed(err: unknown, detail: AgentUpdateDetail | null): NextResponse {
+  function runtimeUpdateFailed(
+    err: unknown,
+    detail: AgentUpdateDetail | null,
+    followUp?: { err: unknown; groupsNotSaved: boolean }
+  ): NextResponse {
     const cause = err instanceof Error ? err.message : String(err);
     console.error(`[agents] config regeneration failed for agent ${agentId}:`, err);
+    let followUpNote = "";
+    if (followUp) {
+      const followUpCause =
+        followUp.err instanceof Error ? followUp.err.message : String(followUp.err);
+      console.error(`[agents] follow-up step failed for agent ${agentId}:`, followUp.err);
+      followUpNote = followUp.groupsNotSaved
+        ? `. The group assignment was not saved: ${followUpCause}`
+        : `. A follow-up step also failed: ${followUpCause}`;
+    }
     if (detail) {
       after(() =>
         appendAuditLog({
@@ -245,87 +268,112 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
       );
     }
     return NextResponse.json(
-      { error: `Settings were saved, but the agent runtime was not updated: ${cause}` },
+      {
+        error: `Settings were saved, but the agent runtime was not updated: ${cause}${followUpNote}`,
+      },
       { status: 500 }
     );
   }
 
+  // A runtime failure inside updateAgent is held, not answered on the spot.
+  // The row is committed at that point, and the rest of this request — the
+  // group replace, the Telegram allow-stores — does not depend on the runtime.
+  // Returning early skipped all of it while the response said "Settings were
+  // saved": the settings page sends the Access tab's `groupIds` in the same
+  // PATCH as the Permissions tab's `allowedTools`, so the admin was told a
+  // group change landed that never ran, and the failure audit row could not
+  // record it.
   let agent: typeof existingAgent;
+  let runtimeError: AgentRuntimeUpdateError | null = null;
   try {
     agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
   } catch (err) {
     if (err instanceof AgentRuntimeUpdateError) {
-      return runtimeUpdateFailed(err, Object.keys(changes).length > 0 ? { changes } : null);
+      runtimeError = err;
+      agent = err.agent;
+    } else {
+      const cause = err instanceof Error ? err.message : String(err);
+      console.error(`[agents] update failed for agent ${agentId}:`, err);
+      return NextResponse.json({ error: `Could not update the agent: ${cause}` }, { status: 500 });
     }
-
-    const cause = err instanceof Error ? err.message : String(err);
-    console.error(`[agents] update failed for agent ${agentId}:`, err);
-    return NextResponse.json({ error: `Could not update the agent: ${cause}` }, { status: 500 });
   }
 
-  // Capture old group IDs for audit diff (BEFORE delete/insert)
-  const oldGroupIds =
-    body.groupIds !== undefined && session.user.role === "admin"
-      ? await getAgentGroupIds(agentId)
-      : [];
+  const auditDetail: AgentUpdateDetail = { ...baseDetail };
+  const groupsRequested = body.groupIds !== undefined && session.user.role === "admin";
+  let groupsWritten = false;
 
-  // Update group assignments if provided (zod already validated string[]).
-  // Atomic replace: the wipe and the re-insert must commit or roll back
-  // together. As two standalone statements, an insert failure (I/O error, a
-  // group deleted in the validation→insert window) would leave a restricted
-  // agent stripped of every group with none re-added — silent access loss.
-  // Mirrors users/[userId]/groups and groups/[groupId]/members.
-  if (body.groupIds !== undefined && session.user.role === "admin") {
-    await db.transaction(async (tx) => {
-      await tx.delete(agentGroups).where(eq(agentGroups.agentId, agentId));
-      if (body.groupIds!.length > 0) {
-        await tx
-          .insert(agentGroups)
-          .values(body.groupIds!.map((groupId: string) => ({ agentId, groupId })));
+  // Everything from here to the push may throw. With a runtime failure held,
+  // a throw must not escape: the caller is owed that answer and its audit row,
+  // and an escaping error becomes a blank Next.js 500 for a row that is
+  // already committed. Without one held, the throw escapes as before.
+  let followUpError: unknown = null;
+  try {
+    // Capture old group IDs for audit diff (BEFORE delete/insert)
+    const oldGroupIds = groupsRequested ? await getAgentGroupIds(agentId) : [];
+
+    // Update group assignments if provided (zod already validated string[]).
+    // Atomic replace: the wipe and the re-insert must commit or roll back
+    // together. As two standalone statements, an insert failure (I/O error, a
+    // group deleted in the validation→insert window) would leave a restricted
+    // agent stripped of every group with none re-added — silent access loss.
+    // Mirrors users/[userId]/groups and groups/[groupId]/members.
+    if (groupsRequested) {
+      await db.transaction(async (tx) => {
+        await tx.delete(agentGroups).where(eq(agentGroups.agentId, agentId));
+        if (body.groupIds!.length > 0) {
+          await tx
+            .insert(agentGroups)
+            .values(body.groupIds!.map((groupId: string) => ({ agentId, groupId })));
+        }
+      });
+      groupsWritten = true;
+    }
+
+    // Build audit detail with group diffs — only for groups that were written
+    if (groupsWritten && body.groupIds !== undefined) {
+      const newIds = body.groupIds;
+      const addedIds = newIds.filter((id: string) => !oldGroupIds.includes(id));
+      const removedIds = oldGroupIds.filter((id: string) => !newIds.includes(id));
+      if (addedIds.length > 0 || removedIds.length > 0) {
+        const allGroupIds = [...new Set([...addedIds, ...removedIds])];
+        const groupRows =
+          allGroupIds.length > 0
+            ? await db
+                .select({ id: groups.id, name: groups.name })
+                .from(groups)
+                .where(inArray(groups.id, allGroupIds))
+            : [];
+        const nameMap = new Map(groupRows.map((g: { id: string; name: string }) => [g.id, g.name]));
+        auditDetail.allowedGroups = {
+          added: addedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
+          removed: removedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
+        };
       }
-    });
-  }
-
-  if (data.name !== undefined || data.tagline !== undefined) {
-    writeIdentityFile(agentId, {
-      name: agent.name,
-      tagline: agent.tagline,
-    });
-  }
-
-  // Build audit detail with group diffs
-  const auditDetail: AgentUpdateDetail = { changes };
-
-  if (body.groupIds !== undefined && session.user.role === "admin") {
-    const newIds = body.groupIds;
-    const addedIds = newIds.filter((id: string) => !oldGroupIds.includes(id));
-    const removedIds = oldGroupIds.filter((id: string) => !newIds.includes(id));
-    if (addedIds.length > 0 || removedIds.length > 0) {
-      const allGroupIds = [...new Set([...addedIds, ...removedIds])];
-      const groupRows =
-        allGroupIds.length > 0
-          ? await db
-              .select({ id: groups.id, name: groups.name })
-              .from(groups)
-              .where(inArray(groups.id, allGroupIds))
-          : [];
-      const nameMap = new Map(groupRows.map((g: { id: string; name: string }) => [g.id, g.name]));
-      auditDetail.allowedGroups = {
-        added: addedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
-        removed: removedIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id })),
-      };
     }
+
+    // Recalculate Telegram allow-from stores when visibility or groups change.
+    // Above the push, where it has always run: the rows it mirrors are already
+    // committed, so a failed push must not skip it and leave the store enforcing
+    // an access rule the database no longer has.
+    if (body.visibility !== undefined || body.groupIds !== undefined) {
+      await recalculateTelegramAllowStores();
+    }
+
+    // Last of the follow-up steps: a full or unwritable workspace is also what
+    // breaks the runtime push, so this is the step most likely to throw — and
+    // it must not take the committed group diff and the Telegram recalc with it.
+    if (data.name !== undefined || data.tagline !== undefined) {
+      writeIdentityFile(agentId, {
+        name: agent.name,
+        tagline: agent.tagline,
+      });
+    }
+  } catch (err) {
+    if (!runtimeError) throw err;
+    followUpError = err;
   }
 
-  const hasAuditableChange = Object.keys(changes).length > 0 || Boolean(auditDetail.allowedGroups);
-
-  // Recalculate Telegram allow-from stores when visibility or groups change.
-  // Above the push, where it has always run: the rows it mirrors are already
-  // committed, so a failed push must not skip it and leave the store enforcing
-  // an access rule the database no longer has.
-  if (body.visibility !== undefined || body.groupIds !== undefined) {
-    await recalculateTelegramAllowStores();
-  }
+  const hasAuditableChange = hasBaseChange || Boolean(auditDetail.allowedGroups);
 
   // Rebuild OpenClaw config when tool permissions or plugin config change — these
   // fields affect the generated openclaw.json (e.g. write_paths for pinchy_write).
@@ -338,11 +386,38 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   // `after()` cannot be cancelled once queued, so a success row registered
   // first would still be written after this fails — one request leaving two
   // rows that disagree, with the wrong one claiming `outcome: "success"`.
+  if (runtimeError) {
+    // No second push: it could not make the first one's state current, and a
+    // second failure would only repeat the message.
+    return runtimeUpdateFailed(
+      runtimeError,
+      hasAuditableChange ? auditDetail : null,
+      followUpError === null
+        ? undefined
+        : { err: followUpError, groupsNotSaved: groupsRequested && !groupsWritten }
+    );
+  }
+
   if (data.allowedTools !== undefined || data.pluginConfig !== undefined) {
     try {
       await regenerateOpenClawConfig();
     } catch (err) {
       return runtimeUpdateFailed(err, hasAuditableChange ? auditDetail : null);
+    }
+
+    // A folder granted now — or `knowledge_search` given to an agent that
+    // already had folders — is one nothing has indexed yet, and the agent
+    // finds nothing in it until something does (#1280). Queued as this
+    // admin's request; only folders no run has gone through, so saving the
+    // tab again queues nothing. A busy slot or a failure here is left to the
+    // index worker, which queues the run once it can — never a reason to fail
+    // a save that has already landed.
+    try {
+      await queueFirstIndex(agentId, { actorType: "user", actorId: session.user.id! }, (entry) =>
+        deferAuditLog(entry)
+      );
+    } catch (err) {
+      console.error(`[agents] could not queue the first index of agent ${agentId}:`, err);
     }
   }
 

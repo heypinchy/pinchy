@@ -154,7 +154,7 @@ describe("EmailPermissionSection", () => {
     });
   });
 
-  // MIGRATION TEST (AGENTS.md § "Test Migrations Against Pre-Existing Data"):
+  // MIGRATION TEST (agent-rules/testing.md § "Test Migrations Against Pre-Existing Data"):
   // pre-#328 agent template creation could persist a standalone (email,
   // "search") or (email, "list") permission row with NO accompanying "read"
   // row (see tool-registry.ts EMAIL_OPERATIONS comment for the write-path

@@ -6,7 +6,7 @@
  * `__tests__/security/committed-license-tokens.test.ts` can read the
  * production key without pulling in `@/lib/settings` (and with it the DB).
  *
- * See AGENTS.md § "Secret Handling" — none of this is secret. A public key is
+ * See agent-rules/secrets.md § "Secret Handling" — none of this is secret. A public key is
  * public by construction, and the development token below unlocks nothing that
  * a production install honours (#1083).
  */

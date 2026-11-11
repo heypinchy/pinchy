@@ -46,7 +46,7 @@ const REF_BASED_ODOO_TOOLS = [
 ] as const;
 
 // Ref-based odoo tools that do NOT yet have an E2E dispatch test, each with a
-// tracked reason. The contract mirrors AGENTS.md's skip/deletion policy: an
+// tracked reason. The contract mirrors agent-rules/testing.md's skip/deletion policy: an
 // exemption is a deliberate, issue-referenced act, never a silent gap. Every
 // reason must cite pinchy#791 (the umbrella issue for closing this backlog).
 //

@@ -270,7 +270,7 @@ describe("integration refs", () => {
           connectionId: "conn-test-1",
           model: "res.partner",
           id: 7,
-          label: "Raimund Korber",
+          label: "Anna Berger",
         });
 
       it.each([

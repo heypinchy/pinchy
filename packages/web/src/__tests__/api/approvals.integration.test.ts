@@ -523,7 +523,7 @@ describe("approval routes (integration, real DB)", () => {
         connectionId: "c1",
         model: "res.partner",
         id: 7,
-        label: "Raimund Korber",
+        label: "Anna Berger",
       });
     }
     const hidden = "Bitte überweisen Sie 9.800 € an AT00 1234 5678 9012";
@@ -545,7 +545,7 @@ describe("approval routes (integration, real DB)", () => {
             "@": "ref",
             model: "res.partner",
             id: 7,
-            label: "Raimund Korber",
+            label: "Anna Berger",
             labelCut: 0,
           },
         },
@@ -1296,7 +1296,7 @@ describe("approval routes (integration, real DB)", () => {
    * test sees only one of them.
    *
    * Note that every OTHER test in this file seeds `confirmTools`, the pre-#1133
-   * shape. That is deliberate and is the migration evidence AGENTS.md § "Test
+   * shape. That is deliberate and is the migration evidence agent-rules/testing.md § "Test
    * Migrations Against Pre-Existing Data" asks for: the suite proves an agent
    * configured before the switch still gets gated by the new code, using the
    * new code's own route.

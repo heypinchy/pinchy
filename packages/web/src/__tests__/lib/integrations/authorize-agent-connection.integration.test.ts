@@ -100,7 +100,7 @@ describe("authorizeAgentConnection against a real database", () => {
   });
 
   it("honors a grant row written by an older deploy, whatever model/operation it names", async () => {
-    // AGENTS.md § "Test Migrations Against Pre-Existing Data": this check is a
+    // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data": this check is a
     // NEW reader of `agent_connection_permissions`, and the rows it reads were
     // written by deploys that knew nothing about it. An IMAP mailbox grant
     // carries `model: "email"`; an Odoo grant carries a dotted model name and
@@ -143,6 +143,16 @@ describe("authorizeAgentConnection against a real database", () => {
       // row would revoke web search from every agent in the instance.
       await expect(authorizeAgentConnection(searcher, web)).resolves.toMatchObject({
         allowed: true,
+      });
+    });
+
+    it("denies an agent that may only fetch pages — fetch needs no key", async () => {
+      const web = await seedConnection({ type: "web-search", name: "Brave" });
+      const reader = await seedAgent({ name: "Reader", allowedTools: ["pinchy_web_fetch"] });
+
+      await expect(authorizeAgentConnection(reader, web)).resolves.toMatchObject({
+        allowed: false,
+        reason: "not-granted",
       });
     });
 

@@ -53,7 +53,7 @@ describe("migrateSmithersSoul", () => {
     appendAuditLogMock.mockResolvedValue({ id: 1, rowHmac: "x" });
   });
 
-  // ── The pre-existing-data test AGENTS.md § "Test Migrations Against
+  // ── The pre-existing-data test agent-rules/testing.md § "Test Migrations Against
   //    Pre-Existing Data" mandates. Every other test here starts from a clean
   //    slate where the current soul was written on the first write, which proves
   //    nothing about the state an UPGRADE produces: old data, new code.

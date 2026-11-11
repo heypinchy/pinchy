@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
  * `id="…"` attributes both exist, so it is the only place the two halves of
  * such a link can be resolved against each other.
  *
- * This also follows AGENTS.md's own rule from the X-Frame-Options gate: assert
+ * This also follows agent-rules/web-routes.md's own rule from the X-Frame-Options gate: assert
  * what a concrete URL resolves to, not what a source file asked for.
  *
  * Run with `pnpm -C docs check:anchors` AFTER `pnpm -C docs build`.

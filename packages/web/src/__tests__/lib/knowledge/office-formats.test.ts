@@ -15,9 +15,16 @@ import {
   isOfficeFile,
   isPresentationFile,
   isSpreadsheetFile,
+  isMsgFile,
+  isScanFile,
+  isTextFile,
   isWordFile,
+  MSG_EXTENSIONS,
   OFFICE_EXTENSIONS,
   PRESENTATION_EXTENSIONS,
+  SCAN_EXTENSIONS,
+  SPREADSHEET_EXTENSIONS,
+  TEXT_EXTENSIONS,
   WORD_EXTENSIONS,
 } from "@/lib/knowledge/office-formats";
 
@@ -54,14 +61,14 @@ describe("isOfficeFile", () => {
 
 describe("convertedPdfName", () => {
   it("keeps the document's own name and changes only the format", () => {
-    expect(convertedPdfName("/data/noack/Angebot.doc")).toBe("Angebot.pdf");
+    expect(convertedPdfName("/data/customer/Angebot.doc")).toBe("Angebot.pdf");
     expect(convertedPdfName("Präsentation.pptx")).toBe("Präsentation.pdf");
   });
 
   it("does not lowercase the name it was given", () => {
     // The label is shown to a reader and the filename lands in their downloads
     // folder; only the EXTENSION is matched case-insensitively.
-    expect(convertedPdfName("/data/QF_2012/Bericht.DOC")).toBe("Bericht.pdf");
+    expect(convertedPdfName("/data/archive-2012/Bericht.DOC")).toBe("Bericht.pdf");
   });
 
   it("leaves a doubled extension alone apart from the last one", () => {
@@ -80,8 +87,8 @@ describe("isSpreadsheetFile", () => {
     // carries `.XLSX`. Discovery lowercases (isAllowedExtension) and so must
     // the dispatch, or a file would be admitted to the ingest and then handed
     // to the PDF extractor.
-    expect(isSpreadsheetFile("/data/QF_2012/LIEFERANTEN.XLSX")).toBe(true);
-    expect(isSpreadsheetFile("/data/QF_2012/Liste.XlSm")).toBe(true);
+    expect(isSpreadsheetFile("/data/archive-2012/LIEFERANTEN.XLSX")).toBe(true);
+    expect(isSpreadsheetFile("/data/archive-2012/Liste.XlSm")).toBe(true);
   });
 
   it("leaves out the formats the extractor cannot open", () => {
@@ -115,8 +122,11 @@ describe("the two halves of OFFICE_EXTENSIONS", () => {
     // Legacy is the majority of the reference corpus (13 of 19), and it is
     // exactly what the OOXML-only parsing ecosystem cannot read — the reason
     // both anchors come out of the converted PDF instead.
-    expect(isWordFile("/data/QF_2012/Bericht.DOC")).toBe(true);
+    expect(isWordFile("/data/archive-2012/Bericht.DOC")).toBe(true);
     expect(isWordFile("/data/Angebot.docx")).toBe(true);
+    // A macro-enabled Word document is a Word document: same converter, same
+    // heading anchor. Its macros never run (office-preflight.test.ts, .docm).
+    expect(isWordFile("/data/Wartungsplan.DOCM")).toBe(true);
     expect(isPresentationFile("/data/Schulung.PPT")).toBe(true);
     expect(isPresentationFile("/data/Schulung.pptx")).toBe(true);
   });
@@ -128,5 +138,40 @@ describe("the two halves of OFFICE_EXTENSIONS", () => {
       expect(isWordFile(path)).toBe(false);
       expect(isPresentationFile(path)).toBe(false);
     }
+  });
+});
+
+describe("isScanFile, isTextFile and isMsgFile (#1409)", () => {
+  it("recognises a scanned TIFF under either spelling, whatever the case", () => {
+    expect(isScanFile("/data/plates/Typenschild.tif")).toBe(true);
+    expect(isScanFile("/data/plates/Typenschild.TIFF")).toBe(true);
+    expect(isScanFile("/data/plates/Typenschild.png")).toBe(false);
+    expect(isScanFile("/data/.tif")).toBe(false);
+  });
+
+  it("recognises a plain-text file", () => {
+    expect(isTextFile("/data/notes/Liesmich.TXT")).toBe(true);
+    expect(isTextFile("/data/notes/Liesmich.md")).toBe(false);
+    expect(isTextFile("/data/.txt")).toBe(false);
+  });
+
+  it("recognises a saved Outlook message", () => {
+    expect(isMsgFile("/data/mail/Angebot.MSG")).toBe(true);
+    expect(isMsgFile("/data/mail/Angebot.eml")).toBe(false);
+    expect(isMsgFile("/data/.msg")).toBe(false);
+  });
+
+  it("gives every readable extension exactly one reader", () => {
+    // `readDocument` dispatches on these lists in turn. An extension in two of
+    // them would take whichever branch is tested first, silently.
+    const all = [
+      ...OFFICE_EXTENSIONS,
+      ...SPREADSHEET_EXTENSIONS,
+      ...SCAN_EXTENSIONS,
+      ...TEXT_EXTENSIONS,
+      ...MSG_EXTENSIONS,
+      ".pdf",
+    ];
+    expect(new Set(all).size).toBe(all.length);
   });
 });

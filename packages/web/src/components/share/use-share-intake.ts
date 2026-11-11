@@ -41,7 +41,7 @@ interface UseShareIntakeArgs {
  *
  * When a `share` id IS present but the payload can't be loaded (a rejected
  * read, or a resolved-but-null entry — e.g. expired/already consumed), this
- * surfaces a toast: it's a transient, retryable error per AGENTS.md (the
+ * surfaces a toast: it's a transient, retryable error per agent-rules/ui.md (the
  * user can simply re-share), not a silent no-op.
  */
 export function useShareIntake({ addPendingUpload, setComposerText }: UseShareIntakeArgs) {

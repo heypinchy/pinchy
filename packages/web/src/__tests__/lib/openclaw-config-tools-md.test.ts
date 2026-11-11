@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 //     TOOLS.md written earlier in the SAME regeneration, and
 //   - the stale-content transition: a second regeneration against the
 //     state the first one left behind — the "pre-existing data" test class
-//     required by AGENTS.md ("Test Migrations Against Pre-Existing Data").
+//     required by agent-rules/testing.md ("Test Migrations Against Pre-Existing Data").
 
 const { fileStore } = vi.hoisted(() => ({ fileStore: new Map<string, string>() }));
 

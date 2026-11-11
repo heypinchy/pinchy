@@ -17,7 +17,7 @@
  * weekly freshness job (and the release preflight) then asks GitHub whether
  * that issue is closed, and a closed issue behind a "planned" sentence is a
  * doc that describes a world that no longer exists. Same contract as
- * AGENTS.md's "No Untracked Test Skips" — the issue is what makes the promise
+ * agent-rules/testing.md's "No Untracked Test Skips" — the issue is what makes the promise
  * auditable.
  *
  * The phrase list is deliberately narrow. "not yet claimed" (an invite) and

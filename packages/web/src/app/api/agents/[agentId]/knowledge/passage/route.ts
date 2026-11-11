@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { withAuth } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { getAgentWithAccess } from "@/lib/agent-access";
+import { grantedDataPaths } from "@/lib/agent-granted-paths";
 import { resolveAllowedFile } from "@/lib/agent-file-access";
 import { findCitedPassage } from "@/lib/knowledge/cited-passage";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
@@ -16,9 +17,10 @@ import type { AgentPluginConfig } from "@/db/schema";
 type RouteContext = { params: Promise<{ agentId: string }> };
 
 /**
- * POST /api/agents/[agentId]/knowledge/passage — which indexed passage on a
- * cited page the answer drew on, so the citation viewer can highlight it
- * (#1268). See lib/knowledge/cited-passage.ts for how it is chosen.
+ * POST /api/agents/[agentId]/knowledge/passage — which indexed passage of a
+ * cited page, slide or Word section the answer drew on, so the citation viewer
+ * can highlight it (#1268). See lib/knowledge/cited-passage.ts for how it is
+ * chosen.
  *
  * It returns document text, so it refuses exactly what the file route
  * (`workspace-file`) refuses, through the same two gates in the same order:
@@ -39,10 +41,15 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
 
   const parsed = await parseRequestBody(citedPassageSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { path, page, claim } = parsed.data;
+  const { path, claim } = parsed.data;
+  const anchor =
+    "page" in parsed.data
+      ? { page: parsed.data.page }
+      : "slide" in parsed.data
+        ? { slide: parsed.data.slide }
+        : { heading: parsed.data.heading };
 
-  const allowedPaths =
-    (agent.pluginConfig as AgentPluginConfig | null)?.["pinchy-files"]?.allowed_paths ?? [];
+  const allowedPaths = grantedDataPaths(agent.pluginConfig as AgentPluginConfig | null);
   const resolved = await resolveAllowedFile(path, allowedPaths);
   if (!resolved.ok) {
     return NextResponse.json(
@@ -60,7 +67,7 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
     : null;
 
   try {
-    const passage = await findCitedPassage(DEFAULT_ORG_ID, sourcePaths, page, claim, deps);
+    const passage = await findCitedPassage(DEFAULT_ORG_ID, sourcePaths, anchor, claim, deps);
     return NextResponse.json({ passage });
   } catch (err) {
     // The viewer shows the page without a highlight on any failure, so this

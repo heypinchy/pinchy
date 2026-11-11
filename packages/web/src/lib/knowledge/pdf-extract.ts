@@ -28,6 +28,8 @@ import {
 } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { hasSparseText, isScannedPage } from "../../../../plugins/pinchy-files/pdf-scan-rule";
+import { flattenOutline, type OutlineEntry } from "@/lib/pdf/outline";
+
 import { renderPageToImage } from "./pdf-render";
 import type { HeadingMark } from "./types";
 
@@ -85,7 +87,26 @@ export interface PdfOcrOptions {
   onDocumentOcr?: (stats: { rendered: number; skipped: number }) => void;
 }
 
-const DEFAULT_MAX_OCR_PAGES = 200;
+/**
+ * How many scanned pages of one document go to OCR. Exported because a TIFF
+ * is converted to PDF only up to this many frames (tiff-pdf.ts): a frame the
+ * budget will not read would only cost a decode.
+ */
+export const DEFAULT_MAX_OCR_PAGES = 200;
+
+/**
+ * How many pages of one document are with the vision provider at once (#1385).
+ *
+ * The wait is the provider's, not this machine's: one page after another, a
+ * long scan held a whole run for minutes. Pages are still rendered one at a
+ * time (the render is local CPU and memory); only the provider calls overlap.
+ * Three, not more: each one is a call against the operator's key, and a wider
+ * fan-out trades a slow document for rate limits.
+ */
+const OCR_PAGE_CONCURRENCY = 3;
+
+/** What a page is indexed with — its own text, or what OCR read off it. */
+type PageRead = { text: string; failed?: true };
 
 /**
  * Whether the page paints an image at all.
@@ -128,87 +149,19 @@ interface PageLine {
   y: number | null;
 }
 
-/** Where one outline entry points, once its destination has been resolved. */
-interface OutlineTarget {
-  page: number;
-  /**
-   * The destination's top edge, or null when the destination names no
-   * coordinate.
-   *
-   * Only `/XYZ` carries one, which is what LibreOffice writes for a Word
-   * heading — and it is the whole reason a heading can be placed WITHIN a page
-   * rather than at the top of it. Every other destination type (`/Fit`, which
-   * is what pdfkit emits, and the rest) genuinely means "this page", so null
-   * is not a gap to paper over: it is the destination's own answer, and the
-   * top of the page is the honest reading of it.
-   */
-  top: number | null;
-  headings: string[];
-}
-
-/** The y a destination names, or null when it names none. */
-function destinationTop(dest: unknown[]): number | null {
-  const type = (dest[1] as { name?: string } | undefined)?.name;
-  return type === "XYZ" && typeof dest[3] === "number" ? dest[3] : null;
-}
-
 /**
- * The document's outline, flattened to one entry per heading and grouped by
- * the page it points at, in document order.
- *
- * An outline this cannot read is not an error: the document simply has no
- * headings to anchor on, and its chunks carry no locator (locator.ts). That is
- * the normal state of a Word file written without heading styles.
+ * The document's outline, grouped by the page each heading points at, in
+ * document order. The flattening itself is shared with the citation viewer
+ * (`lib/pdf/outline.ts`), which has to find these exact heading paths again.
  */
-async function readOutline(doc: PDFDocumentProxy): Promise<Map<number, OutlineTarget[]>> {
-  const byPage = new Map<number, OutlineTarget[]>();
-
-  let outline: OutlineNode[] | null;
-  try {
-    // pdfjs types the outline with its own node shape; OutlineNode is the
-    // subset this reads, and `dest` is genuinely `string | unknown[] | null`.
-    outline = (await doc.getOutline()) as OutlineNode[] | null;
-  } catch {
-    return byPage;
+async function readOutline(doc: PDFDocumentProxy): Promise<Map<number, OutlineEntry[]>> {
+  const byPage = new Map<number, OutlineEntry[]>();
+  for (const entry of await flattenOutline(doc)) {
+    const targets = byPage.get(entry.page) ?? [];
+    targets.push(entry);
+    byPage.set(entry.page, targets);
   }
-  if (!outline) return byPage;
-
-  const visit = async (nodes: OutlineNode[], path: string[]): Promise<void> => {
-    for (const node of nodes) {
-      const title = (node.title ?? "").trim();
-      // An untitled entry adds no level rather than an empty one: "§ Quality >
-      //  > Zone B" names a section nobody can find.
-      const headings = title ? [...path, title] : path;
-
-      if (headings.length > 0) {
-        try {
-          const dest =
-            typeof node.dest === "string" ? await doc.getDestination(node.dest) : node.dest;
-          if (Array.isArray(dest) && dest.length > 0) {
-            const page =
-              (await doc.getPageIndex(dest[0] as Parameters<typeof doc.getPageIndex>[0])) + 1;
-            const targets = byPage.get(page) ?? [];
-            targets.push({ page, top: destinationTop(dest), headings });
-            byPage.set(page, targets);
-          }
-        } catch {
-          // A destination that will not resolve costs its own heading and
-          // nothing else — the rest of the outline still anchors.
-        }
-      }
-
-      if (node.items?.length) await visit(node.items, headings);
-    }
-  };
-
-  await visit(outline, []);
   return byPage;
-}
-
-interface OutlineNode {
-  title?: string;
-  dest?: string | unknown[] | null;
-  items?: OutlineNode[];
 }
 
 /**
@@ -221,7 +174,7 @@ interface OutlineNode {
  * The y a destination carries is the document's own answer to the same
  * question.
  */
-function markHeadings(lines: PageLine[], targets: OutlineTarget[]): HeadingMark[] {
+function markHeadings(lines: PageLine[], targets: OutlineEntry[]): HeadingMark[] {
   const offsets: number[] = [];
   let offset = 0;
   for (const line of lines) {
@@ -291,6 +244,30 @@ export async function extractPdfPages(
   let skipped = 0;
 
   /**
+   * Vision calls still out. Each one settles to a value and never rejects, so
+   * nothing here can surface as an unhandled rejection if the loop throws.
+   */
+  const inFlight = new Set<Promise<PageRead>>();
+
+  /**
+   * Starts the vision call for a rendered page, once a slot is free, and
+   * returns its result WITHOUT waiting for it — so the loop renders the next
+   * page while this one is with the provider.
+   */
+  async function startRead(image: Buffer, text: string): Promise<{ read: Promise<PageRead> }> {
+    while (inFlight.size >= OCR_PAGE_CONCURRENCY) await Promise.race(inFlight);
+    const read = ocr!.ocrPage(image).then(
+      (result): PageRead => (result === null ? { text, failed: true } : { text: result }),
+      (): PageRead => ({ text, failed: true })
+    );
+    inFlight.add(read);
+    void read.then(() => inFlight.delete(read));
+    // Wrapped: returning the promise itself from an async function would make
+    // the caller wait for it.
+    return { read };
+  }
+
+  /**
    * Returns the text this page should be indexed with: its own, or what a
    * vision model read off a render of it.
    *
@@ -302,7 +279,7 @@ export async function extractPdfPages(
   async function ocrIfScanned(
     page: PDFPageProxy,
     text: string
-  ): Promise<{ text: string; failed?: true }> {
+  ): Promise<PageRead | { read: Promise<PageRead> }> {
     if (!ocr || !hasSparseText(text)) return { text };
 
     const imageSizeUnknown = await paintsAnyImage(page as unknown as PageWithOperatorList);
@@ -319,15 +296,23 @@ export async function extractPdfPages(
     // A failed render counts as a failed read too. It costs no provider call,
     // and erring this way means a transient render failure (a memory squeeze)
     // is retried rather than taken as the document's last word.
+    let image: Buffer;
     try {
-      const image = await renderPageToImage(page);
-      rendered++;
-      const read = await ocr.ocrPage(image);
-      return read === null ? { text, failed: true } : { text: read };
+      image = await renderPageToImage(page);
     } catch {
       return { text, failed: true };
     }
+    rendered++;
+    return startRead(image, text);
   }
+
+  /** A page read so far: its text is final, or still with the vision provider. */
+  const pending: Array<{
+    page: number;
+    text: string;
+    lines: PageLine[];
+    read: PageRead | Promise<PageRead>;
+  }> = [];
 
   try {
     for (let i = 1; i <= doc.numPages; i++) {
@@ -369,23 +354,35 @@ export async function extractPdfPages(
 
         // The OCR decision, and the render, must happen while the page proxy
         // is still alive — `page.cleanup()` in the finally below releases it.
+        // The vision call itself only needs the rendered image, so it may
+        // still be running when the loop moves on.
         const read = ocr ? await ocrIfScanned(page, text) : { text };
-        const extracted: ExtractedPdfPage = { page: i, text: read.text };
-        if (read.failed) extracted.ocrFailed = true;
-        // Offsets into the text as extracted. OCR replaces that text wholesale
-        // when it fires, and a scanned page has no outline to speak of, so the
-        // marks are attached to the text they were measured against.
-        const targets = outline?.get(i);
-        if (targets?.length && extracted.text === text) {
-          extracted.headings = markHeadings(lines, targets);
-        }
-        pages.push(extracted);
+        pending.push({ page: i, text, lines, read: "read" in read ? read.read : read });
       } finally {
         page.cleanup();
       }
     }
   } finally {
+    // Every vision call that started is waited for, even when the loop threw:
+    // its usage is reported when it settles, and that must not land after the
+    // document has been given up on.
+    await Promise.all(inFlight);
     await loadingTask.destroy();
+  }
+
+  // In page order, whatever order the provider answered in.
+  for (const { page, text, lines, read } of pending) {
+    const { text: finalText, failed } = await read;
+    const extracted: ExtractedPdfPage = { page, text: finalText };
+    if (failed) extracted.ocrFailed = true;
+    // Offsets into the text as extracted. OCR replaces that text wholesale
+    // when it fires, and a scanned page has no outline to speak of, so the
+    // marks are attached to the text they were measured against.
+    const targets = outline?.get(page);
+    if (targets?.length && extracted.text === text) {
+      extracted.headings = markHeadings(lines, targets);
+    }
+    pages.push(extracted);
   }
 
   // Reported whenever this document had any scanned page: `rendered` is what

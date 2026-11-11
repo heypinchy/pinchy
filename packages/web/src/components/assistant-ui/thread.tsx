@@ -75,6 +75,7 @@ import { useShareIntake } from "@/components/share/use-share-intake";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { canOfferInstructionHandoff, stashInstructionDraft } from "@/lib/instruction-handoff";
+import { KnowledgeFirstIndexNotice } from "@/components/chat/knowledge-first-index-notice";
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -102,6 +103,7 @@ const MessageTimestamp: FC = () => {
 };
 
 const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMessages }) => {
+  const agentId = useContext(AgentIdContext);
   return (
     <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
       {!isReconcilingMessages && (
@@ -128,6 +130,9 @@ const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMess
 
       <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
         <ThreadScrollToBottom />
+        {/* Above the composer, where it is read before the question it would
+            otherwise answer "nothing found" to (#1280). */}
+        {agentId && <KnowledgeFirstIndexNotice agentId={agentId} />}
         <Composer />
       </ThreadPrimitive.ViewportFooter>
     </ThreadPrimitive.Viewport>
@@ -265,18 +270,27 @@ export const ThreadWelcome: FC = () => {
 
   if (chatStatus.kind === "unavailable") {
     const { reason } = chatStatus;
+    // The banner under the thread carries the detail and the buttons; this is
+    // the headline for an empty thread. Nothing here asks for a reload — we
+    // keep retrying (#1422).
     const message =
       reason === "disconnected"
         ? "Reconnecting to the agent..."
-        : reason === "configuring"
-          ? "Just a moment — getting things ready..."
-          : "We couldn't reconnect. Please reload to continue.";
+        : reason === "offline"
+          ? "You're offline."
+          : reason === "rejected"
+            ? "Waiting for a free connection..."
+            : reason === "upstreamDown"
+              ? "Waiting for the agent to come back..."
+              : reason === "unreachable"
+                ? "Still trying to reach Pinchy..."
+                : "Just a moment — getting things ready...";
 
     return (
       <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
         <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
           <div className="flex flex-col items-center gap-3">
-            {reason === "disconnected" && (
+            {reason !== "configuring" && reason !== "offline" && (
               <div
                 data-testid="loading-spinner"
                 className="size-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground"

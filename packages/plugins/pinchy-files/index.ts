@@ -23,6 +23,7 @@ import { normalizeDeliverableBasename } from "./deliverable-filename";
 import { assertPlainPath } from "./plain-path";
 import { refusingUnknownParams } from "./unknown-params";
 import { openVerified } from "./verified-open";
+import { isWebChatRun } from "./web-chat-run";
 
 // The Pinchy web process runs as uid/gid 999 in the container and must own a
 // generated file to serve it back to the user as a download (#703). Chowning
@@ -35,6 +36,8 @@ const GENERATE_FILE_FORMATS: GenerateFileFormat[] = ["csv", "xlsx", "pdf"];
 
 interface PluginToolContext {
   agentId?: string;
+  sessionKey?: string;
+  messageChannel?: string;
 }
 
 // Resolve a caller-supplied path to the Unicode form that actually exists on
@@ -869,6 +872,7 @@ const plugin = {
 
         const writePaths = config.write_paths;
         if (!writePaths || writePaths.length === 0) return null;
+        const offeredInChat = isWebChatRun(ctx);
 
         // Generated files always land in the workbench zone — the #703 serve
         // route only resolves delivered files from "workbench" or "uploads",
@@ -926,9 +930,10 @@ const plugin = {
           label: "Generate File",
           description:
             "Generate a CSV, XLSX, or PDF file from tabular data (columns + rows) and save it " +
-            "into your workbench. The file is delivered to the user in chat as a downloadable " +
-            "attachment. Supported formats: csv (spreadsheet-safe, UTF-8 with BOM), xlsx (a " +
-            "single-sheet Excel workbook), pdf (a simple table report). Existing files are " +
+            "into your workbench. In Pinchy's web chat the user gets it as a downloadable " +
+            "attachment; the result says whether this conversation is one. Supported " +
+            "formats: csv (spreadsheet-safe, UTF-8 with BOM), xlsx (a single-sheet Excel " +
+            "workbook), pdf (a simple table report). Existing files are " +
             "never overwritten — on a name collision a numeric suffix is appended (e.g. " +
             "export-2.csv); the tool result reports the actual filename used.",
           parameters,
@@ -1048,7 +1053,13 @@ const plugin = {
                   { type: "file", filename: name, mimeType },
                   {
                     type: "text",
-                    text: `Generated ${name} (${rows.length} rows, ${buffer.byteLength} bytes).`,
+                    text:
+                      `Generated ${name} (${rows.length} rows, ${buffer.byteLength} bytes). ` +
+                      (offeredInChat
+                        ? `Delivered to the user in chat as a downloadable file.`
+                        : `Files are offered as a download only in Pinchy's web chat, and this ` +
+                          `conversation is not one, so do not tell the user it was delivered: ` +
+                          `it is saved in the agent's workbench.`),
                   },
                 ],
                 details: {

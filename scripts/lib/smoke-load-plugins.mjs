@@ -1,6 +1,6 @@
 /**
  * Pure logic for the plugin smoke-load gate (see scripts/smoke-load-plugins.mjs
- * for the CLI/CI wrapper and AGENTS.md § "Plugin Integration Contract").
+ * for the CLI/CI wrapper and agent-rules/plugins.md § "Plugin Integration Contract").
  *
  * The incident this gate exists to catch: `googleapis` was missing from
  * pinchy-email's production install, gmail-adapter.ts threw at import time,

@@ -145,7 +145,7 @@ export async function waitForOpenClawStable(
  *    connection-only poll therefore returns on its FIRST iteration and waits
  *    for nothing — strictly weaker than the sleep it would replace. Only
  *    `configPushesPending === 0`, held for a contiguous window, is the real
- *    signal (AGENTS.md § "No Untracked Sleeps In E2E": the poll's exit
+ *    signal (agent-rules/testing.md § "No Untracked Sleeps In E2E": the poll's exit
  *    condition must be the condition the assertion depends on).
  *  - **Timing out must leave a trace.** The sleeps these replace were lenient
  *    by construction and every caller has its own gate before it dispatches,

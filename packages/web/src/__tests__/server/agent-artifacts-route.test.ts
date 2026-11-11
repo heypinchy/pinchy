@@ -46,7 +46,7 @@ function pinnedGrant(zone: "workbench" | "uploads", bytes: Buffer) {
 /**
  * A grant written before #903 — no zone, no hash, and unpinnable after the
  * fact. It keeps the semantics it was created under; the block at the bottom of
- * this file is what holds that promise (AGENTS.md § "Test Migrations Against
+ * this file is what holds that promise (agent-rules/testing.md § "Test Migrations Against
  * Pre-Existing Data").
  */
 const LEGACY_GRANT = [{ zone: null, contentHash: null }];
@@ -307,7 +307,7 @@ describe("GET /api/agents/[agentId]/artifacts/[filename]", () => {
     }
   });
 
-  // AGENTS.md § "Test Migrations Against Pre-Existing Data". The pinning above
+  // agent-rules/testing.md § "Test Migrations Against Pre-Existing Data". The pinning above
   // is a change to WHERE this route reads its authorization from, and every
   // other test in this file starts from a database written by the new code.
   // A real upgrade does not: `agent_delivered_files` already holds rows with

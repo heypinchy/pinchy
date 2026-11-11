@@ -302,7 +302,7 @@ describe("no plain string renders like an annotated value", () => {
     ["v", "https:f\u0456rma.at/x"],
     ["v", "https://firma.at@evil.com/x"],
     ["v", "Boss <boss@f\u0456rma.at>"],
-    ["to", '"Raimund Korber" <attacker@evil.com>'],
+    ["to", '"Anna Berger" <attacker@evil.com>'],
     ["to", '"Boss" <boss@f\u0456rma.at>'],
   ];
 

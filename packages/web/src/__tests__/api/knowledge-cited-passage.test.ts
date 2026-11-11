@@ -105,6 +105,72 @@ describe("POST /api/agents/[agentId]/knowledge/passage", () => {
     expect(mockFindCitedPassage).not.toHaveBeenCalled();
   });
 
+  it("rejects a body naming more than one anchor", async () => {
+    // Which one would it answer for? A silent pick is a highlight the viewer
+    // did not ask about.
+    const res = await POST(makeRequest({ ...validBody, slide: 4 }), ctx as never);
+
+    expect(res.status).toBe(400);
+    expect(mockFindCitedPassage).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty heading", async () => {
+    const res = await POST(
+      makeRequest({ path: "/data/quality/Handbuch.docx", heading: "  " }),
+      ctx as never
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockFindCitedPassage).not.toHaveBeenCalled();
+  });
+
+  it("asks about the cited slide of a presentation", async () => {
+    mockResolveAllowedFile.mockResolvedValueOnce({ ok: true, realPath: "/data/quality/Deck.pptx" });
+
+    const res = await POST(
+      makeRequest({ path: "/data/quality/Deck.pptx", slide: 3, claim: "Margins grew." }),
+      ctx as never
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockFindCitedPassage.mock.calls[0].slice(1, 4)).toEqual([
+      ["/data/quality/Deck.pptx"],
+      { slide: 3 },
+      "Margins grew.",
+    ]);
+  });
+
+  it("asks about the cited heading of a Word document", async () => {
+    mockResolveAllowedFile.mockResolvedValueOnce({
+      ok: true,
+      realPath: "/data/quality/Handbuch.docx",
+    });
+
+    const res = await POST(
+      makeRequest({ path: "/data/quality/Handbuch.docx", heading: "Qualität > Wareneingang" }),
+      ctx as never
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockFindCitedPassage.mock.calls[0].slice(1, 4)).toEqual([
+      ["/data/quality/Handbuch.docx"],
+      { heading: "Qualität > Wareneingang" },
+      undefined,
+    ]);
+  });
+
+  it("checks the grant for a slide or heading lookup too", async () => {
+    mockResolveAllowedFile.mockResolvedValueOnce({ ok: false, status: 403 });
+
+    const res = await POST(
+      makeRequest({ path: "/data/secret/Handbuch.docx", heading: "Gehälter" }),
+      ctx as never
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockFindCitedPassage).not.toHaveBeenCalled();
+  });
+
   it("refuses a path outside the agent's grant before reading the index", async () => {
     mockResolveAllowedFile.mockResolvedValueOnce({ ok: false, status: 403 });
 
@@ -113,6 +179,22 @@ describe("POST /api/agents/[agentId]/knowledge/passage", () => {
     expect(res.status).toBe(403);
     expect(mockResolveAllowedFile).toHaveBeenCalledWith("/data/secret/x.pdf", ["/data/quality"]);
     expect(mockFindCitedPassage).not.toHaveBeenCalled();
+  });
+
+  // An agent created before the v0.9.0 lockdown can still store a grant
+  // outside /data (#1272). The route must check the file against the grants
+  // under /data only, or that leftover would let it read passages from there.
+  it("ignores a stored grant outside /data when checking the file", async () => {
+    mockGetAgentWithAccess.mockResolvedValueOnce({
+      ...agentRow,
+      pluginConfig: {
+        "pinchy-files": { allowed_paths: ["/data/quality", "/root/.openclaw/workspaces"] },
+      },
+    });
+
+    await POST(makeRequest(validBody), ctx as never);
+
+    expect(mockResolveAllowedFile).toHaveBeenCalledWith(validBody.path, ["/data/quality"]);
   });
 
   it("answers 404 for a granted path that does not exist", async () => {
@@ -132,7 +214,7 @@ describe("POST /api/agents/[agentId]/knowledge/passage", () => {
     expect(mockFindCitedPassage).toHaveBeenCalledWith(
       DEFAULT_ORG_ID,
       ["/data/quality/Wartung.pdf"],
-      4,
+      { page: 4 },
       "Four hours.",
       expect.objectContaining({ embed: expect.any(Function) })
     );
