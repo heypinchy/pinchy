@@ -179,7 +179,7 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
     vi.restoreAllMocks();
   });
 
-  it("removes a deleted agent through OpenClaw's agents.delete, keeping its files", async () => {
+  it("removes a deleted agent through OpenClaw's agents.delete, files included", async () => {
     const oc = new FakeOpenClaw({
       gateway,
       agents: {
@@ -198,9 +198,10 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
     await settle();
 
     expect(oc.file).toEqual(target);
-    // deleteFiles: false — Pinchy owns the workspace and has already removed
-    // it (deleteAgent); OpenClaw would otherwise move its own copies to trash.
-    expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: false }]);
+    // deleteFiles: true — without it OpenClaw 2026.9 leaves the agent's
+    // database registered while its deletion journal marks the agent deleted,
+    // and the next gateway start refuses to come up.
+    expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: true }]);
     expect(configFileWrites()).toHaveLength(0);
     expect(onChangeApplied).toHaveBeenCalledTimes(1);
     expect(errorSpy).not.toHaveBeenCalled();
@@ -240,7 +241,7 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
     await settle();
 
     expect(oc.file).toEqual(target);
-    expect(oc.deletes).toEqual([{ agentId: "b", deleteFiles: false }]);
+    expect(oc.deletes).toEqual([{ agentId: "b", deleteFiles: true }]);
     expect(configFileWrites()).toHaveLength(1);
   });
 
@@ -258,8 +259,8 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
 
     expect(oc.file).toEqual(target);
     expect(oc.deletes).toEqual([
-      { agentId: "a", deleteFiles: false },
-      { agentId: "a", deleteFiles: false },
+      { agentId: "a", deleteFiles: true },
+      { agentId: "a", deleteFiles: true },
     ]);
     expect(configFileWrites()).toHaveLength(0);
     expect(errorSpy).not.toHaveBeenCalled();
