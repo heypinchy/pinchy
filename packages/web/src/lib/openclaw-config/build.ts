@@ -111,6 +111,7 @@ import { resolveChatModelFallbackChain } from "./chat-model-fallback";
 import { buildAgentsBlock, preserveTalkBlock } from "./agent-roster";
 import { buildGatewayBlock } from "./gateway";
 import { aggregateEmailPermissionsByAgent, buildEmailAgentConfigs } from "./email-agent-config";
+import { personalAgentsByOwner, telegramDirectTarget } from "@/lib/telegram-routing";
 
 /**
  * Public docs URL configuration for the bundled `pinchy-docs` plugin.
@@ -1738,9 +1739,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     if (personalBotsAccountIds.length > 0) {
       const telegramLinks = links.filter((l) => l.channel === "telegram");
       // Map userId → their personal agent ID (hoisted outside loop)
-      const personalAgentsByOwner = new Map(
-        liveAgents.filter((a) => a.isPersonal).map((a) => [a.ownerId, a.id])
-      );
+      const personalAgents = personalAgentsByOwner(liveAgents);
 
       // Members may be barred from personal agents (Settings → Organization →
       // Member access). Then a member gets no binding at all — skipping only
@@ -1775,10 +1774,14 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
           ) {
             continue;
           }
-          // Route to user's own personal agent, or fall back to the bot owner's agent
-          const targetAgentId = personalAgentsByOwner.get(link.userId) || accountId;
+          // The allow store lets this user in only once OpenClaw routes them
+          // to this same agent, so both ask telegramDirectTarget.
           bindings.push({
-            agentId: targetAgentId,
+            agentId: telegramDirectTarget(
+              { id: accountId, isPersonal: true },
+              link.userId,
+              personalAgents
+            ),
             match: {
               channel: "telegram",
               accountId,

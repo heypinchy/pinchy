@@ -112,6 +112,43 @@ describe("pinchy-audit plugin", () => {
     expect(respond).toHaveBeenCalledWith(true, { request: null });
   });
 
+  // The allow-list write holds back a sender until OpenClaw routes them to the
+  // agent Pinchy meant, asking OpenClaw's own routing with the live config.
+  it("checks setAllowFrom's routeTo against OpenClaw's routing for the running config", async () => {
+    const { default: plugin } = await import("./index");
+    const liveConfig = { bindings: [] };
+    const resolveAgentRoute = vi.fn(() => ({ agentId: "agent-owner" }));
+    const api = {
+      ...createMockApi(undefined),
+      runtime: {
+        state: { resolveStateDir: () => "/nonexistent-state-dir" },
+        config: { current: () => liveConfig },
+        channel: { routing: { resolveAgentRoute } },
+      },
+    };
+    plugin.register?.(api as any);
+
+    const setAllowFrom = api.registerGatewayMethod.mock.calls.find(
+      (c) => c[0] === "pinchy.pairing.setAllowFrom"
+    )![1];
+    setAllowFrom({
+      params: {
+        channel: "telegram",
+        allowFrom: { "bot-a": ["111"] },
+        routeTo: { "bot-a": { "111": "agent-alice" } },
+        replaceAll: false,
+      },
+      respond: vi.fn(),
+    });
+
+    expect(resolveAgentRoute).toHaveBeenCalledWith({
+      cfg: liveConfig,
+      channel: "telegram",
+      accountId: "bot-a",
+      peer: { kind: "direct", id: "111" },
+    });
+  });
+
   it("posts start events from before_tool_call", async () => {
     const { default: plugin } = await import("./index");
     plugin.register?.(

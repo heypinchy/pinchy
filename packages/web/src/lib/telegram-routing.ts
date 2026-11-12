@@ -1,0 +1,39 @@
+/**
+ * Which agent a linked user's direct messages to a Telegram bot reach.
+ *
+ * Two places need the same answer: the config builder writes the OpenClaw
+ * bindings that route the messages there (openclaw-config/build.ts), and the
+ * allow store lets a user in only once OpenClaw actually routes them there
+ * (telegram-allow-store.ts). Should they ever disagree, the allow store would
+ * hold a user back for good, or let them in to the wrong agent.
+ */
+
+interface RoutableAgent {
+  id: string;
+  isPersonal: boolean;
+  ownerId: string | null;
+}
+
+/** Each owner's personal agent, keyed by user id. */
+export function personalAgentsByOwner(agents: ReadonlyArray<RoutableAgent>): Map<string, string> {
+  const byOwner = new Map<string, string>();
+  for (const agent of agents) {
+    if (agent.isPersonal && agent.ownerId) byOwner.set(agent.ownerId, agent.id);
+  }
+  return byOwner;
+}
+
+/**
+ * A shared agent's bot serves its own agent to everyone. A personal agent's
+ * bot (Smithers) hands each linked user their own personal agent, so their
+ * Telegram chat is the one they see in the web UI; a user without one gets the
+ * bot's agent.
+ */
+export function telegramDirectTarget(
+  bot: { id: string; isPersonal: boolean },
+  userId: string,
+  personalAgents: ReadonlyMap<string, string>
+): string {
+  if (!bot.isPersonal) return bot.id;
+  return personalAgents.get(userId) ?? bot.id;
+}

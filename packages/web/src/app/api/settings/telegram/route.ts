@@ -104,9 +104,11 @@ export const POST = withAuth(async (req, _ctx, session) => {
   // Routing before access. A personal bot lets every linked user in and sends
   // each to their own personal agent by peer binding; the account-wide binding
   // to the bot owner's agent catches everyone else (openclaw-config/build.ts).
-  // Allowing this user in before their peer binding is written would put their
-  // DMs into the owner's agent. A bindings change is a no-op reload in
-  // OpenClaw 2026.9, so this costs no restart. If it throws, nobody is let in.
+  // The regenerate writes this user's peer binding, a no-op reload in OpenClaw
+  // 2026.9 that costs no restart. It reaches OpenClaw in the background,
+  // though, so the recalculation lets the user in only once OpenClaw routes
+  // them to their own agent, and asks again until it does
+  // (telegram-allow-store.ts).
   await regenerateOpenClawConfig();
 
   // Recalculate per-account allow-from stores (permission-aware)

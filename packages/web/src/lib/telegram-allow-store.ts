@@ -22,8 +22,9 @@
 import { db } from "@/db";
 import { agents, channelLinks, agentGroups, userGroups, users } from "@/db/schema";
 import { eq, isNull } from "drizzle-orm";
-import { getSettingsByPrefix } from "@/lib/settings";
+import { getSettingsByKeys, getSettingsByPrefix } from "@/lib/settings";
 import { getInstancePolicy, isPausedPersonalAgent } from "@/lib/instance-policy";
+import { personalAgentsByOwner, telegramDirectTarget } from "@/lib/telegram-routing";
 import {
   callPairingStore,
   OpenClawNotConnectedError,
@@ -33,26 +34,37 @@ import {
 
 /**
  * Write allow lists. `replaceAll` drops every account the map leaves out;
- * without it, only the named accounts change. Skipped, with a log line, while
- * OpenClaw is disconnected; any other failure throws, because a revocation
- * that silently did not land would leave a user with access they lost.
+ * without it, only the named accounts change. `routeTo` names, per account and
+ * sender, the agent the sender must reach: pinchy-audit holds back a sender
+ * OpenClaw does not route there yet and answers with them as `withheld`.
+ * Skipped, with a log line, while OpenClaw is disconnected; any other failure
+ * throws, because a revocation that silently did not land would leave a user
+ * with access they lost. Answers how many senders were held back.
  */
 async function writeAllowFrom(
   allowFrom: Record<string, string[]>,
-  replaceAll: boolean
-): Promise<void> {
+  replaceAll: boolean,
+  routeTo?: Record<string, Record<string, string>>
+): Promise<number> {
+  let response: unknown;
   try {
-    await callPairingStore(PAIRING_SET_ALLOW_FROM_METHOD, { allowFrom, replaceAll });
+    response = await callPairingStore(PAIRING_SET_ALLOW_FROM_METHOD, {
+      allowFrom,
+      replaceAll,
+      ...(routeTo ? { routeTo } : {}),
+    });
   } catch (err) {
     if (err instanceof OpenClawNotConnectedError) {
       console.warn(
         "[telegram-allow-store]",
         "OpenClaw is not connected; the allow lists are rewritten when it reconnects"
       );
-      return;
+      return 0;
     }
     throw err;
   }
+  const withheld = (response as { withheld?: unknown } | null)?.withheld;
+  return Array.isArray(withheld) ? withheld.length : 0;
 }
 
 // ── Per-account store functions ─────────────────────────────────────
@@ -81,14 +93,65 @@ export async function clearAllAllowStores(): Promise<void> {
 let recalculateMutex: Promise<void> = Promise.resolve();
 
 export function recalculateTelegramAllowStores(): Promise<void> {
+  return enqueueRecalculation(false);
+}
+
+// While pinchy-audit holds a sender back, the run is repeated: soon at first,
+// since OpenClaw usually loads the new bindings within seconds, then rarely, so
+// a binding that never arrives costs one call every five minutes. Any run
+// replaces the pending retry, and one that lets everyone through ends it.
+const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000, 300_000];
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryAttempt = 0;
+
+function enqueueRecalculation(isRetry: boolean): Promise<void> {
   // Serialize concurrent calls — each waits for the previous to complete
   recalculateMutex = recalculateMutex
     .catch(() => {}) // don't let a failed previous run block the next
-    .then(() => recalculateTelegramAllowStoresImpl());
+    .then(async () => {
+      let withheld: number;
+      try {
+        withheld = await recalculateTelegramAllowStoresImpl();
+      } catch (err) {
+        // A failed retry must not end the retries; a failed regular run keeps
+        // whichever retry is pending.
+        if (isRetry) scheduleRetry(true);
+        throw err;
+      }
+      if (withheld > 0) {
+        scheduleRetry(isRetry);
+      } else {
+        cancelRetry();
+      }
+    });
   return recalculateMutex;
 }
 
-async function recalculateTelegramAllowStoresImpl(): Promise<void> {
+function cancelRetry(): void {
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+  retryAttempt = 0;
+}
+
+function scheduleRetry(isRetry: boolean): void {
+  if (retryTimer) clearTimeout(retryTimer);
+  retryAttempt = isRetry ? retryAttempt + 1 : 0;
+  const delay = RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)];
+  console.info(
+    "[telegram-allow-store]",
+    `OpenClaw does not route every linked Telegram user to their agent yet; asking again in ${delay / 1000} s`
+  );
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    enqueueRecalculation(true).catch((err) =>
+      console.error("[telegram-allow-store] retrying the allow lists failed:", err)
+    );
+  }, delay);
+  retryTimer.unref?.();
+}
+
+/** Answers how many senders pinchy-audit held back (see writeAllowFrom). */
+async function recalculateTelegramAllowStoresImpl(): Promise<number> {
   // 1. Get all non-deleted agents (including personal ones like Smithers,
   // which can have Telegram bots connected via Settings → Telegram)
   const allAgents = await db.select().from(agents).where(isNull(agents.deletedAt));
@@ -113,8 +176,7 @@ async function recalculateTelegramAllowStoresImpl(): Promise<void> {
   const allowFrom: Record<string, string[]> = {};
   for (const agent of agentsWithBots) allowFrom[agent.id] = [];
   if (agentsWithBots.length === 0) {
-    await writeAllowFrom(allowFrom, true);
-    return;
+    return writeAllowFrom(allowFrom, true);
   }
 
   // 4. Get all Telegram-linked users
@@ -122,8 +184,7 @@ async function recalculateTelegramAllowStoresImpl(): Promise<void> {
 
   if (links.length === 0) {
     // No linked users — every bot gets an empty list
-    await writeAllowFrom(allowFrom, true);
-    return;
+    return writeAllowFrom(allowFrom, true);
   }
 
   // 5. Get all users (for role check and ban status)
@@ -190,7 +251,41 @@ async function recalculateTelegramAllowStoresImpl(): Promise<void> {
     }
   }
 
-  await writeAllowFrom(allowFrom, true);
+  return writeAllowFrom(allowFrom, true, await personalBotRoutes(allAgents, agentsWithBots, links));
+}
+
+/**
+ * The agent each sender of a personal-agent bot must reach before pinchy-audit
+ * lets them in (see writeAllowFrom). The bindings that send a linked user to
+ * their own agent reach OpenClaw in the background, up to a minute after the
+ * link; until then the bot's account-wide binding would hand them the bot
+ * owner's agent. A shared agent's bot has no such gap: its one binding arrives
+ * with the bot itself. Neither has a bot OpenClaw is not running after a
+ * polling conflict (build.ts leaves it out of the config), so it gets no route
+ * to wait for.
+ */
+async function personalBotRoutes(
+  allAgents: ReadonlyArray<{ id: string; isPersonal: boolean; ownerId: string | null }>,
+  agentsWithBots: ReadonlyArray<{ id: string; isPersonal: boolean }>,
+  links: ReadonlyArray<{ userId: string; channelUserId: string }>
+): Promise<Record<string, Record<string, string>>> {
+  const personalBots = agentsWithBots.filter((a) => a.isPersonal);
+  if (personalBots.length === 0) return {};
+  const conflictDisabled = await getSettingsByKeys(
+    personalBots.map((bot) => `telegram_conflict_disabled:${bot.id}`)
+  );
+  const personalAgents = personalAgentsByOwner(allAgents);
+  const routeTo: Record<string, Record<string, string>> = {};
+  for (const bot of personalBots) {
+    if (conflictDisabled.has(`telegram_conflict_disabled:${bot.id}`)) continue;
+    routeTo[bot.id] = Object.fromEntries(
+      links.map((link) => [
+        link.channelUserId,
+        telegramDirectTarget(bot, link.userId, personalAgents),
+      ])
+    );
+  }
+  return routeTo;
 }
 
 // ── Pairing store ───────────────────────────────────────────────────

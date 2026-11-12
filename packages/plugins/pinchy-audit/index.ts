@@ -5,6 +5,7 @@ import {
   PAIRING_FIND_BY_CODE_METHOD,
   PAIRING_REMOVE_REQUESTS_METHOD,
   PAIRING_SET_ALLOW_FROM_METHOD,
+  type ResolveRoute,
 } from "./channel-pairing-store";
 import { createTrajectoryReadMethod, TRAJECTORY_READ_METHOD } from "./trajectory-reader";
 
@@ -61,7 +62,21 @@ type GateDecision =
 interface PluginApi {
   pluginConfig?: PluginConfig;
   logger?: PluginLogger;
-  runtime: { state: { resolveStateDir: () => string } };
+  runtime: {
+    state: { resolveStateDir: () => string };
+    // Only the slices Pinchy uses; OpenClaw's own types are far wider.
+    config: { current: () => unknown };
+    channel: {
+      routing: {
+        resolveAgentRoute: (input: {
+          cfg: unknown;
+          channel: string;
+          accountId: string;
+          peer: { kind: "direct"; id: string };
+        }) => { agentId: string };
+      };
+    };
+  };
   registerGatewayMethod: (
     method: string,
     handler: ReturnType<typeof createTrajectoryReadMethod>,
@@ -604,9 +619,19 @@ const plugin = {
       createPairingRemoveRequestsMethod(resolveStateDir),
       { scope: "operator.admin" }
     );
+    // The same routing call and config snapshot Telegram uses for an inbound
+    // direct message, so a sender is let in only once their messages would
+    // reach the agent Pinchy meant.
+    const resolveRoute: ResolveRoute = ({ channel, accountId, peerId }) =>
+      api.runtime.channel.routing.resolveAgentRoute({
+        cfg: api.runtime.config.current(),
+        channel,
+        accountId,
+        peer: { kind: "direct", id: peerId },
+      }).agentId;
     api.registerGatewayMethod(
       PAIRING_SET_ALLOW_FROM_METHOD,
-      createPairingSetAllowFromMethod(resolveStateDir),
+      createPairingSetAllowFromMethod(resolveStateDir, resolveRoute),
       { scope: "operator.admin" }
     );
 

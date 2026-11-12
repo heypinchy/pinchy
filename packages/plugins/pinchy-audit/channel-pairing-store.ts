@@ -259,16 +259,95 @@ export function createPairingRemoveRequestsMethod(resolveStateDir: () => string)
 }
 
 /**
- * `pinchy.pairing.setAllowFrom` — params `channel`, `allowFrom` (account id →
- * sender ids) and `replaceAll`; answers `{ accounts }`.
+ * Where OpenClaw sends a direct message from `peerId` to bot `accountId` under
+ * the config it is running with right now: the agent id its routing picks.
+ * Throws when no binding routes the message, as OpenClaw does.
  */
-export function createPairingSetAllowFromMethod(resolveStateDir: () => string): Handler {
+export type ResolveRoute = (params: {
+  channel: string;
+  accountId: string;
+  peerId: string;
+}) => string;
+
+export interface WithheldSender {
+  accountId: string;
+  peerId: string;
+}
+
+function requireRouteTo(value: unknown): Record<string, Record<string, string>> | undefined {
+  if (value === undefined) return undefined;
+  const invalid = () =>
+    new InvalidRequestError("routeTo must be a map of account id to sender id to agent id");
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid();
+  for (const senders of Object.values(value)) {
+    if (typeof senders !== "object" || senders === null || Array.isArray(senders)) throw invalid();
+    if (!Object.values(senders).every((agentId) => typeof agentId === "string")) throw invalid();
+  }
+  return value as Record<string, Record<string, string>>;
+}
+
+// OpenClaw lowercases agent ids (`normalizeAgentId`); Pinchy's are UUIDs.
+function sameAgent(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * Hold back every sender OpenClaw would not yet route to the agent Pinchy
+ * meant. Pinchy pushes the bindings that route a linked user to their own
+ * agent in the background, and OpenClaw may take up to a minute to load them
+ * (config.apply is rate-limited). Until it does, a bot's account-wide binding
+ * sends that user's messages to the bot owner's agent. Letting them in before
+ * then would hand them someone else's agent, so they wait, and Pinchy asks
+ * again until they are through.
+ */
+function withholdMisrouted(
+  channel: string,
+  allowFrom: Record<string, string[]>,
+  routeTo: Record<string, Record<string, string>>,
+  resolveRoute: ResolveRoute
+): { allowFrom: Record<string, string[]>; withheld: WithheldSender[] } {
+  const withheld: WithheldSender[] = [];
+  const kept: Record<string, string[]> = {};
+  for (const [accountId, entries] of Object.entries(allowFrom)) {
+    kept[accountId] = entries.filter((raw) => {
+      const peerId = raw.trim();
+      const expected = routeTo[accountId]?.[peerId];
+      if (expected === undefined) return true;
+      let routed: string | null;
+      try {
+        routed = resolveRoute({ channel, accountId, peerId });
+      } catch {
+        routed = null;
+      }
+      if (routed !== null && sameAgent(routed, expected)) return true;
+      withheld.push({ accountId, peerId });
+      return false;
+    });
+  }
+  return { allowFrom: kept, withheld };
+}
+
+/**
+ * `pinchy.pairing.setAllowFrom` — params `channel`, `allowFrom` (account id →
+ * sender ids), `replaceAll` and optionally `routeTo` (account id → sender id →
+ * the agent that sender must reach). A sender with an entry in `routeTo` is
+ * only written once OpenClaw routes them there (see withholdMisrouted).
+ * Answers `{ accounts, withheld }`.
+ */
+export function createPairingSetAllowFromMethod(
+  resolveStateDir: () => string,
+  resolveRoute: ResolveRoute
+): Handler {
   return handler((params) => {
     const channel = requireString(params, "channel");
-    const allowFrom = requireAllowFrom(params.allowFrom);
+    const requested = requireAllowFrom(params.allowFrom);
+    const routeTo = requireRouteTo(params.routeTo);
     if (typeof params.replaceAll !== "boolean") {
       throw new InvalidRequestError("replaceAll must be a boolean");
     }
+    const { allowFrom, withheld } = routeTo
+      ? withholdMisrouted(channel, requested, routeTo, resolveRoute)
+      : { allowFrom: requested, withheld: [] };
     return {
       accounts: setPairingAllowFrom({
         stateDir: resolveStateDir(),
@@ -276,6 +355,7 @@ export function createPairingSetAllowFromMethod(resolveStateDir: () => string): 
         allowFrom,
         replaceAll: params.replaceAll,
       }),
+      withheld,
     };
   });
 }

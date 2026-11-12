@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Since OpenClaw 2026.9 the allow lists and pairing requests live in its state
 // database; the pinchy-audit plugin writes them for us over the gateway.
@@ -69,10 +69,16 @@ import {
 const SET_ALLOW_FROM = "pinchy.pairing.setAllowFrom";
 
 /** The params of every setAllowFrom call, oldest first. */
-function allowFromWrites(): Array<{ allowFrom: Record<string, string[]>; replaceAll: boolean }> {
+interface AllowFromWrite {
+  allowFrom: Record<string, string[]>;
+  replaceAll: boolean;
+  routeTo?: Record<string, Record<string, string>>;
+}
+
+function allowFromWrites(): AllowFromWrite[] {
   return mockCallPairingStore.mock.calls
     .filter((c: unknown[]) => c[0] === SET_ALLOW_FROM)
-    .map((c: unknown[]) => c[1] as { allowFrom: Record<string, string[]>; replaceAll: boolean });
+    .map((c: unknown[]) => c[1] as AllowFromWrite);
 }
 
 /** The allow lists of the one setAllowFrom call the test expects. */
@@ -189,6 +195,7 @@ describe("telegram-allow-store", () => {
         id: string;
         visibility: string;
         isPersonal: boolean;
+        ownerId?: string | null;
         deletedAt: string | null;
         avatarSeed: string | null;
       }>;
@@ -620,6 +627,165 @@ describe("telegram-allow-store", () => {
 
       // All three agents' lists were still written from the batched result.
       expect(Object.keys(writtenAllowFrom()).sort()).toEqual(["agent-1", "agent-2", "agent-3"]);
+    });
+
+    // ── Routing gate ────────────────────────────────────────────────
+    // The bindings that send a linked user to their own personal agent reach
+    // OpenClaw in the background, up to a minute after the link. Until then
+    // the bot's account-wide binding hands their messages to the bot owner's
+    // agent, so pinchy-audit holds back a sender OpenClaw would not yet route
+    // where Pinchy means them to go.
+
+    function personalBotFleet() {
+      setupDbMocks({
+        agents: [
+          {
+            id: "smithers-owner",
+            visibility: "restricted",
+            isPersonal: true,
+            ownerId: "owner-1",
+            deletedAt: null,
+            avatarSeed: "__smithers__",
+          },
+          {
+            id: "smithers-alice",
+            visibility: "restricted",
+            isPersonal: true,
+            ownerId: "alice",
+            deletedAt: null,
+            avatarSeed: "__smithers__",
+          },
+          {
+            id: "shared-1",
+            visibility: "all",
+            isPersonal: false,
+            ownerId: "owner-1",
+            deletedAt: null,
+            avatarSeed: null,
+          },
+        ],
+        channelLinks: [
+          { userId: "owner-1", channelUserId: "100" },
+          { userId: "alice", channelUserId: "200" },
+          { userId: "bob", channelUserId: "300" },
+        ],
+        users: [
+          { id: "owner-1", role: "admin", banned: false },
+          { id: "alice", role: "member", banned: false },
+          { id: "bob", role: "member", banned: false },
+        ],
+      });
+      mockSettings.set("telegram_bot_token:smithers-owner", "token-1");
+      mockSettings.set("telegram_bot_token:shared-1", "token-2");
+    }
+
+    it("tells OpenClaw which agent each user of a personal-agent bot must reach", async () => {
+      personalBotFleet();
+
+      await recalculateTelegramAllowStores();
+
+      // A shared bot routes everyone through the binding that arrives with its
+      // account, so it has no route to wait for.
+      expect(allowFromWrites()[0].routeTo).toEqual({
+        "smithers-owner": {
+          "100": "smithers-owner",
+          "200": "smithers-alice",
+          "300": "smithers-owner",
+        },
+      });
+    });
+
+    it("expects no route for a bot OpenClaw is not running after a polling conflict", async () => {
+      personalBotFleet();
+      mockSettings.set("telegram_conflict_disabled:smithers-owner", "true");
+
+      await recalculateTelegramAllowStores();
+
+      expect(allowFromWrites()[0].routeTo).toEqual({});
+    });
+
+    describe("while OpenClaw holds a sender back", () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+        vi.spyOn(console, "info").mockImplementation(() => {});
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      const heldBack = { withheld: [{ accountId: "smithers-owner", peerId: "200" }] };
+
+      it("asks again shortly, until the sender is through", async () => {
+        personalBotFleet();
+        mockCallPairingStore
+          .mockResolvedValueOnce(heldBack)
+          .mockResolvedValueOnce({ withheld: [] });
+
+        await recalculateTelegramAllowStores();
+        expect(allowFromWrites()).toHaveLength(1);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(allowFromWrites()).toHaveLength(2);
+
+        await vi.advanceTimersByTimeAsync(60 * 60_000);
+        expect(allowFromWrites()).toHaveLength(2);
+      });
+
+      it("waits longer each time, then every five minutes", async () => {
+        personalBotFleet();
+        mockCallPairingStore.mockResolvedValue(heldBack);
+
+        await recalculateTelegramAllowStores();
+        for (const [delay, writes] of [
+          [2_000, 2],
+          [5_000, 3],
+          [15_000, 4],
+          [30_000, 5],
+          [60_000, 6],
+          [300_000, 7],
+          [300_000, 8],
+        ]) {
+          await vi.advanceTimersByTimeAsync(delay - 1);
+          expect(allowFromWrites()).toHaveLength(writes - 1);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(allowFromWrites()).toHaveLength(writes);
+        }
+
+        mockCallPairingStore.mockResolvedValue({ withheld: [] });
+        await vi.advanceTimersByTimeAsync(300_000);
+        await vi.advanceTimersByTimeAsync(60 * 60_000);
+        expect(allowFromWrites()).toHaveLength(9);
+      });
+
+      it("drops a pending retry when a newer run lets everyone through", async () => {
+        personalBotFleet();
+        mockCallPairingStore
+          .mockResolvedValueOnce(heldBack)
+          .mockResolvedValueOnce({ withheld: [] });
+
+        await recalculateTelegramAllowStores();
+        await recalculateTelegramAllowStores();
+        await vi.advanceTimersByTimeAsync(60 * 60_000);
+
+        expect(allowFromWrites()).toHaveLength(2);
+      });
+
+      it("keeps asking when a retry fails", async () => {
+        personalBotFleet();
+        const error = vi.spyOn(console, "error").mockImplementation(() => {});
+        mockCallPairingStore
+          .mockResolvedValueOnce(heldBack)
+          .mockRejectedValueOnce(new Error("setAllowFrom failed: locked"))
+          .mockResolvedValueOnce({ withheld: [] });
+
+        await recalculateTelegramAllowStores();
+        await vi.advanceTimersByTimeAsync(2_000);
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(allowFromWrites()).toHaveLength(3);
+        expect(error).toHaveBeenCalled();
+        error.mockRestore();
+      });
     });
 
     // A revocation that did not land must surface, not pass as done.

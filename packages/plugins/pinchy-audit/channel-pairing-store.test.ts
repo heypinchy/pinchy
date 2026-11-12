@@ -270,11 +270,15 @@ describe("gateway handlers", () => {
     expect(respond).toHaveBeenCalledWith(true, { removed: 1 });
   });
 
+  const noRoute = () => {
+    throw new Error("no route expected in this test");
+  };
+
   it("pinchy.pairing.setAllowFrom writes the map", () => {
     seed(() => {});
 
     const respond = call(
-      createPairingSetAllowFromMethod(() => stateDir),
+      createPairingSetAllowFromMethod(() => stateDir, noRoute),
       {
         channel: "telegram",
         allowFrom: { "bot-a": ["111"] },
@@ -282,8 +286,120 @@ describe("gateway handlers", () => {
       }
     );
 
-    expect(respond).toHaveBeenCalledWith(true, { accounts: 1 });
+    expect(respond).toHaveBeenCalledWith(true, { accounts: 1, withheld: [] });
     expect(allowRows()).toEqual([{ channel_key: "telegram", account_id: "bot-a", entry: "111" }]);
+  });
+
+  describe("pinchy.pairing.setAllowFrom with routeTo", () => {
+    // OpenClaw's own answer for where a direct message from `peerId` to bot
+    // `accountId` goes, as its routing would give it for the live config.
+    function routes(table: Record<string, string>) {
+      return vi.fn(({ accountId, peerId }: { accountId: string; peerId: string }) => {
+        const agentId = table[`${accountId}/${peerId}`];
+        if (!agentId) throw new Error(`No agent binding for ${accountId}/${peerId}`);
+        return agentId;
+      });
+    }
+
+    it("writes a sender only once OpenClaw routes them to the agent Pinchy meant", () => {
+      seed(() => {});
+      const resolveRoute = routes({ "bot-a/111": "agent-alice", "bot-a/222": "agent-owner" });
+
+      const respond = call(
+        createPairingSetAllowFromMethod(() => stateDir, resolveRoute),
+        {
+          channel: "telegram",
+          allowFrom: { "bot-a": ["111", "222"] },
+          routeTo: { "bot-a": { "111": "agent-alice", "222": "agent-bob" } },
+          replaceAll: true,
+        }
+      );
+
+      expect(resolveRoute).toHaveBeenCalledWith({
+        channel: "telegram",
+        accountId: "bot-a",
+        peerId: "111",
+      });
+      expect(respond).toHaveBeenCalledWith(true, {
+        accounts: 1,
+        withheld: [{ accountId: "bot-a", peerId: "222" }],
+      });
+      expect(allowRows()).toEqual([{ channel_key: "telegram", account_id: "bot-a", entry: "111" }]);
+    });
+
+    it("withholds a sender OpenClaw cannot route at all", () => {
+      seed(() => {});
+
+      const respond = call(
+        createPairingSetAllowFromMethod(() => stateDir, routes({})),
+        {
+          channel: "telegram",
+          allowFrom: { "bot-a": ["111"] },
+          routeTo: { "bot-a": { "111": "agent-alice" } },
+          replaceAll: true,
+        }
+      );
+
+      expect(respond).toHaveBeenCalledWith(true, {
+        accounts: 1,
+        withheld: [{ accountId: "bot-a", peerId: "111" }],
+      });
+      expect(allowRows()).toEqual([]);
+    });
+
+    it("compares agent ids the way OpenClaw normalises them", () => {
+      seed(() => {});
+
+      const respond = call(
+        createPairingSetAllowFromMethod(() => stateDir, routes({ "Bot-A/111": "agent-alice" })),
+        {
+          channel: "telegram",
+          allowFrom: { "Bot-A": [" 111 "] },
+          routeTo: { "Bot-A": { "111": " Agent-Alice " } },
+          replaceAll: true,
+        }
+      );
+
+      expect(respond).toHaveBeenCalledWith(true, { accounts: 1, withheld: [] });
+      expect(allowRows()).toEqual([{ channel_key: "telegram", account_id: "bot-a", entry: "111" }]);
+    });
+
+    it("writes senders without an expected route as they are", () => {
+      seed(() => {});
+      const resolveRoute = routes({});
+
+      const respond = call(
+        createPairingSetAllowFromMethod(() => stateDir, resolveRoute),
+        {
+          channel: "telegram",
+          allowFrom: { "bot-a": ["111"] },
+          routeTo: {},
+          replaceAll: true,
+        }
+      );
+
+      expect(resolveRoute).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledWith(true, { accounts: 1, withheld: [] });
+      expect(allowRows()).toEqual([{ channel_key: "telegram", account_id: "bot-a", entry: "111" }]);
+    });
+
+    it("refuses a routeTo that is not a map of maps of agent ids", () => {
+      const respond = call(
+        createPairingSetAllowFromMethod(() => stateDir, routes({})),
+        {
+          channel: "telegram",
+          allowFrom: {},
+          routeTo: { "bot-a": ["agent-alice"] },
+          replaceAll: true,
+        }
+      );
+
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({ code: "INVALID_REQUEST" })
+      );
+    });
   });
 
   it.each([
@@ -306,7 +422,7 @@ describe("gateway handlers", () => {
     ["a missing channel", createPairingFindByCodeMethod, { code: "ABCD1234" }],
   ])("refuses %s as an invalid request", (_label, factory, params) => {
     const respond = call(
-      factory(() => stateDir),
+      factory(() => stateDir, noRoute),
       params
     );
 
@@ -319,7 +435,7 @@ describe("gateway handlers", () => {
 
   it("answers UNAVAILABLE when the store cannot be written", () => {
     const respond = call(
-      createPairingSetAllowFromMethod(() => stateDir),
+      createPairingSetAllowFromMethod(() => stateDir, noRoute),
       {
         channel: "telegram",
         allowFrom: {},
