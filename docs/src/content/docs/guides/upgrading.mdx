@@ -324,11 +324,18 @@ The knowledge base now indexes emails saved from Outlook (`.msg`): subject, send
 
 The archive rule (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)) read the whole path of a document, including the folders above the one an agent is granted. An agent granted a folder that is itself called `Archiv`, or sits below one — `/data/Archiv/Projekte` — therefore had every document marked archived, and everyday search found nothing. The rule now reads only the path inside the granted folder. Nothing to do on upgrade: the next index run — the nightly one, or **Reindex now** — marks those documents current again without reading them a second time. When two agents are granted nested folders, the folder granted further down decides for both.
 
+#### Word documents that lost text in conversion are searchable
+
+We convert every Word document to PDF and count its words a second time. A PDF that came out more than a tenth short was kept out of the index, and so was the document: it had no searchable text at all and sat on the **Unsearchable** list. Now we index the text read from the `.docx` itself. You can search it and cite it, but it has no preview, so a citation names the document and no heading, and the viewer offers the original for download. The server log names each such document with both word counts. See [Supported file types](/guides/mount-data-directories/#supported-file-types).
+
+Nothing to do on upgrade. A `.docx` that the old check had given up on is read once more on the next index run, the nightly one or **Reindex now**. That costs one conversion per document, nothing else. Legacy `.doc` and `.ppt` files have no text to fall back on and stay listed as before.
+
 ### Database migrations
 
-The migration `0082` runs automatically on startup — no manual steps. It is additive.
+The migrations `0082`–`0083` run automatically on startup — no manual steps.
 
-- `0082` — `initial` as a fourth `trigger` on `kb_index_jobs`, for the first index Pinchy starts when an agent is granted a folder nothing has indexed yet.
+- `0082` — `initial` as a fourth `trigger` on `kb_index_jobs`, for the first index Pinchy starts when an agent is granted a folder nothing has indexed yet. Additive.
+- `0083` — changes no table. It owes each `.docx` the knowledge base had given up on after a short conversion one more read, so the next index run can read its text.
 
 ## Upgrading from v0.10.2 to v0.10.3
 

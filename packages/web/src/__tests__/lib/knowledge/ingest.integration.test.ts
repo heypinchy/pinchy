@@ -122,6 +122,7 @@ import { parseMsg, type ParsedEmail } from "@/lib/knowledge/msg-extract";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 import { listUnsupportedFiles, type UnsupportedFile } from "@/lib/knowledge/unsupported-files";
 import { DEFAULT_ALLOWED_EXTENSIONS } from "@/lib/knowledge/exclude-globs";
+import { runMigrationFile } from "@/test-helpers/run-migration-file";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -3012,6 +3013,70 @@ describe("a .docx whose converted PDF lost words against its source (#1406)", ()
 
     expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
     expect(readDocxText).not.toHaveBeenCalled();
+  });
+
+  it("reads a .docx the old code settled as refused once more after the upgrade", async () => {
+    // Before this fix the short conversion was the end of it: five empty reads
+    // and the row settled as "1|converter", which ingest never reads again on
+    // the same bytes. The upgrade's migration owes those rows one more read.
+    const docPath = join(tmpRoot, "Katalog.docx");
+    writeFileSync(docPath, "fake-docx-bytes");
+    const { deps, readDocxText } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async () => SOURCE_TEXT
+    );
+    await ingestDirectory(ORG_ID, tmpRoot, deps);
+    await db.delete(kbChunks);
+    await db
+      .update(kbDocuments)
+      .set({ emptyExtractionBy: "1|converter", incompleteReads: 5 })
+      .where(eq(kbDocuments.sourcePath, docPath));
+    readDocxText.mockClear();
+
+    // The state a v0.10 install upgrades with: still skipped, by design.
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 1 }));
+
+    await runMigrationFile("0083_kb_docx_short_conversion_reread.sql");
+
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+    expect(readDocxText).toHaveBeenCalledTimes(1);
+    const doc = await onlyDocument();
+    expect(doc).toMatchObject({ emptyExtractionBy: null, incompleteReads: 0 });
+    expect((await chunksFor(doc.id)).map((chunk) => chunk.chunkText).join("\n")).toContain(
+      "Kräutertee"
+    );
+  });
+
+  it("settles the owed read at once when the .docx text is refused again", async () => {
+    // One read, not five: the migration gives back a single retry.
+    const docPath = join(tmpRoot, "Katalog.docx");
+    writeFileSync(docPath, "fake-docx-bytes");
+    const { deps } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async () => {
+        throw new OfficeFileRejectedError(
+          "too_large",
+          "word/document.xml is past the markup limit"
+        );
+      }
+    );
+    await ingestDirectory(ORG_ID, tmpRoot, deps);
+    await db
+      .update(kbDocuments)
+      .set({ emptyExtractionBy: "1|converter", incompleteReads: 5 })
+      .where(eq(kbDocuments.sourcePath, docPath));
+    await runMigrationFile("0083_kb_docx_short_conversion_reread.sql");
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 1 }));
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await onlyDocument()).toMatchObject({ incompleteReads: 5 });
   });
 
   it("has no source text to fall back on for a legacy .doc or a .ppt", async () => {
