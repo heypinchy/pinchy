@@ -2907,17 +2907,19 @@ describe("a .docx whose converted PDF lost words against its source (#1406)", ()
     // only without a page-accurate preview.
     const docPath = join(tmpRoot, "Katalog.docx");
     writeFileSync(docPath, "fake-docx-bytes");
+    let readBytes: string | undefined;
     const { deps, extractPdf, readDocxText } = officeDeps(
       shortConversion,
       () => WORD_PAGES,
       async (copyPath) => {
-        // The private copy is still there, with the bytes that were hashed.
-        expect(readFileSync(copyPath, "utf8")).toBe("fake-docx-bytes");
+        readBytes = readFileSync(copyPath, "utf8");
         return SOURCE_TEXT;
       }
     );
 
     expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+    // The private copy was still there, with the bytes that were hashed.
+    expect(readBytes).toBe("fake-docx-bytes");
     expect(extractPdf).not.toHaveBeenCalled();
     // A private copy of the verified bytes, never the path on the share.
     expect(readDocxText).toHaveBeenCalledTimes(1);

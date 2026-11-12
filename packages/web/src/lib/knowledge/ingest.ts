@@ -1033,8 +1033,9 @@ async function conversionOf(
  * Short and nothing else, because only then has the reader child already read
  * these bytes through its guard and found them whole — the oracle's count is
  * that read. (It read the copy staged for conversion, which the sanitizer may
- * have cut relationships and altChunks from; mammoth's raw text reads
- * neither, so the text is the same.) A document refused before conversion (a bomb, HTML renamed
+ * have cut relationships and altChunks from. mammoth's raw text skips
+ * altChunks and takes no text from a relationship, and a cut one it needs
+ * makes the count fail, which is never short — so the text is the same.) A document refused before conversion (a bomb, HTML renamed
  * `.docx`) or one LibreOffice could not load must not reach mammoth by a back
  * door. `.doc` and `.ppt` have oracles too, but catdoc and catppt under-count
  * and mangle the diacritics a search matches on: fit for a lower bound, not

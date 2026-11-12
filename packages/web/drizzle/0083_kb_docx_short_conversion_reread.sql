@@ -6,8 +6,8 @@
 -- the upgrade.
 --
 -- The record does not say WHY the converter refused, so every settled .docx
--- refusal is owed the read, not only a short conversion: one extra
--- LibreOffice conversion each, nothing else. Not a bump of EXTRACTION_VERSION,
+-- refusal is owed the read, not only a short conversion: at most one extra
+-- LibreOffice conversion each. Not a bump of EXTRACTION_VERSION,
 -- which would re-read every empty document of every format — blank scans
 -- through the vision model included.
 --
