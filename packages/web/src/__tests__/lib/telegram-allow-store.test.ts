@@ -11,7 +11,6 @@ vi.mock("@/lib/openclaw-pairing-store", async (importOriginal) => ({
 // ── DB mocks ────────────────────────────────────────────────────────────
 
 const mockDbSelect = vi.fn();
-const mockDbSelectFrom = vi.fn();
 
 vi.mock("@/db", () => ({
   db: {

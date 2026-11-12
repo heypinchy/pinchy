@@ -6,7 +6,7 @@ import {
   secretsFileExists,
   type SecretsBundle,
 } from "@/lib/openclaw-secrets";
-import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
+import { PROVIDERS, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
 import { db } from "@/db";
