@@ -570,6 +570,45 @@ describe("PdfDialog for a document without a converted PDF", () => {
     fetchSpy.mockRestore();
   });
 
+  it("keeps saying so while it closes, rather than mounting the viewer on the way out", async () => {
+    // The dialog's content outlives `open` — for the exit animation in a
+    // browser, for one commit even in jsdom. Reading "available" there mounts
+    // the <embed>, which requests the 404 the pane was put up to avoid.
+    const fetchSpy = headAnswers(404);
+    render(
+      <PdfDialog
+        url={viewerUrl}
+        title="customer/Angebot.docx"
+        downloads={buildSourceDownloads(officeHref)!}
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "trigger" }));
+    await screen.findByText(/can't preview this document/i);
+
+    let embedsMounted = 0;
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof Element && (node.matches("embed") || node.querySelector("embed"))) {
+            embedsMounted += 1;
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(screen.queryByText(/can't preview this document/i)).not.toBeInTheDocument()
+    );
+    observer.disconnect();
+
+    expect(embedsMounted).toBe(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
+  });
+
   it("asks nothing of a document that is its own PDF", () => {
     const fetchSpy = vi.spyOn(global, "fetch");
 

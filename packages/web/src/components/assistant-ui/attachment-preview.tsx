@@ -196,12 +196,17 @@ type ConvertedAvailability = "checking" | "available" | "missing";
 
 function useConvertedAvailability(
   url: string,
-  check: boolean,
+  enabled: boolean,
+  open: boolean,
   openCount: number
 ): ConvertedAvailability {
   // Keyed on the open it answers for, so a reopened dialog reads "checking" in
   // its very first render rather than the last open's answer — an <embed>
   // mounted for one frame is already a request for the 404.
+  //
+  // Asked only while open, but NOT reset by closing: the content outlives
+  // `open` for its exit animation (and for one commit even without one), and
+  // reading "available" there mounts that same <embed> on the way out.
   const [answer, setAnswer] = useState<{
     key: string;
     value: Exclude<ConvertedAvailability, "checking">;
@@ -209,7 +214,7 @@ function useConvertedAvailability(
   const key = `${openCount}:${url}`;
 
   useEffect(() => {
-    if (!check) return;
+    if (!enabled || !open) return;
     const ctrl = new AbortController();
     const settle = (value: "available" | "missing") =>
       !ctrl.signal.aborted && setAnswer({ key, value });
@@ -220,9 +225,9 @@ function useConvertedAvailability(
       () => settle("available")
     );
     return () => ctrl.abort();
-  }, [url, check, key]);
+  }, [url, enabled, open, key]);
 
-  if (!check) return "available";
+  if (!enabled) return "available";
   return answer?.key === key ? answer.value : "checking";
 }
 
@@ -298,7 +303,7 @@ export const PdfDialog: FC<{
   // Asked only while open, and afresh on every open: the dialog is mounted
   // with every citation in an answer, a check is a request the route audits,
   // and a document converted since the last open has a preview now.
-  const availability = useConvertedAvailability(url, open && showsConversion, openCount);
+  const availability = useConvertedAvailability(url, showsConversion, open, openCount);
   const missing = availability === "missing";
 
   const documentDownloads = (downloads ?? [{ label: filename, url: downloadUrlFor(url) }]).filter(
