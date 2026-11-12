@@ -25,14 +25,13 @@ import {
 } from "./src/server/channel-health-watchdog";
 import { setChannelHealthMonitor } from "./src/server/channel-health-singleton";
 import { createConflictRestartHandler } from "./src/server/channel-conflict-restart";
-import { appendAuditLog, safeProviderError } from "./src/lib/audit";
+import { appendAuditLog } from "./src/lib/audit";
 import { recordAuditFailure } from "./src/lib/audit-deferred";
 import { db, closeDb } from "./src/db";
 import { agents, auditLog } from "./src/db/schema";
 import { eq, and, desc } from "drizzle-orm";
-import { getSetting, setSetting } from "./src/lib/settings";
-import { updateTelegramChannelConfig } from "./src/lib/openclaw-config";
-import { clearAllowStoreForAccount } from "./src/lib/telegram-allow-store";
+import { getSetting } from "./src/lib/settings";
+import { autoDisableConflictedTelegramAccount } from "./src/server/telegram-auto-disable";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
 import {
@@ -727,53 +726,9 @@ const startup = app.prepare().then(async () => {
             return null;
           }
         },
-        // #477 layer 2: disable the account so it survives a restart (build.ts
-        // skips it on regen), stop the poller promptly via the same
-        // config.apply/reload path connect/disconnect already use, and clear
-        // its allow-store. Non-request context — try/catch + recordAuditFailure
-        // per AGENTS.md, not a bare .catch(console.error).
-        autoDisableConflictedAccount: async (channel, accountId, lastError) => {
-          // Defensive: skip if already disabled (e.g. a race with a manual
-          // disconnect, or the monitor somehow re-entering for the same episode).
-          const already = await getSetting(`telegram_conflict_disabled:${accountId}`);
-          if (already) return;
-
-          await setSetting(
-            `telegram_conflict_disabled:${accountId}`,
-            JSON.stringify({
-              reason: "polling_conflict",
-              lastError: safeProviderError(lastError),
-              disabledAt: new Date().toISOString(),
-            })
-          );
-          updateTelegramChannelConfig(accountId, null);
-          try {
-            await clearAllowStoreForAccount(accountId);
-          } catch (err) {
-            // Not fatal: the bot is out of the config already, so its list grants nothing.
-            console.error("[channel-watchdog] failed to clear the allow list:", err);
-          }
-
-          const name = await resolveAccountName(channel, accountId);
-          const entry = {
-            actorType: "system" as const,
-            actorId: "channel-watchdog",
-            eventType: "channel.auto_disabled" as const,
-            resource: `agent:${accountId}`,
-            outcome: "success" as const,
-            detail: {
-              channel,
-              account: { id: accountId, name },
-              reason: "polling_conflict",
-              lastError: safeProviderError(lastError),
-            },
-          };
-          try {
-            await appendAuditLog(entry);
-          } catch (err) {
-            recordAuditFailure(err, entry);
-          }
-        },
+        // #477 layer 2: see autoDisableConflictedTelegramAccount.
+        autoDisableConflictedAccount: (channel, accountId, lastError) =>
+          autoDisableConflictedTelegramAccount(channel, accountId, lastError, resolveAccountName),
       },
       Number(process.env.CHANNEL_HEALTH_INTERVAL_MS) || CHANNEL_HEALTH_INTERVAL_MS
     );
