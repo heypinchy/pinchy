@@ -329,6 +329,32 @@ describe("fix_config_permissions — behaviour carried over from start-openclaw.
     expect(statSync(join(stateDir, "openclaw.json")).mode & 0o777).toBe(0o666);
   });
 
+  it("leaves an openclaw.json that is already 0666 untouched", () => {
+    // OpenClaw 2026.9 watches openclaw.json with a 300 ms debounce that every
+    // event restarts — attribute events included. An ungated chmod on the 50 ms
+    // tick fires one every 50 ms, so the debounce never elapses: a config Pinchy
+    // writes to the file is never reloaded, and every later config.apply fails
+    // "config changed since last load" against the stale snapshot.
+    //
+    // Asserted on the chmod call, not on ctime: Linux rewrites ctime on a chmod
+    // to the mode a file already has (that is the event), macOS does not, so a
+    // ctime assertion would pass on a developer's Mac whatever the script did.
+    const file = join(stateDir, "openclaw.json");
+    chmodSync(file, 0o666);
+    const chmodLog = join(root, "chmod.log");
+    const realChmod = execFileSync("bash", ["-c", "command -v chmod"], {
+      encoding: "utf8",
+    }).trim();
+    const wrapper = join(binDir, "chmod");
+    writeFileSync(wrapper, `#!/bin/bash\necho "$@" >> '${chmodLog}'\nexec '${realChmod}' "$@"\n`);
+    chmodSync(wrapper, 0o755);
+
+    runFix();
+
+    const calls = existsSync(chmodLog) ? readFileSync(chmodLog, "utf8") : "";
+    expect(calls).not.toContain(file);
+  });
+
   it("opens agents/<id> to 0755 so Pinchy can traverse it", () => {
     const { agentIdDir } = seedAgentDir("agent-a");
 

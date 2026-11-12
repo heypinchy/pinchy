@@ -21,7 +21,16 @@ PINCHY_UID="${PINCHY_UID:-999}"
 PINCHY_GID="${PINCHY_GID:-999}"
 
 fix_config_permissions() {
-    chmod 666 "$OPENCLAW_STATE_DIR/openclaw.json" 2>/dev/null || true
+    # Gated like the `-not -perm` repairs below, for a stronger reason than
+    # ctime alone. OpenClaw 2026.9 watches openclaw.json with a 300 ms debounce
+    # that every event restarts, attribute events included, and on Linux a chmod
+    # to the mode the file already has is still one. Ungated, this line fired
+    # every 50 ms, so the debounce never elapsed: a config Pinchy wrote to the
+    # file (the fallback for a change config.apply refuses, such as retiring the
+    # implicit `main` agent on a fresh install) was never reloaded, and every
+    # later config.apply failed "config changed since last load".
+    find "$OPENCLAW_STATE_DIR/openclaw.json" -maxdepth 0 -type f -not -perm 0666 \
+        -exec chmod 666 {} \; 2>/dev/null || true
     # Use a glob so we also catch any sibling credential files OpenClaw
     # writes alongside the pairing file (allowFrom stores etc.) — they too
     # are written by root and consumed by Pinchy.
