@@ -219,6 +219,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   });
 }
 
+// The audit row is immutable, so it gets a fixed message rather than the
+// error's, which can carry a file system path.
+const CONFIG_WRITE_FAILED = "Could not remove the bot from the OpenClaw config";
+
 export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
   async (_req, { params }, session) => {
     const { agentId } = await params;
@@ -257,15 +261,19 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
     // answering anyone. A failing clear must not undo the removal: once the
     // config lands the bot no longer runs, and the next recalculation drops
     // its list. updateTelegramChannelConfig() notifies restart-state on actual
-    // write.
+    // write. A config write that fails doesn't stop the rest: the token is
+    // already gone from the database, so the disconnect is audited, marked
+    // failed, and the error reaches the caller afterwards.
+    let configError: unknown = null;
     try {
       updateTelegramChannelConfig(agentId, null);
-    } finally {
-      try {
-        await clearAllowStoreForAccount(agentId);
-      } catch (err) {
-        console.error("[telegram] could not clear the allow list of a removed bot:", err);
-      }
+    } catch (err) {
+      configError = err;
+    }
+    try {
+      await clearAllowStoreForAccount(agentId);
+    } catch (err) {
+      console.error("[telegram] could not clear the allow list of a removed bot:", err);
     }
 
     // Gap 3 (#476): if this was the last Telegram bot, clear the user↔telegram-user
@@ -301,8 +309,11 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
         // attributable, not silent — 0 when other bots remain.
         channelLinksCleared,
       },
-      outcome: "success",
+      ...(configError
+        ? { outcome: "failure" as const, error: { message: CONFIG_WRITE_FAILED } }
+        : { outcome: "success" as const }),
     });
+    if (configError) throw configError;
 
     return NextResponse.json({ success: true });
   }

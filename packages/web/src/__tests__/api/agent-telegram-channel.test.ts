@@ -665,6 +665,36 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     expect(mockClearAllowStoreForAccount).toHaveBeenCalledWith("agent-1");
   });
 
+  // The token is gone from the database by then, so the bot is disconnected as
+  // far as Pinchy is concerned. That state change belongs in the audit trail,
+  // marked failed, and the rest of the cleanup still runs.
+  it("audits the disconnect as failed when the config write fails", async () => {
+    mockUpdateTelegramChannelConfig.mockImplementationOnce(() => {
+      throw new Error("EACCES /root/.openclaw/openclaw.json");
+    });
+    vi.mocked(db.delete).mockReturnValueOnce({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "link-1" }]),
+      }),
+    } as any);
+
+    await expect(
+      DELETE(new NextRequest("http://localhost"), { params: mockParams })
+    ).rejects.toThrow(/EACCES/);
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry).toMatchObject({
+      eventType: "channel.deleted",
+      resource: "agent:agent-1",
+      outcome: "failure",
+      error: { message: expect.any(String) },
+      detail: expect.objectContaining({ channelLinksCleared: 1 }),
+    });
+    // No file system path in the immutable audit row.
+    expect(JSON.stringify(entry)).not.toContain("/root/.openclaw");
+  });
+
   it("clears stale channel_links when the last Telegram bot is removed (#476 gap 3)", async () => {
     // db.select().from().where() is mocked to resolve [] → no bot remains.
     vi.mocked(db.delete).mockReturnValueOnce({

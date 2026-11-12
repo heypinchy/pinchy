@@ -35,15 +35,19 @@ export async function DELETE() {
   // removal: once the config lands no bot is left to read the lists, and the
   // next recalculation drops them. updateTelegramChannelConfig() notifies
   // restart-state on actual write — and is auto-deduped when there's nothing to
-  // remove, avoiding a 30 s overlay for a no-op.
+  // remove, avoiding a 30 s overlay for a no-op. A config write that fails
+  // still leaves tokens and links gone from the database, so the removal is
+  // audited, marked failed, and the error reaches the caller afterwards.
+  let configError: unknown = null;
   try {
     updateTelegramChannelConfig(null, null);
-  } finally {
-    try {
-      await clearAllAllowStores();
-    } catch (err) {
-      console.error("[telegram] could not clear the allow lists of removed bots:", err);
-    }
+  } catch (err) {
+    configError = err;
+  }
+  try {
+    await clearAllAllowStores();
+  } catch (err) {
+    console.error("[telegram] could not clear the allow lists of removed bots:", err);
   }
 
   await appendAuditLog({
@@ -57,8 +61,16 @@ export async function DELETE() {
       scope: "all",
       botsRemoved: botTokenSettings.length,
     },
-    outcome: "success",
+    // A fixed message: the error's own can carry a file system path, and the
+    // audit row is immutable.
+    ...(configError
+      ? {
+          outcome: "failure" as const,
+          error: { message: "Could not remove the bots from the OpenClaw config" },
+        }
+      : { outcome: "success" as const }),
   });
+  if (configError) throw configError;
 
   return NextResponse.json({ removed: true });
 }

@@ -134,6 +134,26 @@ describe("DELETE /api/settings/telegram/all", () => {
     expect(mockClearAllAllowStores).toHaveBeenCalled();
   });
 
+  // Tokens and links are gone from the database by then: the removal happened
+  // as far as Pinchy is concerned, so it is audited, marked failed.
+  it("audits the removal as failed when the config write fails", async () => {
+    mockUpdateTelegramChannelConfig.mockImplementationOnce(() => {
+      throw new Error("EACCES /root/.openclaw/openclaw.json");
+    });
+
+    await expect(DELETE()).rejects.toThrow(/EACCES/);
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry).toMatchObject({
+      eventType: "channel.deleted",
+      resource: "settings:telegram",
+      outcome: "failure",
+      error: { message: expect.any(String) },
+    });
+    expect(JSON.stringify(entry)).not.toContain("/root/.openclaw");
+  });
+
   it("logs audit event", async () => {
     const response = await DELETE();
     expect(response.status).toBe(200);
