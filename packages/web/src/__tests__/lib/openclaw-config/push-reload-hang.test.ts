@@ -75,6 +75,9 @@ class FakeOpenClaw209 {
    * watcher loads the persisted file, and the apply itself hangs like a no-op.
    */
   watcherWins?: (apply: number) => boolean;
+  /** config.get calls (1-based) that fail transiently, each costing a backoff slot. */
+  getFails?: (call: number) => boolean;
+  private gets = 0;
   private writes = 0;
   private hung: ((err: Error) => void)[] = [];
 
@@ -97,65 +100,85 @@ class FakeOpenClaw209 {
   private commit(next: Json) {
     this.writes++;
     this.file = next;
-    const waiting = this.hung;
-    this.hung = [];
-    for (const answer of waiting) {
-      answer(
-        new Error(
-          "config.apply persisted but was not applied to the active Gateway (superseded); run config.get, then use config.apply to reapply the saved config or restart the Gateway"
-        )
-      );
-    }
+    this.answerHung("superseded");
   }
 
   client = {
     config: {
       // The materialized runtime, SecretRef ids redacted: never a payload.
-      get: vi.fn(async () => ({
-        hash: `h${this.writes}`,
-        config: {
-          ...structuredClone(this.runtime),
-          models: {
-            providers: {
-              anthropic: { ...providers.anthropic, apiKey: "__OPENCLAW_REDACTED__" },
-            },
+      get: vi.fn(async () => {
+        if (this.getFails?.(++this.gets) === true) throw new Error("socket hang up");
+        return this.snapshot();
+      }),
+      apply: vi.fn(async (raw: string) => this.apply(raw)),
+    },
+    request: vi.fn(async (method: string, params: Json) => this.request(method, params)),
+  };
+
+  private snapshot() {
+    return {
+      hash: `h${this.writes}`,
+      config: {
+        ...structuredClone(this.runtime),
+        models: {
+          providers: {
+            anthropic: { ...providers.anthropic, apiKey: "__OPENCLAW_REDACTED__" },
           },
         },
-        parsed: structuredClone(this.file),
-      })),
-      apply: vi.fn(async (raw: string) => {
-        const next = JSON.parse(raw) as Json;
-        this.applies.push(next);
-        const kept = new Set(this.roster(next));
-        const dropped = this.roster().filter((id) => !kept.has(id));
-        if (dropped.length > 0) {
-          throw new Error(
-            `Config write would drop agent roster entries without an explicit deletion: ${dropped.sort().join(", ")}.`
-          );
-        }
-        const unchanged = isDeepStrictEqual(withoutMeta(next), withoutMeta(this.runtime));
-        this.commit(next);
-        const overtaken = this.watcherWins?.(this.applies.length) === true;
-        if (overtaken) this.runtime = next;
-        if (!unchanged && !overtaken) {
-          this.runtime = next;
-          return { ok: true };
-        }
-        // Persisted; the reload hangs until the next write — or until the
-        // client's own 30 s request timeout.
-        return new Promise((_resolve, reject) => {
-          let done = false;
-          const answer = (err: Error) => {
-            if (done) return;
-            done = true;
-            reject(err);
-          };
-          this.hung.push(answer);
-          setTimeout(() => answer(new Error("Request config.apply timed out")), 30_000);
-        });
-      }),
-    },
-    request: vi.fn(async (method: string, params: Json) => {
+      },
+      parsed: structuredClone(this.file),
+    };
+  }
+
+  /** Answers a hung apply with OpenClaw's own text for the given reload outcome. */
+  answerHung(outcome: string) {
+    const waiting = this.hung;
+    this.hung = [];
+    for (const answer of waiting) {
+      answer(
+        new Error(
+          `config.apply persisted but was not applied to the active Gateway (${outcome}); run config.get, then use config.apply to reapply the saved config or restart the Gateway`
+        )
+      );
+    }
+  }
+
+  private async apply(raw: string) {
+    {
+      const next = JSON.parse(raw) as Json;
+      this.applies.push(next);
+      const kept = new Set(this.roster(next));
+      const dropped = this.roster().filter((id) => !kept.has(id));
+      if (dropped.length > 0) {
+        throw new Error(
+          `Config write would drop agent roster entries without an explicit deletion: ${dropped.sort().join(", ")}.`
+        );
+      }
+      const unchanged = isDeepStrictEqual(withoutMeta(next), withoutMeta(this.runtime));
+      this.commit(next);
+      const overtaken = this.watcherWins?.(this.applies.length) === true;
+      if (overtaken) this.runtime = next;
+      if (!unchanged && !overtaken) {
+        this.runtime = next;
+        return { ok: true };
+      }
+      // Persisted; the reload hangs until the next write — or until the
+      // client's own 30 s request timeout.
+      return new Promise((_resolve, reject) => {
+        let done = false;
+        const answer = (err: Error) => {
+          if (done) return;
+          done = true;
+          reject(err);
+        };
+        this.hung.push(answer);
+        setTimeout(() => answer(new Error("Request config.apply timed out")), 30_000);
+      });
+    }
+  }
+
+  private async request(method: string, params: Json) {
+    {
       if (method !== "agents.delete") throw new Error(`unexpected method ${method}`);
       this.deletes.push(params);
       const agentId = params.agentId as string;
@@ -166,8 +189,8 @@ class FakeOpenClaw209 {
       this.commit({ ...this.file, agents: { ...agents, entries } });
       this.runtime = this.file;
       return { type: "res", id: "1", ok: true, payload: { ok: true, agentId } };
-    }),
-  };
+    }
+  }
 }
 
 function configFileWrites() {
@@ -293,5 +316,57 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
     expect(oc.applies).toHaveLength(1);
     expect(fileOnlyDeliveryPending()).toBe(false);
     expect(onChangeApplied).toHaveBeenCalledTimes(1);
+  });
+  it("still removes the agent when the bridge hangs on the push's last attempt", async () => {
+    // Four transient failures spend every backoff slot but the last. A bridge
+    // that hangs there is persisted all the same: agents.delete still follows,
+    // instead of the file fallback past OpenClaw's roster guard.
+    const before = {
+      gateway,
+      models: { providers },
+      agents: { ownership: "explicit", entries: { a: {}, b: {}, c: {} } },
+    };
+    const oc = new FakeOpenClaw209(before);
+    oc.getFails = (call) => call <= 4;
+    oc.watcherWins = (apply) => apply === 2;
+    mockGetClient.mockReturnValue(oc.client);
+    const target = {
+      gateway,
+      models: { providers },
+      agents: { ownership: "explicit", entries: { a: {}, b: {} } },
+    };
+
+    pushConfigInBackground(serialize(target));
+    await settle();
+
+    expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: false }]);
+    expect(configFileWrites()).toHaveLength(0);
+    expect(fileOnlyDeliveryPending()).toBe(false);
+  });
+
+  it("keeps a file-only delivery pending when OpenClaw answers that its reload failed", async () => {
+    // "(failed)": the hot reload threw, and the runtime does not hold what the
+    // file does. Only "superseded" means a newer reload took over the file.
+    const config = {
+      gateway,
+      models: { providers },
+      agents: { ownership: "explicit", entries: { a: {} } },
+    };
+    const oc = new FakeOpenClaw209(config);
+    mockGetClient.mockReturnValue(oc.client);
+    noteFileOnlyDelivery();
+    const onChangeApplied = vi.fn();
+
+    pushConfigInBackground(serialize(config), { onChangeApplied });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(oc.applies).toHaveLength(1);
+    oc.answerHung("failed");
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    // Retried, not taken as delivered.
+    expect(oc.applies.length).toBeGreaterThan(1);
+    expect(fileOnlyDeliveryPending()).toBe(true);
+    _supersedePendingPushes();
+    await settle();
   });
 });

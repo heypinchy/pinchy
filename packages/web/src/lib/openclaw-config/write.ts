@@ -286,17 +286,21 @@ function parseRetryAfterMs(message: string): number | null {
 // and the write is safe (OC is genuinely down, not racing its own startup).
 const WS_DISCONNECTED_ERROR_FRAGMENT = "Not connected to OpenClaw Gateway";
 
+const NOT_CONNECTED_MAX_WAIT_MS = 60_000;
+const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
+
 // An apply OpenClaw persisted to openclaw.json without answering it: 2026.9's
 // reload hangs on a config the runtime already holds, until the next write
 // supersedes it or openclaw-node's 30 s request timeout gives up. The file is
 // written either way, and the reload that runs on it is OpenClaw's own — so a
-// retry of the same content cannot deliver anything, and hangs again.
+// retry of the same content cannot deliver anything, and hangs again. Only
+// "(superseded)": the same text carries the reload's other outcomes, and
+// "(failed)" or "(stopped)" mean the runtime did not take the file — a retry
+// re-runs that reload.
 const UNANSWERED_APPLY_ERROR_FRAGMENTS = [
   "Request config.apply timed out",
-  "config.apply persisted but was not applied",
+  "config.apply persisted but was not applied to the active Gateway (superseded)",
 ];
-const NOT_CONNECTED_MAX_WAIT_MS = 60_000;
-const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 
 // OpenClaw's config writer refuses any write under half of the current
 // openclaw.json (`size-drop:OLD->NEW`), and config.apply exposes no way to lift
@@ -371,8 +375,11 @@ const MAX_SIZE_DROP_REFUSALS = 3;
  *
  * `onChangeApplied` fires exactly once, on the terminal path where the new
  * config actually reached OpenClaw's runtime or the on-disk file — i.e. a
- * successful `config.apply`, or any `writeConfigAtomic` fallback (no client,
- * rate-limit budget exhausted, retries exhausted). It deliberately does NOT
+ * successful `config.apply`, an apply OpenClaw persisted but left unanswered
+ * while openclaw.json holds its payload (UNANSWERED_APPLY_ERROR_FRAGMENTS — on
+ * 2026.9 that can be a config the runtime already held), or any
+ * `writeConfigAtomic` fallback (no client, rate-limit budget exhausted, retries
+ * exhausted). It deliberately does NOT
  * fire when the push is a semantic no-op (skipped because the supplemented
  * payload already equals OC's runtime) or when a newer push superseded this
  * one. Callers use it to drive side effects that must only happen when a real
