@@ -266,7 +266,12 @@ async function recalculateTelegramAllowStoresImpl(): Promise<number> {
  * to wait for.
  */
 async function personalBotRoutes(
-  allAgents: ReadonlyArray<{ id: string; isPersonal: boolean; ownerId: string | null }>,
+  allAgents: ReadonlyArray<{
+    id: string;
+    isPersonal: boolean;
+    ownerId: string | null;
+    createdAt: Date;
+  }>,
   agentsWithBots: ReadonlyArray<{ id: string; isPersonal: boolean }>,
   links: ReadonlyArray<{ userId: string; channelUserId: string }>
 ): Promise<Record<string, Record<string, string>>> {

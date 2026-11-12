@@ -12,15 +12,27 @@ interface RoutableAgent {
   id: string;
   isPersonal: boolean;
   ownerId: string | null;
+  createdAt: Date;
 }
 
-/** Each owner's personal agent, keyed by user id. */
+/**
+ * Each owner's personal agent, keyed by user id. Should an owner have two
+ * (nothing in the schema forbids it), the oldest wins — never the row order,
+ * which neither caller's query fixes, so both callers pick the same one.
+ */
 export function personalAgentsByOwner(agents: ReadonlyArray<RoutableAgent>): Map<string, string> {
-  const byOwner = new Map<string, string>();
+  const oldest = new Map<string, RoutableAgent>();
   for (const agent of agents) {
-    if (agent.isPersonal && agent.ownerId) byOwner.set(agent.ownerId, agent.id);
+    if (!agent.isPersonal || !agent.ownerId) continue;
+    const current = oldest.get(agent.ownerId);
+    if (!current || isOlder(agent, current)) oldest.set(agent.ownerId, agent);
   }
-  return byOwner;
+  return new Map([...oldest].map(([ownerId, agent]) => [ownerId, agent.id]));
+}
+
+function isOlder(a: RoutableAgent, b: RoutableAgent): boolean {
+  const diff = a.createdAt.getTime() - b.createdAt.getTime();
+  return diff !== 0 ? diff < 0 : a.id < b.id;
 }
 
 /**
