@@ -67,7 +67,12 @@ function open(stateDir: string, readOnly: boolean): DatabaseSync | null {
   // here first would leave an empty file it then finds without one.
   if (!existsSync(path)) return null;
   const db = new DatabaseSync(path, { readOnly });
-  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  try {
+    db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  } catch (err) {
+    db.close();
+    throw err;
+  }
   return db;
 }
 

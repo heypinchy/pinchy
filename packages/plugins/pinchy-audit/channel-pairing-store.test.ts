@@ -139,6 +139,25 @@ describe("findPairingRequestByCode", () => {
     );
     expect(existsSync(dbPath())).toBe(false);
   });
+
+  // Each call opens its own handle. One left open when setting up the
+  // connection fails would hold a file descriptor until garbage collection.
+  it("closes the database when setting up the connection fails", () => {
+    seed(() => {});
+    const exec = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementationOnce(() => {
+      throw new Error("disk I/O error");
+    });
+    const close = vi.spyOn(DatabaseSync.prototype, "close");
+    try {
+      expect(() =>
+        findPairingRequestByCode({ stateDir, channel: "telegram", code: "ABCD1234" })
+      ).toThrow("disk I/O error");
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      exec.mockRestore();
+      close.mockRestore();
+    }
+  });
 });
 
 describe("removePairingRequests", () => {
