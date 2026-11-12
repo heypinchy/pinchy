@@ -768,30 +768,20 @@ export function useWsRuntime(
     // Synchronous timer cleanup is the entire point of doing this in render
     // (see comment above). Deferring it to useEffect would defeat the
     // race-prevention this block exists for.
-    // eslint-disable-next-line react-hooks/refs
     if (reconcileApplyTimerRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(reconcileApplyTimerRef.current);
-      // eslint-disable-next-line react-hooks/refs
       reconcileApplyTimerRef.current = null;
     }
-    // eslint-disable-next-line react-hooks/refs
     if (reconcileFinishTimerRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(reconcileFinishTimerRef.current);
-      // eslint-disable-next-line react-hooks/refs
       reconcileFinishTimerRef.current = null;
     }
     // The previous session's history deadline must not fire into the new one —
     // it would drop a healthy socket the new session just opened (#956).
-    // eslint-disable-next-line react-hooks/refs
     if (historyWatchdogRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(historyWatchdogRef.current);
-      // eslint-disable-next-line react-hooks/refs
       historyWatchdogRef.current = null;
     }
-    // eslint-disable-next-line react-hooks/refs
     historySelfHealsRef.current = 0;
     // Revoke object URLs from previous agent's pending uploads and clear the list.
     setPendingUploads((prev) => {
