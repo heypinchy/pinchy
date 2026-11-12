@@ -1313,10 +1313,11 @@ function couldReadDifferently(recorded: string, deps: IngestDeps): boolean {
 }
 
 /**
- * Whether a document whose row already records its current content is owed
- * another read, or is skipped without one. A batch of Office conversions asks
- * it too (`turnWillSkip`), so a document its own turn will skip is not
- * converted on the way.
+ * Whether a document's row owes it another read even if the bytes on disk are
+ * the ones it records, or lets it be skipped. `ingestFile` asks once the hash
+ * has matched; `turnWillSkip` asks before hashing, since a row that owes a
+ * read owes it whatever the bytes are — so a batch of Office conversions never
+ * converts on the way a document its own turn will skip.
  *
  * `current` is whether the row's chunks came from the current artifact rules;
  * `storedChunks` how many it has. Both are returned only when a read is owed.

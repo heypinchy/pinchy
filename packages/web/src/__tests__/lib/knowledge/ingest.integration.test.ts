@@ -3481,19 +3481,20 @@ it("looks no further ahead for batch mates than a batch reaches", async () => {
   expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: names.length }));
   const calls = convertOffice.mock.calls.length;
 
-  // The head changes, and one document past the head's window.
-  const far = names[OFFICE_CONVERT_BATCH_SIZE + 2];
-  writeFileSync(join(tmpRoot, names[0]), `${names[0]}-v2`);
-  writeFileSync(join(tmpRoot, far), `${far}-v2`);
+  // The head changes, the last document its window reaches, and the first
+  // one past it.
+  const edge = names[OFFICE_CONVERT_BATCH_SIZE - 1];
+  const far = names[OFFICE_CONVERT_BATCH_SIZE];
+  for (const name of [names[0], edge, far]) writeFileSync(join(tmpRoot, name), `${name}-v2`);
   expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
-    counts({ indexed: 2, skipped: names.length - 2 })
+    counts({ indexed: 3, skipped: names.length - 3 })
   );
 
   expect(
     convertOffice.mock.calls
       .slice(calls)
       .map(([sources]) => sources.map((source: { absPath: string }) => basename(source.absPath)))
-  ).toEqual([[names[0]], [far]]);
+  ).toEqual([[names[0], edge], [far]]);
 });
 
 it("hashes an Office file as it streams, so the server never holds it whole while it converts", async () => {
