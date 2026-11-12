@@ -211,9 +211,12 @@ stage_llama_cpp_provider
 # bootInits (cascade-prevention seed in `seedRestartClassOverridesIfMissing`,
 # more file activity = more 600-mode windows for OpenClaw's restart writes).
 # 50 ms is well under the 5 s `docker compose exec stat` round-trip the
-# test uses, so the race is effectively closed. Cost is ~80 chmod calls/s
-# on an idle gateway — measured negligible (chmod on a known path is a
-# kernel-only operation, no syscalls past inode lookup).
+# test uses, so the race is effectively closed. A repair in this tick is not
+# free just because the syscall is cheap: each chmod or chown is an attribute
+# event, 20 a second. On OpenClaw 2026.9 the ungated chmod of openclaw.json
+# starved the config watcher, which is why that repair, like those on watched
+# session files, only fires when the mode is actually wrong (see
+# fix_config_permissions).
 (while true; do sleep 0.05; fix_config_permissions; done) &
 
 # Defense in depth for the secrets owner race (#200): the 0.2 s tick above
