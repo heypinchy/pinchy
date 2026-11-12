@@ -132,9 +132,25 @@ describe("fix-volume-ownership.sh", () => {
     expect(chownedPaths()).not.toContain(join(configDir, "npm"));
   });
 
+  // OpenClaw 2026.9 keeps its gateway lock directory in the state dir
+  // (`tmp/openclaw-<uid>`, mode 0700) and refuses to start when that directory
+  // is not owned by its own uid: "device identity coordinator directory belongs
+  // to another user". Handing it to uid 999 with the rest of the volume took the
+  // gateway down on every restart after the first boot. Pinchy never reads or
+  // writes anything under tmp/.
+  it("never chowns OpenClaw's gateway lock directory", () => {
+    const lockDir = join(configDir, "tmp", "openclaw-0");
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, "device-identity.0123abcd.lock.sqlite"), "");
+
+    run();
+
+    expect(chownedPaths()).not.toContain(join(configDir, "tmp"));
+  });
+
   // The prune must not swallow the traversal: everything BESIDE npm/ still has
   // to be repaired, or the entrypoint stops doing the job it was written for.
-  it("prunes only the plugin store, not its siblings", () => {
+  it("prunes only OpenClaw's own directories, not their siblings", () => {
     mkdirSync(join(configDir, "credentials"), { recursive: true });
     writeFileSync(join(configDir, "credentials", "telegram-pairing.json"), "{}\n");
 

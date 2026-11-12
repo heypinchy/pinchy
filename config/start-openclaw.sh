@@ -94,7 +94,8 @@ fi
 # install-plugin-deps.sh / stage-llama-cpp-provider.sh) so each of those
 # cross-uid invariants is unit-testable — see
 # packages/web/src/__tests__/lib/fix-config-permissions.test.ts. Defines
-# fix_config_permissions() and remove_retired_auth_profiles() into this shell;
+# fix_config_permissions(), remove_retired_auth_profiles() and
+# restore_gateway_lock_ownership() into this shell;
 # it reads $SECRETS_FILE from above.
 # shellcheck source=fix-config-permissions.sh
 source /fix-config-permissions.sh
@@ -276,6 +277,7 @@ auto_approve_devices &
 # would never run — a crashed gateway would never get restarted.
 ensure_secrets_root_owned
 remove_retired_auth_profiles
+restore_gateway_lock_ownership
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 &
 mark_bootstrap_when_ready
@@ -305,6 +307,7 @@ while true; do
             stage_llama_cpp_provider
             ensure_secrets_root_owned
             remove_retired_auth_profiles
+            restore_gateway_lock_ownership
             openclaw gateway --port 18789 &
             mark_bootstrap_when_ready
         fi

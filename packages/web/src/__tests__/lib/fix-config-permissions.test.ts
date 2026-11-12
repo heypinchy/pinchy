@@ -410,6 +410,54 @@ describe("remove_retired_auth_profiles", () => {
   });
 });
 
+// OpenClaw 2026.9 keeps its gateway lock directory in the state dir
+// (`tmp/openclaw-<uid>`, mode 0700) and refuses to start when that directory is
+// not owned by its own uid ("device identity coordinator directory belongs to
+// another user"). fix-volume-ownership.sh no longer hands tmp/ to the pinchy
+// uid; this is the migration half for a volume an earlier Pinchy already did.
+describe("restore_gateway_lock_ownership", () => {
+  function runRestore(): void {
+    execFileSync("bash", ["-c", `source '${SCRIPT}'; restore_gateway_lock_ownership`], {
+      env: {
+        ...process.env,
+        PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+        OPENCLAW_STATE_DIR: stateDir,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+  }
+
+  it("hands a lock directory owned by another uid back to root", () => {
+    const lockDir = join(stateDir, "tmp", "openclaw-0");
+    mkdirSync(lockDir, { recursive: true });
+    const lockFile = join(lockDir, "device-identity.0123abcd.lock.sqlite");
+    writeFileSync(lockFile, "");
+
+    runRestore();
+
+    // The test process is not root, so every fixture counts as foreign-owned.
+    expect(chownedPaths()).toEqual(
+      expect.arrayContaining([join(stateDir, "tmp"), lockDir, lockFile])
+    );
+    expect(readFileSync(chownLog, "utf8")).toContain("root:root");
+  });
+
+  it("touches nothing outside tmp/", () => {
+    seedAgentDir("agent-a");
+    mkdirSync(join(stateDir, "tmp", "openclaw-0"), { recursive: true });
+
+    runRestore();
+
+    expect(chownedPaths().every((p) => p.startsWith(join(stateDir, "tmp")))).toBe(true);
+  });
+
+  it("tolerates a missing tmp/ (first boot)", () => {
+    expect(() => runRestore()).not.toThrow();
+    expect(chownedPaths()).toEqual([]);
+  });
+});
+
 describe("fix_config_permissions — wiring", () => {
   // An extracted script that never reaches the container repairs nothing, and
   // the tests above would stay green the whole time.
@@ -430,6 +478,19 @@ describe("fix_config_permissions — wiring", () => {
     for (const start of starts) {
       const before = lines.slice(Math.max(0, start - 15), start).join("\n");
       expect(before).toContain("remove_retired_auth_profiles");
+    }
+  });
+
+  it("restores the gateway lock directory's ownership before every gateway start", () => {
+    // The gateway checks the directory at startup, and the restart branch of
+    // the watchdog loop starts a gateway too.
+    const startScript = readFileSync(resolve(REPO_ROOT, "config/start-openclaw.sh"), "utf8");
+    const lines = startScript.split("\n");
+    const starts = lines.flatMap((line, i) => (/^\s*openclaw gateway\b/.test(line) ? [i] : []));
+    expect(starts.length).toBeGreaterThan(0);
+    for (const start of starts) {
+      const before = lines.slice(Math.max(0, start - 15), start).join("\n");
+      expect(before).toContain("restore_gateway_lock_ownership");
     }
   });
 

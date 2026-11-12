@@ -161,3 +161,15 @@ remove_retired_auth_profiles() {
     find "$OPENCLAW_STATE_DIR/agents" -mindepth 3 -maxdepth 3 -type f -path "*/agent/auth-profiles.json" \
         -delete 2>/dev/null || true
 }
+
+# OpenClaw 2026.9 keeps its gateway lock directory in the state dir
+# (`tmp/openclaw-<uid>`, mode 0700) and refuses to start when that directory is
+# not owned by its own uid: "Gateway failed to start: device identity
+# coordinator directory belongs to another user". config/fix-volume-ownership.sh
+# no longer hands tmp/ to the pinchy uid; an earlier Pinchy did, on every boot,
+# so a volume upgraded from it still carries a 999-owned lock directory. Hand it
+# back before each gateway start. Gated on the uid like every other chown here.
+restore_gateway_lock_ownership() {
+    [ -d "$OPENCLAW_STATE_DIR/tmp" ] || return 0
+    find "$OPENCLAW_STATE_DIR/tmp" ! -uid 0 -exec chown root:root {} \; 2>/dev/null || true
+}
