@@ -276,7 +276,8 @@ export const PdfDialog: FC<{
    * converted yet, or refused. The dialog then asks the route first, on every
    * open, and when there is none it says so and points at the original rather
    * than embedding the route's bare 404 — and stops offering the PDF and the
-   * full tab, both of which would be that same 404.
+   * full tab, both of which would be that same 404. While it asks, both stay
+   * in place but inert, so nothing hands over a 404 and nothing moves.
    */
   downloads?: DocumentDownload[];
   /**
@@ -307,11 +308,13 @@ export const PdfDialog: FC<{
   const missing = availability === "missing";
   // The PDF is offered — downloaded or opened in a tab — only once it is known
   // to exist: the check hashes the source, long enough on a large deck for a
-  // click to hand over the 404 it is there to catch.
+  // click to hand over the 404 it is there to catch. Until then its controls
+  // keep their place, inert: appearing late, they would shift the ones beside
+  // them under a reader's cursor.
   const offersPdf = availability === "available";
 
   const documentDownloads = (downloads ?? [{ label: filename, url: downloadUrlFor(url) }]).filter(
-    (d) => offersPdf || d.variant !== "converted"
+    (d) => !(missing && d.variant === "converted")
   );
   const original = documentDownloads.find((d) => d.variant === "original");
   // With one entry the icon is unambiguous. With two it is not — "the original
@@ -380,15 +383,29 @@ export const PdfDialog: FC<{
             customer is most likely to be standing.
            */}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
-            {documentDownloads.map((download) => (
-              <Button
-                key={download.url}
-                variant="ghost"
-                size={namesDownloads ? "sm" : "icon"}
-                className={namesDownloads ? undefined : "size-8"}
-                asChild
-              >
-                {/*
+            {documentDownloads.map((download) =>
+              !offersPdf && download.variant === "converted" ? (
+                <Button
+                  key={download.url}
+                  variant="ghost"
+                  size={namesDownloads ? "sm" : "icon"}
+                  className={namesDownloads ? undefined : "size-8"}
+                  disabled
+                  aria-label={downloadAccessibleName(download)}
+                  title={download.filename ?? download.label}
+                >
+                  <Download className="size-4" />
+                  {namesDownloads && <span className="max-w-32 truncate">{download.label}</span>}
+                </Button>
+              ) : (
+                <Button
+                  key={download.url}
+                  variant="ghost"
+                  size={namesDownloads ? "sm" : "icon"}
+                  className={namesDownloads ? undefined : "size-8"}
+                  asChild
+                >
+                  {/*
                   `download` covers the routes that do not read `download=1`
                   (a chat attachment is served by uploads/[filename]); the query
                   parameter is what makes the knowledge-base route both serve an
@@ -396,18 +413,19 @@ export const PdfDialog: FC<{
                   on purpose, so a Content-Disposition filename — the one that
                   carries umlauts intact — still wins.
                  */}
-                <a
-                  href={download.url}
-                  download
-                  aria-label={downloadAccessibleName(download)}
-                  title={download.filename ?? download.label}
-                >
-                  <Download className="size-4" />
-                  {namesDownloads && <span className="max-w-32 truncate">{download.label}</span>}
-                </a>
-              </Button>
-            ))}
-            {offersPdf && (
+                  <a
+                    href={download.url}
+                    download
+                    aria-label={downloadAccessibleName(download)}
+                    title={download.filename ?? download.label}
+                  >
+                    <Download className="size-4" />
+                    {namesDownloads && <span className="max-w-32 truncate">{download.label}</span>}
+                  </a>
+                </Button>
+              )
+            )}
+            {offersPdf ? (
               <Button variant="ghost" size="icon" className="size-8" asChild>
                 <a
                   href={url}
@@ -418,6 +436,18 @@ export const PdfDialog: FC<{
                   <ExternalLink className="size-4" />
                 </a>
               </Button>
+            ) : (
+              !missing && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  disabled
+                  aria-label="Open in new tab"
+                >
+                  <ExternalLink className="size-4" />
+                </Button>
+              )
             )}
             <DialogClose asChild>
               <Button variant="ghost" size="icon" className="size-8" aria-label="Close">
@@ -426,6 +456,17 @@ export const PdfDialog: FC<{
             </DialogClose>
           </div>
         </div>
+        {/*
+          Mounted with the dialog and empty until there is something to say: a
+          live region is announced when its text changes, not reliably when it
+          arrives already filled. Focus sits in the header, so without it a
+          screen reader would never hear why the pane holds no document.
+         */}
+        <p role="status" className="sr-only">
+          {missing
+            ? "There's no preview of this document. You can download the original instead."
+            : ""}
+        </p>
         {availability === "checking" ? (
           <div className="flex flex-1 items-center justify-center bg-muted/40">
             <Loader2
@@ -461,9 +502,8 @@ export const PdfDialog: FC<{
 const NoPreview: FC<{ original: DocumentDownload | undefined }> = ({ original }) => (
   <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-muted/40 p-6 text-center">
     <FileText className="size-8 text-muted-foreground" />
-    {/* Announced, not only drawn: focus sits in the header, so a screen reader
-        would otherwise never hear why the pane holds no document. */}
-    <div role="status" className="flex flex-col gap-3">
+    {/* Announced through the dialog's own status region, which outlives this. */}
+    <div className="flex flex-col gap-3">
       <p className="font-medium text-sm">We can&apos;t preview this document</p>
       <p className="max-w-md text-muted-foreground text-sm">
         Its preview is the PDF we convert it to, and there isn&apos;t one: it hasn&apos;t been

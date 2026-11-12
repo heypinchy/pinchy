@@ -471,7 +471,7 @@ describe("PdfDialog for a document without a converted PDF", () => {
     expect(await screen.findByText(/can't preview this document/i)).toBeInTheDocument();
     // Announced, not only drawn: focus sits in the header, so a screen reader
     // would otherwise never hear that the preview is missing.
-    expect(screen.getByRole("status")).toHaveTextContent(/can't preview this document/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/no preview of this document/i);
     expect(document.querySelector("embed")).toBeNull();
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe(viewerUrl);
@@ -488,29 +488,26 @@ describe("PdfDialog for a document without a converted PDF", () => {
       expect(href.searchParams.get("variant")).toBe("original");
       expect(href.searchParams.get("download")).toBe("1");
     }
-    fetchSpy.mockRestore();
   });
 
   it("does not offer a PDF there is none of, nor a tab that would open the 404", async () => {
-    const fetchSpy = headAnswers(404);
+    headAnswers(404);
 
     openOffice();
 
     await screen.findByText(/can't preview this document/i);
     expect(screen.queryByRole("link", { name: /download pdf/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /open in new tab/i })).not.toBeInTheDocument();
-    fetchSpy.mockRestore();
   });
 
   it("shows the converted PDF as before when there is one", async () => {
-    const fetchSpy = headAnswers(200);
+    headAnswers(200);
 
     openOffice();
 
     await waitFor(() => expect(document.querySelector("embed")).toHaveAttribute("src", viewerUrl));
     expect(screen.getByRole("link", { name: /download pdf/i })).toBeInTheDocument();
     expect(screen.queryByText(/can't preview this document/i)).not.toBeInTheDocument();
-    fetchSpy.mockRestore();
   });
 
   it("offers neither the PDF nor a tab onto it until it knows there is one", async () => {
@@ -533,6 +530,52 @@ describe("PdfDialog for a document without a converted PDF", () => {
     expect(screen.getByRole("link", { name: /open in new tab/i })).toBeInTheDocument();
   });
 
+  it("holds the header still while it checks, so a click lands where it was aimed", async () => {
+    // Controls that appear when the answer arrives shift the ones beside them:
+    // the slot by Close would turn from the original's download into a tab
+    // onto the PDF under a reader's cursor. Held back, not hidden — in place,
+    // labelled, and inert until the PDF is known to exist.
+    let answer: (res: Response) => void = () => {};
+    vi.spyOn(global, "fetch").mockImplementation(
+      () => new Promise<Response>((resolve) => (answer = resolve))
+    );
+
+    openOffice();
+    await screen.findByLabelText("Loading preview");
+
+    const header = () =>
+      [...screen.getByRole("button", { name: "Close" }).parentElement!.children].map((el) => ({
+        name: el.getAttribute("aria-label"),
+        text: el.textContent,
+      }));
+    const whileChecking = header();
+    expect(screen.getByRole("button", { name: /download pdf/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /open in new tab/i })).toBeDisabled();
+
+    answer(new Response(null, { status: 200 }));
+    await screen.findByRole("link", { name: /download pdf/i });
+    expect(header()).toEqual(whileChecking);
+  });
+
+  it("announces the missing preview through a region that was there all along", async () => {
+    // A live region is heard when its content changes, not reliably when it
+    // arrives already filled — VoiceOver skips that. So the region is mounted
+    // with the dialog, empty, and only its text changes.
+    let answer: (res: Response) => void = () => {};
+    vi.spyOn(global, "fetch").mockImplementation(
+      () => new Promise<Response>((resolve) => (answer = resolve))
+    );
+
+    openOffice();
+    await screen.findByLabelText("Loading preview");
+    const region = screen.getByRole("status");
+    expect(region).toHaveTextContent("");
+
+    answer(new Response(null, { status: 404 }));
+    await waitFor(() => expect(region).toHaveTextContent(/no preview of this document/i));
+    expect(screen.getByRole("status")).toBe(region);
+  });
+
   it("keeps the viewer on a server error, which is no verdict on the PDF either", async () => {
     headAnswers(500);
 
@@ -543,17 +586,16 @@ describe("PdfDialog for a document without a converted PDF", () => {
   });
 
   it("keeps the viewer when the check itself fails, which is no verdict on the PDF", async () => {
-    const fetchSpy = vi.spyOn(global, "fetch").mockRejectedValue(new TypeError("offline"));
+    vi.spyOn(global, "fetch").mockRejectedValue(new TypeError("offline"));
 
     openOffice();
 
     await waitFor(() => expect(document.querySelector("embed")).toHaveAttribute("src", viewerUrl));
-    fetchSpy.mockRestore();
   });
 
   it("does not start the page renderer on a PDF that is not there", async () => {
     mockOpenPdf.mockReset();
-    const fetchSpy = headAnswers(404);
+    headAnswers(404);
 
     openOffice({
       url: "/api/agents/a1/knowledge/passage",
@@ -562,7 +604,6 @@ describe("PdfDialog for a document without a converted PDF", () => {
 
     await screen.findByText(/can't preview this document/i);
     expect(mockOpenPdf).not.toHaveBeenCalled();
-    fetchSpy.mockRestore();
   });
 
   it("asks again on every open, and shows nothing of the last answer meanwhile", async () => {
@@ -608,7 +649,6 @@ describe("PdfDialog for a document without a converted PDF", () => {
     observer.disconnect();
     expect(embedsMounted).toBe(0);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    fetchSpy.mockRestore();
   });
 
   it("keeps saying so while it closes, rather than mounting the viewer on the way out", async () => {
@@ -647,7 +687,6 @@ describe("PdfDialog for a document without a converted PDF", () => {
 
     expect(embedsMounted).toBe(0);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    fetchSpy.mockRestore();
   });
 
   it("asks nothing of a document that is its own PDF", () => {
@@ -657,6 +696,5 @@ describe("PdfDialog for a document without a converted PDF", () => {
 
     expect(document.querySelector("embed")).toHaveAttribute("src", SOURCE_URL);
     expect(fetchSpy).not.toHaveBeenCalled();
-    fetchSpy.mockRestore();
   });
 });
