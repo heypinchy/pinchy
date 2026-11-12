@@ -47,6 +47,44 @@ describe("pinchy-audit plugin", () => {
     expect(hookNames).toContain("after_tool_call");
   });
 
+  it("registers pinchy.trajectory.read for admin clients, reading under the runtime's state dir", async () => {
+    const { default: plugin } = await import("./index");
+    const resolveStateDir = vi.fn(() => "/nonexistent-state-dir");
+    const api = {
+      ...createMockApi({ apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" }),
+      runtime: { state: { resolveStateDir } },
+    };
+    plugin.register?.(api as any);
+
+    expect(api.registerGatewayMethod).toHaveBeenCalledWith(
+      "pinchy.trajectory.read",
+      expect.any(Function),
+      { scope: "operator.admin" }
+    );
+    const handler = api.registerGatewayMethod.mock.calls[0][1];
+    const respond = vi.fn();
+    handler({ params: { agentId: "smithers", sessionKey: "agent:smithers:direct:u" }, respond });
+    expect(resolveStateDir).toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(true, { sessionId: null, jsonl: null });
+  });
+
+  // Usage tracking and the diagnostics export depend on this method, not on
+  // the audit forwarding, so a missing audit config must not take it down.
+  it("registers pinchy.trajectory.read even when the audit config is missing", async () => {
+    const { default: plugin } = await import("./index");
+    const api = {
+      ...createMockApi(undefined),
+      runtime: { state: { resolveStateDir: () => "/nonexistent-state-dir" } },
+    };
+    plugin.register?.(api as any);
+
+    expect(api.registerGatewayMethod).toHaveBeenCalledWith(
+      "pinchy.trajectory.read",
+      expect.any(Function),
+      { scope: "operator.admin" }
+    );
+  });
+
   it("posts start events from before_tool_call", async () => {
     const { default: plugin } = await import("./index");
     plugin.register?.(

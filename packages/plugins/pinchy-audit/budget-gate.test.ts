@@ -23,6 +23,8 @@ async function registerGate() {
     pluginConfig: { apiBaseUrl: "http://pinchy:7777/", gatewayToken: "gw-token" },
     logger,
     on,
+    registerGatewayMethod: vi.fn(),
+    runtime: { state: { resolveStateDir: () => "/nonexistent-state-dir" } },
   } as never);
   const call = on.mock.calls.find((c) => c[0] === "before_agent_run");
   expect(call, "before_agent_run must be registered").toBeDefined();

@@ -1,3 +1,5 @@
+import { createTrajectoryReadMethod, TRAJECTORY_READ_METHOD } from "./trajectory-reader";
+
 interface PluginConfig {
   apiBaseUrl: string;
   gatewayToken: string;
@@ -51,6 +53,12 @@ type GateDecision =
 interface PluginApi {
   pluginConfig?: PluginConfig;
   logger?: PluginLogger;
+  runtime: { state: { resolveStateDir: () => string } };
+  registerGatewayMethod: (
+    method: string,
+    handler: ReturnType<typeof createTrajectoryReadMethod>,
+    opts: { scope: "operator.admin" }
+  ) => void;
   on: {
     (
       hookName: "before_tool_call" | "after_tool_call",
@@ -561,6 +569,18 @@ const plugin = {
   },
 
   register(api: PluginApi) {
+    // Pinchy's per-turn usage and diagnostics export read session trajectories
+    // through this method since OpenClaw 2026.9 keeps them in a database only
+    // the gateway can open (see trajectory-reader.ts). Registered before the
+    // config check: it needs no Pinchy URL or token, and losing it would stop
+    // usage tracking, not just audit forwarding. Admin scope because a
+    // trajectory carries whole prompts and replies.
+    api.registerGatewayMethod(
+      TRAJECTORY_READ_METHOD,
+      createTrajectoryReadMethod(() => api.runtime.state.resolveStateDir()),
+      { scope: "operator.admin" }
+    );
+
     const cfg = api.pluginConfig;
     if (!cfg?.apiBaseUrl || !cfg?.gatewayToken) {
       api.logger?.warn?.("[pinchy-audit] plugin config is missing apiBaseUrl or gatewayToken");

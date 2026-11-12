@@ -5,8 +5,8 @@
 //
 // Pipeline:
 //   1. Auth + body validation + agent-access guard (standard route boilerplate).
-//   2. Resolve the per-user OpenClaw session via the on-disk sessions.json
-//      index, then read the trajectory JSONL.
+//   2. Resolve the per-user OpenClaw session, then read its trajectory JSONL
+//      (both over the gateway: `pinchy.trajectory.read`).
 //   3. Parse → turns → scope-resolve → otel spans.
 //   4. Pull audit rows for the session and assemble the bundle.
 //   5. Sanitize + enforce 5 MB cap (drops oldest turns until the bundle fits;
@@ -121,7 +121,7 @@ export const POST = withAuth(async (request, _ctx, session) => {
     exportedChatId = null;
   }
 
-  // Read the trajectory. When the chat is authorized but its trajectory file is
+  // Read the trajectory. When the chat is authorized but its trajectory is
   // gone (#639), don't 404 — degrade to an audit-only bundle so support still
   // gets the audit trail, flagged with `trajectoryMissing`.
   let raw: string | null = null;

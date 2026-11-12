@@ -191,10 +191,10 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
       // gate on `parsed.type === "chat"` — the comment here claimed system
       // sessions (main/cron/hook/channel) have "no per-user trajectory we
       // scan", which was never re-verified after #483 shipped. Verified live
-      // in production: cron/channel sessions DO have a
-      // <sessionId>.trajectory.jsonl with promptCache.lastCallUsage, and
-      // sessions.json maps every sessionKey — system included — to its
-      // sessionId, so resolveSessionId() already works for system keys.
+      // in production: cron/channel sessions DO have a trajectory with
+      // promptCache.lastCallUsage, and OpenClaw's session index maps every
+      // sessionKey — system included — to its sessionId, so
+      // resolveSessionId() already works for system keys.
       // Leaving system sessions on the gauge meant the autonomous/cron/
       // Telegram runs (exactly the shape of the 2026-07-15 Piper incident)
       // never got a context_tokens reading. A session with no trajectory yet
