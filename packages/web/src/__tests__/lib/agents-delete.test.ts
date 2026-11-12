@@ -103,6 +103,21 @@ describe("deleteAgent", () => {
     expect(recalculateTelegramAllowStores).toHaveBeenCalled();
   });
 
+  // Only one error can reach the caller. The other must not vanish: a
+  // rewrite that failed leaves allow lists behind, and the log is the only
+  // place anyone learns of it.
+  it("logs the allow-list failure when the config regenerate fails too", async () => {
+    const recalcError = new Error("Request pinchy.pairing.setAllowFrom timed out");
+    vi.mocked(recalculateTelegramAllowStores).mockRejectedValueOnce(recalcError);
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES openclaw.json"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(deleteAgent("agent-1")).rejects.toThrow(/EACCES/);
+
+    expect(consoleError).toHaveBeenCalledWith(expect.any(String), recalcError);
+    consoleError.mockRestore();
+  });
+
   it("should return undefined and skip cleanup when agent not found", async () => {
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnThis(),

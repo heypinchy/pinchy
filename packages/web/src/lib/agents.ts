@@ -152,11 +152,23 @@ export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
     // Both run whichever fails. The recalculation rewrites every list from
     // scratch, so the deleted bot's list goes first and the bot answers no one
     // while it still runs; the regenerate then takes it out of the config.
+    // Should both fail, the regenerate's error reaches the caller and the
+    // recalculation's is logged rather than lost.
+    let recalcError: unknown = null;
     try {
       await recalculateTelegramAllowStores();
-    } finally {
-      await regenerateOpenClawConfig();
+    } catch (err) {
+      recalcError = err;
     }
+    try {
+      await regenerateOpenClawConfig();
+    } catch (err) {
+      if (recalcError) {
+        console.error("[agents] could not rewrite the Telegram allow lists:", recalcError);
+      }
+      throw err;
+    }
+    if (recalcError) throw recalcError;
   }
 
   return updated;
