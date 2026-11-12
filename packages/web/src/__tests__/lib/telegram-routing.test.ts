@@ -48,10 +48,18 @@ describe("telegram-routing", () => {
     ).toBe("smithers-alice");
   });
 
-  it("falls back to the bot's own agent for a user without a personal agent", () => {
+  // The bot's own agent is its owner's private one. Handing it to someone
+  // without a personal agent of their own would let them talk to it.
+  it("gives a user without a personal agent no route on a personal-agent bot", () => {
     expect(telegramDirectTarget({ id: "smithers-owner", isPersonal: true }, "bob", personal)).toBe(
-      "smithers-owner"
+      null
     );
+  });
+
+  it("routes the bot's owner to the bot's own agent", () => {
+    expect(
+      telegramDirectTarget({ id: "smithers-owner", isPersonal: true }, "owner-1", personal)
+    ).toBe("smithers-owner");
   });
 
   it("sends everyone writing to a shared agent's bot to that agent", () => {

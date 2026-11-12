@@ -38,14 +38,15 @@ function isOlder(a: RoutableAgent, b: RoutableAgent): boolean {
 /**
  * A shared agent's bot serves its own agent to everyone. A personal agent's
  * bot (Smithers) hands each linked user their own personal agent, so their
- * Telegram chat is the one they see in the web UI; a user without one gets the
- * bot's agent.
+ * Telegram chat is the one they see in the web UI. A user without one gets no
+ * route (null): the bot's own agent is its owner's private one, so the config
+ * builder writes them no binding and the allow store leaves them off the bot.
  */
 export function telegramDirectTarget(
   bot: { id: string; isPersonal: boolean },
   userId: string,
   personalAgents: ReadonlyMap<string, string>
-): string {
+): string | null {
   if (!bot.isPersonal) return bot.id;
-  return personalAgents.get(userId) ?? bot.id;
+  return personalAgents.get(userId) ?? null;
 }

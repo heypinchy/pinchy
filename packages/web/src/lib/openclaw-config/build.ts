@@ -1742,9 +1742,9 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       const personalAgents = personalAgentsByOwner(liveAgents);
 
       // Members may be barred from personal agents (Settings → Organization →
-      // Member access). Then a member gets no binding at all — skipping only
-      // their own would hand them the fallback below, the bot owner's private
-      // agent. The allow store leaves them out as well (telegram-allow-store).
+      // Member access). Then a member gets no binding at all: their own agent
+      // is paused, and the bot's is its owner's private one. The allow store
+      // leaves them out as well (telegram-allow-store).
       // Roles are read only when the switch is off.
       const policy = await getInstancePolicy();
       const roleByUser = policy.memberPersonalAgents
@@ -1775,13 +1775,17 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
             continue;
           }
           // The allow store lets this user in only once OpenClaw routes them
-          // to this same agent, so both ask telegramDirectTarget.
+          // to this same agent, so both ask telegramDirectTarget. No target
+          // means no personal agent of their own: no binding, and the allow
+          // store leaves them off the bot.
+          const target = telegramDirectTarget(
+            { id: accountId, isPersonal: true },
+            link.userId,
+            personalAgents
+          );
+          if (target === null) continue;
           bindings.push({
-            agentId: telegramDirectTarget(
-              { id: accountId, isPersonal: true },
-              link.userId,
-              personalAgents
-            ),
+            agentId: target,
             match: {
               channel: "telegram",
               accountId,

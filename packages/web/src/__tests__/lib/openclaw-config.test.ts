@@ -8218,6 +8218,59 @@ describe("restart-state integration", () => {
     ]);
   });
 
+  it("binds no linked user without a personal agent to a personal-agent bot", async () => {
+    // user-c has no personal agent of their own. The bot's agent is user-a's
+    // private Smithers, so a binding to it would hand user-c someone else's.
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(
+            Promise.resolve([
+              {
+                id: "admin-smithers",
+                name: "Smithers",
+                model: "m",
+                allowedTools: [],
+                isPersonal: true,
+                ownerId: "user-a",
+              },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        if (callCount === 5) {
+          return Object.assign(
+            Promise.resolve([
+              { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
+              { userId: "user-c", channel: "telegram", channelUserId: "777888999" },
+            ]),
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:admin-smithers") return "123456:ABC-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const peerIds = config.bindings.map(
+      (b: { match: { peer?: { id: string } } }) => b.match.peer?.id
+    );
+    expect(peerIds).toContain("111222333");
+    expect(peerIds).not.toContain("777888999");
+  });
+
   it("binds no member to a personal-agent bot while members may not use a personal agent", async () => {
     // Settings → Organization → Member access. user-a is the admin who owns
     // the bot's Smithers; user-b is a member. Skipping only user-b's OWN

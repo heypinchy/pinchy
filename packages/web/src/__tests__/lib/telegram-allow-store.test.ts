@@ -497,6 +497,7 @@ describe("telegram-allow-store", () => {
             id: "smithers-1",
             visibility: "restricted",
             isPersonal: true,
+            ownerId: "user-1",
             deletedAt: null,
             avatarSeed: "__smithers__",
           },
@@ -513,6 +514,39 @@ describe("telegram-allow-store", () => {
       expect(writtenAllowFrom()["smithers-1"]).toContain("111222333");
     });
 
+    // The bot's own agent is its owner's private one, and a linked user with
+    // no personal agent of their own has nowhere else to go — say their
+    // invite claim failed after the sign-up. They stay off the bot.
+    it("leaves a linked user without a personal agent off a personal-agent bot", async () => {
+      setupDbMocks({
+        agents: [
+          {
+            id: "smithers-1",
+            visibility: "restricted",
+            isPersonal: true,
+            ownerId: "owner-1",
+            deletedAt: null,
+            avatarSeed: "__smithers__",
+          },
+        ],
+        channelLinks: [
+          { userId: "owner-1", channelUserId: "111" },
+          { userId: "user-2", channelUserId: "222" },
+        ],
+        agentGroups: [],
+        userGroups: [],
+        users: [
+          { id: "owner-1", role: "admin", banned: false },
+          { id: "user-2", role: "member", banned: false },
+        ],
+      });
+      mockSettings.set("telegram_bot_token:smithers-1", "token-1");
+
+      await recalculateTelegramAllowStores();
+
+      expect(writtenAllowFrom()["smithers-1"]).toEqual(["111"]);
+    });
+
     it("leaves members off a personal-agent bot while members may not use a personal agent", async () => {
       // The personal-agent bot routes each linked user's DMs to THEIR OWN
       // Smithers. With that switched off, a member must not get through at all
@@ -523,6 +557,7 @@ describe("telegram-allow-store", () => {
             id: "smithers-1",
             visibility: "restricted",
             isPersonal: true,
+            ownerId: "admin-1",
             deletedAt: null,
             avatarSeed: "__smithers__",
           },
@@ -685,14 +720,15 @@ describe("telegram-allow-store", () => {
       await recalculateTelegramAllowStores();
 
       // A shared bot routes everyone through the binding that arrives with its
-      // account, so it has no route to wait for.
+      // account, so it has no route to wait for. Bob has no personal agent:
+      // no route, and he stays off the personal-agent bot.
       expect(allowFromWrites()[0].routeTo).toEqual({
         "smithers-owner": {
           "100": "smithers-owner",
           "200": "smithers-alice",
-          "300": "smithers-owner",
         },
       });
+      expect(writtenAllowFrom()["smithers-owner"]).toEqual(["100", "200"]);
     });
 
     it("expects no route for a bot OpenClaw is not running after a polling conflict", async () => {

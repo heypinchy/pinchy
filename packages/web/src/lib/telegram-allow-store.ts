@@ -213,6 +213,7 @@ async function recalculateTelegramAllowStoresImpl(): Promise<number> {
   // Member access). Read once, and only when a personal-agent bot exists — it
   // narrows that branch below and nothing else.
   const policy = agentsWithBots.some((a) => a.isPersonal) ? await getInstancePolicy() : null;
+  const personalAgents = personalAgentsByOwner(allAgents);
 
   // 7. For each agent with a bot, compute allowed Telegram user IDs
   for (const agent of agentsWithBots) {
@@ -223,12 +224,13 @@ async function recalculateTelegramAllowStoresImpl(): Promise<number> {
       if (!user || user.banned) continue;
 
       if (agent.isPersonal) {
-        // Personal agents (e.g. Smithers): all linked users get access.
-        // Smithers is personal but the Telegram bot serves everyone — each
-        // user's DMs are routed to their OWN personal agent (build.ts). A
-        // member whose personal agent is paused is left out entirely: the
-        // routing would otherwise fall back to the bot owner's agent.
+        // Personal agents (e.g. Smithers): the Telegram bot serves every
+        // linked user, routing each one's DMs to their OWN personal agent
+        // (build.ts). Left out entirely: a member whose personal agent is
+        // paused, and a user without one — the bot's own agent is its owner's
+        // private one, and nothing else would answer them.
         if (policy && isPausedPersonalAgent(agent, user.role, policy)) continue;
+        if (telegramDirectTarget(agent, link.userId, personalAgents) === null) continue;
         allowedTelegramIds.push(link.channelUserId);
       } else if (agent.visibility === "all") {
         // All non-banned linked users get access
@@ -252,7 +254,11 @@ async function recalculateTelegramAllowStoresImpl(): Promise<number> {
     }
   }
 
-  return writeAllowFrom(allowFrom, true, await personalBotRoutes(allAgents, agentsWithBots, links));
+  return writeAllowFrom(
+    allowFrom,
+    true,
+    await personalBotRoutes(personalAgents, agentsWithBots, links)
+  );
 }
 
 /**
@@ -266,12 +272,7 @@ async function recalculateTelegramAllowStoresImpl(): Promise<number> {
  * to wait for.
  */
 async function personalBotRoutes(
-  allAgents: ReadonlyArray<{
-    id: string;
-    isPersonal: boolean;
-    ownerId: string | null;
-    createdAt: Date;
-  }>,
+  personalAgents: ReadonlyMap<string, string>,
   agentsWithBots: ReadonlyArray<{ id: string; isPersonal: boolean }>,
   links: ReadonlyArray<{ userId: string; channelUserId: string }>
 ): Promise<Record<string, Record<string, string>>> {
@@ -280,16 +281,15 @@ async function personalBotRoutes(
   const conflictDisabled = await getSettingsByKeys(
     personalBots.map((bot) => `telegram_conflict_disabled:${bot.id}`)
   );
-  const personalAgents = personalAgentsByOwner(allAgents);
   const routeTo: Record<string, Record<string, string>> = {};
   for (const bot of personalBots) {
     if (conflictDisabled.has(`telegram_conflict_disabled:${bot.id}`)) continue;
-    routeTo[bot.id] = Object.fromEntries(
-      links.map((link) => [
-        link.channelUserId,
-        telegramDirectTarget(bot, link.userId, personalAgents),
-      ])
-    );
+    const routes: Record<string, string> = {};
+    for (const link of links) {
+      const target = telegramDirectTarget(bot, link.userId, personalAgents);
+      if (target !== null) routes[link.channelUserId] = target;
+    }
+    routeTo[bot.id] = routes;
   }
   return routeTo;
 }
