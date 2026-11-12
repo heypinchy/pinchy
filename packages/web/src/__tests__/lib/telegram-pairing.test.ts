@@ -1,157 +1,108 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("fs")>();
-  const readFileSyncMock = vi.fn();
-  const existsSyncMock = vi.fn();
-  return {
-    ...actual,
-    default: { ...actual, readFileSync: readFileSyncMock, existsSync: existsSyncMock },
-    readFileSync: readFileSyncMock,
-    existsSync: existsSyncMock,
-  };
-});
+// Since OpenClaw 2026.9 the pending requests live in its state database and
+// the pinchy-audit plugin looks a code up for us (`pinchy.pairing.findByCode`).
+const { mockCallPairingStore } = vi.hoisted(() => ({ mockCallPairingStore: vi.fn() }));
+vi.mock("@/lib/openclaw-pairing-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/openclaw-pairing-store")>()),
+  callPairingStore: mockCallPairingStore,
+}));
 
-import { readFileSync, existsSync } from "fs";
+import { OpenClawNotConnectedError } from "@/lib/openclaw-pairing-store";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
 
-const mockedReadFileSync = vi.mocked(readFileSync);
-const mockedExistsSync = vi.mocked(existsSync);
+function pending(request: Record<string, unknown> | null) {
+  mockCallPairingStore.mockResolvedValue({ request });
+}
 
 describe("resolvePairingCode", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("returns telegram user ID for valid pairing code", () => {
-    mockedExistsSync.mockReturnValue(true);
-    mockedReadFileSync.mockReturnValue(
-      JSON.stringify({
-        version: 1,
-        requests: [{ id: "8754697762", code: "FMSVEN7M", createdAt: new Date().toISOString() }],
-      })
-    );
+  it("returns telegram user ID for valid pairing code", async () => {
+    pending({ id: "8754697762", code: "FMSVEN7M", createdAt: new Date().toISOString() });
 
-    const result = resolvePairingCode("FMSVEN7M");
+    const result = await resolvePairingCode("FMSVEN7M");
     expect(result).toEqual({ found: true, telegramUserId: "8754697762" });
-  });
-
-  it("matches code case-insensitively", () => {
-    mockedExistsSync.mockReturnValue(true);
-    mockedReadFileSync.mockReturnValue(
-      JSON.stringify({
-        version: 1,
-        requests: [{ id: "12345", code: "ABC123", createdAt: new Date().toISOString() }],
-      })
-    );
-
-    const result = resolvePairingCode("abc123");
-    expect(result).toEqual({ found: true, telegramUserId: "12345" });
-  });
-
-  it("returns not found for unknown code", () => {
-    mockedExistsSync.mockReturnValue(true);
-    mockedReadFileSync.mockReturnValue(
-      JSON.stringify({
-        version: 1,
-        requests: [{ id: "12345", code: "ABC123", createdAt: new Date().toISOString() }],
-      })
-    );
-
-    const result = resolvePairingCode("WRONG");
-    expect(result).toEqual({ found: false });
-  });
-
-  it("returns not found when pairing file does not exist", () => {
-    mockedExistsSync.mockReturnValue(false);
-
-    const result = resolvePairingCode("ABC123");
-    expect(result).toEqual({ found: false });
-  });
-
-  it("returns not found when pairing file is empty", () => {
-    mockedExistsSync.mockReturnValue(true);
-    mockedReadFileSync.mockReturnValue(JSON.stringify({ version: 1, requests: [] }));
-
-    const result = resolvePairingCode("ABC123");
-    expect(result).toEqual({ found: false });
-  });
-
-  it("regression: logs a warning when the pairing file is unreadable (EACCES)", () => {
-    // On v0.5.0 staging, OpenClaw writes telegram-pairing.json as root:0600.
-    // Pinchy (uid 999) gets EACCES when reading it, but the resolver's bare
-    // catch{} swallowed the error and returned { found: false }, surfacing
-    // to the user as a misleading "Invalid or expired pairing code".
-    // The fix is operational (start-openclaw.sh chmods the file), but the
-    // resolver MUST log non-ENOENT errors so future regressions of this
-    // class are immediately visible in container logs instead of debugging
-    // for an hour.
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    mockedExistsSync.mockReturnValue(true);
-    mockedReadFileSync.mockImplementation(() => {
-      const err = new Error(
-        "EACCES: permission denied, open '/openclaw-config/credentials/telegram-pairing.json'"
-      ) as Error & { code: string };
-      err.code = "EACCES";
-      throw err;
+    expect(mockCallPairingStore).toHaveBeenCalledWith("pinchy.pairing.findByCode", {
+      code: "FMSVEN7M",
     });
+  });
 
-    const result = resolvePairingCode("VVN2THRM");
+  it("asks for the code trimmed, leaving case to the store's own match", async () => {
+    pending({ id: "12345", code: "ABC123", createdAt: new Date().toISOString() });
+
+    const result = await resolvePairingCode("  abc123 ");
+    expect(result).toEqual({ found: true, telegramUserId: "12345" });
+    expect(mockCallPairingStore).toHaveBeenCalledWith("pinchy.pairing.findByCode", {
+      code: "abc123",
+    });
+  });
+
+  it("returns not found for unknown code", async () => {
+    pending(null);
+
+    const result = await resolvePairingCode("WRONG");
     expect(result).toEqual({ found: false });
+  });
+
+  it("reports the lookup unavailable, not the code invalid, while OpenClaw is disconnected", async () => {
+    mockCallPairingStore.mockRejectedValue(new OpenClawNotConnectedError());
+
+    const result = await resolvePairingCode("ABC123");
+    expect(result).toEqual({ found: false, unavailable: true });
+  });
+
+  it("returns not found when the answer carries no request", async () => {
+    mockCallPairingStore.mockResolvedValue({});
+
+    const result = await resolvePairingCode("ABC123");
+    expect(result).toEqual({ found: false });
+  });
+
+  it("regression: logs a warning and reports unavailable when the lookup fails", async () => {
+    // On v0.5.0 staging the pairing file was unreadable (root:0600) and a bare
+    // catch{} turned that into a misleading "Invalid or expired pairing code".
+    // A failed lookup must be visible in the logs and must not read as a
+    // wrong code.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockCallPairingStore.mockRejectedValue(
+      new Error("pinchy.pairing.findByCode failed: database is locked")
+    );
+
+    const result = await resolvePairingCode("VVN2THRM");
+    expect(result).toEqual({ found: false, unavailable: true });
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("[telegram-pairing]"),
-      expect.stringContaining("EACCES")
+      expect.stringContaining("database is locked")
     );
     warnSpy.mockRestore();
   });
 
-  it("does NOT log when the pairing file simply does not exist (ENOENT is normal)", () => {
-    // existsSync handles the ENOENT-by-stat case; this guards against a
-    // future change that drops the existsSync check and starts logging on
-    // every cold start (where the file legitimately doesn't exist yet).
+  it("does NOT log when the code simply is not pending", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    mockedExistsSync.mockReturnValue(false);
+    pending(null);
 
-    const result = resolvePairingCode("VVN2THRM");
+    const result = await resolvePairingCode("VVN2THRM");
     expect(result).toEqual({ found: false });
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
-  it("regression: matches the exact staging pairing-file shape (with lastSeenAt + meta)", () => {
-    // Reproduces the staging payload Pinchy's own /api/settings/telegram POST
-    // received on 2026-04-29 — verbatim file content from
-    // /openclaw-config/credentials/telegram-pairing.json. The user submitted
-    // the matching code via the UI and got "Invalid or expired pairing code".
-    // If this test passes locally, the bug is environmental (path, race,
-    // mtime), not in the resolver's matching logic.
-    //
-    // `now` is pinned shortly after `createdAt` (matching the recorded
-    // `lastSeenAt`) rather than left to default to the real clock, because
-    // the pairing-code expiry added below would otherwise reject this
-    // 2026-04-29 fixture as stale against today's date.
-    mockedExistsSync.mockReturnValue(true);
-    mockedReadFileSync.mockReturnValue(
-      JSON.stringify({
-        version: 1,
-        requests: [
-          {
-            id: "8754697762",
-            code: "VVN2THRM",
-            createdAt: "2026-04-29T16:52:07.768Z",
-            lastSeenAt: "2026-04-29T16:56:04.803Z",
-            meta: {
-              username: "clemenshelm",
-              firstName: "Clemens",
-              lastName: "Helm",
-              accountId: "ffa4180a-b920-42f0-9ee1-c61250e952ed",
-            },
-          },
-        ],
-      })
-    );
+  it("regression: matches the staging request shape (with lastSeenAt and accountId)", async () => {
+    // The request a staging user redeemed on 2026-04-29, as OpenClaw now
+    // stores it. `now` is pinned just after `lastSeenAt` so the expiry below
+    // does not reject the old fixture against today's date.
+    pending({
+      id: "8754697762",
+      code: "VVN2THRM",
+      accountId: "ffa4180a-b920-42f0-9ee1-c61250e952ed",
+      createdAt: "2026-04-29T16:52:07.768Z",
+      lastSeenAt: "2026-04-29T16:56:04.803Z",
+    });
 
-    const result = resolvePairingCode("VVN2THRM", Date.parse("2026-04-29T16:56:10.000Z"));
+    const result = await resolvePairingCode("VVN2THRM", Date.parse("2026-04-29T16:56:10.000Z"));
     expect(result).toEqual({ found: true, telegramUserId: "8754697762" });
   });
 
@@ -160,34 +111,28 @@ describe("resolvePairingCode", () => {
     const CREATED_AT_MS = Date.parse(CREATED_AT);
 
     function writePairingFile(request: Record<string, unknown>) {
-      mockedReadFileSync.mockReturnValue(
-        JSON.stringify({
-          version: 1,
-          requests: [{ id: "8754697762", code: "VVN2THRM", ...request }],
-        })
-      );
+      pending({ id: "8754697762", code: "VVN2THRM", ...request });
     }
 
     beforeEach(() => {
-      mockedExistsSync.mockReturnValue(true);
       writePairingFile({ createdAt: CREATED_AT });
     });
 
-    it("accepts a code redeemed just under the 10-minute expiry", () => {
+    it("accepts a code redeemed just under the 10-minute expiry", async () => {
       const justUnderTenMinutes = CREATED_AT_MS + 10 * 60_000 - 1;
-      const result = resolvePairingCode("VVN2THRM", justUnderTenMinutes);
+      const result = await resolvePairingCode("VVN2THRM", justUnderTenMinutes);
       expect(result).toEqual({ found: true, telegramUserId: "8754697762" });
     });
 
-    it("rejects a code redeemed at exactly the 10-minute expiry", () => {
+    it("rejects a code redeemed at exactly the 10-minute expiry", async () => {
       const tenMinutesLater = CREATED_AT_MS + 10 * 60_000;
-      const result = resolvePairingCode("VVN2THRM", tenMinutesLater);
+      const result = await resolvePairingCode("VVN2THRM", tenMinutesLater);
       expect(result).toEqual({ found: false });
     });
 
-    it("rejects a code redeemed well past the expiry (brute-force window closed)", () => {
+    it("rejects a code redeemed well past the expiry (brute-force window closed)", async () => {
       const oneHourLater = CREATED_AT_MS + 60 * 60_000;
-      const result = resolvePairingCode("VVN2THRM", oneHourLater);
+      const result = await resolvePairingCode("VVN2THRM", oneHourLater);
       expect(result).toEqual({ found: false });
     });
 
@@ -197,49 +142,49 @@ describe("resolvePairingCode", () => {
     // pending — only lastSeenAt moves. Measured from createdAt, messaging the
     // bot would therefore change nothing and the user would stay locked out
     // of a self-service flow until OpenClaw's own one-hour TTL expired.
-    it("accepts a stale-by-createdAt code the peer has just messaged about again", () => {
+    it("accepts a stale-by-createdAt code the peer has just messaged about again", async () => {
       const halfAnHourLater = CREATED_AT_MS + 30 * 60_000;
       writePairingFile({
         createdAt: CREATED_AT,
         lastSeenAt: new Date(halfAnHourLater).toISOString(),
       });
 
-      const result = resolvePairingCode("VVN2THRM", halfAnHourLater + 1_000);
+      const result = await resolvePairingCode("VVN2THRM", halfAnHourLater + 1_000);
       expect(result).toEqual({ found: true, telegramUserId: "8754697762" });
     });
 
-    it("rejects once 10 minutes have passed since the last contact too", () => {
+    it("rejects once 10 minutes have passed since the last contact too", async () => {
       const lastSeenMs = CREATED_AT_MS + 30 * 60_000;
       writePairingFile({
         createdAt: CREATED_AT,
         lastSeenAt: new Date(lastSeenMs).toISOString(),
       });
 
-      const result = resolvePairingCode("VVN2THRM", lastSeenMs + 10 * 60_000);
+      const result = await resolvePairingCode("VVN2THRM", lastSeenMs + 10 * 60_000);
       expect(result).toEqual({ found: false });
     });
 
-    it("falls back to createdAt when lastSeenAt is absent or unreadable", () => {
+    it("falls back to createdAt when lastSeenAt is absent or unreadable", async () => {
       // Pre-lastSeenAt files, and files where the field is present but junk.
       for (const request of [
         { createdAt: CREATED_AT },
         { createdAt: CREATED_AT, lastSeenAt: "not-a-date" },
       ]) {
         writePairingFile(request);
-        expect(resolvePairingCode("VVN2THRM", CREATED_AT_MS + 1_000)).toEqual({
+        expect(await resolvePairingCode("VVN2THRM", CREATED_AT_MS + 1_000)).toEqual({
           found: true,
           telegramUserId: "8754697762",
         });
-        expect(resolvePairingCode("VVN2THRM", CREATED_AT_MS + 20 * 60_000)).toEqual({
+        expect(await resolvePairingCode("VVN2THRM", CREATED_AT_MS + 20 * 60_000)).toEqual({
           found: false,
         });
       }
     });
 
-    it("rejects a code with an unparseable createdAt (fail closed, not open)", () => {
+    it("rejects a code with an unparseable createdAt (fail closed, not open)", async () => {
       writePairingFile({ createdAt: "not-a-date" });
 
-      const result = resolvePairingCode("VVN2THRM", CREATED_AT_MS);
+      const result = await resolvePairingCode("VVN2THRM", CREATED_AT_MS);
       expect(result).toEqual({ found: false });
     });
   });

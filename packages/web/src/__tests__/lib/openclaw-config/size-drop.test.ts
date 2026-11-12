@@ -6,6 +6,7 @@
 import { describe, it, expect } from "vitest";
 import {
   sizeGuardBaseline,
+  keepsAProvider,
   parseSizeDropRejection,
   buildProviderShrinkStep,
   planShrinkPush,
@@ -98,6 +99,17 @@ describe("sizeGuardBaseline", () => {
     const noModels = config({});
     delete noModels.models;
     expect(sizeGuardBaseline(existing, noModels)).toBe(existing.length);
+  });
+
+  it("does not count the embedding server as a surviving provider (#311 empty read)", () => {
+    // `llama-cpp` is Pinchy's own, emitted on every regenerate whatever the
+    // database says — so an empty read still carries it. It must not turn
+    // that read into what looks like a deletion of every chat provider.
+    const llamaCpp = { baseUrl: "http://127.0.0.1:19432/v1", models: [] };
+    const existing = serialize(config({ anthropic, acme: provider(40), "llama-cpp": llamaCpp }));
+    expect(sizeGuardBaseline(existing, config({ "llama-cpp": llamaCpp }))).toBe(existing.length);
+    expect(keepsAProvider(config({ "llama-cpp": llamaCpp }))).toBe(false);
+    expect(keepsAProvider(config({ anthropic, "llama-cpp": llamaCpp }))).toBe(true);
   });
 
   it("discounts ONLY the provider catalog — a shrink elsewhere is measured in full", () => {

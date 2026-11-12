@@ -22,8 +22,9 @@
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { MEMORY_EMBEDDING_MODEL_PATH } from "@/lib/openclaw-config";
+import { LLAMA_SERVER_COMMAND, LLAMA_SERVER_PRESET_PATH } from "@/lib/openclaw-config/paths";
 import { EMBEDDING_MODEL_PATH } from "@/lib/knowledge/constants";
 
 const REPO_ROOT = resolve(__dirname, "../../../../..");
@@ -164,6 +165,81 @@ describe("memory embedding pin drift guard", () => {
   it("the CI smoke test checks the same model path", () => {
     const smokePath = VERIFY_SCRIPT.match(/MODEL_PATH="([^"]+\.gguf)"/)?.[1];
     expect(smokePath).toBe(MEMORY_EMBEDDING_MODEL_PATH);
+  });
+});
+
+/**
+ * Since OpenClaw 2026.9 the `local` provider no longer embeds in-process: the
+ * llama.cpp provider starts a llama-server child process from the command
+ * Pinchy writes into `models.providers["llama-cpp"].localService`. The provider
+ * would download that binary itself on first use, which an offline install
+ * cannot, so the image bakes it. Same silent-failure class as the model path:
+ * if build.ts names a binary the image does not ship, memory_search answers
+ * nothing in production while every unit test passes.
+ */
+describe("llama-server pin drift guard", () => {
+  /**
+   * Every `curl … github.com/ggml-org/llama.cpp/…tar.gz` the image runs. `[^;]`
+   * keeps a match inside one shell command — a lazy `[\s\S]` would start at the
+   * GGUF download further up and run on to the first llama.cpp URL.
+   */
+  function llamaServerDownloads(dockerfile: string): string[] {
+    const downloads = [
+      ...dockerfile.matchAll(/curl -fsSL[^;]*?github\.com\/ggml-org\/llama\.cpp\/\S+\.tar\.gz/g),
+    ].map((m) => m[0]);
+    if (downloads.length === 0) {
+      throw new Error("No llama.cpp download found — this guard cannot assert on it.");
+    }
+    return downloads;
+  }
+
+  it("ships llama-server at exactly LLAMA_SERVER_COMMAND", () => {
+    // The stage asserts the binary where it builds it, and the runtime stage
+    // copies that directory to the same place build.ts points the provider at.
+    expect(DOCKERFILE_OPENCLAW).toContain(`test -x ${LLAMA_SERVER_COMMAND}`);
+    const dir = dirname(LLAMA_SERVER_COMMAND);
+    expect(DOCKERFILE_OPENCLAW).toContain(`COPY --from=llama-server ${dir} ${dir}`);
+  });
+
+  it("verifies every llama.cpp download against a pinned digest", () => {
+    // amd64 takes the release's prebuilt binary, arm64 builds the same tag's
+    // source (the prebuilt needs a newer glibc than the image has). Both are
+    // downloads baked into every deployment, so both are digest-checked.
+    const downloads = llamaServerDownloads(DOCKERFILE_OPENCLAW);
+    expect(downloads).toHaveLength(2);
+    for (const download of downloads) {
+      const target = download.match(/-o\s+(\S+)/)?.[1];
+      expect(target).toBeDefined();
+      expect(DOCKERFILE_OPENCLAW).toMatch(
+        new RegExp(`echo "\\$\\{LLAMA_SERVER_\\w*SHA256\\w*\\}  ${target}" \\| sha256sum -c -`)
+      );
+    }
+  });
+
+  it("waits long enough for a rate limit on every llama.cpp download", () => {
+    for (const download of llamaServerDownloads(DOCKERFILE_OPENCLAW)) {
+      expectPatientBackoff(download);
+    }
+  });
+
+  it("fails the build when the provider pins a different llama-server release", () => {
+    // The provider carries its own release and digests for the binary it would
+    // download. If an OpenClaw bump moves them and this image does not follow,
+    // the provider would run a llama-server it was not released against.
+    expect(DOCKERFILE_OPENCLAW).toContain(
+      'grep -q "LLAMA_SERVER_RELEASE = \\"${LLAMA_SERVER_RELEASE}\\"" "$provider"'
+    );
+    expect(DOCKERFILE_OPENCLAW).toContain(
+      'grep -q "sha256: \\"${LLAMA_SERVER_SHA256_AMD64}\\"" "$provider"'
+    );
+    expect(DOCKERFILE_OPENCLAW).toContain(
+      'grep -q "sha256: \\"${LLAMA_SERVER_SHA256_ARM64}\\"" "$provider"'
+    );
+  });
+
+  it("the CI smoke test runs the same llama-server and preset", () => {
+    expect(VERIFY_SCRIPT.match(/LLAMA_SERVER="([^"]+)"/)?.[1]).toBe(LLAMA_SERVER_COMMAND);
+    expect(VERIFY_SCRIPT.match(/LLAMA_PRESET="([^"]+)"/)?.[1]).toBe(LLAMA_SERVER_PRESET_PATH);
   });
 });
 

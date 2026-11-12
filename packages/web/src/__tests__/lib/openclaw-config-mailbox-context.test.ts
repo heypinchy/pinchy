@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// TOOLS.md mailbox context generation during regenerateOpenClawConfig.
+// Mailbox context generation during regenerateOpenClawConfig. The context
+// lives in the agent's IDENTITY.md since OpenClaw 2026.9 stopped loading
+// TOOLS.md (see writeMailboxContext in workspace.ts).
 //
 // The fs mock here is STATEFUL (fileStore): writes land in an in-memory map
 // and reads consult it first. That is load-bearing for two scenarios:
 //   - the ordering guarantee: getAgentBootstrapSizes must see the
-//     TOOLS.md written earlier in the SAME regeneration, and
+//     mailbox section written earlier in the SAME regeneration, and
 //   - the stale-content transition: a second regeneration against the
 //     state the first one left behind — the "pre-existing data" test class
 //     required by agent-rules/testing.md ("Test Migrations Against Pre-Existing Data").
@@ -118,7 +120,7 @@ import { readFileSync, writeFileSync, rmSync } from "fs";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { mockJoinedPermissionsDb } from "@/test-helpers/db-mock";
-import { generateToolsContent } from "@/lib/workspace";
+import { generateMailboxContent } from "@/lib/workspace";
 import {
   OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS,
   BOOTSTRAP_HEADROOM_CHARS,
@@ -132,12 +134,17 @@ const gatewayConfig = {
   gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
 };
 
-function toolsMdPath(agentId: string): string {
+function identityMdPath(agentId: string): string {
+  return `/openclaw-config/workspaces/${agentId}/IDENTITY.md`;
+}
+
+/** Where an earlier Pinchy (OpenClaw ≤ 2026.7) wrote the mailbox context. */
+function legacyToolsMdPath(agentId: string): string {
   return `/openclaw-config/workspaces/${agentId}/TOOLS.md`;
 }
 
 function getWrittenConfig(): Record<string, unknown> & {
-  agents: { list: Array<Record<string, unknown>> };
+  agents: { entries: Record<string, Record<string, unknown>> };
   plugins?: { entries?: Record<string, { config: Record<string, unknown> }> };
 } {
   const written = fileStore.get(CONFIG_PATH);
@@ -219,7 +226,7 @@ function agentRow(id: string, overrides: Partial<Record<string, unknown>> = {}) 
   };
 }
 
-describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
+describe("regenerateOpenClawConfig mailbox context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fileStore.clear();
@@ -237,7 +244,7 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
     });
   });
 
-  it("writes TOOLS.md with the connected mailbox address, label, and granted operations", async () => {
+  it("writes the connected mailbox address, label, and granted operations", async () => {
     const conn = emailConnection("conn-ms-1", { name: "Support Inbox" });
     mockDb(
       [agentRow("hermes")],
@@ -250,15 +257,15 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
 
     await regenerateOpenClawConfig();
 
-    const toolsMd = fileStore.get(toolsMdPath("hermes"));
-    expect(toolsMd).toBeDefined();
-    expect(toolsMd).toContain("## Connected Email");
-    expect(toolsMd).toContain("conn-ms-1@example.com");
-    expect(toolsMd).toContain("Support Inbox");
-    expect(toolsMd).toContain("read and search messages");
-    expect(toolsMd).toContain("send email");
+    const mailboxSection = fileStore.get(identityMdPath("hermes"));
+    expect(mailboxSection).toBeDefined();
+    expect(mailboxSection).toContain("## Connected Email");
+    expect(mailboxSection).toContain("conn-ms-1@example.com");
+    expect(mailboxSection).toContain("Support Inbox");
+    expect(mailboxSection).toContain("read and search messages");
+    expect(mailboxSection).toContain("send email");
     // The mailbox identity disclaimer (shared agents serve multiple users).
-    expect(toolsMd).toContain("not necessarily the personal address of the user");
+    expect(mailboxSection).toContain("not necessarily the personal address of the user");
   });
 
   it("falls back to the connection name when data.emailAddress is absent", async () => {
@@ -267,30 +274,46 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
 
     await regenerateOpenClawConfig();
 
-    const toolsMd = fileStore.get(toolsMdPath("hermes"));
-    expect(toolsMd).toContain("### Legacy Mailbox");
+    const mailboxSection = fileStore.get(identityMdPath("hermes"));
+    expect(mailboxSection).toContain("### Legacy Mailbox");
   });
 
-  it("removes a previously generated TOOLS.md when email permissions are revoked (pre-existing data transition)", async () => {
+  it("removes the mailbox section when email permissions are revoked (pre-existing data transition)", async () => {
     const conn = emailConnection("conn-old", { name: "Old Mailbox" });
     mockDb([agentRow("hermes")], [emailPermission("hermes", conn, "read")]);
     await regenerateOpenClawConfig();
-    expect(fileStore.get(toolsMdPath("hermes"))).toContain("conn-old@example.com");
+    expect(fileStore.get(identityMdPath("hermes"))).toContain("conn-old@example.com");
 
     // Permissions removed in the DB; the workspace still carries the old
-    // TOOLS.md from the previous regeneration (pre-existing state).
+    // mailbox section from the previous regeneration (pre-existing state).
     mockDb([agentRow("hermes")], []);
     await regenerateOpenClawConfig();
 
-    expect(fileStore.has(toolsMdPath("hermes"))).toBe(false);
+    expect(fileStore.get(identityMdPath("hermes")) ?? "").not.toContain("## Connected Email");
     // Nothing on disk mentions the revoked mailbox any more.
     for (const [, content] of fileStore) {
       expect(content).not.toContain("conn-old@example.com");
     }
   });
 
-  it("sizes bootstrap caps from the TOOLS.md written in the SAME regeneration (ordering)", async () => {
-    // A TOOLS.md larger than OpenClaw's 12k default per-file cap. If the file
+  it("removes the TOOLS.md an earlier Pinchy wrote on upgrade (pre-existing data)", async () => {
+    // OpenClaw 2026.9 no longer loads TOOLS.md, and `openclaw doctor --fix`
+    // would merge a stale one into the user's AGENTS.md. The first
+    // regeneration after the upgrade moves the context and drops the file.
+    fileStore.set(legacyToolsMdPath("hermes"), "## Connected Email\n\n### old@example.com\n");
+    fileStore.set(legacyToolsMdPath("plain"), "## Connected Email\n\n### gone@example.com\n");
+    const conn = emailConnection("conn-now", { name: "Current Mailbox" });
+    mockDb([agentRow("hermes"), agentRow("plain")], [emailPermission("hermes", conn, "read")]);
+
+    await regenerateOpenClawConfig();
+
+    expect(fileStore.has(legacyToolsMdPath("hermes"))).toBe(false);
+    expect(fileStore.has(legacyToolsMdPath("plain"))).toBe(false);
+    expect(fileStore.get(identityMdPath("hermes"))).toContain("conn-now@example.com");
+  });
+
+  it("sizes bootstrap caps from the mailbox section written in the SAME regeneration (ordering)", async () => {
+    // A mailbox section larger than OpenClaw's 12k default per-file cap. If the file
     // were written AFTER getAgentBootstrapSizes ran, the caps would lag one
     // regeneration behind and this (first) regen would emit no caps at all.
     const hugeLabel = "L".repeat(15_000);
@@ -299,15 +322,15 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
 
     await regenerateOpenClawConfig();
 
-    const expectedToolsMd = generateToolsContent([
+    const expectedSection = generateMailboxContent([
       { address: "conn-big@example.com", label: hugeLabel, operations: ["read"] },
     ]);
-    expect(fileStore.get(toolsMdPath("big-email-agent"))).toBe(expectedToolsMd);
+    expect(fileStore.get(identityMdPath("big-email-agent"))).toBe(expectedSection);
 
     const config = getWrittenConfig();
-    const entry = config.agents.list.find((a) => a.id === "big-email-agent");
+    const entry = config.agents.entries["big-email-agent"];
     expect(entry?.bootstrapMaxChars).toBe(
-      expectedToolsMd.trimEnd().length + BOOTSTRAP_HEADROOM_CHARS
+      expectedSection.trimEnd().length + BOOTSTRAP_HEADROOM_CHARS
     );
     expect(entry?.bootstrapMaxChars as number).toBeGreaterThan(
       OPENCLAW_DEFAULT_BOOTSTRAP_MAX_CHARS
@@ -357,13 +380,13 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
 
     await regenerateOpenClawConfig();
 
-    // TOOLS.md lists only the email mailbox — no Odoo/web leakage.
-    const toolsMd = fileStore.get(toolsMdPath("multi"))!;
-    expect(toolsMd).toContain("conn-mail@example.com");
-    expect(toolsMd).not.toContain("Odoo");
-    expect(toolsMd).not.toContain("Brave");
+    // The mailbox section lists only the email mailbox — no Odoo/web leakage.
+    const mailboxSection = fileStore.get(identityMdPath("multi"))!;
+    expect(mailboxSection).toContain("conn-mail@example.com");
+    expect(mailboxSection).not.toContain("Odoo");
+    expect(mailboxSection).not.toContain("Brave");
 
-    // The Odoo and web plugin configs are exactly what the pre-TOOLS.md
+    // The Odoo and web plugin configs are exactly what the pre-mailbox-context
     // pipeline emitted — the mailbox context feature must not interfere.
     const config = getWrittenConfig();
     expect(config.plugins?.entries?.["pinchy-odoo"]?.config.agents).toEqual({
@@ -401,7 +424,7 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
     await regenerateOpenClawConfig();
 
     // The runtime serves the FIRST connection (first-wins connectionId with
-    // ops merged across all connections). TOOLS.md must mirror exactly that —
+    // ops merged across all connections). The mailbox section must mirror exactly that —
     // context and runtime can never diverge.
     const config = getWrittenConfig();
     const emailAgentConfig = config.plugins?.entries?.["pinchy-email"]?.config.agents as Record<
@@ -411,11 +434,11 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
     expect(emailAgentConfig.dual.connectionId).toBe("conn-alpha");
     expect(emailAgentConfig.dual.tools).toContain("email_send");
 
-    const toolsMd = fileStore.get(toolsMdPath("dual"))!;
-    expect(toolsMd).toContain("conn-alpha@example.com");
-    expect(toolsMd).not.toContain("conn-beta@example.com");
-    // Merged ops are what the runtime actually grants — TOOLS.md says so too.
-    expect(toolsMd).toContain("send email");
+    const mailboxSection = fileStore.get(identityMdPath("dual"))!;
+    expect(mailboxSection).toContain("conn-alpha@example.com");
+    expect(mailboxSection).not.toContain("conn-beta@example.com");
+    // Merged ops are what the runtime actually grants — the section says so too.
+    expect(mailboxSection).toContain("send email");
 
     // The silent first-wins pick is surfaced to operators, naming the agent.
     const multiConnWarning = warn.mock.calls.find((c) =>
@@ -426,15 +449,16 @@ describe("regenerateOpenClawConfig TOOLS.md mailbox context", () => {
     warn.mockRestore();
   });
 
-  it("regenerates cleanly for an agent with no integrations at all (no TOOLS.md, no crash)", async () => {
+  it("regenerates cleanly for an agent with no integrations at all (no mailbox file, no crash)", async () => {
     mockDb([agentRow("plain")], []);
 
     await regenerateOpenClawConfig();
 
-    expect(fileStore.has(toolsMdPath("plain"))).toBe(false);
+    expect(fileStore.has(identityMdPath("plain"))).toBe(false);
+    expect(fileStore.has(legacyToolsMdPath("plain"))).toBe(false);
     const config = getWrittenConfig();
     expect(config.plugins?.entries?.["pinchy-email"]).toBeUndefined();
-    expect(config.agents.list.find((a) => a.id === "plain")).toBeDefined();
+    expect(config.agents.entries["plain"]).toBeDefined();
   });
 });
 
@@ -448,7 +472,7 @@ describe("regenerateOpenClawConfig — an unwritable workspace is not fatal (#10
   //
   // Until then this loop decides the blast radius. Unguarded, one agent's EACCES
   // aborts regenerateOpenClawConfig BEFORE the openclaw.json write — so the
-  // symptom is not "one agent's TOOLS.md is stale" but every agent's runtime
+  // symptom is not "one agent's mailbox context is stale" but every agent's runtime
   // config frozen and pinchy-email absent. That is #1095 as it actually shipped.
 
   beforeEach(() => {
@@ -468,7 +492,7 @@ describe("regenerateOpenClawConfig — an unwritable workspace is not fatal (#10
   /**
    * Model a root-owned workspace DIRECTORY: every write under it is denied,
    * including the sibling temp file writeFileReclaiming falls back to. Denying
-   * only TOOLS.md would let the reclaim rescue it and prove nothing.
+   * only IDENTITY.md would let the reclaim rescue it and prove nothing.
    */
   function denyWritesUnder(agentId: string): void {
     const dir = `/openclaw-config/workspaces/${agentId}/`;
@@ -495,7 +519,7 @@ describe("regenerateOpenClawConfig — an unwritable workspace is not fatal (#10
     // runtime even though the file explaining it could not be written.
     const config = getWrittenConfig();
     expect(config.plugins?.entries?.["pinchy-email"]).toBeDefined();
-    expect(config.agents.list.find((a) => a.id === "hermes")).toBeDefined();
+    expect(config.agents.entries["hermes"]).toBeDefined();
   });
 
   it("names the agent and quotes the errno rather than failing silently", async () => {
@@ -506,7 +530,9 @@ describe("regenerateOpenClawConfig — an unwritable workspace is not fatal (#10
 
     await regenerateOpenClawConfig();
 
-    const relevant = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes("TOOLS.md"));
+    const relevant = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes("mailbox context"));
     expect(relevant).toBeDefined();
     expect(relevant).toContain("hermes");
     // A warning that hides the errno is the log line that cost #1095 two days.
@@ -514,7 +540,7 @@ describe("regenerateOpenClawConfig — an unwritable workspace is not fatal (#10
     warn.mockRestore();
   });
 
-  it("keeps every OTHER agent's TOOLS.md when one workspace is locked", async () => {
+  it("keeps every OTHER agent's mailbox context when one workspace is locked", async () => {
     const locked = emailConnection("conn-locked", { name: "Locked Mailbox" });
     const fine = emailConnection("conn-fine", { name: "Fine Mailbox" });
     mockDb(
@@ -525,17 +551,17 @@ describe("regenerateOpenClawConfig — an unwritable workspace is not fatal (#10
 
     await regenerateOpenClawConfig();
 
-    expect(fileStore.get(toolsMdPath("hermes"))).toBeUndefined();
-    expect(fileStore.get(toolsMdPath("iris"))).toContain("conn-fine@example.com");
+    expect(fileStore.get(identityMdPath("hermes"))).toBeUndefined();
+    expect(fileStore.get(identityMdPath("iris"))).toContain("conn-fine@example.com");
   });
 
   it("survives an unwritable REMOVAL too", async () => {
-    // writeToolsFile DELETES TOOLS.md for an agent with no mailbox. rmSync's
+    // writeMailboxContext DELETES the TOOLS.md an earlier Pinchy wrote. rmSync's
     // `force` swallows ENOENT, never EACCES.
     const rm = vi.mocked(rmSync);
     const passthrough = rm.getMockImplementation();
     rm.mockImplementation(((p: unknown, ...rest: unknown[]) => {
-      if (String(p) === toolsMdPath("plain")) {
+      if (String(p) === legacyToolsMdPath("plain")) {
         const err = new Error(`EACCES: permission denied, unlink '${String(p)}'`);
         (err as NodeJS.ErrnoException).code = "EACCES";
         throw err;
@@ -546,6 +572,6 @@ describe("regenerateOpenClawConfig — an unwritable workspace is not fatal (#10
 
     await expect(regenerateOpenClawConfig()).resolves.not.toThrow();
 
-    expect(getWrittenConfig().agents.list.find((a) => a.id === "plain")).toBeDefined();
+    expect(getWrittenConfig().agents.entries["plain"]).toBeDefined();
   });
 });

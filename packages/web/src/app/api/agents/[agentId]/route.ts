@@ -261,7 +261,7 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
           // summary blob rather than trimming the offender — taking
           // `changes` with it, on the one row whose value is recording what
           // changed. It also scrubs addresses, and this path exists because
-          // of TOOLS.md, the file carrying an agent's mailbox context.
+          // of the file carrying an agent's mailbox context (TOOLS.md then).
           detail: { ...detail, runtimeUpdate: { applied: false, error: safeProviderError(cause) } },
           outcome: "failure",
         })

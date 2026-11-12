@@ -297,7 +297,7 @@ test.describe("Plugin behavior — pinchy-context", () => {
 // ── Plugin behavior: pinchy-files ────────────────────────────────────────────
 // Proves pinchy-files loaded correctly and registerTool() worked end-to-end.
 //
-// Reuses the existing Smithers agent (already has its workspace + auth-profiles
+// Reuses the existing Smithers agent (already has its workspace + agent
 // directory created by the setup wizard) and temporarily grants it
 // pinchy_ls / pinchy_read plus a /data allow-list via PATCH. Creating a brand
 // new agent here would hit EACCES because the integration suite bind-mounts

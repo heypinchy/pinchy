@@ -38,6 +38,36 @@ describe("ensureTrailingAssistant", () => {
     ]);
   });
 
+  it("keeps the resume buffer when the persisted reply runs ahead of it, because the deltas after the buffer still arrive", () => {
+    // The resume buffer is snapshotted when the socket joins the run; every
+    // delta after that point reaches the client and is merged onto the anchor.
+    // A transcript that already holds some of those words would get them twice
+    // ("one two two three…") if it replaced the buffer as the base.
+    const messages: Msg[] = [
+      { id: "u1", role: "user", content: "list one..ten" },
+      { id: "tmp", role: "assistant", content: "one two" },
+    ];
+    const bufferAnchor: Msg = { id: "run-1", role: "assistant", content: "one" };
+    expect(ensureTrailingAssistant(messages, bufferAnchor)).toEqual([
+      { id: "u1", role: "user", content: "list one..ten" },
+      { id: "run-1", role: "assistant", content: "one" },
+    ]);
+  });
+
+  it("keeps a longer persisted reply that the resume buffer does not continue", () => {
+    // A different text (the previous turn's reply of a multi-turn run, say) is
+    // not a lagging copy of the buffer, so no delta will rebuild it.
+    const messages: Msg[] = [
+      { id: "u1", role: "user", content: "hi" },
+      { id: "tmp", role: "assistant", content: "Let me look that up for you." },
+    ];
+    const otherAnchor: Msg = { id: "run-1", role: "assistant", content: "Found" };
+    expect(ensureTrailingAssistant(messages, otherAnchor)).toEqual([
+      { id: "u1", role: "user", content: "hi" },
+      { id: "run-1", role: "assistant", content: "Let me look that up for you." },
+    ]);
+  });
+
   it("appends when an assistant exists but a newer user turn trails it", () => {
     const messages: Msg[] = [
       { id: "u1", role: "user", content: "first" },

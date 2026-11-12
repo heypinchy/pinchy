@@ -256,12 +256,13 @@ describe("supplementPayloadWithOcConfig", () => {
     expect(result.models.providers.anthropic.baseUrl).toBe("https://mock.api:443");
   });
 
-  // OC 5.x enriches discovery, update, canvasHost with runtime subfields.
+  // OC 5.x enriches discovery and update with runtime subfields.
   // config.apply writes the payload to the file, and the config reloader diffs
   // OC's enriched currentCompareConfig against the new file. Missing subfields
   // → diff detected → restart triggered → ConfigMutationConflictError on in-
   // process restart (stale hash). These tests verify that supplementation
-  // preserves OC-enriched subfields for all three sections.
+  // preserves OC-enriched subfields for both sections. (Root `canvasHost` was
+  // the third until OpenClaw 2026.9 retired it — see the test below.)
 
   it("deep-supplements discovery from OC config — preserves OC-enriched subfields while keeping Pinchy values", () => {
     // OC 5.x enriches discovery.mdns with runtime state (lastAnnouncedAt, etc.)
@@ -313,66 +314,56 @@ describe("supplementPayloadWithOcConfig", () => {
     expect(result.update.channel).toBe("stable");
   });
 
-  it("deep-supplements canvasHost from OC config — preserves Pinchy enabled: false", () => {
-    const ocConfig = {
+  it("never carries a retired root canvasHost from the source into the payload", () => {
+    // OpenClaw 2026.9 moved it to the canvas plugin's config and its loader
+    // rejects the root key, so supplementing it back from a file an earlier
+    // Pinchy wrote would hand OpenClaw a config it refuses.
+    const source = {
       hash: "x",
-      canvasHost: {
-        enabled: false, // Pinchy owns this
-        port: 18790, // OC-enriched
-        boundAddr: "0.0.0.0", // OC-enriched
-      },
+      canvasHost: { enabled: false, port: 18790 },
     };
-    const payload = JSON.stringify({
-      canvasHost: { enabled: false },
-    });
-    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+    const payload = JSON.stringify({ plugins: { entries: {} } });
 
-    expect(result.canvasHost.enabled).toBe(false); // Pinchy value preserved
-    expect(result.canvasHost.port).toBe(18790);
-    expect(result.canvasHost.boundAddr).toBe("0.0.0.0");
+    expect(JSON.parse(supplementPayloadWithOcConfig(payload, source)).canvasHost).toBeUndefined();
+    mockedReadFileSync.mockReturnValue(JSON.stringify(source));
+    expect(JSON.parse(supplementPayloadWithFileFields(payload)).canvasHost).toBeUndefined();
   });
 
-  it("does NOT overwrite Pinchy-set values in discovery/update/canvasHost with OC values", () => {
+  it("does NOT overwrite Pinchy-set values in discovery/update with OC values", () => {
     // Even if OC has a different value for a key Pinchy explicitly sets,
     // the payload (Pinchy's intent) takes precedence.
     const ocConfig = {
       hash: "x",
       discovery: { mdns: { mode: "on" } }, // OC says "on"
       update: { checkOnStart: true }, // OC says "true"
-      canvasHost: { enabled: true }, // OC says "true"
     };
     const payload = JSON.stringify({
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
-      canvasHost: { enabled: false },
     });
     const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
 
     expect(result.discovery.mdns.mode).toBe("off");
     expect(result.update.checkOnStart).toBe(false);
-    expect(result.canvasHost.enabled).toBe(false);
   });
 
-  it("supplements discovery/update/canvasHost via file fallback (supplementPayloadWithFileFields)", () => {
+  it("supplements discovery/update via file fallback (supplementPayloadWithFileFields)", () => {
     const file = JSON.stringify({
       discovery: {
         mdns: { mode: "off", lastAnnouncedAt: "2026-05-04T10:00:00Z" },
       },
       update: { checkOnStart: false, lastCheckedAt: "T1" },
-      canvasHost: { enabled: false, port: 18790 },
     });
     mockedReadFileSync.mockReturnValue(file);
 
     const payload = JSON.stringify({
       discovery: { mdns: { mode: "off" } },
       update: { checkOnStart: false },
-      canvasHost: { enabled: false },
     });
     const result = JSON.parse(supplementPayloadWithFileFields(payload));
 
     expect(result.discovery.mdns.lastAnnouncedAt).toBe("2026-05-04T10:00:00Z");
     expect(result.update.lastCheckedAt).toBe("T1");
-    expect(result.canvasHost.port).toBe(18790);
   });
 
   it("merges OC-enriched sibling channel sub-blocks (e.g. channels.defaults) absent from payload (#193 follow-up)", () => {

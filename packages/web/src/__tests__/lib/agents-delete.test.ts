@@ -28,7 +28,6 @@ vi.mock("@/lib/workspace", () => ({
 
 vi.mock("@/lib/telegram-allow-store", () => ({
   recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
-  clearAllowStoreForAccount: vi.fn(),
 }));
 
 vi.mock("@/lib/settings", () => ({
@@ -39,6 +38,7 @@ import { deleteAgent } from "@/lib/agents";
 import { agents, agentConnectionPermissions } from "@/db/schema";
 import { db } from "@/db";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { deleteWorkspace } from "@/lib/workspace";
 
 describe("deleteAgent", () => {
@@ -81,6 +81,41 @@ describe("deleteAgent", () => {
     await deleteAgent("agent-1");
 
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  // The deleted agent's bot must leave the runtime config, and its allow list
+  // must go, whichever of the two steps fails.
+  it("takes the agent out of the runtime config even when the allow-list rewrite fails", async () => {
+    vi.mocked(recalculateTelegramAllowStores).mockRejectedValueOnce(
+      new Error("Request pinchy.pairing.setAllowFrom timed out")
+    );
+
+    await expect(deleteAgent("agent-1")).rejects.toThrow(/timed out/);
+
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("rewrites the allow lists even when the config regenerate fails", async () => {
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES openclaw.json"));
+
+    await expect(deleteAgent("agent-1")).rejects.toThrow(/EACCES/);
+
+    expect(recalculateTelegramAllowStores).toHaveBeenCalled();
+  });
+
+  // Only one error can reach the caller. The other must not vanish: a
+  // rewrite that failed leaves allow lists behind, and the log is the only
+  // place anyone learns of it.
+  it("logs the allow-list failure when the config regenerate fails too", async () => {
+    const recalcError = new Error("Request pinchy.pairing.setAllowFrom timed out");
+    vi.mocked(recalculateTelegramAllowStores).mockRejectedValueOnce(recalcError);
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES openclaw.json"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(deleteAgent("agent-1")).rejects.toThrow(/EACCES/);
+
+    expect(consoleError).toHaveBeenCalledWith(expect.any(String), recalcError);
+    consoleError.mockRestore();
   });
 
   it("should return undefined and skip cleanup when agent not found", async () => {

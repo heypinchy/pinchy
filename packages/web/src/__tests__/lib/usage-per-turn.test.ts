@@ -182,6 +182,20 @@ describe("recordSessionTurnsUsage cost wiring", () => {
     expect(rows[0].estimatedCostUsd).not.toBeNull();
   });
 
+  it("reads the trajectory through the OpenClaw client it was given", async () => {
+    const openclawClient = client();
+    await recordSessionTurnsUsage({
+      openclawClient,
+      agentId: "a1",
+      userId: "u1",
+      agentName: "Ada",
+      sessionKey: "agent:a1:direct:u1",
+    });
+
+    expect(mockResolveSessionId).toHaveBeenCalledWith("a1", "agent:a1:direct:u1", openclawClient);
+    expect(mockReadTrajectoryJsonl).toHaveBeenCalledWith("a1", "sess-1", openclawClient);
+  });
+
   it("records the turn's context size, distinct from the billed input tokens", async () => {
     // Guards the whole trajectory → DB-row path: the row must bill the summed
     // 1000 while reporting the last call's 400 as context pressure. Collapsing

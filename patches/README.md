@@ -41,3 +41,25 @@ its `pnpm.patchedDependencies` entry, and keep the test as a guard. Tracked in
 `compositionend` events). The same code is on assistant-ui `main` at
 `packages/react/src/primitives/composer/ComposerInput.tsx`. An upstream issue
 proposing the guard reorder is pending.
+
+## `openclaw-node@0.14.0.patch`
+
+**What:** lets the `caps` client option through to the `connect` handshake
+(`caps: this.options.caps || []` instead of a hard-coded `caps: []`), and adds
+`caps?: string[]` to `OpenClawClientOptions`.
+
+**Why:** OpenClaw 2026.9 hands a plugin approval only to a gateway client that
+announced it can take one — the `plugin-approvals` capability, or one of
+OpenClaw's own client ids (`canDeliverApprovals`). 2026.7 asked for the admin
+or approvals scope alone. With no client announcing it, OpenClaw expires every
+request on the spot, and each tool call pinchy-approvals gates fails with
+"Plugin approval unavailable (no approval route)". Pinchy's options live in
+`packages/web/src/server/openclaw-client-options.ts`.
+
+**Regression guard:** `packages/web/src/__tests__/server/openclaw-client-options.test.ts`
+connects the real client to a fake gateway and asserts the handshake carries
+`caps: ["plugin-approvals"]`. It goes red on the unpatched dependency.
+
+**Remove when:** openclaw-node ships a release with a `caps` option (we
+maintain it). Then bump to that version, delete this patch and its
+`pnpm.patchedDependencies` entry, and keep the test as a guard.

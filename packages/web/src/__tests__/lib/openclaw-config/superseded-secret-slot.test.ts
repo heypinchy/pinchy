@@ -489,7 +489,10 @@ describe("a superseded key slot outlives the config apply that moves OpenClaw of
   // `.bak`, which names the old slot). The real handlers judge the same files
   // in integration/openclaw-config-size-drop-against-oc.test.ts.
   describe("re-keyed to a much smaller catalogue (refused by the #311 guard)", () => {
-    const bigCatalogue = Array.from({ length: 40 }, (_, i) => ({
+    // Big enough that the re-keyed payload stays clearly under half of the
+    // settled file on the later regenerate, not just by a few bytes: every
+    // fixed key build.ts adds to the config shrinks that margin.
+    const bigCatalogue = Array.from({ length: 60 }, (_, i) => ({
       id: `acme-model-${i}-with-a-realistically-long-identifier`,
       name: `Acme Model ${i} (realistic display name)`,
       contextWindow: 128000,

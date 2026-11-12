@@ -18,12 +18,11 @@ const SECRETS_RELOAD_METHOD = "secrets.reload";
  * serving the old — now revoked — credential until someone restarts the
  * container. Every agent answers HTTP 401 in the meantime.
  *
- * Why not simply force the `config.apply` through instead: it would not fix it.
- * OpenClaw commits a config write with `includeAuthStoreRefs: false` and carries
- * the previously-resolved auth-profile stores over verbatim — and Pinchy's
- * per-agent `auth-profiles.json` is exactly where an agent's provider key is
- * resolved from. `secrets.reload` re-prepares the WHOLE runtime snapshot
- * (config refs and auth stores), restarts the channels whose secrets moved, and
+ * Why not simply force the `config.apply` through instead: the provider key is
+ * a SecretRef (`models.providers.<p>.apiKey`) in a file that did not change,
+ * and `secrets.reload` is the RPC OpenClaw provides for exactly this. It
+ * re-prepares the WHOLE runtime snapshot (config refs and auth stores),
+ * restarts the channels whose secrets moved, and
  * rolls back on failure. Forcing the apply would also spend a rate-limit slot
  * the no-op guard exists to protect.
  *

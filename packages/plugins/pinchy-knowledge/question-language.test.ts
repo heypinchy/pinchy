@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { REPLY_MEDIA_HINT, detectQuestionLanguage, sharedOpeners } from "./question-language";
+import { detectQuestionLanguage, sharedOpeners } from "./question-language";
 
 describe("detectQuestionLanguage", () => {
   it.each([
@@ -116,11 +116,13 @@ describe("detectQuestionLanguage", () => {
   });
 
   it("reads a Telegram caption past OpenClaw's media lines", () => {
-    // For a photo with a caption, OpenClaw's prompt is a "[media attached: …]"
-    // line and an English hint about sending images, then the caption.
+    // For photos with a caption, OpenClaw's prompt is a "[media attached: …]"
+    // line per file (a count line first when there are several), then the
+    // caption. Paths and MIME types are English and would outvote it.
     const prompt =
-      "[media attached: /root/.openclaw/media/inbound/abc.jpg (image/jpeg)]\n" +
-      "To send an image back, use the message tool with structured media fields such as media, mediaUrl, path, or filePath. Keep caption in the text body.\n" +
+      "[media attached: 2 files]\n" +
+      "[media attached 1/2: /root/.openclaw/media/inbound/abc.jpg (image/jpeg)]\n" +
+      "[media attached 2/2: /root/.openclaw/media/inbound/def.jpg (image/jpeg)]\n" +
       "Opisz ten dokument";
     expect(detectQuestionLanguage(prompt)).toBe("Polish");
   });
@@ -136,14 +138,23 @@ describe("detectQuestionLanguage", () => {
     expect(detectQuestionLanguage(question)).toBe("Italian");
   });
 
-  it("strips OpenClaw's reply-media hint as OpenClaw writes it", () => {
-    // The hint is copied byte for byte from OpenClaw. If a bump rewords it,
-    // the strip stops working without a word, so check the installed dist.
-    // packages/web is the workspace package that depends on openclaw.
+  it("strips OpenClaw's media lines as OpenClaw writes them", () => {
+    // The media-line pattern mirrors OpenClaw's own markers. If a bump changes
+    // them, the strip stops working without a word, so check the installed
+    // dist. packages/web is the workspace package that depends on openclaw.
     const dist = join(__dirname, "../../web/node_modules/openclaw/dist");
-    const found = readdirSync(dist)
+    const sources = readdirSync(dist)
       .filter((f) => f.endsWith(".js"))
-      .some((f) => readFileSync(join(dist, f), "utf8").includes(REPLY_MEDIA_HINT));
-    expect(found).toBe(true);
+      .map((f) => readFileSync(join(dist, f), "utf8"));
+    for (const marker of [
+      '"[media attached: "',
+      "`[media attached ${params.index}/${params.total}: `",
+      "`[media attached: ${count} files]`",
+    ]) {
+      expect(
+        sources.some((source) => source.includes(marker)),
+        marker
+      ).toBe(true);
+    }
   });
 });

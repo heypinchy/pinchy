@@ -314,8 +314,11 @@ export function removeWorkspaceSkill(agentId: string, skillId: string): void {
 // The files OpenClaw loads as prompt-bootstrap context for an agent
 // (loadWorkspaceBootstrapFiles). Each is subject to the per-file
 // `bootstrapMaxChars` cap and the shared `bootstrapTotalMaxChars` budget.
-// Pinchy writes AGENTS.md/SOUL.md/TOOLS.md/IDENTITY.md/USER.md; the rest are
-// included so the sizing stays correct if a fork or future feature adds them.
+// Pinchy writes AGENTS.md/SOUL.md/IDENTITY.md/USER.md; BOOTSTRAP.md is
+// OpenClaw's first-run file and is measured so the sizing stays correct when
+// it is present. OpenClaw 2026.9 dropped TOOLS.md and HEARTBEAT.md from this
+// set — which is why the mailbox context moved into IDENTITY.md (see
+// writeMailboxContext).
 //
 // MEMORY.md is here even though the AGENT writes it, not Pinchy — omitting it
 // was a real bug. OpenClaw loads it LAST, so it is the first file the total
@@ -331,10 +334,8 @@ export function removeWorkspaceSkill(agentId: string, skillId: string): void {
 export const BOOTSTRAP_FILENAMES = [
   "AGENTS.md",
   "SOUL.md",
-  "TOOLS.md",
   "IDENTITY.md",
   "USER.md",
-  "HEARTBEAT.md",
   "BOOTSTRAP.md",
   "MEMORY.md",
 ] as const;
@@ -371,7 +372,7 @@ export function getAgentBootstrapSizes(agentId: string): number[] {
 }
 
 /**
- * A mailbox connected to an agent, rendered into the agent's TOOLS.md
+ * A mailbox connected to an agent, rendered into the agent's IDENTITY.md
  * bootstrap file so the agent knows the identity of the account it operates
  * on. `operations` are the granted email operations (subset of
  * read/search/list/draft/send).
@@ -399,17 +400,19 @@ const EMAIL_OPERATION_LABELS = new Map<string, string>([
   ["send", "send email"],
 ]);
 
+const MAILBOX_SECTION_HEADING = "## Connected Email";
+
 /**
- * Renders TOOLS.md content from the agent's connected mailboxes. Returns ""
- * for an empty list so callers (writeToolsFile) remove the file instead of
+ * Renders the agent's mailbox section from its connected mailboxes. Returns ""
+ * for an empty list so writeMailboxContext drops the section instead of
  * leaving stale mailbox context behind. Loops over ALL entries — correct for
  * one and for N mailboxes, no single-entry assumption.
  */
-export function generateToolsContent(mailboxes: MailboxContext[]): string {
+export function generateMailboxContent(mailboxes: MailboxContext[]): string {
   if (mailboxes.length === 0) return "";
 
   const lines = [
-    "## Connected Email",
+    MAILBOX_SECTION_HEADING,
     "",
     "Each mailbox below is the identity of an email account this agent " +
       "operates on. It is not necessarily the personal address of the user " +
@@ -431,27 +434,80 @@ export function generateToolsContent(mailboxes: MailboxContext[]): string {
 }
 
 /**
- * Materializes the generated TOOLS.md into the agent workspace, or removes it
- * when there is nothing to say. Deleting (rather than writing an empty file)
- * is the simpler no-stale-content guarantee: both getAgentBootstrapSizes and
- * OpenClaw's loadWorkspaceBootstrapFiles skip missing files, and a file that
- * does not exist can never inject a revoked mailbox identity.
+ * IDENTITY.md has two writers, each owning one half: writeIdentityFile the
+ * name/tagline header, writeMailboxContext the mailbox section below it. Each
+ * rewrites its own half and carries the other one over, so neither order of
+ * writes can lose the other's content. Pinchy owns the whole file — the agent
+ * cannot write it (build.ts keeps it out of the agent's paths) — and the
+ * header can never contain the section heading on a line of its own (it is
+ * `# name` and `> tagline`), so the split is unambiguous.
  */
-export function writeToolsFile(agentId: string, mailboxes: MailboxContext[]): void {
+function splitIdentityFile(content: string): { header: string; mailboxSection: string } {
+  const match = new RegExp(`^${MAILBOX_SECTION_HEADING}$`, "m").exec(content);
+  if (!match) return { header: content, mailboxSection: "" };
+  return {
+    header: content.slice(0, match.index).trimEnd(),
+    mailboxSection: content.slice(match.index),
+  };
+}
+
+/**
+ * Any read failure counts as "no file", like getAgentBootstrapSizes: a write
+ * must still go through on an IDENTITY.md Pinchy can no longer read, because
+ * writeFileReclaiming is what repairs it. The half that could not be carried
+ * over comes back with the next write of that half — every config
+ * regeneration rewrites the mailbox section.
+ */
+function readIdentityFile(workspacePath: string): string | null {
+  try {
+    return readFileSync(join(workspacePath, "IDENTITY.md"), "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+function joinIdentityFile(header: string, mailboxSection: string): string {
+  if (!mailboxSection) return header;
+  return header ? `${header}\n\n${mailboxSection}` : mailboxSection;
+}
+
+/**
+ * Materializes the agent's mailbox context into its IDENTITY.md, or drops the
+ * section when there is nothing to say, so no stale mailbox identity survives
+ * a permission revocation.
+ *
+ * Why IDENTITY.md: OpenClaw 2026.9 no longer loads TOOLS.md, where this used
+ * to live (#1095); the files it does load are AGENTS.md and SOUL.md (the
+ * user's), USER.md (user context), MEMORY.md (the agent's), BOOTSTRAP.md
+ * (OpenClaw's first-run ritual) and IDENTITY.md — the one Pinchy generates and
+ * the agent cannot touch. It also reaches cron sessions, which TOOLS.md never
+ * did.
+ *
+ * The TOOLS.md an earlier Pinchy wrote is removed here: nothing loads it any
+ * more, and `openclaw doctor --fix` would merge its stale mailbox identity into
+ * the user's AGENTS.md, from where nothing ever removes it.
+ */
+export function writeMailboxContext(agentId: string, mailboxes: MailboxContext[]): void {
   assertValidAgentId(agentId);
   const workspacePath = getWorkspacePath(agentId);
-  const filePath = join(workspacePath, "TOOLS.md");
 
-  const content = generateToolsContent(mailboxes);
-  if (!content) {
-    rmSync(filePath, { force: true });
-    return;
+  const mailboxSection = generateMailboxContent(mailboxes);
+  const { header, mailboxSection: previous } = splitIdentityFile(
+    readIdentityFile(workspacePath) ?? ""
+  );
+  if (previous !== mailboxSection) {
+    if (!existsSync(workspacePath)) {
+      mkdirSync(workspacePath, { recursive: true });
+    }
+    writeFileReclaiming(
+      join(workspacePath, "IDENTITY.md"),
+      joinIdentityFile(header, mailboxSection)
+    );
   }
 
-  if (!existsSync(workspacePath)) {
-    mkdirSync(workspacePath, { recursive: true });
-  }
-  writeFileReclaiming(filePath, content);
+  // After the write, so a TOOLS.md Pinchy cannot remove never costs the agent
+  // its current mailbox context.
+  rmSync(join(workspacePath, "TOOLS.md"), { force: true });
 }
 
 export function generateIdentityContent(agent: { name: string; tagline: string | null }): string {
@@ -469,5 +525,10 @@ export function writeIdentityFile(
   if (!existsSync(workspacePath)) {
     mkdirSync(workspacePath, { recursive: true });
   }
-  writeFileReclaiming(join(workspacePath, "IDENTITY.md"), generateIdentityContent(agent));
+  // Carry the mailbox section over — see splitIdentityFile.
+  const { mailboxSection } = splitIdentityFile(readIdentityFile(workspacePath) ?? "");
+  writeFileReclaiming(
+    join(workspacePath, "IDENTITY.md"),
+    joinIdentityFile(generateIdentityContent(agent), mailboxSection)
+  );
 }

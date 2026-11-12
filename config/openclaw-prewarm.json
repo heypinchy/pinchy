@@ -15,9 +15,6 @@
   "update": {
     "checkOnStart": false
   },
-  "canvasHost": {
-    "enabled": false
-  },
   "plugins": {
     "allow": ["browser", "memory-core", "talk-voice"]
   }

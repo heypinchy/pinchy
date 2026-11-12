@@ -156,7 +156,7 @@ function mockFsReads(agentsMdByAgent: Record<string, string>) {
 function getAgentEntry(agentId: string) {
   const written = writtenOpenClawConfig(mockedWriteFileSync);
   const config = JSON.parse(written);
-  return config.agents.list.find((a: { id: string }) => a.id === agentId);
+  return config.agents.entries[agentId];
 }
 
 describe("regenerateOpenClawConfig bootstrap caps (Issue #373)", () => {
