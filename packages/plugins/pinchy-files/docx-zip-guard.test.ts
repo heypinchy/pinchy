@@ -821,6 +821,54 @@ describe("verifiedZipCopy — a ceiling on the markup a reader may parse", () =>
     }
   });
 
+  it("leaves out a .docm's macro project and an ActiveX control's binary, which no reader parses", async () => {
+    for (const [type, part] of [
+      ["vbaProject", "vbaProject.bin"],
+      ["activeXControlBinary", "activeX/activeX1.bin"],
+    ] as Array<[string, string]>) {
+      const zip = rawZip([
+        honest("[Content_Types].xml", "<Types/>"),
+        honest("_rels/.rels", rootRels),
+        honest("word/_rels/document.xml.rels", docRels([type, part])),
+        honest("word/document.xml", "<w:document/>"),
+        honest(`word/${part}`, pictureBytes()),
+      ]);
+      const copy = await verifiedZipCopy(zip, LIMITS_2K);
+      expect(contentsOf(copy).get(`word/${part}`)!.length, type).toBe(5008);
+    }
+  });
+
+  it("still leaves out a picture when the document names a file on the author's disk — a template, a mail-merge source", async () => {
+    // Word records the template a document was made from, the data source of
+    // a mail merge, a frameset's frames and a master document's parts as
+    // paths on the author's machine — backslashes, `%20` and all. No reader
+    // parses those targets out of this package (mammoth follows a part only
+    // as the main document, its styles, numbering, comments or notes), so
+    // they are no reason to count every picture as markup: a report from a
+    // company template with 8 MB of screenshots was refused as too long.
+    for (const [type, target] of [
+      ["attachedTemplate", "file:///C:\\Users\\Anna\\Templates\\Firmen%20Vorlage.dotm"],
+      ["mailMergeSource", "file:///\\\\server\\share\\Adressen%202026.xlsx"],
+      ["frame", "file:///C:\\Web%20Seiten\\rechts.htm"],
+      ["subDocument", "file:///C:\\Bericht\\Kapitel%201.docx"],
+      ["mailMergeHeaderSource", "file:///C:\\Serienbrief\\Kopf%20Zeile.docx"],
+      ["transform", "file:///C:\\XSLT\\Export%20Vorlage.xsl"],
+    ] as Array<[string, string]>) {
+      const zip = rawZip([
+        honest("[Content_Types].xml", "<Types/>"),
+        honest("_rels/.rels", rootRels),
+        honest(
+          "word/_rels/document.xml.rels",
+          docRels(["image", "media/image1.png"], [type, target])
+        ),
+        honest("word/document.xml", "<w:document/>"),
+        honest("word/media/image1.png", pictureBytes()),
+      ]);
+      const copy = await verifiedZipCopy(zip, LIMITS_2K);
+      expect(contentsOf(copy).get("word/media/image1.png")!.length, type).toBe(5008);
+    }
+  });
+
   it("still leaves out a picture whose image relationship names it with a plain space", async () => {
     // A space is not rewritten by any parser, so it is no reason to give up.
     const zip = rawZip([

@@ -40,6 +40,7 @@ import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { DEFAULT_MAX_OCR_PAGES, extractPdfPages } from "@/lib/knowledge/pdf-extract";
 import {
   extractXlsxIsolated,
+  readDocxTextIsolated,
   readMsgIsolated,
   tiffToPdfIsolated,
 } from "@/lib/knowledge/xlsx-isolated";
@@ -181,6 +182,7 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
     },
     // Behind the same fence: the parser walks an untrusted Compound File.
     readEmail: (copyPath) => readMsgIsolated(copyPath),
+    readDocxText: (copyPath) => readDocxTextIsolated(copyPath),
     ocrModel: ocr?.model ?? null,
     // The artifact volume, not the container's /tmp: see IngestDeps.stagingDir.
     stagingDir: stagingDirOf(),

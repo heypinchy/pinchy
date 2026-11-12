@@ -102,7 +102,11 @@ import {
   type IngestResult,
   type ScanConversion,
 } from "@/lib/knowledge/ingest";
-import { OfficeFileRejectedError, StagedCopyWriteError } from "@/lib/knowledge/office-formats";
+import {
+  OFFICE_CONVERT_BATCH_SIZE,
+  OfficeFileRejectedError,
+  StagedCopyWriteError,
+} from "@/lib/knowledge/office-formats";
 import { extractXlsx as realExtractXlsx, type XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
 import {
   convertOfficeFiles,
@@ -122,6 +126,7 @@ import { parseMsg, type ParsedEmail } from "@/lib/knowledge/msg-extract";
 import { listUnsearchableDocuments } from "@/lib/knowledge/unsearchable";
 import { listUnsupportedFiles, type UnsupportedFile } from "@/lib/knowledge/unsupported-files";
 import { DEFAULT_ALLOWED_EXTENSIONS } from "@/lib/knowledge/exclude-globs";
+import { runMigrationFile } from "@/test-helpers/run-migration-file";
 
 const ORG_ID = "org-kb-ingest-test";
 
@@ -182,6 +187,11 @@ const neverCalledEmail = async (): Promise<ParsedEmail> => {
   throw new Error("readEmail must not be called for anything but an Outlook message");
 };
 
+/** And for the .docx text reader: only a .docx whose PDF came out short may reach it (#1406). */
+const neverCalledDocxText = async (): Promise<string> => {
+  throw new Error("readDocxText must not be called unless a .docx conversion came out short");
+};
+
 function fakeDeps(
   pages: IngestPage[] = [
     { page: 1, text: PAGE_1_TEXT },
@@ -216,6 +226,7 @@ function fakeDeps(
       extractXlsx,
       convertScan: neverCalledScan,
       readEmail: (path: string) => parseMsg(path),
+      readDocxText: neverCalledDocxText,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -539,6 +550,7 @@ it("stores the hash of the bytes it re-read when a chunkless document is saved b
     extractXlsx: neverCalledXlsx,
     convertScan: neverCalledScan,
     readEmail: neverCalledEmail,
+    readDocxText: neverCalledDocxText,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -1300,6 +1312,7 @@ it("keeps ingesting the rest of the corpus when one file's extraction throws", a
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
       readEmail: neverCalledEmail,
+      readDocxText: neverCalledDocxText,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -1345,6 +1358,7 @@ it("surfaces an embedding outage as a run failure instead of blaming every file"
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
       readEmail: neverCalledEmail,
+      readDocxText: neverCalledDocxText,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -1376,6 +1390,7 @@ it("keeps indexing the next file when the embedder refuses one file's text", asy
     extractXlsx: neverCalledXlsx,
     convertScan: neverCalledScan,
     readEmail: neverCalledEmail,
+    readDocxText: neverCalledDocxText,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -1575,6 +1590,7 @@ it("counts a file whose staging copy hits a full disk as failed and goes on", as
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
       readEmail: neverCalledEmail,
+      readDocxText: neverCalledDocxText,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -1616,6 +1632,7 @@ it("keeps the last indexed version searchable when a file changes into one that 
     extractXlsx: neverCalledXlsx,
     convertScan: neverCalledScan,
     readEmail: neverCalledEmail,
+    readDocxText: neverCalledDocxText,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -1699,6 +1716,7 @@ function rejectingDeps(rejectedText: string, pagesFor: (path: string) => IngestP
     extractXlsx: neverCalledXlsx,
     convertScan: neverCalledScan,
     readEmail: neverCalledEmail,
+    readDocxText: neverCalledDocxText,
     convertOffice: neverCalledConvert,
     ocrModel: null,
     stagingDir,
@@ -2671,13 +2689,15 @@ const SLIDE_PAGES: IngestPage[] = [
  */
 function officeDeps(
   outcomes: (absPath: string) => ConversionOutcome,
-  pagesFor: (artifactPath: string) => IngestPage[]
+  pagesFor: (artifactPath: string) => IngestPage[],
+  docxText: (copyPath: string) => Promise<string> = neverCalledDocxText
 ) {
   const embed = vi.fn(async (texts: string[]) => texts.map(() => Array(768).fill(0.05)));
   const extractPdf = vi.fn(async (absPath: string) => pagesFor(absPath));
   const convertOffice = vi.fn(async (sources: readonly { absPath: string }[]) =>
     sources.map((source) => outcomes(source.absPath))
   );
+  const readDocxText = vi.fn(docxText);
   return {
     deps: {
       embed,
@@ -2686,11 +2706,13 @@ function officeDeps(
       convertOffice,
       convertScan: neverCalledScan,
       readEmail: neverCalledEmail,
+      readDocxText,
       ocrModel: null,
       stagingDir,
     } as IngestDeps,
     extractPdf,
     convertOffice,
+    readDocxText,
   };
 }
 
@@ -2870,6 +2892,243 @@ it("keeps a refused Office document's log entry to one bounded line, whatever it
   }
 });
 
+describe("a .docx whose converted PDF lost words against its source (#1406)", () => {
+  /** What the converter answers when the PDF fails the word-count tripwire. */
+  const shortConversion = (absPath: string): ConversionOutcome => ({
+    sourcePath: absPath,
+    status: "failed",
+    reason: "conversion lost content: 2165 words in the PDF vs 3277 in the source",
+    verification: { status: "short", sourceWords: 3277, pdfWords: 2165, epsilon: 0.1 },
+  });
+  const SOURCE_TEXT =
+    "Produktkatalog Herbst. Grüner Tee, Kräutertee und Früchtetee in Bioqualität, " +
+    "lieferbar ab Oktober in Kartons zu zwölf Packungen.";
+
+  it("indexes the text read from the .docx itself, with no locator a missing PDF would contradict", async () => {
+    // The tripwire is right to keep the short PDF out of the index and the
+    // viewer. It is wrong to leave the document with nothing: the source is
+    // readable — the oracle has just read all of it — so it is searchable,
+    // only without a page-accurate preview.
+    const docPath = join(tmpRoot, "Katalog.docx");
+    writeFileSync(docPath, "fake-docx-bytes");
+    let readBytes: string | undefined;
+    const { deps, extractPdf, readDocxText } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async (copyPath) => {
+        readBytes = readFileSync(copyPath, "utf8");
+        return SOURCE_TEXT;
+      }
+    );
+
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+    // The private copy was still there, with the bytes that were hashed.
+    expect(readBytes).toBe("fake-docx-bytes");
+    expect(extractPdf).not.toHaveBeenCalled();
+    // A private copy of the verified bytes, never the path on the share.
+    expect(readDocxText).toHaveBeenCalledTimes(1);
+    expect(readDocxText.mock.calls[0][0]).not.toBe(docPath);
+
+    const doc = await onlyDocument();
+    expect(doc.sourcePath).toBe(docPath);
+    expect(doc.pageCount).toBeNull();
+    const chunks = await chunksFor(doc.id);
+    expect(chunks.map((chunk) => chunk.chunkText).join("\n")).toContain("Kräutertee");
+    // No PDF exists to open on a heading or a page.
+    expect(chunks.every((chunk) => chunk.locator === null)).toBe(true);
+    expect(await listUnsearchableDocuments(ORG_ID, [tmpRoot], { state: "off" })).toMatchObject({
+      documents: [],
+    });
+
+    // A verdict on these bytes, as final as the conversion's: not read again.
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 1 }));
+    expect(readDocxText).toHaveBeenCalledTimes(1);
+  });
+
+  it("says in the server log that the document was indexed without its preview, and why", async () => {
+    const docPath = join(tmpRoot, "Katalog.docx");
+    writeFileSync(docPath, "fake-docx-bytes");
+    const { deps } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async () => SOURCE_TEXT
+    );
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await ingestDirectory(ORG_ID, tmpRoot, deps);
+      const lines = ingestLines(warn).filter((line) => line.includes(docPath));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("2165 words in the PDF vs 3277 in the source");
+      expect(lines[0]).toMatch(/indexed from the \.docx text, without a preview/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("leaves it unsearchable, with the cause in the log, when the .docx text cannot be read either", async () => {
+    const docPath = join(tmpRoot, "Katalog.docx");
+    writeFileSync(docPath, "fake-docx-bytes");
+    const { deps } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async () => {
+        throw new OfficeFileRejectedError(
+          "too_large",
+          "word/document.xml is past the markup limit"
+        );
+      }
+    );
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+      const lines = ingestLines(warn).filter((line) => line.includes(docPath));
+      expect(lines.join("\n")).toContain("2165 words in the PDF vs 3277 in the source");
+      expect(lines.join("\n")).toContain("word/document.xml is past the markup limit");
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await chunksFor((await onlyDocument()).id)).toHaveLength(0);
+  });
+
+  it("counts a reader that died as a failure to retry, not as an unsearchable document", async () => {
+    // Not a refusal of the file: the machine. The index keeps what it had.
+    writeFileSync(join(tmpRoot, "Katalog.docx"), "fake-docx-bytes");
+    const { deps } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async () => {
+        throw new Error("word-count reader stopped");
+      }
+    );
+
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ failed: 1 }));
+  });
+
+  it("does not read the source of a document the converter refused for any other reason", async () => {
+    // Only a SHORT conversion proves the reader child already read this .docx
+    // through its guard. A refusal before conversion (a bomb, HTML renamed
+    // .docx) must not reach mammoth by the back door.
+    writeFileSync(join(tmpRoot, "Angebot.docx"), "fake-docx-bytes");
+    const { deps, readDocxText } = officeDeps(
+      (absPath) => ({
+        sourcePath: absPath,
+        status: "failed",
+        reason: "refused before conversion: the content is HTML, not the format its name claims",
+      }),
+      () => WORD_PAGES,
+      async () => SOURCE_TEXT
+    );
+
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+    expect(readDocxText).not.toHaveBeenCalled();
+  });
+
+  it("reads a .docx the old code settled as refused once more after the upgrade", async () => {
+    // Before this fix the short conversion was the end of it: five empty reads
+    // and the row settled as "1|converter", which ingest never reads again on
+    // the same bytes. The upgrade's migration owes those rows one more read.
+    const docPath = join(tmpRoot, "Katalog.docx");
+    writeFileSync(docPath, "fake-docx-bytes");
+    const { deps, readDocxText } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async () => SOURCE_TEXT
+    );
+    await ingestDirectory(ORG_ID, tmpRoot, deps);
+    await db.delete(kbChunks);
+    await db
+      .update(kbDocuments)
+      .set({ emptyExtractionBy: "1|converter", incompleteReads: 5 })
+      .where(eq(kbDocuments.sourcePath, docPath));
+    readDocxText.mockClear();
+
+    // The state a v0.10 install upgrades with: still skipped, by design.
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 1 }));
+
+    await runMigrationFile("0083_kb_docx_short_conversion_reread.sql");
+
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+    expect(readDocxText).toHaveBeenCalledTimes(1);
+    const doc = await onlyDocument();
+    expect(doc).toMatchObject({ emptyExtractionBy: null, incompleteReads: 0 });
+    expect((await chunksFor(doc.id)).map((chunk) => chunk.chunkText).join("\n")).toContain(
+      "Kräutertee"
+    );
+  });
+
+  it("settles the owed read at once when the .docx text is refused again", async () => {
+    // One read, not five: the migration gives back a single retry.
+    const docPath = join(tmpRoot, "Katalog.docx");
+    writeFileSync(docPath, "fake-docx-bytes");
+    const { deps } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async () => {
+        throw new OfficeFileRejectedError(
+          "too_large",
+          "word/document.xml is past the markup limit"
+        );
+      }
+    );
+    await ingestDirectory(ORG_ID, tmpRoot, deps);
+    await db
+      .update(kbDocuments)
+      .set({ emptyExtractionBy: "1|converter", incompleteReads: 5 })
+      .where(eq(kbDocuments.sourcePath, docPath));
+    await runMigrationFile("0083_kb_docx_short_conversion_reread.sql");
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 1 }));
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 1 }));
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await onlyDocument()).toMatchObject({ incompleteReads: 5 });
+  });
+
+  it("falls back on the text of a macro-enabled .docm too, which the same reader counted", async () => {
+    // A .docm is the same package with a macro part beside it: mammoth counted
+    // it for the tripwire, so the text that count read is there to index.
+    const docPath = join(tmpRoot, "Katalog.docm");
+    writeFileSync(docPath, "fake-docm-bytes");
+    const { deps, readDocxText } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async () => SOURCE_TEXT
+    );
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+      const lines = ingestLines(warn).filter((line) => line.includes(docPath));
+      expect(lines.join("\n")).toMatch(/indexed from the \.docm text, without a preview/);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(readDocxText).toHaveBeenCalledTimes(1);
+    const chunks = await chunksFor((await onlyDocument()).id);
+    expect(chunks.map((chunk) => chunk.chunkText).join("\n")).toContain("Kräutertee");
+  });
+
+  it("has no source text to fall back on for a legacy .doc or a .ppt", async () => {
+    // Their oracles (catdoc, catppt) under-count and mangle diacritics — fit
+    // for a lower bound, not for the text a search matches against.
+    writeFileSync(join(tmpRoot, "Katalog.doc"), "fake-doc-bytes");
+    writeFileSync(join(tmpRoot, "Messe.ppt"), "fake-ppt-bytes");
+    const { deps, readDocxText } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async () => SOURCE_TEXT
+    );
+
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ unsearchable: 2 }));
+    expect(readDocxText).not.toHaveBeenCalled();
+  });
+});
+
 describe("the converter's log lines about a document", () => {
   // The converter reads private copies on the staging volume, each under the
   // file's own basename in a directory of its own — a name that reads like the
@@ -2891,6 +3150,7 @@ describe("the converter's log lines about a document", () => {
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
       readEmail: neverCalledEmail,
+      readDocxText: neverCalledDocxText,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store: new OfficeArtifactStore(storeRoot),
@@ -3002,6 +3262,7 @@ it("keeps a failed file's log entry to one bounded line, whatever its name holds
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
       readEmail: neverCalledEmail,
+      readDocxText: neverCalledDocxText,
       convertOffice: neverCalledConvert,
       ocrModel: null,
       stagingDir,
@@ -3042,6 +3303,7 @@ it.skipIf(process.getuid?.() === 0)(
         extractXlsx: neverCalledXlsx,
         convertScan: neverCalledScan,
         readEmail: neverCalledEmail,
+        readDocxText: neverCalledDocxText,
         convertOffice: neverCalledConvert,
         ocrModel: null,
         stagingDir,
@@ -3146,6 +3408,7 @@ describe("an artifact volume that cannot be written", () => {
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
       readEmail: neverCalledEmail,
+      readDocxText: neverCalledDocxText,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store: new OfficeArtifactStore(storeRoot),
@@ -3355,6 +3618,144 @@ it("batches from the document that asked, carrying the hash of the bytes it hand
   ]);
 });
 
+it("leaves out of a batch every later document its own turn will skip", async () => {
+  // A batch mate is taken to save it a converter start of its own — which is
+  // only worth anything when its own turn will read it. A settled refusal (a
+  // document the converter could not convert, unchanged since) and an
+  // unchanged indexed document are both skipped there. Taken into the batch
+  // anyway, the refusal went through LibreOffice again on every run that
+  // read any Office file, and the indexed one cost a full verified copy, for
+  // a conversion nobody reads.
+  for (const name of ["a.docx", "b.docx", "c.docx"]) {
+    writeFileSync(join(tmpRoot, name), `${name}-v1`);
+  }
+  const { deps, convertOffice } = officeDeps(
+    (absPath) =>
+      basename(absPath) === "b.docx"
+        ? { sourcePath: absPath, status: "failed", reason: "no artifact produced" }
+        : convertedTo("/artifacts/batch.pdf")(absPath),
+    () => WORD_PAGES
+  );
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+      counts({ indexed: 2, unsearchable: 1 })
+    );
+    // A refusal is retried until it has had its reads; then it is settled.
+    for (let run = 2; run <= MAX_INCOMPLETE_READS; run++) {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+        counts({ skipped: 2, unsearchable: 1 })
+      );
+    }
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 3 }));
+    const calls = convertOffice.mock.calls.length;
+
+    // Only the head of the queue changes; the two behind it are settled.
+    writeFileSync(join(tmpRoot, "a.docx"), "a.docx-v2");
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+      counts({ indexed: 1, skipped: 2 })
+    );
+
+    expect(convertOffice).toHaveBeenCalledTimes(calls + 1);
+    expect(
+      convertOffice.mock.calls[calls][0].map((source: { absPath: string }) =>
+        basename(source.absPath)
+      )
+    ).toEqual(["a.docx"]);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it("still takes a later document into the batch when its own turn will read it", async () => {
+  // The other half of the same rule: leaving a mate out is only right when
+  // its turn skips it. A changed one belongs in the batch, or every changed
+  // Office document pays a converter start of its own.
+  for (const name of ["a.docx", "b.docx", "c.docx"]) {
+    writeFileSync(join(tmpRoot, name), `${name}-v1`);
+  }
+  const { deps, convertOffice } = officeDeps(convertedTo("/artifacts/batch.pdf"), () => WORD_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 3 }));
+
+  writeFileSync(join(tmpRoot, "a.docx"), "a.docx-v2");
+  writeFileSync(join(tmpRoot, "c.docx"), "c.docx-v2");
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 2, skipped: 1 }));
+
+  expect(convertOffice).toHaveBeenCalledTimes(2);
+  expect(
+    convertOffice.mock.calls[1][0].map((source: { absPath: string }) => basename(source.absPath))
+  ).toEqual(["a.docx", "c.docx"]);
+});
+
+it("takes a later unchanged document into the batch when its turn owes it a read anyway", async () => {
+  // A matching hash is not the whole skip decision: a refusal still owed a
+  // retry, and a document read under an earlier artifact format, are read
+  // again unchanged. After a format bump that is every Office document, which
+  // is exactly when batching them together matters most.
+  for (const name of ["a.docx", "b.docx", "c.docx"]) {
+    writeFileSync(join(tmpRoot, name), `${name}-v1`);
+  }
+  const { deps, convertOffice } = officeDeps(
+    (absPath) =>
+      basename(absPath) === "b.docx"
+        ? { sourcePath: absPath, status: "failed", reason: "no artifact produced" }
+        : convertedTo("/artifacts/batch.pdf")(absPath),
+    () => WORD_PAGES
+  );
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+      counts({ indexed: 2, unsearchable: 1 })
+    );
+    await db
+      .update(kbDocuments)
+      .set({ artifactFormatVersion: null })
+      .where(eq(kbDocuments.sourcePath, join(tmpRoot, "c.docx")));
+
+    writeFileSync(join(tmpRoot, "a.docx"), "a.docx-v2");
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+      counts({ indexed: 2, unsearchable: 1 })
+    );
+  } finally {
+    warn.mockRestore();
+  }
+
+  expect(convertOffice).toHaveBeenCalledTimes(2);
+  expect(
+    convertOffice.mock.calls[1][0].map((source: { absPath: string }) => basename(source.absPath))
+  ).toEqual(["a.docx", "b.docx", "c.docx"]);
+});
+
+it("looks no further ahead for batch mates than a batch reaches", async () => {
+  // Every mate looked at is read in full to learn whether its turn will skip
+  // it. A look-ahead that ran on until it found a batch's worth of documents
+  // to read would hash the rest of an unchanged corpus inside the first
+  // changed document's turn — and again on each of their own turns.
+  const names = Array.from(
+    { length: OFFICE_CONVERT_BATCH_SIZE + 6 },
+    (_, i) => `doc-${String(i).padStart(2, "0")}.docx`
+  );
+  for (const name of names) writeFileSync(join(tmpRoot, name), `${name}-v1`);
+  const { deps, convertOffice } = officeDeps(convertedTo("/artifacts/batch.pdf"), () => WORD_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: names.length }));
+  const calls = convertOffice.mock.calls.length;
+
+  // The head changes, the last document its window reaches, and the first
+  // one past it.
+  const edge = names[OFFICE_CONVERT_BATCH_SIZE - 1];
+  const far = names[OFFICE_CONVERT_BATCH_SIZE];
+  for (const name of [names[0], edge, far]) writeFileSync(join(tmpRoot, name), `${name}-v2`);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+    counts({ indexed: 3, skipped: names.length - 3 })
+  );
+
+  expect(
+    convertOffice.mock.calls
+      .slice(calls)
+      .map(([sources]) => sources.map((source: { absPath: string }) => basename(source.absPath)))
+  ).toEqual([[names[0], edge], [far]]);
+});
+
 it("hashes an Office file as it streams, so the server never holds it whole while it converts", async () => {
   // The hash was taken from a whole-file read, and V8 kept that buffer alive
   // across the awaits after it — through the whole conversion: up to 200 MB
@@ -3412,6 +3813,7 @@ it("converts a batch mate again when it was saved between its batch and its own 
     convertOffice,
     convertScan: neverCalledScan,
     readEmail: neverCalledEmail,
+    readDocxText: neverCalledDocxText,
     ocrModel: null,
     stagingDir,
   };
@@ -3470,6 +3872,7 @@ it("spends one converter attempt per batch when the converter never answers at a
     convertOffice,
     convertScan: neverCalledScan,
     readEmail: neverCalledEmail,
+    readDocxText: neverCalledDocxText,
     ocrModel: null,
     stagingDir,
   } as IngestDeps;
@@ -3533,6 +3936,7 @@ describe("a legacy .xls workbook (#1373)", () => {
       convertOffice,
       convertScan: neverCalledScan,
       readEmail: neverCalledEmail,
+      readDocxText: neverCalledDocxText,
       ocrModel: null,
       stagingDir,
     };
@@ -3704,6 +4108,7 @@ describe("an Office document converted under an earlier artifact format", () => 
       extractXlsx: neverCalledXlsx,
       convertScan: neverCalledScan,
       readEmail: neverCalledEmail,
+      readDocxText: neverCalledDocxText,
       convertOffice: (sources: readonly OfficeSource[]) =>
         convertOfficeFiles(sources, {
           store,
@@ -3888,6 +4293,7 @@ function recordingDeps() {
     }),
     convertScan: neverCalledScan,
     readEmail: neverCalledEmail,
+    readDocxText: neverCalledDocxText,
     convertOffice: vi.fn(async (sources: readonly { absPath: string }[]) =>
       sources.map((source) => {
         read(source.absPath);

@@ -324,6 +324,12 @@ The knowledge base now indexes emails saved from Outlook (`.msg`): subject, send
 
 The archive rule (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)) read the whole path of a document, including the folders above the one an agent is granted. An agent granted a folder that is itself called `Archiv`, or sits below one — `/data/Archiv/Projekte` — therefore had every document marked archived, and everyday search found nothing. The rule now reads only the path inside the granted folder. Nothing to do on upgrade: the next index run — the nightly one, or **Reindex now** — marks those documents current again without reading them a second time. When two agents are granted nested folders, the folder granted further down decides for both.
 
+#### Word documents that lost text in conversion are searchable
+
+We convert every Word document to PDF and count its words a second time. A PDF that came out more than a tenth short was kept out of the index, and so was the document: it had no searchable text at all, and the **Index** section listed it among the [documents that can't be searched](/guides/create-knowledge-base-agent/#documents-that-cant-be-searched). Now we index the text read from the `.docx` itself. You can search it and cite it, but it has no preview, so a citation names the document and no heading, and the viewer offers the original for download. The server log names each such document with both word counts. See [Supported file types](/guides/mount-data-directories/#supported-file-types).
+
+Nothing to do on upgrade. Every `.docx` the knowledge base had stopped trying to convert is read once more on the next index run, the nightly one or **Reindex now**: at most one conversion each. The index doesn't record why a file was refused, so a `.docx` refused for another reason — one LibreOffice can't open, say — is read again too, and refused again. Legacy `.doc` and `.ppt` files have no such fallback: the reader that counts their words misses some of them and garbles accented letters. They stay listed as before.
+
 #### The agent runtime is OpenClaw 2026.9.2
 
 This release moves the OpenClaw runtime from 2026.7.1 to 2026.9.2, which fixes every published OpenClaw security advisory that affected the version we shipped before. OpenClaw 2026.9 renamed or retired a few settings in `openclaw.json`; Pinchy moves them on its first start, before OpenClaw boots, so there is nothing to edit by hand.
@@ -350,9 +356,10 @@ The v0.9.0 notes say a shared agent's `MEMORY.md` stays out of Telegram group ch
 
 ### Database migrations
 
-The migration `0082` runs automatically on startup — no manual steps. It is additive.
+The migrations `0082`–`0083` run automatically on startup — no manual steps.
 
-- `0082` — `initial` as a fourth `trigger` on `kb_index_jobs`, for the first index Pinchy starts when an agent is granted a folder nothing has indexed yet.
+- `0082` — `initial` as a fourth `trigger` on `kb_index_jobs`, for the first index Pinchy starts when an agent is granted a folder nothing has indexed yet. Additive.
+- `0083` — no schema change. It marks every `.docx` the knowledge base had stopped trying to convert to be read once more, so the next index run can read its text.
 
 ## Upgrading from v0.10.2 to v0.10.3
 
