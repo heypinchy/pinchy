@@ -57,6 +57,30 @@ describe("callPairingStore", () => {
     expect(mockRequest).not.toHaveBeenCalled();
   });
 
+  // A gateway restart drops the socket under a pending call. openclaw-node
+  // rejects it with a plain Error, which is the same situation as calling while
+  // disconnected: the allow lists are rewritten when the connection is back.
+  it("throws OpenClawNotConnectedError when the connection drops during the call", async () => {
+    mockRequest.mockRejectedValue(
+      new Error("Not connected to OpenClaw Gateway: connection closed")
+    );
+
+    await expect(
+      callPairingStore(PAIRING_SET_ALLOW_FROM_METHOD, { allowFrom: {}, replaceAll: true })
+    ).rejects.toBeInstanceOf(OpenClawNotConnectedError);
+  });
+
+  it("still throws a timeout as a failure, not as a disconnect", async () => {
+    mockRequest.mockRejectedValue(new Error("Request pinchy.pairing.setAllowFrom timed out"));
+
+    const call = callPairingStore(PAIRING_SET_ALLOW_FROM_METHOD, {
+      allowFrom: {},
+      replaceAll: true,
+    });
+    await expect(call).rejects.toThrow(/timed out/);
+    await expect(call).rejects.not.toBeInstanceOf(OpenClawNotConnectedError);
+  });
+
   it("throws OpenClawNotConnectedError before the client exists", async () => {
     mockGetOpenClawClient.mockImplementation(() => {
       throw new Error("OpenClaw client not initialized");

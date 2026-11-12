@@ -18,10 +18,7 @@ import {
   writeWorkspaceFileInternal,
   writeIdentityFile,
 } from "@/lib/workspace";
-import {
-  recalculateTelegramAllowStores,
-  clearAllowStoreForAccount,
-} from "@/lib/telegram-allow-store";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { deleteSetting } from "@/lib/settings";
 import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
@@ -152,8 +149,8 @@ export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
     // Clean up Telegram bot settings if this agent had a bot
     await deleteSetting(`telegram_bot_token:${id}`);
     await deleteSetting(`telegram_bot_username:${id}`);
-    await clearAllowStoreForAccount(id);
     await regenerateOpenClawConfig();
+    // Rewrites every list from scratch, so the deleted bot's list goes too.
     await recalculateTelegramAllowStores();
   }
 

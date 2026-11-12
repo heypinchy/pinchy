@@ -25,6 +25,9 @@ export class OpenClawNotConnectedError extends Error {
   }
 }
 
+/** How openclaw-node rejects pending requests when the connection closes. */
+const GATEWAY_DISCONNECTED_PREFIX = "Not connected to OpenClaw Gateway";
+
 export async function callPairingStore(
   method: string,
   params: Record<string, unknown>
@@ -37,8 +40,18 @@ export async function callPairingStore(
   }
   if (!client.isConnected) throw new OpenClawNotConnectedError();
 
-  // openclaw-node resolves an error response rather than rejecting.
-  const response = await client.request(method, { channel: "telegram", ...params });
+  // openclaw-node resolves an error response rather than rejecting. It does
+  // reject a call whose socket drops before the answer, e.g. on a gateway
+  // restart; that is the same situation as calling while disconnected.
+  let response;
+  try {
+    response = await client.request(method, { channel: "telegram", ...params });
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith(GATEWAY_DISCONNECTED_PREFIX)) {
+      throw new OpenClawNotConnectedError();
+    }
+    throw err;
+  }
   if (!response.ok) {
     throw new Error(`${method} failed: ${response.error?.message ?? "no reason given"}`);
   }

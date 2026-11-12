@@ -611,6 +611,25 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     );
   });
 
+  // Taking the bot out of openclaw.json stops it outright, so that comes
+  // first. A failing allow-list write must not leave the bot running and the
+  // removal unaudited; the next recalculation drops the account's list anyway.
+  it("removes the bot from the config and audits it when the allow-list write fails", async () => {
+    mockClearAllowStoreForAccount.mockRejectedValueOnce(
+      new Error("Request pinchy.pairing.setAllowFrom timed out")
+    );
+
+    const response = await DELETE(new NextRequest("http://localhost"), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockUpdateTelegramChannelConfig).toHaveBeenCalledWith("agent-1", null);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "channel.deleted", outcome: "success" })
+    );
+  });
+
   it("clears stale channel_links when the last Telegram bot is removed (#476 gap 3)", async () => {
     // db.select().from().where() is mocked to resolve [] → no bot remains.
     vi.mocked(db.delete).mockReturnValueOnce({

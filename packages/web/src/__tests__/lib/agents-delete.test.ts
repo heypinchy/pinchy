@@ -39,6 +39,7 @@ import { deleteAgent } from "@/lib/agents";
 import { agents, agentConnectionPermissions } from "@/db/schema";
 import { db } from "@/db";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { clearAllowStoreForAccount } from "@/lib/telegram-allow-store";
 import { deleteWorkspace } from "@/lib/workspace";
 
 describe("deleteAgent", () => {
@@ -78,6 +79,19 @@ describe("deleteAgent", () => {
   });
 
   it("should call regenerateOpenClawConfig after deletion", async () => {
+    await deleteAgent("agent-1");
+
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  // The deleted agent and its bot leave the runtime config whatever the allow
+  // lists do: the recalculation after the regenerate already drops the
+  // account, so a failing per-account clear must not stand in front of it.
+  it("removes the agent from the runtime config even when an allow-list write fails", async () => {
+    vi.mocked(clearAllowStoreForAccount).mockRejectedValueOnce(
+      new Error("Request pinchy.pairing.setAllowFrom timed out")
+    );
+
     await deleteAgent("agent-1");
 
     expect(regenerateOpenClawConfig).toHaveBeenCalled();

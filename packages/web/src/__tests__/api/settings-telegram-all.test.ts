@@ -110,6 +110,20 @@ describe("DELETE /api/settings/telegram/all", () => {
     expect(mockUpdateTelegramChannelConfig).toHaveBeenCalled();
   });
 
+  it("removes every bot from the config and audits it when the allow-list write fails", async () => {
+    mockClearAllAllowStores.mockRejectedValueOnce(
+      new Error("Request pinchy.pairing.setAllowFrom timed out")
+    );
+
+    const response = await DELETE();
+
+    expect(response.status).toBe(200);
+    expect(mockUpdateTelegramChannelConfig).toHaveBeenCalledWith(null, null);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "channel.deleted", outcome: "success" })
+    );
+  });
+
   it("logs audit event", async () => {
     const response = await DELETE();
     expect(response.status).toBe(200);

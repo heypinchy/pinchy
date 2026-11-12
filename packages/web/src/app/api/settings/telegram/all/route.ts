@@ -28,12 +28,18 @@ export async function DELETE() {
     await deleteSetting(`telegram_bot_username:${agentId}`);
   }
 
-  // Clear all per-account allow-from stores and remove all channel config.
-  // updateTelegramChannelConfig() notifies restart-state on actual write — and
-  // is auto-deduped when there's nothing to remove, avoiding a 30 s overlay for
-  // a no-op.
-  await clearAllAllowStores();
+  // Remove all channel config first, which stops every bot, then clear the
+  // per-account allow-from stores. updateTelegramChannelConfig() notifies
+  // restart-state on actual write — and is auto-deduped when there's nothing to
+  // remove, avoiding a 30 s overlay for a no-op. A failing clear must not undo
+  // the removal: no bot is left to read the lists, and the next recalculation
+  // drops them.
   updateTelegramChannelConfig(null, null);
+  try {
+    await clearAllAllowStores();
+  } catch (err) {
+    console.error("[telegram] could not clear the allow lists of removed bots:", err);
+  }
 
   await appendAuditLog({
     actorType: "user",
