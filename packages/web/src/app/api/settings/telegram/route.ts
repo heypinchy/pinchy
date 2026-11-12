@@ -12,6 +12,7 @@ import {
   isChannelUserIdConflictError,
 } from "@/lib/telegram-pairing-security";
 import { recalculateTelegramAllowStores, removePairingRequest } from "@/lib/telegram-allow-store";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -100,14 +101,20 @@ export const POST = withAuth(async (req, _ctx, session) => {
   // become the sole authority for Telegram access.
   await removePairingRequest(telegramUserId);
 
+  // Routing before access. A personal bot lets every linked user in and sends
+  // each to their own personal agent by peer binding; the account-wide binding
+  // to the bot owner's agent catches everyone else (openclaw-config/build.ts).
+  // Allowing this user in before their peer binding is written would put their
+  // DMs into the owner's agent. A bindings change is a no-op reload in
+  // OpenClaw 2026.9, so this costs no restart. If it throws, nobody is let in.
+  await regenerateOpenClawConfig();
+
   // Recalculate per-account allow-from stores (permission-aware)
   await recalculateTelegramAllowStores();
 
   // #508: per-task session model. We no longer write session.identityLinks —
   // each Telegram peer keeps its own per-peer OpenClaw session rather than
-  // being folded into the user's web chat session. Pinchy's own authorization
-  // (Chats list, Telegram allow-listing) reads channel_links directly, so the
-  // link is fully effective without any identityLinks emission.
+  // being folded into the user's web chat session.
 
   return NextResponse.json({ linked: true, telegramUserId });
 });
@@ -130,9 +137,8 @@ export const DELETE = withAuth(async (_req, _ctx, session) => {
   // Recalculate per-account allow-from stores (removes unlinked user)
   await recalculateTelegramAllowStores();
 
-  // #508: per-task session model — no session.identityLinks to update. The
-  // per-account allow-from recalculation above (driven by channel_links) is
-  // the sole config-side effect of unlinking.
+  // Access is gone; now drop the user's stale peer binding.
+  await regenerateOpenClawConfig();
 
   return NextResponse.json({ linked: false });
 });

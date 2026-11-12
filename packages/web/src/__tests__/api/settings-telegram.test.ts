@@ -31,10 +31,14 @@ vi.mock("@/lib/telegram-pairing-security", async (importOriginal) => ({
 }));
 
 // #508: the route no longer writes session.identityLinks (per-task session
-// model — each Telegram peer keeps its own per-peer OpenClaw session). It no
-// longer imports anything from @/lib/openclaw-config, so there is nothing to
-// mock here; the assertions below verify channel_links + allow-store remain
-// the only effects of link/unlink.
+// model — each Telegram peer keeps its own per-peer OpenClaw session). It does
+// regenerate openclaw.json, for the user's peer binding: on OpenClaw 2026.9 a
+// personal bot carries an account-wide binding to its owner's agent, so a
+// linked user without their own peer binding lands on the owner's agent.
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+}));
 
 const mockRecalculateTelegramAllowStores = vi.fn().mockResolvedValue(undefined);
 const mockRemovePairingRequest = vi.fn();
@@ -186,8 +190,31 @@ describe("POST /api/settings/telegram", () => {
     // Per-account allow-from stores recalculated (permission-aware)
     expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
 
-    // #508: no session.identityLinks write — channel_links + the allow-store
-    // recalc are the only effects of linking under the per-task session model.
+    // #508: no session.identityLinks write under the per-task session model.
+  });
+
+  // A personal bot lets every linked user in, and routes them by peer binding
+  // to their own personal agent — with the bot owner's agent as the
+  // account-wide fallback. Granting access before the binding exists sends the
+  // new user's DMs into the owner's agent, with the owner's memory and
+  // integrations, until some unrelated regenerate.
+  it("writes the user's peer binding before letting them onto any bot", async () => {
+    const response = await POST(makePostRequest({ code: "FMSVEN7M" }), routeContext());
+    expect(response.status).toBe(200);
+
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRecalculateTelegramAllowStores.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("grants no bot access when the binding could not be written", async () => {
+    mockRegenerateOpenClawConfig.mockRejectedValueOnce(new Error("disk full"));
+
+    await expect(POST(makePostRequest({ code: "FMSVEN7M" }), routeContext())).rejects.toThrow(
+      "disk full"
+    );
+    expect(mockRecalculateTelegramAllowStores).not.toHaveBeenCalled();
   });
 
   it("returns 400 when pairing code is invalid", async () => {
@@ -355,7 +382,10 @@ describe("DELETE /api/settings/telegram", () => {
     // Per-account allow-from stores recalculated (removes unlinked user)
     expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
 
-    // #508: no session.identityLinks write on unlink either — the allow-store
-    // recalc (driven by channel_links) is the sole config-side effect.
+    // Access goes first; the stale peer binding is dropped after it.
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(mockRecalculateTelegramAllowStores.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]
+    );
   });
 });
