@@ -114,10 +114,9 @@ export function updateTelegramChannelConfig(
         // what `build.ts:regenerateOpenClawConfig` produces. Without it,
         // connectBot emits `{dmPolicy, accounts}` while the next
         // regenerate emits `{enabled: true, dmPolicy, accounts}` — a
-        // channels-block diff that OC 2026.5.12 classifies as restart-
-        // class (channels is not in BASE_RELOAD_RULES), triggering the
-        // gateway restart cascade that #193 / agent-create-no-restart
-        // asserts against.
+        // `channels.telegram` diff: a gateway restart before the Telegram
+        // plugin loads (the cascade #193 / agent-create-no-restart asserts
+        // against), a bounce of every bot after it.
         enabled: true,
         dmPolicy: "pairing",
         accounts: existingAccounts,
@@ -204,11 +203,11 @@ export function updateTelegramChannelConfig(
   // installs where OpenClaw isn't reachable over the gateway WS yet.
   //
   // This does NOT reintroduce the restart cascade agent-create-no-restart.spec.ts
-  // and telegram-flow.spec.ts guard against: `channels` has no entry in OC's
-  // BASE_RELOAD_RULES, so a structural channels diff is restart-class
-  // regardless of transport (file+inotify or WS config.apply) — routing
-  // through config.apply changes WHEN OC learns about the diff, not WHETHER
-  // it restarts for it. See write.ts's pushConfigInBackground for the
+  // and telegram-flow.spec.ts guard against: a structural `channels.telegram`
+  // diff restarts the gateway (before the Telegram plugin loads) or every bot
+  // (after) regardless of transport (file+inotify or WS config.apply) —
+  // routing through config.apply changes WHEN OC learns about the diff, not
+  // WHETHER it restarts for it. See write.ts's pushConfigInBackground for the
   // no-op/rate-limit/stale-hash handling this delegates to.
   //
   // channels.telegram and bindings sit in OC's restart-trigger set, so a real
@@ -313,8 +312,8 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
  * OpenClaw starts. Writes ONLY the fields that, when missing-then-added later
  * via WS config.apply, OpenClaw's reload planner classifies as restart-class —
  * `gateway` / `discovery` (explicit `kind:"restart"` rules), `update` /
- * `attachments` / `memory` (no rule at all, which defaults to restart) and the
- * `canvas` plugin's host — and trigger
+ * `memory` (no rule at all, which defaults to restart) and the `canvas`
+ * plugin's host — and trigger
  * a SIGUSR1 → in-process restart that crashes with
  * `ConfigMutationConflictError: config changed since last load` (OC 5.3
  * stale-snapshot bug in `prepareGatewayStartupConfig → ensureGatewayStartupAuth →
@@ -331,6 +330,10 @@ export async function seedGatewayTokenIfMissing(): Promise<boolean> {
  * OC's model registry refresh on hot-reload. Restricting the bootInits write
  * to ONLY the gateway/discovery/canvas/update/attachments/memory fields avoids that
  * interaction while still aligning OC's compare baseline.
+ *
+ * `attachments` is seeded too, although it hot-reloads as of OpenClaw 2026.9
+ * (as `media` it had no rule); trimming the seed to what is still
+ * restart-class is tracked in #1441.
  *
  * This function is idempotent: if the file already has all the overrides
  * with their expected values, no write happens. The skip path covers a volume

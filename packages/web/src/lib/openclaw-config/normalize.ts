@@ -154,9 +154,11 @@ function supplementFromSource(payload: string, source: Record<string, unknown>):
     // OC 4.27+ writes additional fields to channels.telegram in-memory (beyond
     // what Pinchy emits). OC 2026.5.x also adds sibling sub-blocks like
     // `channels.defaults` (heartbeat-visibility, botLoopProtection). Without
-    // supplementing both layers, config.apply sees a channels diff and triggers
-    // a full gateway restart for agents-only changes (channels has no entry in
-    // BASE_RELOAD_RULES → fallback is restart-class).
+    // supplementing both layers, config.apply sees a channels diff for
+    // agents-only changes. A `channels.telegram` diff is a gateway restart
+    // before the Telegram plugin loads and a bounce of every bot after it
+    // (build.ts, at the Telegram channel block). `channels.defaults` and
+    // `channels.modelByChannel` reload as no-ops as of 2026.9.
     const payloadChannels = payloadObj.channels as Record<string, unknown> | undefined;
     const sourceChannels = source.channels as Record<string, unknown> | undefined;
     if (payloadChannels && sourceChannels) {

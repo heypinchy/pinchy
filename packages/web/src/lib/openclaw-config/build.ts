@@ -1292,15 +1292,19 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // Build the allow list. Two requirements:
   //   1. Include every plugin we have entries for (pinchy-*) and every
   //      OpenClaw-managed plugin (e.g. "telegram") already in the list.
-  //   2. Preserve the existing positional order. OpenClaw treats
-  //      `plugins.allow` as restart-required: a reorder triggers a full
-  //      gateway restart even when the SET of plugins is unchanged. The
-  //      previous implementation rebuilt allow as
-  //      `[...existing-non-pinchy, ...our-pinchy-in-insertion-order]`,
+  //   2. Preserve the existing positional order. OpenClaw diffs arrays by
+  //      position, so a reorder is a `plugins.allow` change even when the
+  //      SET of plugins is unchanged. In 2026.9 that is no gateway restart
+  //      (`plugins` hot-reloads), but it still reloads every plugin, and a
+  //      plugin reload stops the running channels first: each reorder
+  //      bounces the Telegram bots. (Through 2026.7.1 the bundled canvas
+  //      plugin made `plugins.allow` restart-class, and a reorder was a full
+  //      gateway restart — #237.) The previous implementation rebuilt allow
+  //      as `[...existing-non-pinchy, ...our-pinchy-in-insertion-order]`,
   //      which reshuffles the array whenever OpenClaw appended one of its
   //      managed plugins after Pinchy's first write (e.g. `telegram` after
   //      `connectBot`). The next regenerate then moved telegram to position 0
-  //      and re-ordered pinchy-* entries — same set, restart cascade. See #237.
+  //      and re-ordered pinchy-* entries — same set, needless reload.
   // We must NOT include Pinchy plugins without entries — OpenClaw validates
   // their config schema and rejects missing required fields like "agents".
   const existingAllow = ((existing.plugins as Record<string, unknown>)?.allow as string[]) || [];
@@ -1317,11 +1321,12 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // We deliberately do NOT also stamp `plugins.entries.<id>.enabled = false`.
   // OpenClaw enriches `plugins.entries.*` at runtime (sibling fields like
   // hooks/subagent state); writing our own value over the existing entry
-  // would either drop those enrichments (-> next regenerate diffs `plugins`
-  // -> full SIGUSR1 gateway restart, caught by agent-create-no-restart.
-  // spec.ts:207) or write a new entry that wasn't there before (-> first
-  // regenerate diffs `plugins` -> restart). The allowlist alone is the
-  // correct mechanism here.
+  // would either drop those enrichments or write a new entry that wasn't
+  // there before, and either way the next regenerate diffs `plugins`. Through
+  // 2026.7.1 that was a full SIGUSR1 gateway restart (caught by
+  // agent-create-no-restart.spec.ts:207); in 2026.9 it is a plugin reload,
+  // which still stops and restarts every running channel. The allowlist
+  // alone is the correct mechanism here.
   //
   // Why each is safe to disable:
   //   - acpx: Agent Client Protocol bridge for desktop chat clients
@@ -1391,16 +1396,18 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // ollama-cloud) and the telegram channel by writing
   // `plugins.entries.<id> = { enabled: true }` into openclaw.json on startup.
   // Without this preservation the next regenerate strips those entries,
-  // OpenClaw treats it as a config diff and triggers a full gateway restart
-  // (15-30 s downtime, "Agent runtime is not available" banner — #193).
+  // OpenClaw treats it as a config diff: through 2026.7.1 a full gateway
+  // restart (15-30 s downtime, "Agent runtime is not available" banner —
+  // #193), in 2026.9 a plugin reload that bounces every running channel.
   // Same root cause as the channels.telegram.enabled fix above; this covers
   // the plugins.entries.* surface.
   const existingEntries =
     ((existing.plugins as Record<string, unknown>)?.entries as Record<string, unknown>) || {};
   // Preserve all existing non-pinchy entries — including ones for plugins
   // we've filtered out of `plugins.allow` (acpx/bonjour/...). Stripping
-  // them would diff `plugins` and OpenClaw classifies that as restart-
-  // required (caught by agent-create-no-restart.spec.ts:207). The allow
+  // them would diff `plugins`, which reloads every plugin and bounces the
+  // running channels (a full restart through 2026.7.1, caught by
+  // agent-create-no-restart.spec.ts:207). The allow
   // whitelist alone keeps them from loading, so leftover entries are inert.
   for (const [pluginId, entry] of Object.entries(existingEntries)) {
     if (!isPinchyPlugin(pluginId) && !(pluginId in entries)) {
@@ -1683,9 +1690,11 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // Build Telegram channel config from DB settings using OpenClaw's multi-account format.
   // Each agent with a bot token gets its own account. Bindings route via accountId.
   //
-  // NOTE: allowFrom is NOT written here. It's managed in OpenClaw's per-account
-  // allow-from store (telegram-allow-store.ts) to avoid triggering the broken
-  // channel restart (openclaw/openclaw#47458).
+  // NOTE: allowFrom is NOT written here. Since 2026.9 OpenClaw keeps each
+  // account's allow list in its state database, and telegram-allow-store.ts
+  // writes it there over the gateway. In openclaw.json it would be a
+  // `channels` diff on every link and unlink, which bounces the Telegram
+  // channel (and before the plugin loads, restarts the gateway).
   const accounts: Record<string, { botToken: string }> = {};
   interface TelegramBinding {
     agentId: string;
@@ -1805,11 +1814,16 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // presence depends on OpenClaw's auto-enable side-effect having run
     // first, and any regenerate before that side-effect fires would strip
     // it and trigger the ping-pong.
-    // OC 2026.5.12's BASE_RELOAD_RULES does not list `channels` — the
-    // fallback for unmatched prefixes is restart-class. Any structural
-    // diff in the emitted `channels` block (including spurious key-order
-    // shifts from spread-then-override and OC-side enrichment ping-pongs)
-    // triggers `[reload] config change requires gateway restart (channels)`.
+    // OpenClaw's base reload rules do not list `channels.telegram`. Until the
+    // Telegram plugin is loaded (before the first bot), the unmatched-prefix
+    // fallback makes any diff there a gateway restart: `[reload] config
+    // change requires gateway restart (channels)`. Once it is loaded, the
+    // plugin's own rule turns the diff into a restart of the whole Telegram
+    // channel — every bot, since it declares no account-scoped restart. So
+    // any structural diff in the emitted `channels` block (including
+    // spurious key-order shifts from spread-then-override and OC-side
+    // enrichment ping-pongs) costs either a gateway restart or a bounce of
+    // every bot.
     // Build the telegram channel sub-config the same way as before, then
     // skip the write entirely when the new payload is deep-equal to what's
     // already on disk. The downstream equivalence guard
@@ -1850,9 +1864,9 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       // may have enriched at the top of `channels` (e.g. `defaults` for
       // botLoopProtection / heartbeat-visibility, `modelByChannel`, other
       // channels' configs). Without this spread, writing `{telegram: ...}`
-      // alone would strip the OC-enriched siblings and the resulting
-      // channels diff still classifies as restart-class (channels has no
-      // entry in BASE_RELOAD_RULES; fallback is restart).
+      // alone would strip the OC-enriched siblings. In 2026.9 `defaults` and
+      // `modelByChannel` themselves reload as no-ops, but another channel's
+      // block is that channel's restart (see the comment above).
       config.channels = { ...existingChannels, telegram: desiredTelegram };
     } else if (Object.keys(existingChannels).length > 0) {
       // No telegram-level change either — pass channels through byte-for-

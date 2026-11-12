@@ -1965,6 +1965,55 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
+  it(
+    "leaves memory.search untouched across regenerates (restart-class since OpenClaw 2026.9)",
+    { timeout: 30_000 },
+    async () => {
+      // As `agents.defaults.memorySearch` it hot-reloaded; as `memory.search`
+      // any diff restarts the gateway. Pinchy writes a constant there, so a
+      // regenerate that changes something else must not touch it — including
+      // a field OpenClaw keeps under `memory.search` itself.
+      await regenerateOpenClawConfig();
+      const first = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+      first.memory.search.sync = { onSessionStart: true };
+      mockedReadFileSync.mockReturnValue(JSON.stringify(first));
+      mockedWriteFileSync.mockClear();
+      mockedDb.select.mockReturnValue({
+        from: mockFrom([
+          {
+            id: "new-agent-id",
+            name: "Assistant",
+            model: "anthropic/claude-haiku-4-5-20251001",
+            templateId: "custom",
+            pluginConfig: null,
+            allowedTools: ["pinchy_memory"],
+            createdAt: new Date(),
+          },
+        ]),
+      } as never);
+
+      await regenerateOpenClawConfig();
+      const second = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+      const planner = await loadOpenClawReloadPlanner();
+      const changedPaths = planner.diffGatewayReloadPaths(
+        first,
+        second,
+        planner.listConfigReloadRefinementPrefixes()
+      );
+      // Baseline: the regenerate did change something, and a memory.search
+      // diff would be caught as a restart.
+      expect(changedPaths.some((path) => path.startsWith("agents"))).toBe(true);
+      expect(planner.buildGatewayReloadPlan(["memory.search.provider"]).restartReasons).toEqual([
+        "memory.search.provider",
+      ]);
+      expect(
+        changedPaths.filter((path) => path === "memory" || path.startsWith("memory."))
+      ).toEqual([]);
+      expect(second.memory).toEqual(first.memory);
+    }
+  );
+
   it("emits a fail-closed allowlist (not a deny list) for agents with only safe tools", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([
