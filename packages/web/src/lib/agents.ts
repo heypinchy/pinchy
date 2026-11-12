@@ -149,9 +149,14 @@ export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
     // Clean up Telegram bot settings if this agent had a bot
     await deleteSetting(`telegram_bot_token:${id}`);
     await deleteSetting(`telegram_bot_username:${id}`);
-    await regenerateOpenClawConfig();
-    // Rewrites every list from scratch, so the deleted bot's list goes too.
-    await recalculateTelegramAllowStores();
+    // Both run whichever fails. The recalculation rewrites every list from
+    // scratch, so the deleted bot's list goes first and the bot answers no one
+    // while it still runs; the regenerate then takes it out of the config.
+    try {
+      await recalculateTelegramAllowStores();
+    } finally {
+      await regenerateOpenClawConfig();
+    }
   }
 
   return updated;

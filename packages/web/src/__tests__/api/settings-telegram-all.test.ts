@@ -124,6 +124,16 @@ describe("DELETE /api/settings/telegram/all", () => {
     );
   });
 
+  it("clears every allow list even when the config write fails", async () => {
+    mockUpdateTelegramChannelConfig.mockImplementationOnce(() => {
+      throw new Error("EACCES openclaw.json");
+    });
+
+    await expect(DELETE()).rejects.toThrow(/EACCES/);
+
+    expect(mockClearAllAllowStores).toHaveBeenCalled();
+  });
+
   it("logs audit event", async () => {
     const response = await DELETE();
     expect(response.status).toBe(200);

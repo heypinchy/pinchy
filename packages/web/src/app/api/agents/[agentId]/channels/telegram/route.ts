@@ -238,17 +238,22 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
     // been fully disconnected and may later be reconnected with a fresh token.
     await deleteSetting(`telegram_conflict_disabled:${agentId}`);
 
-    // Remove this account from config (other accounts preserved) first: that
-    // stops the bot. updateTelegramChannelConfig() notifies restart-state on
-    // actual write.
-    updateTelegramChannelConfig(agentId, null);
-    // Then clear only this account's allow-from store (other agents' bots are
-    // unaffected). A failure here must not undo the removal: the list belongs
-    // to a bot that no longer runs, and the next recalculation drops it.
+    // Take this account out of the config (other accounts stay) and empty its
+    // allow list (other bots are unaffected), each whichever way the other
+    // goes. The config reaches OpenClaw in the background, up to a minute
+    // later, and until then the empty list is what keeps the bot from
+    // answering anyone. A failing clear must not undo the removal: once the
+    // config lands the bot no longer runs, and the next recalculation drops
+    // its list. updateTelegramChannelConfig() notifies restart-state on actual
+    // write.
     try {
-      await clearAllowStoreForAccount(agentId);
-    } catch (err) {
-      console.error("[telegram] could not clear the allow list of a removed bot:", err);
+      updateTelegramChannelConfig(agentId, null);
+    } finally {
+      try {
+        await clearAllowStoreForAccount(agentId);
+      } catch (err) {
+        console.error("[telegram] could not clear the allow list of a removed bot:", err);
+      }
     }
 
     // Gap 3 (#476): if this was the last Telegram bot, clear the user↔telegram-user

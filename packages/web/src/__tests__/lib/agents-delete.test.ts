@@ -28,7 +28,6 @@ vi.mock("@/lib/workspace", () => ({
 
 vi.mock("@/lib/telegram-allow-store", () => ({
   recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
-  clearAllowStoreForAccount: vi.fn(),
 }));
 
 vi.mock("@/lib/settings", () => ({
@@ -39,7 +38,7 @@ import { deleteAgent } from "@/lib/agents";
 import { agents, agentConnectionPermissions } from "@/db/schema";
 import { db } from "@/db";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { clearAllowStoreForAccount } from "@/lib/telegram-allow-store";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { deleteWorkspace } from "@/lib/workspace";
 
 describe("deleteAgent", () => {
@@ -84,17 +83,24 @@ describe("deleteAgent", () => {
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
-  // The deleted agent and its bot leave the runtime config whatever the allow
-  // lists do: the recalculation after the regenerate already drops the
-  // account, so a failing per-account clear must not stand in front of it.
-  it("removes the agent from the runtime config even when an allow-list write fails", async () => {
-    vi.mocked(clearAllowStoreForAccount).mockRejectedValueOnce(
+  // The deleted agent's bot must leave the runtime config, and its allow list
+  // must go, whichever of the two steps fails.
+  it("takes the agent out of the runtime config even when the allow-list rewrite fails", async () => {
+    vi.mocked(recalculateTelegramAllowStores).mockRejectedValueOnce(
       new Error("Request pinchy.pairing.setAllowFrom timed out")
     );
 
-    await deleteAgent("agent-1");
+    await expect(deleteAgent("agent-1")).rejects.toThrow(/timed out/);
 
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("rewrites the allow lists even when the config regenerate fails", async () => {
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(new Error("EACCES openclaw.json"));
+
+    await expect(deleteAgent("agent-1")).rejects.toThrow(/EACCES/);
+
+    expect(recalculateTelegramAllowStores).toHaveBeenCalled();
   });
 
   it("should return undefined and skip cleanup when agent not found", async () => {
