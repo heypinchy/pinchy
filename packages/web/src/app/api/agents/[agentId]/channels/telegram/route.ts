@@ -170,18 +170,30 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   // [Reconnect] path referenced in the disabled-state UI.
   await deleteSetting(`telegram_conflict_disabled:${agentId}`);
 
-  // Update only Telegram channel config (targeted write — preserves OpenClaw-enriched
+  // A personal agent's bot (the main bot) hands each linked user their own
+  // agent through per-peer bindings, and the allow store lets a user in only
+  // once OpenClaw routes them there. The targeted write carries only the
+  // account-wide binding, so after a reconnect or a token change every linked
+  // member would stay locked out until some unrelated change regenerated the
+  // config. The full regeneration writes the account and its peer bindings
+  // together.
+  //
+  // A shared agent's bot needs just the one account-wide binding: update only
+  // the Telegram channel config (targeted write — preserves OpenClaw-enriched
   // fields like agents.defaults to avoid hot-reloads that break polling).
   // updateTelegramChannelConfig() also notifies restart-state on actual write so
   // /api/health/openclaw reflects the pending OC restart.
-  const targetedResult = updateTelegramChannelConfig(agentId, { botToken });
-  if (targetedResult === "agent-not-in-config") {
-    // The on-disk agents.list predates this agent (its create-regen is still
-    // in flight). OpenClaw ≥2026.7.1 rejects a config whose bindings
-    // reference an agent missing from agents.list, so the targeted patch was
-    // not written — regenerate the full config instead, which emits
-    // agents.list, the account, and the binding consistently from the DB
-    // (the token is already stored above).
+  //
+  // The targeted write also falls back to the full one when the on-disk
+  // roster predates this agent (its create-regen is still in flight):
+  // OpenClaw ≥2026.7.1 rejects a config whose bindings reference an agent
+  // missing from the roster, so the targeted patch was not written. The full
+  // regeneration emits the roster, the account and its bindings consistently
+  // from the DB (the token is already stored above).
+  const needsFullConfig =
+    agent.isPersonal ||
+    updateTelegramChannelConfig(agentId, { botToken }) === "agent-not-in-config";
+  if (needsFullConfig) {
     await regenerateOpenClawConfig();
   }
 

@@ -574,6 +574,27 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
     expect(data).toEqual({ botUsername: "test_bot", botId: 123456 });
     expect(mockValidateTelegramBotToken).toHaveBeenCalled();
   });
+
+  it("writes a personal agent's bot with the full config, so linked users' own routes come along", async () => {
+    // The main bot hands each linked user their own Smithers through per-peer
+    // bindings, and the allow store lets a user in only once OpenClaw routes
+    // them there. The targeted write keeps just the account-wide binding —
+    // after a reconnect or a token change every linked member would stay
+    // locked out until some unrelated change regenerated the config.
+    mockGetAgentWithAccess.mockResolvedValueOnce({ ...mockAgent, isPersonal: true });
+
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(mockUpdateTelegramChannelConfig).not.toHaveBeenCalled();
+    expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRecalculateTelegramAllowStores.mock.invocationCallOrder[0]
+    );
+  });
 });
 
 describe("DELETE /api/agents/[agentId]/channels/telegram", () => {

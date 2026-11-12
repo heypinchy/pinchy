@@ -731,7 +731,10 @@ describe("telegram-allow-store", () => {
         expect(allowFromWrites()).toHaveLength(2);
       });
 
-      it("waits longer each time, then every five minutes", async () => {
+      it("checks at least every 15 s for the first minute, then backs off to every five minutes", async () => {
+        // OpenClaw can park a config push behind its config.apply rate limit
+        // for 33–53 s. Checking every 15 s through that window lets a linked
+        // user in within about a minute, as the Telegram guide promises.
         personalBotFleet();
         mockCallPairingStore.mockResolvedValue(heldBack);
 
@@ -739,11 +742,14 @@ describe("telegram-allow-store", () => {
         for (const [delay, writes] of [
           [2_000, 2],
           [5_000, 3],
-          [15_000, 4],
-          [30_000, 5],
-          [60_000, 6],
-          [300_000, 7],
-          [300_000, 8],
+          [10_000, 4],
+          [15_000, 5],
+          [15_000, 6],
+          [15_000, 7],
+          [30_000, 8],
+          [60_000, 9],
+          [300_000, 10],
+          [300_000, 11],
         ]) {
           await vi.advanceTimersByTimeAsync(delay - 1);
           expect(allowFromWrites()).toHaveLength(writes - 1);
@@ -754,7 +760,7 @@ describe("telegram-allow-store", () => {
         mockCallPairingStore.mockResolvedValue({ withheld: [] });
         await vi.advanceTimersByTimeAsync(300_000);
         await vi.advanceTimersByTimeAsync(60 * 60_000);
-        expect(allowFromWrites()).toHaveLength(9);
+        expect(allowFromWrites()).toHaveLength(12);
       });
 
       it("drops a pending retry when a newer run lets everyone through", async () => {

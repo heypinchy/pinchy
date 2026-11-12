@@ -97,10 +97,11 @@ export function recalculateTelegramAllowStores(): Promise<void> {
 }
 
 // While pinchy-audit holds a sender back, the run is repeated: soon at first,
-// since OpenClaw usually loads the new bindings within seconds, then rarely, so
-// a binding that never arrives costs one call every five minutes. Any run
-// replaces the pending retry, and one that lets everyone through ends it.
-const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000, 300_000];
+// since OpenClaw usually loads the new bindings within seconds, at least every
+// 15 s while a push may sit behind config.apply's rate limit (33–53 s), then
+// rarely, so a binding that never arrives costs one call every five minutes.
+// Any run replaces the pending retry, and one that lets everyone through ends it.
+const RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 15_000, 15_000, 15_000, 30_000, 60_000, 300_000];
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempt = 0;
 
