@@ -3085,6 +3085,30 @@ describe("a .docx whose converted PDF lost words against its source (#1406)", ()
     expect(await onlyDocument()).toMatchObject({ incompleteReads: 5 });
   });
 
+  it("falls back on the text of a macro-enabled .docm too, which the same reader counted", async () => {
+    // A .docm is the same package with a macro part beside it: mammoth counted
+    // it for the tripwire, so the text that count read is there to index.
+    const docPath = join(tmpRoot, "Katalog.docm");
+    writeFileSync(docPath, "fake-docm-bytes");
+    const { deps, readDocxText } = officeDeps(
+      shortConversion,
+      () => WORD_PAGES,
+      async () => SOURCE_TEXT
+    );
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
+      const lines = ingestLines(warn).filter((line) => line.includes(docPath));
+      expect(lines.join("\n")).toMatch(/indexed from the \.docm text, without a preview/);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(readDocxText).toHaveBeenCalledTimes(1);
+    const chunks = await chunksFor((await onlyDocument()).id);
+    expect(chunks.map((chunk) => chunk.chunkText).join("\n")).toContain("Kräutertee");
+  });
+
   it("has no source text to fall back on for a legacy .doc or a .ppt", async () => {
     // Their oracles (catdoc, catppt) under-count and mangle diacritics — fit
     // for a lower bound, not for the text a search matches against.

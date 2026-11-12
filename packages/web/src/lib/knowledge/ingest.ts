@@ -75,6 +75,7 @@ import { collectHeadingSections, headingLocatorAt } from "./heading-sections";
 import {
   isLegacyWorkbook,
   isOfficeFile,
+  isOoxmlWordFile,
   needsConversion,
   OfficeFileRejectedError,
   isPresentationFile,
@@ -1028,25 +1029,23 @@ async function conversionOf(
 
 /**
  * Whether a refused conversion leaves the source text to index (#1406): a
- * `.docx` whose PDF came out SHORT against the word-count oracle.
+ * `.docx` or `.docm` whose PDF came out SHORT against the word-count oracle.
  *
  * Short and nothing else, because only then has the reader child already read
  * these bytes through its guard and found them whole — the oracle's count is
- * that read. (It read the copy staged for conversion, which the sanitizer may
- * have cut relationships and altChunks from. mammoth's raw text skips
- * altChunks and takes no text from a relationship, and a cut one it needs
- * makes the count fail, which is never short — so the text is the same.) A document refused before conversion (a bomb, HTML renamed
- * `.docx`) or one LibreOffice could not load must not reach mammoth by a back
- * door. `.doc` and `.ppt` have oracles too, but catdoc and catppt under-count
- * and mangle the diacritics a search matches on: fit for a lower bound, not
- * for the text a document is found by.
+ * that read, of the same private copy `readDocxText` gets here, not the
+ * sanitized one the converter got (`oracleInput`). A document refused before
+ * conversion (a bomb, HTML renamed `.docx`) or one LibreOffice could not load
+ * must not reach mammoth by a back door. `.doc` and `.ppt` have oracles too,
+ * but catdoc and catppt under-count and mangle the diacritics a search matches
+ * on: fit for a lower bound, not for the text a document is found by.
  */
 function hasSourceTextFallback(absPath: string, outcome: ConversionOutcome): boolean {
-  return outcome.verification?.status === "short" && extname(absPath).toLowerCase() === ".docx";
+  return outcome.verification?.status === "short" && isOoxmlWordFile(absPath);
 }
 
 /**
- * A `.docx` read straight from its source, after its PDF failed the tripwire
+ * A `.docx` or `.docm` read straight from its source, after its PDF failed the tripwire
  * (#1406). The tripwire is right to keep that PDF out of the index and the
  * viewer — a third of the text may be missing from it — and wrong to leave the
  * document with nothing. So it is indexed like a text file: no pages, no
@@ -1073,7 +1072,11 @@ async function extractDocxSourceText(
   if (text === null) {
     return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
   }
-  logRefusal(absPath, "indexed from the .docx text, without a preview", reason);
+  logRefusal(
+    absPath,
+    `indexed from the ${extname(absPath).toLowerCase()} text, without a preview`,
+    reason
+  );
   return {
     chunks: chunkPages([{ page: 1, text }]).map((chunk) => ({ text: chunk.text, locator: null })),
     pageCount: null,
