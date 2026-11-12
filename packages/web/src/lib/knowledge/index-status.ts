@@ -46,6 +46,8 @@ import {
 import { getLatestIndexJobForAgent, getLatestPlannedIndexJobForAgent } from "./index-jobs";
 import { readFromSupersededArtifact } from "./office-format-upgrade";
 import { buildPathFilter } from "./path-filter";
+import { unsupportedFileType } from "./unsupported-files";
+import { unsupportedFileKind } from "./unsupported-kind";
 
 export interface FolderStatus {
   path: string;
@@ -394,7 +396,9 @@ export async function getKnowledgeFolderStatus(
  * - `pending`: not in the index yet; the active run will get to it.
  * - `failed`: not in the index although the last run saw it.
  * - `new`: not in the index; added after the last run.
- * - `unsupported`: a file type the index does not read.
+ * - `unsupported`: a document type the index does not read yet.
+ * - `ignored`: not a document at all — a program, a data export, a firmware
+ *   image (#1410). Skipped on purpose; unsupported-kind.ts draws the line.
  */
 export type FileState =
   | "searchable"
@@ -404,7 +408,8 @@ export type FileState =
   | "pending"
   | "failed"
   | "new"
-  | "unsupported";
+  | "unsupported"
+  | "ignored";
 
 export interface FolderFile {
   path: string;
@@ -429,9 +434,16 @@ export interface FolderFilesResult {
   total: number;
   /**
    * Across the whole folder, regardless of filter and search. `all` counts the
-   * files the index reads; file types it does not read are `unsupported`.
+   * files the index reads; document types it does not read yet are
+   * `unsupported`, files that are not documents at all are `ignored`.
    */
-  totals: { all: number; searchable: number; notSearchable: number; unsupported: number };
+  totals: {
+    all: number;
+    searchable: number;
+    notSearchable: number;
+    unsupported: number;
+    ignored: number;
+  };
   /** The folder holds more files than one listing reads; the counts cover the first part only. */
   truncated: boolean;
 }
@@ -573,6 +585,7 @@ export async function listKnowledgeFolderFiles(
   };
   const searchableCount = listed.filter((file) => file.supported && isSearchable(file)).length;
   const supportedCount = listed.filter((file) => file.supported).length;
+  const ignoredCount = listed.filter((file) => !file.supported && isIgnored(file)).length;
 
   const needle = opts.q?.trim().toLowerCase() ?? "";
   const nameOf = (path: string) =>
@@ -623,10 +636,16 @@ export async function listKnowledgeFolderFiles(
       all: supportedCount,
       searchable: searchableCount,
       notSearchable: supportedCount - searchableCount,
-      unsupported: listed.length - supportedCount,
+      unsupported: listed.length - supportedCount - ignoredCount,
+      ignored: ignoredCount,
     },
     truncated,
   };
+}
+
+/** A file the index skips because it is not a document (#1410). */
+function isIgnored(file: Listed): boolean {
+  return unsupportedFileKind(unsupportedFileType(posix.basename(file.path))) === "ignored";
 }
 
 /** A second of slack: file systems round modification times differently. */
@@ -640,7 +659,7 @@ function fileState(
   activeCovers: boolean,
   lastRun: FinishedJob | null
 ): FileState {
-  if (!file.supported) return "unsupported";
+  if (!file.supported) return isIgnored(file) ? "ignored" : "unsupported";
   if (doc) {
     if (doc.superseded) return "awaiting_conversion";
     if (doc.no_text) return "no_text";

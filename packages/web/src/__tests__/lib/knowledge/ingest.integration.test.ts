@@ -269,6 +269,7 @@ function counts(expected: Partial<IngestResult> = {}): IngestResult {
     failed: 0,
     archived: 0,
     unsupported: 0,
+    ignored: 0,
     ...expected,
   };
 }
@@ -4131,7 +4132,8 @@ describe("files whose type the indexer cannot read (#1267)", () => {
 
     const result = await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
 
-    expect(result).toEqual(counts({ indexed: 1, unsupported: 3 }));
+    // README has no extension: not a document we know of (#1410).
+    expect(result).toEqual(counts({ indexed: 1, unsupported: 2, ignored: 1 }));
     expect(await unsupportedUnder(tmpRoot)).toEqual(
       [
         { sourcePath: join(tmpRoot, "Budget 2019.xlsb"), type: ".xlsb" },
@@ -4139,6 +4141,31 @@ describe("files whose type the indexer cannot read (#1267)", () => {
         { sourcePath: join(tmpRoot, "word", "Offer.RTF"), type: ".rtf" },
       ].sort((a, b) => (a.sourcePath < b.sourcePath ? -1 : 1))
     );
+  });
+
+  // #1410: a real supplier share held driver DLLs, executables, JSON exports
+  // and firmware images beside its documents. They are counted — the counts
+  // must add up to what was checked — but apart from the documents we cannot
+  // read yet, and both kinds stay on the list.
+  it("counts software, data and system files as ignored, apart from documents it cannot read yet", async () => {
+    writeFileSync(join(tmpRoot, "handbook.pdf"), "fake-pdf-bytes");
+    writeFileSync(join(tmpRoot, "Prices 2019.xlsb"), "biff12");
+    mkdirSync(join(tmpRoot, "driver"));
+    writeFileSync(join(tmpRoot, "driver", "usb.dll"), "mz");
+    writeFileSync(join(tmpRoot, "driver", "setup.exe"), "mz");
+    writeFileSync(join(tmpRoot, "driver", "manifest.json"), "{}");
+    writeFileSync(join(tmpRoot, "driver", "FIRMWARE"), "firmware");
+
+    const result = await ingestDirectory(ORG_ID, tmpRoot, fakeDeps().deps);
+
+    expect(result).toEqual(counts({ indexed: 1, unsupported: 1, ignored: 4 }));
+    expect((await unsupportedUnder(tmpRoot)).map((f) => f.type).sort()).toEqual([
+      "",
+      ".dll",
+      ".exe",
+      ".json",
+      ".xlsb",
+    ]);
   });
 
   // An install that upgrades already has these on its list: the version
@@ -4205,6 +4232,7 @@ describe("files whose type the indexer cannot read (#1267)", () => {
     });
 
     expect(reports[0].counts.unsupported).toBe(1);
+    expect(reports[0].counts.ignored).toBe(0);
   });
 
   it("drops a file from the list once it is gone or converted", async () => {

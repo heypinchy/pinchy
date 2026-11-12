@@ -409,6 +409,7 @@ describe("listKnowledgeFolderFiles", () => {
 
   it("gives each file below a subfolder its state", async () => {
     const agent = await makeAgent();
+    await writeFile(join(root, "certs", "prices.xlsb"), "x");
     const longAgo = new Date(Date.now() - 2 * 3_600_000);
     await seedDoc(join(root, "certs", "iso.pdf"), { mtime: new Date() });
     await seedDoc(join(root, "certs", "scan.pdf"), { chunks: false });
@@ -430,11 +431,20 @@ describe("listKnowledgeFolderFiles", () => {
       "2024/afnor.pdf": "new",
       "iso.pdf": "searchable",
       "old.pdf": "changed",
-      "photo.xyz": "unsupported",
+      // #1410: a type we have no name for is not a document; an .xlsb is
+      // one the index can't read yet.
+      "photo.xyz": "ignored",
+      "prices.xlsb": "unsupported",
       "scan.pdf": "no_text",
     });
-    // `all` counts the files the index reads; photo.xyz is counted apart.
-    expect(result!.totals).toEqual({ all: 4, searchable: 2, notSearchable: 2, unsupported: 1 });
+    // `all` counts the files the index reads; the other two are counted apart.
+    expect(result!.totals).toEqual({
+      all: 4,
+      searchable: 2,
+      notSearchable: 2,
+      unsupported: 1,
+      ignored: 1,
+    });
   });
 
   it("marks a file the last run saw but did not get in as failed", async () => {

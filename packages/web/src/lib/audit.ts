@@ -1035,7 +1035,10 @@ export type AuditLogEntry =
         failed?: number;
         archived?: number;
         // Files under the run's folders whose type the indexer cannot read (#1267). The count only: the list lives in kb_unsupported_files.
+        // Since #1410 documents only; a row without `ignored` predates the split and counts non-documents here too.
         unsupported?: number;
+        // Files under the run's folders that are not documents at all — programs, data, firmware (#1410). Counted apart from `unsupported`.
+        ignored?: number;
         ocr?: { model: string; documents: number; pages: number; skippedPages: number };
         unavailableFolders?: number;
         // Files refused because their path no longer led to a regular file in the folder (a swapped link); also in `failed`.

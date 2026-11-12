@@ -639,7 +639,8 @@ The agent's most recent index run — in flight or last finished — and whether
       "unsearchable": 2,
       "failed": 0,
       "archived": 0,
-      "unsupported": 4
+      "unsupported": 4,
+      "ignored": 37
     },
     "error": null,
     "createdAt": "2026-07-17T10:00:00.000Z",
@@ -663,7 +664,8 @@ The agent's most recent index run — in flight or last finished — and whether
 | `counts.unsearchable`           | Parsed without error but yielded no text, so the document exists in the index yet can never be retrieved — a workbook whose sheets are all hidden, or a scan that no vision model was available to read.                                                                                                                                                                                                                                                                                                     |
 | `counts.failed`                 | The file could not be read or parsed, or was refused because it had been [swapped for a symbolic link](/guides/mount-data-directories/#links-inside-a-mounted-folder) during the run. The run continues — one bad file never aborts the reindex — and a previously indexed version of the file stays searchable.                                                                                                                                                                                             |
 | `counts.archived`               | Documents in this run that sit under an archive folder (`OLD`, `Archiv` and the like) and are therefore left out of everyday search. Not a separate outcome: an archived document is also `indexed` or `skipped`.                                                                                                                                                                                                                                                                                            |
-| `counts.unsupported`            | Files in the granted folders whose type the index can't read — an `.rtf` note, a binary `.xlsb` workbook. Not part of the counts above, because they never become documents. Known from the moment discovery finishes. Absent on a run that stopped before discovery finished, and on one that finished before Pinchy counted them. [`GET …/knowledge/unsupported`](#get-apiagentsagentidknowledgeunsupported) lists them.                                                                                   |
+| `counts.unsupported`            | Documents in the granted folders the index can't read yet — an `.rtf` note, a binary `.xlsb` workbook, a `.jpg` scan. Not part of the counts above, because they never become documents. Known from the moment discovery finishes. Absent on a run that stopped before discovery finished, and on one that finished before Pinchy counted them. [`GET …/knowledge/unsupported`](#get-apiagentsagentidknowledgeunsupported) lists them.                                                                       |
+| `counts.ignored`                | Files in the granted folders that aren't documents at all — programs, drivers, data exports, firmware images, media, and any type Pinchy has no name for. Skipped on purpose and listed by the same endpoint as `counts.unsupported`. Absent when `counts.unsupported` is. A run that finished before Pinchy told the two apart is answered with both counts derived from the files the latest run under the same folders recorded, so `unsupported` never includes these.                                   |
 | `error`                         | Why the run failed. `null` unless `status` is `failed`. When none of the agent's folders could be read, it names them and says, per folder, whether it is gone (remove the grant or mount it again), can't be opened (a permissions problem on the server), or came up empty while the index still holds its documents (a share that didn't mount). The matching audit entry gives the same failure without folder paths.                                                                                    |
 
 `schedule` answers "do I still have to press the button?" for this agent. It is `null` if the schedule could not be read; the job is reported either way.
@@ -925,23 +927,25 @@ A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed w
 
 ### `GET /api/agents/:agentId/knowledge/unsupported`
 
-A CSV of the files in the agent's granted folders whose type the index can't read — the ones `counts.unsupported` counts. **Admin only.**
+A CSV of the files in the agent's granted folders whose type the index can't read — the ones `counts.unsupported` and `counts.ignored` count, each marked with which of the two it is. **Admin only.**
 
 The answer is a download (`Content-Disposition: attachment`), streamed, so a share with a hundred thousand such files works as well as one with three. It holds what the last run that finished found; nothing here walks the share. Scoped to the agent's granted folders, exactly like search itself. Hidden files and operating-system or Office clutter (`Thumbs.db`, `~$Report.docx`, `*.tmp`) are never listed.
 
 **Response:** `text/csv; charset=utf-8`, UTF-8 with a byte-order mark, one row per file, ordered by path:
 
 ```csv
-"path","type"
-"/data/hr/Budget 2019.rtf",".rtf"
-"/data/hr/README",""
-"/data/hr/notes/Minutes.rtf",".rtf"
+"path","type","status"
+"/data/hr/Budget 2019.xlsb",".xlsb","not supported yet"
+"/data/hr/README","","ignored"
+"/data/hr/driver/usb.dll",".dll","ignored"
+"/data/hr/notes/Minutes.rtf",".rtf","not supported yet"
 ```
 
-| Column | Description                                                            |
-| ------ | ---------------------------------------------------------------------- |
-| `path` | The file's full path.                                                  |
-| `type` | Its extension, lowercased, with the dot. Empty for a file without one. |
+| Column   | Description                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------------- |
+| `path`   | The file's full path.                                                                                    |
+| `type`   | Its extension, lowercased, with the dot. Empty for a file without one.                                   |
+| `status` | `not supported yet` for a document the index can't read yet, `ignored` for a file that isn't a document. |
 
 A cell that would start a spreadsheet formula (`=`, `+`, `-`, `@`) is prefixed with `'`, because a file name is text anyone who can write to the share chose.
 
@@ -1060,19 +1064,25 @@ One folder's files and whether search can use each one. Open to **everyone who c
     }
   ],
   "total": 1,
-  "totals": { "all": 2, "searchable": 1, "notSearchable": 1, "unsupported": 0 },
+  "totals": {
+    "all": 2,
+    "searchable": 1,
+    "notSearchable": 1,
+    "unsupported": 0,
+    "ignored": 0
+  },
   "truncated": false
 }
 ```
 
-| Field              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `files[].state`    | `searchable`, `changed` (searchable, but modified since it was indexed), `no_text` (indexed, nothing readable in it), `awaiting_conversion` (an Office file waiting to be converted again), `pending` (the active run will read it), `failed` (the file was there before the last successful run started and it isn't in the index), `new` (added after the last successful run) or `unsupported` (a file type the index can't read). Only `searchable` and `changed` count as searchable. |
-| `files[].name`     | The path below `folder`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `files[].archived` | `true` for a file in an [archive folder](/guides/create-knowledge-base-agent/#current-documents-first), which everyday search leaves out.                                                                                                                                                                                                                                                                                                                                                  |
-| `total`            | Files matching `filter` and `q`, before `offset` and `limit`.                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `totals`           | Counts for everything `scope` lists, regardless of `filter` and `q`. `all` counts the files the index reads; `unsupported` counts the rest, which `not_searchable` leaves out.                                                                                                                                                                                                                                                                                                             |
-| `truncated`        | `true` when the listing stopped at 20,000 files; the folder may hold more, and `totals` cover only those listed.                                                                                                                                                                                                                                                                                                                                                                           |
+| Field              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `files[].state`    | `searchable`, `changed` (searchable, but modified since it was indexed), `no_text` (indexed, nothing readable in it), `awaiting_conversion` (an Office file waiting to be converted again), `pending` (the active run will read it), `failed` (the file was there before the last successful run started and it isn't in the index), `new` (added after the last successful run) `unsupported` (a document type the index can't read yet) or `ignored` (a file that isn't a document — a program, a data export). Only `searchable` and `changed` count as searchable. |
+| `files[].name`     | The path below `folder`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `files[].archived` | `true` for a file in an [archive folder](/guides/create-knowledge-base-agent/#current-documents-first), which everyday search leaves out.                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `total`            | Files matching `filter` and `q`, before `offset` and `limit`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `totals`           | Counts for everything `scope` lists, regardless of `filter` and `q`. `all` counts the files the index reads; `unsupported` and `ignored` count the rest, which `not_searchable` leaves out.                                                                                                                                                                                                                                                                                                                                                                            |
+| `truncated`        | `true` when the listing stopped at 20,000 files; the folder may hold more, and `totals` cover only those listed.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 **Errors:**
 

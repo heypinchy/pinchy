@@ -151,10 +151,10 @@ describe("GET /api/agents/[agentId]/knowledge/unsupported", () => {
 
     expect(await rawBody(res)).toBe(
       BOM +
-        '"path","type"\n' +
-        '"/data/hr/Prüfbericht.tif",".tif"\n' +
-        '"/data/hr/README",""\n' +
-        '"/data/legal/Budget, 2019.xls",".xls"\n'
+        '"path","type","status"\n' +
+        '"/data/hr/Prüfbericht.tif",".tif","not supported yet"\n' +
+        '"/data/hr/README","","ignored"\n' +
+        '"/data/legal/Budget, 2019.xls",".xls","not supported yet"\n'
     );
   });
 
@@ -167,6 +167,29 @@ describe("GET /api/agents/[agentId]/knowledge/unsupported", () => {
     const res = await GET(makeRequest(), ctx as never);
 
     expect(await res.text()).toContain(`"'=HYPERLINK(""http://x"")",""`);
+  });
+
+  // #1410: the list keeps both kinds — nothing is hidden — and says of each
+  // file whether it is a document Pinchy cannot read yet or a file it skipped
+  // because it is not a document (a driver, a program, a data export).
+  it("marks each file as a document not supported yet or as ignored", async () => {
+    pages = [
+      [
+        { sourcePath: "/data/hr/Order.msg", type: ".msg" },
+        { sourcePath: "/data/hr/driver/usb.dll", type: ".dll" },
+        { sourcePath: "/data/hr/export.json", type: ".json" },
+        { sourcePath: "/data/hr/Scan.JPG", type: ".jpg" },
+      ],
+    ];
+
+    const res = await GET(makeRequest(), ctx as never);
+
+    expect((await res.text()).trim().split("\n").slice(1)).toEqual([
+      '"/data/hr/Order.msg",".msg","not supported yet"',
+      '"/data/hr/driver/usb.dll",".dll","ignored"',
+      '"/data/hr/export.json",".json","ignored"',
+      '"/data/hr/Scan.JPG",".jpg","not supported yet"',
+    ]);
   });
 
   // An admin who cancels a 100k-row download must not leave the route paging

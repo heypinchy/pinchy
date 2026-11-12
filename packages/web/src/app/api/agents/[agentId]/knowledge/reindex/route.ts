@@ -12,6 +12,8 @@ import { getIndexScheduleStatus } from "@/lib/knowledge/index-schedule-store";
 import { reindexAuditEntry } from "@/lib/knowledge/reindex-audit";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { kbEmbedderAvailable } from "@/lib/knowledge/kb-embedder";
+import { countUnsupportedFilesByKind } from "@/lib/knowledge/unsupported-files";
+import type { IngestResult } from "@/lib/knowledge/types";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { safeProviderError, type EntityRef } from "@/lib/audit";
 
@@ -248,6 +250,8 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
 
   if (!job) return NextResponse.json({ job: null, schedule });
 
+  const counts = await splitLegacyUnsupported(job.counts, job.orgId, job.paths);
+
   return NextResponse.json({
     schedule,
     job: {
@@ -273,7 +277,7 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
       processedBytes: job.processedBytes,
       totalBytes: job.totalBytes,
       /** The run's findings; null until it finishes. `unsearchable` and `failed` are the counters that say a document will never answer a question. */
-      counts: job.counts,
+      counts,
       /** Scrubbed failure summary; null unless the run failed systemically. */
       error: job.error,
       createdAt: job.createdAt,
@@ -282,3 +286,23 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
     },
   });
 });
+
+/**
+ * A run that finished before #1410 stored one `unsupported` number for
+ * documents Pinchy cannot read yet and for files that are not documents at
+ * all. Shown as is, a share of drivers reads as hundreds of documents Pinchy
+ * cannot read until its next run. The rows behind that number (kb_unsupported_files) carry
+ * each file's type, so the split is read back from them, scoped to the folders
+ * that run walked. The rows are current state, so this is the share as the
+ * latest run under those folders found it — the same list the CSV download
+ * serves. Counts that already carry `ignored`, or never counted unsupported
+ * files at all, are returned untouched.
+ */
+async function splitLegacyUnsupported(
+  counts: IngestResult | null,
+  orgId: string,
+  paths: readonly string[]
+): Promise<IngestResult | null> {
+  if (!counts || counts.unsupported === undefined || counts.ignored !== undefined) return counts;
+  return { ...counts, ...(await countUnsupportedFilesByKind(orgId, paths)) };
+}

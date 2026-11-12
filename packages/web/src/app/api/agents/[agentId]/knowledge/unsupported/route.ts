@@ -7,8 +7,12 @@ import { grantedDataPaths } from "@/lib/agent-granted-paths";
 import { csvField, csvFileStem } from "@/lib/csv";
 import { DEFAULT_ORG_ID } from "@/lib/knowledge/constants";
 import { listUnsupportedFiles } from "@/lib/knowledge/unsupported-files";
+import { unsupportedFileKind } from "@/lib/knowledge/unsupported-kind";
 
 type RouteContext = { params: Promise<{ agentId: string }> };
+
+/** The `status` column, in the words the reindex summary uses. */
+const STATUS = { unsupported: "not supported yet", ignored: "ignored" } as const;
 
 /**
  * GET /api/agents/[agentId]/knowledge/unsupported — a CSV of the files under
@@ -16,6 +20,12 @@ type RouteContext = { params: Promise<{ agentId: string }> };
  * binary `.xlsb`. The reindex status counts them
  * (`counts.unsupported`); this names them, with path and type, so an admin can
  * convert them or tell users what the agent cannot see.
+ *
+ * Both kinds are on the list (#1410): documents the index cannot read yet
+ * ("not supported yet") and files skipped because they are not documents at
+ * all — programs, drivers, data exports ("ignored"). The `status` column says
+ * which, so the admin can filter the handful that matter out of a share full
+ * of software without anything being hidden from them.
  *
  * A download rather than a JSON list beside the unsearchable one, because of
  * scale: a real share holds 100k+ such files, which no panel shows usefully and
@@ -58,7 +68,9 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
         headerSent = true;
         // The BOM is what makes Excel read the file as UTF-8. Without it a
         // German share's "Prüfbericht.rtf" opens as "PrÃ¼fbericht.rtf".
-        controller.enqueue(encoder.encode(`\uFEFF${csvField("path")},${csvField("type")}\n`));
+        controller.enqueue(
+          encoder.encode(`\uFEFF${csvField("path")},${csvField("type")},${csvField("status")}\n`)
+        );
         return;
       }
       const next = await pages.next();
@@ -68,7 +80,7 @@ export const GET = withAdmin<RouteContext>(async (_request, { params }, session)
       }
       let chunk = "";
       for (const file of next.value) {
-        chunk += `${csvField(file.sourcePath)},${csvField(file.type)}\n`;
+        chunk += `${csvField(file.sourcePath)},${csvField(file.type)},${csvField(STATUS[unsupportedFileKind(file.type)])}\n`;
       }
       controller.enqueue(encoder.encode(chunk));
     },
