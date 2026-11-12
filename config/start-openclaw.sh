@@ -86,16 +86,17 @@ fi
 # OpenClaw creates openclaw.json with 600 (root-only). Pinchy needs write access
 # to update provider keys and agent configuration via regenerateOpenClawConfig().
 #
-# Also opens credentials/ (up to OpenClaw 2026.8 Pinchy read Telegram pairing
-# codes there; 2026.9 keeps them in its state database and imports the old
-# files) and fixes the per-agent directory ownership of #934.
+# Also fixes the per-agent directory ownership of #934. credentials/ is no
+# longer opened: up to OpenClaw 2026.8 Pinchy read Telegram pairing codes there,
+# 2026.9 keeps them in its state database (restore_credentials_privacy).
 #
 # Extracted to config/fix-config-permissions.sh (same pattern as
 # install-plugin-deps.sh / stage-llama-cpp-provider.sh) so each of those
 # cross-uid invariants is unit-testable — see
 # packages/web/src/__tests__/lib/fix-config-permissions.test.ts. Defines
-# fix_config_permissions(), remove_retired_auth_profiles() and
-# restore_gateway_lock_ownership() into this shell;
+# fix_config_permissions(), remove_retired_auth_profiles(),
+# restore_gateway_lock_ownership() and restore_credentials_privacy() into this
+# shell;
 # it reads $SECRETS_FILE from above.
 # shellcheck source=fix-config-permissions.sh
 source /fix-config-permissions.sh
@@ -281,6 +282,7 @@ auto_approve_devices &
 ensure_secrets_root_owned
 remove_retired_auth_profiles
 restore_gateway_lock_ownership
+restore_credentials_privacy
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 &
 mark_bootstrap_when_ready
@@ -311,6 +313,7 @@ while true; do
             ensure_secrets_root_owned
             remove_retired_auth_profiles
             restore_gateway_lock_ownership
+            restore_credentials_privacy
             openclaw gateway --port 18789 &
             mark_bootstrap_when_ready
         fi

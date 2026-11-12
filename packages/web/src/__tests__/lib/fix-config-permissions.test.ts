@@ -365,34 +365,26 @@ describe("fix_config_permissions — behaviour carried over from start-openclaw.
     expect(chmodCalls()).not.toContain(file);
   });
 
-  it("opens credentials/ and the files in it for Pinchy to read", () => {
+  it("keeps credentials/ private to OpenClaw", () => {
+    // Up to OpenClaw 2026.8 Pinchy read Telegram pairing codes from here, so the
+    // tick opened the tree to everyone. 2026.9 keeps pairing in its state
+    // database and Pinchy reads nothing here. What is left is OpenClaw's own:
+    // the browser relay secret, which OpenClaw refuses to read unless it is
+    // owner-only, and legacy OAuth files.
     const credentials = join(stateDir, "credentials");
     mkdirSync(credentials);
-    const allowFrom = join(credentials, "telegram-allowFrom.json");
-    writeFileSync(allowFrom, "{}\n");
-    chmodSync(allowFrom, 0o600);
+    const relaySecret = join(credentials, "browser-extension-relay.secret");
+    writeFileSync(relaySecret, "secret\n");
+    chmodSync(relaySecret, 0o600);
     chmodSync(credentials, 0o700);
-
-    runFix();
-
-    expect(statSync(credentials).mode & 0o777).toBe(0o755);
-    expect(statSync(allowFrom).mode & 0o777).toBe(0o644);
-  });
-
-  it("leaves a credentials/ that Pinchy can already read untouched", () => {
-    // Same 50 ms-tick reason as openclaw.json: each chmod is an inotify
-    // attribute event, even to the mode a file already has. OpenClaw 2026.9
-    // does not watch credentials/, so this keeps the tick quiet before one does.
-    const credentials = join(stateDir, "credentials");
-    mkdirSync(credentials);
-    writeFileSync(join(credentials, "telegram-allowFrom.json"), "{}\n");
-    chmodSync(join(credentials, "telegram-allowFrom.json"), 0o644);
-    chmodSync(credentials, 0o755);
     const chmodCalls = recordChmod();
 
     runFix();
 
+    expect(statSync(credentials).mode & 0o777).toBe(0o700);
+    expect(statSync(relaySecret).mode & 0o777).toBe(0o600);
     expect(chmodCalls()).not.toContain(credentials);
+    expect(chownedPaths().some((p) => p.startsWith(credentials))).toBe(false);
   });
 
   it("opens agents/<id> to 0755 so Pinchy can traverse it", () => {
@@ -547,6 +539,98 @@ describe("restore_gateway_lock_ownership", () => {
   });
 });
 
+// Up to OpenClaw 2026.8 the tick opened credentials/ to everyone (a+rX), and
+// the pinchy entrypoint handed it to uid 999 with the rest of the volume.
+// Neither does so any more; this is the migration half for a volume an earlier
+// Pinchy already opened. OpenClaw's browser relay reads its secret there only
+// when the file belongs to its own uid and no other user can read it.
+describe("restore_credentials_privacy", () => {
+  let credentials: string;
+
+  function runRestore(extraEnv: Record<string, string> = {}): void {
+    execFileSync("bash", ["-c", `source '${SCRIPT}'; restore_credentials_privacy`], {
+      env: {
+        ...process.env,
+        PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+        OPENCLAW_STATE_DIR: stateDir,
+        ...extraEnv,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+  }
+
+  beforeEach(() => {
+    credentials = join(stateDir, "credentials");
+  });
+
+  it("closes a credentials/ an earlier Pinchy opened to owner-only modes", () => {
+    const telegram = join(credentials, "telegram");
+    mkdirSync(telegram, { recursive: true });
+    const allowFrom = join(credentials, "telegram-allowFrom.json");
+    const pairing = join(telegram, "pairing.json");
+    writeFileSync(allowFrom, "{}\n");
+    writeFileSync(pairing, "{}\n");
+    chmodSync(allowFrom, 0o644);
+    chmodSync(pairing, 0o644);
+    chmodSync(telegram, 0o755);
+    chmodSync(credentials, 0o755);
+
+    runRestore();
+
+    // The modes OpenClaw's own `security audit --fix` sets.
+    expect(statSync(credentials).mode & 0o777).toBe(0o700);
+    expect(statSync(telegram).mode & 0o777).toBe(0o700);
+    expect(statSync(allowFrom).mode & 0o777).toBe(0o600);
+    expect(statSync(pairing).mode & 0o777).toBe(0o600);
+  });
+
+  it("hands a credentials/ owned by another uid back to root", () => {
+    mkdirSync(credentials);
+    const relaySecret = join(credentials, "browser-extension-relay.secret");
+    writeFileSync(relaySecret, "secret\n");
+
+    runRestore();
+
+    // The test process is not root, so every fixture counts as foreign-owned.
+    expect(chownedPaths()).toEqual(expect.arrayContaining([credentials, relaySecret]));
+    expect(readFileSync(chownLog, "utf8")).toContain("root:root");
+  });
+
+  it("leaves a credentials/ that is already OpenClaw's and private untouched", () => {
+    // chown and chmod rewrite ctime even when nothing changes; gated like every
+    // other repair in this file. OPENCLAW_UID stands in for root here.
+    mkdirSync(credentials);
+    const relaySecret = join(credentials, "browser-extension-relay.secret");
+    writeFileSync(relaySecret, "secret\n");
+    chmodSync(relaySecret, 0o600);
+    chmodSync(credentials, 0o700);
+    const chmodCalls = recordChmod();
+
+    runRestore({ OPENCLAW_UID: String(process.getuid!()) });
+
+    expect(chownedPaths()).toEqual([]);
+    expect(chmodCalls()).toBe("");
+  });
+
+  it("touches nothing outside credentials/", () => {
+    const { agentDir } = seedAgentDir("agent-a");
+    mkdirSync(credentials);
+    const chmodCalls = recordChmod();
+
+    runRestore();
+
+    expect(chownedPaths().every((p) => p.startsWith(credentials))).toBe(true);
+    expect(chmodCalls()).not.toContain(agentDir);
+    expect(statSync(agentDir).mode & 0o777).toBe(0o700);
+  });
+
+  it("tolerates a missing credentials/ (first boot)", () => {
+    expect(() => runRestore()).not.toThrow();
+    expect(chownedPaths()).toEqual([]);
+  });
+});
+
 describe("fix_config_permissions — wiring", () => {
   // An extracted script that never reaches the container repairs nothing, and
   // the tests above would stay green the whole time.
@@ -580,6 +664,19 @@ describe("fix_config_permissions — wiring", () => {
     for (const start of starts) {
       const before = lines.slice(Math.max(0, start - 15), start).join("\n");
       expect(before).toContain("restore_gateway_lock_ownership");
+    }
+  });
+
+  it("restores credentials/ privacy before every gateway start", () => {
+    // OpenClaw's browser relay reads its secret when the gateway starts the
+    // relay, and the restart branch of the watchdog loop starts a gateway too.
+    const startScript = readFileSync(resolve(REPO_ROOT, "config/start-openclaw.sh"), "utf8");
+    const lines = startScript.split("\n");
+    const starts = lines.flatMap((line, i) => (/^\s*openclaw gateway\b/.test(line) ? [i] : []));
+    expect(starts.length).toBeGreaterThan(0);
+    for (const start of starts) {
+      const before = lines.slice(Math.max(0, start - 15), start).join("\n");
+      expect(before).toContain("restore_credentials_privacy");
     }
   });
 

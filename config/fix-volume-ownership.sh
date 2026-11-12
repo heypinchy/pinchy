@@ -5,7 +5,7 @@
 # unit-testable — see packages/web/src/__tests__/lib/fix-volume-ownership.test.ts.
 #
 # OpenClaw runs as root and creates most of this volume; Pinchy runs as uid 999
-# and needs write access to openclaw.json, agents/, credentials/ and the rest. So
+# and needs write access to openclaw.json, agents/, workspaces/ and the rest. So
 # the entrypoint takes ownership of the volume, because only root can chown and
 # this is the last moment in the boot where the pinchy container still is root.
 #
@@ -41,6 +41,14 @@
 # for a volume an earlier Pinchy already chowned is restore_gateway_lock_ownership
 # in config/fix-config-permissions.sh, run before every gateway start.
 #
+# credentials/ is pruned too. Up to OpenClaw 2026.8 Pinchy read Telegram pairing
+# codes there; 2026.9 keeps them in its state database and Pinchy reads nothing
+# under credentials/ any more. What is left is OpenClaw's: its browser relay
+# ignores its secret there unless the file belongs to its own uid, so handing the
+# tree to uid 999 would cost a relay pairing on every pinchy restart. The
+# migration half is restore_credentials_privacy in
+# config/fix-config-permissions.sh.
+#
 # `! -uid` gates the chown so an already-correct tree is left alone. Same
 # reasoning as config/fix-config-permissions.sh: this volume carries
 # agents/<id>/sessions and workspaces/ with unbounded file counts, and chown
@@ -60,7 +68,8 @@ OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR%/}"
 PINCHY_UID="${PINCHY_UID:-999}"
 PINCHY_GID="${PINCHY_GID:-999}"
 
-find "$OPENCLAW_CONFIG_DIR" \( -path "$OPENCLAW_CONFIG_DIR/npm" -o -path "$OPENCLAW_CONFIG_DIR/tmp" \) -prune -o \
+find "$OPENCLAW_CONFIG_DIR" \( -path "$OPENCLAW_CONFIG_DIR/npm" -o -path "$OPENCLAW_CONFIG_DIR/tmp" \
+    -o -path "$OPENCLAW_CONFIG_DIR/credentials" \) -prune -o \
     ! -uid "$PINCHY_UID" -exec chown "$PINCHY_UID:$PINCHY_GID" {} + 2>/dev/null || true
 
 # Belt-and-suspenders: ensure pinchy can stat AND write the directory itself.
