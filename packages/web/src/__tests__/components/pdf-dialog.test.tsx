@@ -304,8 +304,12 @@ describe("PdfDialog with a passage to highlight", () => {
 
     expect(await screen.findByText("Page 510 of 600")).toBeInTheDocument();
     expect(document.querySelector("embed")).toBeNull();
+    // Count once the page has rendered: from then on the viewer also carries
+    // the page's text for screen readers ("Text of page 510: …"), which is
+    // not a label. Counting before that raced the render.
+    expect(await screen.findByText(/^Text of page 510:/)).toBeInTheDocument();
     // One page label, not the header's and the viewer's both.
-    expect(screen.getAllByText(/page 510/i)).toHaveLength(1);
+    expect(screen.getAllByText(/^page 510( of 600)?$/i)).toHaveLength(1);
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
     fetchSpy.mockRestore();
   });
