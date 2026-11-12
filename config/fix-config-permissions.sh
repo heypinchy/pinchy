@@ -19,6 +19,8 @@ SECRETS_FILE="${SECRETS_FILE:-${OPENCLAW_SECRETS_PATH:-/openclaw-secrets/secrets
 # The pinchy user inside the Pinchy container (Dockerfile.pinchy: useradd -u 999).
 PINCHY_UID="${PINCHY_UID:-999}"
 PINCHY_GID="${PINCHY_GID:-999}"
+# OpenClaw runs as root; overridable only so the test can stand in for root.
+OPENCLAW_UID="${OPENCLAW_UID:-0}"
 
 fix_config_permissions() {
     # Gated like the `-not -perm` repairs below, for a stronger reason than
@@ -31,12 +33,21 @@ fix_config_permissions() {
     # later config.apply failed "config changed since last load".
     find "$OPENCLAW_STATE_DIR/openclaw.json" -maxdepth 0 -type f -not -perm 0666 \
         -exec chmod 666 {} \; 2>/dev/null || true
-    # Use a glob so we also catch any sibling credential files OpenClaw
-    # writes alongside the pairing file (allowFrom stores etc.) — they too
-    # are written by root and consumed by Pinchy.
+    # The whole credentials/ tree, so we also catch any sibling credential
+    # files OpenClaw writes alongside the pairing file (allowFrom stores etc.) —
+    # they too are written by root and consumed by Pinchy.
     # a+rX: r for all files, x only for directories (capital X) so uid 999
     # can both enter the credentials/ dir (exec bit) and read files inside it.
-    chmod -R a+rX "$OPENCLAW_STATE_DIR/credentials" 2>/dev/null || true
+    #
+    # Gated to what is not yet readable by all, like every repair on this tick:
+    # a chmod to the mode a file already has is still an inotify attribute
+    # event and a ctime bump on Linux, and openclaw.json above shows what that
+    # does to a watcher when it fires every 50 ms. Nothing in OpenClaw 2026.9
+    # watches credentials/ or the secrets file, so this is not a live bug —
+    # it keeps the tick from becoming one when a release starts watching them.
+    find "$OPENCLAW_STATE_DIR/credentials" \
+        \( -type d -not -perm -0555 -o -type f -not -perm -0444 \) \
+        -exec chmod a+rX {} \; 2>/dev/null || true
     # Re-take ownership of secrets.json. Pinchy writes it as uid 999 (the
     # pinchy user inside its container); OpenClaw's secret-resolver requires
     # owner == process uid (root) and refuses to reload otherwise. The 30 s
@@ -46,10 +57,12 @@ fix_config_permissions() {
     # loop wakes up. Without this fast tick, a freshly created agent surfaces
     # as `unknown agent id` because the reload fails on secrets and the new
     # agents.list never enters runtime. See issue #200.
-    if [ -f "$SECRETS_FILE" ]; then
-        chown root:root "$SECRETS_FILE" 2>/dev/null || true
-        chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
-    fi
+    #
+    # Gated on owner and mode, for the reason given at credentials/ above.
+    find "$SECRETS_FILE" -maxdepth 0 -type f ! -uid "$OPENCLAW_UID" \
+        -exec chown root:root {} \; 2>/dev/null || true
+    find "$SECRETS_FILE" -maxdepth 0 -type f -not -perm 0600 \
+        -exec chmod 0600 {} \; 2>/dev/null || true
 
     # agents/<id>/agent has to be pinchy-OWNED — the whole of issue #934. Up to
     # OpenClaw 2026.7 Pinchy (uid 999) wrote each agent's auth-profiles.json

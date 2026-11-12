@@ -67,7 +67,27 @@ function stubChown(): void {
   chmodSync(bin, 0o755);
 }
 
-function runFix(): void {
+/**
+ * Record every `chmod` invocation while still performing it, and return a
+ * reader for the recorded argument lines.
+ *
+ * The 50 ms tick's gates are asserted on the chmod call, not on ctime: Linux
+ * rewrites ctime on a chmod to the mode a file already has (and raises an
+ * inotify attribute event), macOS does not, so a ctime assertion would pass on
+ * a developer's Mac whatever the script did.
+ */
+function recordChmod(): () => string {
+  const chmodLog = join(root, "chmod.log");
+  const realChmod = execFileSync("bash", ["-c", "command -v chmod"], {
+    encoding: "utf8",
+  }).trim();
+  const wrapper = join(binDir, "chmod");
+  writeFileSync(wrapper, `#!/bin/bash\necho "$@" >> '${chmodLog}'\nexec '${realChmod}' "$@"\n`);
+  chmodSync(wrapper, 0o755);
+  return () => (existsSync(chmodLog) ? readFileSync(chmodLog, "utf8") : "");
+}
+
+function runFix(extraEnv: Record<string, string> = {}): void {
   execFileSync("bash", ["-c", `source '${SCRIPT}'; fix_config_permissions`], {
     env: {
       ...process.env,
@@ -76,6 +96,7 @@ function runFix(): void {
       SECRETS_FILE: secretsFile,
       PINCHY_UID,
       PINCHY_GID,
+      ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
@@ -335,24 +356,43 @@ describe("fix_config_permissions — behaviour carried over from start-openclaw.
     // tick fires one every 50 ms, so the debounce never elapses: a config Pinchy
     // writes to the file is never reloaded, and every later config.apply fails
     // "config changed since last load" against the stale snapshot.
-    //
-    // Asserted on the chmod call, not on ctime: Linux rewrites ctime on a chmod
-    // to the mode a file already has (that is the event), macOS does not, so a
-    // ctime assertion would pass on a developer's Mac whatever the script did.
     const file = join(stateDir, "openclaw.json");
     chmodSync(file, 0o666);
-    const chmodLog = join(root, "chmod.log");
-    const realChmod = execFileSync("bash", ["-c", "command -v chmod"], {
-      encoding: "utf8",
-    }).trim();
-    const wrapper = join(binDir, "chmod");
-    writeFileSync(wrapper, `#!/bin/bash\necho "$@" >> '${chmodLog}'\nexec '${realChmod}' "$@"\n`);
-    chmodSync(wrapper, 0o755);
+    const chmodCalls = recordChmod();
 
     runFix();
 
-    const calls = existsSync(chmodLog) ? readFileSync(chmodLog, "utf8") : "";
-    expect(calls).not.toContain(file);
+    expect(chmodCalls()).not.toContain(file);
+  });
+
+  it("opens credentials/ and the files in it for Pinchy to read", () => {
+    const credentials = join(stateDir, "credentials");
+    mkdirSync(credentials);
+    const allowFrom = join(credentials, "telegram-allowFrom.json");
+    writeFileSync(allowFrom, "{}\n");
+    chmodSync(allowFrom, 0o600);
+    chmodSync(credentials, 0o700);
+
+    runFix();
+
+    expect(statSync(credentials).mode & 0o777).toBe(0o755);
+    expect(statSync(allowFrom).mode & 0o777).toBe(0o644);
+  });
+
+  it("leaves a credentials/ that Pinchy can already read untouched", () => {
+    // Same 50 ms-tick reason as openclaw.json: each chmod is an inotify
+    // attribute event, even to the mode a file already has. OpenClaw 2026.9
+    // does not watch credentials/, so this keeps the tick quiet before one does.
+    const credentials = join(stateDir, "credentials");
+    mkdirSync(credentials);
+    writeFileSync(join(credentials, "telegram-allowFrom.json"), "{}\n");
+    chmodSync(join(credentials, "telegram-allowFrom.json"), 0o644);
+    chmodSync(credentials, 0o755);
+    const chmodCalls = recordChmod();
+
+    runFix();
+
+    expect(chmodCalls()).not.toContain(credentials);
   });
 
   it("opens agents/<id> to 0755 so Pinchy can traverse it", () => {
@@ -388,6 +428,29 @@ describe("fix_config_permissions — behaviour carried over from start-openclaw.
 
     expect(chownedPaths()).toContain(secretsFile);
     expect(statSync(secretsFile).mode & 0o777).toBe(0o600);
+  });
+
+  it("tightens a secrets file Pinchy left readable back to 0600", () => {
+    writeFileSync(secretsFile, "{}\n");
+    chmodSync(secretsFile, 0o644);
+
+    runFix();
+
+    expect(statSync(secretsFile).mode & 0o777).toBe(0o600);
+  });
+
+  it("leaves a secrets file that is already OpenClaw's and 0600 untouched", () => {
+    // Ungated, the 50 ms tick raised two attribute events on the file every
+    // 50 ms. OPENCLAW_UID stands in for root here: the test process cannot own
+    // a file as root.
+    writeFileSync(secretsFile, "{}\n");
+    chmodSync(secretsFile, 0o600);
+    const chmodCalls = recordChmod();
+
+    runFix({ OPENCLAW_UID: String(process.getuid!()) });
+
+    expect(chownedPaths()).not.toContain(secretsFile);
+    expect(chmodCalls()).not.toContain(secretsFile);
   });
 
   it("skips the secrets file when it does not exist", () => {
