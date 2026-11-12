@@ -48,7 +48,7 @@ function toFailure(err: unknown): SheetReaderFailure {
 }
 
 /**
- * The words mammoth sees in a .docx — the conversion's oracle. Read through
+ * The words mammoth sees in a .docx or .docm — the conversion's oracle. Read through
  * the same guard the conversion input passed: mammoth inflates the whole
  * archive, so a bomb must not reach it through the oracle's door.
  */

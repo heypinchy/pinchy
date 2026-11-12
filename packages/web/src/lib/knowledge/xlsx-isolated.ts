@@ -45,7 +45,7 @@
  * `maxQueued`, so reloads cannot stack reads in front of the indexer — which
  * passes neither, and is never cut short or turned away.
  *
- * The same child also counts a `.docx`'s words for the conversion's oracle
+ * The same child also counts a `.docx` or `.docm`'s words for the conversion's oracle
  * (`countDocxWordsIsolated`). mammoth builds a DOM at
  * up to ~300x the markup it parses, and the markup ceiling in front of it
  * (`MAX_DOCX_MARKUP_BYTES`) is a PREDICTION of which parts mammoth parses: a

@@ -235,7 +235,7 @@ export interface OfficeSource {
   /**
    * A copy only the caller writes, held until the conversion returns — never
    * a path on the share. The converter stages it, and the word-count oracle
-   * reads a `.docx` from it AFTER the conversion (`oracleInput`): a file that
+   * reads a `.docx` or `.docm` from it AFTER the conversion (`oracleInput`): a file that
    * changed in between would be checked against the wrong text.
    */
   absPath: string;
