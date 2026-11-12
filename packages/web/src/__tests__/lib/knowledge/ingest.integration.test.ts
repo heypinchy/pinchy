@@ -3355,6 +3355,75 @@ it("batches from the document that asked, carrying the hash of the bytes it hand
   ]);
 });
 
+it("leaves out of a batch every later document its own turn will skip", async () => {
+  // A batch mate is taken to save it a converter start of its own — which is
+  // only worth anything when its own turn will read it. A settled refusal (a
+  // document the converter could not convert, unchanged since) and an
+  // unchanged indexed document are both skipped there. Taken into the batch
+  // anyway, the refusal went through LibreOffice again on every run that
+  // read any Office file, and the indexed one cost a full verified copy, for
+  // a conversion nobody reads.
+  for (const name of ["a.docx", "b.docx", "c.docx"]) {
+    writeFileSync(join(tmpRoot, name), `${name}-v1`);
+  }
+  const { deps, convertOffice } = officeDeps(
+    (absPath) =>
+      basename(absPath) === "b.docx"
+        ? { sourcePath: absPath, status: "failed", reason: "no artifact produced" }
+        : convertedTo("/artifacts/batch.pdf")(absPath),
+    () => WORD_PAGES
+  );
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+      counts({ indexed: 2, unsearchable: 1 })
+    );
+    // A refusal is retried until it has had its reads; then it is settled.
+    for (let run = 2; run <= MAX_INCOMPLETE_READS; run++) {
+      expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+        counts({ skipped: 2, unsearchable: 1 })
+      );
+    }
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ skipped: 3 }));
+    const calls = convertOffice.mock.calls.length;
+
+    // Only the head of the queue changes; the two behind it are settled.
+    writeFileSync(join(tmpRoot, "a.docx"), "a.docx-v2");
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+      counts({ indexed: 1, skipped: 2 })
+    );
+
+    expect(convertOffice).toHaveBeenCalledTimes(calls + 1);
+    expect(
+      convertOffice.mock.calls[calls][0].map((source: { absPath: string }) =>
+        basename(source.absPath)
+      )
+    ).toEqual(["a.docx"]);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it("still takes a later document into the batch when its own turn will read it", async () => {
+  // The other half of the same rule: leaving a mate out is only right when
+  // its turn skips it. A changed one belongs in the batch, or every changed
+  // Office document pays a converter start of its own.
+  for (const name of ["a.docx", "b.docx", "c.docx"]) {
+    writeFileSync(join(tmpRoot, name), `${name}-v1`);
+  }
+  const { deps, convertOffice } = officeDeps(convertedTo("/artifacts/batch.pdf"), () => WORD_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 3 }));
+
+  writeFileSync(join(tmpRoot, "a.docx"), "a.docx-v2");
+  writeFileSync(join(tmpRoot, "c.docx"), "c.docx-v2");
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 2, skipped: 1 }));
+
+  expect(convertOffice).toHaveBeenCalledTimes(2);
+  expect(
+    convertOffice.mock.calls[1][0].map((source: { absPath: string }) => basename(source.absPath))
+  ).toEqual(["a.docx", "c.docx"]);
+});
+
 it("hashes an Office file as it streams, so the server never holds it whole while it converts", async () => {
   // The hash was taken from a whole-file read, and V8 kept that buffer alive
   // across the awaits after it — through the whole conversion: up to 200 MB
