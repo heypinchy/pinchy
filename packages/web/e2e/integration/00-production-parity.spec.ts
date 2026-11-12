@@ -20,7 +20,8 @@
  *   - it leaves OpenClaw's `credentials/` private to root. Up to OpenClaw
  *     2026.8 Pinchy read Telegram pairing files there and the tick opened the
  *     tree to everyone; since 2026.9 Pinchy reads nothing there, and OpenClaw's
- *     browser relay ignores its secret unless it is owner-only.
+ *     browser relay ignores its secret when another uid owns it and chmods it
+ *     back to 0600 when someone else can read it.
  *
  * Why `--user pinchy` is mandatory on the docker exec calls:
  *   `Dockerfile.pinchy` deliberately omits a `USER` directive — the
@@ -37,7 +38,10 @@
  *      unwritable for uid 999).
  *   3. The shared volume isn't actually shared (Pinchy reads its own,
  *      empty mount instead of OpenClaw's writes — probe file is missing).
- *   4. Something opens `credentials/` to uid 999 again.
+ *   4. The repair tick opens `credentials/` to uid 999 again. The probe is
+ *      written after the stack is up, so this sees the tick only: the
+ *      entrypoint's prune and the modes restored at gateway start are pinned
+ *      by fix-volume-ownership.test.ts and fix-config-permissions.test.ts.
  */
 
 import { test, expect } from "@playwright/test";

@@ -2451,8 +2451,8 @@ jobs:
     # docker-compose.e2e.yml using the production Dockerfile.pinchy
     # (uid 999 demotion via entrypoint.sh), matching what end users
     # actually run. Catches uid/permission mismatches between Pinchy
-    # (uid 999) and OpenClaw (root) — see e.g. PR #195's regression for
-    # the telegram-pairing.json mode 0600 case.
+    # (uid 999) and OpenClaw (root), e.g. a bootstrap file OpenClaw creates
+    # as root that Pinchy must rewrite (#1095).
     #
     # ${PINCHY_VERSION:?} on docker-compose.yml's `image:` line is
     # satisfied by any non-empty string; the build directive in

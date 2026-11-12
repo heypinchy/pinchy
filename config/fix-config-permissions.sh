@@ -180,9 +180,11 @@ remove_retired_auth_profiles() {
 # the tree to everyone (a+rX) and config/fix-volume-ownership.sh handed it to
 # uid 999. OpenClaw 2026.9 keeps both in its state database, which Pinchy
 # reaches through the pinchy-audit plugin, and Pinchy reads nothing here any
-# more. What is left is OpenClaw's own: its browser relay secret, which it
-# ignores unless the file belongs to its own uid and no other user can read it,
-# and legacy OAuth files its doctor imports.
+# more. What is left is OpenClaw's own: legacy OAuth files its doctor imports,
+# and its browser relay secret. The relay ignores that secret when the file
+# belongs to another uid, and chmods it back to 0600 (with a warning) whenever
+# someone else can read it — so the old tick and OpenClaw undid each other's
+# work every 50 ms.
 #
 # Neither script opens the tree any more; this takes back a volume an earlier
 # Pinchy already opened, with the modes OpenClaw's own `security audit --fix`

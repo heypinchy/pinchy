@@ -9,8 +9,8 @@
 # Why this exists separately from docker-compose.dev.yml:
 #   docker-compose.dev.yml runs Pinchy via `Dockerfile.pinchy.dev` which
 #   skips the user demotion. CI E2E ran under that image and missed the
-#   class of bugs where Pinchy (uid 999) can't read files OpenClaw writes
-#   as root (e.g. telegram-pairing.json mode 0600). Running E2E against
+#   class of bugs where Pinchy (uid 999) can't write files OpenClaw creates
+#   as root (e.g. a workspace bootstrap file, #1095). Running E2E against
 #   the production image catches them. See docs/contributing or PR for
 #   detail.
 

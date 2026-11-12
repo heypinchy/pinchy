@@ -369,8 +369,8 @@ describe("fix_config_permissions — behaviour carried over from start-openclaw.
     // Up to OpenClaw 2026.8 Pinchy read Telegram pairing codes from here, so the
     // tick opened the tree to everyone. 2026.9 keeps pairing in its state
     // database and Pinchy reads nothing here. What is left is OpenClaw's own:
-    // the browser relay secret, which OpenClaw refuses to read unless it is
-    // owner-only, and legacy OAuth files.
+    // legacy OAuth files, and the browser relay secret, which OpenClaw ignores
+    // when another uid owns it and chmods back to 0600 when others can read it.
     const credentials = join(stateDir, "credentials");
     mkdirSync(credentials);
     const relaySecret = join(credentials, "browser-extension-relay.secret");
@@ -614,15 +614,26 @@ describe("restore_credentials_privacy", () => {
   });
 
   it("touches nothing outside credentials/", () => {
-    const { agentDir } = seedAgentDir("agent-a");
+    // Seeded at modes the credentials passes would change, so a find rooted one
+    // level too high shows up here instead of being skipped by its own gate.
+    const agentsDir = join(stateDir, "agents");
+    const configFile = join(stateDir, "openclaw.json");
+    mkdirSync(agentsDir, { recursive: true });
+    chmodSync(agentsDir, 0o755);
+    chmodSync(configFile, 0o644);
     mkdirSync(credentials);
     const chmodCalls = recordChmod();
 
     runRestore();
 
     expect(chownedPaths().every((p) => p.startsWith(credentials))).toBe(true);
-    expect(chmodCalls()).not.toContain(agentDir);
-    expect(statSync(agentDir).mode & 0o777).toBe(0o700);
+    const chmodded = chmodCalls()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split(" ").slice(1).join(" "));
+    expect(chmodded.every((p) => p.startsWith(credentials))).toBe(true);
+    expect(statSync(agentsDir).mode & 0o777).toBe(0o755);
+    expect(statSync(configFile).mode & 0o777).toBe(0o644);
   });
 
   it("tolerates a missing credentials/ (first boot)", () => {

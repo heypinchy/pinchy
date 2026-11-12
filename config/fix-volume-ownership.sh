@@ -45,7 +45,8 @@
 # codes there; 2026.9 keeps them in its state database and Pinchy reads nothing
 # under credentials/ any more. What is left is OpenClaw's: its browser relay
 # ignores its secret there unless the file belongs to its own uid, so handing the
-# tree to uid 999 would cost a relay pairing on every pinchy restart. The
+# tree to uid 999 would stop the relay authenticating after every pinchy restart,
+# until the next gateway start took the tree back. The
 # migration half is restore_credentials_privacy in
 # config/fix-config-permissions.sh.
 #
