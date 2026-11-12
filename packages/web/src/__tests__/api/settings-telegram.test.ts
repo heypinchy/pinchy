@@ -18,6 +18,7 @@ vi.mock("@/lib/telegram-pairing", () => ({
 
 const mockTryAcquireTelegramPairingSlot = vi.fn();
 const mockRecordTelegramPairingFailure = vi.fn().mockResolvedValue(undefined);
+const mockReleaseTelegramPairingSlot = vi.fn();
 // Only the two stateful helpers are stubbed. `isChannelUserIdConflictError`
 // deliberately keeps its real implementation: stubbing it made the 409 test
 // assert nothing about error recognition, which is precisely where the bug
@@ -28,6 +29,7 @@ vi.mock("@/lib/telegram-pairing-security", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/telegram-pairing-security")>()),
   tryAcquireTelegramPairingSlot: (...args: unknown[]) => mockTryAcquireTelegramPairingSlot(...args),
   recordTelegramPairingFailure: (...args: unknown[]) => mockRecordTelegramPairingFailure(...args),
+  releaseTelegramPairingSlot: (...args: unknown[]) => mockReleaseTelegramPairingSlot(...args),
 }));
 
 // #508: the route no longer writes session.identityLinks (per-task session
@@ -236,6 +238,8 @@ describe("POST /api/settings/telegram", () => {
       "user-1",
       "invalid_or_expired_code"
     );
+    // A wrong code is a real guess and keeps its slot.
+    expect(mockReleaseTelegramPairingSlot).not.toHaveBeenCalled();
   });
 
   // OpenClaw 2026.9 keeps pairing codes in its own database, read over the
@@ -254,6 +258,8 @@ describe("POST /api/settings/telegram", () => {
 
     expect(mockRecordTelegramPairingFailure).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
+    // Nor does the attempt count against the user's five tries.
+    expect(mockReleaseTelegramPairingSlot).toHaveBeenCalledWith("user-1");
   });
 
   it("returns 429 and does not touch the DB when the per-user rate limit is exceeded", async () => {

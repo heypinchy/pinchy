@@ -8,6 +8,7 @@ import { withAuth } from "@/lib/api-auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
 import {
   tryAcquireTelegramPairingSlot,
+  releaseTelegramPairingSlot,
   recordTelegramPairingFailure,
   isChannelUserIdConflictError,
 } from "@/lib/telegram-pairing-security";
@@ -51,7 +52,8 @@ export const POST = withAuth(async (req, _ctx, session) => {
   const pairing = await resolvePairingCode(code);
   if (!pairing.found && pairing.unavailable) {
     // We could not ask OpenClaw, so the code may well be valid: no failed
-    // guess is recorded against the user.
+    // guess is recorded against the user, and the attempt does not count.
+    releaseTelegramPairingSlot(session.user.id);
     return NextResponse.json(
       { error: "We can't reach the agent runtime right now. Try again in a moment." },
       { status: 503 }

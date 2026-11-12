@@ -10,6 +10,7 @@ import { DrizzleQueryError } from "drizzle-orm/errors";
 import { appendAuditLog } from "@/lib/audit";
 import {
   tryAcquireTelegramPairingSlot,
+  releaseTelegramPairingSlot,
   resetTelegramPairingRateLimiterForTest,
   recordTelegramPairingFailure,
   resetTelegramPairingAuditWindowsForTest,
@@ -50,6 +51,21 @@ describe("tryAcquireTelegramPairingSlot", () => {
     expect(tryAcquireTelegramPairingSlot("user-1", start)).toBe(false);
 
     expect(tryAcquireTelegramPairingSlot("user-1", start + 10 * 60_000 + 1)).toBe(true);
+  });
+
+  // An attempt OpenClaw could not check (gateway down) is not a guess.
+  it("gives a slot back when the attempt could not be checked", () => {
+    const now = 1_000_000;
+    for (let i = 0; i < 5; i++) tryAcquireTelegramPairingSlot("user-1", now);
+
+    releaseTelegramPairingSlot("user-1", now);
+
+    expect(tryAcquireTelegramPairingSlot("user-1", now)).toBe(true);
+    expect(tryAcquireTelegramPairingSlot("user-1", now)).toBe(false);
+  });
+
+  it("ignores a release for a user who never took a slot", () => {
+    expect(() => releaseTelegramPairingSlot("nobody", 1_000_000)).not.toThrow();
   });
 });
 
