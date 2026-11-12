@@ -231,6 +231,12 @@ export const MIN_FREE_OUTPUT_INODES = 1024;
 export type VolumeSpace = Pick<StatsFs, "bsize" | "bavail" | "files" | "ffree">;
 
 export interface OfficeSource {
+  /**
+   * A copy only the caller writes, held until the conversion returns — never
+   * a path on the share. The converter stages it, and the word-count oracle
+   * reads a `.docx` from it AFTER the conversion (`oracleInput`): a file that
+   * changed in between would be checked against the wrong text.
+   */
   absPath: string;
   /**
    * sha256 of the file's bytes — the artifact key. Optional because a
@@ -333,8 +339,9 @@ export interface ConvertOptions {
   countPdfWords?: (absPath: string) => Promise<number>;
   /**
    * Words the INDEPENDENT extractor sees in the original, or null when there is
-   * none for this format. `absPath` is the staged copy; `displayPath` is what a
-   * log line calls the document.
+   * none for this format. `absPath` is the private copy for a `.docx` and the
+   * staged copy otherwise (`oracleInput`); `displayPath` is what a log line
+   * calls the document.
    */
   countSourceWords?: (absPath: string, displayPath: string) => Promise<number | null>;
   batchSize?: number;
@@ -951,10 +958,10 @@ async function verifyAndCommit(
   }
 
   // An oracle that breaks says nothing about the conversion, so it must never
-  // fail a document — it only removes the tripwire for this one file. It reads
-  // the STAGED copy: the bytes that were checked and converted, not whatever
-  // the share holds by now.
-  const sourceWords = await deps.countSourceWords(stagedSource, item.displayPath).catch(() => null);
+  // fail a document — it only removes the tripwire for this one file.
+  const sourceWords = await deps
+    .countSourceWords(oracleInput(item, stagedSource), item.displayPath)
+    .catch(() => null);
 
   const verification: VerificationReport = {
     status: sourceWords === null ? "unverified" : "ok",
@@ -984,6 +991,29 @@ async function verifyAndCommit(
   }
 
   return { sourcePath: item.absPath, status: "converted", artifactPath, verification };
+}
+
+/**
+ * Which file the word-count oracle reads.
+ *
+ * A `.docx` is counted from the caller's private copy (`OfficeSource.absPath`):
+ * the document as written, before the preflight cut its external links. The
+ * staged copy keeps the elements that pointed at them, and mammoth throws on
+ * some of what is left — a hyperlink that still has its `w:anchor` (a link to
+ * a section of a web page) and a picture linked to a file — which turned
+ * the tripwire off for exactly those documents. Reading the copy costs no
+ * safety: mammoth runs in the reader child, through `readGuardedDocx`'s
+ * limits, and extracting raw text reads no picture, linked or embedded (and
+ * mammoth's `externalFileAccess` defaults to off besides). It counts no text
+ * the cut removed, either: mammoth reads no altChunk.
+ *
+ * Every other format is counted from the STAGED copy, the bytes that were
+ * checked and converted: a legacy binary is staged as it is, and an RTF file
+ * under a Word name is staged with its field instructions cut — text catdoc
+ * would count and LibreOffice never draws.
+ */
+function oracleInput(item: WorkItem, stagedSource: string): string {
+  return extname(item.absPath).toLowerCase() === ".docx" ? item.absPath : stagedSource;
 }
 
 /**
@@ -1244,15 +1274,17 @@ export async function countSourceWordsWithOracle(
       // memory whatever those limits miss.
       return await (deps.countDocxWords ?? countDocxWordsIsolated)(absPath);
     } catch (err) {
-      if (err instanceof OfficeFileRejectedError && err.code === "too_large") {
-        // Too much markup for mammoth's DOM — refused by the scan, or by the
-        // reader child running out of heap — or a bomb the conversion's own
-        // preflight refuses as well. Not a failure: the conversion goes on,
-        // without its tripwire.
-        console.warn(
-          `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count skipped, unverified — ${oneLine(err.message, LOG_REASON_MAX)}`
-        );
-      }
+      // Not a failure of the document either way: the conversion goes on,
+      // without its tripwire — and the log says so, or a PDF that lost text
+      // is indexed with nothing anywhere to tell.
+      const skipped = err instanceof OfficeFileRejectedError && err.code === "too_large";
+      // Skipped: too much markup for mammoth's DOM — refused by the scan, or
+      // by the reader child running out of heap — or a bomb the conversion's
+      // own preflight refuses as well. Failed: anything else, mammoth's own
+      // errors included.
+      console.warn(
+        `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count ${skipped ? "skipped" : "failed"}, unverified — ${oneLine(reasonOf(err), LOG_REASON_MAX)}`
+      );
       return null;
     }
   }
