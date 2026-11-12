@@ -398,7 +398,7 @@ describe("fix_config_permissions — behaviour carried over from start-openclaw.
   // Up to OpenClaw 2026.8 this tick opened agents/<id> and agents/<id>/sessions
   // to 0755 and sessions.json / *.trajectory.jsonl to 0644 for Pinchy's
   // diagnostics export. OpenClaw 2026.9 keeps sessions and trajectories in a
-  // per-agent SQLite database at mode 0600 that Pinchy's container cannot read,
+  // per-agent SQLite database at mode 0600 that the gateway owns,
   // and the pinchy-audit plugin reads it inside the gateway
   // (`pinchy.trajectory.read`). Nothing running as uid 999 opens a path under
   // agents/<id>/ any more, so a widened mode there is exposure with no reader —
@@ -429,7 +429,8 @@ describe("fix_config_permissions — behaviour carried over from start-openclaw.
 
   it("still chowns agents/<id> for a tree that holds sessions/, without changing its mode", () => {
     // The ownership repair (#934) is separate from the mode repair removed
-    // above, and must keep covering agent directories that carry sessions/.
+    // above. This is also the liveness guard for the test above: it proves the
+    // function ran to the end, so "no chmod" cannot pass by an early abort.
     const { agentIdDir } = seedAgentDir("agent-a");
     mkdirSync(join(agentIdDir, "sessions"), { recursive: true });
 

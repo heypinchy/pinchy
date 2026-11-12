@@ -94,7 +94,7 @@ fix_config_permissions() {
     # `! -uid` gates the chown so an already-correct directory is left alone:
     # chown rewrites ctime, and OpenClaw's session-takeover detector reads a
     # ctime change as external modification (same reason the `-not -perm` gates
-    # below exist). At a 50 ms tick an ungated chown would be ~20 ctime bumps a
+    # above exist). At a 50 ms tick an ungated chown would be ~20 ctime bumps a
     # second, per agent, forever.
     #
     # -maxdepth 1 covers the agents/ root (so new agent dirs can be created) and
@@ -155,13 +155,16 @@ fix_config_permissions() {
     # sessions.json / *.trajectory.jsonl to 0644, so Pinchy's diagnostics export
     # could read them from its own mount. OpenClaw 2026.9 keeps sessions and
     # trajectories in a per-agent SQLite database (agents/<id>/agent/
-    # openclaw-agent.sqlite, mode 0600) that uid 999 cannot read; the
-    # pinchy-audit plugin reads it inside the gateway and answers
-    # `pinchy.trajectory.read` (packages/web/src/lib/diagnostics/jsonl-reader.ts).
-    # Nothing running as uid 999 opens a path under agents/<id>/ any more, so the
-    # widened modes had no reader — and every chmod on that tree was an inotify
-    # event and a ctime bump on files OpenClaw writes on every turn. Ownership of
-    # agents/ and agents/<id>/agent (above) is a separate repair and stays.
+    # openclaw-agent.sqlite, mode 0600) that the gateway owns; Pinchy does not
+    # read it from its mount. The pinchy-audit plugin reads it inside the
+    # gateway and answers `pinchy.trajectory.read`
+    # (packages/web/src/lib/diagnostics/jsonl-reader.ts). So the widened modes
+    # had no reader, and every chmod on that tree was an inotify event and a
+    # ctime bump on files OpenClaw writes on every turn. The one remaining
+    # uid-999 read under agents/<id>/ is the legacy migrateSessionKeys boot
+    # sweep; it runs after Pinchy's entrypoint chowned the volume to 999 and
+    # never needed these modes. Ownership of agents/ and agents/<id>/agent
+    # (above) is a separate repair and stays.
 }
 
 # OpenClaw 2026.9 retired the per-agent auth-profiles.json: auth profiles live
