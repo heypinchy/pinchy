@@ -714,12 +714,20 @@ function leafName(path: string): string {
  * being explicit here is what stops a later widening of that default from
  * silently changing which bytes a download control hands over.
  *
+ * Each entry also says which representation it is, as data: the converted PDF
+ * is what the viewer shows, and it may not exist yet (not converted, or a
+ * conversion that was refused). The dialog then drops that entry and points at
+ * the original, and it recognises the entry by this field, never by its label.
+ *
  * The fragment goes: `#page=510` positions a viewer and means nothing to a
  * saved file.
  */
-export function buildSourceDownloads(
-  href: string
-): Array<{ label: string; filename: string; url: string }> | null {
+export function buildSourceDownloads(href: string): Array<{
+  label: string;
+  filename: string;
+  url: string;
+  variant: "original" | "converted";
+}> | null {
   const source = parseSourceHref(href);
   if (!source) return null;
 
@@ -727,13 +735,18 @@ export function buildSourceDownloads(
   const name = leafName(source.path);
   const originalUrl = `${base}&download=1&variant=original`;
   if (!shownAsConvertedPdf(source.path)) {
-    return [{ label: name, filename: name, url: originalUrl }];
+    return [{ label: name, filename: name, url: originalUrl, variant: "original" }];
   }
 
   const extension = name.slice(name.lastIndexOf("."));
   return [
-    { label: `Original (${extension})`, filename: name, url: originalUrl },
-    { label: "PDF", filename: convertedPdfName(name), url: `${base}&download=1&variant=converted` },
+    { label: `Original (${extension})`, filename: name, url: originalUrl, variant: "original" },
+    {
+      label: "PDF",
+      filename: convertedPdfName(name),
+      url: `${base}&download=1&variant=converted`,
+      variant: "converted",
+    },
   ];
 }
 

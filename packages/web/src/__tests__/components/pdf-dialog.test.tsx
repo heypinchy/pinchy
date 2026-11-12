@@ -19,7 +19,7 @@
  * renders blank no matter what we do.
  */
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mockOpenPdf = vi.fn();
 vi.mock("@/lib/pdf/browser-pdf", () => ({
@@ -416,6 +416,167 @@ describe("PdfDialog with a passage to highlight", () => {
     await waitFor(() => expect(document.querySelector("embed")).toHaveAttribute("src", wordUrl));
     // No page to name: the browser's viewer opens at the top, as it did.
     expect(screen.queryByText(/page \d/i)).not.toBeInTheDocument();
+    fetchSpy.mockRestore();
+  });
+});
+
+/**
+ * An Office source (or a scan) is shown as the PDF it was converted to, and
+ * that PDF may not exist: the file has not been converted yet, its conversion
+ * was refused, or — since #1444 — it was indexed from its own text because the
+ * conversion came out short. The route answers that with a bare 404, and an
+ * <embed> of it put "Not found" in the pane while the original sat one click
+ * away in the same header. So the dialog asks first, and says so.
+ */
+describe("PdfDialog for a document without a converted PDF", () => {
+  const officeHref = buildSourceHref("a1", "customer/Angebot.docx", null);
+  const viewerUrl =
+    "/api/agents/a1/workspace-file/Angebot.pdf?path=%2Fdata%2Fcustomer%2FAngebot.docx";
+
+  function openOffice(
+    passage: { url: string; body: { path: string; heading: string } } | null = null
+  ) {
+    return render(
+      <PdfDialog
+        url={viewerUrl}
+        title="customer/Angebot.docx"
+        page={null}
+        downloads={buildSourceDownloads(officeHref)!}
+        passage={passage}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+  }
+
+  function headAnswers(status: number) {
+    return vi.spyOn(global, "fetch").mockResolvedValue(new Response(null, { status }));
+  }
+
+  it("says there is no preview and points at the original instead of showing the 404", async () => {
+    const fetchSpy = headAnswers(404);
+
+    openOffice();
+
+    expect(await screen.findByText(/can't preview this document/i)).toBeInTheDocument();
+    expect(document.querySelector("embed")).toBeNull();
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe(viewerUrl);
+    expect(init).toMatchObject({ method: "HEAD" });
+    // The pane's own way out is the original, downloaded and logged as one —
+    // beside the header's entry for the same file, which stays.
+    const pointers = screen.getAllByRole("link", {
+      name: "Download Original (.docx): Angebot.docx",
+    });
+    expect(pointers).toHaveLength(2);
+    expect(pointers[1]).toHaveTextContent("Download Original (.docx)");
+    for (const pointer of pointers) {
+      const href = new URL(pointer.getAttribute("href")!, "http://x");
+      expect(href.searchParams.get("variant")).toBe("original");
+      expect(href.searchParams.get("download")).toBe("1");
+    }
+    fetchSpy.mockRestore();
+  });
+
+  it("does not offer a PDF there is none of, nor a tab that would open the 404", async () => {
+    const fetchSpy = headAnswers(404);
+
+    openOffice();
+
+    await screen.findByText(/can't preview this document/i);
+    expect(screen.queryByRole("link", { name: /download pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /open in new tab/i })).not.toBeInTheDocument();
+    fetchSpy.mockRestore();
+  });
+
+  it("shows the converted PDF as before when there is one", async () => {
+    const fetchSpy = headAnswers(200);
+
+    openOffice();
+
+    await waitFor(() => expect(document.querySelector("embed")).toHaveAttribute("src", viewerUrl));
+    expect(screen.getByRole("link", { name: /download pdf/i })).toBeInTheDocument();
+    expect(screen.queryByText(/can't preview this document/i)).not.toBeInTheDocument();
+    fetchSpy.mockRestore();
+  });
+
+  it("keeps the viewer when the check itself fails, which is no verdict on the PDF", async () => {
+    const fetchSpy = vi.spyOn(global, "fetch").mockRejectedValue(new TypeError("offline"));
+
+    openOffice();
+
+    await waitFor(() => expect(document.querySelector("embed")).toHaveAttribute("src", viewerUrl));
+    fetchSpy.mockRestore();
+  });
+
+  it("does not start the page renderer on a PDF that is not there", async () => {
+    mockOpenPdf.mockReset();
+    const fetchSpy = headAnswers(404);
+
+    openOffice({
+      url: "/api/agents/a1/knowledge/passage",
+      body: { path: "/data/customer/Angebot.docx", heading: "Preise" },
+    });
+
+    await screen.findByText(/can't preview this document/i);
+    expect(mockOpenPdf).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("asks again on every open, and shows nothing of the last answer meanwhile", async () => {
+    // A reopened dialog that showed the last open's verdict for even one render
+    // would mount the <embed>, which is already a request for the 404.
+    let answer: (res: Response) => void = () => {};
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => (answer = resolve)));
+    render(
+      <PdfDialog
+        url={viewerUrl}
+        title="customer/Angebot.docx"
+        downloads={buildSourceDownloads(officeHref)!}
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "trigger" }));
+    await waitFor(() => expect(document.querySelector("embed")).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(document.querySelector("embed")).toBeNull());
+
+    // Records every <embed> that ever reaches the page, however briefly.
+    let embedsMounted = 0;
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof Element && (node.matches("embed") || node.querySelector("embed"))) {
+            embedsMounted += 1;
+          }
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "trigger" }));
+    expect(await screen.findByLabelText("Loading preview")).toBeInTheDocument();
+    answer(new Response(null, { status: 404 }));
+    expect(await screen.findByText(/can't preview this document/i)).toBeInTheDocument();
+    observer.disconnect();
+    expect(embedsMounted).toBe(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    fetchSpy.mockRestore();
+  });
+
+  it("asks nothing of a document that is its own PDF", () => {
+    const fetchSpy = vi.spyOn(global, "fetch");
+
+    openDialog(SOURCE_URL, "customer/PPR/document.pdf", 510);
+
+    expect(document.querySelector("embed")).toHaveAttribute("src", SOURCE_URL);
+    expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
 });

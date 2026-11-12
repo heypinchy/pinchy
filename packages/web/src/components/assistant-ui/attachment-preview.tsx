@@ -156,6 +156,12 @@ export type DocumentDownload = {
    * in the accessible name, so a screen reader hears which file it is taking.
    */
   filename?: string;
+  /**
+   * Which representation of the document this entry hands over. `converted`
+   * marks the PDF an Office source or a scan is SHOWN as — which may not exist
+   * yet, so a dialog given one checks before showing it (see PdfDialog).
+   */
+  variant?: "original" | "converted";
 };
 
 /** "Download PDF: Angebot.pdf" — starts with the visible label (WCAG 2.5.3). */
@@ -178,6 +184,46 @@ function downloadAccessibleName({ label, filename }: DocumentDownload): string {
 function downloadUrlFor(url: string): string {
   const withoutFragment = url.split("#")[0];
   return `${withoutFragment}${withoutFragment.includes("?") ? "&" : "?"}download=1`;
+}
+
+/**
+ * Whether the converted PDF a dialog is about to show exists. `missing` only on
+ * a 404 — the route's answer for "no converted artifact"; anything else (a
+ * network failure, a 5xx) is no verdict on the PDF, and the viewer opens as it
+ * always did.
+ */
+type ConvertedAvailability = "checking" | "available" | "missing";
+
+function useConvertedAvailability(
+  url: string,
+  check: boolean,
+  openCount: number
+): ConvertedAvailability {
+  // Keyed on the open it answers for, so a reopened dialog reads "checking" in
+  // its very first render rather than the last open's answer — an <embed>
+  // mounted for one frame is already a request for the 404.
+  const [answer, setAnswer] = useState<{
+    key: string;
+    value: Exclude<ConvertedAvailability, "checking">;
+  } | null>(null);
+  const key = `${openCount}:${url}`;
+
+  useEffect(() => {
+    if (!check) return;
+    const ctrl = new AbortController();
+    const settle = (value: "available" | "missing") =>
+      !ctrl.signal.aborted && setAnswer({ key, value });
+    // HEAD: the headers are the whole answer, and the route sends no body for
+    // one. It is gated and audited like the view it precedes.
+    fetch(url.split("#")[0], { method: "HEAD", signal: ctrl.signal }).then(
+      (res) => settle(res.status === 404 ? "missing" : "available"),
+      () => settle("available")
+    );
+    return () => ctrl.abort();
+  }, [url, check, key]);
+
+  if (!check) return "available";
+  return answer?.key === key ? answer.value : "checking";
 }
 
 /**
@@ -219,6 +265,13 @@ export const PdfDialog: FC<{
    * What the reader may take away. Defaults to the document being shown, which
    * is the only thing there is to take today; a caller that has more than one
    * representation of the same document passes them all.
+   *
+   * An entry marked `variant: "converted"` says the document SHOWN is a
+   * conversion (an Office source, a scan), and a conversion may not exist: not
+   * converted yet, or refused. The dialog then asks the route first, on every
+   * open, and when there is none it says so and points at the original rather
+   * than embedding the route's bare 404 — and stops offering the PDF and the
+   * full tab, both of which would be that same 404.
    */
   downloads?: DocumentDownload[];
   /**
@@ -239,7 +292,19 @@ export const PdfDialog: FC<{
   // but spending header width on it would push the controls off a narrow screen.
   const filename = title.split("/").filter(Boolean).pop() ?? title;
 
-  const documentDownloads = downloads ?? [{ label: filename, url: downloadUrlFor(url) }];
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  const [openCount, setOpenCount] = useState(0);
+  const showsConversion = Boolean(downloads?.some((d) => d.variant === "converted"));
+  // Asked only while open, and afresh on every open: the dialog is mounted
+  // with every citation in an answer, a check is a request the route audits,
+  // and a document converted since the last open has a preview now.
+  const availability = useConvertedAvailability(url, open && showsConversion, openCount);
+  const missing = availability === "missing";
+
+  const documentDownloads = (downloads ?? [{ label: filename, url: downloadUrlFor(url) }]).filter(
+    (d) => !(missing && d.variant === "converted")
+  );
+  const original = documentDownloads.find((d) => d.variant === "original");
   // With one entry the icon is unambiguous. With two it is not — "the original
   // or the converted one?" is exactly the question a bare pair of identical
   // icons refuses to answer — so each names itself as soon as there is a
@@ -269,9 +334,15 @@ export const PdfDialog: FC<{
 
   return (
     <Dialog
-      defaultOpen={defaultOpen}
-      // Each open tries the renderer afresh: a fallback was about that open.
-      onOpenChange={(open) => open && setShowsOwnRenderer(highlightsPassage)}
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        // Each open tries the renderer afresh: a fallback was about that open.
+        if (next) {
+          setShowsOwnRenderer(highlightsPassage);
+          setOpenCount((count) => count + 1);
+        }
+      }}
     >
       <DialogTrigger asChild>{children}</DialogTrigger>
       <DialogContent
@@ -327,11 +398,18 @@ export const PdfDialog: FC<{
                 </a>
               </Button>
             ))}
-            <Button variant="ghost" size="icon" className="size-8" asChild>
-              <a href={url} target="_blank" rel="noreferrer noopener" aria-label="Open in new tab">
-                <ExternalLink className="size-4" />
-              </a>
-            </Button>
+            {!missing && (
+              <Button variant="ghost" size="icon" className="size-8" asChild>
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  aria-label="Open in new tab"
+                >
+                  <ExternalLink className="size-4" />
+                </a>
+              </Button>
+            )}
             <DialogClose asChild>
               <Button variant="ghost" size="icon" className="size-8" aria-label="Close">
                 <X className="size-4" />
@@ -339,7 +417,16 @@ export const PdfDialog: FC<{
             </DialogClose>
           </div>
         </div>
-        {highlightsPassage && passage ? (
+        {availability === "checking" ? (
+          <div className="flex flex-1 items-center justify-center bg-muted/40">
+            <Loader2
+              className="size-5 animate-spin text-muted-foreground"
+              aria-label="Loading preview"
+            />
+          </div>
+        ) : missing ? (
+          <NoPreview original={original} />
+        ) : highlightsPassage && passage ? (
           <CitationPdfViewer
             url={url}
             page={startPage}
@@ -355,6 +442,36 @@ export const PdfDialog: FC<{
     </Dialog>
   );
 };
+
+/**
+ * What the pane says instead of embedding the route's 404 for a converted PDF
+ * that does not exist. Honest about why without guessing which reason applies
+ * — the route does not say, and both are ordinary — and the way out is the
+ * original, which holds everything the answer cited.
+ */
+const NoPreview: FC<{ original: DocumentDownload | undefined }> = ({ original }) => (
+  <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-muted/40 p-6 text-center">
+    <FileText className="size-8 text-muted-foreground" />
+    <p className="font-medium text-sm">We can&apos;t preview this document</p>
+    <p className="max-w-md text-muted-foreground text-sm">
+      Its preview is the PDF we convert it to, and there isn&apos;t one: it hasn&apos;t been
+      converted yet, or it couldn&apos;t be. The original has everything the answer cited.
+    </p>
+    {original && (
+      <Button variant="outline" size="sm" asChild>
+        <a
+          href={original.url}
+          download
+          aria-label={downloadAccessibleName(original)}
+          title={original.filename ?? original.label}
+        >
+          <Download className="size-4" />
+          Download {original.label}
+        </a>
+      </Button>
+    )}
+  </div>
+);
 
 const PdfPreview: FC<{ url: string; filename: string; warning: string | null }> = ({
   url,

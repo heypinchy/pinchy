@@ -177,6 +177,20 @@ describe("buildSourceDownloads", () => {
     );
   });
 
+  it("marks which entry is the converted PDF, so a viewer can drop it when there is none", () => {
+    // The viewer shows the converted PDF of an Office source, and that PDF may
+    // not exist: not converted yet, or a conversion that was refused. Marked
+    // on the entry rather than recognised by label, so the dialog never has to
+    // parse "PDF" back out of copy.
+    expect(buildSourceDownloads(hrefFor("customer/Bericht.docx"))!.map((d) => d.variant)).toEqual([
+      "original",
+      "converted",
+    ]);
+    expect(
+      buildSourceDownloads(hrefFor("customer/PPR/document.pdf"))!.map((d) => d.variant)
+    ).toEqual(["original"]);
+  });
+
   it("asks the server for a copy, so both are audited as downloads", () => {
     for (const download of buildSourceDownloads(hrefFor("customer/Angebot.docx"))!) {
       const parsed = new URL(download.url, "http://localhost");
@@ -607,6 +621,7 @@ describe("a spreadsheet citation", () => {
         label: "Preisliste.xls",
         filename: "Preisliste.xls",
         url: expect.stringContaining("variant=original"),
+        variant: "original",
       },
     ]);
   });
