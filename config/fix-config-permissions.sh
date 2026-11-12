@@ -174,8 +174,9 @@ fix_config_permissions() {
 # in its SQLite store now, and the file is only ever read to detect an
 # unmigrated install. One an earlier Pinchy wrote, next to an empty store, gets
 # that agent marked AuthProfileMigrationRequiredError ("run openclaw doctor
-# --fix"), which refuses every dispatch for it. Nothing in a Pinchy deployment
-# runs doctor, and there is nothing to migrate: the file held only a keyRef to
+# --fix"), which refuses every dispatch for it. The gateway's startup preflight
+# runs only doctor's config checks, not that migration; nothing in a Pinchy
+# deployment runs `doctor --fix`, and there is nothing to migrate: the file held only a keyRef to
 # the provider key that openclaw.json already passes to OpenClaw as a
 # SecretRef. Pinchy no longer writes the file, so start-openclaw.sh runs this
 # once before each gateway start rather than on the 50 ms tick.

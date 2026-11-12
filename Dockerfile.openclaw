@@ -282,11 +282,12 @@ WORKDIR /
 # expose no embeddings — so a bundled local model is the only option that works
 # on every install.
 #
-# `openclaw plugins install` writes the provider (plain JS since 2026.9 — the
-# embeddings run in the llama-server child process from the `llama-server`
-# stage) into ~/.openclaw/npm/projects/. That dir lives under the `openclaw-config` volume in
-# production, which shadows any image-baked content on upgrade, so we stage the
-# whole npm tree to /opt (non-volume). start-openclaw.sh copies it into
+# `openclaw plugins install` writes the provider into ~/.openclaw/npm/projects/.
+# Since 2026.9 that is plain JS: the embeddings run in the llama-server child
+# process from the `llama-server` stage. The npm dir lives under the
+# `openclaw-config` volume in production, which shadows any image-baked content
+# on upgrade, so we stage the whole npm tree to /opt (non-volume).
+# stage-llama-cpp-provider.sh (run by start-openclaw.sh) copies it into
 # ~/.openclaw on boot and refreshes the plugin registry — same pattern as the
 # /opt/*-deps bundles. The EmbeddingGemma GGUF it serves comes from the
 # `embedding-model` stage above.
