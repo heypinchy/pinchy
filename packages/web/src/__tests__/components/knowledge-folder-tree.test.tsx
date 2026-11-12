@@ -150,6 +150,21 @@ describe("KnowledgeFolderTree", () => {
     expect(row).toHaveClass("sm:flex-row", "sm:flex-wrap");
   });
 
+  // A folder of driver files has files, just none to index (#1410). Its list
+  // shows each one as skipped, so a badge saying "No files" contradicts it.
+  it("calls a folder with nothing to index one with no documents, not no files", async () => {
+    mockGet.mockResolvedValue({
+      job: null,
+      folders: [
+        { ...folder({ path: "/data/drivers", state: "empty", expected: 0 }), children: [] },
+      ],
+    });
+    render(<KnowledgeFolderTree agentId="a1" />);
+
+    expect(await screen.findByText("No documents")).toBeInTheDocument();
+    expect(screen.queryByText("No files")).not.toBeInTheDocument();
+  });
+
   it("asks the folders route of the agent it was given", async () => {
     mockGet.mockResolvedValue({ job: null, folders: [] });
     render(<KnowledgeFolderTree agentId="agent-7" />);
