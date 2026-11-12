@@ -94,7 +94,7 @@ fix_config_permissions() {
     # `! -uid` gates the chown so an already-correct directory is left alone:
     # chown rewrites ctime, and OpenClaw's session-takeover detector reads a
     # ctime change as external modification (same reason the `-not -perm` gates
-    # below exist). At a 50 ms tick an ungated chown would be ~20 ctime bumps a
+    # above exist). At a 50 ms tick an ungated chown would be ~20 ctime bumps a
     # second, per agent, forever.
     #
     # -maxdepth 1 covers the agents/ root (so new agent dirs can be created) and
@@ -150,24 +150,21 @@ fix_config_permissions() {
         ! -uid "$PINCHY_UID" \
         -exec chown "$PINCHY_UID:$PINCHY_GID" {} \; 2>/dev/null || true
 
-    # Cross-uid read access for Pinchy's self-service diagnostics export.
-    # OpenClaw writes per-agent sessions.json and *.trajectory.jsonl as root
-    # under agents/<agentId>/sessions/ — with default umask these emerge
-    # 0644/0755, but OpenClaw 2026.5.x ships with a tighter umask that
-    # produces 0600/0700, so Pinchy (uid 999) gets EACCES on the dir traversal.
-    # Diagnostics is read-only against these files; 0755/0644 is sufficient.
-    # The 50 ms tick catches runtime-created sessions (same pattern as the
-    # openclaw.json mode race).
-    #
-    # `-not -perm` gates: skip files that already have the right mode. chmod
-    # would otherwise rewrite the inode's ctime on every tick, and OpenClaw's
-    # embedded-prompt session-takeover detector treats any ctime change as
-    # "session file modified externally" and aborts the in-flight turn with
-    # EmbeddedAttemptSessionTakeoverError. Without the gate, every chat turn
-    # races our 50 ms loop against the assistant's response.
-    find "$OPENCLAW_STATE_DIR/agents" -mindepth 1 -maxdepth 1 -type d -not -perm 0755 -exec chmod 0755 {} \; 2>/dev/null || true
-    find "$OPENCLAW_STATE_DIR/agents" -type d -name sessions -not -perm 0755 -exec chmod 0755 {} \; 2>/dev/null || true
-    find "$OPENCLAW_STATE_DIR/agents" \( -name "sessions.json" -o -name "*.trajectory.jsonl" \) -type f -not -perm 0644 -exec chmod 0644 {} \; 2>/dev/null || true
+    # No mode repair under agents/ — on purpose. Up to OpenClaw 2026.8 this
+    # tick opened agents/<id> and agents/<id>/sessions to 0755 and
+    # sessions.json / *.trajectory.jsonl to 0644, so Pinchy's diagnostics export
+    # could read them from its own mount. OpenClaw 2026.9 keeps sessions and
+    # trajectories in a per-agent SQLite database (agents/<id>/agent/
+    # openclaw-agent.sqlite, mode 0600) that the gateway owns; Pinchy does not
+    # read it from its mount. The pinchy-audit plugin reads it inside the
+    # gateway and answers `pinchy.trajectory.read`
+    # (packages/web/src/lib/diagnostics/jsonl-reader.ts). So the widened modes
+    # had no reader, and every chmod on that tree was an inotify event and a
+    # ctime bump on files OpenClaw writes on every turn. The one remaining
+    # uid-999 read under agents/<id>/ is the legacy migrateSessionKeys boot
+    # sweep; it runs after Pinchy's entrypoint chowned the volume to 999 and
+    # never needed these modes. Ownership of agents/ and agents/<id>/agent
+    # (above) is a separate repair and stays.
 }
 
 # OpenClaw 2026.9 retired the per-agent auth-profiles.json: auth profiles live
