@@ -693,7 +693,8 @@ function zipSize(parts: readonly ZipPart[]): number {
 
 /**
  * Relationship types whose target a reader embeds or links but never parses as
- * XML: pictures, fonts, embedded objects and packages, media, hyperlinks — and
+ * XML: pictures, fonts, embedded objects and packages, media, hyperlinks, a
+ * `.docm`'s macro project and ActiveX controls' binaries — and
  * the files Word names on the author's own disk: the template the document was
  * made from, a mail merge's data source and header file, a frameset's frames,
  * a master document's parts and the XSLT it is saved through. Word writes those as Windows paths (backslashes, `%20`),
@@ -720,6 +721,8 @@ const UNPARSED_RELATIONSHIP_TYPES = new Set([
   "subdocument",
   "mailmergeheadersource",
   "transform",
+  "vbaproject",
+  "activexcontrolbinary",
 ]);
 
 /** No real relationship tag is this long; one that is, is not read. */
