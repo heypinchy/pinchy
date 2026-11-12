@@ -8055,11 +8055,16 @@ describe("restart-state integration", () => {
         },
       ])
     );
-    // No generic binding without peer (all users are routed via peer-specific bindings)
-    const genericBinding = config.bindings.find(
+    // The bot also needs one account-wide owner, its own agent: OpenClaw
+    // 2026.9 throws for an unowned account once there is more than one agent,
+    // and the Telegram channel resolves that route without a peer on start.
+    // Peer bindings outrank it, so linked users still reach their own agent.
+    const accountWide = config.bindings.filter(
       (b: Record<string, unknown>) => (b.match as Record<string, unknown>).peer === undefined
     );
-    expect(genericBinding).toBeUndefined();
+    expect(accountWide).toEqual([
+      { agentId: "admin-smithers", match: { channel: "telegram", accountId: "admin-smithers" } },
+    ]);
   });
 
   it("binds no member to a personal-agent bot while members may not use a personal agent", async () => {

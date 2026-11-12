@@ -169,6 +169,39 @@ describe("openclaw.json for a multi-agent fleet validates under OpenClaw's own l
     expect(emitted.media).toBeUndefined();
   }, 60_000);
 
+  it("gives every Telegram bot an owner OpenClaw's router accepts, and still routes a linked user to their own agent", async () => {
+    // OpenClaw 2026.9 no longer falls back to a default agent once a fleet has
+    // more than one: a Telegram account its bindings leave without an owner
+    // makes the router throw. The Telegram channel resolves its account's
+    // route without a peer while it starts, to build the native command menu,
+    // so an unowned bot exits on start and never answers. A personal agent's
+    // bot carried only per-user peer bindings and was exactly that bot.
+    const { regenerateOpenClawConfig } = await import("@/lib/openclaw-config");
+    await regenerateOpenClawConfig();
+
+    const cfg = (await freshOpenClawLoader())() as Json;
+    const { resolveAgentRoute } = (await import("openclaw/plugin-sdk/routing")) as unknown as {
+      resolveAgentRoute: (input: {
+        cfg: unknown;
+        channel: string;
+        accountId: string;
+        peer?: { kind: string; id: string };
+      }) => { agentId: string };
+    };
+
+    for (const accountId of ["smithers-u1", "kb-agent"]) {
+      expect(resolveAgentRoute({ cfg, channel: "telegram", accountId }).agentId).toBe(accountId);
+    }
+    expect(
+      resolveAgentRoute({
+        cfg,
+        channel: "telegram",
+        accountId: "smithers-u1",
+        peer: { kind: "direct", id: "111222333" },
+      }).agentId
+    ).toBe("smithers-u1");
+  }, 60_000);
+
   it("migrates an openclaw.json an earlier Pinchy wrote and drops roster references to removed agents", async () => {
     // What Pinchy on OpenClaw 2026.7 left on disk, plus what OpenClaw 2026.9
     // stamps onto a roster when it first grows past one agent — here pointing

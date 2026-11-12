@@ -1743,6 +1743,16 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
           );
 
       for (const { accountId } of personalBotsAccountIds) {
+        // The bot's account-wide owner is its own agent. OpenClaw 2026.9 has
+        // no default agent once a fleet holds more than one: an account its
+        // bindings leave unowned makes the router throw, and the Telegram
+        // channel resolves the account's route without a peer as it starts —
+        // so the bot exited on start and never answered anyone. OpenClaw
+        // ranks peer bindings above this one, so each linked user below still
+        // reaches their own agent. Who may write to the bot at all is decided
+        // by the allow store, not here: a member barred from personal agents
+        // is left out of it, as the comment above says.
+        bindings.push({ agentId: accountId, match: { channel: "telegram", accountId } });
         for (const link of telegramLinks) {
           if (
             roleByUser &&
