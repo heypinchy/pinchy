@@ -186,6 +186,10 @@ describe("buildSourceDownloads", () => {
       "original",
       "converted",
     ]);
+    expect(buildSourceDownloads(hrefFor("archive/scan.TIFF"))!.map((d) => d.variant)).toEqual([
+      "original",
+      "converted",
+    ]);
     expect(
       buildSourceDownloads(hrefFor("customer/PPR/document.pdf"))!.map((d) => d.variant)
     ).toEqual(["original"]);

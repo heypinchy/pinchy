@@ -26,7 +26,7 @@ import {
   convertedPdfName,
   isOfficeFile,
   isPresentationFile,
-  isScanFile,
+  isShownAsConvertedPdf,
   isSpreadsheetFile,
   isWordFile,
 } from "./office-formats";
@@ -99,16 +99,6 @@ const PATH_BOUNDARY = /[\s,.;:)\]]/;
  * `.docm`, where the boundary check then rejects it.
  */
 const EXTENSION = /\.(?:pdf|docm|docx?|pptx?|xlsx?|xlsm|tiff?)/gi;
-
-/**
- * Whether the viewer is shown a PDF the knowledge base made of this file rather
- * than the file itself: an Office document (converted by LibreOffice) or a
- * scanned TIFF (one PDF page per frame, #1409). No browser renders either, so
- * the viewer url is named after that PDF and the downloads offer both.
- */
-function shownAsConvertedPdf(path: string): boolean {
-  return isOfficeFile(path) || isScanFile(path);
-}
 
 /**
  * How far back from an extension a path may reasonably start. The longest path
@@ -596,7 +586,7 @@ export function buildSourceViewerUrl(href: string): string | null {
   const [base, fragment] = splitFragment(href);
   const [routePath, query] = [base.slice(0, base.indexOf("?")), base.slice(base.indexOf("?"))];
   const name = leafName(source.path);
-  const shown = shownAsConvertedPdf(source.path) ? convertedPdfName(name) : name;
+  const shown = isShownAsConvertedPdf(source.path) ? convertedPdfName(name) : name;
   return `${routePath}/${encodeURIComponent(shown)}${query}${fragment}`;
 }
 
@@ -734,7 +724,7 @@ export function buildSourceDownloads(href: string): Array<{
   const [base] = splitFragment(href);
   const name = leafName(source.path);
   const originalUrl = `${base}&download=1&variant=original`;
-  if (!shownAsConvertedPdf(source.path)) {
+  if (!isShownAsConvertedPdf(source.path)) {
     return [{ label: name, filename: name, url: originalUrl, variant: "original" }];
   }
 

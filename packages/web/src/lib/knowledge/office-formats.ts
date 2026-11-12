@@ -162,6 +162,19 @@ export function isScanFile(path: string): boolean {
   return (SCAN_EXTENSIONS as readonly string[]).includes(extensionOf(path));
 }
 
+/**
+ * Whether a reader is shown a PDF the knowledge base made of this file rather
+ * than the file itself: an Office document (converted by LibreOffice) or a
+ * scanned TIFF (one PDF page per frame, #1409). No browser renders either.
+ *
+ * The route that serves that PDF and the citation links that name the viewer
+ * url after it both ask this. Two answers would drift, and a drift is a viewer
+ * url the route refuses, which the citation dialog reads as "no preview".
+ */
+export function isShownAsConvertedPdf(path: string): boolean {
+  return isOfficeFile(path) || isScanFile(path);
+}
+
 /** Is this a plain-text file? */
 export function isTextFile(path: string): boolean {
   return (TEXT_EXTENSIONS as readonly string[]).includes(extensionOf(path));

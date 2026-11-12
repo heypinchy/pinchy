@@ -18,7 +18,7 @@
  * which is also the only thing that works on iOS Safari, where an embedded PDF
  * renders blank no matter what we do.
  */
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mockOpenPdf = vi.fn();
@@ -116,6 +116,8 @@ describe("PdfDialog", () => {
  * governance has to be able to tell the two apart.
  */
 describe("PdfDialog — taking the document", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("offers a way to keep the document, not just look at it", () => {
     openDialog(SOURCE_URL, "/data/customer/PPR/document.pdf");
 
@@ -199,12 +201,14 @@ describe("PdfDialog — taking the document", () => {
     expect(screen.getByRole("link", { name: /download converted pdf/i })).toBeInTheDocument();
   });
 
-  it("offers an Office citation both representations, built by the renderer", () => {
+  it("offers an Office citation both representations, built by the renderer", async () => {
     // The pair is not hand-assembled at the call site: `buildSourceDownloads`
     // derives it from the same href the viewer opens, which is what keeps the
     // download urls and the preview url describing one document. Rendering it
     // here proves the two halves fit — the list shape and the labels a reader
     // actually distinguishes them by.
+    // The PDF is offered once the dialog knows it exists.
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
     const href = buildSourceHref("a1", "customer/archive-2012/Angebot.doc", {
       kind: "page",
       page: 3,
@@ -221,16 +225,17 @@ describe("PdfDialog — taking the document", () => {
       </PdfDialog>
     );
 
+    const converted = await screen.findByRole("link", { name: "Download PDF: Angebot.pdf" });
     const original = screen.getByRole("link", { name: "Download Original (.doc): Angebot.doc" });
-    const converted = screen.getByRole("link", { name: "Download PDF: Angebot.pdf" });
     expect(original).toHaveTextContent("Original (.doc)");
     expect(converted).toHaveTextContent("PDF");
   });
 
-  it("tells the two downloads apart at a glance, and names the file on hover (#1268)", () => {
+  it("tells the two downloads apart at a glance, and names the file on hover (#1268)", async () => {
     // Labelled by filename, both read "Vorlage_Wartung…" once the header
     // truncated them. The visible label says which representation each is;
     // the tooltip still says which file lands in the downloads folder.
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
     const href = buildSourceHref("a1", "customer/Vorlage_Wartung_Kundendienst_2026.docx", null);
     render(
       <PdfDialog
@@ -243,6 +248,7 @@ describe("PdfDialog — taking the document", () => {
       </PdfDialog>
     );
 
+    await screen.findByRole("link", { name: /^download pdf/i });
     const links = screen.getAllByRole("link", { name: /^download/i });
     expect(links.map((link) => link.textContent)).toEqual(["Original (.docx)", "PDF"]);
     expect(links.map((link) => link.getAttribute("title"))).toEqual([
@@ -429,6 +435,9 @@ describe("PdfDialog with a passage to highlight", () => {
  * away in the same header. So the dialog asks first, and says so.
  */
 describe("PdfDialog for a document without a converted PDF", () => {
+  // A failing assertion must not leave `fetch` mocked for the next test.
+  afterEach(() => vi.restoreAllMocks());
+
   const officeHref = buildSourceHref("a1", "customer/Angebot.docx", null);
   const viewerUrl =
     "/api/agents/a1/workspace-file/Angebot.pdf?path=%2Fdata%2Fcustomer%2FAngebot.docx";
@@ -460,6 +469,9 @@ describe("PdfDialog for a document without a converted PDF", () => {
     openOffice();
 
     expect(await screen.findByText(/can't preview this document/i)).toBeInTheDocument();
+    // Announced, not only drawn: focus sits in the header, so a screen reader
+    // would otherwise never hear that the preview is missing.
+    expect(screen.getByRole("status")).toHaveTextContent(/can't preview this document/i);
     expect(document.querySelector("embed")).toBeNull();
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe(viewerUrl);
@@ -499,6 +511,35 @@ describe("PdfDialog for a document without a converted PDF", () => {
     expect(screen.getByRole("link", { name: /download pdf/i })).toBeInTheDocument();
     expect(screen.queryByText(/can't preview this document/i)).not.toBeInTheDocument();
     fetchSpy.mockRestore();
+  });
+
+  it("offers neither the PDF nor a tab onto it until it knows there is one", async () => {
+    // The HEAD hashes the source, which on a large deck takes a moment — long
+    // enough to click a control that would hand over the 404.
+    let answer: (res: Response) => void = () => {};
+    vi.spyOn(global, "fetch").mockImplementation(
+      () => new Promise<Response>((resolve) => (answer = resolve))
+    );
+
+    openOffice();
+
+    expect(await screen.findByLabelText("Loading preview")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /download pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /open in new tab/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /download original/i })).toBeInTheDocument();
+
+    answer(new Response(null, { status: 200 }));
+    expect(await screen.findByRole("link", { name: /download pdf/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open in new tab/i })).toBeInTheDocument();
+  });
+
+  it("keeps the viewer on a server error, which is no verdict on the PDF either", async () => {
+    headAnswers(500);
+
+    openOffice();
+
+    await waitFor(() => expect(document.querySelector("embed")).toHaveAttribute("src", viewerUrl));
+    expect(screen.queryByText(/can't preview this document/i)).not.toBeInTheDocument();
   });
 
   it("keeps the viewer when the check itself fails, which is no verdict on the PDF", async () => {

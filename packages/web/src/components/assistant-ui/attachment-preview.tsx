@@ -305,9 +305,13 @@ export const PdfDialog: FC<{
   // and a document converted since the last open has a preview now.
   const availability = useConvertedAvailability(url, showsConversion, open, openCount);
   const missing = availability === "missing";
+  // The PDF is offered — downloaded or opened in a tab — only once it is known
+  // to exist: the check hashes the source, long enough on a large deck for a
+  // click to hand over the 404 it is there to catch.
+  const offersPdf = availability === "available";
 
   const documentDownloads = (downloads ?? [{ label: filename, url: downloadUrlFor(url) }]).filter(
-    (d) => !(missing && d.variant === "converted")
+    (d) => offersPdf || d.variant !== "converted"
   );
   const original = documentDownloads.find((d) => d.variant === "original");
   // With one entry the icon is unambiguous. With two it is not — "the original
@@ -403,7 +407,7 @@ export const PdfDialog: FC<{
                 </a>
               </Button>
             ))}
-            {!missing && (
+            {offersPdf && (
               <Button variant="ghost" size="icon" className="size-8" asChild>
                 <a
                   href={url}
@@ -457,11 +461,15 @@ export const PdfDialog: FC<{
 const NoPreview: FC<{ original: DocumentDownload | undefined }> = ({ original }) => (
   <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-muted/40 p-6 text-center">
     <FileText className="size-8 text-muted-foreground" />
-    <p className="font-medium text-sm">We can&apos;t preview this document</p>
-    <p className="max-w-md text-muted-foreground text-sm">
-      Its preview is the PDF we convert it to, and there isn&apos;t one: it hasn&apos;t been
-      converted yet, or it couldn&apos;t be. The original has everything the answer cited.
-    </p>
+    {/* Announced, not only drawn: focus sits in the header, so a screen reader
+        would otherwise never hear why the pane holds no document. */}
+    <div role="status" className="flex flex-col gap-3">
+      <p className="font-medium text-sm">We can&apos;t preview this document</p>
+      <p className="max-w-md text-muted-foreground text-sm">
+        Its preview is the PDF we convert it to, and there isn&apos;t one: it hasn&apos;t been
+        converted yet, or it couldn&apos;t be. The original has everything the answer cited.
+      </p>
+    </div>
     {original && (
       <Button variant="outline" size="sm" asChild>
         <a
