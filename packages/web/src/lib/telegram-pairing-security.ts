@@ -35,7 +35,11 @@ import { FixedWindowRateLimiter } from "./fixed-window-rate-limiter";
  * distinct users the process has seen, same accepted tradeoff as
  * `scopeDenialWindows` in `lib/api-auth.ts`.
  *
- * The budget counts EVERY attempt, a success as much as a wrong guess, and
+ * An attempt OpenClaw could not check (gateway down, 503) gives its slot
+ * back through `releaseTelegramPairingSlot`: it guessed nothing, and a user
+ * retrying through an outage should not find themselves locked out after it.
+ *
+ * The budget counts EVERY checked attempt, a success as much as a wrong guess, and
  * the margin that leaves is thinner than 5 suggests: `pnpm test:e2e:telegram`
  * links the same user four times in one process (`telegram-flow` twice,
  * `chats` and `media` once each) inside a suite that runs well under the
@@ -61,6 +65,11 @@ export function tryAcquireTelegramPairingSlot(userId: string, now: number = Date
     pairingAttemptLimiters.set(userId, limiter);
   }
   return limiter.tryAcquire(now);
+}
+
+/** Gives back the slot of an attempt that could not be checked. */
+export function releaseTelegramPairingSlot(userId: string, now: number = Date.now()): void {
+  pairingAttemptLimiters.get(userId)?.release(now);
 }
 
 /** Resets all per-user windows. Intended for tests. */

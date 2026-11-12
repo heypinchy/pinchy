@@ -154,9 +154,11 @@ function supplementFromSource(payload: string, source: Record<string, unknown>):
     // OC 4.27+ writes additional fields to channels.telegram in-memory (beyond
     // what Pinchy emits). OC 2026.5.x also adds sibling sub-blocks like
     // `channels.defaults` (heartbeat-visibility, botLoopProtection). Without
-    // supplementing both layers, config.apply sees a channels diff and triggers
-    // a full gateway restart for agents-only changes (channels has no entry in
-    // BASE_RELOAD_RULES → fallback is restart-class).
+    // supplementing both layers, config.apply sees a channels diff for
+    // agents-only changes. A `channels.telegram` diff is a gateway restart
+    // before the Telegram plugin loads and a bounce of every bot after it
+    // (build.ts, at the Telegram channel block). `channels.defaults` and
+    // `channels.modelByChannel` reload as no-ops as of 2026.9.
     const payloadChannels = payloadObj.channels as Record<string, unknown> | undefined;
     const sourceChannels = source.channels as Record<string, unknown> | undefined;
     if (payloadChannels && sourceChannels) {
@@ -183,17 +185,22 @@ function supplementFromSource(payload: string, source: Record<string, unknown>):
       }
     }
 
-    // Supplement discovery, update, canvasHost: OC 5.x enriches these sections
-    // with runtime state (lastAnnouncedAt, lastCheckedAt, boundPort, peers …).
+    // Supplement discovery and update: OC 5.x enriches these sections with
+    // runtime state (lastAnnouncedAt, lastCheckedAt, peers …).
     // config.apply writes the payload to the file; the config reloader then
     // diffs OC's enriched currentCompareConfig against the new file content.
-    // Missing subfields trigger a restart (BASE_RELOAD_RULES_TAIL classifies
-    // `gateway`, `discovery`, `canvasHost` as kind:"restart"; `update` has no
-    // rule and defaults to restart). On OC 5.3, the in-process SIGUSR1 path
-    // then hits ConfigMutationConflictError because startupConfigSnapshotRead
-    // is stale. Deep-supplement preserves OC-enriched subfields while keeping
-    // Pinchy-owned values (mdns.mode, checkOnStart, enabled) authoritative.
-    for (const section of ["discovery", "update", "canvasHost"] as const) {
+    // Missing subfields trigger a restart (`gateway` and `discovery` are
+    // kind:"restart"; `update` has no rule and defaults to restart). On OC
+    // 5.3, the in-process SIGUSR1 path then hits ConfigMutationConflictError
+    // because startupConfigSnapshotRead is stale. Deep-supplement preserves
+    // OC-enriched subfields while keeping Pinchy-owned values (mdns.mode,
+    // checkOnStart) authoritative.
+    //
+    // Root `canvasHost` was a third section until OpenClaw 2026.9 moved it to
+    // the canvas plugin's config (`plugins.*` reloads hot) and made its loader
+    // reject the root key. Supplementing it from a file an earlier Pinchy wrote
+    // would put the rejected key back.
+    for (const section of ["discovery", "update"] as const) {
       const sourceSection = source[section] as Record<string, unknown> | undefined;
       if (sourceSection) {
         const payloadSection = payloadObj[section] as Record<string, unknown> | undefined;

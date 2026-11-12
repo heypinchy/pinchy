@@ -67,7 +67,27 @@ function stubChown(): void {
   chmodSync(bin, 0o755);
 }
 
-function runFix(): void {
+/**
+ * Record every `chmod` invocation while still performing it, and return a
+ * reader for the recorded argument lines.
+ *
+ * The 50 ms tick's gates are asserted on the chmod call, not on ctime: Linux
+ * rewrites ctime on a chmod to the mode a file already has (and raises an
+ * inotify attribute event), macOS does not, so a ctime assertion would pass on
+ * a developer's Mac whatever the script did.
+ */
+function recordChmod(): () => string {
+  const chmodLog = join(root, "chmod.log");
+  const realChmod = execFileSync("bash", ["-c", "command -v chmod"], {
+    encoding: "utf8",
+  }).trim();
+  const wrapper = join(binDir, "chmod");
+  writeFileSync(wrapper, `#!/bin/bash\necho "$@" >> '${chmodLog}'\nexec '${realChmod}' "$@"\n`);
+  chmodSync(wrapper, 0o755);
+  return () => (existsSync(chmodLog) ? readFileSync(chmodLog, "utf8") : "");
+}
+
+function runFix(extraEnv: Record<string, string> = {}): void {
   execFileSync("bash", ["-c", `source '${SCRIPT}'; fix_config_permissions`], {
     env: {
       ...process.env,
@@ -76,6 +96,7 @@ function runFix(): void {
       SECRETS_FILE: secretsFile,
       PINCHY_UID,
       PINCHY_GID,
+      ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
@@ -120,7 +141,7 @@ afterEach(() => {
 });
 
 describe("fix_config_permissions — per-agent directory ownership (#934)", () => {
-  it("chowns agents/<id>/agent to the pinchy uid so Pinchy can write auth-profiles.json", () => {
+  it("chowns agents/<id>/agent to the pinchy uid", () => {
     const { agentDir } = seedAgentDir("f18382bd-c4b3-4826-a3da-89046629f310");
 
     runFix();
@@ -197,13 +218,16 @@ describe("fix_config_permissions — per-agent directory ownership (#934)", () =
 // last successful `agent.updated` audit row. The user saw "Failed to save some
 // settings" and nothing else.
 //
-// The mechanism is a race that Pinchy itself opens. writeToolsFile() DELETES
-// TOOLS.md when an agent has no mailbox (rmSync — "no stale mailbox identity
+// The mechanism was a race that Pinchy itself opened. Up to OpenClaw 2026.7
+// Pinchy kept the mailbox context in TOOLS.md and DELETED it when an agent had
+// no mailbox (rmSync — "no stale mailbox identity
 // survives a permission revocation"). OpenClaw creates the file from its own
 // bootstrap template whenever it is missing, as root, mode 0644. Grant the
 // agent an email connection afterwards and Pinchy's writeFileSync gets EACCES
 // forever — root-owned 0644 denies uid 999 the write, and root ignores mode
-// bits, so no chmod can substitute for ownership here either.
+// bits, so no chmod can substitute for ownership here either. The context
+// lives in IDENTITY.md since OpenClaw 2026.9 (writeMailboxContext), which
+// OpenClaw seeds root-owned the same way.
 //
 // The blast radius is the same as #934's and worth spelling out, because the
 // two user-visible symptoms look unrelated: the EACCES aborts
@@ -222,15 +246,15 @@ describe("fix_config_permissions — workspace bootstrap file ownership (#1095)"
     return file;
   }
 
-  it("chowns workspaces/<id>/TOOLS.md so Pinchy can write the mailbox context", () => {
-    const file = seedWorkspaceFile("025449c8-12b8-4919-a427-86a1ee7a4a77", "TOOLS.md");
+  it("chowns workspaces/<id>/IDENTITY.md so Pinchy can write the mailbox context", () => {
+    const file = seedWorkspaceFile("025449c8-12b8-4919-a427-86a1ee7a4a77", "IDENTITY.md");
 
     runFix();
 
     expect(chownedPaths()).toContain(file);
   });
 
-  it.each(["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md"])(
+  it.each(["AGENTS.md", "SOUL.md", "TOOLS.md", "USER.md", "HEARTBEAT.md"])(
     "chowns workspaces/<id>/%s — OpenClaw bootstraps all of these, Pinchy writes them too",
     (name) => {
       const file = seedWorkspaceFile("agent-a", name);
@@ -253,9 +277,9 @@ describe("fix_config_permissions — workspace bootstrap file ownership (#1095)"
   });
 
   it("chowns the workspace directory itself, so a deleted file can be recreated", () => {
-    // writeToolsFile() removes TOOLS.md for an agent with no mailbox and
-    // recreates it when one is granted. Recreating needs write permission on
-    // the DIRECTORY, which a file-only repair would never grant.
+    // Pinchy removes and recreates bootstrap files (the old TOOLS.md, a
+    // reclaimed IDENTITY.md). Both need write permission on the DIRECTORY,
+    // which a file-only repair would never grant.
     seedWorkspaceFile("agent-a", "TOOLS.md");
 
     runFix();
@@ -326,15 +350,49 @@ describe("fix_config_permissions — behaviour carried over from start-openclaw.
     expect(statSync(join(stateDir, "openclaw.json")).mode & 0o777).toBe(0o666);
   });
 
-  it("tightens auth-profiles.json to 0600", () => {
-    const { agentDir } = seedAgentDir("agent-a");
-    const file = join(agentDir, "auth-profiles.json");
-    writeFileSync(file, "{}\n");
-    chmodSync(file, 0o644);
+  it("leaves an openclaw.json that is already 0666 untouched", () => {
+    // OpenClaw 2026.9 watches openclaw.json with a 300 ms debounce that every
+    // event restarts — attribute events included. An ungated chmod on the 50 ms
+    // tick fires one every 50 ms, so the debounce never elapses: a config Pinchy
+    // writes to the file is never reloaded, and every later config.apply fails
+    // "config changed since last load" against the stale snapshot.
+    const file = join(stateDir, "openclaw.json");
+    chmodSync(file, 0o666);
+    const chmodCalls = recordChmod();
 
     runFix();
 
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(chmodCalls()).not.toContain(file);
+  });
+
+  it("opens credentials/ and the files in it for Pinchy to read", () => {
+    const credentials = join(stateDir, "credentials");
+    mkdirSync(credentials);
+    const allowFrom = join(credentials, "telegram-allowFrom.json");
+    writeFileSync(allowFrom, "{}\n");
+    chmodSync(allowFrom, 0o600);
+    chmodSync(credentials, 0o700);
+
+    runFix();
+
+    expect(statSync(credentials).mode & 0o777).toBe(0o755);
+    expect(statSync(allowFrom).mode & 0o777).toBe(0o644);
+  });
+
+  it("leaves a credentials/ that Pinchy can already read untouched", () => {
+    // Same 50 ms-tick reason as openclaw.json: each chmod is an inotify
+    // attribute event, even to the mode a file already has. OpenClaw 2026.9
+    // does not watch credentials/, so this keeps the tick quiet before one does.
+    const credentials = join(stateDir, "credentials");
+    mkdirSync(credentials);
+    writeFileSync(join(credentials, "telegram-allowFrom.json"), "{}\n");
+    chmodSync(join(credentials, "telegram-allowFrom.json"), 0o644);
+    chmodSync(credentials, 0o755);
+    const chmodCalls = recordChmod();
+
+    runFix();
+
+    expect(chmodCalls()).not.toContain(credentials);
   });
 
   it("opens agents/<id> to 0755 so Pinchy can traverse it", () => {
@@ -372,10 +430,120 @@ describe("fix_config_permissions — behaviour carried over from start-openclaw.
     expect(statSync(secretsFile).mode & 0o777).toBe(0o600);
   });
 
+  it("tightens a secrets file Pinchy left readable back to 0600", () => {
+    writeFileSync(secretsFile, "{}\n");
+    chmodSync(secretsFile, 0o644);
+
+    runFix();
+
+    expect(statSync(secretsFile).mode & 0o777).toBe(0o600);
+  });
+
+  it("leaves a secrets file that is already OpenClaw's and 0600 untouched", () => {
+    // Ungated, the 50 ms tick raised two attribute events on the file every
+    // 50 ms. OPENCLAW_UID stands in for root here: the test process cannot own
+    // a file as root.
+    writeFileSync(secretsFile, "{}\n");
+    chmodSync(secretsFile, 0o600);
+    const chmodCalls = recordChmod();
+
+    runFix({ OPENCLAW_UID: String(process.getuid!()) });
+
+    expect(chownedPaths()).not.toContain(secretsFile);
+    expect(chmodCalls()).not.toContain(secretsFile);
+  });
+
   it("skips the secrets file when it does not exist", () => {
     runFix();
 
     expect(chownedPaths()).not.toContain(secretsFile);
+  });
+});
+
+// OpenClaw 2026.9 retired the per-agent auth-profiles.json: profiles live in
+// its SQLite store now. A file an earlier Pinchy wrote, next to an empty store,
+// is read as unmigrated credentials — OpenClaw marks that agent
+// AuthProfileMigrationRequiredError ("run openclaw doctor --fix") and refuses
+// every dispatch for it. Nothing in a Pinchy deployment runs doctor, and there
+// is nothing to migrate: the file only ever held a keyRef to the provider key
+// that openclaw.json already hands OpenClaw as a SecretRef.
+describe("remove_retired_auth_profiles", () => {
+  function runRemove(): void {
+    execFileSync("bash", ["-c", `source '${SCRIPT}'; remove_retired_auth_profiles`], {
+      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+  }
+
+  it("removes every agent's auth-profiles.json and leaves the rest of agent/ alone", () => {
+    const a = seedAgentDir("agent-a");
+    const b = seedAgentDir("agent-b");
+    for (const { agentDir } of [a, b]) {
+      writeFileSync(join(agentDir, "auth-profiles.json"), "{}\n");
+      writeFileSync(join(agentDir, "models.json"), "{}\n");
+    }
+
+    runRemove();
+
+    for (const { agentDir } of [a, b]) {
+      expect(existsSync(join(agentDir, "auth-profiles.json"))).toBe(false);
+      expect(existsSync(join(agentDir, "models.json"))).toBe(true);
+    }
+  });
+
+  it("tolerates a missing agents/ directory (pre-first-agent boot)", () => {
+    rmSync(join(stateDir, "agents"), { recursive: true, force: true });
+
+    expect(() => runRemove()).not.toThrow();
+  });
+});
+
+// OpenClaw 2026.9 keeps its gateway lock directory in the state dir
+// (`tmp/openclaw-<uid>`, mode 0700) and refuses to start when that directory is
+// not owned by its own uid ("device identity coordinator directory belongs to
+// another user"). fix-volume-ownership.sh no longer hands tmp/ to the pinchy
+// uid; this is the migration half for a volume an earlier Pinchy already did.
+describe("restore_gateway_lock_ownership", () => {
+  function runRestore(): void {
+    execFileSync("bash", ["-c", `source '${SCRIPT}'; restore_gateway_lock_ownership`], {
+      env: {
+        ...process.env,
+        PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+        OPENCLAW_STATE_DIR: stateDir,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+  }
+
+  it("hands a lock directory owned by another uid back to root", () => {
+    const lockDir = join(stateDir, "tmp", "openclaw-0");
+    mkdirSync(lockDir, { recursive: true });
+    const lockFile = join(lockDir, "device-identity.0123abcd.lock.sqlite");
+    writeFileSync(lockFile, "");
+
+    runRestore();
+
+    // The test process is not root, so every fixture counts as foreign-owned.
+    expect(chownedPaths()).toEqual(
+      expect.arrayContaining([join(stateDir, "tmp"), lockDir, lockFile])
+    );
+    expect(readFileSync(chownLog, "utf8")).toContain("root:root");
+  });
+
+  it("touches nothing outside tmp/", () => {
+    seedAgentDir("agent-a");
+    mkdirSync(join(stateDir, "tmp", "openclaw-0"), { recursive: true });
+
+    runRestore();
+
+    expect(chownedPaths().every((p) => p.startsWith(join(stateDir, "tmp")))).toBe(true);
+  });
+
+  it("tolerates a missing tmp/ (first boot)", () => {
+    expect(() => runRestore()).not.toThrow();
+    expect(chownedPaths()).toEqual([]);
   });
 });
 
@@ -386,6 +554,33 @@ describe("fix_config_permissions — wiring", () => {
     const startScript = readFileSync(resolve(REPO_ROOT, "config/start-openclaw.sh"), "utf8");
     expect(startScript).toContain("source /fix-config-permissions.sh");
     expect(startScript).toContain("fix_config_permissions");
+  });
+
+  it("removes the retired auth-profiles.json before every gateway start", () => {
+    // Before the start, not on the 50 ms tick: OpenClaw reads the file when the
+    // gateway boots, and Pinchy no longer writes one, so once per start covers
+    // the upgraded install.
+    const startScript = readFileSync(resolve(REPO_ROOT, "config/start-openclaw.sh"), "utf8");
+    const lines = startScript.split("\n");
+    const starts = lines.flatMap((line, i) => (/^\s*openclaw gateway\b/.test(line) ? [i] : []));
+    expect(starts.length).toBeGreaterThan(0);
+    for (const start of starts) {
+      const before = lines.slice(Math.max(0, start - 15), start).join("\n");
+      expect(before).toContain("remove_retired_auth_profiles");
+    }
+  });
+
+  it("restores the gateway lock directory's ownership before every gateway start", () => {
+    // The gateway checks the directory at startup, and the restart branch of
+    // the watchdog loop starts a gateway too.
+    const startScript = readFileSync(resolve(REPO_ROOT, "config/start-openclaw.sh"), "utf8");
+    const lines = startScript.split("\n");
+    const starts = lines.flatMap((line, i) => (/^\s*openclaw gateway\b/.test(line) ? [i] : []));
+    expect(starts.length).toBeGreaterThan(0);
+    for (const start of starts) {
+      const before = lines.slice(Math.max(0, start - 15), start).join("\n");
+      expect(before).toContain("restore_gateway_lock_ownership");
+    }
   });
 
   it("is copied into the OpenClaw image", () => {

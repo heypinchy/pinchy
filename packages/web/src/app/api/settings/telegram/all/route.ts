@@ -28,12 +28,27 @@ export async function DELETE() {
     await deleteSetting(`telegram_bot_username:${agentId}`);
   }
 
-  // Clear all per-account allow-from stores and remove all channel config.
-  // updateTelegramChannelConfig() notifies restart-state on actual write — and
-  // is auto-deduped when there's nothing to remove, avoiding a 30 s overlay for
-  // a no-op.
-  clearAllAllowStores();
-  updateTelegramChannelConfig(null, null);
+  // Take every bot out of the config and empty every allow list, each
+  // whichever way the other goes. The config reaches OpenClaw in the
+  // background, up to a minute later, and until then the empty lists are what
+  // keep the bots from answering anyone. A failing clear must not undo the
+  // removal: once the config lands no bot is left to read the lists, and the
+  // next recalculation drops them. updateTelegramChannelConfig() notifies
+  // restart-state on actual write — and is auto-deduped when there's nothing to
+  // remove, avoiding a 30 s overlay for a no-op. A config write that fails
+  // still leaves tokens and links gone from the database, so the removal is
+  // audited, marked failed, and the error reaches the caller afterwards.
+  let configError: unknown = null;
+  try {
+    updateTelegramChannelConfig(null, null);
+  } catch (err) {
+    configError = err;
+  }
+  try {
+    await clearAllAllowStores();
+  } catch (err) {
+    console.error("[telegram] could not clear the allow lists of removed bots:", err);
+  }
 
   await appendAuditLog({
     actorType: "user",
@@ -46,8 +61,16 @@ export async function DELETE() {
       scope: "all",
       botsRemoved: botTokenSettings.length,
     },
-    outcome: "success",
+    // A fixed message: the error's own can carry a file system path, and the
+    // audit row is immutable.
+    ...(configError
+      ? {
+          outcome: "failure" as const,
+          error: { message: "Could not remove the bots from the OpenClaw config" },
+        }
+      : { outcome: "success" as const }),
   });
+  if (configError) throw configError;
 
   return NextResponse.json({ removed: true });
 }

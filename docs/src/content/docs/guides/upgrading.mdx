@@ -324,6 +324,30 @@ The knowledge base now indexes emails saved from Outlook (`.msg`): subject, send
 
 The archive rule (see [Current documents first](/guides/create-knowledge-base-agent/#current-documents-first)) read the whole path of a document, including the folders above the one an agent is granted. An agent granted a folder that is itself called `Archiv`, or sits below one — `/data/Archiv/Projekte` — therefore had every document marked archived, and everyday search found nothing. The rule now reads only the path inside the granted folder. Nothing to do on upgrade: the next index run — the nightly one, or **Reindex now** — marks those documents current again without reading them a second time. When two agents are granted nested folders, the folder granted further down decides for both.
 
+#### The agent runtime is OpenClaw 2026.9.2
+
+This release moves the OpenClaw runtime from 2026.7.1 to 2026.9.2, which fixes every published OpenClaw security advisory that affected the version we shipped before. OpenClaw 2026.9 renamed or retired a few settings in `openclaw.json`; Pinchy moves them on its first start, before OpenClaw boots, so there is nothing to edit by hand.
+
+Two things newer OpenClaw versions switch on by default stay off: **dreaming**, a nightly job that rewrites an agent's memory from its conversations, and **skill self-learning**, where an agent writes and installs its own skills. See [Background memory rewriting and skill self-learning](/guides/hardening/#background-memory-rewriting-and-skill-self-learning-disabled).
+
+The tools OpenClaw 2026.9 adds to every agent by default — ask-the-user questions, a shared secrets store, the skill workshop — stay out of reach of Pinchy agents, and an agent's session status now covers only its own session. See [Agent Permissions](/concepts/agent-permissions/#how-permissions-reach-openclaw).
+
+#### Memory search runs in a local llama.cpp server
+
+OpenClaw 2026.9 no longer computes memory embeddings inside its own process. The `openclaw` image now ships a llama.cpp server for that: OpenClaw starts it on the first memory search and stops it after ten minutes without one. It still runs offline, with the same bundled model and no API key. After the upgrade, each agent's memory index is rebuilt once in the background, so expect some extra CPU on the `openclaw` container in the first minutes. The log line `llama-cpp local service ready` shows the server came up.
+
+#### An agent's mailbox context moved into `IDENTITY.md`
+
+OpenClaw 2026.9 no longer loads an agent's `TOOLS.md`, where Pinchy wrote which mailboxes an agent works with. That section is now part of the agent's `IDENTITY.md`, and Pinchy removes the old `TOOLS.md` the next time it writes the agent's configuration. Nothing to do.
+
+#### Telegram pairing codes and access lists live in OpenClaw's database
+
+OpenClaw 2026.9 keeps pending pairing codes and the list of who may message each bot in its own database instead of files under `credentials/`. It imports the old files on its first start, and Pinchy rewrites every bot's list from its own records as soon as it connects, so linked accounts keep working and nobody has to pair again. While OpenClaw is unreachable, entering a pairing code in Pinchy answers "try again in a moment" instead of "invalid code".
+
+#### Group chats really don't see a shared agent's memory now
+
+The v0.9.0 notes say a shared agent's `MEMORY.md` stays out of Telegram group chats. It didn't: the filter we shipped for that was never loaded by OpenClaw, so a group chat could still receive what the agent had learned in one-to-one conversations. OpenClaw 2026.9 filters it out itself — for group chats, channels, and background runs alike — and we removed our filter. Shared agents may now appear to "know less" in groups; that is the privacy fix working.
+
 #### Word documents that lost text in conversion are searchable
 
 We convert every Word document to PDF and count its words a second time. A PDF that came out more than a tenth short was kept out of the index, and so was the document: it had no searchable text at all, and the **Index** section listed it among the [documents that can't be searched](/guides/create-knowledge-base-agent/#documents-that-cant-be-searched). Now we index the text read from the `.docx` itself. You can search it and cite it, but it has no preview, so a citation names the document and no heading, and the viewer offers the original for download. The server log names each such document with both word counts. See [Supported file types](/guides/mount-data-directories/#supported-file-types).

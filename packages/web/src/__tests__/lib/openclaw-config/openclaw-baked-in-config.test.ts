@@ -18,17 +18,18 @@
  *   Reload rules (BASE_RELOAD_RULES_TAIL in OC source):
  *     gateway   → restart
  *     discovery → restart
- *     canvasHost → restart
  *     update    → restart (no rule → default)
+ *   plus the canvas plugin's host, `attachments` and `memory` (OpenClaw 2026.9;
+ *   no rule → default restart).
  *
- *   All four sections must be present in the baked-in config with Pinchy's
+ *   All of them must be present in the baked-in config with Pinchy's
  *   expected stable values so the first config.apply is a no-op diff for these
  *   paths. See openclaw#75534 and CI failures in PR #279.
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
-import { OPENCLAW_MEDIA_TTL_HOURS } from "@/lib/openclaw-config/paths";
+import { MEMORY_EMBEDDING_MODEL_PATH, OPENCLAW_MEDIA_TTL_HOURS } from "@/lib/openclaw-config/paths";
 
 describe("config/openclaw.json (baked-in config)", () => {
   let config: Record<string, unknown>;
@@ -76,10 +77,35 @@ describe("config/openclaw.json (baked-in config)", () => {
     expect(update!.checkOnStart).toBe(false);
   });
 
-  it("has canvasHost.enabled: false — prevents restart-triggering diff on first config.apply", () => {
-    const canvasHost = config.canvasHost as Record<string, unknown> | undefined;
-    expect(canvasHost, "config.canvasHost must exist").toBeDefined();
-    expect(canvasHost!.enabled).toBe(false);
+  it("has the canvas plugin's host off — prevents restart-triggering diff on first config.apply", () => {
+    // OpenClaw 2026.9 moved root `canvasHost` into the bundled canvas plugin's
+    // config and refuses a file that still carries the root key.
+    expect(config.canvasHost, "root canvasHost is retired").toBeUndefined();
+    const plugins = config.plugins as Record<string, Record<string, Record<string, unknown>>>;
+    const canvas = plugins?.entries?.canvas as { config?: { host?: { enabled?: unknown } } };
+    expect(canvas?.config?.host?.enabled).toBe(false);
+  });
+
+  it("has memory-core's dreaming off — no dreaming cron before the first regenerate, no restart-triggering diff", () => {
+    // OpenClaw 2026.8.1 turned grounded dreaming on by default, and memory-core
+    // creates its nightly cron job at gateway start. Pinchy forces it off on
+    // every regenerate (build.ts); baked in, the job never exists, and `plugins`
+    // — restart-class — does not diff on the first config.apply.
+    const plugins = config.plugins as Record<string, Record<string, Record<string, unknown>>>;
+    const memoryCore = plugins?.entries?.["memory-core"] as {
+      config?: { dreaming?: { enabled?: unknown } };
+    };
+    expect(memoryCore?.config?.dreaming?.enabled).toBe(false);
+  });
+
+  it("has Skill Workshop's autonomous mode off — no self-applied skills before the first regenerate", () => {
+    const skills = config.skills as { workshop?: { autonomous?: { mode?: unknown } } } | undefined;
+    expect(skills?.workshop?.autonomous?.mode).toBe("off");
+  });
+
+  it("limits session tools to the current session — no cross-session reach before the first regenerate", () => {
+    const tools = config.tools as { sessions?: { visibility?: unknown } } | undefined;
+    expect(tools?.sessions?.visibility).toBe("self");
   });
 
   it("has gateway.terminal.enabled: false — governance + prevents restart-triggering diff on first config.apply", () => {
@@ -96,13 +122,25 @@ describe("config/openclaw.json (baked-in config)", () => {
     expect(terminal!.enabled).toBe(false);
   });
 
-  it("has media.ttlHours: 48 — prevents restart-triggering diff on first config.apply", () => {
-    // OpenClaw has no reload rule for `media`, so it treats any change there as
-    // restart-class. Pinchy writes media.ttlHours on every regenerate (see
-    // build.ts); without it baked in, a fresh install's first regenerate is an
-    // in-process gateway restart that aborts the run in flight.
-    const media = config.media as Record<string, unknown> | undefined;
-    expect(media, "config.media must exist").toBeDefined();
-    expect(media!.ttlHours).toBe(OPENCLAW_MEDIA_TTL_HOURS);
+  it("has attachments.ttlHours: 48 — prevents restart-triggering diff on first config.apply", () => {
+    // OpenClaw has no reload rule for `attachments` (root `media.ttlHours` until
+    // 2026.8), so it treats any change there as restart-class. Pinchy writes it
+    // on every regenerate (see build.ts); without it baked in, a fresh install's
+    // first regenerate is an in-process gateway restart that aborts the run in
+    // flight.
+    expect(config.media, "root media is retired").toBeUndefined();
+    const attachments = config.attachments as Record<string, unknown> | undefined;
+    expect(attachments, "config.attachments must exist").toBeDefined();
+    expect(attachments!.ttlHours).toBe(OPENCLAW_MEDIA_TTL_HOURS);
+  });
+
+  it("has memory.search pinned to the bundled local model — prevents restart-triggering diff on first config.apply", () => {
+    // `memory` is restart-class in OpenClaw 2026.9 (it was hot as
+    // agents.defaults.memorySearch), and Pinchy writes it on every regenerate.
+    const memory = config.memory as { search?: Record<string, unknown> } | undefined;
+    expect(memory?.search?.provider).toBe("local");
+    expect((memory?.search?.local as Record<string, unknown>)?.modelPath).toBe(
+      MEMORY_EMBEDDING_MODEL_PATH
+    );
   });
 });

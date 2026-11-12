@@ -2098,6 +2098,7 @@ Link the current user's Telegram account using a pairing code received from the 
 - `400` — invalid or expired pairing code. A code stays redeemable for 10 minutes after the last message that Telegram account sent the bot, so messaging the bot again refreshes the window (it replies with the same code while the request is still pending)
 - `409` — the pairing code's Telegram account is already linked to a different Pinchy user
 - `429` — too many pairing attempts for this user (rate limited to 5 per 10 minutes, to close the brute-force window against another user's pending code)
+- `503` — the agent runtime, which holds the pending pairing codes, can't be reached right now. The code wasn't checked, so no failed attempt is logged against you; try again in a moment
 
 ### `DELETE /api/settings/telegram`
 

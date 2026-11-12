@@ -384,18 +384,6 @@ export function withConflictError(e: AuditEntry): boolean {
 
 // ── Pairing code helpers ───────────────────────────────────────────────
 
-export function readPairingFile(): Record<string, unknown> | null {
-  try {
-    const output = execSync(
-      "docker compose -f docker-compose.yml -f docker-compose.test.yml exec -T pinchy cat /openclaw-config/credentials/telegram-pairing.json 2>/dev/null",
-      { encoding: "utf-8", cwd: process.cwd() }
-    );
-    return JSON.parse(output);
-  } catch {
-    return null;
-  }
-}
-
 export function extractPairingCode(botResponseText: string): string | null {
   // OpenClaw pairing messages typically contain a code like "XXXX-XXXX" or similar
   // Try common patterns

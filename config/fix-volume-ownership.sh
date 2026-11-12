@@ -33,6 +33,14 @@
 # left to repair it until the openclaw container itself restarts. Pinchy never
 # reads or writes anything under npm/, so pruning it costs nothing.
 #
+# tmp/ is pruned for the same reason. OpenClaw 2026.9 keeps its gateway lock
+# directory there (`tmp/openclaw-<uid>`, mode 0700) and refuses to start when it
+# is not owned by its own uid — "device identity coordinator directory belongs
+# to another user" — so the first pinchy restart after OpenClaw created it took
+# the gateway down for good. Pinchy never touches tmp/ either. The migration half
+# for a volume an earlier Pinchy already chowned is restore_gateway_lock_ownership
+# in config/fix-config-permissions.sh, run before every gateway start.
+#
 # `! -uid` gates the chown so an already-correct tree is left alone. Same
 # reasoning as config/fix-config-permissions.sh: this volume carries
 # agents/<id>/sessions and workspaces/ with unbounded file counts, and chown
@@ -52,7 +60,7 @@ OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR%/}"
 PINCHY_UID="${PINCHY_UID:-999}"
 PINCHY_GID="${PINCHY_GID:-999}"
 
-find "$OPENCLAW_CONFIG_DIR" -path "$OPENCLAW_CONFIG_DIR/npm" -prune -o \
+find "$OPENCLAW_CONFIG_DIR" \( -path "$OPENCLAW_CONFIG_DIR/npm" -o -path "$OPENCLAW_CONFIG_DIR/tmp" \) -prune -o \
     ! -uid "$PINCHY_UID" -exec chown "$PINCHY_UID:$PINCHY_GID" {} + 2>/dev/null || true
 
 # Belt-and-suspenders: ensure pinchy can stat AND write the directory itself.

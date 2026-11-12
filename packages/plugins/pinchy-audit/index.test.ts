@@ -47,6 +47,108 @@ describe("pinchy-audit plugin", () => {
     expect(hookNames).toContain("after_tool_call");
   });
 
+  it("registers pinchy.trajectory.read for admin clients, reading under the runtime's state dir", async () => {
+    const { default: plugin } = await import("./index");
+    const resolveStateDir = vi.fn(() => "/nonexistent-state-dir");
+    const api = {
+      ...createMockApi({ apiBaseUrl: "http://pinchy:7777", gatewayToken: "gw-token" }),
+      runtime: { state: { resolveStateDir } },
+    };
+    plugin.register?.(api as any);
+
+    expect(api.registerGatewayMethod).toHaveBeenCalledWith(
+      "pinchy.trajectory.read",
+      expect.any(Function),
+      { scope: "operator.admin" }
+    );
+    const handler = api.registerGatewayMethod.mock.calls[0][1];
+    const respond = vi.fn();
+    handler({ params: { agentId: "smithers", sessionKey: "agent:smithers:direct:u" }, respond });
+    expect(resolveStateDir).toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(true, { sessionId: null, jsonl: null });
+  });
+
+  // Usage tracking and the diagnostics export depend on this method, not on
+  // the audit forwarding, so a missing audit config must not take it down.
+  it("registers pinchy.trajectory.read even when the audit config is missing", async () => {
+    const { default: plugin } = await import("./index");
+    const api = {
+      ...createMockApi(undefined),
+      runtime: { state: { resolveStateDir: () => "/nonexistent-state-dir" } },
+    };
+    plugin.register?.(api as any);
+
+    expect(api.registerGatewayMethod).toHaveBeenCalledWith(
+      "pinchy.trajectory.read",
+      expect.any(Function),
+      { scope: "operator.admin" }
+    );
+  });
+
+  // Telegram linking and access go through these since OpenClaw 2026.9 keeps
+  // pairing state in its own database; like the trajectory read, they must
+  // not depend on the audit config.
+  it("registers the pairing store methods for admin clients, even without audit config", async () => {
+    const { default: plugin } = await import("./index");
+    const resolveStateDir = vi.fn(() => "/nonexistent-state-dir");
+    const api = { ...createMockApi(undefined), runtime: { state: { resolveStateDir } } };
+    plugin.register?.(api as any);
+
+    for (const method of [
+      "pinchy.pairing.findByCode",
+      "pinchy.pairing.removeRequests",
+      "pinchy.pairing.setAllowFrom",
+    ]) {
+      expect(api.registerGatewayMethod).toHaveBeenCalledWith(method, expect.any(Function), {
+        scope: "operator.admin",
+      });
+    }
+    const findByCode = api.registerGatewayMethod.mock.calls.find(
+      (c) => c[0] === "pinchy.pairing.findByCode"
+    )![1];
+    const respond = vi.fn();
+    findByCode({ params: { channel: "telegram", code: "ABCD1234" }, respond });
+    expect(resolveStateDir).toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(true, { request: null });
+  });
+
+  // The allow-list write holds back a sender until OpenClaw routes them to the
+  // agent Pinchy meant, asking OpenClaw's own routing with the live config.
+  it("checks setAllowFrom's routeTo against OpenClaw's routing for the running config", async () => {
+    const { default: plugin } = await import("./index");
+    const liveConfig = { bindings: [] };
+    const resolveAgentRoute = vi.fn(() => ({ agentId: "agent-owner" }));
+    const api = {
+      ...createMockApi(undefined),
+      runtime: {
+        state: { resolveStateDir: () => "/nonexistent-state-dir" },
+        config: { current: () => liveConfig },
+        channel: { routing: { resolveAgentRoute } },
+      },
+    };
+    plugin.register?.(api as any);
+
+    const setAllowFrom = api.registerGatewayMethod.mock.calls.find(
+      (c) => c[0] === "pinchy.pairing.setAllowFrom"
+    )![1];
+    setAllowFrom({
+      params: {
+        channel: "telegram",
+        allowFrom: { "bot-a": ["111"] },
+        routeTo: { "bot-a": { "111": "agent-alice" } },
+        replaceAll: false,
+      },
+      respond: vi.fn(),
+    });
+
+    expect(resolveAgentRoute).toHaveBeenCalledWith({
+      cfg: liveConfig,
+      channel: "telegram",
+      accountId: "bot-a",
+      peer: { kind: "direct", id: "111" },
+    });
+  });
+
   it("posts start events from before_tool_call", async () => {
     const { default: plugin } = await import("./index");
     plugin.register?.(

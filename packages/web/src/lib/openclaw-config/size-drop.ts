@@ -32,6 +32,8 @@
 // discount altogether — that payload is an empty read, whatever else it does.
 // A shrink outside `models.providers` is judged exactly as before.
 
+import { LLAMA_CPP_PROVIDER_ID } from "./paths";
+
 type Json = Record<string, unknown>;
 
 function isRecord(value: unknown): value is Json {
@@ -68,11 +70,13 @@ export function keptProviderCollapsed(before: Json, after: Json): boolean {
 }
 
 /**
- * True when `next` still carries a provider. Pinchy refuses to delete the last
- * one, so a payload with none is an empty read, never a deletion.
+ * True when `next` still carries a chat provider. Pinchy refuses to delete the
+ * last one, so a payload with none is an empty read, never a deletion.
+ * `llama-cpp`, the embedding server, does not count: build.ts emits it on every
+ * regenerate, an empty read included.
  */
 export function keepsAProvider(next: Json): boolean {
-  return Object.keys(providersOf(next) ?? {}).length > 0;
+  return Object.keys(providersOf(next) ?? {}).some((key) => key !== LLAMA_CPP_PROVIDER_ID);
 }
 
 /** True when `next` no longer lists a provider `existing` does. */

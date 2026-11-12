@@ -42,8 +42,9 @@
       "rollup@>=4.0.0 <4.59.0": ">=4.59.0",
       "esbuild@<0.28.1": ">=0.28.1",
       "undici@>=7.0.0 <7.29.1": ">=7.29.1 <8",
-      "undici@>=8.0.0 <8.10.2": ">=8.10.2 <9",
-      "kysely@>=0.26.0 <=0.28.16": "^0.29.0",
+      "undici@>=8.0.0 <8.12.2": ">=8.12.2 <9",
+      "kysely@>=0.26.0 <=0.28.16": "0.29.5",
+      "kysely": "0.29.5",
       "mermaid@<11.16.1": ">=11.16.1",
       "picomatch@<2.3.2": ">=2.3.2",
       "picomatch@>=4.0.0 <4.0.4": ">=4.0.4",
@@ -90,12 +91,14 @@
     ],
     "ignoredBuiltDependencies": [
       "@google/genai",
+      "koffi",
       "openclaw",
       "protobufjs",
       "tree-sitter-bash"
     ],
     "patchedDependencies": {
-      "@assistant-ui/react@0.14.24": "patches/@assistant-ui__react@0.14.24.patch"
+      "@assistant-ui/react@0.14.24": "patches/@assistant-ui__react@0.14.24.patch",
+      "openclaw-node@0.14.0": "patches/openclaw-node@0.14.0.patch"
     }
   },
   "lint-staged": {

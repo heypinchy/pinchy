@@ -59,7 +59,7 @@ Each browser connection gets its own `ClientRouter` instance that manages agent 
 
 ### Agent routing
 
-When a message arrives, the `ClientRouter` passes the `agentId` from the browser message to OpenClaw via `chatOptions`. OpenClaw uses this to select the matching agent from its `agents.list[]` config — each agent can have its own model, system prompt, tools, and workspace.
+When a message arrives, the `ClientRouter` passes the `agentId` from the browser message to OpenClaw via `chatOptions`. OpenClaw uses this to select the matching agent from its `agents.entries` config, keyed by agent id — each agent can have its own model, system prompt, tools, and workspace.
 
 ### Chat sessions
 
@@ -116,7 +116,7 @@ Sessions grow with each message. OpenClaw tracks the full conversation in JSONL 
 
 OpenClaw handles this via **compaction** — automatic summarization of older messages when the context window approaches its limit. Pinchy relies on OpenClaw's built-in compaction and does not override its mode, but it does bound one input to it: the **effective context budget** every model runs on.
 
-Compaction triggers a fixed distance below a model's context limit. On a model advertising a million-token window, that trigger sits so high it never fires in practice — the session just keeps growing until a single turn has to reprocess everything at once, which is slow, expensive, and eventually blocks the runtime. So Pinchy caps the budget it hands OpenClaw at **256K tokens** for every model, on two layers: a per-model `contextTokens` in the emitted `models.providers` tree, and `agents.defaults.contextTokens` as a native backstop for models Pinchy never emits.
+Compaction triggers a fixed distance below a model's context limit. On a model advertising a million-token window, that trigger sits so high it never fires in practice — the session just keeps growing until a single turn has to reprocess everything at once, which is slow, expensive, and eventually blocks the runtime. So Pinchy caps the budget it hands OpenClaw at **256K tokens** for every model it configures, through a per-model `contextTokens` in the emitted `models.providers` tree. OpenClaw 2026.9 retired the defaults-level `agents.defaults.contextTokens`, so the per-model value is the only layer, and Pinchy removes the old key from a file an earlier version wrote.
 
 The cap only ever lowers. A model whose window is already at or below 256K is unaffected, and models with a documented long-context quality limit (both DeepSeek-V4 models, at 128K) keep their lower value. Each model's advertised `contextWindow` stays honest — Pinchy bounds what agents _use_, not what the provider _offers_. In exchange, compaction reliably fires, and a very-long-window model like Gemini works the same way every other model does. If you need a larger effective window, that's a change to Pinchy's ceiling, not a per-model setting.
 

@@ -1,3 +1,14 @@
+import {
+  createPairingFindByCodeMethod,
+  createPairingRemoveRequestsMethod,
+  createPairingSetAllowFromMethod,
+  PAIRING_FIND_BY_CODE_METHOD,
+  PAIRING_REMOVE_REQUESTS_METHOD,
+  PAIRING_SET_ALLOW_FROM_METHOD,
+  type ResolveRoute,
+} from "./channel-pairing-store";
+import { createTrajectoryReadMethod, TRAJECTORY_READ_METHOD } from "./trajectory-reader";
+
 interface PluginConfig {
   apiBaseUrl: string;
   gatewayToken: string;
@@ -51,6 +62,26 @@ type GateDecision =
 interface PluginApi {
   pluginConfig?: PluginConfig;
   logger?: PluginLogger;
+  runtime: {
+    state: { resolveStateDir: () => string };
+    // Only the slices Pinchy uses; OpenClaw's own types are far wider.
+    config: { current: () => unknown };
+    channel: {
+      routing: {
+        resolveAgentRoute: (input: {
+          cfg: unknown;
+          channel: string;
+          accountId: string;
+          peer: { kind: "direct"; id: string };
+        }) => { agentId: string };
+      };
+    };
+  };
+  registerGatewayMethod: (
+    method: string,
+    handler: ReturnType<typeof createTrajectoryReadMethod>,
+    opts: { scope: "operator.admin" }
+  ) => void;
   on: {
     (
       hookName: "before_tool_call" | "after_tool_call",
@@ -561,6 +592,49 @@ const plugin = {
   },
 
   register(api: PluginApi) {
+    // Pinchy's per-turn usage and diagnostics export read session trajectories
+    // through this method since OpenClaw 2026.9 keeps them in a database only
+    // the gateway can open (see trajectory-reader.ts). Registered before the
+    // config check: it needs no Pinchy URL or token, and losing it would stop
+    // usage tracking, not just audit forwarding. Admin scope because a
+    // trajectory carries whole prompts and replies.
+    api.registerGatewayMethod(
+      TRAJECTORY_READ_METHOD,
+      createTrajectoryReadMethod(() => api.runtime.state.resolveStateDir()),
+      { scope: "operator.admin" }
+    );
+
+    // Telegram pairing codes and allow lists live in OpenClaw's state
+    // database since 2026.9 (see channel-pairing-store.ts). Same reasoning
+    // for registering them here: Telegram access must not depend on the audit
+    // config. Admin scope because setAllowFrom decides who reaches an agent.
+    const resolveStateDir = () => api.runtime.state.resolveStateDir();
+    api.registerGatewayMethod(
+      PAIRING_FIND_BY_CODE_METHOD,
+      createPairingFindByCodeMethod(resolveStateDir),
+      { scope: "operator.admin" }
+    );
+    api.registerGatewayMethod(
+      PAIRING_REMOVE_REQUESTS_METHOD,
+      createPairingRemoveRequestsMethod(resolveStateDir),
+      { scope: "operator.admin" }
+    );
+    // The same routing call and config snapshot Telegram uses for an inbound
+    // direct message, so a sender is let in only once their messages would
+    // reach the agent Pinchy meant.
+    const resolveRoute: ResolveRoute = ({ channel, accountId, peerId }) =>
+      api.runtime.channel.routing.resolveAgentRoute({
+        cfg: api.runtime.config.current(),
+        channel,
+        accountId,
+        peer: { kind: "direct", id: peerId },
+      }).agentId;
+    api.registerGatewayMethod(
+      PAIRING_SET_ALLOW_FROM_METHOD,
+      createPairingSetAllowFromMethod(resolveStateDir, resolveRoute),
+      { scope: "operator.admin" }
+    );
+
     const cfg = api.pluginConfig;
     if (!cfg?.apiBaseUrl || !cfg?.gatewayToken) {
       api.logger?.warn?.("[pinchy-audit] plugin config is missing apiBaseUrl or gatewayToken");
