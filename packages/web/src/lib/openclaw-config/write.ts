@@ -897,9 +897,12 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // it once it is the only agent left to drop. Built on `payload`, not the target:
         // during a provider deletion that is the step OpenClaw's size-drop
         // guard accepts, and the agents ride along with it. `deleteFiles:
-        // false`: Pinchy owns the workspace and deleteAgent already removed
-        // it; OpenClaw still drops the agent's sessions, cron jobs and
-        // bindings, as it does for its own deletions.
+        // true` although deleteAgent already removed the workspace (a missing
+        // path counts as removed): only then does OpenClaw unregister the
+        // agent's database. Without it, its deletion journal calls the agent
+        // deleted while the database stays registered, and the next gateway
+        // start fails ("agent database is unavailable while agent … is
+        // deleted").
         if (rosterRemoval) {
           const ids = rosterRemoval;
           if (rosterRemovalRounds >= MAX_ROSTER_REMOVAL_ROUNDS) {
@@ -941,7 +944,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
             for (const agentId of ids) {
               if (agentId === PLACEHOLDER_AGENT_ID) continue;
               try {
-                await client.request("agents.delete", { agentId, deleteFiles: false });
+                await client.request("agents.delete", { agentId, deleteFiles: true });
               } catch (err) {
                 const m = err instanceof Error ? err.message : String(err);
                 // Already gone: the next apply tells whether OpenClaw agrees.

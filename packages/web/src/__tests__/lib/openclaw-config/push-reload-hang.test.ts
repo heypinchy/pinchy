@@ -249,7 +249,7 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
     const took = await settle();
 
     expect(oc.file).toEqual(target);
-    expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: false }]);
+    expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: true }]);
     // Never past OpenClaw's roster guard through the file.
     expect(configFileWrites()).toHaveLength(0);
     expect(fileOnlyDeliveryPending()).toBe(false);
@@ -339,7 +339,7 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
 
     expect(oc.file).toEqual(target);
     expect(onChangeApplied).toHaveBeenCalledTimes(1);
-    expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: false }]);
+    expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: true }]);
     expect(configFileWrites()).toHaveLength(0);
     expect(fileOnlyDeliveryPending()).toBe(false);
   });
