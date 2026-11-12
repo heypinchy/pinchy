@@ -35,7 +35,6 @@ import {
   isHiddenSegment,
 } from "./exclude-globs";
 import {
-  archivedToReconvert,
   currentPlanFolder,
   deriveFolderState,
   folderPlanProgress,
@@ -59,11 +58,10 @@ export interface FolderStatus {
   searchable: number;
   /** Of `indexed`, the ones it cannot: no text, or waiting to be converted again. */
   notSearchable: number;
-  /**
-   * Of `notSearchable`, archived documents the active run will still convert
-   * again. They are on their way, so `state` doesn't count them as errors.
-   */
-  archivedToReconvert: number;
+  /** Of `searchable`, documents from archived subfolders. */
+  archivedSearchable: number;
+  /** Of `notSearchable`, documents from archived subfolders. */
+  archivedNotSearchable: number;
   /**
    * Files the last run found here; null when no run's plan covers the folder:
    * none recorded one, the folder was granted since, the plan counted it only as
@@ -108,29 +106,34 @@ interface CountRow extends Record<string, unknown> {
   in_sub: boolean;
   indexed: string | number;
   not_searchable: string | number;
-  reread_archived: string | number;
+  archived: string | number;
+  archived_not_searchable: string | number;
   last_created: Date | string | null;
 }
 
 interface Counts {
   indexed: number;
   notSearchable: number;
-  /** Of `notSearchable`, archived documents a reconversion will read again. */
-  rereadArchived: number;
+  /** Of `indexed`, documents from archived subfolders. */
+  archived: number;
+  /** Of `notSearchable`, documents from archived subfolders. */
+  archivedNotSearchable: number;
   lastCreated: Date | null;
 }
 
 const zero = (): Counts => ({
   indexed: 0,
   notSearchable: 0,
-  rereadArchived: 0,
+  archived: 0,
+  archivedNotSearchable: 0,
   lastCreated: null,
 });
 
 function addCounts(into: Counts, row: Counts): void {
   into.indexed += row.indexed;
   into.notSearchable += row.notSearchable;
-  into.rereadArchived += row.rereadArchived;
+  into.archived += row.archived;
+  into.archivedNotSearchable += row.archivedNotSearchable;
   if (row.lastCreated && (!into.lastCreated || row.lastCreated > into.lastCreated)) {
     into.lastCreated = row.lastCreated;
   }
@@ -160,20 +163,26 @@ async function countsUnderRoot(
 ): Promise<{ direct: Counts; children: Map<string, Counts> }> {
   const offset = root === "/" ? 2 : root.length + 2;
   const superseded = readFromSupersededArtifact(sql`d.source_path`, sql`d.artifact_format_version`);
+  // Whether a document is searchable is worked out once per row, then counted
+  // twice: for the folder, and for its archive.
   const rows = await db.execute<CountRow>(sql`
     SELECT split_part(substr(d.source_path, ${offset}), '/', 1) AS child,
            strpos(substr(d.source_path, ${offset}), '/') > 0 AS in_sub,
            COUNT(*) AS indexed,
-           -- "Has no chunk", correlated on document_id as in unsearchable.ts.
-           COUNT(*) FILTER (
-             WHERE NOT EXISTS (SELECT 1 FROM kb_chunks c WHERE c.document_id = d.id)
-                OR ${superseded}
-           ) AS not_searchable,
-           COUNT(*) FILTER (WHERE d.status = 'archived' AND ${superseded}) AS reread_archived,
+           COUNT(*) FILTER (WHERE d.unsearchable) AS not_searchable,
+           COUNT(*) FILTER (WHERE d.status = 'archived') AS archived,
+           COUNT(*) FILTER (WHERE d.status = 'archived' AND d.unsearchable)
+             AS archived_not_searchable,
            MAX(d.created_at) AT TIME ZONE 'UTC' AS last_created
-    FROM kb_documents d
-    WHERE d.org_id = ${orgId}
-      AND (${buildPathFilter([root], sql`d.source_path`)})
+    FROM (
+      SELECT d.source_path, d.status, d.created_at,
+             -- "Has no chunk", correlated on document_id as in unsearchable.ts.
+             (NOT EXISTS (SELECT 1 FROM kb_chunks c WHERE c.document_id = d.id)
+               OR ${superseded}) AS unsearchable
+      FROM kb_documents d
+      WHERE d.org_id = ${orgId}
+        AND (${buildPathFilter([root], sql`d.source_path`)})
+    ) d
     GROUP BY 1, 2
   `);
 
@@ -183,7 +192,8 @@ async function countsUnderRoot(
     const counts: Counts = {
       indexed: Number(row.indexed),
       notSearchable: Number(row.not_searchable),
-      rereadArchived: Number(row.reread_archived),
+      archived: Number(row.archived),
+      archivedNotSearchable: Number(row.archived_not_searchable),
       lastCreated: row.last_created ? new Date(row.last_created) : null,
     };
     if (!row.in_sub) {
@@ -306,7 +316,8 @@ export async function getKnowledgeFolderStatus(
       state: deriveFolderState({
         indexed: counts.indexed,
         notSearchable: counts.notSearchable,
-        rereadArchived: counts.rereadArchived,
+        archived: counts.archived,
+        archivedNotSearchable: counts.archivedNotSearchable,
         expected: progress.expected,
         pending: progress.pending,
         pendingArchived: progress.pendingArchived,
@@ -318,10 +329,8 @@ export async function getKnowledgeFolderStatus(
       indexed: counts.indexed,
       searchable: counts.indexed - counts.notSearchable,
       notSearchable: counts.notSearchable,
-      archivedToReconvert: archivedToReconvert({
-        rereadArchived: counts.rereadArchived,
-        pendingArchived: progress.pendingArchived,
-      }),
+      archivedSearchable: counts.archived - counts.archivedNotSearchable,
+      archivedNotSearchable: counts.archivedNotSearchable,
       expected: progress.expected,
       pending: progress.pending,
       pendingArchived: progress.pendingArchived,
