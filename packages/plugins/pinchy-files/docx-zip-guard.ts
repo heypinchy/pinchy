@@ -695,8 +695,8 @@ function zipSize(parts: readonly ZipPart[]): number {
  * Relationship types whose target a reader embeds or links but never parses as
  * XML: pictures, fonts, embedded objects and packages, media, hyperlinks — and
  * the files Word names on the author's own disk: the template the document was
- * made from, a mail merge's data source, a frameset's frames, a master
- * document's parts. Word writes those as Windows paths (backslashes, `%20`),
+ * made from, a mail merge's data source and header file, a frameset's frames,
+ * a master document's parts and the XSLT it is saved through. Word writes those as Windows paths (backslashes, `%20`),
  * so leaving them off this list made every picture count as markup for a
  * report made from a company template. mammoth follows a part only as the
  * main document, its styles, numbering, comments or notes, and none of these
@@ -718,6 +718,8 @@ const UNPARSED_RELATIONSHIP_TYPES = new Set([
   "mailmergesource",
   "frame",
   "subdocument",
+  "mailmergeheadersource",
+  "transform",
 ]);
 
 /** No real relationship tag is this long; one that is, is not read. */

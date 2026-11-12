@@ -834,6 +834,8 @@ describe("verifiedZipCopy — a ceiling on the markup a reader may parse", () =>
       ["mailMergeSource", "file:///\\\\server\\share\\Adressen%202026.xlsx"],
       ["frame", "file:///C:\\Web%20Seiten\\rechts.htm"],
       ["subDocument", "file:///C:\\Bericht\\Kapitel%201.docx"],
+      ["mailMergeHeaderSource", "file:///C:\\Serienbrief\\Kopf%20Zeile.docx"],
+      ["transform", "file:///C:\\XSLT\\Export%20Vorlage.xsl"],
     ] as Array<[string, string]>) {
       const zip = rawZip([
         honest("[Content_Types].xml", "<Types/>"),
