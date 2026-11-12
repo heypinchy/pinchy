@@ -472,7 +472,7 @@ function fromCodePoint(code: number): string {
 }
 
 /**
- * The `.docx` bytes for the word-count oracle, verified like the conversion
+ * The `.docx`/`.docm` bytes for the word-count oracle, verified like the conversion
  * input and held to mammoth's markup ceiling on top. A refusal here only
  * leaves the conversion unverified; it never fails it. Read in the reader
  * child, never in the server (`countDocxWordsIsolated`).

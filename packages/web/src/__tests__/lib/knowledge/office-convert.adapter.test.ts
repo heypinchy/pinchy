@@ -360,16 +360,18 @@ describe("runTextOracle", () => {
     expect(await runTextOracle(bin, "/data/a.doc")).toBe(3);
   });
 
-  it("answers null for a missing binary, rather than failing the document", async () => {
-    // Local dev has no catdoc. A missing oracle removes the tripwire for one
-    // file; it must never be mistaken for a conversion problem.
-    expect(await runTextOracle(join(tmpRoot, "not-installed"), "/data/a.doc")).toBeNull();
+  it("says the extractor is missing, so the caller can tell skipped from failed", async () => {
+    // A host without catdoc removes the tripwire for every .doc; the caller
+    // logs that as skipped — it must never be mistaken for a conversion problem.
+    await expect(
+      runTextOracle(join(tmpRoot, "not-installed"), "/data/a.doc")
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("answers null when the extractor exits non-zero", async () => {
+  it("says how the extractor exited when it exits non-zero", async () => {
     const bin = stub("oracle-angry", "printf 'partial\\n'\nexit 2\n");
 
-    expect(await runTextOracle(bin, "/data/a.doc")).toBeNull();
+    await expect(runTextOracle(bin, "/data/a.doc")).rejects.toThrow(/exited with code 2/);
   });
 
   it("stops reading a runaway extractor instead of buffering it all", async () => {
@@ -382,9 +384,7 @@ describe("runTextOracle", () => {
       "while true; do printf 'word word word word word word word word\\n'; done\n"
     );
 
-    const words = await runTextOracle(bin, "/data/a.doc");
-
-    expect(words).toBeNull();
+    await expect(runTextOracle(bin, "/data/a.doc")).rejects.toThrow(/more than 16 MB of text/);
   }, 20_000);
 });
 

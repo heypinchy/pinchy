@@ -94,6 +94,7 @@ import {
   OfficeFileRejectedError,
   StagedCopyWriteError,
   isOfficeFile,
+  isOoxmlWordFile,
   type ConvertedExtension,
 } from "./office-formats";
 import type { StagedSource } from "./office-preflight";
@@ -231,6 +232,12 @@ export const MIN_FREE_OUTPUT_INODES = 1024;
 export type VolumeSpace = Pick<StatsFs, "bsize" | "bavail" | "files" | "ffree">;
 
 export interface OfficeSource {
+  /**
+   * A copy only the caller writes, held until the conversion returns — never
+   * a path on the share. The converter stages it, and the word-count oracle
+   * reads a `.docx` or `.docm` from it AFTER the conversion (`oracleInput`): a file that
+   * changed in between would be checked against the wrong text.
+   */
   absPath: string;
   /**
    * sha256 of the file's bytes — the artifact key. Optional because a
@@ -336,8 +343,9 @@ export interface ConvertOptions {
   countPdfWords?: (absPath: string) => Promise<number>;
   /**
    * Words the INDEPENDENT extractor sees in the original, or null when there is
-   * none for this format. `absPath` is the staged copy; `displayPath` is what a
-   * log line calls the document.
+   * none for this format. `absPath` is the private copy for a `.docx` and the
+   * staged copy otherwise (`oracleInput`); `displayPath` is what a log line
+   * calls the document.
    */
   countSourceWords?: (absPath: string, displayPath: string) => Promise<number | null>;
   batchSize?: number;
@@ -954,10 +962,10 @@ async function verifyAndCommit(
   }
 
   // An oracle that breaks says nothing about the conversion, so it must never
-  // fail a document — it only removes the tripwire for this one file. It reads
-  // the STAGED copy: the bytes that were checked and converted, not whatever
-  // the share holds by now.
-  const sourceWords = await deps.countSourceWords(stagedSource, item.displayPath).catch(() => null);
+  // fail a document — it only removes the tripwire for this one file.
+  const sourceWords = await deps
+    .countSourceWords(oracleInput(item, stagedSource), item.displayPath)
+    .catch(() => null);
 
   const verification: VerificationReport = {
     status: sourceWords === null ? "unverified" : "ok",
@@ -987,6 +995,29 @@ async function verifyAndCommit(
   }
 
   return { sourcePath: item.absPath, status: "converted", artifactPath, verification };
+}
+
+/**
+ * Which file the word-count oracle reads.
+ *
+ * A `.docx` or `.docm` is counted from the caller's private copy (`OfficeSource.absPath`):
+ * the document as written, before the preflight cut its external links. The
+ * staged copy keeps the elements that pointed at them, and mammoth throws on
+ * some of what is left — a hyperlink that still has its `w:anchor` (a link to
+ * a section of a web page) and a picture linked to a file — which turned
+ * the tripwire off for exactly those documents. Reading the copy costs no
+ * safety: mammoth runs in the reader child, through `readGuardedDocx`'s
+ * limits, and extracting raw text reads no picture, linked or embedded (and
+ * mammoth's `externalFileAccess` defaults to off besides). It counts no text
+ * the cut removed, either: mammoth reads no altChunk.
+ *
+ * Every other format is counted from the STAGED copy, the bytes that were
+ * checked and converted: a legacy binary is staged as it is, and an RTF file
+ * under a Word name is staged with its field instructions cut — text catdoc
+ * would count and LibreOffice never draws.
+ */
+function oracleInput(item: WorkItem, stagedSource: string): string {
+  return isOoxmlWordFile(item.absPath) ? item.absPath : stagedSource;
 }
 
 /**
@@ -1207,6 +1238,11 @@ export interface OracleDeps {
    * (`countDocxWordsIsolated`), so this process never holds the file.
    */
   countDocxWords?: (absPath: string) => Promise<number>;
+  /**
+   * Counts what a text-dumping CLI (`catdoc`, `catppt`) prints for a file, or
+   * rejects with why it could not. Production spawns it (`runTextOracle`).
+   */
+  countTextWords?: (bin: string, absPath: string) => Promise<number>;
 }
 
 /**
@@ -1216,7 +1252,7 @@ export interface OracleDeps {
  * Independence is the point: an oracle derived from LibreOffice would agree
  * with LibreOffice about text it dropped, and verify nothing.
  *
- *   - `.docx` — mammoth, already a web dependency, reading OOXML directly —
+ *   - `.docx`/`.docm` — mammoth, already a web dependency, reading OOXML directly —
  *     in the reader child (`xlsx-isolated.ts`), never in this process: its
  *     DOM costs up to ~300x the markup it parses.
  *   - `.doc`  — `catdoc`, and `.ppt` — `catppt` (Debian `catdoc`, ~1 MB next
@@ -1226,11 +1262,14 @@ export interface OracleDeps {
  *   - `.pptx` — no extractor available without adding a dependency, so it is
  *     honestly reported as unverified rather than silently passed.
  *
- * A missing binary is not an error: it yields null, the file is recorded
- * `unverified`, and conversion proceeds. Local dev has no catdoc.
+ * A count that cannot be had is not an error of the document: it yields null,
+ * the file is recorded `unverified`, conversion proceeds — and the server log
+ * says so, `skipped` (too big for mammoth, or no catdoc on this host) or
+ * `failed` (anything else), because a PDF that lost text is otherwise indexed
+ * with nothing anywhere to tell.
  *
- * `displayPath` is what its log line calls the document: the conversion hands
- * the oracle a staged copy (`in/0.docx`), a name that says nothing.
+ * `displayPath` is what that log line calls the document: the oracle reads a
+ * private copy (`oracleInput`), whose name says nothing.
  */
 export async function countSourceWordsWithOracle(
   absPath: string,
@@ -1239,7 +1278,7 @@ export async function countSourceWordsWithOracle(
 ): Promise<number | null> {
   const ext = extname(absPath).toLowerCase();
 
-  if (ext === ".docx") {
+  if (isOoxmlWordFile(absPath)) {
     try {
       // The child reads the file through the same limits the conversion
       // input passed — mammoth inflates the whole archive, so a bomb must not
@@ -1247,22 +1286,32 @@ export async function countSourceWordsWithOracle(
       // memory whatever those limits miss.
       return await (deps.countDocxWords ?? countDocxWordsIsolated)(absPath);
     } catch (err) {
-      if (err instanceof OfficeFileRejectedError && err.code === "too_large") {
-        // Too much markup for mammoth's DOM — refused by the scan, or by the
-        // reader child running out of heap — or a bomb the conversion's own
-        // preflight refuses as well. Not a failure: the conversion goes on,
-        // without its tripwire.
-        console.warn(
-          `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count skipped, unverified — ${oneLine(err.message, LOG_REASON_MAX)}`
-        );
-      }
+      // Not a failure of the document either way: the conversion goes on,
+      // without its tripwire — and the log says so, or a PDF that lost text
+      // is indexed with nothing anywhere to tell.
+      const skipped = err instanceof OfficeFileRejectedError && err.code === "too_large";
+      // Skipped: too much markup for mammoth's DOM — refused by the scan, or
+      // by the reader child running out of heap — or a bomb the conversion's
+      // own preflight refuses as well. Failed: anything else, mammoth's own
+      // errors included.
+      console.warn(
+        `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count ${skipped ? "skipped" : "failed"}, unverified — ${oneLine(reasonOf(err), LOG_REASON_MAX)}`
+      );
       return null;
     }
   }
 
-  if (ext === ".doc") return runTextOracle("catdoc", absPath);
-  if (ext === ".ppt") return runTextOracle("catppt", absPath);
-  return null;
+  const bin = ext === ".doc" ? "catdoc" : ext === ".ppt" ? "catppt" : null;
+  if (bin === null) return null;
+  try {
+    return await (deps.countTextWords ?? runTextOracle)(bin, absPath);
+  } catch (err) {
+    const skipped = (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
+    console.warn(
+      `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count ${skipped ? "skipped" : "failed"}, unverified — ${oneLine(reasonOf(err), LOG_REASON_MAX)}`
+    );
+    return null;
+  }
 }
 
 /**
@@ -1274,14 +1323,15 @@ export async function countSourceWordsWithOracle(
 const MAX_ORACLE_BYTES = 16 * 1024 * 1024;
 
 /**
- * Runs a text-dumping CLI over `absPath` and counts its words; null if it is
- * absent, unhappy, too slow, or too talkative.
+ * Runs a text-dumping CLI over `absPath` and counts its words. Rejects when it
+ * is absent (the spawn error, `code: "ENOENT"`), exits non-zero, is too slow
+ * or too talkative, saying which — the caller logs it.
  *
  * Exported for the adapter test — the production callers pass a fixed binary
  * name, so this is the only seam a stub can reach.
  */
-export function runTextOracle(bin: string, absPath: string): Promise<number | null> {
-  return new Promise((resolve) => {
+export function runTextOracle(bin: string, absPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
     const child = spawn(bin, [absPath], {
       stdio: ["ignore", "pipe", "ignore"],
       env: childEnv(process.env.HOME ?? "/tmp"),
@@ -1289,26 +1339,33 @@ export function runTextOracle(bin: string, absPath: string): Promise<number | nu
     });
     let out = "";
     let settled = false;
-    const finish = (words: number | null) => {
+    const finish = (outcome: number | Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(words);
+      if (typeof outcome === "number") resolve(outcome);
+      else reject(outcome);
     };
 
     child.stdout.on("data", (chunk: Buffer) => {
       out += chunk.toString("utf8");
       if (out.length > MAX_ORACLE_BYTES) {
         killTree(child);
-        finish(null);
+        finish(new Error(`${bin} printed more than ${MAX_ORACLE_BYTES / 1024 / 1024} MB of text`));
       }
     });
     const timer = setTimeout(() => {
       killTree(child);
-      finish(null);
+      finish(new Error(`${bin} took longer than 30 s`));
     }, 30_000);
-    child.on("error", () => finish(null));
-    child.on("close", (code) => finish(code === 0 ? countWords(out) : null));
+    child.on("error", (err) => finish(err));
+    child.on("close", (code, signal) =>
+      finish(
+        code === 0
+          ? countWords(out)
+          : new Error(`${bin} exited with ${code === null ? `signal ${signal}` : `code ${code}`}`)
+      )
+    );
   });
 }
 
