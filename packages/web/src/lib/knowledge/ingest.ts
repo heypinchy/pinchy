@@ -644,6 +644,12 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
  * of the queue — a skipped document never asks, so a batch cut from the front
  * would convert exactly what the run is about to leave alone.
  *
+ * Nor does a document its own turn will skip join a later document's batch
+ * (`turnWillSkip`): an unchanged indexed document would cost a full verified
+ * copy, and a settled refusal — one the converter could not convert, read as
+ * often as it is owed — a LibreOffice run, on every run that converts anything,
+ * for an answer its turn never asks for.
+ *
  * Every document in a batch is answered by that batch, including when the
  * converter rejects outright. One event, one answer: an unanswered document
  * would come back for a slice of its own.
@@ -667,6 +673,7 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
 function officeArtifacts(
   queue: readonly { absPath: string; realPath: string }[],
   deps: IngestDeps,
+  turnWillSkip: (file: { absPath: string; realPath: string }) => Promise<boolean>,
   batchSize = OFFICE_CONVERT_BATCH_SIZE
 ): ResolveArtifact {
   const pending = queue.filter((file) => needsConversion(file.absPath));
@@ -695,15 +702,23 @@ function officeArtifacts(
     const copies: VerifiedCopy[] = [];
 
     try {
-      for (let i = start + 1; i < pending.length && batch.length < batchSize; i++) {
+      // The look-ahead is bounded by the window a full batch would span, not
+      // only by the batch: each mate looked at is read to learn whether its
+      // turn will skip it, and a scan that ran on until it found a batch's
+      // worth to read would hash the rest of an unchanged corpus here, inside
+      // this one document's turn.
+      let examined = 0;
+      for (let i = start + 1; i < pending.length && examined < batchSize - 1; i++) {
         const mate = pending[i];
         if (done.has(mate.absPath)) continue;
+        examined++;
         let copy;
         try {
+          if (await turnWillSkip(mate)) continue;
           copy = await copyVerifiedSource(mate.realPath, mate.absPath, deps.stagingDir);
         } catch {
-          // Refused, unreadable, or no room for the copy. Not answered: see
-          // the doc comment above.
+          // Refused, unreadable, no room for the copy, or its row could not
+          // be looked up. Not answered: see the doc comment above.
           continue;
         }
         copies.push(copy);
@@ -1391,6 +1406,79 @@ function couldReadDifferently(recorded: string, deps: IngestDeps): boolean {
 }
 
 /**
+ * Whether a document's row owes it another read even if the bytes on disk are
+ * the ones it records, or lets it be skipped. `ingestFile` asks once the hash
+ * has matched; `turnWillSkip` asks before hashing, since a row that owes a
+ * read owes it whatever the bytes are — so a batch of Office conversions never
+ * converts on the way a document its own turn will skip.
+ *
+ * `current` is whether the row's chunks came from the current artifact rules;
+ * `storedChunks` how many it has. Both are returned only when a read is owed.
+ */
+async function readOwed(
+  existing: typeof kbDocuments.$inferSelect,
+  absPath: string,
+  deps: IngestDeps
+): Promise<{ owed: false } | { owed: true; current: boolean; storedChunks: number }> {
+  // Chunks read from an artifact the current conversion rules did not make
+  // are owed a new read, whatever else is on record: the rules changed
+  // because of what such an artifact may hold.
+  const current = existing.artifactFormatVersion === artifactFormatVersionFor(absPath);
+
+  // A read that did not finish is owed another one, chunks or not: a scan
+  // with a typed cover sheet has chunks of its own even when every vision
+  // call behind it failed.
+  const retryOwed =
+    !current || (existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS);
+
+  // A file with no text at all: the last read found nothing. Reading it
+  // again with the same setup would find the same nothing — and under the
+  // nightly reindex, a blank scan would be rendered and sent to the vision
+  // model again every night. So it is skipped like any unchanged file unless
+  // this run could read it differently. Checked before the chunk count: on a
+  // corpus of thousands of blank scans that is a query per document per night.
+  if (
+    !retryOwed &&
+    existing.emptyExtractionBy !== null &&
+    !couldReadDifferently(existing.emptyExtractionBy, deps)
+  ) {
+    return { owed: false };
+  }
+
+  const [{ value: storedChunks }] = await db
+    .select({ value: count() })
+    .from(kbChunks)
+    .where(eq(kbChunks.documentId, existing.id));
+
+  if (!retryOwed && storedChunks > 0) return { owed: false };
+  return { owed: true, current, storedChunks };
+}
+
+/**
+ * Whether this file's own turn will skip it: its row records the bytes on
+ * disk now, and owes them no read (`readOwed`). A row that owes a read
+ * whatever the bytes are answers without them; otherwise the file is read once
+ * to hash it. That read comes on top of the one its own turn takes — worth it
+ * against the verified copy, and possibly the conversion, a batch would
+ * otherwise spend on a document nobody reads.
+ */
+async function turnWillSkip(
+  orgId: string,
+  file: { absPath: string; realPath: string },
+  deps: IngestDeps
+): Promise<boolean> {
+  const [existing] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, orgId), eq(kbDocuments.sourcePath, file.absPath)))
+    .limit(1);
+  if (!existing) return false;
+  if ((await readOwed(existing, file.absPath, deps)).owed) return false;
+  const { hash } = await hashVerifiedSource(file.realPath);
+  return existing.contentHash === hash;
+}
+
+/**
  * Ingests one file: hash it, decide skip/recover/replace/insert, and write its
  * chunks. Whatever it throws is this file's failure unless
  * `systemicIngestError` says otherwise — the per-file boundary in
@@ -1451,39 +1539,11 @@ async function ingestFile(
       await db.update(kbDocuments).set({ status }).where(eq(kbDocuments.id, existing.id));
     }
 
-    // Chunks read from an artifact the current conversion rules did not make
-    // are owed a new read, whatever else is on record: the rules changed
-    // because of what such an artifact may hold.
-    const current = existing.artifactFormatVersion === artifactFormatVersionFor(absPath);
+    const verdict = await readOwed(existing, absPath, deps);
+    if (!verdict.owed) return "skipped";
+    const { current, storedChunks } = verdict;
     // Retries already spent were spent under the earlier rules.
     const previousIncompleteReads = current ? existing.incompleteReads : 0;
-
-    // A read that did not finish is owed another one, chunks or not: a scan
-    // with a typed cover sheet has chunks of its own even when every vision
-    // call behind it failed.
-    const retryOwed =
-      !current || (existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS);
-
-    // A file with no text at all: the last read found nothing. Reading it
-    // again with the same setup would find the same nothing — and under the
-    // nightly reindex, a blank scan would be rendered and sent to the vision
-    // model again every night. So it is skipped like any unchanged file unless
-    // this run could read it differently. Checked before the chunk count: on a
-    // corpus of thousands of blank scans that is a query per document per night.
-    if (
-      !retryOwed &&
-      existing.emptyExtractionBy !== null &&
-      !couldReadDifferently(existing.emptyExtractionBy, deps)
-    ) {
-      return "skipped";
-    }
-
-    const [{ value: storedChunks }] = await db
-      .select({ value: count() })
-      .from(kbChunks)
-      .where(eq(kbChunks.documentId, existing.id));
-
-    if (!retryOwed && storedChunks > 0) return "skipped";
 
     // Robustness case: a document row survives with zero chunks and no
     // empty read on record (written by a version that inserted the document
@@ -1760,7 +1820,7 @@ export async function ingestPaths(
 
   // Converts in queue order, in batches, as the loop below reaches Office
   // documents — see officeArtifacts for why this is not a pre-pass.
-  const resolveArtifact = officeArtifacts(queue, deps);
+  const resolveArtifact = officeArtifacts(queue, deps, (file) => turnWillSkip(orgId, file, deps));
 
   const tally: Record<FileOutcome, number> = { indexed: 0, skipped: 0, unsearchable: 0 };
   let failed = 0;
