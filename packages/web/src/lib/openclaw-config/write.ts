@@ -899,12 +899,19 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
               null,
               2
             );
-            if (
-              !configsAreEquivalentUpToOpenClawMetadata(
+            // Held already when the runtime equals it, or — as for the target
+            // above — when openclaw.json does: an earlier push's bridge that
+            // landed but was answered "superseded" before its agents.delete
+            // ran. Re-sending it is the 2026.9 no-op apply that never settles,
+            // and every newer push would stall on it the same way.
+            const onDisk = fileOnlyDeliveryPending() ? undefined : readCurrentContent();
+            const bridgeHeld =
+              configsAreEquivalentUpToOpenClawMetadata(
                 JSON.stringify(current.config ?? {}, null, 2),
                 bridge
-              )
-            ) {
+              ) ||
+              (onDisk !== undefined && configsAreEquivalentApartFromMeta(onDisk, bridge));
+            if (!bridgeHeld) {
               lastSent = bridge;
               await client.config.apply(bridge, current.hash, {
                 note: `pinchy: keep ${ids.join(", ")} until agents.delete removes it`,

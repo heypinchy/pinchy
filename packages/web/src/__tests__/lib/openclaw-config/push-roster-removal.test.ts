@@ -29,6 +29,8 @@ vi.mock("@/server/openclaw-client", () => ({
 const mockWriteFileSync = vi.fn();
 // writeConfigAtomic writes openclaw.json.tmp, then renames it into place.
 let onConfigFileWrite: ((content: string) => void) | undefined;
+/** openclaw.json as Pinchy reads it; missing unless a test exposes the fake's file. */
+let readConfigFile: (() => string) | undefined;
 vi.mock("fs", () => ({
   existsSync: () => true,
   mkdirSync: vi.fn(),
@@ -39,7 +41,10 @@ vi.mock("fs", () => ({
     }
     return mockWriteFileSync(...args);
   },
-  readFileSync: () => {
+  readFileSync: (path: unknown) => {
+    if (readConfigFile && typeof path === "string" && path.endsWith("openclaw.json")) {
+      return readConfigFile();
+    }
     const err = new Error("ENOENT: no such file or directory") as NodeJS.ErrnoException;
     err.code = "ENOENT";
     throw err;
@@ -61,6 +66,13 @@ class FakeOpenClaw {
   private writes = 0;
   /** Makes agents.delete refuse a call (1-based) with the returned message. */
   deleteFailure?: (call: number) => string | undefined;
+  /**
+   * OpenClaw 2026.9 with a SecretRef configured: config.get redacts the
+   * runtime, so it never equals a payload, and an apply that changes nothing
+   * never settles — it hangs until the next write and then fails "superseded".
+   */
+  redactsSecrets = false;
+  private hungApplies: ((err: Error) => void)[] = [];
   constructor(initial: Json) {
     this.file = initial;
     // A direct write of openclaw.json, which OpenClaw's reloader hot-applies.
@@ -75,13 +87,28 @@ class FakeOpenClaw {
   private commit(next: Json) {
     this.writes++;
     this.file = next;
+    for (const reject of this.hungApplies.splice(0)) {
+      reject(
+        new Error(
+          "config.apply persisted but was not applied to the active Gateway (superseded); run config.get, then use config.apply to reapply the saved config or restart the Gateway"
+        )
+      );
+    }
   }
   client = {
     config: {
-      get: vi.fn(async () => ({ hash: `h${this.writes}`, config: structuredClone(this.file) })),
+      get: vi.fn(async () => ({
+        hash: `h${this.writes}`,
+        config: this.redactsSecrets
+          ? { ...structuredClone(this.file), secrets: "__OPENCLAW_REDACTED__" }
+          : structuredClone(this.file),
+      })),
       apply: vi.fn(async (raw: string) => {
         const next = JSON.parse(raw) as Json;
         this.applies.push(next);
+        if (this.redactsSecrets && JSON.stringify(next) === JSON.stringify(this.file)) {
+          return new Promise((_, reject) => this.hungApplies.push(reject));
+        }
         const kept = new Set(
           Object.keys(((next.agents as Json | undefined)?.entries ?? {}) as Json)
         );
@@ -176,6 +203,7 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
 
   afterEach(() => {
     onConfigFileWrite = undefined;
+    readConfigFile = undefined;
     vi.restoreAllMocks();
   });
 
@@ -205,6 +233,45 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
     expect(configFileWrites()).toHaveLength(0);
     expect(onChangeApplied).toHaveBeenCalledTimes(1);
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("deletes the agent without re-sending a bridge openclaw.json already holds", async () => {
+    // An earlier push's bridge landed in the file but was answered
+    // "superseded" before its agents.delete ran. The bridge this push builds
+    // is that file again: on OpenClaw 2026.9 with a provider key, an apply
+    // that changes nothing never settles, so sending it again stalls the push
+    // until the 60s request timeout — and every newer push takes the same
+    // path, so the agent is never deleted (Odoo E2E, CI run 43221406793).
+    const bridge = {
+      gateway,
+      agents: {
+        ownership: "explicit",
+        defaults: { authInheritance: { agentId: "a" } },
+        entries: { a: { name: "A" }, b: { name: "B" } },
+      },
+    };
+    const oc = new FakeOpenClaw(bridge);
+    oc.redactsSecrets = true;
+    readConfigFile = () => serialize(oc.file);
+    mockGetClient.mockReturnValue(oc.client);
+    const onChangeApplied = vi.fn();
+    const target = {
+      gateway,
+      agents: {
+        ownership: "explicit",
+        defaults: { authInheritance: { agentId: "a" } },
+        entries: { a: { name: "A" } },
+      },
+    };
+
+    pushConfigInBackground(serialize(target), { onChangeApplied });
+    await settle();
+
+    expect(oc.deletes).toEqual([{ agentId: "b", deleteFiles: true }]);
+    expect(oc.file).toEqual(target);
+    expect(oc.applies).not.toContainEqual(bridge);
+    expect(onChangeApplied).toHaveBeenCalledTimes(1);
+    expect(configFileWrites()).toHaveLength(0);
   });
 
   it("delivers a fresh install's first agent, retiring OpenClaw's implicit main by a file write", async () => {
