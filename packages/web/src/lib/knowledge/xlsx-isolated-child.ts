@@ -2,8 +2,8 @@
  * The spreadsheet reader's child process — the other half of
  * `xlsx-isolated.ts`, which forks this file with a capped heap and explains
  * why. It reads ONE request (a workbook, a range of rows, a .docx's word
- * count, an Office file to stage for conversion, or a TIFF to turn into a
- * PDF), answers it, and exits.
+ * count or text, an Outlook message, an Office file to stage for conversion,
+ * or a TIFF to turn into a PDF), answers it, and exits.
  *
  * Everything that is not the read lives in the parent; this file only makes
  * itself the expendable process and relays.
@@ -48,23 +48,26 @@ function toFailure(err: unknown): SheetReaderFailure {
 }
 
 /**
- * The words mammoth sees in a .docx or .docm — the conversion's oracle. Read through
- * the same guard the conversion input passed: mammoth inflates the whole
- * archive, so a bomb must not reach it through the oracle's door.
+ * The text mammoth sees in a .docx or .docm — what the conversion's oracle
+ * counts, and what a document whose PDF came out short is indexed from (#1406).
+ * Read through the same guard the conversion input passed: mammoth inflates
+ * the whole archive, so a bomb must not reach it through the oracle's door.
  */
-async function docxWords(path: string): Promise<number> {
+async function docxText(path: string): Promise<string> {
   const { value } = await mammoth.extractRawText({ buffer: await readGuardedDocx(path) });
-  return countWords(value);
+  return value;
 }
 
-function read(request: SheetReaderRequest): Promise<unknown> {
+async function read(request: SheetReaderRequest): Promise<unknown> {
   switch (request.op) {
     case "extract":
       return extractXlsx(request.path, request.options);
     case "rows":
       return readSheetRange(request.path, request.sheet, request.startRow, request.endRow);
     case "docx-words":
-      return docxWords(request.path);
+      return countWords(await docxText(request.path));
+    case "docx-text":
+      return docxText(request.path);
     case "stage-office":
       return stageOfficeSource(request.path, request.dest);
     case "tiff-pdf":

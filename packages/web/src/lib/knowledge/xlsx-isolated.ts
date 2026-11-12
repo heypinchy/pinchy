@@ -45,8 +45,9 @@
  * `maxQueued`, so reloads cannot stack reads in front of the indexer — which
  * passes neither, and is never cut short or turned away.
  *
- * The same child also counts a `.docx` or `.docm`'s words for the conversion's oracle
- * (`countDocxWordsIsolated`). mammoth builds a DOM at
+ * The same child also counts a `.docx` or `.docm`'s words for the conversion's
+ * oracle (`countDocxWordsIsolated`), and reads its text for a document whose PDF
+ * came out short (`readDocxTextIsolated`). mammoth builds a DOM at
  * up to ~300x the markup it parses, and the markup ceiling in front of it
  * (`MAX_DOCX_MARKUP_BYTES`) is a PREDICTION of which parts mammoth parses: a
  * part it misses is a 13 KB file worth ~900 MB (measured) in whatever
@@ -108,6 +109,8 @@ export type SheetReaderRequest =
   | { op: "rows"; path: string; sheet: string | null; startRow: number; endRow: number }
   /** Words mammoth sees in the .docx at `path`, read through `readGuardedDocx`. */
   | { op: "docx-words"; path: string }
+  /** The text mammoth sees in the .docx at `path` — what `docx-words` counts (#1406). */
+  | { op: "docx-text"; path: string }
   /** The Office file at `path`, checked and written to `dest` (`stageOfficeSource`). */
   | { op: "stage-office"; path: string; dest: string }
   /** The TIFF at `path`, one PDF page per frame, written to `dest` (`tiffToPdf`). */
@@ -120,6 +123,8 @@ function readerName(request: SheetReaderRequest): string {
   switch (request.op) {
     case "docx-words":
       return "word-count reader";
+    case "docx-text":
+      return "Word text reader";
     case "stage-office":
       return "Office preflight";
     case "tiff-pdf":
@@ -482,6 +487,21 @@ export async function countDocxWordsIsolated(
   readerOptions: SheetReaderOptions = {}
 ): Promise<number> {
   return (await runSheetReader({ op: "docx-words", path: absPath }, readerOptions)) as number;
+}
+
+/**
+ * The text mammoth sees in the .docx at `absPath` — the same read
+ * `countDocxWordsIsolated` counts — in a child process, through the same
+ * guard and behind the same fence. What a Word document is indexed from when
+ * its converted PDF came out short (#1406): the oracle has just read the same
+ * bytes this way, so it is the one reading of the source known to work. Same
+ * errors as the count.
+ */
+export async function readDocxTextIsolated(
+  absPath: string,
+  readerOptions: SheetReaderOptions = {}
+): Promise<string> {
+  return (await runSheetReader({ op: "docx-text", path: absPath }, readerOptions)) as string;
 }
 
 /**

@@ -288,7 +288,10 @@ export interface ConversionOutcome {
   status: ConversionStatus;
   /** Set for `converted` only. */
   artifactPath?: string;
-  /** Set for `converted` only. */
+  /**
+   * Set for `converted`, and for a `failed` outcome the word-count check
+   * refused (`status: "short"`) — ingest's .docx fallback reads it (#1406).
+   */
   verification?: VerificationReport;
   /**
    * Diagnostic. Holds no document text, but it can quote names read from the

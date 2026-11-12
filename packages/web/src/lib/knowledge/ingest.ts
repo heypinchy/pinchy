@@ -46,7 +46,7 @@
  * source path, because the artifact is not a file the reader has.
  */
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, extname, join, sep } from "node:path";
 
 import { and, count, eq, inArray, sql } from "drizzle-orm";
 
@@ -195,6 +195,22 @@ export interface IngestDeps {
    * one.
    */
   readEmail: (copyPath: string) => Promise<ParsedEmail>;
+  /**
+   * The text of a `.docx`, read straight from the source (#1406). Prod:
+   * `readDocxTextIsolated`, the fenced reader child — the same mammoth read,
+   * through the same guard, as the conversion's word-count oracle.
+   *
+   * Asked only when the converted PDF came out SHORT: the tripwire keeps that
+   * PDF out of the index and the viewer, and this text is what keeps the
+   * document searchable without it — no preview, so no locator either. A
+   * refusal of the file is an `OfficeFileRejectedError`; anything else is
+   * about the machine, and the file counts as failed.
+   *
+   * Required for the same reason `convertOffice` is: every deployment that
+   * holds Word files meets a short conversion sooner or later, and an optional
+   * reader would turn it back into a document nobody can find.
+   */
+  readDocxText: (copyPath: string) => Promise<string>;
   /**
    * The vision model `extractPdf` reads scanned pages with this run, or null
    * when it reads the text layer only (no vision model, or `PINCHY_KB_OCR=off`).
@@ -754,7 +770,8 @@ type ResolveArtifact = (
 
 /**
  * The server log's line for a file refused before anything was indexed from
- * it. The path is whatever name the file was given on the share, newlines
+ * it, or indexed without part of what it should have had (a .docx read from
+ * its own text, without a preview). The path is whatever name the file was given on the share, newlines
  * included, and a reason can quote the file or the file system — so neither is
  * printed as it stands: one refusal is one bounded line, and cannot pass for
  * another.
@@ -987,15 +1004,83 @@ async function convertedArtifact(
   resolveArtifact: ResolveArtifact,
   contentHash: string
 ): Promise<string | null> {
-  const outcome = await resolveArtifact(absPath, contentHash, copyPath);
-  if (outcome.status === "infrastructure") {
-    throw new Error(`office conversion unavailable: ${outcome.reason ?? "unknown"}`);
-  }
+  const outcome = await conversionOf(absPath, copyPath, resolveArtifact, contentHash);
   if (outcome.status !== "converted" || !outcome.artifactPath) {
     logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
     return null;
   }
   return outcome.artifactPath;
+}
+
+/** The converter's answer for one document; throws when it never judged it (see above). */
+async function conversionOf(
+  absPath: string,
+  copyPath: string,
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
+): Promise<ConversionOutcome> {
+  const outcome = await resolveArtifact(absPath, contentHash, copyPath);
+  if (outcome.status === "infrastructure") {
+    throw new Error(`office conversion unavailable: ${outcome.reason ?? "unknown"}`);
+  }
+  return outcome;
+}
+
+/**
+ * Whether a refused conversion leaves the source text to index (#1406): a
+ * `.docx` whose PDF came out SHORT against the word-count oracle.
+ *
+ * Short and nothing else, because only then has the reader child already read
+ * these bytes through its guard and found them whole — the oracle's count is
+ * that read. (It read the copy staged for conversion, which the sanitizer may
+ * have cut relationships and altChunks from. mammoth's raw text skips
+ * altChunks and takes no text from a relationship, and a cut one it needs
+ * makes the count fail, which is never short — so the text is the same.) A document refused before conversion (a bomb, HTML renamed
+ * `.docx`) or one LibreOffice could not load must not reach mammoth by a back
+ * door. `.doc` and `.ppt` have oracles too, but catdoc and catppt under-count
+ * and mangle the diacritics a search matches on: fit for a lower bound, not
+ * for the text a document is found by.
+ */
+function hasSourceTextFallback(absPath: string, outcome: ConversionOutcome): boolean {
+  return outcome.verification?.status === "short" && extname(absPath).toLowerCase() === ".docx";
+}
+
+/**
+ * A `.docx` read straight from its source, after its PDF failed the tripwire
+ * (#1406). The tripwire is right to keep that PDF out of the index and the
+ * viewer — a third of the text may be missing from it — and wrong to leave the
+ * document with nothing. So it is indexed like a text file: no pages, no
+ * locator, and a citation names the file without a page-accurate preview.
+ *
+ * Final, like a converted document: the converter judged these bytes, and the
+ * next run would convert them to the same short PDF. A source the reader
+ * refuses as well is left as the refused conversion always was — no chunks,
+ * retried a few runs — with both causes in the log.
+ */
+async function extractDocxSourceText(
+  absPath: string,
+  copyPath: string,
+  deps: IngestDeps,
+  outcome: ConversionOutcome
+): Promise<ExtractedDocument> {
+  const reason = outcome.reason ?? "unknown";
+  const text = await deps.readDocxText(copyPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    logRefusal(absPath, "not converted", reason);
+    logRefusal(absPath, "not read from the .docx either", err.message);
+    return null;
+  });
+  if (text === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
+  }
+  logRefusal(absPath, "indexed from the .docx text, without a preview", reason);
+  return {
+    chunks: chunkPages([{ page: 1, text }]).map((chunk) => ({ text: chunk.text, locator: null })),
+    pageCount: null,
+    text,
+    incomplete: false,
+    reader: "text",
+  };
 }
 
 /**
@@ -1062,10 +1147,15 @@ async function extractOfficeDocument(
   resolveArtifact: ResolveArtifact,
   contentHash: string
 ): Promise<ExtractedDocument> {
-  const artifactPath = await convertedArtifact(absPath, copyPath, resolveArtifact, contentHash);
-  if (artifactPath === null) {
+  const outcome = await conversionOf(absPath, copyPath, resolveArtifact, contentHash);
+  if (outcome.status !== "converted" || !outcome.artifactPath) {
+    if (hasSourceTextFallback(absPath, outcome)) {
+      return extractDocxSourceText(absPath, copyPath, deps, outcome);
+    }
+    logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
     return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
   }
+  const artifactPath = outcome.artifactPath;
 
   const word = isWordFile(absPath);
   const pages = await deps.extractPdf(artifactPath, { outline: word });

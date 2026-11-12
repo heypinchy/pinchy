@@ -40,6 +40,7 @@ import {
   batchTimeoutMs,
   convertOfficeFiles,
   countSourceWordsWithOracle,
+  countWords,
   type OracleDeps,
   isOfficeFile,
   MIN_FREE_OUTPUT_BYTES,
@@ -55,7 +56,11 @@ import {
 import { OfficeArtifactStore } from "@/lib/knowledge/office-artifacts";
 import { MAX_DOCX_MARKUP_BYTES } from "../../../../../plugins/pinchy-files/docx-zip-guard";
 import { OfficeFileRejectedError, StagedCopyWriteError } from "@/lib/knowledge/office-formats";
-import { countDocxWordsIsolated, stageOfficeSourceIsolated } from "@/lib/knowledge/xlsx-isolated";
+import {
+  countDocxWordsIsolated,
+  readDocxTextIsolated,
+  stageOfficeSourceIsolated,
+} from "@/lib/knowledge/xlsx-isolated";
 import {
   declaredBomb,
   docxWith,
@@ -1379,6 +1384,28 @@ describe("preflight before conversion", () => {
       expect(await countSourceWordsWithOracle(path)).toBeNull();
       expect(await rejection(countDocxWordsIsolated(path))).toBeInstanceOf(OfficeFileRejectedError);
     }
+  });
+
+  it("reads a .docx's text in the reader child — the text the oracle counted (#1406)", async () => {
+    // The fallback when a conversion is rejected as short: the very text the
+    // oracle counted, so a document the tripwire turns away is still found.
+    const path = join(tmpRoot, "Produktkatalog.docx");
+    await writeFile(
+      path,
+      docxWith({ text: "Grüner Tee und Kräutertee im Sortiment", documentRels: relationships() })
+    );
+    const text = await readDocxTextIsolated(path);
+    expect(text).toContain("Grüner Tee und Kräutertee im Sortiment");
+    expect(countWords(text)).toBe(await countDocxWordsIsolated(path));
+  });
+
+  it("refuses to read the text of a .docx the oracle would refuse to count (#1406)", async () => {
+    // Same door, same guard: the fallback must not hand mammoth a bomb.
+    const bomb = join(tmpRoot, "bomb.docx");
+    await writeFile(bomb, declaredBomb(0xfffffffe, "word/document.xml"));
+    const err = await rejection(readDocxTextIsolated(bomb));
+    expect(err).toBeInstanceOf(OfficeFileRejectedError);
+    expect((err as OfficeFileRejectedError).code).toBe("too_large");
   });
 });
 
