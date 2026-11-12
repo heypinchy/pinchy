@@ -395,30 +395,48 @@ describe("fix_config_permissions — behaviour carried over from start-openclaw.
     expect(chmodCalls()).not.toContain(credentials);
   });
 
-  it("opens agents/<id> to 0755 so Pinchy can traverse it", () => {
-    const { agentIdDir } = seedAgentDir("agent-a");
-
-    runFix();
-
-    expect(statSync(agentIdDir).mode & 0o777).toBe(0o755);
-  });
-
-  it("opens sessions/ and its session files for Pinchy's diagnostics export", () => {
-    const sessionsDir = join(stateDir, "agents", "agent-a", "sessions");
+  // Up to OpenClaw 2026.8 this tick opened agents/<id> and agents/<id>/sessions
+  // to 0755 and sessions.json / *.trajectory.jsonl to 0644 for Pinchy's
+  // diagnostics export. OpenClaw 2026.9 keeps sessions and trajectories in a
+  // per-agent SQLite database at mode 0600 that Pinchy's container cannot read,
+  // and the pinchy-audit plugin reads it inside the gateway
+  // (`pinchy.trajectory.read`). Nothing running as uid 999 opens a path under
+  // agents/<id>/ any more, so a widened mode there is exposure with no reader —
+  // and a chmod on a tree OpenClaw writes to on every turn.
+  it("does not widen anything under agents/<id>, and does not touch the tree with chmod", () => {
+    const { agentIdDir, agentDir } = seedAgentDir("agent-a");
+    const sessionsDir = join(agentIdDir, "sessions");
     mkdirSync(sessionsDir, { recursive: true });
     chmodSync(sessionsDir, 0o700);
     const sessions = join(sessionsDir, "sessions.json");
     const trajectory = join(sessionsDir, "run-1.trajectory.jsonl");
-    writeFileSync(sessions, "{}\n");
-    writeFileSync(trajectory, "\n");
-    chmodSync(sessions, 0o600);
-    chmodSync(trajectory, 0o600);
+    const agentDb = join(agentDir, "openclaw-agent.sqlite");
+    for (const file of [sessions, trajectory, agentDb]) {
+      writeFileSync(file, "\n");
+      chmodSync(file, 0o600);
+    }
+    const chmodCalls = recordChmod();
 
     runFix();
 
-    expect(statSync(sessionsDir).mode & 0o777).toBe(0o755);
-    expect(statSync(sessions).mode & 0o777).toBe(0o644);
-    expect(statSync(trajectory).mode & 0o777).toBe(0o644);
+    expect(statSync(agentIdDir).mode & 0o777).toBe(0o700);
+    expect(statSync(sessionsDir).mode & 0o777).toBe(0o700);
+    expect(statSync(sessions).mode & 0o777).toBe(0o600);
+    expect(statSync(trajectory).mode & 0o777).toBe(0o600);
+    expect(statSync(agentDb).mode & 0o777).toBe(0o600);
+    expect(chmodCalls()).not.toContain(join(stateDir, "agents"));
+  });
+
+  it("still chowns agents/<id> for a tree that holds sessions/, without changing its mode", () => {
+    // The ownership repair (#934) is separate from the mode repair removed
+    // above, and must keep covering agent directories that carry sessions/.
+    const { agentIdDir } = seedAgentDir("agent-a");
+    mkdirSync(join(agentIdDir, "sessions"), { recursive: true });
+
+    runFix();
+
+    expect(chownedPaths()).toContain(agentIdDir);
+    expect(statSync(agentIdDir).mode & 0o777).toBe(0o700);
   });
 
   it("re-takes ownership of the secrets file when it exists", () => {
