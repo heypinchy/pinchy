@@ -102,7 +102,11 @@ import {
   type IngestResult,
   type ScanConversion,
 } from "@/lib/knowledge/ingest";
-import { OfficeFileRejectedError, StagedCopyWriteError } from "@/lib/knowledge/office-formats";
+import {
+  OFFICE_CONVERT_BATCH_SIZE,
+  OfficeFileRejectedError,
+  StagedCopyWriteError,
+} from "@/lib/knowledge/office-formats";
 import { extractXlsx as realExtractXlsx, type XlsxExtraction } from "@/lib/knowledge/xlsx-extract";
 import {
   convertOfficeFiles,
@@ -3422,6 +3426,74 @@ it("still takes a later document into the batch when its own turn will read it",
   expect(
     convertOffice.mock.calls[1][0].map((source: { absPath: string }) => basename(source.absPath))
   ).toEqual(["a.docx", "c.docx"]);
+});
+
+it("takes a later unchanged document into the batch when its turn owes it a read anyway", async () => {
+  // A matching hash is not the whole skip decision: a refusal still owed a
+  // retry, and a document read under an earlier artifact format, are read
+  // again unchanged. After a format bump that is every Office document, which
+  // is exactly when batching them together matters most.
+  for (const name of ["a.docx", "b.docx", "c.docx"]) {
+    writeFileSync(join(tmpRoot, name), `${name}-v1`);
+  }
+  const { deps, convertOffice } = officeDeps(
+    (absPath) =>
+      basename(absPath) === "b.docx"
+        ? { sourcePath: absPath, status: "failed", reason: "no artifact produced" }
+        : convertedTo("/artifacts/batch.pdf")(absPath),
+    () => WORD_PAGES
+  );
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+      counts({ indexed: 2, unsearchable: 1 })
+    );
+    await db
+      .update(kbDocuments)
+      .set({ artifactFormatVersion: null })
+      .where(eq(kbDocuments.sourcePath, join(tmpRoot, "c.docx")));
+
+    writeFileSync(join(tmpRoot, "a.docx"), "a.docx-v2");
+    expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+      counts({ indexed: 2, unsearchable: 1 })
+    );
+  } finally {
+    warn.mockRestore();
+  }
+
+  expect(convertOffice).toHaveBeenCalledTimes(2);
+  expect(
+    convertOffice.mock.calls[1][0].map((source: { absPath: string }) => basename(source.absPath))
+  ).toEqual(["a.docx", "b.docx", "c.docx"]);
+});
+
+it("looks no further ahead for batch mates than a batch reaches", async () => {
+  // Every mate looked at is read in full to learn whether its turn will skip
+  // it. A look-ahead that ran on until it found a batch's worth of documents
+  // to read would hash the rest of an unchanged corpus inside the first
+  // changed document's turn — and again on each of their own turns.
+  const names = Array.from(
+    { length: OFFICE_CONVERT_BATCH_SIZE + 6 },
+    (_, i) => `doc-${String(i).padStart(2, "0")}.docx`
+  );
+  for (const name of names) writeFileSync(join(tmpRoot, name), `${name}-v1`);
+  const { deps, convertOffice } = officeDeps(convertedTo("/artifacts/batch.pdf"), () => WORD_PAGES);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: names.length }));
+  const calls = convertOffice.mock.calls.length;
+
+  // The head changes, and one document past the head's window.
+  const far = names[OFFICE_CONVERT_BATCH_SIZE + 2];
+  writeFileSync(join(tmpRoot, names[0]), `${names[0]}-v2`);
+  writeFileSync(join(tmpRoot, far), `${far}-v2`);
+  expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(
+    counts({ indexed: 2, skipped: names.length - 2 })
+  );
+
+  expect(
+    convertOffice.mock.calls
+      .slice(calls)
+      .map(([sources]) => sources.map((source: { absPath: string }) => basename(source.absPath)))
+  ).toEqual([[names[0]], [far]]);
 });
 
 it("hashes an Office file as it streams, so the server never holds it whole while it converts", async () => {

@@ -685,9 +685,16 @@ function officeArtifacts(
     const copies: VerifiedCopy[] = [];
 
     try {
-      for (let i = start + 1; i < pending.length && batch.length < batchSize; i++) {
+      // The look-ahead is bounded by the window a full batch would span, not
+      // only by the batch: each mate looked at is read to learn whether its
+      // turn will skip it, and a scan that ran on until it found a batch's
+      // worth to read would hash the rest of an unchanged corpus here, inside
+      // this one document's turn.
+      let examined = 0;
+      for (let i = start + 1; i < pending.length && examined < batchSize - 1; i++) {
         const mate = pending[i];
         if (done.has(mate.absPath)) continue;
+        examined++;
         let copy;
         try {
           if (await turnWillSkip(mate)) continue;
@@ -1307,12 +1314,12 @@ function couldReadDifferently(recorded: string, deps: IngestDeps): boolean {
 
 /**
  * Whether a document whose row already records its current content is owed
- * another read — the one decision behind every skip of an unchanged file. A
- * batch of Office conversions asks it too (`officeArtifacts`), so a document
- * its own turn will skip is not converted on the way.
+ * another read, or is skipped without one. A batch of Office conversions asks
+ * it too (`turnWillSkip`), so a document its own turn will skip is not
+ * converted on the way.
  *
  * `current` is whether the row's chunks came from the current artifact rules;
- * `storedChunks` how many it has. Both are only known when a read is owed.
+ * `storedChunks` how many it has. Both are returned only when a read is owed.
  */
 async function readOwed(
   existing: typeof kbDocuments.$inferSelect,
@@ -1355,9 +1362,11 @@ async function readOwed(
 
 /**
  * Whether this file's own turn will skip it: its row records the bytes on
- * disk now, and owes them no read (`readOwed`). Reads the file once to hash
- * it — the same read its turn pays for an unchanged file, and less than the
- * verified copy a batch would otherwise take of it.
+ * disk now, and owes them no read (`readOwed`). A row that owes a read
+ * whatever the bytes are answers without them; otherwise the file is read once
+ * to hash it. That read comes on top of the one its own turn takes — worth it
+ * against the verified copy, and possibly the conversion, a batch would
+ * otherwise spend on a document nobody reads.
  */
 async function turnWillSkip(
   orgId: string,
@@ -1370,9 +1379,9 @@ async function turnWillSkip(
     .where(and(eq(kbDocuments.orgId, orgId), eq(kbDocuments.sourcePath, file.absPath)))
     .limit(1);
   if (!existing) return false;
+  if ((await readOwed(existing, file.absPath, deps)).owed) return false;
   const { hash } = await hashVerifiedSource(file.realPath);
-  if (existing.contentHash !== hash) return false;
-  return !(await readOwed(existing, file.absPath, deps)).owed;
+  return existing.contentHash === hash;
 }
 
 /**
