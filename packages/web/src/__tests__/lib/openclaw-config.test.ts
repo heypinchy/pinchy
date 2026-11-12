@@ -4590,9 +4590,14 @@ describe("regenerateOpenClawConfig", () => {
         expect(fileOnlyDeliveryPending()).toBe(false);
       });
 
-      it("is applied again after OpenClaw persisted an apply it did not load", async () => {
-        // The file now names the change; the runtime does not. Taking the file
-        // for the runtime here would lock the change out of it for good.
+      it("is not applied again after OpenClaw persisted it and a newer reload took over", async () => {
+        // "persisted but was not applied (superseded)" means a newer reload
+        // took over, and that reload loads the file this apply wrote. CI run
+        // 43137181823 shows it: a push got this answer at 01:59:49 for a change
+        // OpenClaw had hot-reloaded at 01:59:45. Re-applying the same content
+        // is then the no-op that hangs, and treating the file as ahead of the
+        // runtime kept every later push from recognising it: each one hung
+        // five times over, two and a half minutes per push.
         mockConfigApply
           .mockRejectedValueOnce(
             new Error(
@@ -4615,7 +4620,7 @@ describe("regenerateOpenClawConfig", () => {
           vi.useRealTimers();
         }
 
-        expect(mockConfigApply).toHaveBeenCalledTimes(2);
+        expect(mockConfigApply).toHaveBeenCalledTimes(1);
         expect(fileOnlyDeliveryPending()).toBe(false);
       });
     });

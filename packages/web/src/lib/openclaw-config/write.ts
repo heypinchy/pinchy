@@ -229,9 +229,6 @@ export function _supersedePendingPushes() {
 // (#193, agent-create-no-restart.spec.ts CI flake).
 const STALE_HASH_ERROR_FRAGMENT = "config changed since last load";
 const MAX_STALE_HASH_RETRIES = 3;
-// OpenClaw 2026.9's answer when it wrote an apply's payload to openclaw.json
-// but a newer reload took over before the payload reached the runtime.
-const PERSISTED_NOT_APPLIED_FRAGMENT = "persisted but was not applied";
 
 // OC 5.3 rate-limits config.apply (~3 calls per 45 s window). The error
 // carries an explicit "retry after Ns" hint. A rate-limited apply ALWAYS
@@ -808,7 +805,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // reload path throws "superseded" and nothing reschedules it, so the
         // call hangs until the next write and then fails "config.apply
         // persisted but was not applied to the active Gateway (superseded)".
-        // Five attempts of that are two and a half minutes per push. openclaw.json
+        // Five attempts of that are two and a half minutes per push. That
+        // answer is no sign the file is ahead of the runtime: "superseded"
+        // means a newer reload took over, and that reload loads the file
+        // (CI run 43137181823 hot-reloaded a change at 01:59:45 and answered
+        // its apply "superseded" at 01:59:49). openclaw.json
         // stands for the runtime exactly while no file-only delivery is pending
         // — the same premise build.ts's early return rests on — and a payload
         // it already holds (as Pinchy wrote it, or as supplemented) is that
@@ -973,12 +974,6 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-
-        // OpenClaw wrote this payload to openclaw.json and did not load it:
-        // the file is ahead of the runtime now, and must not be taken for it —
-        // not by the no-op guard above on the retry, not by build.ts's early
-        // return on the next push. Whatever apply lands next settles it.
-        if (message.includes(PERSISTED_NOT_APPLIED_FRAGMENT)) noteFileOnlyDelivery();
 
         // A newer push can have started while this attempt's RPC was in
         // flight. Both terminal branches below end in writeConfigAtomic, and a
