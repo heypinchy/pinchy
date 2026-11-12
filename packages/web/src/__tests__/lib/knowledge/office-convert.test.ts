@@ -2343,25 +2343,44 @@ describe("the word-count oracle counts the document, not the sanitized copy the 
 
   for (const { what, body, rel, pictureRelId } of cases) {
     it(`fails a conversion that lost content from a .docx holding ${what}`, async () => {
-      const absPath = join(corpusDir, "Bericht.docx");
-      await mkdir(corpusDir, { recursive: true });
-      await writeFile(
-        absPath,
-        docxWith({ text: TEXT, documentRels: relationships(rel), body, pictureRelId })
-      );
-
-      const outcomes = await convertOfficeFiles(
-        [{ absPath }],
-        deps(fakeConverter({ outputs: { "0.docx": "only five words survived here" } }), {
-          prepareSource: undefined,
-          countSourceWords: undefined,
-        })
-      );
-
-      expect(outcomes[0].status).toBe("failed");
-      expect(outcomes[0].reason).toMatch(/conversion lost content: 5 words in the PDF vs 3\d in/);
-      expect(outcomes[0].verification?.status).toBe("short");
+      await expectLostContentCaught("Bericht.docx", body, rel, pictureRelId);
     });
+  }
+
+  // A macro-enabled document is converted exactly like a .docx (#1431), and
+  // a share from an older system writes the extension in capitals.
+  for (const name of ["Vorlage.docm", "ALT.DOCX"]) {
+    it(`fails a conversion that lost content from ${name}`, async () => {
+      const { body, rel } = cases[0];
+      await expectLostContentCaught(name, body, rel);
+    });
+  }
+
+  async function expectLostContentCaught(
+    name: string,
+    body: string,
+    rel: string,
+    pictureRelId?: string
+  ) {
+    const absPath = join(corpusDir, name);
+    const staged = `0${extname(name).toLowerCase()}`;
+    await mkdir(corpusDir, { recursive: true });
+    await writeFile(
+      absPath,
+      docxWith({ text: TEXT, documentRels: relationships(rel), body, pictureRelId })
+    );
+
+    const outcomes = await convertOfficeFiles(
+      [{ absPath }],
+      deps(fakeConverter({ outputs: { [staged]: "only five words survived here" } }), {
+        prepareSource: undefined,
+        countSourceWords: undefined,
+      })
+    );
+
+    expect(outcomes[0].status).toBe("failed");
+    expect(outcomes[0].reason).toMatch(/conversion lost content: 5 words in the PDF vs 3\d in/);
+    expect(outcomes[0].verification?.status).toBe("short");
   }
 
   it("counts a legacy .doc from the staged copy, which is the bytes that were checked", async () => {

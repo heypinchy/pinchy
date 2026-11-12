@@ -94,6 +94,7 @@ import {
   OfficeFileRejectedError,
   StagedCopyWriteError,
   isOfficeFile,
+  isOoxmlWordFile,
   type ConvertedExtension,
 } from "./office-formats";
 import type { StagedSource } from "./office-preflight";
@@ -996,7 +997,7 @@ async function verifyAndCommit(
 /**
  * Which file the word-count oracle reads.
  *
- * A `.docx` is counted from the caller's private copy (`OfficeSource.absPath`):
+ * A `.docx` or `.docm` is counted from the caller's private copy (`OfficeSource.absPath`):
  * the document as written, before the preflight cut its external links. The
  * staged copy keeps the elements that pointed at them, and mammoth throws on
  * some of what is left — a hyperlink that still has its `w:anchor` (a link to
@@ -1013,7 +1014,7 @@ async function verifyAndCommit(
  * would count and LibreOffice never draws.
  */
 function oracleInput(item: WorkItem, stagedSource: string): string {
-  return extname(item.absPath).toLowerCase() === ".docx" ? item.absPath : stagedSource;
+  return isOoxmlWordFile(item.absPath) ? item.absPath : stagedSource;
 }
 
 /**
@@ -1243,7 +1244,7 @@ export interface OracleDeps {
  * Independence is the point: an oracle derived from LibreOffice would agree
  * with LibreOffice about text it dropped, and verify nothing.
  *
- *   - `.docx` — mammoth, already a web dependency, reading OOXML directly —
+ *   - `.docx`/`.docm` — mammoth, already a web dependency, reading OOXML directly —
  *     in the reader child (`xlsx-isolated.ts`), never in this process: its
  *     DOM costs up to ~300x the markup it parses.
  *   - `.doc`  — `catdoc`, and `.ppt` — `catppt` (Debian `catdoc`, ~1 MB next
@@ -1266,7 +1267,7 @@ export async function countSourceWordsWithOracle(
 ): Promise<number | null> {
   const ext = extname(absPath).toLowerCase();
 
-  if (ext === ".docx") {
+  if (isOoxmlWordFile(absPath)) {
     try {
       // The child reads the file through the same limits the conversion
       // input passed — mammoth inflates the whole archive, so a bomb must not
