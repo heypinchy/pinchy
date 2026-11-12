@@ -4493,6 +4493,133 @@ describe("regenerateOpenClawConfig", () => {
       expect(mockConfigApply).not.toHaveBeenCalled();
     });
 
+    describe("a payload openclaw.json already holds, behind a config.get that cannot show it", () => {
+      // What OpenClaw 2026.9's config.get answers for a configured provider:
+      // `config` is the materialized runtime (every model gains cost,
+      // contextWindow, … defaults) with each SecretRef id redacted. Neither
+      // can ever equal Pinchy's payload, so the comparison above never fires
+      // once a provider is configured.
+      const authored = {
+        meta: { lastTouchedVersion: "2026.9.2", lastTouchedAt: "2026-11-12T01:00:00Z" },
+        gateway: { mode: "local", bind: "lan" },
+        models: {
+          providers: {
+            anthropic: {
+              baseUrl: "https://api.anthropic.com",
+              api: "anthropic-messages",
+              apiKey: { source: "file", provider: "pinchy", id: "/providers/anthropic/apiKey" },
+              models: [{ id: "claude-haiku-4-5", name: "Haiku" }],
+            },
+          },
+        },
+      };
+      const materialized = {
+        ...authored,
+        models: {
+          providers: {
+            anthropic: {
+              ...authored.models.providers.anthropic,
+              apiKey: { source: "file", provider: "pinchy", id: "__OPENCLAW_REDACTED__" },
+              models: [
+                {
+                  id: "claude-haiku-4-5",
+                  name: "Haiku",
+                  contextWindow: 200000,
+                  maxTokens: 64000,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                },
+              ],
+            },
+          },
+        },
+      };
+      const { meta: _meta, ...payload } = authored;
+
+      beforeEach(() => {
+        mockGetClient.mockReturnValue({ config: { get: mockConfigGet, apply: mockConfigApply } });
+        mockConfigGet.mockResolvedValue({ hash: "h1", config: materialized });
+        mockedReadFileSync.mockReturnValue(JSON.stringify(authored, null, 2));
+      });
+
+      it("is not sent to config.apply", async () => {
+        // OpenClaw 2026.9 never settles such an apply when a SecretRef is
+        // configured: its unchanged-effective-config path throws "superseded"
+        // and nothing reschedules it, so the call hangs ~30 s and fails
+        // "config.apply persisted but was not applied to the active Gateway
+        // (superseded)" — five attempts, two and a half minutes, per push.
+        mockConfigApply.mockResolvedValue(undefined);
+
+        pushConfigInBackground(JSON.stringify(payload));
+        await drainBackgroundCoroutine();
+        await drainBackgroundCoroutine();
+
+        expect(mockConfigApply).not.toHaveBeenCalled();
+      });
+
+      it("is not sent to config.apply when openclaw.json differs from it only in OpenClaw's meta", async () => {
+        // OpenClaw 2026.9 stamps meta.migrations into the file on its first
+        // write. A payload built from the file before that stamp — the second
+        // of two pushes racing on a fresh install — differs in meta alone,
+        // which is no change to the effective config, so it hangs the same way.
+        mockedReadFileSync.mockReturnValue(
+          JSON.stringify(
+            { ...authored, meta: { ...authored.meta, migrations: { modelPolicyAllowlist: true } } },
+            null,
+            2
+          )
+        );
+        mockConfigGet.mockResolvedValue({
+          hash: "h1",
+          config: { ...materialized, meta: undefined },
+        });
+        mockConfigApply.mockResolvedValue(undefined);
+
+        pushConfigInBackground(JSON.stringify(authored));
+        await drainBackgroundCoroutine();
+        await drainBackgroundCoroutine();
+
+        expect(mockConfigApply).not.toHaveBeenCalled();
+      });
+
+      it("is still applied while openclaw.json may hold what the runtime never loaded", async () => {
+        noteFileOnlyDelivery();
+        mockConfigApply.mockResolvedValue(undefined);
+
+        pushConfigInBackground(JSON.stringify(payload));
+        await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledTimes(1));
+        expect(fileOnlyDeliveryPending()).toBe(false);
+      });
+
+      it("is applied again after OpenClaw persisted an apply it did not load", async () => {
+        // The file now names the change; the runtime does not. Taking the file
+        // for the runtime here would lock the change out of it for good.
+        mockConfigApply
+          .mockRejectedValueOnce(
+            new Error(
+              "config.apply persisted but was not applied to the active Gateway (superseded); run config.get, then use config.apply to reapply the saved config or restart the Gateway"
+            )
+          )
+          .mockResolvedValue(undefined);
+        const before = { gateway: { mode: "local", bind: "lan" } };
+        mockedReadFileSync.mockImplementation(() =>
+          JSON.stringify(mockConfigApply.mock.calls.length > 0 ? authored : before, null, 2)
+        );
+        mockConfigGet
+          .mockResolvedValueOnce({ hash: "h0", config: before })
+          .mockResolvedValue({ hash: "h1", config: materialized });
+        vi.useFakeTimers();
+        try {
+          pushConfigInBackground(JSON.stringify(payload));
+          for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(5_000);
+        } finally {
+          vi.useRealTimers();
+        }
+
+        expect(mockConfigApply).toHaveBeenCalledTimes(2);
+        expect(fileOnlyDeliveryPending()).toBe(false);
+      });
+    });
+
     it("a push parked since an earlier test can never reach config.apply, whatever generation the next push mints", async () => {
       // The generation counter is a MONOTONIC cancellation token: a coroutine
       // captures its own number and bails the moment `_pushGeneration` has

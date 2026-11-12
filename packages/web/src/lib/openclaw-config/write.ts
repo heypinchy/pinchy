@@ -1,5 +1,6 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { dirname } from "path";
+import { isDeepStrictEqual } from "node:util";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import {
@@ -66,6 +67,17 @@ export function writeConfigAtomic(content: string) {
   // because the volume itself is namespaced inside Docker; not exposed.)
   writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o666 });
   renameSync(tmpPath, CONFIG_PATH);
+}
+
+/** Whether two openclaw.json documents hold the same config once OpenClaw's `meta` is set aside. */
+function configsAreEquivalentApartFromMeta(a: string, b: string): boolean {
+  try {
+    const { meta: _a, ...configA } = JSON.parse(a) as Record<string, unknown>;
+    const { meta: _b, ...configB } = JSON.parse(b) as Record<string, unknown>;
+    return isDeepStrictEqual(configA, configB);
+  } catch {
+    return false;
+  }
 }
 
 /** openclaw.json as it is now, or undefined when it is missing or stays unreadable. */
@@ -217,6 +229,9 @@ export function _supersedePendingPushes() {
 // (#193, agent-create-no-restart.spec.ts CI flake).
 const STALE_HASH_ERROR_FRAGMENT = "config changed since last load";
 const MAX_STALE_HASH_RETRIES = 3;
+// OpenClaw 2026.9's answer when it wrote an apply's payload to openclaw.json
+// but a newer reload took over before the payload reached the runtime.
+const PERSISTED_NOT_APPLIED_FRAGMENT = "persisted but was not applied";
 
 // OC 5.3 rate-limits config.apply (~3 calls per 45 s window). The error
 // carries an explicit "retry after Ns" hint. A rate-limited apply ALWAYS
@@ -783,14 +798,38 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // 41906476538's late apply: `hot reload applied (hooks, plugins,
         // models)`, no restart). The handler also responds before it queues
         // any follow-up, so a landed apply is seen and settles the delivery.
-        if (current.config && !fileOnlyDeliveryPending()) {
-          const supplementedConfig = JSON.parse(supplemented) as Record<string, unknown>;
-          if (
-            configsAreEquivalentUpToOpenClawMetadata(
-              JSON.stringify(current.config, null, 2),
-              JSON.stringify(supplementedConfig, null, 2)
-            )
-          ) {
+        //
+        // The file is the second witness, for OpenClaw 2026.9: its config.get
+        // `config` is the materialized runtime with every SecretRef id
+        // redacted, so once a provider is configured it never equals a payload
+        // and the comparison above stops firing. That would only waste a slot,
+        // were it not that 2026.9 never settles an apply whose effective config
+        // is unchanged while a SecretRef is configured — its unchanged-config
+        // reload path throws "superseded" and nothing reschedules it, so the
+        // call hangs until the next write and then fails "config.apply
+        // persisted but was not applied to the active Gateway (superseded)".
+        // Five attempts of that are two and a half minutes per push. openclaw.json
+        // stands for the runtime exactly while no file-only delivery is pending
+        // — the same premise build.ts's early return rests on — and a payload
+        // it already holds (as Pinchy wrote it, or as supplemented) is that
+        // no-op. `meta` is left out of this comparison as a whole: it is
+        // OpenClaw's bookkeeping, not effective config, and 2026.9 stamps
+        // meta.migrations into the file on its first write — after a racing
+        // second push already built its payload from the file without it.
+        if (!fileOnlyDeliveryPending()) {
+          const supplementedJson = JSON.stringify(JSON.parse(supplemented), null, 2);
+          const onDisk = readCurrentContent();
+          const runtimeHoldsIt =
+            (current.config !== undefined &&
+              configsAreEquivalentUpToOpenClawMetadata(
+                JSON.stringify(current.config, null, 2),
+                supplementedJson
+              )) ||
+            (onDisk !== undefined &&
+              [supplementedJson, newContent].some((candidate) =>
+                configsAreEquivalentApartFromMeta(onDisk, candidate)
+              ));
+          if (runtimeHoldsIt) {
             // After agents.delete removed what OpenClaw refused to drop, the
             // target is already in place: that round delivered it.
             if (rosterRemovalRounds > 0) {
@@ -934,6 +973,12 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+
+        // OpenClaw wrote this payload to openclaw.json and did not load it:
+        // the file is ahead of the runtime now, and must not be taken for it —
+        // not by the no-op guard above on the retry, not by build.ts's early
+        // return on the next push. Whatever apply lands next settles it.
+        if (message.includes(PERSISTED_NOT_APPLIED_FRAGMENT)) noteFileOnlyDelivery();
 
         // A newer push can have started while this attempt's RPC was in
         // flight. Both terminal branches below end in writeConfigAtomic, and a
