@@ -2070,7 +2070,7 @@ describe("a .doc or .ppt whose word count fails is said in the log", () => {
   }
 
   it("counts a .doc with catdoc and a .ppt with catppt, and logs nothing when it works", async () => {
-    const countTextWords = vi.fn(async () => 42);
+    const countTextWords = vi.fn<NonNullable<OracleDeps["countTextWords"]>>(async () => 42);
 
     expect(await counted("Alt.doc", countTextWords)).toEqual({ words: 42, printed: [] });
     expect(await counted("Folien.ppt", countTextWords)).toEqual({ words: 42, printed: [] });
