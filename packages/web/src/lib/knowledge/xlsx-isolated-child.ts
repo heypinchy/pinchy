@@ -2,8 +2,8 @@
  * The spreadsheet reader's child process — the other half of
  * `xlsx-isolated.ts`, which forks this file with a capped heap and explains
  * why. It reads ONE request (a workbook, a range of rows, a .docx's word
- * count, an Office file to stage for conversion, or a TIFF to turn into a
- * PDF), answers it, and exits.
+ * count or text, an Outlook message, an Office file to stage for conversion,
+ * or a TIFF to turn into a PDF), answers it, and exits.
  *
  * Everything that is not the read lives in the parent; this file only makes
  * itself the expendable process and relays.

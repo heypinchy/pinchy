@@ -198,7 +198,7 @@ export interface IngestDeps {
   /**
    * The text of a `.docx`, read straight from the source (#1406). Prod:
    * `readDocxTextIsolated`, the fenced reader child — the same mammoth read,
-   * through the same guard, that the conversion's word-count oracle counts.
+   * through the same guard, as the conversion's word-count oracle.
    *
    * Asked only when the converted PDF came out SHORT: the tripwire keeps that
    * PDF out of the index and the viewer, and this text is what keeps the
@@ -770,7 +770,8 @@ type ResolveArtifact = (
 
 /**
  * The server log's line for a file refused before anything was indexed from
- * it. The path is whatever name the file was given on the share, newlines
+ * it, or indexed without part of what it should have had (a .docx read from
+ * its own text, without a preview). The path is whatever name the file was given on the share, newlines
  * included, and a reason can quote the file or the file system — so neither is
  * printed as it stands: one refusal is one bounded line, and cannot pass for
  * another.
@@ -1030,8 +1031,10 @@ async function conversionOf(
  * `.docx` whose PDF came out SHORT against the word-count oracle.
  *
  * Short and nothing else, because only then has the reader child already read
- * this very file through its guard and found it whole — the oracle's count is
- * that read. A document refused before conversion (a bomb, HTML renamed
+ * these bytes through its guard and found them whole — the oracle's count is
+ * that read. (It read the copy staged for conversion, which the sanitizer may
+ * have cut relationships and altChunks from; mammoth's raw text reads
+ * neither, so the text is the same.) A document refused before conversion (a bomb, HTML renamed
  * `.docx`) or one LibreOffice could not load must not reach mammoth by a back
  * door. `.doc` and `.ppt` have oracles too, but catdoc and catppt under-count
  * and mangle the diacritics a search matches on: fit for a lower bound, not

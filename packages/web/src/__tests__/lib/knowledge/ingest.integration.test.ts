@@ -2910,7 +2910,11 @@ describe("a .docx whose converted PDF lost words against its source (#1406)", ()
     const { deps, extractPdf, readDocxText } = officeDeps(
       shortConversion,
       () => WORD_PAGES,
-      async () => SOURCE_TEXT
+      async (copyPath) => {
+        // The private copy is still there, with the bytes that were hashed.
+        expect(readFileSync(copyPath, "utf8")).toBe("fake-docx-bytes");
+        return SOURCE_TEXT;
+      }
     );
 
     expect(await ingestDirectory(ORG_ID, tmpRoot, deps)).toEqual(counts({ indexed: 1 }));
