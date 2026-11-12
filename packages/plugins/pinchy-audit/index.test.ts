@@ -85,6 +85,33 @@ describe("pinchy-audit plugin", () => {
     );
   });
 
+  // Telegram linking and access go through these since OpenClaw 2026.9 keeps
+  // pairing state in its own database; like the trajectory read, they must
+  // not depend on the audit config.
+  it("registers the pairing store methods for admin clients, even without audit config", async () => {
+    const { default: plugin } = await import("./index");
+    const resolveStateDir = vi.fn(() => "/nonexistent-state-dir");
+    const api = { ...createMockApi(undefined), runtime: { state: { resolveStateDir } } };
+    plugin.register?.(api as any);
+
+    for (const method of [
+      "pinchy.pairing.findByCode",
+      "pinchy.pairing.removeRequests",
+      "pinchy.pairing.setAllowFrom",
+    ]) {
+      expect(api.registerGatewayMethod).toHaveBeenCalledWith(method, expect.any(Function), {
+        scope: "operator.admin",
+      });
+    }
+    const findByCode = api.registerGatewayMethod.mock.calls.find(
+      (c) => c[0] === "pinchy.pairing.findByCode"
+    )![1];
+    const respond = vi.fn();
+    findByCode({ params: { channel: "telegram", code: "ABCD1234" }, respond });
+    expect(resolveStateDir).toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(true, { request: null });
+  });
+
   it("posts start events from before_tool_call", async () => {
     const { default: plugin } = await import("./index");
     plugin.register?.(

@@ -53,6 +53,7 @@ import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
 import { regenerateOnConnect } from "./src/server/openclaw-connect-regenerate";
+import { syncTelegramAllowStoresOnConnect } from "./src/server/telegram-allow-store-on-connect";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 import {
   describeAuditKeyFilePersist,
@@ -749,7 +750,12 @@ const startup = app.prepare().then(async () => {
             })
           );
           updateTelegramChannelConfig(accountId, null);
-          clearAllowStoreForAccount(accountId);
+          try {
+            await clearAllowStoreForAccount(accountId);
+          } catch (err) {
+            // Not fatal: the bot is out of the config already, so its list grants nothing.
+            console.error("[channel-watchdog] failed to clear the allow list:", err);
+          }
 
           const name = await resolveAccountName(channel, accountId);
           const entry = {
@@ -848,6 +854,10 @@ const startup = app.prepare().then(async () => {
       // Full config push via config.apply — see regenerateOnConnect for when
       // a connect owes one.
       regenerateOnConnect({ firstConnect }, regenerateOpenClawConfig);
+
+      // Telegram allow lists live in OpenClaw's store; writes skipped while it
+      // was away land now (see syncTelegramAllowStoresOnConnect).
+      void syncTelegramAllowStoresOnConnect();
 
       // Start global usage poller. Idempotent — a reconnect won't spawn a
       // second poller. The poller handles sessions.list() failures gracefully.

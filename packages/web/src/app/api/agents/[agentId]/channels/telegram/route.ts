@@ -239,7 +239,7 @@ export const DELETE = withAuth<{ params: Promise<{ agentId: string }> }>(
     await deleteSetting(`telegram_conflict_disabled:${agentId}`);
 
     // Clear only this account's allow-from store (other agents' bots are unaffected)
-    clearAllowStoreForAccount(agentId);
+    await clearAllowStoreForAccount(agentId);
     // Remove this account from config (other accounts preserved).
     // updateTelegramChannelConfig() notifies restart-state on actual write.
     updateTelegramChannelConfig(agentId, null);

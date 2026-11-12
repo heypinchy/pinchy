@@ -46,8 +46,16 @@ export const POST = withAuth(async (req, _ctx, session) => {
     );
   }
 
-  // Resolve pairing code to Telegram user ID by reading OpenClaw's pairing file
-  const pairing = resolvePairingCode(code);
+  // Resolve the pairing code to a Telegram user ID through OpenClaw's store.
+  const pairing = await resolvePairingCode(code);
+  if (!pairing.found && pairing.unavailable) {
+    // We could not ask OpenClaw, so the code may well be valid: no failed
+    // guess is recorded against the user.
+    return NextResponse.json(
+      { error: "We can't reach the agent runtime right now. Try again in a moment." },
+      { status: 503 }
+    );
+  }
   if (!pairing.found) {
     await recordTelegramPairingFailure(session.user.id, "invalid_or_expired_code");
     return NextResponse.json(
@@ -90,7 +98,7 @@ export const POST = withAuth(async (req, _ctx, session) => {
   // Clear the pairing request from OpenClaw's store so it doesn't retain
   // any internal "approved" state. The allow-from stores (computed below)
   // become the sole authority for Telegram access.
-  removePairingRequest(telegramUserId);
+  await removePairingRequest(telegramUserId);
 
   // Recalculate per-account allow-from stores (permission-aware)
   await recalculateTelegramAllowStores();
@@ -116,7 +124,7 @@ export const DELETE = withAuth(async (_req, _ctx, session) => {
 
   // Remove the pairing request so OpenClaw issues a fresh code on next message
   if (existingLink) {
-    removePairingRequest(existingLink.channelUserId);
+    await removePairingRequest(existingLink.channelUserId);
   }
 
   // Recalculate per-account allow-from stores (removes unlinked user)

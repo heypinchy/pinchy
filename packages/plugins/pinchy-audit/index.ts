@@ -1,3 +1,11 @@
+import {
+  createPairingFindByCodeMethod,
+  createPairingRemoveRequestsMethod,
+  createPairingSetAllowFromMethod,
+  PAIRING_FIND_BY_CODE_METHOD,
+  PAIRING_REMOVE_REQUESTS_METHOD,
+  PAIRING_SET_ALLOW_FROM_METHOD,
+} from "./channel-pairing-store";
 import { createTrajectoryReadMethod, TRAJECTORY_READ_METHOD } from "./trajectory-reader";
 
 interface PluginConfig {
@@ -578,6 +586,27 @@ const plugin = {
     api.registerGatewayMethod(
       TRAJECTORY_READ_METHOD,
       createTrajectoryReadMethod(() => api.runtime.state.resolveStateDir()),
+      { scope: "operator.admin" }
+    );
+
+    // Telegram pairing codes and allow lists live in OpenClaw's state
+    // database since 2026.9 (see channel-pairing-store.ts). Same reasoning
+    // for registering them here: Telegram access must not depend on the audit
+    // config. Admin scope because setAllowFrom decides who reaches an agent.
+    const resolveStateDir = () => api.runtime.state.resolveStateDir();
+    api.registerGatewayMethod(
+      PAIRING_FIND_BY_CODE_METHOD,
+      createPairingFindByCodeMethod(resolveStateDir),
+      { scope: "operator.admin" }
+    );
+    api.registerGatewayMethod(
+      PAIRING_REMOVE_REQUESTS_METHOD,
+      createPairingRemoveRequestsMethod(resolveStateDir),
+      { scope: "operator.admin" }
+    );
+    api.registerGatewayMethod(
+      PAIRING_SET_ALLOW_FROM_METHOD,
+      createPairingSetAllowFromMethod(resolveStateDir),
       { scope: "operator.admin" }
     );
 

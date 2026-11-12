@@ -1677,9 +1677,9 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // Build Telegram channel config from DB settings using OpenClaw's multi-account format.
   // Each agent with a bot token gets its own account. Bindings route via accountId.
   //
-  // NOTE: allowFrom is NOT written here. It's managed via per-account allow-from
-  // store files (credentials/telegram-<accountId>-allowFrom.json) to avoid
-  // triggering the broken channel restart (openclaw/openclaw#47458).
+  // NOTE: allowFrom is NOT written here. It's managed in OpenClaw's per-account
+  // allow-from store (telegram-allow-store.ts) to avoid triggering the broken
+  // channel restart (openclaw/openclaw#47458).
   const accounts: Record<string, { botToken: string }> = {};
   interface TelegramBinding {
     agentId: string;

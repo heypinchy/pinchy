@@ -152,7 +152,7 @@ export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
     // Clean up Telegram bot settings if this agent had a bot
     await deleteSetting(`telegram_bot_token:${id}`);
     await deleteSetting(`telegram_bot_username:${id}`);
-    clearAllowStoreForAccount(id);
+    await clearAllowStoreForAccount(id);
     await regenerateOpenClawConfig();
     await recalculateTelegramAllowStores();
   }

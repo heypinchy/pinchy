@@ -32,7 +32,7 @@ export async function DELETE() {
   // updateTelegramChannelConfig() notifies restart-state on actual write — and
   // is auto-deduped when there's nothing to remove, avoiding a 30 s overlay for
   // a no-op.
-  clearAllAllowStores();
+  await clearAllAllowStores();
   updateTelegramChannelConfig(null, null);
 
   await appendAuditLog({

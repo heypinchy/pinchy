@@ -86,9 +86,9 @@ fi
 # OpenClaw creates openclaw.json with 600 (root-only). Pinchy needs write access
 # to update provider keys and agent configuration via regenerateOpenClawConfig().
 #
-# Also fixes the telegram-pairing.json file (OpenClaw 2026.4.12 writes it as
-# root:0600, but Pinchy needs to read it to look up Telegram user IDs from
-# pairing codes) and the per-agent directory ownership of #934.
+# Also opens credentials/ (up to OpenClaw 2026.8 Pinchy read Telegram pairing
+# codes there; 2026.9 keeps them in its state database and imports the old
+# files) and fixes the per-agent directory ownership of #934.
 #
 # Extracted to config/fix-config-permissions.sh (same pattern as
 # install-plugin-deps.sh / stage-llama-cpp-provider.sh) so each of those

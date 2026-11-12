@@ -154,7 +154,7 @@ describe("POST /api/settings/telegram", () => {
         onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
       }),
     });
-    mockResolvePairingCode.mockReturnValue({ found: true, telegramUserId: "8734062810" });
+    mockResolvePairingCode.mockResolvedValue({ found: true, telegramUserId: "8734062810" });
     mockTryAcquireTelegramPairingSlot.mockReturnValue(true);
   });
 
@@ -191,7 +191,7 @@ describe("POST /api/settings/telegram", () => {
   });
 
   it("returns 400 when pairing code is invalid", async () => {
-    mockResolvePairingCode.mockReturnValueOnce({ found: false });
+    mockResolvePairingCode.mockResolvedValueOnce({ found: false });
 
     const response = await POST(makePostRequest({ code: "BADCODE" }), routeContext());
     expect(response.status).toBe(400);
@@ -201,7 +201,7 @@ describe("POST /api/settings/telegram", () => {
   });
 
   it("records an audit failure when the pairing code is invalid", async () => {
-    mockResolvePairingCode.mockReturnValueOnce({ found: false });
+    mockResolvePairingCode.mockResolvedValueOnce({ found: false });
 
     await POST(makePostRequest({ code: "BADCODE" }), routeContext());
 
@@ -209,6 +209,24 @@ describe("POST /api/settings/telegram", () => {
       "user-1",
       "invalid_or_expired_code"
     );
+  });
+
+  // OpenClaw 2026.9 keeps pairing codes in its own database, read over the
+  // gateway. When that is unreachable we cannot tell a valid code from a bad
+  // one, so we say so instead of blaming the user's code — and record no
+  // failed guess against them.
+  it("returns 503 without recording a failed guess when OpenClaw cannot be asked", async () => {
+    mockResolvePairingCode.mockResolvedValueOnce({ found: false, unavailable: true });
+
+    const response = await POST(makePostRequest({ code: "FMSVEN7M" }), routeContext());
+    expect(response.status).toBe(503);
+
+    const data = await response.json();
+    expect(data.error).toMatch(/try again/i);
+    expect(data.error).not.toContain("Invalid or expired");
+
+    expect(mockRecordTelegramPairingFailure).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 
   it("returns 429 and does not touch the DB when the per-user rate limit is exceeded", async () => {

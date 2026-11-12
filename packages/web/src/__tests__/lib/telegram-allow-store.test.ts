@@ -1,46 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const {
-  mockReadFileSync,
-  mockWriteFileSync,
-  mockRenameSync,
-  mockExistsSync,
-  mockMkdirSync,
-  mockUnlinkSync,
-  mockReaddirSync,
-} = vi.hoisted(() => ({
-  mockReadFileSync: vi.fn(),
-  mockWriteFileSync: vi.fn(),
-  mockRenameSync: vi.fn(),
-  mockExistsSync: vi.fn().mockReturnValue(true),
-  mockMkdirSync: vi.fn(),
-  mockUnlinkSync: vi.fn(),
-  mockReaddirSync: vi.fn().mockReturnValue([]),
+// Since OpenClaw 2026.9 the allow lists and pairing requests live in its state
+// database; the pinchy-audit plugin writes them for us over the gateway.
+const { mockCallPairingStore } = vi.hoisted(() => ({ mockCallPairingStore: vi.fn() }));
+vi.mock("@/lib/openclaw-pairing-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/openclaw-pairing-store")>()),
+  callPairingStore: mockCallPairingStore,
 }));
-
-vi.mock("fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("fs")>();
-  return {
-    ...actual,
-    default: {
-      ...actual,
-      readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
-      writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
-      renameSync: (...args: unknown[]) => mockRenameSync(...args),
-      existsSync: (...args: unknown[]) => mockExistsSync(...args),
-      mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
-      unlinkSync: (...args: unknown[]) => mockUnlinkSync(...args),
-      readdirSync: (...args: unknown[]) => mockReaddirSync(...args),
-    },
-    readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
-    writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
-    renameSync: (...args: unknown[]) => mockRenameSync(...args),
-    existsSync: (...args: unknown[]) => mockExistsSync(...args),
-    mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
-    unlinkSync: (...args: unknown[]) => mockUnlinkSync(...args),
-    readdirSync: (...args: unknown[]) => mockReaddirSync(...args),
-  };
-});
 
 // ── DB mocks ────────────────────────────────────────────────────────────
 
@@ -92,78 +58,71 @@ vi.mock("@/lib/settings", () => ({
     ),
 }));
 
+import { OpenClawNotConnectedError } from "@/lib/openclaw-pairing-store";
 import {
   removePairingRequest,
   recalculateTelegramAllowStores,
-  getStorePathForAccount,
   clearAllowStoreForAccount,
   clearAllAllowStores,
 } from "@/lib/telegram-allow-store";
 
-function makeEaccesError() {
-  const err = new Error("EACCES: permission denied, open '/openclaw-config/credentials/file.json'");
-  (err as NodeJS.ErrnoException).code = "EACCES";
-  return err;
+const SET_ALLOW_FROM = "pinchy.pairing.setAllowFrom";
+
+/** The params of every setAllowFrom call, oldest first. */
+function allowFromWrites(): Array<{ allowFrom: Record<string, string[]>; replaceAll: boolean }> {
+  return mockCallPairingStore.mock.calls
+    .filter((c: unknown[]) => c[0] === SET_ALLOW_FROM)
+    .map((c: unknown[]) => c[1] as { allowFrom: Record<string, string[]>; replaceAll: boolean });
+}
+
+/** The allow lists of the one setAllowFrom call the test expects. */
+function writtenAllowFrom(): Record<string, string[]> {
+  const writes = allowFromWrites();
+  expect(writes).toHaveLength(1);
+  return writes[0].allowFrom;
 }
 
 describe("telegram-allow-store", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockExistsSync.mockReturnValue(true);
+    mockCallPairingStore.mockResolvedValue({});
   });
 
   describe("removePairingRequest", () => {
-    it("removes pairing request for given telegram user ID", () => {
-      mockReadFileSync.mockReturnValue(
-        JSON.stringify({
-          version: 1,
-          requests: [
-            { id: "8754697762", code: "ABC123", createdAt: "2026-01-01" },
-            { id: "111222333", code: "XYZ789", createdAt: "2026-01-01" },
-          ],
-        })
-      );
+    it("removes the telegram user's pending requests through the gateway", async () => {
+      await removePairingRequest("8754697762");
 
-      removePairingRequest("8754697762");
-
-      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
-      expect(written.requests).toHaveLength(1);
-      expect(written.requests[0].id).toBe("111222333");
-    });
-
-    it("does nothing if user not in pairing store", () => {
-      mockReadFileSync.mockReturnValue(
-        JSON.stringify({ version: 1, requests: [{ id: "111222333", code: "XYZ" }] })
-      );
-
-      removePairingRequest("999999");
-
-      expect(mockWriteFileSync).not.toHaveBeenCalled();
-    });
-
-    it("does nothing if pairing file does not exist", () => {
-      mockReadFileSync.mockImplementation(() => {
-        throw new Error("ENOENT");
+      expect(mockCallPairingStore).toHaveBeenCalledWith("pinchy.pairing.removeRequests", {
+        requestId: "8754697762",
       });
-
-      removePairingRequest("8754697762");
-
-      expect(mockWriteFileSync).not.toHaveBeenCalled();
     });
 
-    it("logs a warning and does nothing when pairing file is not readable due to EACCES", () => {
+    it("does not throw while OpenClaw is disconnected", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      mockReadFileSync.mockImplementation(() => {
-        throw makeEaccesError();
-      });
+      mockCallPairingStore.mockRejectedValue(new OpenClawNotConnectedError());
 
-      removePairingRequest("8754697762");
+      await expect(removePairingRequest("8754697762")).resolves.toBeUndefined();
+      warn.mockRestore();
+    });
 
-      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    it("does not throw when the gateway refuses, since the link itself already stands", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockCallPairingStore.mockRejectedValue(new Error("removeRequests failed: locked"));
+
+      await expect(removePairingRequest("8754697762")).resolves.toBeUndefined();
+      warn.mockRestore();
+    });
+
+    it("logs a warning when the removal fails", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockCallPairingStore.mockRejectedValue(new Error("removeRequests failed: locked"));
+
+      await removePairingRequest("8754697762");
+
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining("[telegram-allow-store]"),
         expect.any(String),
-        expect.stringContaining("EACCES")
+        expect.stringContaining("locked")
       );
       warn.mockRestore();
     });
@@ -171,97 +130,52 @@ describe("telegram-allow-store", () => {
 
   // ── Per-account store functions ───────────────────────────────────
 
-  describe("getStorePathForAccount", () => {
-    it("returns per-account store path", () => {
-      const path = getStorePathForAccount("agent-1");
-      expect(path).toContain("telegram-agent-1-allowFrom.json");
-      expect(path).toContain("credentials");
-    });
-  });
-
   describe("clearAllowStoreForAccount", () => {
-    it("writes empty allowFrom for specific account", () => {
-      mockReadFileSync.mockReturnValue(JSON.stringify({ version: 1, allowFrom: ["8754697762"] }));
+    it("empties that account's list and leaves the other accounts alone", async () => {
+      await clearAllowStoreForAccount("agent-1");
 
-      clearAllowStoreForAccount("agent-1");
-
-      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
-      expect(written).toEqual({ version: 1, allowFrom: [] });
-      // Verify it writes to the correct per-account path
-      expect(mockWriteFileSync.mock.calls[0][0]).toContain("telegram-agent-1-allowFrom.json");
+      expect(allowFromWrites()).toEqual([{ allowFrom: { "agent-1": [] }, replaceAll: false }]);
     });
 
-    it("does nothing if account store does not exist", () => {
-      mockReadFileSync.mockImplementation(() => {
-        throw new Error("ENOENT");
-      });
-
-      clearAllowStoreForAccount("agent-1");
-
-      expect(mockWriteFileSync).not.toHaveBeenCalled();
-    });
-
-    it("logs a warning and does nothing when store is not readable due to EACCES", () => {
+    it("skips with a warning while OpenClaw is disconnected", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      mockReadFileSync.mockImplementation(() => {
-        throw makeEaccesError();
-      });
+      mockCallPairingStore.mockRejectedValue(new OpenClawNotConnectedError());
 
-      clearAllowStoreForAccount("agent-1");
-
-      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      await expect(clearAllowStoreForAccount("agent-1")).resolves.toBeUndefined();
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining("[telegram-allow-store]"),
-        expect.any(String),
-        expect.stringContaining("EACCES")
+        expect.stringContaining("not connected")
       );
       warn.mockRestore();
+    });
+
+    // A revocation that did not land must not look like one that did.
+    it("throws when the gateway refuses the write", async () => {
+      mockCallPairingStore.mockRejectedValue(new Error("setAllowFrom failed: locked"));
+
+      await expect(clearAllowStoreForAccount("agent-1")).rejects.toThrow(/locked/);
     });
   });
 
   describe("clearAllAllowStores", () => {
-    it("clears all per-account store files", () => {
-      mockReaddirSync.mockReturnValue([
-        "telegram-agent-1-allowFrom.json",
-        "telegram-agent-2-allowFrom.json",
-        "telegram-pairing.json", // should be ignored
-      ]);
-      mockReadFileSync.mockReturnValue(JSON.stringify({ version: 1, allowFrom: ["8754697762"] }));
+    it("empties every account's list", async () => {
+      await clearAllAllowStores();
 
-      clearAllAllowStores();
-
-      // Should write empty stores for both accounts (2 writes: tmp + rename each)
-      const writeCallPaths = mockWriteFileSync.mock.calls.map((c: unknown[]) => c[0] as string);
-      expect(writeCallPaths.filter((p: string) => p.includes("agent-1"))).toHaveLength(1);
-      expect(writeCallPaths.filter((p: string) => p.includes("agent-2"))).toHaveLength(1);
+      expect(allowFromWrites()).toEqual([{ allowFrom: {}, replaceAll: true }]);
     });
 
-    it("also clears legacy store file if present", () => {
-      mockReaddirSync.mockReturnValue([
-        "telegram-allowFrom.json", // legacy
-        "telegram-agent-1-allowFrom.json",
-      ]);
-      mockReadFileSync.mockReturnValue(JSON.stringify({ version: 1, allowFrom: ["8754697762"] }));
-
-      clearAllAllowStores();
-
-      // Legacy + per-account = 2 writes
-      expect(mockWriteFileSync).toHaveBeenCalledTimes(2);
-    });
-
-    it("logs a warning and does not throw when credentials dir is not readable due to EACCES", () => {
+    it("skips while OpenClaw is disconnected", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      mockReaddirSync.mockImplementation(() => {
-        throw makeEaccesError();
-      });
+      mockCallPairingStore.mockRejectedValue(new OpenClawNotConnectedError());
 
-      expect(() => clearAllAllowStores()).not.toThrow();
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("[telegram-allow-store]"),
-        expect.any(String),
-        expect.stringContaining("EACCES")
-      );
+      await expect(clearAllAllowStores()).resolves.toBeUndefined();
       warn.mockRestore();
+    });
+
+    it("throws when the gateway refuses the write", async () => {
+      mockCallPairingStore.mockRejectedValue(new Error("setAllowFrom failed: locked"));
+
+      await expect(clearAllAllowStores()).rejects.toThrow(/locked/);
     });
   });
 
@@ -314,7 +228,6 @@ describe("telegram-allow-store", () => {
           new Map(Array.from(mockSettings.entries()).filter(([k]) => k.startsWith(prefix)))
         )
       );
-      mockReaddirSync.mockReturnValue([]);
     });
 
     it("writes per-account store for agent with visibility 'all'", async () => {
@@ -344,14 +257,8 @@ describe("telegram-allow-store", () => {
       await recalculateTelegramAllowStores();
 
       // Both users should be in agent-1's store (visibility: all)
-      const writeCalls = mockWriteFileSync.mock.calls;
-      const accountWrite = writeCalls.find((c: unknown[]) =>
-        (c[0] as string).includes("telegram-agent-1-allowFrom.json")
-      );
-      expect(accountWrite).toBeTruthy();
-      const written = JSON.parse(accountWrite![1] as string);
-      expect(written.allowFrom).toContain("111222333");
-      expect(written.allowFrom).toContain("444555666");
+      expect(writtenAllowFrom()["agent-1"]).toContain("111222333");
+      expect(writtenAllowFrom()["agent-1"]).toContain("444555666");
     });
 
     it("restricts access for agent with visibility 'restricted' to group members", async () => {
@@ -381,15 +288,9 @@ describe("telegram-allow-store", () => {
 
       await recalculateTelegramAllowStores();
 
-      const writeCalls = mockWriteFileSync.mock.calls;
-      const accountWrite = writeCalls.find((c: unknown[]) =>
-        (c[0] as string).includes("telegram-agent-1-allowFrom.json")
-      );
-      expect(accountWrite).toBeTruthy();
-      const written = JSON.parse(accountWrite![1] as string);
       // Only user-1 (in group) should have access
-      expect(written.allowFrom).toContain("111222333");
-      expect(written.allowFrom).not.toContain("444555666");
+      expect(writtenAllowFrom()["agent-1"]).toContain("111222333");
+      expect(writtenAllowFrom()["agent-1"]).not.toContain("444555666");
     });
 
     it("admins always get access to restricted agents", async () => {
@@ -412,13 +313,7 @@ describe("telegram-allow-store", () => {
 
       await recalculateTelegramAllowStores();
 
-      const writeCalls = mockWriteFileSync.mock.calls;
-      const accountWrite = writeCalls.find((c: unknown[]) =>
-        (c[0] as string).includes("telegram-agent-1-allowFrom.json")
-      );
-      expect(accountWrite).toBeTruthy();
-      const written = JSON.parse(accountWrite![1] as string);
-      expect(written.allowFrom).toContain("111222333");
+      expect(writtenAllowFrom()["agent-1"]).toContain("111222333");
     });
 
     it("writes separate stores for multiple agents", async () => {
@@ -449,21 +344,11 @@ describe("telegram-allow-store", () => {
 
       await recalculateTelegramAllowStores();
 
-      const writeCalls = mockWriteFileSync.mock.calls;
-      const agent1Write = writeCalls.find((c: unknown[]) =>
-        (c[0] as string).includes("telegram-agent-1-allowFrom.json")
-      );
-      const agent2Write = writeCalls.find((c: unknown[]) =>
-        (c[0] as string).includes("telegram-agent-2-allowFrom.json")
-      );
-
-      expect(agent1Write).toBeTruthy();
-      expect(agent2Write).toBeTruthy();
-
+      const written = writtenAllowFrom();
       // agent-1 (visibility: all) → user has access
-      expect(JSON.parse(agent1Write![1] as string).allowFrom).toContain("111222333");
+      expect(written["agent-1"]).toContain("111222333");
       // agent-2 (restricted, user in group) → user has access
-      expect(JSON.parse(agent2Write![1] as string).allowFrom).toContain("111222333");
+      expect(written["agent-2"]).toContain("111222333");
     });
 
     it("skips agents without bot tokens", async () => {
@@ -494,12 +379,12 @@ describe("telegram-allow-store", () => {
 
       await recalculateTelegramAllowStores();
 
-      const writePaths = mockWriteFileSync.mock.calls.map((c: unknown[]) => c[0] as string);
-      expect(writePaths.some((p: string) => p.includes("agent-1"))).toBe(true);
-      expect(writePaths.some((p: string) => p.includes("agent-2"))).toBe(false);
+      expect(Object.keys(writtenAllowFrom())).toEqual(["agent-1"]);
     });
 
-    it("cleans up orphaned store files for agents without bots", async () => {
+    // The write replaces the whole channel, so an account that no longer has a
+    // bot (deleted agent, disconnected bot) loses its list by being left out.
+    it("replaces the whole channel so accounts without a bot lose their list", async () => {
       setupDbMocks({
         agents: [
           {
@@ -516,20 +401,15 @@ describe("telegram-allow-store", () => {
         users: [],
       });
       mockSettings.set("telegram_bot_token:agent-1", "token-1");
-      // Orphaned store file for agent that no longer has a bot
-      mockReaddirSync.mockReturnValue([
-        "telegram-agent-1-allowFrom.json",
-        "telegram-deleted-agent-allowFrom.json",
-      ]);
 
       await recalculateTelegramAllowStores();
 
-      expect(mockUnlinkSync).toHaveBeenCalledWith(
-        expect.stringContaining("telegram-deleted-agent-allowFrom.json")
-      );
+      expect(allowFromWrites()).toEqual([{ allowFrom: { "agent-1": [] }, replaceAll: true }]);
     });
 
-    it("deletes legacy store file", async () => {
+    // While the gateway is down nothing can be written; server.ts recalculates
+    // on reconnect, so the change is not lost and the route must not fail.
+    it("skips with a warning while OpenClaw is disconnected", async () => {
       setupDbMocks({
         agents: [
           {
@@ -546,16 +426,15 @@ describe("telegram-allow-store", () => {
         users: [],
       });
       mockSettings.set("telegram_bot_token:agent-1", "token-1");
-      mockReaddirSync.mockReturnValue([
-        "telegram-allowFrom.json", // legacy
-        "telegram-agent-1-allowFrom.json",
-      ]);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockCallPairingStore.mockRejectedValue(new OpenClawNotConnectedError());
 
-      await recalculateTelegramAllowStores();
-
-      expect(mockUnlinkSync).toHaveBeenCalledWith(
-        expect.stringContaining("telegram-allowFrom.json")
+      await expect(recalculateTelegramAllowStores()).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("[telegram-allow-store]"),
+        expect.stringContaining("not connected")
       );
+      warn.mockRestore();
     });
 
     it("writes empty store when no linked users exist", async () => {
@@ -578,16 +457,10 @@ describe("telegram-allow-store", () => {
 
       await recalculateTelegramAllowStores();
 
-      const writeCalls = mockWriteFileSync.mock.calls;
-      const accountWrite = writeCalls.find((c: unknown[]) =>
-        (c[0] as string).includes("telegram-agent-1-allowFrom.json")
-      );
-      expect(accountWrite).toBeTruthy();
-      const written = JSON.parse(accountWrite![1] as string);
-      expect(written.allowFrom).toEqual([]);
+      expect(writtenAllowFrom()["agent-1"]).toEqual([]);
     });
 
-    it("does nothing when no agents have bots", async () => {
+    it("clears the channel when no agent has a bot", async () => {
       setupDbMocks({
         agents: [
           {
@@ -607,9 +480,7 @@ describe("telegram-allow-store", () => {
 
       await recalculateTelegramAllowStores();
 
-      // No per-account writes (only potential cleanup)
-      const writePaths = mockWriteFileSync.mock.calls.map((c: unknown[]) => c[0] as string);
-      expect(writePaths.some((p: string) => p.includes("telegram-agent"))).toBe(false);
+      expect(allowFromWrites()).toEqual([{ allowFrom: {}, replaceAll: true }]);
     });
 
     it("includes personal agents (e.g. Smithers) that have a bot token", async () => {
@@ -632,13 +503,7 @@ describe("telegram-allow-store", () => {
 
       await recalculateTelegramAllowStores();
 
-      const writeCalls = mockWriteFileSync.mock.calls;
-      const accountWrite = writeCalls.find((c: unknown[]) =>
-        (c[0] as string).includes("telegram-smithers-1-allowFrom.json")
-      );
-      expect(accountWrite).toBeTruthy();
-      const written = JSON.parse(accountWrite![1] as string);
-      expect(written.allowFrom).toContain("111222333");
+      expect(writtenAllowFrom()["smithers-1"]).toContain("111222333");
     });
 
     it("leaves members off a personal-agent bot while members may not use a personal agent", async () => {
@@ -677,12 +542,7 @@ describe("telegram-allow-store", () => {
 
       await recalculateTelegramAllowStores();
 
-      const storeFor = (account: string) =>
-        JSON.parse(
-          mockWriteFileSync.mock.calls.find((c: unknown[]) =>
-            (c[0] as string).includes(`telegram-${account}-allowFrom.json`)
-          )![1] as string
-        ).allowFrom;
+      const storeFor = (account: string) => writtenAllowFrom()[account];
       expect(storeFor("smithers-1")).toEqual(["222"]);
       // A shared agent's bot is not a personal agent; the switch leaves it alone.
       expect(storeFor("shared-1")).toEqual(["111", "222"]);
@@ -714,13 +574,8 @@ describe("telegram-allow-store", () => {
 
       await recalculateTelegramAllowStores();
 
-      const writeCalls = mockWriteFileSync.mock.calls;
-      const accountWrite = writeCalls.find((c: unknown[]) =>
-        (c[0] as string).includes("telegram-agent-1-allowFrom.json")
-      );
-      const written = JSON.parse(accountWrite![1] as string);
-      expect(written.allowFrom).toContain("111222333");
-      expect(written.allowFrom).not.toContain("444555666");
+      expect(writtenAllowFrom()["agent-1"]).toContain("111222333");
+      expect(writtenAllowFrom()["agent-1"]).not.toContain("444555666");
     });
 
     it("fetches bot tokens in a single batched prefix query, not one getSetting per agent (#261)", async () => {
@@ -763,11 +618,85 @@ describe("telegram-allow-store", () => {
       expect(mockGetSettingsByPrefix).toHaveBeenCalledTimes(1);
       expect(mockGetSettingsByPrefix).toHaveBeenCalledWith("telegram_bot_token:", mockSettings);
 
-      // All three agents' stores were still written from the batched result.
-      const written = mockWriteFileSync.mock.calls.map((c: unknown[]) => c[0] as string);
-      expect(written.some((p) => p.includes("telegram-agent-1-allowFrom.json"))).toBe(true);
-      expect(written.some((p) => p.includes("telegram-agent-2-allowFrom.json"))).toBe(true);
-      expect(written.some((p) => p.includes("telegram-agent-3-allowFrom.json"))).toBe(true);
+      // All three agents' lists were still written from the batched result.
+      expect(Object.keys(writtenAllowFrom()).sort()).toEqual(["agent-1", "agent-2", "agent-3"]);
+    });
+
+    // A revocation that did not land must surface, not pass as done.
+    it("throws when the gateway refuses the write", async () => {
+      setupDbMocks({
+        agents: [
+          {
+            id: "agent-1",
+            visibility: "all",
+            isPersonal: false,
+            deletedAt: null,
+            avatarSeed: null,
+          },
+        ],
+      });
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
+      mockCallPairingStore.mockRejectedValue(new Error("setAllowFrom failed: locked"));
+
+      await expect(recalculateTelegramAllowStores()).rejects.toThrow(/locked/);
+    });
+
+    it("lets the next run through after a failed one", async () => {
+      setupDbMocks({
+        agents: [
+          {
+            id: "agent-1",
+            visibility: "all",
+            isPersonal: false,
+            deletedAt: null,
+            avatarSeed: null,
+          },
+        ],
+      });
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
+      mockCallPairingStore.mockRejectedValueOnce(new Error("setAllowFrom failed: locked"));
+
+      await expect(recalculateTelegramAllowStores()).rejects.toThrow();
+      await expect(recalculateTelegramAllowStores()).resolves.toBeUndefined();
+      expect(allowFromWrites()).toHaveLength(2);
+    });
+
+    // An older computation landing after a newer one would restore access
+    // the newer one had just taken away.
+    it("serializes concurrent runs so their writes land in call order", async () => {
+      setupDbMocks({
+        agents: [
+          {
+            id: "agent-1",
+            visibility: "all",
+            isPersonal: false,
+            deletedAt: null,
+            avatarSeed: null,
+          },
+        ],
+      });
+      mockSettings.set("telegram_bot_token:agent-1", "token-1");
+      const order: string[] = [];
+      let releaseFirst!: () => void;
+      mockCallPairingStore
+        .mockImplementationOnce(async () => {
+          order.push("first:start");
+          await new Promise<void>((r) => (releaseFirst = r));
+          order.push("first:end");
+          return {};
+        })
+        .mockImplementationOnce(async () => {
+          order.push("second");
+          return {};
+        });
+
+      const first = recalculateTelegramAllowStores();
+      const second = recalculateTelegramAllowStores();
+      await vi.waitFor(() => expect(order).toEqual(["first:start"]));
+      releaseFirst();
+      await Promise.all([first, second]);
+
+      expect(order).toEqual(["first:start", "first:end", "second"]);
     });
   });
 });
