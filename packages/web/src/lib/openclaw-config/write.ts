@@ -285,8 +285,22 @@ function parseRetryAfterMs(message: string): number | null {
 // file-write fallback runs as before; by then any normal restart has completed
 // and the write is safe (OC is genuinely down, not racing its own startup).
 const WS_DISCONNECTED_ERROR_FRAGMENT = "Not connected to OpenClaw Gateway";
+
 const NOT_CONNECTED_MAX_WAIT_MS = 60_000;
 const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
+
+// An apply OpenClaw persisted to openclaw.json without answering it: 2026.9's
+// reload hangs on a config the runtime already holds, until the next write
+// supersedes it or openclaw-node's 30 s request timeout gives up. The file is
+// written either way, and the reload that runs on it is OpenClaw's own — so a
+// retry of the same content cannot deliver anything, and hangs again. Only
+// "(superseded)": the same text carries the reload's other outcomes, and
+// "(failed)" or "(stopped)" mean the runtime did not take the file — a retry
+// re-runs that reload.
+const UNANSWERED_APPLY_ERROR_FRAGMENTS = [
+  "Request config.apply timed out",
+  "config.apply persisted but was not applied to the active Gateway (superseded)",
+];
 
 // OpenClaw's config writer refuses any write under half of the current
 // openclaw.json (`size-drop:OLD->NEW`), and config.apply exposes no way to lift
@@ -361,17 +375,19 @@ const MAX_SIZE_DROP_REFUSALS = 3;
  *
  * `onChangeApplied` fires exactly once, on the terminal path where the new
  * config actually reached OpenClaw's runtime or the on-disk file — i.e. a
- * successful `config.apply`, or any `writeConfigAtomic` fallback (no client,
- * rate-limit budget exhausted, retries exhausted). It deliberately does NOT
- * fire when the push is a semantic no-op (skipped because the supplemented
- * payload already equals OC's runtime) or when a newer push superseded this
- * one. Callers use it to drive side effects that must only happen when a real
- * change lands — e.g. `restartState.notifyRestart()` for the Telegram channel
- * writer, which must not strand the UI overlay on a no-op (#476 Gap 1). The
- * previous file-content dedup in the caller could not see this: `config.apply`
- * persists an OC-enriched file that never byte-matches the caller's payload, so
- * a repeated identical call no longer deduped and fired notifyRestart on a
- * genuine no-op.
+ * successful `config.apply`, an apply OpenClaw persisted but left unanswered
+ * while openclaw.json holds its payload (UNANSWERED_APPLY_ERROR_FRAGMENTS — on
+ * 2026.9 that can be a config the runtime already held), or any
+ * `writeConfigAtomic` fallback (no client, rate-limit budget exhausted, retries
+ * exhausted). It deliberately does NOT fire when the push is a semantic no-op
+ * (skipped because the supplemented payload already equals OC's runtime) or
+ * when a newer push superseded this one. Callers use it to drive side effects
+ * that must only happen when a real change lands — e.g.
+ * `restartState.notifyRestart()` for the Telegram channel writer, which must
+ * not strand the UI overlay on a no-op (#476 Gap 1). The previous file-content
+ * dedup in the caller could not see this: `config.apply` persists an
+ * OC-enriched file that never byte-matches the caller's payload, so a repeated
+ * identical call no longer deduped and fired notifyRestart on a genuine no-op.
  */
 export interface PushConfigOptions {
   onChangeApplied?: () => void;
@@ -496,6 +512,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     let sizeDropRefusals = 0;
     let lastOcConfig: Record<string, unknown> | undefined;
     let lastSent: string | undefined;
+    // What `lastSent` was: the roster-removal bridge, a provider-deletion step,
+    // or the push's target itself.
+    let lastSentKind: "bridge" | "step" | "target" | undefined;
     let lastSizeDrop = "";
     // Agents OpenClaw refused to drop (parseRosterDropRejection), removed on
     // the next attempt through agents.delete.
@@ -899,12 +918,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
               null,
               2
             );
-            // Held already when the runtime equals it, or — as for the target
-            // above — when openclaw.json does: an earlier push's bridge that
-            // landed but was answered "superseded" before its agents.delete
-            // ran. Re-sending it is the 2026.9 no-op apply that never settles,
-            // and every newer push would stall on it the same way.
-            const onDisk = fileOnlyDeliveryPending() ? undefined : readCurrentContent();
+            // Held already — by the runtime, or by openclaw.json once an
+            // earlier round's bridge persisted without an answer (see
+            // UNANSWERED_APPLY_ERROR_FRAGMENTS): applying it again is a no-op
+            // apply, which 2026.9 never answers.
+            const onDisk = readCurrentContent();
             const bridgeHeld =
               configsAreEquivalentUpToOpenClawMetadata(
                 JSON.stringify(current.config ?? {}, null, 2),
@@ -913,6 +931,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
               (onDisk !== undefined && configsAreEquivalentApartFromMeta(onDisk, bridge));
             if (!bridgeHeld) {
               lastSent = bridge;
+              lastSentKind = "bridge";
               await client.config.apply(bridge, current.hash, {
                 note: `pinchy: keep ${ids.join(", ")} until agents.delete removes it`,
               });
@@ -955,6 +974,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         }
 
         lastSent = payload;
+        lastSentKind = isShrinkStep ? "step" : "target";
         await client.config.apply(payload, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
@@ -1005,6 +1025,35 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           );
           onSuperseded();
           return;
+        }
+
+        // OpenClaw persisted what this push sent and left it unanswered. A
+        // re-send would hang the same way — 2026.9 answers no apply whose
+        // config it already holds — so read the file instead: if it holds what
+        // was sent, the bridge is in place for agents.delete, or the target is
+        // delivered (its reload is OpenClaw's own, on that file). Not for a
+        // provider-deletion step: its budget accounting stays with the retry.
+        if (
+          lastSent !== undefined &&
+          (lastSentKind === "bridge" || lastSentKind === "target") &&
+          UNANSWERED_APPLY_ERROR_FRAGMENTS.some((f) => message.includes(f))
+        ) {
+          const onDisk = readCurrentContent();
+          if (onDisk !== undefined && configsAreEquivalentApartFromMeta(onDisk, lastSent)) {
+            if (lastSentKind === "bridge") {
+              console.log(
+                `[openclaw-config] push gen=${String(generation)}: roster bridge persisted without an answer (${message}); removing via agents.delete`
+              );
+              i--;
+              continue;
+            }
+            console.log(
+              `[openclaw-config] push gen=${String(generation)}: config.apply persisted without an answer (${message}); openclaw.json holds the target, OpenClaw's reload owns it`
+            );
+            runtimeReached();
+            onChangeApplied?.();
+            return;
+          }
         }
 
         const rosterDrop = parseRosterDropRejection(message);

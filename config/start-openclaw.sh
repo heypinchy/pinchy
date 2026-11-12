@@ -214,8 +214,8 @@ stage_llama_cpp_provider
 # test uses, so the race is effectively closed. A repair in this tick is not
 # free just because the syscall is cheap: each chmod or chown is an attribute
 # event, 20 a second. On OpenClaw 2026.9 the ungated chmod of openclaw.json
-# starved the config watcher, which is why that repair, like those on watched
-# session files, only fires when the mode is actually wrong (see
+# starved the config watcher, which is why that repair, like the credentials/
+# and secrets ones, only fires when the mode is actually wrong (see
 # fix_config_permissions).
 (while true; do sleep 0.05; fix_config_permissions; done) &
 

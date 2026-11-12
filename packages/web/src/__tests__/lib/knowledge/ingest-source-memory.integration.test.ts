@@ -122,6 +122,9 @@ it("streams every source through the server one chunk at a time, and hands reade
     readEmail: async () => {
       throw new Error("this run holds no mail");
     },
+    readDocxText: async () => {
+      throw new Error("this run converts every document");
+    },
     convertScan: async () => {
       throw new Error("this run holds no scan");
     },
