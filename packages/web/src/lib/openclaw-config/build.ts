@@ -978,6 +978,12 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // change no admin approved and the audit trail never sees. Forced off on
     // every regenerate, like `hooks.internal.enabled` above.
     skills: { workshop: { autonomous: { mode: "off" as const } } },
+    // Every Pinchy agent holds `session_status`, and OpenClaw lets session
+    // tools reach any session on the Gateway by default ("all", with
+    // cross-agent access on). That would let an agent read another agent's
+    // sessions, or another user's session of the same shared agent. "self"
+    // keeps each session to itself.
+    tools: { sessions: { visibility: "self" as const } },
   };
 
   // Preserve OpenClaw-enriched top-level fields that Pinchy doesn't manage

@@ -2001,6 +2001,108 @@ describe("regenerateOpenClawConfig", () => {
     }
   });
 
+  it(
+    "leaves an agent only Pinchy's built-ins, as OpenClaw's own tool policy filters the full core catalog",
+    { timeout: 30_000 },
+    async () => {
+      // OpenClaw 2026.9 ships agent tools that are on by default and have no
+      // config switch of their own: `ask_user` (questions that block the turn
+      // until someone answers), `secrets` (an unencrypted, team-wide credential
+      // store with no audit) and `skill_workshop` (skills the agent writes for
+      // itself). 2026.9.1 also gave the allowlist globs and namespaces. The
+      // per-agent `tools.allow` is the only thing keeping them, and every
+      // future built-in, away from Pinchy agents, so this runs the emitted
+      // config through the policy pipeline OpenClaw applies to a turn's tools.
+      mockedDb.select.mockReturnValue({
+        from: mockFrom([
+          {
+            id: "memory-agent-id",
+            name: "Assistant",
+            model: "anthropic/claude-haiku-4-5-20251001",
+            templateId: "custom",
+            pluginConfig: null,
+            // pinchy_memory widens the allowlist by the most built-ins.
+            allowedTools: ["pinchy_memory"],
+            createdAt: new Date(),
+          },
+        ]),
+      } as never);
+      await regenerateOpenClawConfig();
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+      const resolveEffectiveToolPolicy = (await loadOpenClawDistExport(
+        /^agent-tools\.policy-.*\.js$/,
+        "resolveEffectiveToolPolicy"
+      )) as (params: { config: unknown; agentId: string }) => unknown;
+      const buildSteps = (await loadOpenClawDistExport(
+        /^tool-policy-pipeline-.*\.js$/,
+        "buildDefaultToolPolicyPipelineSteps"
+      )) as (policy: unknown) => unknown[];
+      const applyPipeline = (await loadOpenClawDistExport(
+        /^tool-policy-pipeline-.*\.js$/,
+        "applyToolPolicyPipeline"
+      )) as (params: {
+        tools: { name: string }[];
+        toolMeta: (tool: { name: string }) => unknown;
+        warn: (message: string) => void;
+        steps: unknown[];
+      }) => { name: string }[];
+      const listCoreToolSections = (await loadOpenClawDistExport(
+        /^tool-catalog-.*\.js$/,
+        "listCoreToolSections"
+      )) as () => { tools: { id: string }[] }[];
+
+      const coreTools = listCoreToolSections().flatMap((section) => section.tools);
+      const survivingCoreTools = (agentConfig: unknown) =>
+        applyPipeline({
+          tools: coreTools.map((tool) => ({ name: tool.id })),
+          toolMeta: () => undefined,
+          warn: () => {},
+          steps: buildSteps(
+            resolveEffectiveToolPolicy({ config: agentConfig, agentId: "memory-agent-id" })
+          ),
+        })
+          .map((tool) => tool.name)
+          .sort();
+
+      expect(survivingCoreTools(config)).toEqual(["memory_get", "memory_search", "session_status"]);
+
+      // Baseline against a false green: the catalog does hold the default-on
+      // tools, and without Pinchy's allowlist OpenClaw hands them out.
+      const withoutAllowlist = structuredClone(config);
+      delete withoutAllowlist.agents.entries["memory-agent-id"].tools.allow;
+      expect(survivingCoreTools(withoutAllowlist)).toEqual(
+        expect.arrayContaining(["ask_user", "secrets", "skill_workshop", "exec", "sessions_list"])
+      );
+    }
+  );
+
+  it(
+    "limits session tools to the agent's current session, as OpenClaw's own resolver reads it",
+    { timeout: 30_000 },
+    async () => {
+      // Every Pinchy agent holds `session_status`. OpenClaw lets session tools
+      // target any session on the Gateway by default ("all"), with cross-agent
+      // access left on (`tools.agentToAgent`), so an agent could ask about
+      // another agent's sessions, or another user's session of the same shared
+      // agent. "self" keeps each session to itself.
+      const resolveSessionToolsVisibility = (await loadOpenClawDistExport(
+        /^session-visibility-.*\.js$/,
+        "resolveSessionToolsVisibility"
+      )) as (cfg: unknown) => string;
+
+      await regenerateOpenClawConfig();
+      const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+
+      expect(resolveSessionToolsVisibility(config)).toBe("self");
+
+      // Baseline against a false green: OpenClaw's own default is "all".
+      const withoutTools = structuredClone(config);
+      delete withoutTools.tools;
+      expect(resolveSessionToolsVisibility(withoutTools)).toBe("all");
+    }
+  );
+
   it("emits a fail-closed allowlist for agents with empty allowedTools", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([

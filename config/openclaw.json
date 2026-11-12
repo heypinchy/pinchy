@@ -44,6 +44,11 @@
       }
     }
   },
+  "tools": {
+    "sessions": {
+      "visibility": "self"
+    }
+  },
   "attachments": {
     "ttlHours": 48
   },

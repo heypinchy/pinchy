@@ -326,6 +326,8 @@ This release moves the OpenClaw runtime from 2026.7.1 to 2026.9.2, which fixes e
 
 Two things newer OpenClaw versions switch on by default stay off: **dreaming**, a nightly job that rewrites an agent's memory from its conversations, and **skill self-learning**, where an agent writes and installs its own skills. See [Background memory rewriting and skill self-learning](/guides/hardening/#background-memory-rewriting-and-skill-self-learning-disabled).
 
+The tools OpenClaw 2026.9 adds to every agent by default — ask-the-user questions, a shared secrets store, the skill workshop — stay out of reach of Pinchy agents, and an agent's session status now covers only its own session. See [Agent Permissions](/concepts/agent-permissions/#how-permissions-reach-openclaw).
+
 #### Memory search runs in a local llama.cpp server
 
 OpenClaw 2026.9 no longer computes memory embeddings inside its own process. The `openclaw` image now ships a llama.cpp server for that: OpenClaw starts it on the first memory search and stops it after ten minutes without one. It still runs offline, with the same bundled model and no API key. After the upgrade, each agent's memory index is rebuilt once in the background, so expect some extra CPU on the `openclaw` container in the first minutes. The log line `llama-cpp local service ready` shows the server came up.

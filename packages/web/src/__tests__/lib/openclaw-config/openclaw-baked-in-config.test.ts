@@ -103,6 +103,11 @@ describe("config/openclaw.json (baked-in config)", () => {
     expect(skills?.workshop?.autonomous?.mode).toBe("off");
   });
 
+  it("limits session tools to the current session — no cross-session reach before the first regenerate", () => {
+    const tools = config.tools as { sessions?: { visibility?: unknown } } | undefined;
+    expect(tools?.sessions?.visibility).toBe("self");
+  });
+
   it("has gateway.terminal.enabled: false — governance + prevents restart-triggering diff on first config.apply", () => {
     // OpenClaw 2026.7.1+ adds gateway.terminal.enabled, an interactive workspace
     // shell for admins. OC defaults it to false, but materializes the block in its
