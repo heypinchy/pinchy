@@ -54,6 +54,7 @@ import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
 import { regenerateOnConnect } from "./src/server/openclaw-connect-regenerate";
 import { syncTelegramAllowStoresOnConnect } from "./src/server/telegram-allow-store-on-connect";
+import { openClawClientOptions } from "./src/server/openclaw-client-options";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 import {
   describeAuditKeyFilePersist,
@@ -561,17 +562,13 @@ const startup = app.prepare().then(async () => {
         "[pinchy] Gateway token not available — setup wizard required before OpenClaw connects"
       );
     }
-    openclawClient = new OpenClawClient({
-      url: OPENCLAW_WS_URL,
-      token: gatewayToken ?? "",
-      clientId: "gateway-client",
-      clientVersion: "0.1.0",
-      scopes: ["operator.admin"],
-      deviceIdentityPath: process.env.DEVICE_IDENTITY_PATH || "/app/secrets/device-identity.json",
-      autoReconnect: true,
-      reconnectIntervalMs: 1000,
-      maxReconnectAttempts: Infinity,
-    });
+    openclawClient = new OpenClawClient(
+      openClawClientOptions({
+        url: OPENCLAW_WS_URL,
+        token: gatewayToken ?? "",
+        deviceIdentityPath: process.env.DEVICE_IDENTITY_PATH || "/app/secrets/device-identity.json",
+      })
+    );
 
     setOpenClawClient(openclawClient);
     // #7: one shared disconnect signal for every ClientRouter (one listener on

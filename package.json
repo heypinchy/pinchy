@@ -97,7 +97,8 @@
       "tree-sitter-bash"
     ],
     "patchedDependencies": {
-      "@assistant-ui/react@0.14.24": "patches/@assistant-ui__react@0.14.24.patch"
+      "@assistant-ui/react@0.14.24": "patches/@assistant-ui__react@0.14.24.patch",
+      "openclaw-node@0.14.0": "patches/openclaw-node@0.14.0.patch"
     }
   },
   "lint-staged": {

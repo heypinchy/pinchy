@@ -56,6 +56,9 @@ patchedDependencies:
   '@assistant-ui/react@0.14.24':
     hash: 1e949ecdd81e8757649b52a913cb9a2d6c08ad466a01eb9a313b1d6689701f8e
     path: patches/@assistant-ui__react@0.14.24.patch
+  openclaw-node@0.14.0:
+    hash: c82941763f87dc331a5304fde750a496b2531d3e920a86664145298181c5b2ba
+    path: patches/openclaw-node@0.14.0.patch
 
 importers:
 
@@ -367,7 +370,7 @@ importers:
         version: 0.3.1
       openclaw-node:
         specifier: 0.14.0
-        version: 0.14.0
+        version: 0.14.0(patch_hash=c82941763f87dc331a5304fde750a496b2531d3e920a86664145298181c5b2ba)
       pdfjs-dist:
         specifier: ^6.2.108
         version: 6.2.108
@@ -14536,7 +14539,7 @@ snapshots:
       ws: 8.21.3
       zod: 4.6.7
 
-  openclaw-node@0.14.0:
+  openclaw-node@0.14.0(patch_hash=c82941763f87dc331a5304fde750a496b2531d3e920a86664145298181c5b2ba):
     optionalDependencies:
       ws: 8.21.1
     transitivePeerDependencies:
