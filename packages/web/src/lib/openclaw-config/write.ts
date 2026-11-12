@@ -379,16 +379,15 @@ const MAX_SIZE_DROP_REFUSALS = 3;
  * while openclaw.json holds its payload (UNANSWERED_APPLY_ERROR_FRAGMENTS — on
  * 2026.9 that can be a config the runtime already held), or any
  * `writeConfigAtomic` fallback (no client, rate-limit budget exhausted, retries
- * exhausted). It deliberately does NOT
- * fire when the push is a semantic no-op (skipped because the supplemented
- * payload already equals OC's runtime) or when a newer push superseded this
- * one. Callers use it to drive side effects that must only happen when a real
- * change lands — e.g. `restartState.notifyRestart()` for the Telegram channel
- * writer, which must not strand the UI overlay on a no-op (#476 Gap 1). The
- * previous file-content dedup in the caller could not see this: `config.apply`
- * persists an OC-enriched file that never byte-matches the caller's payload, so
- * a repeated identical call no longer deduped and fired notifyRestart on a
- * genuine no-op.
+ * exhausted). It deliberately does NOT fire when the push is a semantic no-op
+ * (skipped because the supplemented payload already equals OC's runtime) or
+ * when a newer push superseded this one. Callers use it to drive side effects
+ * that must only happen when a real change lands — e.g.
+ * `restartState.notifyRestart()` for the Telegram channel writer, which must
+ * not strand the UI overlay on a no-op (#476 Gap 1). The previous file-content
+ * dedup in the caller could not see this: `config.apply` persists an
+ * OC-enriched file that never byte-matches the caller's payload, so a repeated
+ * identical call no longer deduped and fired notifyRestart on a genuine no-op.
  */
 export interface PushConfigOptions {
   onChangeApplied?: () => void;

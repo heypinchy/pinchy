@@ -144,52 +144,48 @@ class FakeOpenClaw209 {
   }
 
   private async apply(raw: string) {
-    {
-      const next = JSON.parse(raw) as Json;
-      this.applies.push(next);
-      const kept = new Set(this.roster(next));
-      const dropped = this.roster().filter((id) => !kept.has(id));
-      if (dropped.length > 0) {
-        throw new Error(
-          `Config write would drop agent roster entries without an explicit deletion: ${dropped.sort().join(", ")}.`
-        );
-      }
-      const unchanged = isDeepStrictEqual(withoutMeta(next), withoutMeta(this.runtime));
-      this.commit(next);
-      const overtaken = this.watcherWins?.(this.applies.length) === true;
-      if (overtaken) this.runtime = next;
-      if (!unchanged && !overtaken) {
-        this.runtime = next;
-        return { ok: true };
-      }
-      // Persisted; the reload hangs until the next write — or until the
-      // client's own 30 s request timeout.
-      return new Promise((_resolve, reject) => {
-        let done = false;
-        const answer = (err: Error) => {
-          if (done) return;
-          done = true;
-          reject(err);
-        };
-        this.hung.push(answer);
-        setTimeout(() => answer(new Error("Request config.apply timed out")), 30_000);
-      });
+    const next = JSON.parse(raw) as Json;
+    this.applies.push(next);
+    const kept = new Set(this.roster(next));
+    const dropped = this.roster().filter((id) => !kept.has(id));
+    if (dropped.length > 0) {
+      throw new Error(
+        `Config write would drop agent roster entries without an explicit deletion: ${dropped.sort().join(", ")}.`
+      );
     }
+    const unchanged = isDeepStrictEqual(withoutMeta(next), withoutMeta(this.runtime));
+    this.commit(next);
+    const overtaken = this.watcherWins?.(this.applies.length) === true;
+    if (overtaken) this.runtime = next;
+    if (!unchanged && !overtaken) {
+      this.runtime = next;
+      return { ok: true };
+    }
+    // Persisted; the reload hangs until the next write — or until the
+    // client's own 30 s request timeout.
+    return new Promise((_resolve, reject) => {
+      let done = false;
+      const answer = (err: Error) => {
+        if (done) return;
+        done = true;
+        reject(err);
+      };
+      this.hung.push(answer);
+      setTimeout(() => answer(new Error("Request config.apply timed out")), 30_000);
+    });
   }
 
   private async request(method: string, params: Json) {
-    {
-      if (method !== "agents.delete") throw new Error(`unexpected method ${method}`);
-      this.deletes.push(params);
-      const agentId = params.agentId as string;
-      if (!this.roster().includes(agentId)) throw new Error(`agent "${agentId}" not found`);
-      const agents = (this.file.agents ?? {}) as Json;
-      const entries = { ...((agents.entries ?? {}) as Json) };
-      delete entries[agentId];
-      this.commit({ ...this.file, agents: { ...agents, entries } });
-      this.runtime = this.file;
-      return { type: "res", id: "1", ok: true, payload: { ok: true, agentId } };
-    }
+    if (method !== "agents.delete") throw new Error(`unexpected method ${method}`);
+    this.deletes.push(params);
+    const agentId = params.agentId as string;
+    if (!this.roster().includes(agentId)) throw new Error(`agent "${agentId}" not found`);
+    const agents = (this.file.agents ?? {}) as Json;
+    const entries = { ...((agents.entries ?? {}) as Json) };
+    delete entries[agentId];
+    this.commit({ ...this.file, agents: { ...agents, entries } });
+    this.runtime = this.file;
+    return { type: "res", id: "1", ok: true, payload: { ok: true, agentId } };
   }
 }
 
@@ -317,6 +313,7 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
     expect(fileOnlyDeliveryPending()).toBe(false);
     expect(onChangeApplied).toHaveBeenCalledTimes(1);
   });
+
   it("still removes the agent when the bridge hangs on the push's last attempt", async () => {
     // Four transient failures spend every backoff slot but the last. A bridge
     // that hangs there is persisted all the same: agents.delete still follows,
@@ -330,15 +327,18 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
     oc.getFails = (call) => call <= 4;
     oc.watcherWins = (apply) => apply === 2;
     mockGetClient.mockReturnValue(oc.client);
+    const onChangeApplied = vi.fn();
     const target = {
       gateway,
       models: { providers },
       agents: { ownership: "explicit", entries: { a: {}, b: {} } },
     };
 
-    pushConfigInBackground(serialize(target));
+    pushConfigInBackground(serialize(target), { onChangeApplied });
     await settle();
 
+    expect(oc.file).toEqual(target);
+    expect(onChangeApplied).toHaveBeenCalledTimes(1);
     expect(oc.deletes).toEqual([{ agentId: "c", deleteFiles: false }]);
     expect(configFileWrites()).toHaveLength(0);
     expect(fileOnlyDeliveryPending()).toBe(false);
