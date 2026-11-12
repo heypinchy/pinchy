@@ -487,12 +487,17 @@ export class StreamPipe {
               // means any chunk is either fully before the snapshot (counted in
               // partialContent, not re-broadcast to the new ws) or fully after
               // (not in the snapshot, delivered as a live delta) — never both.
+              // `offset` places the delta in this message's text: a resuming
+              // client drops whatever of it the `partialContent` it was seeded
+              // with already holds (use-ws-runtime's resume cursor).
+              const offset = emittedContent.length;
               emittedContent += emit;
               activeRuns.setContent(sessionKey, emittedContent);
               broadcastForRun(sessionKey, clientWs, {
                 type: "chunk",
                 content: emit,
                 messageId,
+                offset,
               });
             }
           } else if (chunk.type === "error" && userAbort) {
@@ -574,12 +579,14 @@ export class StreamPipe {
                 ? mediaFilter.push(textBuffer)
                 : "") + mediaFilter.flush();
             if (tail) {
+              const offset = emittedContent.length;
               emittedContent += tail;
               activeRuns.setContent(sessionKey, emittedContent);
               broadcastForRun(sessionKey, clientWs, {
                 type: "chunk",
                 content: tail,
                 messageId,
+                offset,
               });
             }
             broadcastForRun(sessionKey, clientWs, { type: "done", messageId });
