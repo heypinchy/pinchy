@@ -40,6 +40,7 @@ import {
   batchTimeoutMs,
   convertOfficeFiles,
   countSourceWordsWithOracle,
+  type OracleDeps,
   isOfficeFile,
   MIN_FREE_OUTPUT_BYTES,
   MIN_FREE_OUTPUT_INODES,
@@ -2020,7 +2021,7 @@ describe("the word-count oracle reads in a heap-capped child", () => {
     }
   });
 
-  it("names the document it was told it is counting, not the staged copy it reads", async () => {
+  it("names the document it was told it is counting, not the copy it reads", async () => {
     const path = join(tmpRoot, "0.docx");
     await writeFile(path, docxWith({ documentRels: relationships() }));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -2046,6 +2047,63 @@ describe("the word-count oracle reads in a heap-capped child", () => {
       throw new Error("the word-count reader could not be started");
     });
     expect(await countSourceWordsWithOracle(path, { countDocxWords })).toBeNull();
+  });
+});
+
+describe("a .doc or .ppt whose word count fails is said in the log", () => {
+  async function counted(
+    name: string,
+    countTextWords: OracleDeps["countTextWords"],
+    displayPath = `/data/${name}`
+  ) {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const words = await countSourceWordsWithOracle(
+        join(tmpRoot, name),
+        { countTextWords },
+        displayPath
+      );
+      return { words, printed: warn.mock.calls.map((call) => format(...call)) };
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  it("counts a .doc with catdoc and a .ppt with catppt, and logs nothing when it works", async () => {
+    const countTextWords = vi.fn(async () => 42);
+
+    expect(await counted("Alt.doc", countTextWords)).toEqual({ words: 42, printed: [] });
+    expect(await counted("Folien.ppt", countTextWords)).toEqual({ words: 42, printed: [] });
+    expect(countTextWords.mock.calls.map(([bin]) => bin)).toEqual(["catdoc", "catppt"]);
+  });
+
+  it("says the check failed when the extractor does, naming the document and why", async () => {
+    // A .doc that catdoc chokes on is converted with no tripwire at all; an
+    // operator asking why a page went missing needs this line to know that.
+    const { words, printed } = await counted(
+      "0.doc",
+      async () => {
+        throw new Error("catdoc exited with code 2");
+      },
+      "/data/Alt.doc"
+    );
+
+    expect(words).toBeNull();
+    expect(printed).toHaveLength(1);
+    expect(printed[0]).toContain(
+      "/data/Alt.doc: word count failed, unverified — catdoc exited with code 2"
+    );
+    expect(printed[0]).not.toContain(tmpRoot);
+  });
+
+  it("says the check was skipped, not failed, when the extractor is not installed", async () => {
+    const { words, printed } = await counted("Folien.ppt", async () => {
+      throw Object.assign(new Error("spawn catppt ENOENT"), { code: "ENOENT" });
+    });
+
+    expect(words).toBeNull();
+    expect(printed).toHaveLength(1);
+    expect(printed[0]).toContain("/data/Folien.ppt: word count skipped, unverified");
   });
 });
 

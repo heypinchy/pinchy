@@ -1235,6 +1235,11 @@ export interface OracleDeps {
    * (`countDocxWordsIsolated`), so this process never holds the file.
    */
   countDocxWords?: (absPath: string) => Promise<number>;
+  /**
+   * Counts what a text-dumping CLI (`catdoc`, `catppt`) prints for a file, or
+   * rejects with why it could not. Production spawns it (`runTextOracle`).
+   */
+  countTextWords?: (bin: string, absPath: string) => Promise<number>;
 }
 
 /**
@@ -1254,11 +1259,14 @@ export interface OracleDeps {
  *   - `.pptx` — no extractor available without adding a dependency, so it is
  *     honestly reported as unverified rather than silently passed.
  *
- * A missing binary is not an error: it yields null, the file is recorded
- * `unverified`, and conversion proceeds. Local dev has no catdoc.
+ * A count that cannot be had is not an error of the document: it yields null,
+ * the file is recorded `unverified`, conversion proceeds — and the server log
+ * says so, `skipped` (too big for mammoth, or no catdoc on this host) or
+ * `failed` (anything else), because a PDF that lost text is otherwise indexed
+ * with nothing anywhere to tell.
  *
- * `displayPath` is what its log line calls the document: the conversion hands
- * the oracle a staged copy (`in/0.docx`), a name that says nothing.
+ * `displayPath` is what that log line calls the document: the oracle reads a
+ * private copy (`oracleInput`), whose name says nothing.
  */
 export async function countSourceWordsWithOracle(
   absPath: string,
@@ -1290,9 +1298,17 @@ export async function countSourceWordsWithOracle(
     }
   }
 
-  if (ext === ".doc") return runTextOracle("catdoc", absPath);
-  if (ext === ".ppt") return runTextOracle("catppt", absPath);
-  return null;
+  const bin = ext === ".doc" ? "catdoc" : ext === ".ppt" ? "catppt" : null;
+  if (bin === null) return null;
+  try {
+    return await (deps.countTextWords ?? runTextOracle)(bin, absPath);
+  } catch (err) {
+    const skipped = (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
+    console.warn(
+      `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count ${skipped ? "skipped" : "failed"}, unverified — ${oneLine(reasonOf(err), LOG_REASON_MAX)}`
+    );
+    return null;
+  }
 }
 
 /**
@@ -1304,14 +1320,15 @@ export async function countSourceWordsWithOracle(
 const MAX_ORACLE_BYTES = 16 * 1024 * 1024;
 
 /**
- * Runs a text-dumping CLI over `absPath` and counts its words; null if it is
- * absent, unhappy, too slow, or too talkative.
+ * Runs a text-dumping CLI over `absPath` and counts its words. Rejects when it
+ * is absent (the spawn error, `code: "ENOENT"`), exits non-zero, is too slow
+ * or too talkative, saying which — the caller logs it.
  *
  * Exported for the adapter test — the production callers pass a fixed binary
  * name, so this is the only seam a stub can reach.
  */
-export function runTextOracle(bin: string, absPath: string): Promise<number | null> {
-  return new Promise((resolve) => {
+export function runTextOracle(bin: string, absPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
     const child = spawn(bin, [absPath], {
       stdio: ["ignore", "pipe", "ignore"],
       env: childEnv(process.env.HOME ?? "/tmp"),
@@ -1319,26 +1336,33 @@ export function runTextOracle(bin: string, absPath: string): Promise<number | nu
     });
     let out = "";
     let settled = false;
-    const finish = (words: number | null) => {
+    const finish = (outcome: number | Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(words);
+      if (typeof outcome === "number") resolve(outcome);
+      else reject(outcome);
     };
 
     child.stdout.on("data", (chunk: Buffer) => {
       out += chunk.toString("utf8");
       if (out.length > MAX_ORACLE_BYTES) {
         killTree(child);
-        finish(null);
+        finish(new Error(`${bin} printed more than ${MAX_ORACLE_BYTES / 1024 / 1024} MB of text`));
       }
     });
     const timer = setTimeout(() => {
       killTree(child);
-      finish(null);
+      finish(new Error(`${bin} took longer than 30 s`));
     }, 30_000);
-    child.on("error", () => finish(null));
-    child.on("close", (code) => finish(code === 0 ? countWords(out) : null));
+    child.on("error", (err) => finish(err));
+    child.on("close", (code, signal) =>
+      finish(
+        code === 0
+          ? countWords(out)
+          : new Error(`${bin} exited with ${code === null ? `signal ${signal}` : `code ${code}`}`)
+      )
+    );
   });
 }
 
