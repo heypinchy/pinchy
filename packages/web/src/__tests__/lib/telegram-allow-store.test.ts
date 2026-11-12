@@ -63,6 +63,7 @@ import {
   recalculateTelegramAllowStores,
   clearAllowStoreForAccount,
   clearAllAllowStores,
+  resetTelegramAllowStoreRetryForTest,
 } from "@/lib/telegram-allow-store";
 
 const SET_ALLOW_FROM = "pinchy.pairing.setAllowFrom";
@@ -91,6 +92,7 @@ describe("telegram-allow-store", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCallPairingStore.mockResolvedValue({});
+    resetTelegramAllowStoreRetryForTest();
   });
 
   describe("removePairingRequest", () => {
@@ -826,6 +828,64 @@ describe("telegram-allow-store", () => {
         expect(allowFromWrites()).toHaveLength(3);
         expect(error).toHaveBeenCalled();
         error.mockRestore();
+      });
+    });
+
+    // A failed run used to wait for the next permission change, or the next
+    // reconnect, before anyone tried again; a revocation that did not land
+    // stayed undone until then.
+    describe("after a failed run", () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+        vi.spyOn(console, "info").mockImplementation(() => {});
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("tries again shortly, until a run lands", async () => {
+        personalBotFleet();
+        const error = vi.spyOn(console, "error").mockImplementation(() => {});
+        mockCallPairingStore
+          .mockRejectedValueOnce(new Error("setAllowFrom failed: locked"))
+          .mockRejectedValueOnce(new Error("setAllowFrom failed: locked"))
+          .mockResolvedValueOnce({ withheld: [] });
+
+        await expect(recalculateTelegramAllowStores()).rejects.toThrow(/locked/);
+        expect(allowFromWrites()).toHaveLength(1);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(allowFromWrites()).toHaveLength(2);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(allowFromWrites()).toHaveLength(3);
+
+        await vi.advanceTimersByTimeAsync(60 * 60_000);
+        expect(allowFromWrites()).toHaveLength(3);
+        error.mockRestore();
+      });
+
+      it("keeps a retry that is already counting down", async () => {
+        personalBotFleet();
+        const heldBack = { withheld: [{ accountId: "smithers-owner", peerId: "200" }] };
+        mockCallPairingStore
+          .mockResolvedValueOnce(heldBack)
+          .mockResolvedValueOnce(heldBack)
+          .mockRejectedValueOnce(new Error("setAllowFrom failed: locked"))
+          .mockResolvedValueOnce({ withheld: [] });
+
+        await recalculateTelegramAllowStores();
+        await vi.advanceTimersByTimeAsync(2_000);
+        // The retry now waits 5 s. A regular run failing 1 s into that wait
+        // must not restart the count from the beginning (2 s).
+        await vi.advanceTimersByTimeAsync(1_000);
+        await expect(recalculateTelegramAllowStores()).rejects.toThrow(/locked/);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(allowFromWrites()).toHaveLength(3);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(allowFromWrites()).toHaveLength(4);
+
+        await vi.advanceTimersByTimeAsync(60 * 60_000);
+        expect(allowFromWrites()).toHaveLength(4);
       });
     });
 

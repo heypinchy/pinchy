@@ -8,8 +8,8 @@ import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
  * write them only over a live connection: a change made while OpenClaw was
  * away was skipped, and an install coming from an older OpenClaw has its lists
  * imported from files Pinchy no longer maintains. The recalculation rebuilds
- * every list from the database, so one run settles both. A failure is logged —
- * the next permission change runs it again.
+ * every list from the database, so one run settles both. A failure is logged;
+ * the allow store tries the run again on its own.
  */
 export async function syncTelegramAllowStoresOnConnect(
   recalculate: () => Promise<void> = recalculateTelegramAllowStores

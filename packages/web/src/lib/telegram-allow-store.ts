@@ -100,7 +100,9 @@ export function recalculateTelegramAllowStores(): Promise<void> {
 // since OpenClaw usually loads the new bindings within seconds, at least every
 // 15 s while a push may sit behind config.apply's rate limit (33–53 s), then
 // rarely, so a binding that never arrives costs one call every five minutes.
-// Any run replaces the pending retry, and one that lets everyone through ends it.
+// A run that fails is repeated on the same schedule: a revocation that did not
+// land must not wait for the next permission change. Any run that lands
+// replaces the pending retry, and one that lets everyone through ends it.
 const RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 15_000, 15_000, 15_000, 30_000, 60_000, 300_000];
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempt = 0;
@@ -114,13 +116,18 @@ function enqueueRecalculation(isRetry: boolean): Promise<void> {
       try {
         withheld = await recalculateTelegramAllowStoresImpl();
       } catch (err) {
-        // A failed retry must not end the retries; a failed regular run keeps
-        // whichever retry is pending.
-        if (isRetry) scheduleRetry(true);
+        // A failed retry backs off further; a failed regular run starts the
+        // retries, or keeps the one already counting down.
+        if (isRetry || !retryTimer) {
+          scheduleRetry(isRetry, "the last attempt to write the allow lists failed");
+        }
         throw err;
       }
       if (withheld > 0) {
-        scheduleRetry(isRetry);
+        scheduleRetry(
+          isRetry,
+          "OpenClaw does not route every linked Telegram user to their agent yet"
+        );
       } else {
         cancelRetry();
       }
@@ -134,14 +141,16 @@ function cancelRetry(): void {
   retryAttempt = 0;
 }
 
-function scheduleRetry(isRetry: boolean): void {
+/** Drops a pending retry and its backoff. Intended for tests. */
+export function resetTelegramAllowStoreRetryForTest(): void {
+  cancelRetry();
+}
+
+function scheduleRetry(isRetry: boolean, reason: string): void {
   if (retryTimer) clearTimeout(retryTimer);
   retryAttempt = isRetry ? retryAttempt + 1 : 0;
   const delay = RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)];
-  console.info(
-    "[telegram-allow-store]",
-    `OpenClaw does not route every linked Telegram user to their agent yet; asking again in ${delay / 1000} s`
-  );
+  console.info("[telegram-allow-store]", `${reason}; asking again in ${delay / 1000} s`);
   retryTimer = setTimeout(() => {
     retryTimer = null;
     enqueueRecalculation(true).catch((err) =>
