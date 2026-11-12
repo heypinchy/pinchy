@@ -204,7 +204,7 @@ describe("ClientRouter handleHistory ↔ ActiveRuns resume (#310 Tier 2b)", () =
     expect(run?.listeners.has(wsOriginal)).toBe(true);
   });
 
-  it("never counts a chunk twice when it streams in while the live-sync subscription is awaited", async () => {
+  it("never counts a chunk twice when it streams in during an await of the history path", async () => {
     // The reconnecting ws joins the listener set before the history frame is
     // built, so a chunk emitted in between reaches it as a live delta (the
     // client buffers it and appends it after seeding the bubble with
@@ -223,10 +223,6 @@ describe("ClientRouter handleHistory ↔ ActiveRuns resume (#310 Tier 2b)", () =
       ws: createMockWs(),
     });
     activeRuns.setContent(sessionKey, "one");
-    mockSessionsHistory.mockResolvedValue({
-      messages: [{ role: "user", content: "count" }],
-    });
-
     // Emits a chunk the way stream-pipe does: accumulate, mirror into the
     // registry, broadcast to every listener — all in one synchronous block.
     const emitChunk = (text: string) => {
@@ -236,11 +232,17 @@ describe("ClientRouter handleHistory ↔ ActiveRuns resume (#310 Tier 2b)", () =
         listener.send(JSON.stringify({ type: "chunk", content: text, messageId: "msg-inflight" }));
       }
     };
+    // A chunk lands during each await of the history path: the live-sync
+    // subscription and the OpenClaw history fetch.
     const pokeBridge = {
       view: vi.fn(async () => {
         emitChunk(" two");
       }),
     };
+    mockSessionsHistory.mockImplementationOnce(async () => {
+      emitChunk(" three");
+      return { messages: [{ role: "user", content: "count" }] };
+    });
 
     const wsReconnect = createMockWs();
     const router = new ClientRouter(
@@ -262,8 +264,9 @@ describe("ClientRouter handleHistory ↔ ActiveRuns resume (#310 Tier 2b)", () =
       .filter((f) => f.type === "chunk")
       .map((f) => f.content as string)
       .join("");
+    expect(historyFrame.activeRun).toBeDefined();
     // What the client renders: the seed plus every delta it received.
-    expect(historyFrame.activeRun!.partialContent + liveDeltas).toBe("one two");
+    expect(historyFrame.activeRun!.partialContent + liveDeltas).toBe("one two three");
   });
 
   it("omits activeRun signal when there is no in-flight run", async () => {

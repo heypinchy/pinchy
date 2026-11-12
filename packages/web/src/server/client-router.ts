@@ -1165,13 +1165,12 @@ export class ClientRouter {
     // When there is a STARTED in-flight run for this session, the gateway's
     // `agentWait` oracle is the source of truth for whether the run is still
     // alive, has completed, or has failed — replacing the old client-side
-    // silence guess. We capture the runId here (the same gate as
-    // `activeRunSignal`: a started run with a real runId) and emit the verdict
-    // in the `finally` below so it always follows the history frame the client
+    // silence guess. The runId comes from `activeRunSignal` (a started run,
+    // decided at the same moment as the snapshot) and the verdict goes out in
+    // the `finally` below so it always follows the history frame the client
     // is about to reconcile against. A pending run has no meaningful runId yet,
     // so it is intentionally excluded.
-    const livenessRunId =
-      activeRun && activeRun.firstChunkAt !== null ? activeRun.runId : undefined;
+    const livenessRunId = activeRunSignal?.runId;
 
     try {
       await this.waitForConnection();
