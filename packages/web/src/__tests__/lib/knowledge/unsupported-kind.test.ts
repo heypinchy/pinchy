@@ -23,6 +23,7 @@ describe("unsupportedFileKind", () => {
     ".odt",
     ".zip",
     ".7z",
+    ".rar",
     ".dwg",
     ".pptm",
     ".ppsm",
@@ -42,6 +43,13 @@ describe("unsupportedFileKind", () => {
       expect(unsupportedFileKind(type)).toBe("ignored");
     }
   );
+
+  // On a real supplier share every .tgz was a driver or firmware package —
+  // kernel modules, shared libraries, device trees — and not one held a
+  // document. Documents there came as .zip, next to the unpacked folder.
+  it.each([".tgz", ".gz", ".tar"])("ignores a %s, which packs software, not documents", (type) => {
+    expect(unsupportedFileKind(type)).toBe("ignored");
+  });
 
   // Firmware images and build outputs often carry no extension, or one
   // nobody has a name for. Unknown means "not a document we know of".

@@ -13,7 +13,7 @@
  *
  * - `unsupported` ("not supported yet"): a document the knowledge base cannot
  *   answer from yet — a picture or scan, a mail, a legacy or non-Microsoft
- *   office file, a drawing, an archive that probably holds documents.
+ *   office file, a drawing, a .zip that probably holds documents.
  * - `ignored`: everything else — programs, data, system and media files, and
  *   any type we have no name for. Counted and listed, never warned about.
  *
@@ -101,13 +101,12 @@ export const DOCUMENT_LIKE_TYPES: readonly string[] = [
   // Technical drawings
   ".dwg",
   ".dxf",
-  // Archives, which on a document share usually hold documents
+  // Archives, which on a document share often hold documents. Not .tar, .gz
+  // or .tgz: on a real supplier share every one of those packed drivers or
+  // firmware, never a document.
   ".zip",
   ".7z",
   ".rar",
-  ".tar",
-  ".gz",
-  ".tgz",
 ];
 
 // A type the index reads is a document by definition. It reaches this list

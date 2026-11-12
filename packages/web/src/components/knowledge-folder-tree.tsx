@@ -45,7 +45,7 @@ const FOLDER_STATE: Record<FolderState, { label: string; className: string }> = 
     className: "border-amber-500/40 text-amber-700 dark:text-amber-300",
   },
   not_indexed: { label: "Not indexed yet", className: "text-muted-foreground" },
-  empty: { label: "No files", className: "text-muted-foreground" },
+  empty: { label: "No documents", className: "text-muted-foreground" },
 };
 
 const FILE_STATE: Record<FileState, { label: string; attention: boolean }> = {
