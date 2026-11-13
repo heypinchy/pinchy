@@ -93,7 +93,7 @@ describe("POST /api/users/[userId]/reset — sendEmail (#1309)", () => {
       eventType: "user.password_reset_requested",
       resource: "user:user-2",
       outcome: "success",
-      detail: { user: { id: "user-2", name: "Anna" }, via: "link" },
+      detail: { user: { id: "user-2", name: "Anna" }, via: "link", invite: { id: "inv-9" } },
     });
     expect(JSON.stringify(entry)).not.toContain("anna@example.com");
   });
@@ -117,7 +117,11 @@ describe("POST /api/users/[userId]/reset — sendEmail (#1309)", () => {
     } as never);
     await POST(makeRequest(), { params: Promise.resolve({ userId: "admin-1" }) });
     const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
-    expect(entry.detail).toEqual({ user: { name: "Clemens" }, via: "link" });
+    expect(entry.detail).toEqual({
+      user: { name: "Clemens" },
+      via: "link",
+      invite: { id: "inv-9" },
+    });
     expect(entry).toMatchObject({ resource: "user:admin-1" });
   });
 

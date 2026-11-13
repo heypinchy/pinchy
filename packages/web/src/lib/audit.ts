@@ -598,7 +598,12 @@ export type AuditLogEntry =
       // goes into `detail` (#824); it is in `resource`. No email: whether a
       // mail went out is the separate `mail.sent` row.
       eventType: "user.password_reset_requested";
-      detail: { user: { id?: string; name: string }; via: "email" | "link" };
+      detail: {
+        user: { id?: string; name: string };
+        via: "email" | "link";
+        /** Joins with `mail.sent` and `auth.password_reset_completed`. */
+        invite: { id: string };
+      };
     })
   | (AuditLogBase & {
       // An admin vouched for a flagged account (lib/user-provenance.ts). The

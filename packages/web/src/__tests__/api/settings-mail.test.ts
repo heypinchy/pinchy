@@ -199,6 +199,24 @@ describe("PUT /api/settings/mail", () => {
     expect(saveSystemMailConfig).not.toHaveBeenCalled();
   });
 
+  it("audits the refused downgrade as a failure, like any other rejected save", async () => {
+    stored = { ...body };
+    await PUT(put({ ...body, password: undefined, security: "none", port: 25 }));
+    expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = mockAppendAuditLog.mock.calls[0][0];
+    expect(entry).toMatchObject({
+      eventType: "settings.updated",
+      resource: "settings:mail",
+      outcome: "failure",
+      detail: {
+        changes: { security: { from: "starttls", to: "none" }, port: { from: 587, to: 25 } },
+        passwordChanged: false,
+      },
+      error: { message: expect.stringMatching(/password/i) },
+    });
+    expect(JSON.stringify(entry)).not.toContain("s3cret");
+  });
+
   it("accepts the downgrade once the password is typed again", async () => {
     stored = { ...body };
     const res = await PUT(put({ ...body, password: "s3cret", security: "none", port: 25 }));

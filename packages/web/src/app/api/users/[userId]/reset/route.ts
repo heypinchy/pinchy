@@ -52,6 +52,7 @@ export async function POST(
     detail: {
       user: user.id === session.user.id ? { name: user.name } : { id: user.id, name: user.name },
       via: viaEmail ? "email" : "link",
+      invite: { id: invite.id },
     },
     outcome: "success",
   });

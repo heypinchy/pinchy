@@ -100,18 +100,24 @@ export async function PUT(request: NextRequest) {
 
   const stored = await getSystemMailConfig();
   if (needsPasswordReentry(parsed.data, stored)) {
+    const message =
+      "Enter the password again to switch to a less secure connection — Pinchy won't reuse the saved one.";
+    // A refused save is audited like a failed verification: the attempt to
+    // weaken the transport is worth a row.
+    await appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id,
+      eventType: "settings.updated",
+      resource: "settings:mail",
+      detail: { changes: diff(audited(stored), audited(parsed.data)), passwordChanged: false },
+      outcome: "failure",
+      error: { message },
+    });
     // Same shape as a schema refusal, so the form puts it under the field.
     return NextResponse.json(
       {
         error: "Validation failed",
-        details: {
-          formErrors: [],
-          fieldErrors: {
-            password: [
-              "Enter the password again to switch to a less secure connection — Pinchy won't reuse the saved one.",
-            ],
-          },
-        },
+        details: { formErrors: [], fieldErrors: { password: [message] } },
       },
       { status: 400 }
     );
