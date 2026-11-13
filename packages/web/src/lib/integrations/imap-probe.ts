@@ -2,11 +2,8 @@ import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
 import { connect as netConnect } from "node:net";
 import type { ImapTestInput } from "@/lib/schemas/imap";
-import {
-  MailHostBlockedError,
-  pinnedMailTarget,
-  resolveAllowedMailHost,
-} from "@/lib/integrations/mail-host-guard";
+import { isIP } from "node:net";
+import { MailHostBlockedError, resolveAllowedMailHost } from "@/lib/integrations/mail-host-guard";
 import type { PinnedAddress } from "@/lib/pinned-connection";
 
 // Shared IMAP/SMTP probe logic used by BOTH:
@@ -177,6 +174,18 @@ export async function probeSmtpPorts(
       reachable: await probeTcpPort(target.address, port, SMTP_PORT_PROBE_TIMEOUT_MS),
     }))
   );
+}
+
+/**
+ * Where a mail client must connect: the address the guard classified, with
+ * the name kept for TLS. imapflow and nodemailer both resolve `host` only
+ * when it is a name — given an IP they connect to it as-is — and use
+ * `servername` for SNI and certificate verification. So the certificate is
+ * still checked against the name the admin typed, and nothing is resolved a
+ * second time. An IP literal has no name to send (SNI forbids one).
+ */
+function pinnedMailTarget(host: string, target: PinnedAddress) {
+  return isIP(host) === 0 ? { host: target.address, servername: host } : { host: target.address };
 }
 
 // A single `security` field can't be simultaneously correct for IMAP

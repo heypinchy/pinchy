@@ -167,18 +167,6 @@ export async function resolveAllowedMailHost(
   return toPinnedAddress(normalizeAddress(addresses[0]));
 }
 
-/**
- * Where a mail client must connect: the address the guard classified, with
- * the name kept for TLS. imapflow and nodemailer both resolve `host` only
- * when it is a name — given an IP they connect to it as-is — and use
- * `servername` for SNI and certificate verification. So the certificate is
- * still checked against the name the admin typed, and nothing is resolved a
- * second time. An IP literal has no name to send (SNI forbids one).
- */
-export function pinnedMailTarget(host: string, target: PinnedAddress) {
-  return isIP(host) === 0 ? { host: target.address, servername: host } : { host: target.address };
-}
-
 function assertPlainHost(host: string): void {
   if (!isPlainHost(host)) {
     throw new MailHostBlockedError(
