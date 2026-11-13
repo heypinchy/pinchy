@@ -1,8 +1,8 @@
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
-import { connect as netConnect } from "node:net";
 import type { ImapTestInput } from "@/lib/schemas/imap";
 import {
+  connectPinned,
   MailHostBlockedError,
   pinnedImapOptions,
   pinnedSmtpOptions,
@@ -19,6 +19,23 @@ import type { PinnedTarget } from "@/lib/pinned-connection";
 // points below (testImapLogin/testSmtpVerify) precisely so neither caller can
 // forget it.
 
+// Everything an error says, for classification. A connect over several
+// addresses that all fail rejects with an AggregateError: empty message, and
+// the codes live on `errors`. Matching only `message` would read that as an
+// unknown failure.
+function errorText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const { code, errors } = error as Error & { code?: unknown; errors?: unknown };
+  const parts: string[] = [typeof code === "string" ? code : "", error.message];
+  if (Array.isArray(errors)) {
+    for (const inner of errors) {
+      const e = inner as { code?: unknown; message?: unknown } | null;
+      parts.push(`${typeof e?.code === "string" ? e.code : ""} ${String(e?.message ?? inner)}`);
+    }
+  }
+  return parts.join(" ");
+}
+
 // Maps low-level probe errors to short, friendly messages that never leak a
 // stack trace or the password. Order matters: unambiguous network-error CODES
 // are matched BEFORE the fuzzy "auth" wordlist, because that wordlist matches
@@ -30,8 +47,7 @@ export function friendlyError(error: unknown): string {
   // fuzzy mapping below would only bury it under "check your settings".
   if (error instanceof MailHostBlockedError) return error.message;
 
-  const message = error instanceof Error ? error.message : String(error);
-  const lower = message.toLowerCase();
+  const lower = errorText(error).toLowerCase();
 
   if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("etimedout")) {
     return "Connection timed out — check the host and port";
@@ -77,8 +93,7 @@ export function classifyProbeError(error: unknown): { code: ProbeFailureCode; me
   // guard just refused must not be scanned on three more ports.
   if (error instanceof MailHostBlockedError) return { code: "blocked", message: error.message };
 
-  const message = error instanceof Error ? error.message : String(error);
-  const lower = message.toLowerCase();
+  const lower = errorText(error).toLowerCase();
 
   // Unambiguous network-error CODES first. The "auth" branch below matches a
   // fuzzy wordlist against the whole message — which includes the
@@ -130,25 +145,24 @@ export type SmtpPortProbe = { port: number; reachable: boolean };
 // connection succeeds within a reasonable time.
 const SMTP_PORT_PROBE_TIMEOUT_MS = 2500;
 
-function probeTcpPort(host: string, port: number, timeoutMs: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = netConnect({ host, port, timeout: timeoutMs });
-    let settled = false;
-    const finish = (reachable: boolean) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(reachable);
-    };
-    // Keep the error listener attached for the socket's whole lifetime rather
-    // than removing all listeners on the first settle: destroy() on a
-    // still-connecting socket can emit a late 'error', and an 'error' event
-    // with no listener crashes the process. The `settled` guard makes any such
-    // late event a no-op instead of a second resolve.
-    socket.once("connect", () => finish(true));
-    socket.once("timeout", () => finish(false));
-    socket.once("error", () => finish(false));
-  });
+// Connects through the pinned lookup, so a first address that refuses falls
+// through to the next checked one instead of reading as "unreachable".
+async function probeTcpPort(
+  host: string,
+  port: number,
+  target: PinnedTarget,
+  timeoutMs: number
+): Promise<boolean> {
+  try {
+    const socket = await connectPinned(host, port, target, timeoutMs);
+    // destroy() can still emit a late 'error'; with no listener that would
+    // crash the process.
+    socket.on("error", () => {});
+    socket.destroy();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // SECURITY: this connects ONLY to the caller-supplied smtpHost on a fixed,
@@ -175,7 +189,7 @@ export async function probeSmtpPorts(
   return Promise.all(
     ports.map(async (port) => ({
       port,
-      reachable: await probeTcpPort(target[0].address, port, SMTP_PORT_PROBE_TIMEOUT_MS),
+      reachable: await probeTcpPort(host, port, target, SMTP_PORT_PROBE_TIMEOUT_MS),
     }))
   );
 }

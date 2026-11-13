@@ -52,6 +52,16 @@ const { mockNetConnect, fakeSockets } = vi.hoisted(() => {
         listeners.set(event, existing);
         return socket;
       }),
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        const existing = listeners.get(event) ?? [];
+        existing.push(listener);
+        listeners.set(event, existing);
+        return socket;
+      }),
+      removeListener: vi.fn((event: string) => {
+        listeners.delete(event);
+        return socket;
+      }),
       removeAllListeners: vi.fn(() => {
         listeners.clear();
         return socket;
@@ -423,6 +433,19 @@ describe("imap-probe", () => {
   });
 
   describe("classifyProbeError", () => {
+    it("classifies a total failure over several addresses by the per-address errors", () => {
+      // autoSelectFamily over >=2 addresses rejects with an AggregateError that
+      // has an empty message; the codes live on `errors`.
+      const failure = new AggregateError(
+        [
+          Object.assign(new Error("connect ECONNREFUSED ::1:993"), { code: "ECONNREFUSED" }),
+          Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:993"), { code: "ECONNREFUSED" }),
+        ],
+        ""
+      );
+      expect(classifyProbeError(failure).code).toBe("refused");
+    });
+
     it.each([
       ["ETIMEDOUT", new Error("connect ETIMEDOUT 1.2.3.4:465"), "timeout"],
       ["'timed out' wording", new Error("Connection timed out"), "timeout"],
@@ -482,7 +505,8 @@ describe("imap-probe", () => {
     /** Lets the probe's one host resolution settle before sockets are opened. */
     const settled = () => new Promise((resolve) => setImmediate(resolve));
 
-    it("connects to the default ports (465, 587, 25) in parallel with a 2500ms timeout each", async () => {
+    it("connects to the default ports (465, 587, 25) in parallel, by name through the pinned lookup", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const resultPromise = probeSmtpPorts("smtp.example.com");
       await settled();
 
@@ -490,20 +514,22 @@ describe("imap-probe", () => {
       // parallel), before any of them settle — each to the checked address.
       expect(mockNetConnect).toHaveBeenCalledTimes(3);
       expect(mockNetConnect).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "93.184.216.34", port: 465, timeout: 2500 })
+        expect.objectContaining({ host: "smtp.example.com", port: 465, lookup: expect.any(Function) })
       );
       expect(mockNetConnect).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "93.184.216.34", port: 587, timeout: 2500 })
+        expect.objectContaining({ host: "smtp.example.com", port: 587, lookup: expect.any(Function) })
       );
       expect(mockNetConnect).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "93.184.216.34", port: 25, timeout: 2500 })
+        expect.objectContaining({ host: "smtp.example.com", port: 25, lookup: expect.any(Function) })
       );
 
       fakeSockets[0].emit("error", new Error("ECONNREFUSED")); // 465
       fakeSockets[1].emit("connect"); // 587
-      fakeSockets[2].emit("timeout"); // 25
+      // 25 never answers: the 2500ms bound ends it.
+      await vi.advanceTimersByTimeAsync(2500);
 
       const results = await resultPromise;
+      vi.useRealTimers();
 
       expect(results).toEqual(
         expect.arrayContaining([
@@ -512,9 +538,10 @@ describe("imap-probe", () => {
           { port: 25, reachable: false },
         ])
       );
-      for (const socket of fakeSockets) {
-        expect(socket.destroy).toHaveBeenCalled();
-      }
+      // The one that connected and the one that timed out are closed; the
+      // refused one is already dead.
+      expect(fakeSockets[1].destroy).toHaveBeenCalled();
+      expect(fakeSockets[2].destroy).toHaveBeenCalled();
     });
 
     it("accepts a custom port list", async () => {
