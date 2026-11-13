@@ -37,15 +37,21 @@ function isRecord(value: unknown): value is Json {
 // `privateKey`, `encryptKey`, `serviceAccount` (an object holding a
 // `private_key`), `x-api-key`. Channel blocks an admin set directly in OpenClaw
 // are carried through a regenerate unchanged, and the plaintext scanner knows
-// none of those formats, so this list errs wide. Counts and switches
-// (`maxTokens`, `secretRotationEnabled`) are numbers or booleans and are kept;
+// none of those formats, so this list errs wide. Switches
+// (`secretRotationEnabled`) and token counts (`maxTokens`) are kept;
 // the top-level `secrets` block holds SecretRef pointers and is redacted
 // anyway: over-redacting a postmortem costs nothing.
 const SECRET_KEY =
   /token|secret|password|passphrase|api[-_]?key|private[-_]?key|access[-_]?key|encrypt[-_]?key|authorization|credential|cookie|bearer|service[-_]?account/i;
 
+// `maxTokens`, `contextTokens`, `tokenLimit`: a number under a key that names
+// tokens is a count. A number under any other credential key (a numeric PIN
+// or password) is not.
+const TOKEN_COUNT_KEY = /token/i;
+
 function isCredential(key: string, value: unknown): boolean {
-  return SECRET_KEY.test(key) && typeof value !== "number" && typeof value !== "boolean";
+  if (!SECRET_KEY.test(key) || typeof value === "boolean") return false;
+  return !(typeof value === "number" && TOKEN_COUNT_KEY.test(key));
 }
 
 /** A URL value without userinfo or query string (both can carry credentials). */

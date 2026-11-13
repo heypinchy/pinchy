@@ -258,9 +258,10 @@ describe("rejected dumps: hostile directory entries, placeholders, key names", (
           more: { apiKeys: ["S8"], tokens: ["S9"], clientSecret: "S10", cookie: "S11" },
         },
         usage: { maxTokens: 8192, tokenLimit: 3, secretRotationEnabled: true },
+        smtp: { password: 482915, pinPassphrase: 7731 },
       })
     );
-    expect(out).not.toMatch(/"S\d+"/);
+    expect(out).not.toMatch(/"S\d+"|482915|7731/);
     expect(JSON.parse(out).usage).toEqual({
       maxTokens: 8192,
       tokenLimit: 3,
