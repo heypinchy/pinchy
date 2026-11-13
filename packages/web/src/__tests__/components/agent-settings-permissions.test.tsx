@@ -1357,6 +1357,59 @@ describe("AgentSettingsPermissions", () => {
       });
     });
 
+    // After a save the page refetches the agent before the sections reload.
+    // A section's dirty flag is still the pre-save `true` in that window, so a
+    // re-emit driven only by the agent's new identity puts the Save bar back
+    // after a save that succeeded.
+    it.each([
+      ["only Odoo is on the page", [odooConnection]],
+      ["the email section has not loaded", [odooConnection, googleConnection]],
+    ])(
+      "does not re-report a saved Odoo change as unsaved when the agent is refetched (%s)",
+      async (_label, connections) => {
+        const onChange = vi.fn();
+        const agent = { ...defaultAgent, allowedTools: ["odoo_read"], pluginConfig: null };
+        const { rerender } = render(
+          <AgentSettingsPermissions
+            agent={agent}
+            directories={defaultDirectories}
+            connections={connections}
+            isAdmin={true}
+            onChange={onChange}
+          />
+        );
+
+        await waitFor(() => expect(capturedOdooOnChange).not.toBeNull());
+        act(() =>
+          capturedOdooOnChange!(
+            {
+              connectionId: "conn-odoo",
+              permissions: [
+                { model: "res.partner", operation: "read" },
+                { model: "res.partner", operation: "create" },
+              ],
+            },
+            true
+          )
+        );
+        await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(expect.anything(), true));
+
+        // The save went through; the page now hands down the refetched agent.
+        onChange.mockClear();
+        rerender(
+          <AgentSettingsPermissions
+            agent={{ ...agent, allowedTools: ["odoo_read", "odoo_create"] }}
+            directories={defaultDirectories}
+            connections={connections}
+            isAdmin={true}
+            onChange={onChange}
+          />
+        );
+
+        expect(onChange.mock.calls.filter(([, dirty]) => dirty === true)).toEqual([]);
+      }
+    );
+
     it("reports integrationsLoaded once every shown section has loaded", async () => {
       const onChange = vi.fn();
       render(
@@ -1379,6 +1432,61 @@ describe("AgentSettingsPermissions", () => {
         expect(values.allowedTools).not.toContain("odoo_read");
         expect(values.allowedTools).not.toContain("email_read");
       });
+    });
+  });
+
+  // R2: the page could not load the connection list at all. Then it cannot
+  // know which integration sections belong on the page, so it must not read
+  // the empty list as "this agent has no integrations".
+  describe("when the connection list could not be loaded", () => {
+    const agentWithGrants = {
+      ...defaultAgent,
+      allowedTools: ["odoo_read", "email_read"],
+      pluginConfig: {
+        "pinchy-approvals": { confirm: { odoo_read: "confirm" } },
+      } as AgentPluginConfig,
+    };
+
+    it("keeps the saved integration tools and reports the integrations as not loaded", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithGrants}
+          directories={defaultDirectories}
+          connections={null}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Create files"));
+
+      await waitFor(() => {
+        const [values, dirty] = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(dirty).toBe(true);
+        expect(values.allowedTools).toEqual(
+          expect.arrayContaining(["pinchy_write", "odoo_read", "email_read"])
+        );
+        expect(values.confirm).toEqual({ odoo_read: "confirm" });
+        expect(values.integrations).toEqual([]);
+        expect(values.integrationsLoaded).toBe(false);
+      });
+    });
+
+    it("says that integration access cannot be edited right now, and that it stays as saved", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithGrants}
+          directories={defaultDirectories}
+          connections={null}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByRole("alert")).toHaveTextContent(/couldn.t load your integrations/i);
+      expect(screen.getByRole("alert")).toHaveTextContent(/stays as it is/i);
+      expect(screen.queryByTestId("odoo-section")).not.toBeInTheDocument();
     });
   });
 });

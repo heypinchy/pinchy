@@ -40,30 +40,36 @@ vi.mock("@/components/agent-settings-personality", () => ({
 // The Permissions tab is stubbed down to a control that emits a dirty draft
 // whose `integrationsLoaded` is set by the test.
 let integrationsLoaded = true;
+let receivedConnections: unknown = "never rendered";
 vi.mock("@/components/agent-settings-permissions", () => ({
   AgentSettingsPermissions: ({
     onChange,
+    connections,
   }: {
     onChange: (v: Record<string, unknown>, dirty: boolean) => void;
-  }) => (
-    <button
-      onClick={() =>
-        onChange(
-          {
-            allowedTools: ["pinchy_write", "odoo_read"],
-            allowedPaths: [],
-            integrations: [],
-            integrationsLoaded,
-            webSearchConfig: {},
-            confirm: {},
-          },
-          true
-        )
-      }
-    >
-      change permissions
-    </button>
-  ),
+    connections: unknown;
+  }) => {
+    receivedConnections = connections;
+    return (
+      <button
+        onClick={() =>
+          onChange(
+            {
+              allowedTools: ["pinchy_write", "odoo_read"],
+              allowedPaths: [],
+              integrations: [],
+              integrationsLoaded,
+              webSearchConfig: {},
+              confirm: {},
+            },
+            true
+          )
+        }
+      >
+        change permissions
+      </button>
+    );
+  },
 }));
 vi.mock("@/components/agent-settings-access", () => ({ AgentSettingsAccess: () => <div /> }));
 vi.mock("@/components/agent-settings-diagnostics", () => ({
@@ -89,9 +95,16 @@ const agent = {
 
 const fetchMock = vi.fn();
 
-function mockFetch() {
+function mockFetch({ integrationsStatus = 200 } = {}) {
   fetchMock.mockImplementation((url: unknown, init?: { method?: string }) => {
     const path = String(url);
+    if (path.endsWith("/api/integrations") && integrationsStatus !== 200) {
+      return Promise.resolve({
+        ok: false,
+        status: integrationsStatus,
+        json: () => Promise.resolve({ error: "boom" }),
+      });
+    }
     if (init?.method && init.method !== "GET") {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
     }
@@ -134,6 +147,7 @@ describe("agent settings save — integration grants that were never loaded (#12
   beforeEach(() => {
     vi.clearAllMocks();
     integrationsLoaded = true;
+    receivedConnections = "never rendered";
     mockFetch();
   });
 
@@ -158,5 +172,23 @@ describe("agent settings save — integration grants that were never loaded (#12
     await save();
 
     await waitFor(() => expect(integrationDeletes()).toHaveLength(1));
+  });
+
+  // A failed connection list is "unknown", not "this workspace has no
+  // integrations": the permissions tab must be told so, or it reads the empty
+  // list as "no access" and the save wipes every grant.
+  it("hands the permissions tab no connection list when the integrations GET fails", async () => {
+    mockFetch({ integrationsStatus: 500 });
+    render(<AgentSettingsPageContent />);
+
+    await screen.findByRole("button", { name: "change permissions", hidden: true });
+    expect(receivedConnections).toBeNull();
+  });
+
+  it("hands the permissions tab the loaded connection list", async () => {
+    render(<AgentSettingsPageContent />);
+
+    await screen.findByRole("button", { name: "change permissions", hidden: true });
+    expect(receivedConnections).toEqual([]);
   });
 });
