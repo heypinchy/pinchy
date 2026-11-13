@@ -250,11 +250,12 @@ export function AgentSettingsPageContent() {
           apiGet<{ content?: string }>(`/api/agents/${agentId}/files/AGENTS.md`, { signal }),
           apiGet<{ directories?: Directory[] }>("/api/data-directories", { signal }),
           // Admin-only: a member's own personal agent gets a 403 here, which
-          // means "no integrations to grant", not a failed page.
-          apiGet<unknown>("/api/integrations", { signal }).catch((err: unknown) => {
-            if (err instanceof ApiError && err.status === 403) return [];
-            throw err;
-          }),
+          // means "no integrations to grant". Any other failure leaves the list
+          // unknown (`null`), which the permissions tab must not save as "none";
+          // it does not fail the page.
+          apiGet<unknown>("/api/integrations", { signal }).catch((err: unknown) =>
+            err instanceof ApiError && err.status === 403 ? [] : null
+          ),
         ]);
         if (signal?.aborted) return;
         setAgent(agentData);
@@ -262,7 +263,7 @@ export function AgentSettingsPageContent() {
         setSoulContent(soulData.content || "");
         setAgentsContent(agentsData.content || "");
         setDirectories(dirData.directories || []);
-        setConnections(Array.isArray(connData) ? (connData as Connection[]) : []);
+        setConnections(Array.isArray(connData) ? (connData as Connection[]) : null);
         setLoadError(null);
       } catch (err) {
         // Classify on the signal alone: an abort's error is not reliably an

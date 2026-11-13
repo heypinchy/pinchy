@@ -100,11 +100,7 @@ function mockFetch({ integrationsStatus = 200 } = {}) {
   fetchMock.mockImplementation((url: unknown, init?: { method?: string }) => {
     const path = String(url);
     if (path.endsWith("/api/integrations") && integrationsStatus !== 200) {
-      return Promise.resolve({
-        ok: false,
-        status: integrationsStatus,
-        json: () => Promise.resolve({ error: "boom" }),
-      });
+      return Promise.resolve(jsonResponse({ error: "boom" }, { status: integrationsStatus }));
     }
     if (init?.method && init.method !== "GET") {
       return Promise.resolve(jsonResponse({}));

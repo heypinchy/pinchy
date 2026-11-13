@@ -551,6 +551,16 @@ describe("AgentSettingsPage", () => {
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     });
 
+    // Any other integrations failure leaves the list unknown: the permissions
+    // tab says so and keeps the saved grants, but the rest of the page loads.
+    it("renders the settings when the integrations list fails", async () => {
+      failLoad("/api/integrations", async () => jsonResponse({}, { status: 500 }));
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByText("Agent Settings")).toBeInTheDocument();
+      expect(screen.queryByText(/couldn't load this agent's settings/i)).not.toBeInTheDocument();
+    });
+
     it("cancels its loads when it unmounts mid-flight", async () => {
       const signals: (AbortSignal | undefined)[] = [];
       fetchSpy.mockImplementation(async (_url, init) => {
