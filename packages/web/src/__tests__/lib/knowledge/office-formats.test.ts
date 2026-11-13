@@ -20,6 +20,7 @@ import {
   isSpreadsheetFile,
   isMsgFile,
   isScanFile,
+  isShownAsConvertedPdf,
   isTextFile,
   isWordFile,
   MSG_EXTENSIONS,
@@ -198,6 +199,23 @@ describe("CONVERTED_EXTENSIONS", () => {
   it("refuses to name a target for a format the converter does not take", () => {
     expect(() => convertedExtensionOf("/data/Preise.xlsx")).toThrow();
     expect(() => convertedExtensionOf("/data/report.pdf")).toThrow();
+  });
+});
+
+describe("isShownAsConvertedPdf", () => {
+  // One answer for the route that serves the PDF and the viewer that names
+  // its url after it. Two predicates would drift, and a drift is a viewer url
+  // the route refuses — which the citation dialog reads as "no preview".
+  it("is true for every Office format and every scan", () => {
+    for (const ext of [...OFFICE_EXTENSIONS, ...SCAN_EXTENSIONS]) {
+      expect(isShownAsConvertedPdf(`dir/file${ext}`)).toBe(true);
+    }
+  });
+
+  it("is false for a PDF, a spreadsheet and a legacy workbook", () => {
+    for (const path of ["a.pdf", "b.xlsx", "c.xlsm", "d.xls", "e.txt"]) {
+      expect(isShownAsConvertedPdf(path)).toBe(false);
+    }
   });
 });
 

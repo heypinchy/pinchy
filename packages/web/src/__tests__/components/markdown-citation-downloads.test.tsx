@@ -98,6 +98,14 @@ describe("what the renderer hands the viewer for a citation", () => {
     expect(downloads?.map((d) => d.label)).toEqual(["Original (.doc)", "PDF"]);
   });
 
+  it("marks the converted PDF, which is what tells the dialog to check it exists", async () => {
+    const downloads = (await downloadsOf(
+      "- [1] customer/archive-2012/Angebot.doc — S. 3"
+    )) as Array<{ variant?: string }> | null;
+
+    expect(downloads?.map((d) => d.variant)).toEqual(["original", "converted"]);
+  });
+
   it("supplies exactly one for a PDF, which has only one representation", async () => {
     const downloads = await downloadsOf("- [1] customer/PPR/document.pdf — p. 510");
 

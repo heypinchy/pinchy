@@ -25,8 +25,8 @@ import {
   convertedExtensionOf,
   convertedPdfName,
   isLegacyWorkbook,
-  isOfficeFile,
   isScanFile,
+  isShownAsConvertedPdf,
   isSpreadsheetFile,
   needsConversion,
   OfficeFileRejectedError,
@@ -594,7 +594,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   const source = await openSource();
   if (!source) return new NextResponse("Not found", { status: 404 });
 
-  const showsConvertedPdf = isOfficeFile(realPath) || isScanFile(realPath);
+  const showsConvertedPdf = isShownAsConvertedPdf(realPath);
   const wantsConverted = variant === "converted" || (variant === null && showsConvertedPdf);
   // Only a page-shaped document or a scan has a converted PDF to serve. A
   // legacy workbook's `.xlsx` is read through `variant=rows`, never handed out.
