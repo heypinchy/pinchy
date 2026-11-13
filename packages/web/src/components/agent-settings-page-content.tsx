@@ -94,6 +94,7 @@ interface PermissionsValues {
   }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
   confirm?: Record<string, "confirm" | "allow">;
+  integrationsLoaded: boolean;
 }
 
 interface AccessValues {
@@ -391,7 +392,10 @@ export function AgentSettingsPageContent() {
           "pinchy-approvals": { confirm: permissionsDraft.current.confirm ?? {} },
         };
 
-        // Save each active integration separately, or clear all if none
+        // Save each active integration separately, or clear all if none.
+        // An empty list only means "none" once every integration section has
+        // loaded: one that has not (or whose load failed) never reported the
+        // agent's grants, and clearing them would delete what nobody saw (#1216).
         if (permissionsDraft.current.integrations.length > 0) {
           for (const integration of permissionsDraft.current.integrations) {
             integrationPromises.push(
@@ -401,8 +405,7 @@ export function AgentSettingsPageContent() {
               )
             );
           }
-        } else {
-          // Clear all integration permissions when no connections are configured
+        } else if (permissionsDraft.current.integrationsLoaded) {
           integrationPromises.push(apiDelete(`/api/agents/${agentId}/integrations`));
         }
       }
