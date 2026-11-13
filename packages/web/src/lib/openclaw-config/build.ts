@@ -1,4 +1,4 @@
-import { writeFileSync } from "fs";
+import { writeRejectedPayload } from "./rejected-payload";
 import { isDeepStrictEqual } from "util";
 import {
   writeSecretsFile,
@@ -2059,13 +2059,8 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     refused = onDiskContent.length > 0 && newContent.length < sizeBaseline * 0.5;
     if (refused) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
-      const rejectedPath = `${CONFIG_PATH}.regenerate-rejected.${ts}`;
-      try {
-        // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is CONFIG_PATH + ISO timestamp, no user input
-        writeFileSync(rejectedPath, newContent, { encoding: "utf-8", mode: 0o644 });
-      } catch {
-        // Best-effort; the warn below carries the salient bytes either way.
-      }
+      // Tokens redacted, 0600, newest few kept (see rejected-payload.ts).
+      const rejectedPath = writeRejectedPayload(CONFIG_PATH, newContent, ts);
       console.error(
         `[openclaw-config] regenerate produced a suspiciously small config ` +
           `(${newContent.length} bytes, was ${onDiskContent.length}` +

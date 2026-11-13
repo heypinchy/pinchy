@@ -50,6 +50,63 @@ function config(providers: Json, extra: Json = {}): Json {
 
 const serialize = (c: Json) => JSON.stringify(c, null, 2).trimEnd() + "\n";
 
+describe("sizeGuardBaseline vs deleted agents", () => {
+  const pad = "x".repeat(600);
+  const agent = (id: string) => ({ id, name: id, workspace: `/ws/${id}`, pad });
+  const full = (ids: string[]): Json => ({
+    gateway: { mode: "local", auth: { mode: "token", token: "t".repeat(40) } },
+    agents: { entries: Object.fromEntries(ids.map((id) => [id, agent(id)])) },
+    models: { providers: { anthropic } },
+    plugins: {
+      entries: {
+        "pinchy-files": {
+          enabled: true,
+          config: {
+            gatewayToken: "g",
+            agents: Object.fromEntries(ids.map((id) => [id, { allowed_paths: [pad] }])),
+          },
+        },
+      },
+    },
+    channels: {
+      telegram: {
+        enabled: true,
+        accounts: Object.fromEntries(ids.map((id) => [id, { botToken: `1:${pad}` }])),
+      },
+    },
+    bindings: ids.map((id) => ({ agentId: id, match: { channel: "telegram", accountId: id } })),
+  });
+
+  it("discounts every byte a deleted agent held (roster, plugin entries, telegram account, bindings)", () => {
+    const existing = serialize(full(["smithers", "a", "b", "c"]));
+    const next = full(["smithers"]);
+    expect(sizeGuardBaseline(existing, next)).toBe(serialize(full(["smithers"])).length);
+    expect(serialize(next).length).toBeGreaterThanOrEqual(sizeGuardBaseline(existing, next) * 0.5);
+  });
+
+  it("discounts a deleted agent a pre-2026.9 file still lists in the retired agents.list array", () => {
+    const legacy = full(["smithers", "a", "b", "c"]);
+    legacy.agents = { list: ["smithers", "a", "b", "c"].map(agent) };
+    const existing = serialize(legacy);
+    expect(sizeGuardBaseline(existing, full(["smithers"]))).toBe(
+      serialize({ ...full(["smithers"]), agents: { list: [agent("smithers")] } }).length
+    );
+  });
+
+  it("does not discount when no agent survives (empty DB read, #311)", () => {
+    const existing = serialize(full(["smithers", "a", "b", "c"]));
+    expect(sizeGuardBaseline(existing, full([]))).toBe(existing.length);
+  });
+
+  it("does not discount a kept agent's lost telegram account and bindings (#311 race)", () => {
+    const existing = serialize(full(["smithers", "a"]));
+    const next = full(["smithers", "a"]);
+    delete (next.channels as Json).telegram;
+    delete next.bindings;
+    expect(sizeGuardBaseline(existing, next)).toBe(existing.length);
+  });
+});
+
 describe("sizeGuardBaseline", () => {
   it("discounts the bytes a deleted provider took when another provider survives", () => {
     const existing = serialize(config({ anthropic, acme: provider(40) }));

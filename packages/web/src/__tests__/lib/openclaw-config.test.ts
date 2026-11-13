@@ -10032,6 +10032,9 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
       (c) => typeof c[0] === "string" && (c[0] as string).includes(".regenerate-rejected.")
     );
     expect(postmortemWrites).toHaveLength(1);
+    // ...but it holds a full openclaw.json, so: owner-only, and no tokens.
+    expect(postmortemWrites[0][2]).toMatchObject({ mode: 0o600 });
+    expect(String(postmortemWrites[0][1])).not.toContain("test-gateway-token");
 
     // The guard must log loudly so the underlying race is observable in
     // production — silent skip would hide the bug forever.
@@ -10095,6 +10098,74 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     expect(postmortemWrites).toHaveLength(0);
 
     errorSpy.mockRestore();
+  });
+
+  it("delivers the config to OpenClaw after most agents were deleted — the #311 guard discounts deleted agents", async () => {
+    // 1 provider, 4 agents, 3 deleted: the payload is under half of the
+    // on-disk file, and every later regenerate was refused against the same
+    // file — the deleted agents (and their grants) stayed live in OpenClaw.
+    const big = (id: string) => ({
+      id,
+      name: `${id}-${"x".repeat(3000)}`,
+      model: "anthropic/claude-opus-4-7",
+      createdAt: new Date(),
+    });
+    const keeper = {
+      id: "a1",
+      name: "Smithers",
+      model: "anthropic/claude-opus-4-7",
+      createdAt: new Date(),
+    };
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-test" : null
+    );
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([keeper, big("a2"), big("a3"), big("a4")]),
+    } as never);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    await regenerateOpenClawConfig();
+    const existing = writtenOpenClawConfig(mockedWriteFileSync);
+
+    mockedWriteFileSync.mockClear();
+    mockedReadFileSync.mockReturnValue(existing);
+    // A connected OpenClaw (pushes go over config.apply, never a file write).
+    const applied: string[] = [];
+    mockGetClient.mockReturnValue({
+      config: {
+        get: vi.fn(async () => ({
+          hash: "h",
+          config: JSON.parse(existing),
+          parsed: JSON.parse(existing),
+        })),
+        apply: vi.fn(async (raw: string) => {
+          applied.push(raw);
+        }),
+      },
+    });
+    mockedDb.select.mockReturnValue({ from: mockFrom([keeper]) } as never);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await regenerateOpenClawConfig();
+      for (let i = 0; i < 500 && getPendingConfigPushCount() > 0; i++) {
+        await new Promise((r) => setImmediate(r));
+      }
+      expect(errorSpy.mock.calls.flat().join(" ")).not.toMatch(/suspiciously small/);
+      expect(
+        mockedWriteFileSync.mock.calls.filter(
+          (c) => typeof c[0] === "string" && c[0].includes(".regenerate-rejected.")
+        )
+      ).toHaveLength(0);
+      expect(applied.length).toBeGreaterThan(0);
+      // Precondition that makes this a real repro: under half of the file.
+      expect(applied[0].length).toBeLessThan(existing.length * 0.5);
+      expect(rosterOf(JSON.parse(applied[0])).map((a: { id: string }) => a.id)).toEqual(["a1"]);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("auto-sets agents.defaults.pdfModel when Anthropic is configured (preferred native PDF provider)", async () => {
