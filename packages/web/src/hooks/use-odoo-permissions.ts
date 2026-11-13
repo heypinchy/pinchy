@@ -157,6 +157,17 @@ export function useOdooPermissions(
           setInitialPermissions(permSet);
           setAddedModels(models);
           setAccessLevelState(detectAccessLevelFromModels(models));
+        } else {
+          // The agent holds no Odoo grant (any more). A reload after a save that
+          // revoked everything lands here, so the snapshot and the editor both
+          // go back to "nothing configured" — otherwise the stale snapshot keeps
+          // reporting the saved change as unsaved. Already-empty state is kept
+          // as-is: a fresh empty object would re-render, and a caller passing a
+          // new connections array per render would then reload forever.
+          setConnectionIdState("");
+          setInitialConnectionId("");
+          setInitialPermissions((prev) => (prev.size === 0 ? prev : new Set()));
+          setAddedModels((prev) => (prev.size === 0 ? prev : new Map()));
         }
       } catch (err) {
         if (signal.aborted) return;
