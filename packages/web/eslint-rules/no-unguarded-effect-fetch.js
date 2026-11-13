@@ -31,13 +31,28 @@
 // what that function rejects with later, and a catch block or finally block is
 // not guarded by its own try.
 //
+// "Runs from a useEffect" covers two shapes:
+//
+//   - A function DEFINED inside the effect body, at any depth.
+//   - A function the effect CALLS and drops: a bare `fn();` or `void fn();`
+//     statement anywhere in the effect body, where `fn` resolves (by scope,
+//     not by name) to a `function fn() {}`, a `const fn = async () => {}` /
+//     `function () {}`, or a `const fn = useCallback(async () => {}, deps)`
+//     declared inside a function in this file — in practice, the component.
+//     This is the settings-page shape: a `fetchData` made with useCallback so
+//     the effect and the post-save refresh share it. Once one effect drops it,
+//     its awaits need a catch of their own, even if an event handler elsewhere
+//     awaits the same function inside a try. A call the effect hands somewhere
+//     — `fn().catch(...)`, `await fn()` inside a try, `const p = fn()` — is
+//     not dropped, and the function is not followed for it.
+//
 // Limits, stated so nobody reads the green check as more than it is:
 //
-//   - It follows functions DEFINED inside the effect. An async function made
-//     with `useCallback` (or at module level) and merely CALLED from the effect
-//     is not followed yet. The fire-and-forget call is visible in the effect
-//     body, but resolving it to the function it names needs a scope lookup
-//     this rule does not do.
+//   - Following a called function goes one level deep and stays in the file.
+//     A function declared at module level, imported from another file, or
+//     called only by another followed function is not followed. Module level
+//     is excluded on purpose: those are shared helpers whose callers decide
+//     what a failure means, and no effect in the codebase drops one today.
 //   - It reads `await`. It sees through an awaited `.then`/`.finally` chain and
 //     `Promise.all/any/race([...])`, but a load that is never awaited
 //     (`fetch(url).then(...)` with no `.catch`) is the same bug and is not
@@ -164,6 +179,64 @@ function isEffectCallback(fn) {
   );
 }
 
+function isInsideEffect(node) {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (isFunction(parent) && isEffectCallback(parent)) return true;
+  }
+  return false;
+}
+
+/**
+ * The call a statement starts and drops: `fn();` or `void fn();`. Nothing
+ * awaits it and nothing catches it. `fn().catch(...)`, `await fn()` and
+ * `const p = fn()` are not this shape: they hand the rejection somewhere.
+ */
+function droppedCall(statement) {
+  let expression = unwrap(statement.expression);
+  if (expression.type === "UnaryExpression" && expression.operator === "void") {
+    expression = unwrap(expression.argument);
+  }
+  return expression.type === "CallExpression" ? expression : null;
+}
+
+function isUseCallback(call) {
+  const callee = unwrap(call.callee);
+  return (
+    (callee.type === "Identifier" && callee.name === "useCallback") ||
+    memberName(callee) === "useCallback"
+  );
+}
+
+/**
+ * The function a name in `scope` refers to, when it is defined in a function
+ * scope of this file: `function fn() {}`, `const fn = async () => {}` /
+ * `function () {}`, or `const fn = useCallback(async () => {}, deps)`. Module-
+ * level functions are not resolved (see the limits in the header).
+ */
+function resolveLocalFunction(scope, name) {
+  for (let current = scope; current; current = current.upper) {
+    const variable = current.set.get(name);
+    if (!variable) continue;
+    if (current.type === "module" || current.type === "global") return null;
+    const def = variable.defs[0];
+    if (!def) return null;
+    if (def.type === "FunctionName") return def.node;
+    if (def.type !== "Variable" || !def.node.init) return null;
+    const init = unwrap(def.node.init);
+    if (init.type === "ArrowFunctionExpression" || init.type === "FunctionExpression") {
+      return init;
+    }
+    if (init.type === "CallExpression" && isUseCallback(init)) {
+      const fn = init.arguments[0] && unwrap(init.arguments[0]);
+      return fn && (fn.type === "ArrowFunctionExpression" || fn.type === "FunctionExpression")
+        ? fn
+        : null;
+    }
+    return null;
+  }
+  return null;
+}
+
 /** @type {import('eslint').Rule.RuleModule} */
 module.exports = {
   meta: {
@@ -194,13 +267,36 @@ module.exports = {
         .some((comment) => EXEMPTION_RE.test(comment.value));
     }
 
+    // Functions an effect calls fire-and-forget, and the unguarded awaits
+    // found in functions that are not (yet known to be) effect-run. Both are
+    // collected over the whole file and matched at the end, because the
+    // effect that calls a function usually comes after its definition.
+    const droppedFromEffect = new Set();
+    const pending = [];
+
+    function report(node, callee) {
+      if (!hasExemption(node)) {
+        context.report({ node, messageId: "unguardedEffectFetch", data: { callee } });
+      }
+    }
+
     return {
+      ExpressionStatement(statement) {
+        const call = droppedCall(statement);
+        if (!call) return;
+        const callee = unwrap(call.callee);
+        if (callee.type !== "Identifier" || !isInsideEffect(statement)) return;
+        const fn = resolveLocalFunction(sourceCode.getScope(call), callee.name);
+        if (fn) droppedFromEffect.add(fn);
+      },
+
       AwaitExpression(node) {
         const callee = loadCalleeName(node.argument);
         if (!callee) return;
 
         let guarded = false;
         let crossedFunction = false;
+        const crossed = [];
         let child = node;
         for (let parent = node.parent; parent; child = parent, parent = parent.parent) {
           if (
@@ -213,13 +309,19 @@ module.exports = {
           }
           if (isFunction(parent)) {
             if (isEffectCallback(parent)) {
-              if (!guarded && !hasExemption(node)) {
-                context.report({ node, messageId: "unguardedEffectFetch", data: { callee } });
-              }
+              if (!guarded) report(node, callee);
               return;
             }
+            crossed.push(parent);
             crossedFunction = true;
           }
+        }
+        if (!guarded) pending.push({ node, callee, crossed });
+      },
+
+      "Program:exit"() {
+        for (const { node, callee, crossed } of pending) {
+          if (crossed.some((fn) => droppedFromEffect.has(fn))) report(node, callee);
         }
       },
     };

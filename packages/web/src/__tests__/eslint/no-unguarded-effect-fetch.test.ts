@@ -115,6 +115,68 @@ tester.run("no-unguarded-effect-fetch", rule, {
       }, []);`,
       filename: CLIENT,
     },
+    // A function the effect calls fire-and-forget is followed — guarded here.
+    {
+      code: `function Page() {
+        const fetchData = useCallback(async () => {
+          try {
+            await apiGet("/api/x");
+          } catch (err) {
+            report(err);
+          }
+        }, []);
+        useEffect(() => { fetchData(); }, [fetchData]);
+      }`,
+      filename: CLIENT,
+    },
+    // A call-site .catch guards the call, so the callee is not followed.
+    {
+      code: `function Page() {
+        async function load() { await apiGet("/api/x"); }
+        useEffect(() => { load().catch(report); }, []);
+      }`,
+      filename: CLIENT,
+    },
+    // So does awaiting it inside a try in the effect.
+    {
+      code: `function Page() {
+        const load = async () => { await apiGet("/api/x"); };
+        useEffect(() => {
+          (async () => {
+            try { await load(); } catch (err) { report(err); }
+          })();
+        }, []);
+      }`,
+      filename: CLIENT,
+    },
+    // A function only an event handler calls is not followed: the handler
+    // owns the rejection.
+    {
+      code: `function Page() {
+        async function save() { await apiPost("/api/x", {}); }
+        return <button onClick={() => save()} />;
+      }`,
+      filename: CLIENT,
+      languageOptions: { parserOptions: { ecmaFeatures: { jsx: true } } },
+    },
+    // A same-named function in another scope is not the one the effect calls.
+    {
+      code: `function Other() {
+        async function load() { await apiGet("/api/x"); }
+        return load;
+      }
+      function Page() {
+        function load() { setReady(true); }
+        useEffect(() => { load(); }, []);
+      }`,
+      filename: CLIENT,
+    },
+    // Module-level functions are a documented limit and are not followed.
+    {
+      code: `async function loadAll() { await apiGet("/api/x"); }
+      function Page() { useEffect(() => { loadAll(); }, []); }`,
+      filename: CLIENT,
+    },
     // Outside the configured scope the rule does nothing.
     {
       code: `useEffect(() => { (async () => { await fetch("/api/x"); })(); }, []);`,
@@ -274,6 +336,73 @@ tester.run("no-unguarded-effect-fetch", rule, {
       }, []);`,
       filename: CLIENT,
       errors: [{ messageId: "unguardedEffectFetch", data: { callee: "fetch" } }],
+    },
+    // A useCallback load the effect calls fire-and-forget (the
+    // settings-page shape).
+    {
+      code: `function Page() {
+        const fetchData = useCallback(async () => {
+          const res = await fetch("/api/groups");
+          if (res.ok) setGroups(await res.json());
+        }, []);
+        useEffect(() => { fetchData(); }, [fetchData]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "fetch" } }],
+    },
+    // React.useCallback, a void call, and a try/finally with no catch.
+    {
+      code: `function Page() {
+        const fetchStatus = React.useCallback(async () => {
+          try {
+            await Promise.all([apiGet("/a"), apiGet("/b")]);
+          } finally {
+            setLoading(false);
+          }
+        }, []);
+        useEffect(() => { void fetchStatus(); }, [fetchStatus]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // A function declaration in the component, called inside a branch.
+    {
+      code: `function Page() {
+        async function fetchUsers() { const res = await fetch("/api/users"); }
+        useEffect(() => { if (ready) { fetchUsers(); } }, [ready]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch" }],
+    },
+    // A const function expression, with TypeScript around it.
+    {
+      code: `function Page() {
+        const load = async function (): Promise<void> { await apiGet<T>("/x"); };
+        useEffect(() => { load(); }, []);
+      }`,
+      filename: CLIENT,
+      languageOptions: { parser: tsParser },
+      errors: [{ messageId: "unguardedEffectFetch" }],
+    },
+    // A try/catch around the effect's call does not catch an async rejection.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { try { load(); } catch (err) { report(err); } }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch" }],
+    },
+    // Called fire-and-forget from the effect and awaited in a handler: the
+    // effect's call is still unguarded, reported once.
+    {
+      code: `function Page() {
+        async function load() { await apiGet("/x"); }
+        useEffect(() => { load(); }, []);
+        async function onRetry() { try { await load(); } catch (e) { report(e); } }
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch" }],
     },
   ],
 });
