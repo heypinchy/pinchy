@@ -220,15 +220,21 @@ const HTML_ENTITIES: Record<string, string> = {
  * tag becomes a newline, anything else a space. A mail body is untrusted, and
  * the lazy-regex form of this (`<(script)[^>]*>[\s\S]*?<\/\1>`, `<!--[\s\S]*?-->`,
  * `<[^>]+>`) rescans the rest of the input from every unclosed opener, so
- * N openers cost N^2. Here every `indexOf` that fails ends the scan for that
- * kind of opener for good, and every one that succeeds moves past what it found.
+ * N openers cost N^2. Here a search that finds nothing is remembered (nothing
+ * later can find it either), and one that finds something moves past it, so
+ * every character is scanned a bounded number of times.
+ *
+ * A `<` that cannot start a tag (not followed by a letter, `/`, `!` or `?`,
+ * as in the HTML tokenizer) is text. This function is duplicated in
+ * `packages/plugins/pinchy-email/email-adapter.ts` (bundle isolation);
+ * `remove-tags-drift.test.ts` pins the two bodies together.
  */
 function removeTags(html: string): string {
-  const lower = html.toLowerCase();
+  // ASCII-only lowering keeps indices aligned with `html`: `toLowerCase()`
+  // turns U+0130 into two code units, which would shift every later index.
+  const lower = html.replace(/[A-Z]+/g, (s) => s.toLowerCase());
   const out: string[] = [];
   let i = 0;
-  // A search that came back empty stays empty for any later start, so it is
-  // remembered instead of repeated.
   let noMoreGt = false;
   const noCloser = new Set<string>();
   let noCommentEnd = false;
@@ -242,6 +248,12 @@ function removeTags(html: string): string {
     out.push(html.slice(i, lt));
     i = lt;
 
+    if (!/[A-Za-z/!?]/.test(html[lt + 1] ?? "")) {
+      out.push("<");
+      i = lt + 1;
+      continue;
+    }
+
     if (!noCommentEnd && html.startsWith("<!--", lt)) {
       const end = html.indexOf("-->", lt + 4);
       if (end !== -1) {
@@ -252,21 +264,6 @@ function removeTags(html: string): string {
       noCommentEnd = true;
     }
 
-    const element = /^<(script|style)/.exec(lower.slice(lt, lt + 7))?.[1];
-    if (element && !noCloser.has(element)) {
-      const openEnd = html.indexOf(">", lt);
-      if (openEnd !== -1) {
-        const closer = `</${element}>`;
-        const close = lower.indexOf(closer, openEnd + 1);
-        if (close !== -1) {
-          out.push(" ");
-          i = close + closer.length;
-          continue;
-        }
-        noCloser.add(element);
-      }
-    }
-
     const gt = noMoreGt ? -1 : html.indexOf(">", lt + 1);
     if (gt === -1) {
       noMoreGt = true;
@@ -274,6 +271,19 @@ function removeTags(html: string): string {
       i = lt + 1;
       continue;
     }
+
+    const element = /^<(script|style)/.exec(lower.slice(lt, lt + 7))?.[1];
+    if (element && !noCloser.has(element)) {
+      const closer = `</${element}>`;
+      const close = lower.indexOf(closer, gt + 1);
+      if (close !== -1) {
+        out.push(" ");
+        i = close + closer.length;
+        continue;
+      }
+      noCloser.add(element);
+    }
+
     out.push(HTML_BLOCK_TAG_RE.test(html.slice(lt, gt + 1)) ? "\n" : " ");
     i = gt + 1;
   }

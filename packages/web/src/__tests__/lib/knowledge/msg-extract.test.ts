@@ -227,31 +227,41 @@ describe("emailContextLine", () => {
 });
 
 describe("stripHtml on hostile mail bodies", () => {
-  // A mail body is untrusted. Many unclosed openers made the old lazy regexes
-  // rescan the rest of the input from each one: quadratic. Compare scaling
-  // rather than wall-clock: 4x the input must cost nowhere near 16x the time.
-  const time = (input: string) => {
-    const runs: number[] = [];
-    for (let i = 0; i < 3; i++) {
-      const t = performance.now();
+  // A mail body is untrusted. Many unclosed openers made lazy regexes rescan
+  // the rest of the input from every opener: quadratic. Wall-clock ratios
+  // cannot see this reliably (a linear run is below timer noise), so count the
+  // work instead: every character String.prototype.indexOf scans. A linear
+  // pass scans each character a small constant number of times; a rescan from
+  // every opener scans O(n) per opener.
+  const scannedChars = (input: string): number => {
+    const original = String.prototype.indexOf;
+    let total = 0;
+    String.prototype.indexOf = function (this: string, needle: string, from = 0) {
+      const r = original.call(this, needle, from);
+      total += (r === -1 ? this.length : r) - from;
+      return r;
+    };
+    try {
       stripHtml(input);
-      runs.push(performance.now() - t);
+    } finally {
+      String.prototype.indexOf = original;
     }
-    // Best of three, floored at 5 ms: a linear scan finishes in well under a
-    // millisecond, where a scheduler hiccup would otherwise read as a ratio.
-    return Math.max(5, Math.min(...runs));
+    return total;
   };
 
-  it.each([
-    ["unclosed <script", "<script "],
-    ["unclosed <style", "<style>"],
-    ["unclosed comment", "<!-- "],
-    ["unclosed tag", "<a "],
-  ])("scales linearly with %s openers", (_label, opener) => {
-    const small = time(opener.repeat(2_000));
-    const large = time(opener.repeat(8_000));
-    expect(large / small).toBeLessThan(10);
-    expect(large).toBeLessThan(2_000);
+  it.each(["<script ", "<SCRIPT ", "<style ", "<style>", "<script>", "<!-- ", "<a ", "<p "])(
+    "scans each character a bounded number of times for %j openers",
+    (opener) => {
+      const input = opener.repeat(4_000);
+      expect(scannedChars(input)).toBeLessThanOrEqual(4 * input.length);
+    }
+  );
+
+  it("finishes a quarter-megabyte of unclosed openers well inside a coarse ceiling", () => {
+    const input = "<script ".repeat(32_000);
+    const t = performance.now();
+    stripHtml(input);
+    expect(performance.now() - t).toBeLessThan(2_000);
   });
 
   it("still strips scripts, styles, comments and tags", () => {
@@ -266,5 +276,17 @@ describe("stripHtml on hostile mail bodies", () => {
     expect(stripHtml("hello <script>never closed")).toBe("hello never closed");
     expect(stripHtml("a <!-- open")).toBe("a <!-- open");
     expect(stripHtml("1 < 2 and 3")).toBe("1 < 2 and 3");
+  });
+
+  it("recognises <style>/<script> after a character whose lowercase is longer (İ)", () => {
+    expect(stripHtml("İstanbul İzmir<style>.a{color:red}</style><p>Hallo</p>")).toBe(
+      "İstanbul İzmir\nHallo"
+    );
+    expect(stripHtml("İ<SCRIPT>alert(1)</SCRIPT>text")).toBe("İ text");
+  });
+
+  it("keeps a literal < in text instead of eating up to the next tag", () => {
+    expect(stripHtml("1 < 2 and 3<br>4")).toBe("1 < 2 and 3\n4");
+    expect(stripHtml("1 < 2 and 3<span>4</span>")).toBe("1 < 2 and 3 4");
   });
 });
