@@ -5,6 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { CircleAlert } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { directoryKey, isSameDirectory, sameDirectorySet } from "@/lib/directory-path";
 import {
   getToolsByCategory,
@@ -33,7 +34,19 @@ export interface PermissionsValues {
   }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
   confirm: ConfirmMap;
+  /**
+   * False while an Odoo or email section on the page has not reported its
+   * grants (still loading, or its load failed). `integrations` then holds only
+   * the sections that did load, so it is not the agent's whole grant set: a
+   * save must not treat an empty list as "remove every integration" (#1216).
+   */
+  integrationsLoaded: boolean;
 }
+
+type IntegrationGrant = {
+  connectionId: string;
+  permissions: Array<{ model: string; operation: string }>;
+};
 
 /**
  * Key-by-key, because a confirm map is written from two places (the tool
@@ -72,6 +85,18 @@ interface Connection {
 
 const EMAIL_CONNECTION_TYPE_SET = new Set<string>(EMAIL_CONNECTION_TYPES);
 
+/** A primitive stand-in for the saved tools with a prefix, stable across refetches. */
+function savedToolsKey(allowedTools: string[], prefix: string): string {
+  return allowedTools
+    .filter((id) => id.startsWith(prefix))
+    .sort()
+    .join(",");
+}
+
+function splitToolsKey(key: string): string[] {
+  return key === "" ? [] : key.split(",");
+}
+
 interface AgentSettingsPermissionsProps {
   agent: {
     id: string;
@@ -79,7 +104,13 @@ interface AgentSettingsPermissionsProps {
     pluginConfig: AgentPluginConfig | null;
   };
   directories: Array<{ path: string; name: string }>;
-  connections: Connection[];
+  /**
+   * `null` when the page could not load the connection list. Then it is not
+   * known which integration sections belong here, so the agent's saved
+   * integration tools stay as they are and the draft reports
+   * `integrationsLoaded: false`.
+   */
+  connections: Connection[] | null;
   isAdmin: boolean;
   onChange: (values: PermissionsValues, isDirty: boolean) => void;
 }
@@ -117,15 +148,15 @@ export function AgentSettingsPermissions({
 
   const [allowedKbTools, setAllowedKbTools] = useState<string[]>(initialKbTools);
   const [allowedPaths, setAllowedPaths] = useState<string[]>(grantedDataPaths(agent.pluginConfig));
-  const [odooIntegration, setOdooIntegration] = useState<{
-    connectionId: string;
-    permissions: Array<{ model: string; operation: string }>;
-  } | null>(null);
+  // `undefined` until the section reports: unknown is not the same as "no
+  // access" (null), and only the section's own load can tell them apart.
+  const [odooIntegration, setOdooIntegration] = useState<IntegrationGrant | null | undefined>(
+    undefined
+  );
   const [odooIsDirty, setOdooIsDirty] = useState(false);
-  const [emailIntegration, setEmailIntegration] = useState<{
-    connectionId: string;
-    permissions: Array<{ model: string; operation: string }>;
-  } | null>(null);
+  const [emailIntegration, setEmailIntegration] = useState<IntegrationGrant | null | undefined>(
+    undefined
+  );
   const [emailIsDirty, setEmailIsDirty] = useState(false);
   const [webSearchConfig, setWebSearchConfig] = useState<AgentPluginConfig["pinchy-web"]>(
     agent.pluginConfig?.["pinchy-web"] ?? {}
@@ -173,15 +204,9 @@ export function AgentSettingsPermissions({
   // like the route it reads.
   const grantedFolders = useGrantedFolders(agent.id, savedPathsKey, isAdmin);
 
-  // Check if the agent has sensitive data access (any allowed paths or odoo/email tools)
-  const hasSensitiveDataAccess =
-    allowedPaths.length > 0 || odooIntegration !== null || emailIntegration !== null;
-
-  const showSecurityWarning = hasWebToolChecked && hasSensitiveDataAccess;
-
   // Partition active (non-pending) connections by integration type
   const { odooConnections, emailConnections, webSearchConnections } = useMemo(() => {
-    const active = connections.filter((c) => c.status !== "pending");
+    const active = (connections ?? []).filter((c) => c.status !== "pending");
     return {
       odooConnections: active.filter((c) => c.type === "odoo") as OdooConnection[],
       emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPE_SET.has(c.type)),
@@ -193,21 +218,45 @@ export function AgentSettingsPermissions({
   const showEmail = emailConnections.length > 0;
   const hasWebSearchApiKey = webSearchConnections.length > 0;
 
+  // A section that is not on the page has nothing to load: its answer is "no
+  // access", as before. A section on the page that has not reported yet keeps
+  // the agent's saved tools for that integration, so a save made meanwhile
+  // (or after its load failed) leaves those grants exactly as they were.
+  // Without a connection list nobody knows which sections belong here, so
+  // both count as not reported.
+  const connectionsLoaded = connections !== null;
+  const odooGrant = !connectionsLoaded ? undefined : showOdoo ? odooIntegration : null;
+  const emailGrant = !connectionsLoaded ? undefined : showEmail ? emailIntegration : null;
+  // The saved tools stand in only while their section is unreported, and are
+  // keyed by content rather than by the agent object: the page refetches the
+  // agent after every save, before the sections reload, and a fresh array then
+  // would re-emit the form with a section's stale pre-save dirty flag — the
+  // Save bar coming back after a save that went through.
+  const odooFallbackKey = odooGrant === undefined ? savedToolsKey(agent.allowedTools, "odoo_") : "";
+  const emailFallbackKey =
+    emailGrant === undefined ? savedToolsKey(agent.allowedTools, "email_") : "";
+  const odooFallback = useMemo(() => splitToolsKey(odooFallbackKey), [odooFallbackKey]);
+  const emailFallback = useMemo(() => splitToolsKey(emailFallbackKey), [emailFallbackKey]);
+
+  // Check if the agent has sensitive data access (any allowed paths or odoo/email tools)
+  const hasSensitiveDataAccess =
+    allowedPaths.length > 0 ||
+    (odooGrant === undefined ? odooFallback.length > 0 : odooGrant !== null) ||
+    (emailGrant === undefined ? emailFallback.length > 0 : emailGrant !== null);
+
+  const showSecurityWarning = hasWebToolChecked && hasSensitiveDataAccess;
+
   // Compute the combined allowedTools array (KB tools + web tools + odoo tools + email tools)
   const computeAllowedTools = useCallback(
     (
       currentKbTools: string[],
-      odoo: {
-        connectionId: string;
-        permissions: Array<{ model: string; operation: string }>;
-      } | null,
-      email: {
-        connectionId: string;
-        permissions: Array<{ model: string; operation: string }>;
-      } | null
+      odoo: IntegrationGrant | null | undefined,
+      email: IntegrationGrant | null | undefined
     ): string[] => {
       let odooToolIds: string[] = [];
-      if (odoo && odoo.permissions.length > 0) {
+      if (odoo === undefined) {
+        odooToolIds = odooFallback;
+      } else if (odoo && odoo.permissions.length > 0) {
         const ops = new Set(odoo.permissions.map((p) => p.operation));
         const hasRead = ops.has("read");
         const hasCreate = ops.has("create");
@@ -230,18 +279,20 @@ export function AgentSettingsPermissions({
       }
 
       let emailToolIds: string[] = [];
-      if (email && email.permissions.length > 0) {
+      if (email === undefined) {
+        emailToolIds = emailFallback;
+      } else if (email && email.permissions.length > 0) {
         emailToolIds = getEmailToolsForOperations(email.permissions.map((p) => p.operation));
       }
 
       return [...currentKbTools, ...odooToolIds, ...emailToolIds];
     },
-    []
+    [odooFallback, emailFallback]
   );
 
   // Notify parent after every state change (and on mount)
   useEffect(() => {
-    const allAllowedTools = computeAllowedTools(allowedKbTools, odooIntegration, emailIntegration);
+    const allAllowedTools = computeAllowedTools(allowedKbTools, odooGrant, emailGrant);
     const kbDirty =
       JSON.stringify([...allowedKbTools].sort()) !==
         JSON.stringify([...initialKbToolsRef.current].sort()) ||
@@ -251,17 +302,15 @@ export function AgentSettingsPermissions({
     const confirmDirty = !sameConfirmMap(confirm, initialConfirm.current);
     const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty || confirmDirty;
     // Collect all active integrations
-    const integrations: Array<{
-      connectionId: string;
-      permissions: Array<{ model: string; operation: string }>;
-    }> = [];
-    if (odooIntegration) integrations.push(odooIntegration);
-    if (emailIntegration) integrations.push(emailIntegration);
+    const integrations: IntegrationGrant[] = [];
+    if (odooGrant) integrations.push(odooGrant);
+    if (emailGrant) integrations.push(emailGrant);
     onChange(
       {
         allowedTools: allAllowedTools,
         allowedPaths,
         integrations,
+        integrationsLoaded: odooGrant !== undefined && emailGrant !== undefined,
         webSearchConfig,
         confirm: pruneConfirmMap(confirm, allAllowedTools),
       },
@@ -270,9 +319,9 @@ export function AgentSettingsPermissions({
   }, [
     allowedKbTools,
     allowedPaths,
-    odooIntegration,
+    odooGrant,
     odooIsDirty,
-    emailIntegration,
+    emailGrant,
     emailIsDirty,
     webSearchConfig,
     confirm,
@@ -404,7 +453,8 @@ export function AgentSettingsPermissions({
       {(hasWebSearchApiKey || hasSavedWebTool) && (
         <section className="space-y-4">
           <h3 className="text-lg font-semibold">Web Search</h3>
-          {!hasWebSearchApiKey && <WebSearchNotSetUpNotice />}
+          {/* Without a connection list, "no key" is a guess from an empty array. */}
+          {connectionsLoaded && !hasWebSearchApiKey && <WebSearchNotSetUpNotice />}
           <div className="space-y-3">
             {webTools.map((tool) => (
               <div key={tool.id} className="flex items-center space-x-3">
@@ -430,6 +480,17 @@ export function AgentSettingsPermissions({
             />
           )}
         </section>
+      )}
+
+      {!connectionsLoaded && (
+        <Alert>
+          <CircleAlert aria-hidden="true" />
+          <AlertDescription>
+            We couldn&apos;t load your integrations, so Odoo and email access can&apos;t be edited
+            right now. Whatever this agent has there stays as it is when you save. Refresh the page
+            to try again.
+          </AlertDescription>
+        </Alert>
       )}
 
       {/* Odoo section — only when at least one active Odoo connection exists */}
@@ -464,7 +525,7 @@ export function AgentSettingsPermissions({
         <section className="space-y-4">
           <h3 className="text-lg font-semibold">Require confirmation before</h3>
           <ApprovalConfirmationSection
-            allowedTools={computeAllowedTools(allowedKbTools, odooIntegration, emailIntegration)}
+            allowedTools={computeAllowedTools(allowedKbTools, odooGrant, emailGrant)}
             confirm={confirm}
             onChange={setConfirm}
           />

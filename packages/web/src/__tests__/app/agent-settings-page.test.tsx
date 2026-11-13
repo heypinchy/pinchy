@@ -319,7 +319,7 @@ describe("AgentSettingsPage", () => {
     // Simulate permissions tab dirty with empty integrations (no connections configured)
     act(() => {
       _capturedOnChangePermissions?.(
-        { allowedTools: [], allowedPaths: [], integrations: [] },
+        { allowedTools: [], allowedPaths: [], integrations: [], integrationsLoaded: true },
         true
       );
     });
