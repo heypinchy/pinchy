@@ -80,7 +80,7 @@ export async function POST(request: NextRequest) {
         actorType: "user",
         actorId: existingUser.id,
         eventType: "auth.password_reset_completed",
-        resource: existingUser.id,
+        resource: `user:${existingUser.id}`,
         outcome: "failure",
         error: { message },
         detail: { inviteId: invite.id, type: "reset" },
@@ -92,12 +92,13 @@ export async function POST(request: NextRequest) {
       actorType: "user",
       actorId: existingUser.id,
       eventType: "auth.password_reset_completed",
-      resource: existingUser.id,
+      resource: `user:${existingUser.id}`,
       outcome: "success",
       detail: {
         inviteId: invite.id,
         type: "reset",
-        target: { id: existingUser.id, name: existingUser.name },
+        // The actor is the target: its raw id stays in `resource`, never in detail (#824).
+        target: { name: existingUser.name },
       },
     });
 

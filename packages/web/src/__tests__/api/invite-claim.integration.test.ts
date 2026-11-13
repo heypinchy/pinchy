@@ -723,6 +723,11 @@ describe("POST /api/invite/claim (integration)", () => {
     // PII must NOT appear in detail (audit policy).
     const serializedDetail = JSON.stringify(entry.detail ?? {});
     expect(serializedDetail).not.toContain("audit-reset@test.local");
+    // The actor IS the target here, so its raw users.id stays out of detail
+    // (#824): the row snapshots the name and carries the id in `resource`.
+    expect(serializedDetail).not.toContain(targetUser!.id);
+    expect(entry.detail).toMatchObject({ target: { name: "Audit Me" } });
+    expect(entry.resource).toBe(`user:${targetUser!.id}`);
   });
 
   it("does not assign groups for password reset invites", async () => {
