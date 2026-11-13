@@ -101,6 +101,7 @@ export function OdooPermissionSection({
     addedModels,
     availableModels,
     loading,
+    loadFailed,
     setConnectionId,
     setAccessLevel,
     addModel,
@@ -134,14 +135,24 @@ export function OdooPermissionSection({
   // Notify parent of changes
   // Connection without models = not configured → report null
   useEffect(() => {
-    if (loading) return;
+    // After a failed load there is nothing to report: "no config" would let a
+    // save revoke grants this section never managed to read.
+    if (loading || loadFailed) return;
     const perms = getPermissions();
     const hasConfig = connectionId && perms.length > 0;
     onChangeRef.current(hasConfig ? { connectionId, permissions: perms } : null, isDirty);
-  }, [connectionId, addedModels, loading, getPermissions, isDirty]);
+  }, [connectionId, addedModels, loading, loadFailed, getPermissions, isDirty]);
 
   if (loading) {
     return <div className="text-muted-foreground py-4">Loading Odoo configuration...</div>;
+  }
+
+  if (loadFailed) {
+    return (
+      <div className="text-muted-foreground py-4">
+        This agent&apos;s Odoo permissions could not be loaded.
+      </div>
+    );
   }
 
   if (connections.length === 0) {
