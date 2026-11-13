@@ -682,7 +682,9 @@ describe("resolveExternalUrlTarget", () => {
     expect(result).not.toHaveProperty("transient");
   });
 
-  it.each(["EAI_AGAIN", "ETIMEOUT", "ESERVFAIL", "ECONNREFUSED", "ETIMEDOUT"])(
+  // dns.lookup yields ENOTFOUND, EAI_AGAIN, EAI_FAIL, EAI_MEMORY and EAI_SYSTEM; the
+  // last entry stands for any code we do not know.
+  it.each(["EAI_AGAIN", "EAI_MEMORY", "EAI_SYSTEM", "SOME_FUTURE_CODE"])(
     "reports a %s lookup failure as temporary, not as a refusal of the name",
     async (code) => {
       for (const check of [validateExternalUrl, resolveExternalUrlTarget]) {
@@ -697,11 +699,15 @@ describe("resolveExternalUrlTarget", () => {
     }
   );
 
-  it.each(["ENOTFOUND", "ENODATA"])("treats %s as a name with no answer", async (code) => {
-    const result = await validateExternalUrl("https://odoo.example.com", dnsDown(code));
-    expect(result).toEqual({ valid: false, error: expect.stringContaining("odoo.example.com") });
-    expect(result).not.toHaveProperty("transient");
-  });
+  // EAI_FAIL is the resolver saying the failure is permanent: retrying will not help.
+  it.each(["ENOTFOUND", "ENODATA", "EAI_FAIL"])(
+    "treats %s as a name with no answer",
+    async (code) => {
+      const result = await validateExternalUrl("https://odoo.example.com", dnsDown(code));
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("odoo.example.com") });
+      expect(result).not.toHaveProperty("transient");
+    }
+  );
 
   it("refuses a name that resolves to nothing", async () => {
     await expect(

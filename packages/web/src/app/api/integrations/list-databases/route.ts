@@ -17,7 +17,7 @@ export const POST = withAdmin(async (request) => {
   // answer an address the first one would have refused (DNS rebinding).
   const urlCheck = await resolveExternalUrlTarget(url);
   if (!urlCheck.valid) {
-    return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+    return NextResponse.json({ error: urlCheck.error }, { status: urlCheck.transient ? 503 : 400 });
   }
 
   try {

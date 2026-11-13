@@ -100,11 +100,12 @@ const transientError = (host: string) =>
   `The DNS lookup for "${host}" failed temporarily. Try again in a moment.`;
 
 /**
- * The resolver codes that mean "this name has no answer". Anything else — a
- * timeout, SERVFAIL, a resolver that refuses the connection, a code we do not
- * know — says nothing about the name and is reported as temporary.
+ * The resolver codes that mean "this name has no answer": not found, no data,
+ * or EAI_FAIL (a non-recoverable failure — retrying will not help). Anything
+ * else `dns.lookup` yields (EAI_AGAIN, EAI_MEMORY, EAI_SYSTEM) or a code we do
+ * not know says nothing about the name and is reported as temporary.
  */
-const NO_ANSWER_CODES = new Set(["ENOTFOUND", "ENODATA"]);
+const NO_ANSWER_CODES = new Set(["ENOTFOUND", "ENODATA", "EAI_FAIL"]);
 
 const PRIVATE_NETWORK_ERROR =
   "Blocked: this URL targets a private network address. " +

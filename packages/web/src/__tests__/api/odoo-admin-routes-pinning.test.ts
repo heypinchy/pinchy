@@ -159,7 +159,51 @@ describe.each(routes)("POST /api/integrations/$name", ({ call }) => {
   });
 });
 
-describe.each(routes)("POST /api/integrations/$name during a DNS outage", ({ call }) => {
+// Every route that accepts an Odoo URL, including the ones that only check it.
+const outageRoutes: Array<{ name: string; status?: number; call: () => Promise<Response> }> = [
+  ...routes.map((r) => ({ ...r, status: r.name === "[connectionId]/sync" ? 200 : 503 })),
+  {
+    name: "list-databases",
+    status: 503,
+    call: async () => {
+      const { POST } = await import("@/app/api/integrations/list-databases/route");
+      return POST(post("/api/integrations/list-databases", { url: creds.url }), routeContext());
+    },
+  },
+  {
+    name: "create",
+    status: 503,
+    call: async () => {
+      const { POST } = await import("@/app/api/integrations/route");
+      return POST(
+        post("/api/integrations", {
+          type: "odoo",
+          name: "Odoo",
+          description: "",
+          credentials: { ...creds, uid: 2 },
+        }),
+        routeContext()
+      );
+    },
+  },
+  {
+    name: "PATCH [connectionId]",
+    status: 503,
+    call: async () => {
+      storedCredentials = { ...creds, uid: 2 };
+      const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+      return PATCH(
+        new NextRequest("http://localhost:7777/api/integrations/conn-1", {
+          method: "PATCH",
+          body: JSON.stringify({ credentials: { ...creds, uid: 2 } }),
+        }),
+        routeContext({ connectionId: "conn-1" })
+      );
+    },
+  },
+];
+
+describe.each(outageRoutes)("$name during a DNS outage", ({ call, status }) => {
   it("says the lookup failed temporarily instead of blocking the URL", async () => {
     mockDnsLookup.mockRejectedValue(Object.assign(new Error("EAI_AGAIN"), { code: "EAI_AGAIN" }));
 
@@ -169,7 +213,7 @@ describe.each(routes)("POST /api/integrations/$name during a DNS outage", ({ cal
     expect(body.success).not.toBe(true);
     expect(body.error).toMatch(/temporar.*try again/i);
     expect(body.error).not.toMatch(/blocked/i);
-    expect(response.status).not.toBe(400);
+    expect(response.status).toBe(status);
     expect(mockFetch).not.toHaveBeenCalled();
     expect(pinnedCalls).toHaveLength(0);
   });
@@ -197,7 +241,12 @@ describe("the other callers that check an Odoo URL and then log in to it", () =>
     expect(pinnedCalls).toHaveLength(0);
   });
 
-  it("[connectionId]/test connects to the checked address", async () => {
+  it("[connectionId]/test looks the host up once and connects to that answer", async () => {
+    // A second lookup would see this address, which the pin must never use.
+    mockDnsLookup.mockReset();
+    mockDnsLookup
+      .mockResolvedValueOnce([{ address: CHECKED_IP, family: 4 }])
+      .mockResolvedValue([{ address: "93.184.216.99", family: 4 }]);
     storedCredentials = { ...creds, uid: 2 };
     const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
 
@@ -205,6 +254,7 @@ describe("the other callers that check an Odoo URL and then log in to it", () =>
 
     expect(mockFetch).not.toHaveBeenCalled();
     expect(pinnedCalls.length).toBeGreaterThan(0);
+    expect(mockDnsLookup).toHaveBeenCalledTimes(1);
     for (const c of pinnedCalls) expect(c.target.map((t) => t.address)).toEqual([CHECKED_IP]);
   });
 
