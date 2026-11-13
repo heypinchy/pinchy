@@ -453,7 +453,8 @@ export function AgentSettingsPermissions({
       {(hasWebSearchApiKey || hasSavedWebTool) && (
         <section className="space-y-4">
           <h3 className="text-lg font-semibold">Web Search</h3>
-          {!hasWebSearchApiKey && <WebSearchNotSetUpNotice />}
+          {/* Without a connection list, "no key" is a guess from an empty array. */}
+          {connectionsLoaded && !hasWebSearchApiKey && <WebSearchNotSetUpNotice />}
           <div className="space-y-3">
             {webTools.map((tool) => (
               <div key={tool.id} className="flex items-center space-x-3">

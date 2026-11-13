@@ -92,44 +92,55 @@ export function EmailPermissionSection({
         });
         if (signal.aborted) return;
         setLoadFailed(false);
-        for (const entry of data) {
-          const matchingConn = connections.find((c) => c.id === entry.connectionId);
-          if (matchingConn) {
-            setConnectionId(entry.connectionId);
-            setInitialConnectionId(entry.connectionId);
+        const entry = data.find((e) => connections.some((c) => c.id === e.connectionId));
+        if (!entry) {
+          // The agent holds no email grant (any more). A reload after a save
+          // that revoked everything lands here, so the snapshot and the editor
+          // both go back to "nothing configured" — otherwise the stale snapshot
+          // keeps reporting the saved change as unsaved. Already-empty state is
+          // kept as-is, so a caller passing a new array per render can't loop.
+          setConnectionId("");
+          setInitialConnectionId("");
+          setInitialPermissions((prev) => (prev.size === 0 ? prev : new Set()));
+          setOperations((prev) =>
+            EMAIL_OPERATIONS.some((op) => prev[op])
+              ? { read: false, draft: false, send: false }
+              : prev
+          );
+        } else {
+          setConnectionId(entry.connectionId);
+          setInitialConnectionId(entry.connectionId);
 
-            const ops: Record<EmailOperation, boolean> = {
-              read: false,
-              draft: false,
-              send: false,
-            };
-            const permSet = new Set<string>();
+          const ops: Record<EmailOperation, boolean> = {
+            read: false,
+            draft: false,
+            send: false,
+          };
+          const permSet = new Set<string>();
 
-            for (const perm of entry.permissions) {
-              if (perm.model !== "email") continue;
+          for (const perm of entry.permissions) {
+            if (perm.model !== "email") continue;
 
-              // Legacy alias: pre-#328 agent template creation could persist
-              // a standalone "search" or "list" row with NO accompanying
-              // "read" row (see tool-registry.ts EMAIL_OPERATIONS comment).
-              // The runtime (getEmailToolsForOperations / checkPermission)
-              // treats both as granting the full "read" toolset, so the
-              // checkbox must reflect that effective grant — otherwise it
-              // renders unchecked while read tools are actually enabled,
-              // and a save would silently revoke read by writing back only
-              // the checked operations.
-              const normalizedOp =
-                perm.operation === "search" || perm.operation === "list" ? "read" : perm.operation;
+            // Legacy alias: pre-#328 agent template creation could persist
+            // a standalone "search" or "list" row with NO accompanying
+            // "read" row (see tool-registry.ts EMAIL_OPERATIONS comment).
+            // The runtime (getEmailToolsForOperations / checkPermission)
+            // treats both as granting the full "read" toolset, so the
+            // checkbox must reflect that effective grant — otherwise it
+            // renders unchecked while read tools are actually enabled,
+            // and a save would silently revoke read by writing back only
+            // the checked operations.
+            const normalizedOp =
+              perm.operation === "search" || perm.operation === "list" ? "read" : perm.operation;
 
-              if (EMAIL_OPERATIONS.includes(normalizedOp as EmailOperation)) {
-                ops[normalizedOp as EmailOperation] = true;
-                permSet.add(`email:${normalizedOp}`);
-              }
+            if (EMAIL_OPERATIONS.includes(normalizedOp as EmailOperation)) {
+              ops[normalizedOp as EmailOperation] = true;
+              permSet.add(`email:${normalizedOp}`);
             }
-
-            setInitialPermissions(permSet);
-            setOperations(ops);
-            break;
           }
+
+          setInitialPermissions(permSet);
+          setOperations(ops);
         }
       } catch (err) {
         if (signal.aborted) return;

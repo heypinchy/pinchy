@@ -566,6 +566,35 @@ describe("useOdooPermissions", () => {
     expect(result.current.isDirty).toBe(false);
   });
 
+  it("is clean again after a save that revoked every grant reloads with no Odoo entry", async () => {
+    mockAgentPerms([
+      {
+        connectionId: "conn-1",
+        connectionName: "Staging",
+        connectionType: "odoo",
+        permissions: [{ model: "sale.order", modelName: "Sale Orders", operation: "read" }],
+      },
+    ]);
+
+    const { result, rerender } = renderHook(({ conns }) => useOdooPermissions("agent-1", conns), {
+      initialProps: { conns: CONNECTIONS },
+    });
+    await flushPendingRenders();
+
+    act(() => result.current.removeModel("sale.order"));
+    expect(result.current.isDirty).toBe(true);
+
+    // The save went through: the server now holds no Odoo row for this agent,
+    // and the page refetches its connection list (a new array).
+    mockAgentPerms([]);
+    rerender({ conns: [...CONNECTIONS] });
+    await flushPendingRenders();
+
+    expect(result.current.isDirty).toBe(false);
+    expect(result.current.addedModels.size).toBe(0);
+    expect(result.current.getPermissions()).toEqual([]);
+  });
+
   // --- Edge cases ---
 
   it("no connections returns empty state", async () => {

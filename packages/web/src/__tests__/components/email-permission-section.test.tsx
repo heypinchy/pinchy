@@ -281,6 +281,47 @@ describe("EmailPermissionSection", () => {
     });
   });
 
+  it("is clean again after a save that revoked every grant reloads with no email entry", async () => {
+    mockAgentPerms([
+      {
+        connectionId: "email-1",
+        connectionName: "Gmail Work",
+        connectionType: "google",
+        permissions: [{ model: "email", modelName: "Email", operation: "read" }],
+      },
+    ]);
+    const onChange = vi.fn();
+    const connections = [makeEmailConnection("email-1", "Gmail Work", "google")];
+
+    const { rerender } = render(
+      <EmailPermissionSection agentId="agent-1" connections={connections} onChange={onChange} />
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: /read.*email/i })).toBeChecked();
+    });
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /read.*email/i }));
+    await waitFor(() => {
+      expect(onChange.mock.calls[onChange.mock.calls.length - 1][1]).toBe(true);
+    });
+
+    // The save went through: the server now holds no email row for this
+    // agent, and the page refetches its connection list (a new array).
+    mockAgentPerms([]);
+    rerender(
+      <EmailPermissionSection
+        agentId="agent-1"
+        connections={[...connections]}
+        onChange={onChange}
+      />
+    );
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(onChange.mock.calls[onChange.mock.calls.length - 1][1]).toBe(false);
+    });
+  });
+
   it("calls onChange with null when no connection is selected", async () => {
     mockAgentPerms();
     const onChange = vi.fn();

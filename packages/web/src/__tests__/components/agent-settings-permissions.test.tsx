@@ -1435,7 +1435,7 @@ describe("AgentSettingsPermissions", () => {
     });
   });
 
-  // R2: the page could not load the connection list at all. Then it cannot
+  // The page could not load the connection list at all. Then it cannot
   // know which integration sections belong on the page, so it must not read
   // the empty list as "this agent has no integrations".
   describe("when the connection list could not be loaded", () => {
@@ -1487,6 +1487,23 @@ describe("AgentSettingsPermissions", () => {
       expect(screen.getByRole("alert")).toHaveTextContent(/couldn.t load your integrations/i);
       expect(screen.getByRole("alert")).toHaveTextContent(/stays as it is/i);
       expect(screen.queryByTestId("odoo-section")).not.toBeInTheDocument();
+    });
+
+    it("does not claim web search is unset, since nobody knows whether a key exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search", "pinchy_web_fetch"] }}
+          directories={defaultDirectories}
+          connections={null}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      // The saved web tools stay visible and editable…
+      expect(screen.getByRole("heading", { name: "Web Search" })).toBeInTheDocument();
+      // …but "no key is set up" would be a guess from an empty list.
+      expect(screen.queryByText("Web search isn't set up")).not.toBeInTheDocument();
     });
   });
 });
