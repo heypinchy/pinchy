@@ -60,6 +60,9 @@ describe("SettingsGroups", () => {
       if (String(url) === "/api/users") {
         return jsonResponse({ users });
       }
+      if (/^\/api\/groups\/[^/]+\/members$/.test(String(url))) {
+        return jsonResponse([]);
+      }
       return { ok: false, status: 404, json: async () => ({}), text: async () => "" } as Response;
     });
   }
@@ -457,10 +460,60 @@ describe("SettingsGroups", () => {
     });
     render(<SettingsGroups />);
 
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Failed to load groups");
-    });
+    // The tab is mounted in the background, so a toast would be gone by the
+    // time the admin opens it: the failure stands where the list would be.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load your groups/i);
+    expect(screen.queryByText(/No groups yet/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New Group" })).not.toBeInTheDocument();
     expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("keeps the list and toasts when the refresh after a change fails", async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    render(<SettingsGroups />);
+    await waitFor(() => expect(screen.getAllByText("Engineering").length).toBeGreaterThan(0));
+
+    vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+      if (init?.method === "DELETE") return jsonResponse({ success: true });
+      if (String(url) === "/api/groups") return jsonResponse({}, { status: 500, ok: false });
+      return jsonResponse({ users: mockUsers });
+    });
+    const table = screen.getByRole("table");
+    const row = within(table).getByText("Design").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Failed to load groups"));
+    expect(screen.getAllByText("Engineering").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  // An edit dialog opened with no members checked would save that: PUT
+  // /members { userIds: [] } removes every member of the group.
+  it.each([
+    ["rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+    ["answers 500", async () => jsonResponse({}, { status: 500, ok: false })],
+  ])("does not open the edit dialog when the members load %s", async (_label, membersResponse) => {
+    const user = userEvent.setup();
+    mockFetch();
+    render(<SettingsGroups />);
+    await waitFor(() => expect(screen.getAllByText("Engineering").length).toBeGreaterThan(0));
+
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/groups/g1/members") return membersResponse();
+      return jsonResponse([]);
+    });
+    const table = screen.getByRole("table");
+    const row = within(table).getByText("Engineering").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Edit" }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(
+      screen.queryByText("Edit Group", { selector: "[data-slot='dialog-title']" })
+    ).not.toBeInTheDocument();
   });
 
   it("cancels the load and says nothing when it unmounts mid-flight", async () => {
