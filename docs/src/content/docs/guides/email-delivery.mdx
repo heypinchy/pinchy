@@ -76,8 +76,9 @@ Click **Turn off** in **Settings → Organization → Email delivery**. Pinchy f
 
 - The configuration, password included, is stored encrypted in Pinchy's database. The password is never sent back to the browser: when you edit the settings, leave the field empty to keep it.
 - A saved password only ever goes to the server it was entered for. If you change the server, enter the password again.
+- Pinchy never reuses a saved password on a weaker connection. If you switch a server you've already set up to no encryption or port 25 and leave the password empty, the form asks you to enter it again.
 - The test email always goes to your own address, so the button can't be used to send mail to anyone else.
-- Every change to the settings is recorded as `settings.updated` (resource `settings:mail`), without the password. Every email Pinchy tries to send is recorded as `mail.sent`, with the recipient stored as a hash and masked preview. See [Audit Trail](/concepts/audit-trail/).
+- Every change to the settings is recorded as `settings.updated` (resource `settings:mail`), without the password; a username that isn't an email address is recorded only as set, never in plain text. Every email Pinchy tries to send is recorded as `mail.sent`, with the recipient stored as a hash and masked preview. See [Audit Trail](/concepts/audit-trail/).
 
 <Aside type="note">
   Email delivery is for invitations and password resets. Agents that read and

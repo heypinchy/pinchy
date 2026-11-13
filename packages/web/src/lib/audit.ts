@@ -161,6 +161,10 @@ export type AuditEventType =
   | "group.members_updated"
   | "user.groups_updated"
   | "user.role_updated"
+  // An admin created a password-reset link for a user (POST
+  // /api/users/:id/reset), with or without emailing it. The row records the
+  // request, not the reset itself — that is `auth.password_reset_completed`.
+  | "user.password_reset_requested"
   | "channel.created"
   | "channel.deleted"
   | "channel.degraded"
@@ -587,6 +591,14 @@ export type AuditLogEntry =
         role: string;
         accountCreatedAt: string;
       };
+    })
+  | (AuditLogBase & {
+      // `resource` is `user:<id>`. The admin may reset their own password, so
+      // `user.id` is left out in that case — the acting user's raw id never
+      // goes into `detail` (#824); it is in `resource`. No email: whether a
+      // mail went out is the separate `mail.sent` row.
+      eventType: "user.password_reset_requested";
+      detail: { user: { id?: string; name: string }; via: "email" | "link" };
     })
   | (AuditLogBase & {
       // An admin vouched for a flagged account (lib/user-provenance.ts). The

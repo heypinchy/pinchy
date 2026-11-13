@@ -178,12 +178,31 @@ describe("PUT /api/settings/mail", () => {
     }
   });
 
-  it("keeps a username that isn't an address, like an API-key user", async () => {
-    await PUT(put({ ...body, username: "apikey" }));
-    expect(mockAppendAuditLog.mock.calls[0][0].detail.changes.username).toEqual({
-      from: null,
-      to: "apikey",
-    });
+  it("never writes a username that isn't an address into the audit row, only that it changed", async () => {
+    stored = { ...body, username: "AKIA-old-service-user" };
+    await PUT(put({ ...body, username: "apikey-8f3a" }));
+    const entry = mockAppendAuditLog.mock.calls[0][0];
+    expect(entry.detail.changes.username).toEqual({ from: "(set)", to: "(set)" });
+    expect(JSON.stringify(mockAppendAuditLog.mock.calls)).not.toMatch(/apikey-8f3a|AKIA-old/);
+  });
+
+  it("refuses to carry the stored password over to plaintext SMTP and asks for it again", async () => {
+    stored = { ...body };
+    const res = await PUT(put({ ...body, password: undefined, security: "none", port: 25 }));
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toBe("Validation failed");
+    expect(json.details.fieldErrors.password).toEqual([
+      expect.stringMatching(/enter the password/i),
+    ]);
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(saveSystemMailConfig).not.toHaveBeenCalled();
+  });
+
+  it("accepts the downgrade once the password is typed again", async () => {
+    stored = { ...body };
+    const res = await PUT(put({ ...body, password: "s3cret", security: "none", port: 25 }));
+    expect(res.status).toBe(200);
   });
 
   it("keeps the stored password when the form sends none", async () => {

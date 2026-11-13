@@ -12,6 +12,7 @@ import {
   saveSystemMailConfig,
   deleteSystemMailConfig,
   mergeWithStoredPassword,
+  needsPasswordReentry,
   toPublicConfig,
 } from "@/lib/system-mail/config";
 import { verifySystemMail } from "@/lib/system-mail/transport";
@@ -40,8 +41,12 @@ const EMAIL_LIKE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * so they go in as `redactEmail()` (hash + masked preview), never verbatim —
  * the same rule the IMAP connection routes follow.
  */
-function auditValue(value: unknown): unknown {
+function auditValue(field: string, value: unknown): unknown {
   if (typeof value === "string" && EMAIL_LIKE.test(value)) return redactEmail(value);
+  // A login that isn't an address (an API-key user, a service account) is a
+  // credential-adjacent identifier. The row says only that one is set; the
+  // `from !== to` comparison still reports that it changed.
+  if (field === "username" && typeof value === "string") return "(set)";
   return value ?? null;
 }
 
@@ -70,7 +75,7 @@ function diff(before: AuditedConfig | null, after: AuditedConfig | null) {
   for (const field of AUDITED_FIELDS) {
     const from = before?.[field] ?? null;
     const to = after?.[field] ?? null;
-    if (from !== to) changes[field] = { from: auditValue(from), to: auditValue(to) };
+    if (from !== to) changes[field] = { from: auditValue(field, from), to: auditValue(field, to) };
   }
   return changes;
 }
@@ -94,6 +99,23 @@ export async function PUT(request: NextRequest) {
   if ("error" in parsed) return parsed.error;
 
   const stored = await getSystemMailConfig();
+  if (needsPasswordReentry(parsed.data, stored)) {
+    // Same shape as a schema refusal, so the form puts it under the field.
+    return NextResponse.json(
+      {
+        error: "Validation failed",
+        details: {
+          formErrors: [],
+          fieldErrors: {
+            password: [
+              "Enter the password again to switch to a less secure connection — Pinchy won't reuse the saved one.",
+            ],
+          },
+        },
+      },
+      { status: 400 }
+    );
+  }
   const next = mergeWithStoredPassword(parsed.data, stored);
   const changes = diff(audited(stored), audited(next));
   const passwordChanged = (stored?.password ?? null) !== (next.password ?? null);

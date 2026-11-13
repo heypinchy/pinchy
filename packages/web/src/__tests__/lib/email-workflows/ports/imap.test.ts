@@ -13,15 +13,26 @@
 // the port's own state, never on the stub's protocol behaviour.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockConnect, mockLogout, mockSearch, mockMailboxOpen } = vi.hoisted(() => ({
-  mockConnect: vi.fn(),
-  mockLogout: vi.fn(),
-  mockSearch: vi.fn(),
-  mockMailboxOpen: vi.fn(),
+const { mockConnect, mockLogout, mockSearch, mockMailboxOpen, ctorOptions, mockResolve } =
+  vi.hoisted(() => ({
+    ctorOptions: [] as Array<Record<string, unknown>>,
+    mockResolve: vi.fn(),
+    mockConnect: vi.fn(),
+    mockLogout: vi.fn(),
+    mockSearch: vi.fn(),
+    mockMailboxOpen: vi.fn(),
+  }));
+
+vi.mock("@/lib/integrations/mail-host-guard", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/integrations/mail-host-guard")>()),
+  resolveAllowedMailHost: mockResolve,
 }));
 
 vi.mock("imapflow", () => ({
   ImapFlow: class {
+    constructor(opts: Record<string, unknown>) {
+      ctorOptions.push(opts);
+    }
     connect = mockConnect;
     logout = mockLogout;
     search = mockSearch;
@@ -158,6 +169,8 @@ describe("IMAP port — connection bookkeeping", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    ctorOptions.length = 0;
+    mockResolve.mockResolvedValue({ address: "203.0.113.9", family: 4 });
     mockConnect.mockResolvedValue(undefined);
     mockMailboxOpen.mockResolvedValue(undefined);
     mockSearch.mockResolvedValue([]);
@@ -178,6 +191,13 @@ describe("IMAP port — connection bookkeeping", () => {
 
     await expect(port.close?.()).resolves.toBeUndefined();
     expect(mockLogout).not.toHaveBeenCalled();
+  });
+
+  it("connects to the address the guard checked and keeps the hostname for TLS", async () => {
+    const port = createImapPort(credentials);
+    await port.search({ sinceDays: 14 });
+    expect(mockResolve).toHaveBeenCalledWith("mail.example.com");
+    expect(ctorOptions[0]).toMatchObject({ host: "203.0.113.9", servername: "mail.example.com" });
   });
 
   it("connects once and serves search + read over the same connection", async () => {

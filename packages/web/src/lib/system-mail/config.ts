@@ -66,6 +66,35 @@ export function toPublicConfig(
  * never carried over to a different host — it was typed for the server it was
  * typed for.
  */
+/**
+ * Is `config` a transport that sends the login in the clear, or close to it?
+ * No encryption at all, or port 25 (the relay port, where opportunistic or no
+ * TLS is the norm).
+ */
+function isWeakTransport(config: SystemMailConfig): boolean {
+  return config.security === "none" || config.port === 25;
+}
+
+/**
+ * Would `mergeWithStoredPassword` carry the stored password onto a weaker
+ * transport of the same server? An admin who only meant to change the sender
+ * must not, by a security dropdown, send the saved password over plaintext
+ * without ever typing it: the downgrade asks for the password again.
+ */
+export function needsPasswordReentry(
+  update: SystemMailConfig,
+  stored: SystemMailConfig | null
+): boolean {
+  return Boolean(
+    stored?.password &&
+    update.username &&
+    !update.password &&
+    stored.host.toLowerCase() === update.host.toLowerCase() &&
+    isWeakTransport(update) &&
+    !isWeakTransport(stored)
+  );
+}
+
 export function mergeWithStoredPassword(
   update: SystemMailConfig,
   stored: SystemMailConfig | null

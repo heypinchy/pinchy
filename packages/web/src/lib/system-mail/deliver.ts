@@ -48,7 +48,8 @@ async function sendAndAudit(args: {
     return { sent: true };
   } catch (error) {
     const message = classifyMailError(error);
-    console.error("[system-mail] send failed:", error instanceof Error ? error.message : error);
+    // The raw message usually quotes the recipient; log the classified one.
+    console.error("[system-mail] send failed:", message);
     deferAuditLog({
       actorType: "user",
       actorId: args.actorId,

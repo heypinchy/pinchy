@@ -1,10 +1,10 @@
-// audit-exempt: creating a reset token changes no credentials; emailing it is audited as mail.sent by deliverLinkEmail
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { createInvite } from "@/lib/invites";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { parseOptionalRequestBody } from "@/lib/api-validation";
 import { resetPasswordSchema } from "@/lib/schemas/users";
 import type { EmailDelivery } from "@/lib/schemas/system-mail";
@@ -39,7 +39,23 @@ export async function POST(
     createdBy: session.user.id,
   });
 
-  // The token exists from here on; a failed send still returns it.
+  // The token exists from here on; a failed send still returns it. Deferred,
+  // because the token cannot be rolled back. Whether a mail then went out is
+  // the separate `mail.sent` row.
+  const viaEmail = Boolean(parsed.data.sendEmail && user.email);
+  deferAuditLog({
+    actorType: "user",
+    actorId: session.user.id,
+    eventType: "user.password_reset_requested",
+    resource: `user:${user.id}`,
+    // An admin can reset their own password; the actor's raw id stays out of detail.
+    detail: {
+      user: user.id === session.user.id ? { name: user.name } : { id: user.id, name: user.name },
+      via: viaEmail ? "email" : "link",
+    },
+    outcome: "success",
+  });
+
   let emailDelivery: EmailDelivery | undefined;
   if (parsed.data.sendEmail && user.email) {
     // Loaded only when an email is asked for: with the mailer off, this route
