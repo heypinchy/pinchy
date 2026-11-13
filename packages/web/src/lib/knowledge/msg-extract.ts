@@ -291,9 +291,11 @@ function removeTags(html: string): string {
 }
 
 /**
- * An HTML mail body as readable text. The same reduction `pinchy-email` applies
- * to mail it reads (`email-adapter.ts`); a copy, because a plugin and the web
- * app cannot share a module (each plugin is mounted standalone).
+ * An HTML mail body as readable text. Tag removal (`removeTags`) is a
+ * drift-guarded copy of what `pinchy-email` applies to mail it reads
+ * (`email-adapter.ts`), because a plugin and the web app cannot share a module
+ * (each plugin is mounted standalone). The entity table differs: this one also
+ * decodes `&quot;`, `&apos;` and `&#39;`.
  */
 export function stripHtml(html: string): string {
   return removeTags(html)
