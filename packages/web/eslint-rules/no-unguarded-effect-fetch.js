@@ -35,9 +35,11 @@
 //
 //   - A function DEFINED inside the effect body, at any depth.
 //   - A function the effect CALLS and drops — `fn();`, `void fn();`,
-//     `fn().then(ok)` / `.finally(...)`, a concise `() => fn()` that is the
-//     effect, a scheduler callback or a `void`, `setInterval(fn, ...)` and the
-//     other SCHEDULERS, or `await fn()` with no catch between it and the
+//     `fn().then(ok)` / `.finally(...)`, the callback of such a link
+//     (`void Promise.resolve().then(() => fn())`, `.then(fn)`), each element of
+//     a dropped `Promise.all/any/race([...])`, a concise `() => fn()` that is
+//     the effect, a scheduler callback or a `void`, `setInterval(fn, ...)` and
+//     the other SCHEDULERS, or `await fn()` with no catch between it and the
 //     effect — anywhere in the effect body, where `fn` resolves (by scope,
 //     not by name) to a `function fn() {}`, a `const fn = async () => {}` /
 //     `function () {}`, or a `const fn = useCallback(async () => {}, deps)`
@@ -194,26 +196,64 @@ function isInsideEffect(node) {
 }
 
 /**
- * The local call an expression starts and drops: `fn()`, `void fn()`, or that
- * call continued by `.then(onFulfilled)` / `.finally(...)`, neither of which
- * catches. `fn().catch(...)`, `fn().then(ok, onError)` and `const p = fn()` are
- * not this shape: they hand the rejection somewhere.
+ * The local functions an expression starts and drops: `fn()`, `void fn()`,
+ * that call continued by `.then(onFulfilled)` / `.finally(...)` (neither
+ * catches), the callbacks of those links (`.then(fn)`, `.then(() => fn())`:
+ * they reject into the same dropped chain), and every element of a dropped
+ * `Promise.all/any/race([...])`. `fn().catch(...)`, `fn().then(ok, onError)`
+ * and `const p = fn()` are not this shape: they hand the rejection somewhere.
+ * Returns call nodes and identifiers; `markDropped` resolves both.
  */
-function droppedCall(expression) {
-  let current = unwrap(expression);
-  if (current.type === "UnaryExpression" && current.operator === "void") {
-    current = unwrap(current.argument);
-  }
-  while (current.type === "CallExpression") {
-    const callee = unwrap(current.callee);
-    const method = memberName(callee);
-    if ((method === "then" && current.arguments.length < 2) || method === "finally") {
-      current = unwrap(callee.object);
-      continue;
+function droppedCalls(expression) {
+  const found = [];
+  collect(expression);
+  return found;
+
+  function collect(expression) {
+    let current = unwrap(expression);
+    if (current.type === "UnaryExpression" && current.operator === "void") {
+      current = unwrap(current.argument);
     }
-    return callee.type === "Identifier" ? current : null;
+    while (current.type === "CallExpression") {
+      const callee = unwrap(current.callee);
+      const method = memberName(callee);
+      if ((method === "then" && current.arguments.length < 2) || method === "finally") {
+        const handler = current.arguments[0] ? unwrap(current.arguments[0]) : null;
+        if (handler && handler.type === "Identifier") found.push(handler);
+        else if (
+          handler &&
+          handler.type === "ArrowFunctionExpression" &&
+          handler.body.type !== "BlockStatement"
+        ) {
+          collect(handler.body);
+        }
+        current = unwrap(callee.object);
+        continue;
+      }
+      if (callee.type === "Identifier") {
+        found.push(current);
+      } else if (isPromiseCombinator(callee)) {
+        const list = current.arguments[0] ? unwrap(current.arguments[0]) : null;
+        if (list && list.type === "ArrayExpression") {
+          for (const element of list.elements) {
+            if (element && element.type !== "SpreadElement") collect(element);
+          }
+        }
+      }
+      return;
+    }
   }
-  return null;
+}
+
+/** `Promise.all` / `.any` / `.race`: they reject when one of their promises does. */
+function isPromiseCombinator(callee) {
+  if (callee.type !== "MemberExpression") return false;
+  const object = unwrap(callee.object);
+  return (
+    object.type === "Identifier" &&
+    object.name === "Promise" &&
+    REJECTING_COMBINATORS.has(memberName(callee))
+  );
 }
 
 // Callers that call a function they are handed and drop what it returns.
@@ -249,10 +289,7 @@ function isAwaitedFanOut(fn) {
   ) {
     return false;
   }
-  const callee = unwrap(combinator.callee);
-  const object = callee.type === "MemberExpression" ? unwrap(callee.object) : null;
-  if (!object || object.type !== "Identifier" || object.name !== "Promise") return false;
-  if (!REJECTING_COMBINATORS.has(memberName(callee))) return false;
+  if (!isPromiseCombinator(unwrap(combinator.callee))) return false;
   const parent = outerOf(combinator);
   return Boolean(parent && parent.type === "AwaitExpression");
 }
@@ -339,10 +376,12 @@ module.exports = {
     const droppedFromEffect = new Set();
     const pending = [];
 
-    function markDropped(call) {
-      if (!call) return;
-      const fn = resolveLocalFunction(sourceCode.getScope(call), unwrap(call.callee).name);
-      if (fn) droppedFromEffect.add(fn);
+    function markDropped(nodes) {
+      for (const node of nodes) {
+        const name = node.type === "Identifier" ? node.name : unwrap(node.callee).name;
+        const fn = resolveLocalFunction(sourceCode.getScope(node), name);
+        if (fn) droppedFromEffect.add(fn);
+      }
     }
 
     /**
@@ -383,7 +422,7 @@ module.exports = {
 
     return {
       ExpressionStatement(statement) {
-        if (isInsideEffect(statement)) markDropped(droppedCall(statement.expression));
+        if (isInsideEffect(statement)) markDropped(droppedCalls(statement.expression));
       },
 
       // A concise body returns its call to whoever runs the arrow. The effect
@@ -400,7 +439,7 @@ module.exports = {
             runner.callee !== arrow &&
             isScheduler(runner));
         if (dropsResult && (isEffectCallback(arrow) || isInsideEffect(arrow))) {
-          markDropped(droppedCall(arrow.body));
+          markDropped(droppedCalls(arrow.body));
         }
       },
 
@@ -421,7 +460,7 @@ module.exports = {
         if (!callee) {
           // `await fn()` with no catch between it and the effect: the effect
           // drops what `fn` rejects with, just one function further out.
-          if (effect && !guarded) markDropped(droppedCall(node.argument));
+          if (effect && !guarded) markDropped(droppedCalls(node.argument));
           return;
         }
         if (guarded) return;

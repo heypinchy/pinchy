@@ -222,6 +222,38 @@ tester.run("no-unguarded-effect-fetch", rule, {
       }, []);`,
       filename: CLIENT,
     },
+    // `.then(ok, onError)` hands the rejection to `onError`.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { load().then(setRows, report); }, [load]);
+      }`,
+      filename: CLIENT,
+    },
+    // A click handler is not an effect: whoever wires it owns the rejection.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        return { onClick: () => void load() };
+      }`,
+      filename: CLIENT,
+    },
+    // A timer started from a click handler is not an effect either.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        return { onClick: () => setTimeout(load, 10) };
+      }`,
+      filename: CLIENT,
+    },
+    // allSettled never rejects, so dropping it drops nothing.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { void Promise.allSettled([load()]); }, [load]);
+      }`,
+      filename: CLIENT,
+    },
   ],
   invalid: [
     // Promise.all of loads is the codebase's multi-source shape; it rejects
@@ -467,6 +499,99 @@ tester.run("no-unguarded-effect-fetch", rule, {
       code: `function Page() {
         const load = useCallback(async () => { await apiGet("/x"); }, []);
         useEffect(() => { (async () => { await load(); })(); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // The deferral idiom in its concise form: the `.then` callback's rejection lands on a dropped chain.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { const c = new AbortController(); void Promise.resolve().then(() => load(c.signal)); return () => c.abort(); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // The same, with the function handed to `.then` by name.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { void Promise.resolve().then(load); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // Loads started together and dropped together.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        const other = useCallback(async () => { await apiGet("/y"); }, []);
+        useEffect(() => { void Promise.all([load(), other()]); }, [load, other]);
+      }`,
+      filename: CLIENT,
+      errors: [
+        { messageId: "unguardedEffectFetch", data: { callee: "apiGet" } },
+        { messageId: "unguardedEffectFetch", data: { callee: "apiGet" } },
+      ],
+    },
+    // Awaited together, but with no catch between the await and the effect.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { void (async () => { await Promise.all([load()]); })(); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // `.then(onFulfilled)` alone catches nothing.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { load().then(setRows); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // A listener is called by the event loop, which drops what it returns.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { window.addEventListener("focus", load); return () => window.removeEventListener("focus", load); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // An explicit `void` drops the call in any callback inside the effect.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { ids.forEach((id) => void load(id)); }, [ids, load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // A fan-out that is returned, not awaited: the try ends before it rejects.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => {
+          try {
+            return Promise.all(ids.map(async (id) => { await apiGet("/x/" + id); }));
+          } catch (err) { report(err); }
+        }, [ids]);
+        useEffect(() => { void load(); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // allSettled never rejects, so the try around it never sees a callback's failure.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => {
+          try {
+            await Promise.allSettled(ids.map(async (id) => { await apiGet("/x/" + id); }));
+          } catch (err) { report(err); }
+        }, [ids]);
+        useEffect(() => { void load(); }, [load]);
       }`,
       filename: CLIENT,
       errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
