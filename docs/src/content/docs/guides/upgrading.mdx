@@ -28,6 +28,17 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
    docker compose exec -T db pg_dump -U pinchy pinchy > backups/pinchy-$(date +%Y%m%d-%H%M%S).sql
    ```
 
+   The dump holds Pinchy's own data, not the agents' chats and workspaces: those live on the `openclaw-config` and `pinchy-workspaces` volumes. To be able to roll those back too, stop the `openclaw` container and archive both, together:
+
+   ```bash
+   docker compose stop openclaw
+   docker compose run --rm --no-deps -T --entrypoint tar openclaw \
+     -C /root/.openclaw --exclude=./extensions -czf - . \
+     > backups/openclaw-state-$(date +%Y%m%d-%H%M%S).tgz
+   ```
+
+   Agents don't answer until step 3 starts the container again. `extensions` is left out because it comes with the image.
+
    Keeping backups under `backups/` instead of loose in `/opt/pinchy/` means they don't sit next to your `docker-compose.yml` / `.env`, and the directory is easy to target with your off-host backup rotation.
 
    <Aside type="tip">
@@ -163,7 +174,20 @@ If you need to roll back after an upgrade:
    docker compose exec -T db psql -U pinchy pinchy < backups/pinchy-YYYYMMDD-HHMMSS.sql
    ```
 
-3. **Re-pin the previous version**
+3. **Restore the chats and workspaces**
+
+   If you archived the `openclaw-config` and `pinchy-workspaces` volumes in step 1, restore that archive from the same moment as the database dump. This empties both volumes first, so nothing the newer version wrote stays behind:
+
+   ```bash
+   ls -lt backups/openclaw-state-*.tgz
+   docker compose run --rm --no-deps -T --entrypoint sh openclaw -c \
+     'cd /root/.openclaw && find . -mindepth 1 ! -path "./extensions*" ! -path ./workspaces -delete && tar -xzpf -' \
+     < backups/openclaw-state-YYYYMMDD-HHMMSS.tgz
+   ```
+
+   Without that archive, skip this step. The agents keep the chats and files the newer version left them, which an older version may not be able to read.
+
+4. **Re-pin the previous version**
 
    Replace `vX.Y.Z` with the version you want to roll back to (check the [Releases page](https://github.com/heypinchy/pinchy/releases)). Update `PINCHY_VERSION` in `.env` to match — `docker compose` refuses to start without it set — and re-fetch `docker-compose.yml` for that tag if the release notes said it changed:
 
@@ -173,7 +197,7 @@ If you need to roll back after an upgrade:
    docker compose pull
    ```
 
-4. **Restart**
+5. **Restart**
 
    ```bash
    docker compose up -d
@@ -224,14 +248,15 @@ With a handful of agents this takes seconds. With long histories it can take a f
 docker compose logs -f openclaw | grep state-migration
 ```
 
-It ends with `Migration complete in …s`. If it ends with `[state-migration] FAILED` instead, the agents stay offline. The lines below it list the files that weren't moved, and the `doctor:` lines above it say why. The `openclaw` container tries again each time it restarts the runtime, about every 40 seconds. If it keeps failing, run the migration by hand, then restart Pinchy so it writes its own `openclaw.json` again:
+It ends with `Migration complete in …s`. If it ends with `[state-migration] FAILED` instead, the agents stay offline. The lines below it list the files that weren't moved, and the `doctor:` lines above it say why. The `openclaw` container tries again each time it restarts the runtime, about every 40 seconds, and gives each attempt up to 30 minutes. If it keeps failing, stop the container so the retries don't run alongside you, run the migration by hand, then restart Pinchy so it writes its own `openclaw.json` again:
 
 ```bash
-docker compose exec openclaw openclaw doctor --fix
-docker compose restart pinchy openclaw
+docker compose stop openclaw
+docker compose run --rm --no-deps --entrypoint openclaw openclaw doctor --fix --non-interactive
+docker compose restart pinchy && docker compose up -d
 ```
 
-The database backup from step 1 doesn't cover this. If you might roll back, also back up the `openclaw-config` and `pinchy-workspaces` volumes before upgrading, the way [Backup & recovery](/guides/hardening/#backup--recovery) describes. The previous version can't read the new storage, so after a rollback without them, chats from before the upgrade don't show up.
+If you might roll back, archive the chats and workspaces before upgrading, as [step 1](#standard-upgrade) shows. The previous version can't read the new storage, so after a rollback without that archive, chats from before the upgrade don't show up.
 
 #### Files that aren't documents no longer count as "not supported"
 
