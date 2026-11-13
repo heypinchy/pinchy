@@ -33,21 +33,6 @@ fix_config_permissions() {
     # later config.apply failed "config changed since last load".
     find "$OPENCLAW_STATE_DIR/openclaw.json" -maxdepth 0 -type f -not -perm 0666 \
         -exec chmod 666 {} \; 2>/dev/null || true
-    # The whole credentials/ tree, so we also catch any sibling credential
-    # files OpenClaw writes alongside the pairing file (allowFrom stores etc.) —
-    # they too are written by root and consumed by Pinchy.
-    # a+rX: r for all files, x only for directories (capital X) so uid 999
-    # can both enter the credentials/ dir (exec bit) and read files inside it.
-    #
-    # Gated to what is not yet readable by all, like every repair on this tick:
-    # a chmod to the mode a file already has is still an inotify attribute
-    # event and a ctime bump on Linux, and openclaw.json above shows what that
-    # does to a watcher when it fires every 50 ms. Nothing in OpenClaw 2026.9
-    # watches credentials/ or the secrets file, so this is not a live bug —
-    # it keeps the tick from becoming one when a release starts watching them.
-    find "$OPENCLAW_STATE_DIR/credentials" \
-        \( -type d -not -perm -0555 -o -type f -not -perm -0444 \) \
-        -exec chmod a+rX {} \; 2>/dev/null || true
     # Re-take ownership of secrets.json. Pinchy writes it as uid 999 (the
     # pinchy user inside its container); OpenClaw's secret-resolver requires
     # owner == process uid (root) and refuses to reload otherwise. The 30 s
@@ -58,7 +43,12 @@ fix_config_permissions() {
     # as `unknown agent id` because the reload fails on secrets and the new
     # agents.list never enters runtime. See issue #200.
     #
-    # Gated on owner and mode, for the reason given at credentials/ above.
+    # Gated on owner and mode, like every repair on this tick: a chown or chmod
+    # to what a file already has is still an inotify attribute event and a
+    # ctime bump on Linux, and openclaw.json above shows what that does to a
+    # watcher when it fires every 50 ms. Nothing in OpenClaw 2026.9 watches the
+    # secrets file, so this is not a live bug — it keeps the tick from becoming
+    # one when a release starts watching it.
     find "$SECRETS_FILE" -maxdepth 0 -type f ! -uid "$OPENCLAW_UID" \
         -exec chown root:root {} \; 2>/dev/null || true
     find "$SECRETS_FILE" -maxdepth 0 -type f -not -perm 0600 \
@@ -180,6 +170,29 @@ fix_config_permissions() {
 remove_retired_auth_profiles() {
     find "$OPENCLAW_STATE_DIR/agents" -mindepth 3 -maxdepth 3 -type f -path "*/agent/auth-profiles.json" \
         -delete 2>/dev/null || true
+}
+
+# credentials/ belongs to OpenClaw. Up to OpenClaw 2026.8 Pinchy read Telegram
+# pairing codes and allow lists from JSON files there, so the 50 ms tick opened
+# the tree to everyone (a+rX) and config/fix-volume-ownership.sh handed it to
+# uid 999. OpenClaw 2026.9 keeps both in its state database, which Pinchy
+# reaches through the pinchy-audit plugin, and Pinchy reads nothing here any
+# more. What is left is OpenClaw's own: legacy OAuth files its doctor imports,
+# and its browser relay secret. The relay ignores that secret when the file
+# belongs to another uid, and chmods it back to 0600 (with a warning) whenever
+# someone else can read it — so the old tick and OpenClaw undid each other's
+# work every 50 ms.
+#
+# Neither script opens the tree any more; this takes back a volume an earlier
+# Pinchy already opened, with the modes OpenClaw's own `security audit --fix`
+# sets (directories 0700, files 0600). start-openclaw.sh runs it before each
+# gateway start. Gated on owner and mode like every other repair here.
+restore_credentials_privacy() {
+    local dir="$OPENCLAW_STATE_DIR/credentials"
+    [ -d "$dir" ] || return 0
+    find "$dir" ! -uid "$OPENCLAW_UID" -exec chown root:root {} \; 2>/dev/null || true
+    find "$dir" -type d -not -perm 0700 -exec chmod 0700 {} \; 2>/dev/null || true
+    find "$dir" -type f -not -perm 0600 -exec chmod 0600 {} \; 2>/dev/null || true
 }
 
 # OpenClaw 2026.9 keeps its gateway lock directory in the state dir
