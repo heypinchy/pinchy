@@ -35,11 +35,13 @@
 //
 //   - It follows functions DEFINED inside the effect. An async function made
 //     with `useCallback` (or at module level) and merely CALLED from the effect
-//     is not followed: the rule cannot see that the call is fire-and-forget,
-//     and an event handler awaiting the same function is entitled to catch it
-//     at the call site.
-//   - It reads `await`. A `fetch(url).then(...)` chain with no `.catch` is the
-//     same bug and is not reported.
+//     is not followed yet. The fire-and-forget call is visible in the effect
+//     body, but resolving it to the function it names needs a scope lookup
+//     this rule does not do.
+//   - It reads `await`. It sees through an awaited `.then`/`.finally` chain and
+//     `Promise.all/any/race([...])`, but a load that is never awaited
+//     (`fetch(url).then(...)` with no `.catch`) is the same bug and is not
+//     reported.
 //   - It checks that a catch exists, never what the catch does. An empty
 //     `catch {}` passes. Review owns that case.
 //
@@ -83,11 +85,47 @@ function unwrap(node) {
   return current;
 }
 
-/** The load's name as written ("fetch", "window.fetch", "apiGet"), or null. */
+// Combinators that reject as soon as one of their inputs does. allSettled is
+// deliberately absent: it never rejects.
+const REJECTING_COMBINATORS = new Set(["all", "any", "race"]);
+
+function memberName(callee) {
+  return callee.type === "MemberExpression" &&
+    !callee.computed &&
+    callee.property.type === "Identifier"
+    ? callee.property.name
+    : null;
+}
+
+/**
+ * The load's name as written ("fetch", "window.fetch", "apiGet"), or null.
+ * Sees through the shapes that still reject when the load does: a
+ * `.then(onFulfilled)` / `.finally()` chain, and `Promise.all/any/race` over an
+ * array literal. A `.catch` link, or a `.then` with a rejection handler, means
+ * the chain handles its own failure.
+ */
 function loadCalleeName(argument) {
   const call = unwrap(argument);
   if (!call || call.type !== "CallExpression") return null;
   const callee = unwrap(call.callee);
+  const method = memberName(callee);
+  if ((method === "then" && call.arguments.length < 2) || method === "finally") {
+    return loadCalleeName(callee.object);
+  }
+  if (
+    method &&
+    REJECTING_COMBINATORS.has(method) &&
+    unwrap(callee.object).type === "Identifier" &&
+    unwrap(callee.object).name === "Promise" &&
+    call.arguments[0] &&
+    unwrap(call.arguments[0]).type === "ArrayExpression"
+  ) {
+    for (const element of unwrap(call.arguments[0]).elements) {
+      const name = element && loadCalleeName(element);
+      if (name) return name;
+    }
+    return null;
+  }
   if (callee.type === "Identifier") {
     return LOAD_HELPERS.has(callee.name) ? callee.name : null;
   }

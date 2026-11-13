@@ -81,6 +81,6 @@ Staying silent is only half of it: the form that holds the section must also tel
 
 - **The exemption is per statement, with a written reason**: `// unguarded-load-exempt: <reason>` directly above the awaited statement. It is the same contract as `raw-fetch-exempt`, and for the same reason: the marker asserts a fact rather than deferring work.
 - **It has three limits:**
-  - It follows only functions _defined_ inside the effect. An async `useCallback` that the effect merely calls is not followed, because an event handler that awaits the same function may catch at the call site.
-  - It reads `await`, so a `.then()` chain with no `.catch` slips through.
+  - It follows only functions _defined_ inside the effect, plus `useEffect`/`useLayoutEffect` bodies. An async `useCallback` that the effect merely calls is not followed yet: the fire-and-forget call is visible, but resolving it to the function it names needs a scope lookup the rule does not do.
+  - It reads `await`. It sees through an awaited `.then`/`.finally` chain and `Promise.all`/`any`/`race([...])`, but a `.then()` chain that is never awaited and has no `.catch` slips through.
   - It checks that a catch exists, never what the catch does. An empty `catch {}` passes, and review owns that case.

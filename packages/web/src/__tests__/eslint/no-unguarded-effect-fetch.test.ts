@@ -14,6 +14,33 @@ const CLIENT = "/repo/packages/web/src/components/audit-log-table.tsx";
 
 tester.run("no-unguarded-effect-fetch", rule, {
   valid: [
+    // A load whose own chain ends in .catch handles its failure.
+    {
+      code: `useEffect(() => {
+        (async () => {
+          const data = await fetch("/api/x").then((r) => r.json()).catch(report);
+        })();
+      }, []);`,
+      filename: CLIENT,
+    },
+    // .then with a rejection handler handles it too.
+    {
+      code: `useEffect(() => {
+        (async () => {
+          await apiGet("/api/x").then(set, report);
+        })();
+      }, []);`,
+      filename: CLIENT,
+    },
+    // allSettled never rejects.
+    {
+      code: `useEffect(() => {
+        (async () => {
+          const results = await Promise.allSettled([apiGet("/a"), apiGet("/b")]);
+        })();
+      }, []);`,
+      filename: CLIENT,
+    },
     // The shape the rule asks for: a catch around the awaited load.
     {
       code: `useEffect(() => {
@@ -113,6 +140,41 @@ tester.run("no-unguarded-effect-fetch", rule, {
     },
   ],
   invalid: [
+    // Promise.all of loads is the codebase's multi-source shape; it rejects
+    // when any of them does.
+    {
+      code: `useEffect(() => {
+        (async () => {
+          try {
+            const [a, b] = await Promise.all([apiGet("/a"), apiGet("/b")]);
+          } finally {
+            setLoading(false);
+          }
+        })();
+      }, []);`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // A .then chain is still the same load.
+    {
+      code: `useEffect(() => {
+        (async () => {
+          const data = await fetch("/api/x").then((r) => r.json());
+        })();
+      }, []);`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "fetch" } }],
+    },
+    // .finally passes a rejection through.
+    {
+      code: `useEffect(() => {
+        (async () => {
+          await Promise.race([fetch("/a")]).finally(done);
+        })();
+      }, []);`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "fetch" } }],
+    },
     // The #1216 shape: try/finally with no catch.
     {
       code: `useEffect(() => {
