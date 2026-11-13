@@ -117,7 +117,8 @@ export function createImapPort(credentials: unknown): EmailPort {
         port: creds.imapPort,
         secure: tlsModeForPort(creds.imapPort, creds.security).secure,
         // Fail rather than fall back to plaintext when STARTTLS is not offered.
-        doSTARTTLS: tlsModeForPort(creds.imapPort, creds.security).requireTLS,
+        // Never `false` (= never upgrade); undefined keeps it opportunistic.
+        doSTARTTLS: tlsModeForPort(creds.imapPort, creds.security).requireTLS ? true : undefined,
         auth: { user: creds.username, pass: creds.password },
         logger: false,
         connectionTimeout: CONNECT_TIMEOUT_MS,

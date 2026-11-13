@@ -203,10 +203,12 @@ export async function testImapLogin(input: ImapTestInput): Promise<void> {
     ...pinnedImapOptions(input.imapHost, target),
     port: input.imapPort,
     secure: tlsModeForPort(input.imapPort, input.security).secure,
-    // imapflow upgrades only opportunistically: a server that stops advertising
-    // STARTTLS would otherwise get the login in the clear. Demand the upgrade
-    // exactly where requireTLS demands it for SMTP.
-    doSTARTTLS: tlsModeForPort(input.imapPort, input.security).requireTLS,
+    // imapflow upgrades only opportunistically by default: a server that stops
+    // advertising STARTTLS would get the login in the clear. Demand the upgrade
+    // exactly where requireTLS demands it for SMTP. Never `false`: in imapflow
+    // that means "never upgrade", whereas undefined upgrades when offered —
+    // the same opportunistic behaviour nodemailer has for security "none".
+    doSTARTTLS: tlsModeForPort(input.imapPort, input.security).requireTLS ? true : undefined,
     auth: {
       user: input.username,
       pass: input.password,

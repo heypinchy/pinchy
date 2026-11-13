@@ -522,10 +522,10 @@ describe("ImapAdapter mock env overrides", () => {
   it.each([
     ["starttls", 143, true],
     ["tls", 143, true],
-    ["none", 143, false],
-    ["tls", 993, false],
+    ["none", 143, undefined],
+    ["tls", 993, undefined],
   ] as const)(
-    "security=%s on IMAP port %i sets doSTARTTLS=%s, so a stripped STARTTLS fails instead of going plaintext",
+    "security=%s on IMAP port %i sets doSTARTTLS=%s (true = demanded, undefined = imapflow upgrades only if offered)",
     async (security, imapPort, expected) => {
       const adapter = new ImapAdapter({ ...opts, security, imapPort });
       await adapter.list({});

@@ -281,7 +281,7 @@ interface ResolvedConnection {
   secure: boolean;
   // Require the STARTTLS upgrade instead of continuing in plaintext when the
   // server does not offer it (imapflow's default is opportunistic).
-  doSTARTTLS: boolean;
+  doSTARTTLS: boolean | undefined;
 }
 
 // SMTP-specific resolved connection: adds requireTLS (STARTTLS), which has
@@ -327,7 +327,8 @@ export class ImapAdapter implements EmailAdapter {
       host: this.opts.imapHost,
       port: this.opts.imapPort,
       secure: mode.secure,
-      doSTARTTLS: mode.requireTLS,
+      // undefined (not false) keeps STARTTLS opportunistic where it is not required.
+      doSTARTTLS: mode.requireTLS ? true : undefined,
     };
   }
 

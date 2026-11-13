@@ -164,10 +164,10 @@ describe("imap-probe", () => {
 
     it.each([
       ["starttls", 143, true],
-      ["none", 143, false],
-      ["tls", 993, false],
+      ["none", 143, undefined],
+      ["tls", 993, undefined],
     ] as const)(
-      "security=%s on port %i sets doSTARTTLS=%s, so a stripped STARTTLS fails instead of going plaintext",
+      "security=%s on port %i sets doSTARTTLS=%s (true = demanded, undefined = imapflow upgrades only if offered)",
       async (security, imapPort, expected) => {
         await testImapLogin({ ...input, security, imapPort });
 
