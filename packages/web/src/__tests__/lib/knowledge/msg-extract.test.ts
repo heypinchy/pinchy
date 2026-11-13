@@ -18,6 +18,7 @@ import {
   formatEmailText,
   MSG_MAX_RECIPIENTS,
   parseMsg,
+  stripHtml,
 } from "@/lib/knowledge/msg-extract";
 import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
 import { buildMsg } from "@/test-helpers/msg-fixture";
@@ -222,5 +223,48 @@ describe("emailContextLine", () => {
     expect(emailContextLine(email)).toBe(
       "Email: Angebot Prüfstand – Größe 3 — from Jörg Müller <j.mueller@lieferant.example>, 2026-11-03 09:15 UTC"
     );
+  });
+});
+
+describe("stripHtml on hostile mail bodies", () => {
+  // A mail body is untrusted. Many unclosed openers made the old lazy regexes
+  // rescan the rest of the input from each one: quadratic. Compare scaling
+  // rather than wall-clock: 4x the input must cost nowhere near 16x the time.
+  const time = (input: string) => {
+    const runs: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const t = performance.now();
+      stripHtml(input);
+      runs.push(performance.now() - t);
+    }
+    // Best of three, floored at 5 ms: a linear scan finishes in well under a
+    // millisecond, where a scheduler hiccup would otherwise read as a ratio.
+    return Math.max(5, Math.min(...runs));
+  };
+
+  it.each([
+    ["unclosed <script", "<script "],
+    ["unclosed <style", "<style>"],
+    ["unclosed comment", "<!-- "],
+    ["unclosed tag", "<a "],
+  ])("scales linearly with %s openers", (_label, opener) => {
+    const small = time(opener.repeat(2_000));
+    const large = time(opener.repeat(8_000));
+    expect(large / small).toBeLessThan(10);
+    expect(large).toBeLessThan(2_000);
+  });
+
+  it("still strips scripts, styles, comments and tags", () => {
+    expect(
+      stripHtml(
+        "<p>a</p><script>x<b></script><style>p{}</style><!-- c --><b>b&nbsp;&amp;</b><p>c</p>"
+      )
+    ).toBe("a\nb &\nc");
+  });
+
+  it("keeps text after an unclosed opener", () => {
+    expect(stripHtml("hello <script>never closed")).toBe("hello never closed");
+    expect(stripHtml("a <!-- open")).toBe("a <!-- open");
+    expect(stripHtml("1 < 2 and 3")).toBe("1 < 2 and 3");
   });
 });

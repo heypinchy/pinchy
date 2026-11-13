@@ -1329,6 +1329,9 @@ const MAX_ORACLE_BYTES = 16 * 1024 * 1024;
  *
  * Exported for the adapter test — the production callers pass a fixed binary
  * name, so this is the only seam a stub can reach.
+ *
+ * Security: this parses an untrusted `.doc`/`.ppt` with catdoc/catppt inside
+ * the web container. Moving it into the converter sidecar is tracked in #1456.
  */
 export function runTextOracle(bin: string, absPath: string): Promise<number> {
   return new Promise((resolve, reject) => {

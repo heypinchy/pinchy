@@ -200,8 +200,10 @@ function formatDate(raw: string | undefined): string | null {
   return `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
-const HTML_BLOCK_BOUNDARY_RE =
-  /<\/?(?:p|div|br|tr|li|ul|ol|h[1-6]|table|thead|tbody|blockquote|section|article|pre|hr)\b[^>]*>/gi;
+// Tested against one whole tag at a time (see `removeTags`), so it is anchored
+// at both ends and cannot scan beyond the tag.
+const HTML_BLOCK_TAG_RE =
+  /^<\/?(?:p|div|br|tr|li|ul|ol|h[1-6]|table|thead|tbody|blockquote|section|article|pre|hr)\b[^>]*>$/i;
 
 const HTML_ENTITIES: Record<string, string> = {
   nbsp: " ",
@@ -214,16 +216,77 @@ const HTML_ENTITIES: Record<string, string> = {
 };
 
 /**
+ * Drops script/style elements, comments and tags in ONE linear pass: a block
+ * tag becomes a newline, anything else a space. A mail body is untrusted, and
+ * the lazy-regex form of this (`<(script)[^>]*>[\s\S]*?<\/\1>`, `<!--[\s\S]*?-->`,
+ * `<[^>]+>`) rescans the rest of the input from every unclosed opener, so
+ * N openers cost N^2. Here every `indexOf` that fails ends the scan for that
+ * kind of opener for good, and every one that succeeds moves past what it found.
+ */
+function removeTags(html: string): string {
+  const lower = html.toLowerCase();
+  const out: string[] = [];
+  let i = 0;
+  // A search that came back empty stays empty for any later start, so it is
+  // remembered instead of repeated.
+  let noMoreGt = false;
+  const noCloser = new Set<string>();
+  let noCommentEnd = false;
+
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      out.push(html.slice(i));
+      break;
+    }
+    out.push(html.slice(i, lt));
+    i = lt;
+
+    if (!noCommentEnd && html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      if (end !== -1) {
+        out.push(" ");
+        i = end + 3;
+        continue;
+      }
+      noCommentEnd = true;
+    }
+
+    const element = /^<(script|style)/.exec(lower.slice(lt, lt + 7))?.[1];
+    if (element && !noCloser.has(element)) {
+      const openEnd = html.indexOf(">", lt);
+      if (openEnd !== -1) {
+        const closer = `</${element}>`;
+        const close = lower.indexOf(closer, openEnd + 1);
+        if (close !== -1) {
+          out.push(" ");
+          i = close + closer.length;
+          continue;
+        }
+        noCloser.add(element);
+      }
+    }
+
+    const gt = noMoreGt ? -1 : html.indexOf(">", lt + 1);
+    if (gt === -1) {
+      noMoreGt = true;
+      out.push("<");
+      i = lt + 1;
+      continue;
+    }
+    out.push(HTML_BLOCK_TAG_RE.test(html.slice(lt, gt + 1)) ? "\n" : " ");
+    i = gt + 1;
+  }
+  return out.join("");
+}
+
+/**
  * An HTML mail body as readable text. The same reduction `pinchy-email` applies
  * to mail it reads (`email-adapter.ts`); a copy, because a plugin and the web
  * app cannot share a module (each plugin is mounted standalone).
  */
-function stripHtml(html: string): string {
-  return html
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(HTML_BLOCK_BOUNDARY_RE, "\n")
-    .replace(/<[^>]+>/g, " ")
+export function stripHtml(html: string): string {
+  return removeTags(html)
     .replace(/&(nbsp|amp|lt|gt|quot|apos|#39);/gi, (m, name: string) => {
       return HTML_ENTITIES[name.toLowerCase()] ?? m;
     })
