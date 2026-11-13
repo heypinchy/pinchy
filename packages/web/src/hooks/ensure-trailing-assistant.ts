@@ -1,3 +1,5 @@
+import { isInFlightPlaceholder } from "@/hooks/in-flight-placeholder";
+
 /**
  * Anchor an in-flight run's assistant reply as the TRAILING message of the
  * reconciled history, so the list always ends with an assistant while the run
@@ -55,4 +57,27 @@ export function ensureTrailingAssistant<T extends { id: string; role: string; co
   // No trailing assistant (unpersisted reply, or a newer user turn trails it):
   // append the anchor so the list ends with an assistant.
   return [...messages, anchor];
+}
+
+/**
+ * Seed the in-flight reply in a LOCAL list the history reconcile keeps instead
+ * of adopting the server's (the local list is longer — typically because it
+ * starts with the client-only greeting the server never persists).
+ *
+ * Keeping the local list must not also discard the server's resume buffer: the
+ * words streamed while this tab was not listening exist only in
+ * `partialContent`, and the deltas still to come start where it ends. So the
+ * trailing local bubble takes the anchor, by the same rule as
+ * `ensureTrailingAssistant` — but only when it is this message's bubble (same
+ * id) or the empty in-flight placeholder no chunk has reached yet. Any other
+ * tail is left alone: it is not this reply, and overwriting it would replace
+ * words the user saw with a different message's.
+ */
+export function resumeInflightReplyInLocal<
+  T extends { id: string; role: string; content: string; error?: unknown },
+>(messages: T[], anchor: T): T[] {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant") return messages;
+  if (last.id !== anchor.id && !isInFlightPlaceholder(last)) return messages;
+  return ensureTrailingAssistant(messages, anchor);
 }

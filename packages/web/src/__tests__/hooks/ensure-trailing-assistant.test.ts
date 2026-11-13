@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
+import {
+  ensureTrailingAssistant,
+  resumeInflightReplyInLocal,
+} from "@/hooks/ensure-trailing-assistant";
 
 type Msg = { id: string; role: string; content: string };
 
@@ -97,5 +100,31 @@ describe("ensureTrailingAssistant", () => {
       const out = ensureTrailingAssistant(messages, anchor);
       expect(out[out.length - 1]!.role).toBe("assistant");
     }
+  });
+});
+
+describe("resumeInflightReplyInLocal", () => {
+  const seed: Msg = { id: "run-1", role: "assistant", content: "one two three" };
+  const greeting: Msg = { id: "g", role: "assistant", content: "Hi!" };
+  const user: Msg = { id: "u1", role: "user", content: "count" };
+
+  it("seeds the local bubble that already streams this message", () => {
+    const local = [greeting, user, { id: "run-1", role: "assistant", content: "one" }];
+    expect(resumeInflightReplyInLocal(local, seed)).toEqual([greeting, user, seed]);
+  });
+
+  it("seeds the empty in-flight placeholder (no chunk arrived before the drop)", () => {
+    const local = [greeting, user, { id: "local-tmp", role: "assistant", content: "" }];
+    expect(resumeInflightReplyInLocal(local, seed)).toEqual([greeting, user, seed]);
+  });
+
+  it("leaves a trailing reply that belongs to another message alone", () => {
+    const local = [user, { id: "other", role: "assistant", content: "an earlier answer" }];
+    expect(resumeInflightReplyInLocal(local, seed)).toBe(local);
+  });
+
+  it("leaves a list that does not end in an assistant alone", () => {
+    const local = [greeting, user];
+    expect(resumeInflightReplyInLocal(local, seed)).toBe(local);
   });
 });
