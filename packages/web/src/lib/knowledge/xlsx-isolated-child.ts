@@ -48,10 +48,10 @@ function toFailure(err: unknown): SheetReaderFailure {
 }
 
 /**
- * The text mammoth sees in a .docx — what the conversion's oracle counts, and
- * what a document whose PDF came out short is indexed from (#1406). Read
- * through the same guard the conversion input passed: mammoth inflates the
- * whole archive, so a bomb must not reach it through the oracle's door.
+ * The text mammoth sees in a .docx or .docm — what the conversion's oracle
+ * counts, and what a document whose PDF came out short is indexed from (#1406).
+ * Read through the same guard the conversion input passed: mammoth inflates
+ * the whole archive, so a bomb must not reach it through the oracle's door.
  */
 async function docxText(path: string): Promise<string> {
   const { value } = await mammoth.extractRawText({ buffer: await readGuardedDocx(path) });

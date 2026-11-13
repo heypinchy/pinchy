@@ -36,6 +36,17 @@ export const WORD_EXTENSIONS = [".doc", ".docx", ".docm"] as const;
 export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
 
 /**
+ * The Word formats that are Office Open XML packages — what mammoth reads, so
+ * what the conversion's word count counts with it (`countSourceWordsWithOracle`).
+ * A macro-enabled `.docm` is the same package with a macro part beside it.
+ */
+export const OOXML_WORD_EXTENSIONS = [".docx", ".docm"] as const;
+
+export function isOoxmlWordFile(path: string): boolean {
+  return (OOXML_WORD_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/**
  * Documents per converter process.
  *
  * Big enough that LibreOffice's startup is amortised (17 real corpus files cost

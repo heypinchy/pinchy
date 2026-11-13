@@ -906,6 +906,36 @@ export class ClientRouter {
       activeRun.handedOverTo?.delete(clientWs);
     }
 
+    // Signal embedded in every history response variant so the client
+    // can preserve `isRunning=true` and anchor incoming chunks to the
+    // right message id after reconcile.
+    //
+    // It is snapshotted in the SAME synchronous block as `addListener` above —
+    // no await may sit between them. From `addListener` on, every chunk reaches
+    // this ws as a live delta, so `partialContent` must hold exactly the chunks
+    // emitted before it. With an await in between (say, the `view()` below), a
+    // chunk landing during the await is in both, and the resumed bubble repeats
+    // a word: "one two two three…".
+    //
+    // B-1: only signal a run that has actually STARTED streaming
+    // (firstChunkAt !== null). A dispatch-time pending run must NOT flip a
+    // reconnecting UI into "responding" — there is nothing to anchor yet, and
+    // the watchdog will either reconcile it (first chunk) or tear it down with
+    // a retryable error. Either way the frame reaches this ws via the listener
+    // set joined above; we just withhold the false "running" signal.
+    const activeRunSignal =
+      activeRun && activeRun.firstChunkAt !== null
+        ? {
+            runId: activeRun.runId,
+            messageId: activeRun.currentMessageId,
+            startedAt: activeRun.startedAt,
+            // Tier 2b resume completeness (#470): the text emitted for the
+            // in-flight message so far. The client seeds the anchored assistant
+            // bubble with this, then appends every live delta it receives.
+            partialContent: activeRun.currentContent,
+          }
+        : undefined;
+
     // Multi-device live-sync (Lane B): this socket now EXCLUSIVELY views this
     // session, so register it as a persistent session subscriber. Done here —
     // after the access gate in handleMessage that guards every path into
@@ -924,31 +954,6 @@ export class ClientRouter {
         console.error("poke-bridge view failed:", err instanceof Error ? err.message : err);
       }
     }
-    // Signal embedded in every history response variant so the client
-    // can preserve `isRunning=true` and anchor incoming chunks to the
-    // right message id after reconcile.
-    //
-    // B-1: only signal a run that has actually STARTED streaming
-    // (firstChunkAt !== null). A dispatch-time pending run must NOT flip a
-    // reconnecting UI into "responding" — there is nothing to anchor yet, and
-    // the watchdog will either reconcile it (first chunk) or tear it down with
-    // a retryable error. Either way the frame reaches this ws via the listener
-    // set joined above; we just withhold the false "running" signal.
-    const activeRunSignal =
-      activeRun && activeRun.firstChunkAt !== null
-        ? {
-            runId: activeRun.runId,
-            messageId: activeRun.currentMessageId,
-            startedAt: activeRun.startedAt,
-            // Tier 2b resume completeness (#470): the text emitted for the
-            // in-flight message so far. Snapshotted here in the SAME
-            // synchronous block as `addListener` above (no await between) so it
-            // can't double-count a chunk that also arrives as a live delta. The
-            // client seeds the anchored assistant bubble with this, then
-            // appends future deltas.
-            partialContent: activeRun.currentContent,
-          }
-        : undefined;
 
     const fetchAndParseHistory = async () => {
       const result = (await this.openclawClient.sessions.history(sessionKey)) as {
@@ -1160,13 +1165,12 @@ export class ClientRouter {
     // When there is a STARTED in-flight run for this session, the gateway's
     // `agentWait` oracle is the source of truth for whether the run is still
     // alive, has completed, or has failed — replacing the old client-side
-    // silence guess. We capture the runId here (the same gate as
-    // `activeRunSignal`: a started run with a real runId) and emit the verdict
-    // in the `finally` below so it always follows the history frame the client
+    // silence guess. The runId comes from `activeRunSignal` (a started run,
+    // decided at the same moment as the snapshot) and the verdict goes out in
+    // the `finally` below so it always follows the history frame the client
     // is about to reconcile against. A pending run has no meaningful runId yet,
     // so it is intentionally excluded.
-    const livenessRunId =
-      activeRun && activeRun.firstChunkAt !== null ? activeRun.runId : undefined;
+    const livenessRunId = activeRunSignal?.runId;
 
     try {
       await this.waitForConnection();

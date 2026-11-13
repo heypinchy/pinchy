@@ -41,6 +41,7 @@ import {
   convertOfficeFiles,
   countSourceWordsWithOracle,
   countWords,
+  type OracleDeps,
   isOfficeFile,
   MIN_FREE_OUTPUT_BYTES,
   MIN_FREE_OUTPUT_INODES,
@@ -64,6 +65,7 @@ import {
   declaredBomb,
   docxWith,
   lyingEntry,
+  REL_HYPERLINK,
   REL_IMAGE,
   relationships,
   replaceEntry,
@@ -1227,16 +1229,18 @@ describe("preflight before conversion", () => {
       expect(outcomes[0].reason).not.toContain(source.absPath);
     });
 
-    it("tells the word-count oracle which file it is counting, for its log line", async () => {
-      // The oracle reads the STAGED copy (`in/0.docx`), a name that says
-      // nothing about which document skipped its count.
+    it("has the word-count oracle read the private copy, and tells it which file that is", async () => {
+      // A .docx is counted from the caller's private copy — the bytes before
+      // the preflight cut its external links (see "the word-count oracle
+      // counts the document…" below) — whose name, in a staging directory,
+      // says nothing about which document skipped its count.
       const source = await privateCopy();
       const countSourceWords = vi.fn(async () => null);
       await convertOfficeFiles(
         [source],
         deps(fakeConverter({ outputs: { "Lohnliste.docx": "words" } }), { countSourceWords })
       );
-      expect(countSourceWords).toHaveBeenCalledWith(expect.stringMatching(/0\.docx$/), SHARE_PATH);
+      expect(countSourceWords).toHaveBeenCalledWith(source.absPath, SHARE_PATH);
     });
   });
 
@@ -2044,7 +2048,7 @@ describe("the word-count oracle reads in a heap-capped child", () => {
     }
   });
 
-  it("names the document it was told it is counting, not the staged copy it reads", async () => {
+  it("names the document it was told it is counting, not the copy it reads", async () => {
     const path = join(tmpRoot, "0.docx");
     await writeFile(path, docxWith({ documentRels: relationships() }));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -2070,6 +2074,63 @@ describe("the word-count oracle reads in a heap-capped child", () => {
       throw new Error("the word-count reader could not be started");
     });
     expect(await countSourceWordsWithOracle(path, { countDocxWords })).toBeNull();
+  });
+});
+
+describe("a .doc or .ppt whose word count fails is said in the log", () => {
+  async function counted(
+    name: string,
+    countTextWords: OracleDeps["countTextWords"],
+    displayPath = `/data/${name}`
+  ) {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const words = await countSourceWordsWithOracle(
+        join(tmpRoot, name),
+        { countTextWords },
+        displayPath
+      );
+      return { words, printed: warn.mock.calls.map((call) => format(...call)) };
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  it("counts a .doc with catdoc and a .ppt with catppt, and logs nothing when it works", async () => {
+    const countTextWords = vi.fn<NonNullable<OracleDeps["countTextWords"]>>(async () => 42);
+
+    expect(await counted("Alt.doc", countTextWords)).toEqual({ words: 42, printed: [] });
+    expect(await counted("Folien.ppt", countTextWords)).toEqual({ words: 42, printed: [] });
+    expect(countTextWords.mock.calls.map(([bin]) => bin)).toEqual(["catdoc", "catppt"]);
+  });
+
+  it("says the check failed when the extractor does, naming the document and why", async () => {
+    // A .doc that catdoc chokes on is converted with no tripwire at all; an
+    // operator asking why a page went missing needs this line to know that.
+    const { words, printed } = await counted(
+      "0.doc",
+      async () => {
+        throw new Error("catdoc exited with code 2");
+      },
+      "/data/Alt.doc"
+    );
+
+    expect(words).toBeNull();
+    expect(printed).toHaveLength(1);
+    expect(printed[0]).toContain(
+      "/data/Alt.doc: word count failed, unverified — catdoc exited with code 2"
+    );
+    expect(printed[0]).not.toContain(tmpRoot);
+  });
+
+  it("says the check was skipped, not failed, when the extractor is not installed", async () => {
+    const { words, printed } = await counted("Folien.ppt", async () => {
+      throw Object.assign(new Error("spawn catppt ENOENT"), { code: "ENOENT" });
+    });
+
+    expect(words).toBeNull();
+    expect(printed).toHaveLength(1);
+    expect(printed[0]).toContain("/data/Folien.ppt: word count skipped, unverified");
   });
 });
 
@@ -2334,3 +2395,111 @@ async function listTree(dir: string): Promise<string[]> {
   }
   return entries.map((e) => join(e.parentPath, e.name)).sort();
 }
+
+describe("the word-count oracle counts the document, not the sanitized copy the converter reads", () => {
+  // The preflight cuts every external relationship from the staged copy, and
+  // leaves the elements that pointed at them. mammoth cannot read some of
+  // what is left: a hyperlink whose relationship is gone but whose `w:anchor`
+  // remains — how a link to a section of a web page is stored — and a
+  // picture linked to a file, DrawingML or VML. Counting the staged copy, the oracle threw, the
+  // tripwire was silently off, and a PDF that lost a third of the text was
+  // indexed with no word of it in the log.
+  const TEXT = Array.from({ length: 30 }, (_, i) => `word${i}`).join(" ");
+  const externalLink = (id: string, type: string, target: string) =>
+    `<Relationship Id="${id}" Type="${type}" Target="${target}" TargetMode="External"/>`;
+  const cases: { what: string; body: string; rel: string; pictureRelId?: string }[] = [
+    {
+      what: "a hyperlink to a section of a web page",
+      body: '<w:p><w:hyperlink r:id="rId5" w:anchor="section-two"><w:r><w:t>the section</w:t></w:r></w:hyperlink></w:p>',
+      rel: externalLink("rId5", REL_HYPERLINK, "https://example.com/page"),
+    },
+    {
+      what: "a picture linked to a file",
+      body: "",
+      pictureRelId: "rId9",
+      rel: externalLink("rId9", REL_IMAGE, "file:///share/logo.png"),
+    },
+    {
+      what: "a VML picture linked to a file",
+      body: '<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml"><v:imagedata r:id="rId7"/></v:shape></w:pict></w:r></w:p>',
+      rel: externalLink("rId7", REL_IMAGE, "file:///share/logo.png"),
+    },
+  ];
+
+  for (const { what, body, rel, pictureRelId } of cases) {
+    it(`fails a conversion that lost content from a .docx holding ${what}`, async () => {
+      await expectLostContentCaught("Bericht.docx", body, rel, pictureRelId);
+    });
+  }
+
+  // A macro-enabled document is converted exactly like a .docx (#1431), and
+  // a share from an older system writes the extension in capitals.
+  for (const name of ["Vorlage.docm", "ALT.DOCX"]) {
+    it(`fails a conversion that lost content from ${name}`, async () => {
+      const { body, rel } = cases[0];
+      await expectLostContentCaught(name, body, rel);
+    });
+  }
+
+  async function expectLostContentCaught(
+    name: string,
+    body: string,
+    rel: string,
+    pictureRelId?: string
+  ) {
+    const absPath = join(corpusDir, name);
+    const staged = `0${extname(name).toLowerCase()}`;
+    await mkdir(corpusDir, { recursive: true });
+    await writeFile(
+      absPath,
+      docxWith({ text: TEXT, documentRels: relationships(rel), body, pictureRelId })
+    );
+
+    const outcomes = await convertOfficeFiles(
+      [{ absPath }],
+      deps(fakeConverter({ outputs: { [staged]: "only five words survived here" } }), {
+        prepareSource: undefined,
+        countSourceWords: undefined,
+      })
+    );
+
+    expect(outcomes[0].status).toBe("failed");
+    expect(outcomes[0].reason).toMatch(/conversion lost content: 5 words in the PDF vs 3\d in/);
+    expect(outcomes[0].verification?.status).toBe("short");
+  }
+
+  it("counts a legacy .doc from the staged copy, which is the bytes that were checked", async () => {
+    // A legacy binary is staged as it is; an RTF file under a Word name is
+    // staged with its field instructions cut, and catdoc would count those.
+    const source = await corpusFile("Alt.doc", "legacy");
+    const countSourceWords = vi.fn(async () => null);
+    await convertOfficeFiles(
+      [source],
+      deps(fakeConverter({ outputs: { "Alt.doc": "words" } }), { countSourceWords })
+    );
+    expect(countSourceWords).toHaveBeenCalledWith(expect.stringMatching(/0\.doc$/), source.absPath);
+  });
+});
+
+describe("a word count that fails is said in the log", () => {
+  it("logs a reader that breaks, with the document's name, and goes on unverified", async () => {
+    const path = join(tmpRoot, "0.docx");
+    await writeFile(path, docxWith({ documentRels: relationships() }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const countDocxWords = vi.fn(async () => {
+        throw new TypeError("Cannot read properties of undefined (reading 'indexOf')");
+      });
+      expect(
+        await countSourceWordsWithOracle(path, { countDocxWords }, "/data/Bericht.docx")
+      ).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const printed = format(...warn.mock.calls[0]);
+      expect(printed).toContain("/data/Bericht.docx: word count failed, unverified");
+      expect(printed).toContain("reading 'indexOf'");
+      expect(printed).not.toContain(path);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
