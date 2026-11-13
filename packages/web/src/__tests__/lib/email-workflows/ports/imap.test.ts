@@ -209,6 +209,19 @@ describe("IMAP port — connection bookkeeping", () => {
     expect(answered).toEqual([{ address: "203.0.113.9", family: 4 }]);
   });
 
+  it.each([
+    ["starttls", 143, true],
+    ["none", 143, false],
+    ["tls", 993, false],
+  ] as const)(
+    "security=%s on port %i sets doSTARTTLS=%s, so a stripped STARTTLS fails instead of going plaintext",
+    async (security, imapPort, expected) => {
+      const port = createImapPort({ ...credentials, security, imapPort });
+      await port.search({ sinceDays: 14 });
+      expect(ctorOptions[0]).toMatchObject({ doSTARTTLS: expected });
+    }
+  );
+
   it("opens no connection when the guard refuses the stored host", async () => {
     mockResolve.mockRejectedValue(new Error("Blocked: private network address"));
     const port = createImapPort(credentials);

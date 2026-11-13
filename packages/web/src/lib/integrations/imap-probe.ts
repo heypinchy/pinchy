@@ -203,6 +203,10 @@ export async function testImapLogin(input: ImapTestInput): Promise<void> {
     ...pinnedImapOptions(input.imapHost, target),
     port: input.imapPort,
     secure: tlsModeForPort(input.imapPort, input.security).secure,
+    // imapflow upgrades only opportunistically: a server that stops advertising
+    // STARTTLS would otherwise get the login in the clear. Demand the upgrade
+    // exactly where requireTLS demands it for SMTP.
+    doSTARTTLS: tlsModeForPort(input.imapPort, input.security).requireTLS,
     auth: {
       user: input.username,
       pass: input.password,

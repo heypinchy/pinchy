@@ -162,6 +162,21 @@ describe("imap-probe", () => {
       );
     });
 
+    it.each([
+      ["starttls", 143, true],
+      ["none", 143, false],
+      ["tls", 993, false],
+    ] as const)(
+      "security=%s on port %i sets doSTARTTLS=%s, so a stripped STARTTLS fails instead of going plaintext",
+      async (security, imapPort, expected) => {
+        await testImapLogin({ ...input, security, imapPort });
+
+        expect(ImapFlowMock).toHaveBeenLastCalledWith(
+          expect.objectContaining({ port: imapPort, doSTARTTLS: expected })
+        );
+      }
+    );
+
     it("disables encryption for security 'none'", async () => {
       await testImapLogin({ ...input, security: "none", imapPort: 143 });
 
