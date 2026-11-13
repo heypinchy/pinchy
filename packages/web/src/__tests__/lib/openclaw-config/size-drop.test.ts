@@ -93,6 +93,22 @@ describe("sizeGuardBaseline vs deleted agents", () => {
     );
   });
 
+  it("grants no agent discount when a kept provider's catalogue collapsed to [] (failed discovery)", () => {
+    const withOllama = (ids: string[], models: number): Json => ({
+      ...full(ids),
+      models: { providers: { anthropic, ollama: provider(models) } },
+    });
+    const existing = serialize(withOllama(["smithers", "a", "b", "c"], 20));
+    expect(sizeGuardBaseline(existing, withOllama(["smithers"], 0))).toBe(existing.length);
+  });
+
+  it("grants no agent discount when the payload has no provider at all (empty read)", () => {
+    const existing = serialize(full(["smithers", "a", "b", "c"]));
+    const next = full(["smithers"]);
+    next.models = { providers: {} };
+    expect(sizeGuardBaseline(existing, next)).toBe(existing.length);
+  });
+
   it("does not discount when no agent survives (empty DB read, #311)", () => {
     const existing = serialize(full(["smithers", "a", "b", "c"]));
     expect(sizeGuardBaseline(existing, full([]))).toBe(existing.length);

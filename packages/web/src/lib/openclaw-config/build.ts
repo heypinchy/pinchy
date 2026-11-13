@@ -1,4 +1,4 @@
-import { writeRejectedPayload } from "./rejected-payload";
+import { sweepRejectedPayloadsOnce, writeRejectedPayload } from "./rejected-payload";
 import { isDeepStrictEqual } from "util";
 import {
   writeSecretsFile,
@@ -2034,6 +2034,9 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // The key-less bridge, and the re-keyed one that follows secrets.json.
   let bridge: Record<string, unknown> | null = null;
   let rekeyed: Record<string, unknown> | null = null;
+  // Dumps older versions left (0644, plaintext tokens) are cleaned on the first
+  // regenerate after boot, not only when a new refusal happens to write one.
+  sweepRejectedPayloadsOnce(CONFIG_PATH);
   if (onDiskContent !== undefined && !unchanged) {
     // Defense-in-depth size-drop guard (#311). A regenerate that runs through a
     // window where DB-derived state isn't fully loaded (telegram_bot_token race
@@ -2044,15 +2047,18 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // content. The bad payload is saved alongside the config for postmortem —
     // silent skip would hide the underlying race forever (#314).
     //
-    // Measured against the existing file MINUS the bytes of every provider the
-    // payload deleted, as long as a provider survives (see size-drop.ts).
+    // Measured against the existing file MINUS the bytes of every provider and
+    // every agent the payload deleted, as long as a provider survives (see
+    // size-drop.ts). A deleted agent takes its roster entry, plugin config,
+    // Telegram account and bindings with it.
     // Deleting a 40-model OpenAI-compatible provider removes most of the file
     // on purpose; judged against the raw size, it was refused here, every later
     // regenerate was refused the same way, and OpenClaw kept serving the
     // deleted provider. Everything else is still judged in full: an empty
     // provider read, a kept provider whose discovered model list shrank (a
     // half-answered discovery), a kept provider whose catalogue collapsed to
-    // `[]` (Ollama unreachable — this voids the deletion discount too), and any
+    // `[]` (Ollama unreachable — this voids every deletion discount, agents'
+    // included), and any
     // shrink outside `models.providers`. Delivering a deletion past OpenClaw's
     // own check is pushConfigInBackground's job (stepwise config.apply).
     const sizeBaseline = sizeGuardBaseline(onDiskContent, config);
@@ -2064,7 +2070,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       console.error(
         `[openclaw-config] regenerate produced a suspiciously small config ` +
           `(${newContent.length} bytes, was ${onDiskContent.length}` +
-          `${sizeBaseline !== onDiskContent.length ? `; ${sizeBaseline} after discounting deleted providers` : ""}). ` +
+          `${sizeBaseline !== onDiskContent.length ? `; ${sizeBaseline} after discounting deleted providers and agents` : ""}). ` +
           `Refusing the write to keep OpenClaw's existing state intact. ` +
           `Likely a DB-state-loading race; see #311. ` +
           `Rejected payload saved to ${rejectedPath}.`
@@ -2114,8 +2120,8 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
         return;
       }
     } else {
-      // Past this guard only because deleted providers were discounted, and
-      // still under half the file: OpenClaw will refuse it as a size drop. The
+      // Past this guard only because deleted providers or agents were
+      // discounted, and still under half the file: OpenClaw will refuse it as a size drop. The
       // push must know before OpenClaw says so — its rate limit can keep the
       // refusal from ever arriving, and the file-write fallback must not run
       // for this payload (see MAX_SHRINK_STEPS in write.ts).

@@ -8,8 +8,9 @@
 // readable by its owner only, and only the newest few survive — a guard that
 // trips on every regenerate must not fill the volume with copies of the token.
 
-import { readdirSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
+import { findPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 
 type Json = Record<string, unknown>;
 
@@ -21,15 +22,44 @@ function isRecord(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Replace `key` of `record` with a marker when it is present. */
-function redactKey(record: unknown, key: string): void {
-  if (isRecord(record) && key in record) record[key] = REDACTED;
+const SECRET_KEY = /token|secret|password|apikey|api_key|authorization/i;
+
+/** A URL value without userinfo or query string (both can carry credentials). */
+function stripUrlCredentials(value: string): string {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return value;
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return REDACTED;
+  }
+}
+
+function redactTree(node: unknown): unknown {
+  if (typeof node === "string") return stripUrlCredentials(node);
+  if (Array.isArray(node)) return node.map(redactTree);
+  if (isRecord(node)) {
+    return Object.fromEntries(
+      Object.entries(node).map(([key, value]) => [
+        key,
+        SECRET_KEY.test(key) ? REDACTED : redactTree(value),
+      ])
+    );
+  }
+  return node;
 }
 
 /**
- * The payload with its credentials replaced by a marker. Content that does not
- * parse as JSON is not written at all: it could carry the very values this
- * exists to keep out.
+ * The payload with its credentials replaced by a marker: every value under a
+ * credential-looking key (over-redacting is fine), URL userinfo and queries,
+ * and, as a backstop for a secret sitting under an innocent key, nothing is
+ * written at all if the plaintext scanner still finds a provider key. Content
+ * that does not parse as JSON is not written either: it could carry the very
+ * values this exists to keep out.
  */
 export function redactRejectedPayload(content: string): string {
   let parsed: unknown;
@@ -38,21 +68,49 @@ export function redactRejectedPayload(content: string): string {
   } catch {
     return "[unparseable payload omitted: it could not be checked for credentials]\n";
   }
-  if (isRecord(parsed)) {
-    if (isRecord(parsed.gateway)) redactKey(parsed.gateway.auth, "token");
-    if (isRecord(parsed.plugins) && isRecord(parsed.plugins.entries)) {
-      for (const entry of Object.values(parsed.plugins.entries)) {
-        if (isRecord(entry)) redactKey(entry.config, "gatewayToken");
-      }
-    }
-    if (isRecord(parsed.channels) && isRecord(parsed.channels.telegram)) {
-      const accounts = parsed.channels.telegram.accounts;
-      if (isRecord(accounts)) {
-        for (const account of Object.values(accounts)) redactKey(account, "botToken");
-      }
-    }
+  const redacted = redactTree(parsed);
+  if (findPlaintextSecrets(redacted).length > 0) {
+    return "[payload omitted: a plaintext provider key survived redaction]\n";
   }
-  return JSON.stringify(parsed, null, 2) + "\n";
+  return JSON.stringify(redacted, null, 2) + "\n";
+}
+
+/**
+ * Keep only the newest MAX_REJECTED_PAYLOADS dumps, and make the survivors
+ * safe: dumps written by older versions are 0644 and hold plaintext tokens, so
+ * each is rewritten redacted at 0600 (idempotent for a dump already clean).
+ * Best-effort; never throws.
+ */
+export function sweepRejectedPayloads(configPath: string): void {
+  try {
+    const prefix = `${basename(configPath)}.regenerate-rejected.`;
+    const dir = dirname(configPath);
+    // The stamp is a sortable ISO timestamp, so name order is age order.
+    const names = readdirSync(dir)
+      .filter((n) => n.startsWith(prefix))
+      .sort();
+    const cut = Math.max(0, names.length - MAX_REJECTED_PAYLOADS);
+    names.forEach((name, i) => {
+      const path = join(dir, name);
+      try {
+        if (i < cut) {
+          // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
+          unlinkSync(path);
+        } else {
+          // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
+          const redacted = redactRejectedPayload(readFileSync(path, "utf-8"));
+          // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
+          writeFileSync(path, redacted, { encoding: "utf-8", mode: 0o600 });
+          // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
+          chmodSync(path, 0o600);
+        }
+      } catch {
+        // One unreadable dump must not stop the sweep of the others.
+      }
+    });
+  } catch {
+    // Housekeeping; a missing directory is the normal case in tests.
+  }
 }
 
 /**
@@ -68,19 +126,24 @@ export function writeRejectedPayload(configPath: string, content: string, stamp:
   } catch {
     return path;
   }
-  try {
-    const prefix = `${basename(configPath)}.regenerate-rejected.`;
-    const dir = dirname(configPath);
-    // The stamp is a sortable ISO timestamp, so name order is age order.
-    const dumps = readdirSync(dir)
-      .filter((name) => name.startsWith(prefix))
-      .sort();
-    for (const name of dumps.slice(0, Math.max(0, dumps.length - MAX_REJECTED_PAYLOADS))) {
-      // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
-      unlinkSync(join(dir, name));
-    }
-  } catch {
-    // Pruning is housekeeping; a failure must not hide the refusal.
-  }
+  sweepRejectedPayloads(configPath);
   return path;
+}
+
+let sweptThisProcess = false;
+
+/**
+ * The sweep, once per process: run it on the first regenerate after a boot so
+ * dumps older versions left behind are cleaned even when no new refusal ever
+ * happens (the fix removes the common trigger).
+ */
+export function sweepRejectedPayloadsOnce(configPath: string): void {
+  if (sweptThisProcess) return;
+  sweptThisProcess = true;
+  sweepRejectedPayloads(configPath);
+}
+
+/** Test seam: forget that the sweep ran. */
+export function _resetRejectedPayloadSweep(): void {
+  sweptThisProcess = false;
 }

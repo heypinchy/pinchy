@@ -171,22 +171,24 @@ export function sizeGuardBaseline(existing: string, next: Json): number {
     return existing.length;
   }
   if (!isRecord(parsed)) return existing.length;
-  let pruned: Json = parsed;
-
   const existingProviders = providersOf(parsed);
   const nextProviders = providersOf(next);
+  // An empty provider read or a collapsed catalogue voids EVERY discount, the
+  // agent one included: that payload is a failed read, and a roster shrink
+  // riding along must not carry it past the guard.
   if (
-    existingProviders &&
-    nextProviders &&
-    keepsAProvider(next) &&
-    !keptProviderCollapsed(existingProviders, nextProviders)
+    !existingProviders ||
+    !nextProviders ||
+    !keepsAProvider(next) ||
+    keptProviderCollapsed(existingProviders, nextProviders)
   ) {
-    const models = parsed.models as Json;
-    const kept = Object.fromEntries(
-      Object.entries(existingProviders).filter(([key]) => key in nextProviders)
-    );
-    pruned = { ...pruned, models: { ...models, providers: kept } };
+    return existing.length;
   }
+  const models = parsed.models as Json;
+  const kept = Object.fromEntries(
+    Object.entries(existingProviders).filter(([key]) => key in nextProviders)
+  );
+  let pruned: Json = { ...parsed, models: { ...models, providers: kept } };
 
   const existingAgents = agentIdsOf(parsed);
   const nextAgents = agentIdsOf(next);

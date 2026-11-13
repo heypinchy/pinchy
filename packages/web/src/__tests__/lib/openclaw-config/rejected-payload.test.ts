@@ -5,6 +5,9 @@ import { join } from "path";
 import {
   MAX_REJECTED_PAYLOADS,
   redactRejectedPayload,
+  sweepRejectedPayloads,
+  sweepRejectedPayloadsOnce,
+  _resetRejectedPayloadSweep,
   writeRejectedPayload,
 } from "@/lib/openclaw-config/rejected-payload";
 
@@ -31,6 +34,37 @@ describe("redactRejectedPayload", () => {
     expect(parsed.agents.entries.a1.name).toBe("Smithers");
     expect(parsed.gateway.mode).toBe("local");
     expect(parsed.plugins.entries["pinchy-files"].enabled).toBe(true);
+  });
+
+  it("redacts by key name, anywhere in the tree", () => {
+    const out = redactRejectedPayload(
+      JSON.stringify({
+        a: { b: { apiKey: "K1", api_key: "K2", password: "P1", clientSecret: "S1" } },
+        list: [{ Authorization: "Bearer A1", accessToken: "T1" }],
+        keep: "visible",
+      })
+    );
+    expect(out).not.toMatch(/K1|K2|P1|S1|A1|T1/);
+    expect(out).toContain("visible");
+  });
+
+  it("strips userinfo and query strings from URL values", () => {
+    const out = redactRejectedPayload(
+      JSON.stringify({
+        models: {
+          providers: { x: { baseUrl: "https://user:pw-SECRET@llm.example/v1?key=Q-SECRET" } },
+        },
+      })
+    );
+    expect(out).not.toMatch(/pw-SECRET|Q-SECRET|user:/);
+    expect(out).toContain("llm.example/v1");
+  });
+
+  it("omits the dump when the plaintext scanner still finds a provider key", () => {
+    const out = redactRejectedPayload(
+      JSON.stringify({ note: { value: "sk-ant-abcdefghijklmnopqrstuvwxyz" } })
+    );
+    expect(out).not.toContain("sk-ant-");
   });
 
   it("never writes unparseable content verbatim (it could carry the tokens)", () => {
@@ -84,5 +118,57 @@ describe("writeRejectedPayload", () => {
     expect(() =>
       writeRejectedPayload(join(dir, "missing", "openclaw.json"), "{}", "2026-11-13T10-00-00Z")
     ).not.toThrow();
+  });
+});
+
+describe("sweepRejectedPayloads (dumps left by older versions)", () => {
+  let dir: string;
+  let configPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "rejected-sweep-"));
+    configPath = join(dir, "openclaw.json");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const legacy = (stamp: string) => {
+    const path = `${configPath}.regenerate-rejected.${stamp}`;
+    writeFileSync(path, JSON.stringify(payload), { mode: 0o644 });
+    return path;
+  };
+
+  it("deletes dumps beyond the newest MAX_REJECTED_PAYLOADS", () => {
+    for (let i = 0; i < MAX_REJECTED_PAYLOADS + 3; i++) legacy(`2026-01-0${i}`);
+    sweepRejectedPayloads(configPath);
+    expect(readdirSync(dir)).toHaveLength(MAX_REJECTED_PAYLOADS);
+  });
+
+  it("redacts and chmods the dumps it keeps", () => {
+    const path = legacy("2026-01-01");
+    sweepRejectedPayloads(configPath);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(readFileSync(path, "utf-8")).not.toMatch(/SECRET/);
+  });
+
+  it("does nothing, quietly, when the directory does not exist", () => {
+    expect(() => sweepRejectedPayloads(join(dir, "nope", "openclaw.json"))).not.toThrow();
+  });
+});
+
+describe("sweepRejectedPayloadsOnce", () => {
+  it("sweeps on the first call only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rejected-once-"));
+    const configPath = join(dir, "openclaw.json");
+    const dump = `${configPath}.regenerate-rejected.2026-01-01`;
+    try {
+      _resetRejectedPayloadSweep();
+      writeFileSync(dump, JSON.stringify(payload), { mode: 0o644 });
+      sweepRejectedPayloadsOnce(configPath);
+      expect(readFileSync(dump, "utf-8")).not.toMatch(/SECRET/);
+      writeFileSync(dump, JSON.stringify(payload), { mode: 0o644 });
+      sweepRejectedPayloadsOnce(configPath);
+      expect(readFileSync(dump, "utf-8")).toMatch(/SECRET/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
