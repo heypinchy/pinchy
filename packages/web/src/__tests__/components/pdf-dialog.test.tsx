@@ -363,7 +363,9 @@ describe("PdfDialog with a passage to highlight", () => {
   });
 
   it("draws a slide citation at its slide, which is the converted PDF's page", async () => {
-    const renderPage = vi.fn(async (_page: number) => ({ width: 600, height: 800, runs: [] }));
+    const renderPage = vi.fn<
+      (page: number) => Promise<{ width: number; height: number; runs: never[] }>
+    >(async () => ({ width: 600, height: 800, runs: [] }));
     mockOpenPdf.mockReset().mockResolvedValue({ numPages: 20, renderPage, destroy: vi.fn() });
     const fetchSpy = vi
       .spyOn(global, "fetch")
@@ -558,6 +560,52 @@ describe("PdfDialog for a document without a converted PDF", () => {
     answer(new Response(null, { status: 200 }));
     await screen.findByRole("link", { name: /download pdf/i });
     expect(header()).toEqual(whileChecking);
+  });
+
+  it("holds the header still when the answer is that there is no PDF, too", async () => {
+    // Removing the PDF's controls on a 404 would shift the slot by Close from
+    // the greyed tab onto the original's download — a click meant for the tab
+    // would then take a copy, and the audit trail would record a download
+    // nobody asked for. They stay, inert; the pane says why.
+    let answer: (res: Response) => void = () => {};
+    vi.spyOn(global, "fetch").mockImplementation(
+      () => new Promise<Response>((resolve) => (answer = resolve))
+    );
+
+    openOffice();
+    await screen.findByLabelText("Loading preview");
+    const header = () =>
+      [...screen.getByRole("button", { name: "Close" }).parentElement!.children].map((el) => ({
+        name: el.getAttribute("aria-label"),
+        text: el.textContent,
+      }));
+    const whileChecking = header();
+
+    answer(new Response(null, { status: 404 }));
+    await screen.findByText(/can't preview this document/i);
+    expect(header()).toEqual(whileChecking);
+    expect(screen.getByRole("button", { name: /download pdf/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /open in new tab/i })).toBeDisabled();
+  });
+
+  it("only promises the original in the announcement when there is one to download", async () => {
+    headAnswers(404);
+    render(
+      <PdfDialog
+        url={viewerUrl}
+        title="customer/Angebot.docx"
+        page={null}
+        downloads={buildSourceDownloads(officeHref)!.filter((d) => d.variant === "converted")}
+        defaultOpen
+      >
+        <button type="button">trigger</button>
+      </PdfDialog>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/no preview of this document/i)
+    );
+    expect(screen.getByRole("status")).not.toHaveTextContent(/original/i);
   });
 
   it("announces the missing preview through a region that was there all along", async () => {

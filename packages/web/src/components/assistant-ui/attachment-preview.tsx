@@ -275,9 +275,10 @@ export const PdfDialog: FC<{
    * conversion (an Office source, a scan), and a conversion may not exist: not
    * converted yet, or refused. The dialog then asks the route first, on every
    * open, and when there is none it says so and points at the original rather
-   * than embedding the route's bare 404 — and stops offering the PDF and the
-   * full tab, both of which would be that same 404. While it asks, both stay
-   * in place but inert, so nothing hands over a 404 and nothing moves.
+   * than embedding the route's bare 404. The PDF download and the full tab,
+   * both of which would be that same 404, are offered only once the PDF is
+   * known to exist; while the dialog asks, and when the answer is no, they stay
+   * in place but inert, so nothing hands over a 404 and the header never moves.
    */
   downloads?: DocumentDownload[];
   /**
@@ -308,14 +309,14 @@ export const PdfDialog: FC<{
   const missing = availability === "missing";
   // The PDF is offered — downloaded or opened in a tab — only once it is known
   // to exist: the check hashes the source, long enough on a large deck for a
-  // click to hand over the 404 it is there to catch. Until then its controls
-  // keep their place, inert: appearing late, they would shift the ones beside
-  // them under a reader's cursor.
+  // click to hand over the 404 it is there to catch. Otherwise — while it
+  // asks, and when the answer is no — its controls keep their place, inert:
+  // appearing late or vanishing, they would shift the ones beside them under a
+  // reader's cursor, and the slot next to Close would turn into a different
+  // download than the one the reader aimed at.
   const offersPdf = availability === "available";
 
-  const documentDownloads = (downloads ?? [{ label: filename, url: downloadUrlFor(url) }]).filter(
-    (d) => !(missing && d.variant === "converted")
-  );
+  const documentDownloads = downloads ?? [{ label: filename, url: downloadUrlFor(url) }];
   const original = documentDownloads.find((d) => d.variant === "original");
   // With one entry the icon is unambiguous. With two it is not — "the original
   // or the converted one?" is exactly the question a bare pair of identical
@@ -392,7 +393,6 @@ export const PdfDialog: FC<{
                   className={namesDownloads ? undefined : "size-8"}
                   disabled
                   aria-label={downloadAccessibleName(download)}
-                  title={download.filename ?? download.label}
                 >
                   <Download className="size-4" />
                   {namesDownloads && <span className="max-w-32 truncate">{download.label}</span>}
@@ -437,17 +437,15 @@ export const PdfDialog: FC<{
                 </a>
               </Button>
             ) : (
-              !missing && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8"
-                  disabled
-                  aria-label="Open in new tab"
-                >
-                  <ExternalLink className="size-4" />
-                </Button>
-              )
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8"
+                disabled
+                aria-label="Open in new tab"
+              >
+                <ExternalLink className="size-4" />
+              </Button>
             )}
             <DialogClose asChild>
               <Button variant="ghost" size="icon" className="size-8" aria-label="Close">
@@ -464,7 +462,7 @@ export const PdfDialog: FC<{
          */}
         <p role="status" className="sr-only">
           {missing
-            ? "There's no preview of this document. You can download the original instead."
+            ? `There's no preview of this document.${original ? " You can download the original instead." : ""}`
             : ""}
         </p>
         {availability === "checking" ? (
