@@ -103,6 +103,8 @@ describe("deliverLinkEmail", () => {
         new Error("Can't send mail - all recipients were rejected: <anna@example.com>"),
         {
           command: "RCPT TO",
+          code: "EENVELOPE",
+          responseCode: 550,
         }
       )
     );
@@ -110,6 +112,10 @@ describe("deliverLinkEmail", () => {
     const logged = JSON.stringify(spy.mock.calls);
     expect(logged).not.toContain("anna@example.com");
     expect(logged).toContain("The mail server refused the recipient address.");
+    // The non-PII diagnostics survive: they are what an operator greps for.
+    expect(logged).toContain("EENVELOPE");
+    expect(logged).toContain("RCPT TO");
+    expect(logged).toContain("550");
     spy.mockRestore();
   });
 
