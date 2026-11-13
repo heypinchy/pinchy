@@ -8,7 +8,17 @@
 // readable by its owner only, and only the newest few survive — a guard that
 // trips on every regenerate must not fill the volume with copies of the token.
 
-import { lstatSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "fs";
 import { randomBytes } from "crypto";
 import { basename, dirname, join } from "path";
 import { findPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
@@ -23,12 +33,20 @@ function isRecord(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// A key NAMING a credential: it ENDS in token/secret/password/api-key/
-// authorization (so `maxTokens` / `contextTokens` counts are kept; `x-api-key`
-// and `api-key` are caught). The top-level `secrets` block holds SecretRef
-// pointers: not secret themselves, but redacted anyway: over-redacting a
-// postmortem costs nothing.
-const SECRET_KEY = /(token|secret|password|api[-_]?key|authorization)$|^secrets$/i;
+// A key NAMING a credential, wherever the word sits in it: `secretKey`,
+// `privateKey`, `encryptKey`, `serviceAccount` (an object holding a
+// `private_key`), `x-api-key`. Channel blocks an admin set directly in OpenClaw
+// are carried through a regenerate unchanged, and the plaintext scanner knows
+// none of those formats, so this list errs wide. Counts and switches
+// (`maxTokens`, `secretRotationEnabled`) are numbers or booleans and are kept;
+// the top-level `secrets` block holds SecretRef pointers and is redacted
+// anyway: over-redacting a postmortem costs nothing.
+const SECRET_KEY =
+  /token|secret|password|passphrase|api[-_]?key|private[-_]?key|access[-_]?key|encrypt[-_]?key|authorization|credential|cookie|bearer|service[-_]?account/i;
+
+function isCredential(key: string, value: unknown): boolean {
+  return SECRET_KEY.test(key) && typeof value !== "number" && typeof value !== "boolean";
+}
 
 /** A URL value without userinfo or query string (both can carry credentials). */
 function stripUrlCredentials(value: string): string {
@@ -52,7 +70,7 @@ function redactTree(node: unknown): unknown {
     return Object.fromEntries(
       Object.entries(node).map(([key, value]) => [
         key,
-        SECRET_KEY.test(key) ? REDACTED : redactTree(value),
+        isCredential(key, value) ? REDACTED : redactTree(value),
       ])
     );
   }
@@ -94,7 +112,9 @@ export function redactRejectedPayload(content: string): string {
  * trusted.
  */
 function replaceFile(path: string, content: string): void {
-  const tmp = `${path}.tmp-${randomBytes(8).toString("hex")}`;
+  // A hidden name, outside the dump prefix, so a temp file a crash leaves
+  // behind is never mistaken for a dump by the next sweep.
+  const tmp = join(dirname(path), `.${basename(path)}.tmp-${randomBytes(8).toString("hex")}`);
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- fresh name in the config's own directory
     writeFileSync(tmp, content, { encoding: "utf-8", mode: 0o600, flag: "wx" });
@@ -108,6 +128,25 @@ function replaceFile(path: string, content: string): void {
       // never created, or already renamed
     }
     throw err;
+  }
+}
+
+/**
+ * The content of `path` if it is a regular file with a single link, else null.
+ * Checked on the opened descriptor, not on the name: O_NOFOLLOW refuses a
+ * symlink (ELOOP), O_NONBLOCK keeps a FIFO from blocking the open, and fstat
+ * judges what was actually opened, so swapping the name between a check and
+ * the read gains nothing.
+ */
+function readOwnRegularFile(path: string): string | null {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.nlink > 1) return null;
+    return readFileSync(fd, "utf-8");
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -143,11 +182,10 @@ export function sweepRejectedPayloads(configPath: string): void {
         }
       };
       try {
-        // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
-        const info = lstatSync(path);
-        if (i < cut || !info.isFile() || info.nlink > 1) return remove();
-        // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
-        replaceFile(path, redactRejectedPayload(readFileSync(path, "utf-8")));
+        if (i < cut) return remove();
+        const raw = readOwnRegularFile(path);
+        if (raw === null) return remove();
+        replaceFile(path, redactRejectedPayload(raw));
       } catch {
         // Cannot be made safe: do not leave a plaintext dump behind.
         remove();

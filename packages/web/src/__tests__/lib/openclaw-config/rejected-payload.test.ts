@@ -245,4 +245,26 @@ describe("rejected dumps: hostile directory entries, placeholders, key names", (
     expect(JSON.stringify(out)).not.toMatch(/XK|AK|SP/);
     expect(out.m).toEqual({ maxTokens: 8192, contextTokens: 5 });
   });
+
+  it("redacts credential keys OpenClaw channels carry through, wherever the word sits", () => {
+    // Channel blocks an admin set directly in OpenClaw survive a regenerate
+    // unchanged, and the plaintext scanner knows none of these formats.
+    const out = redactRejectedPayload(
+      JSON.stringify({
+        channels: {
+          feishu: { appSecret: "S1", encryptKey: "S2" },
+          googlechat: { serviceAccount: { client_email: "x", private_key: "S3" } },
+          other: { secretKey: "S4", secretAccessKey: "S5", privateKey: "S6", passphrase: "S7" },
+          more: { apiKeys: ["S8"], tokens: ["S9"], clientSecret: "S10", cookie: "S11" },
+        },
+        usage: { maxTokens: 8192, tokenLimit: 3, secretRotationEnabled: true },
+      })
+    );
+    expect(out).not.toMatch(/"S\d+"/);
+    expect(JSON.parse(out).usage).toEqual({
+      maxTokens: 8192,
+      tokenLimit: 3,
+      secretRotationEnabled: true,
+    });
+  });
 });

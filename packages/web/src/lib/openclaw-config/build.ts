@@ -2061,8 +2061,8 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // included), and any shrink beyond those two deletions: outside
     // `models.providers`, or of an agent the payload still lists (a kept
     // agent's lost Telegram account or bindings is the #311 race itself).
-    // Delivering a deletion past OpenClaw's
-    // own check is pushConfigInBackground's job (stepwise config.apply).
+    // Delivering a deletion past OpenClaw's own check is
+    // pushConfigInBackground's job (stepwise config.apply).
     const sizeBaseline = sizeGuardBaseline(onDiskContent, config);
     refused = onDiskContent.length > 0 && newContent.length < sizeBaseline * 0.5;
     if (refused) {
