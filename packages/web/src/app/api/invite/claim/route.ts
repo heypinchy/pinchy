@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
         resource: `user:${existingUser.id}`,
         outcome: "failure",
         error: { message },
-        detail: { inviteId: invite.id, type: "reset" },
+        detail: { invite: { id: invite.id }, type: "reset" },
       });
       return NextResponse.json({ error: "Password reset failed" }, { status: 500 });
     }
@@ -95,7 +95,7 @@ export async function POST(request: NextRequest) {
       resource: `user:${existingUser.id}`,
       outcome: "success",
       detail: {
-        inviteId: invite.id,
+        invite: { id: invite.id },
         type: "reset",
         // The actor is the target: its raw id stays in `resource`, never in detail (#824).
         target: { name: existingUser.name },

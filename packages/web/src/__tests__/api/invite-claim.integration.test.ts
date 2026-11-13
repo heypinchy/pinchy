@@ -728,6 +728,13 @@ describe("POST /api/invite/claim (integration)", () => {
     expect(serializedDetail).not.toContain(targetUser!.id);
     expect(entry.detail).toMatchObject({ target: { name: "Audit Me" } });
     expect(entry.resource).toBe(`user:${targetUser!.id}`);
+    // Same field as user.password_reset_requested and mail.sent, so the three
+    // rows of one reset join on `invite.id`.
+    const inviteRow = await db.query.invites.findFirst({
+      where: eq(invites.email, "audit-reset@test.local"),
+    });
+    expect(entry.detail).toMatchObject({ invite: { id: inviteRow!.id } });
+    expect(entry.detail).not.toHaveProperty("inviteId");
   });
 
   it("does not assign groups for password reset invites", async () => {

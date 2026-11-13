@@ -514,13 +514,25 @@ describe("imap-probe", () => {
       // parallel), before any of them settle — each to the checked address.
       expect(mockNetConnect).toHaveBeenCalledTimes(3);
       expect(mockNetConnect).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "smtp.example.com", port: 465, lookup: expect.any(Function) })
+        expect.objectContaining({
+          host: "smtp.example.com",
+          port: 465,
+          lookup: expect.any(Function),
+        })
       );
       expect(mockNetConnect).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "smtp.example.com", port: 587, lookup: expect.any(Function) })
+        expect.objectContaining({
+          host: "smtp.example.com",
+          port: 587,
+          lookup: expect.any(Function),
+        })
       );
       expect(mockNetConnect).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "smtp.example.com", port: 25, lookup: expect.any(Function) })
+        expect.objectContaining({
+          host: "smtp.example.com",
+          port: 25,
+          lookup: expect.any(Function),
+        })
       );
 
       fakeSockets[0].emit("error", new Error("ECONNREFUSED")); // 465
