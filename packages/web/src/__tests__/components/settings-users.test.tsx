@@ -1394,6 +1394,39 @@ describe("SettingsUsers", () => {
       expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
     });
 
+    // A refresh of the list (after a save in the open sheet, or a refreshKey
+    // bump) that loses the groups must not hide the sheet's group checkboxes.
+    it("keeps the loaded groups when a refresh of the list fails to load them", async () => {
+      const user = userEvent.setup();
+      stubLoads((url) =>
+        url === "/api/groups"
+          ? Promise.resolve(jsonResponse([{ id: "g1", name: "Engineering" }]))
+          : url === "/api/enterprise/status"
+            ? Promise.resolve(jsonResponse({ enterprise: true }))
+            : null
+      );
+      const { rerender } = render(<SettingsUsers currentUserId="user-1" refreshKey={0} />);
+      await waitFor(() => expect(screen.getAllByText("Bob User").length).toBeGreaterThan(0));
+      await user.click(within(screen.getByRole("table")).getByText("Bob User"));
+      expect(await screen.findByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+
+      let groupLoads = 0;
+      stubLoads((url) => {
+        if (url === "/api/groups") {
+          groupLoads += 1;
+          return Promise.resolve(jsonResponse({}, { status: 500 }));
+        }
+        return url === "/api/enterprise/status"
+          ? Promise.resolve(jsonResponse({ enterprise: true }))
+          : null;
+      });
+      rerender(<SettingsUsers currentUserId="user-1" refreshKey={1} />);
+
+      await waitFor(() => expect(groupLoads).toBeGreaterThan(0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+    });
+
     it("cancels the load and says nothing when it unmounts mid-flight", async () => {
       const signals: (AbortSignal | undefined)[] = [];
       stubLoads((url, signal) => {
