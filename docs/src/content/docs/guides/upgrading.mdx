@@ -39,6 +39,14 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
 
    Agents don't answer until step 3 starts the container again. `extensions` is left out because it comes with the image.
 
+   The PDFs Pinchy converted Word and PowerPoint files to for knowledge-base previews live on a third volume, `pinchy-kb-artifacts`. Archive it too, so those previews survive a rollback (see [below](#if-you-roll-back-after-a-conversion-change)):
+
+   ```bash
+   docker compose run --rm --no-deps -T --entrypoint tar pinchy \
+     -C /var/cache/pinchy-kb-artifacts -czf - . \
+     > backups/kb-artifacts-$(date +%Y%m%d-%H%M%S).tgz
+   ```
+
    Keeping backups under `backups/` instead of loose in `/opt/pinchy/` means they don't sit next to your `docker-compose.yml` / `.env`, and the directory is easy to target with your off-host backup rotation.
 
    <Aside type="tip">
@@ -185,7 +193,16 @@ If you need to roll back after an upgrade:
      < backups/openclaw-state-YYYYMMDD-HHMMSS.tgz
    ```
 
-   Without that archive, skip this step. The agents keep the chats and files the newer version left them, which an older version may not be able to read.
+   Without that archive, skip this. The agents keep the chats and files the newer version left them, which an older version may not be able to read.
+
+   If you archived `pinchy-kb-artifacts` too, restore it the same way:
+
+   ```bash
+   ls -lt backups/kb-artifacts-*.tgz
+   docker compose run --rm --no-deps -T --entrypoint sh pinchy -c \
+     'cd /var/cache/pinchy-kb-artifacts && find . -mindepth 1 -delete && tar -xzpf -' \
+     < backups/kb-artifacts-YYYYMMDD-HHMMSS.tgz
+   ```
 
 4. **Re-pin the previous version**
 
@@ -211,7 +228,9 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint files to; those live on the `pinchy-kb-artifacts` volume. When the version you upgraded to converts those files differently, it keeps the older PDFs until it has converted again every file a knowledge-base agent can search, and only then deletes them. Roll back before that and nothing is lost. Roll back after it, and the older version still finds every such file in the search, but a citation of one that hasn't changed since won't open its preview, because the PDF it looks for is gone; the original file downloads as usual. If you want previews to survive a rollback, back up that volume alongside the database, the way [Backup & recovery](/guides/hardening/#backup--recovery) describes for the other volumes, and restore it with the database.
+### If you roll back after a conversion change
+
+The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint files to; those live on the `pinchy-kb-artifacts` volume. When the version you upgraded to converts those files differently, it keeps the older PDFs until it has converted again every file a knowledge-base agent can search, and only then deletes them. Roll back before that and nothing is lost. Roll back after it, and the older version still finds every such file in the search, but a citation of one that hasn't changed since won't open its preview, because the PDF it looks for is gone; the original file downloads as usual. The older version doesn't convert it again either, until the file itself changes. If you want previews to survive a rollback, archive that volume in [step 1](#standard-upgrade) and restore it with the database.
 
 ## Upgrading from v0.10.3 to %%PINCHY_VERSION%%
 

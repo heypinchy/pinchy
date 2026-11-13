@@ -112,7 +112,9 @@ for (const p of [...new Set(found)]) console.log(p);
 
 # Stopping the container first keeps the gateway watchdog from restarting the
 # gateway, and this helper from running doctor, while the manual run is going.
-MANUAL_MIGRATION="docker compose stop openclaw && docker compose run --rm --no-deps --entrypoint openclaw openclaw doctor --fix --non-interactive"
+# The last two steps bring the stack back the way the upgrade notes do
+# (docs/src/content/docs/guides/upgrading.mdx); without them openclaw stays stopped.
+MANUAL_MIGRATION="docker compose stop openclaw && docker compose run --rm --no-deps --entrypoint openclaw openclaw doctor --fix --non-interactive && docker compose restart pinchy && docker compose up -d"
 
 migrate_legacy_openclaw_state() {
     local legacy
