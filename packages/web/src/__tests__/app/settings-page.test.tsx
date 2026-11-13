@@ -14,6 +14,11 @@ import { jsonResponse } from "@/test-helpers/fetch";
 const readonlySearchParams = (init?: string) =>
   new URLSearchParams(init) as unknown as ReadonlyURLSearchParams;
 
+const mockToastError = vi.fn();
+vi.mock("sonner", () => ({
+  toast: { error: (...args: unknown[]) => mockToastError(...args), success: vi.fn() },
+}));
+
 let capturedProviderProps: {
   onSuccess?: () => void;
   submitLabel?: string;
@@ -760,6 +765,9 @@ describe("Settings Page", () => {
         }
         if (path === "/api/users/me/context") return jsonResponse({ content: "Mine" });
         if (path === "/api/settings/context") return jsonResponse({ content: "Ours" });
+        // The integrations tab mounts in the background and shows its own
+        // alert for a failed list; only the load under test may fail here.
+        if (path === "/api/integrations") return jsonResponse([]);
         return jsonResponse(undefined, { status: 404 });
       });
     }
@@ -807,6 +815,26 @@ describe("Settings Page", () => {
         expect(screen.queryByTestId("mock-provider-form")).not.toBeInTheDocument();
       }
     );
+
+    // The refresh after a provider save is not the first load: the form the
+    // admin just used stays, and the failure is said once in a toast.
+    it("keeps the provider form and toasts when the refresh after a save fails", async () => {
+      vi.mocked(useSearchParams).mockReturnValue(readonlySearchParams("tab=provider"));
+      stubLoads("/api/none", async () => jsonResponse({}));
+      render(<SettingsPage isAdmin={true} />);
+      await screen.findByTestId("mock-provider-form");
+
+      stubLoads("/api/settings/providers", async () => jsonResponse({}, { status: 500 }));
+      act(() => capturedProviderProps.onSuccess!());
+
+      await waitFor(() =>
+        expect(mockToastError).toHaveBeenCalledWith(
+          "We couldn't refresh your provider settings. Reload the page to see the latest."
+        )
+      );
+      expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
 
     it("cancels its loads when it unmounts mid-flight", async () => {
       const loads = ["/api/settings/providers", "/api/users/me/context", "/api/settings/context"];

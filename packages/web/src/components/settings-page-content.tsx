@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
 import { useTabParam, SETTINGS_TABS, type SettingsTab } from "@/hooks/use-tab-param";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -137,10 +138,11 @@ export function SettingsPageContent({
     setEnterpriseRefreshKey((k) => k + 1);
   }, []);
 
-  // Each load reports a failure inline, where its card would be, instead of a
-  // toast: a failed one replaces the form it backs (agent-rules/ui.md, one
+  // Each first load reports a failure inline, where its card would be, instead
+  // of a toast: a failed one replaces the form it backs (agent-rules/ui.md, one
   // channel per error). `signal` comes from the mount effect, which aborts it
-  // on cleanup; the refresh after a provider save passes none.
+  // on cleanup; the refresh after a provider save passes none, and its failure
+  // is a toast over the form that is already there.
   const fetchStatus = useCallback(async (signal?: AbortSignal) => {
     try {
       const data = await apiGet<ProviderStatus>("/api/settings/providers", { signal });
@@ -150,7 +152,13 @@ export function SettingsPageContent({
     } catch {
       // Classify on the signal alone: an abort's error is not reliably an
       // AbortError (see audit-log-table.tsx).
-      if (!signal?.aborted) setStatusFailed(true);
+      if (signal?.aborted) return;
+      // The refresh after a save keeps the form the admin just used.
+      if (signal) setStatusFailed(true);
+      else
+        toast.error(
+          "We couldn't refresh your provider settings. Reload the page to see the latest."
+        );
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
