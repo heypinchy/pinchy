@@ -509,9 +509,9 @@ describe("validateExternalUrl", () => {
       expect(result).toEqual({ valid: true, url: "https://real-odoo.example" });
     });
 
-    it("fails open when the hostname does not resolve at all (typo, not an attack)", async () => {
+    it("fails closed when the hostname does not resolve at all", async () => {
       const result = await validateExternalUrl("https://typo.example", unresolvable);
-      expect(result).toEqual({ valid: true, url: "https://typo.example" });
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("resolve") });
     });
   });
 
@@ -593,10 +593,10 @@ describe("validateExternalUrl", () => {
       expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
     });
 
-    it("still fails open for an unresolvable name with ALLOW_PRIVATE_URLS=1", async () => {
+    it("still fails closed for an unresolvable name with ALLOW_PRIVATE_URLS=1", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
       const result = await validateExternalUrl("http://typo-odoo:8069", unresolvable);
-      expect(result).toEqual({ valid: true, url: "http://typo-odoo:8069" });
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("resolve") });
     });
 
     it("still rejects non-HTTP schemes even with ALLOW_PRIVATE_URLS=1", async () => {

@@ -9,7 +9,10 @@ vi.mock("nodemailer", () => ({ default: { createTransport } }));
 
 vi.mock("@/lib/integrations/mail-host-guard", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/integrations/mail-host-guard")>();
-  return { ...actual, assertMailHostAllowed: vi.fn().mockResolvedValue(undefined) };
+  return {
+    ...actual,
+    resolveAllowedMailHost: vi.fn().mockResolvedValue({ address: "93.184.216.34", family: 4 }),
+  };
 });
 
 import {
@@ -18,7 +21,7 @@ import {
   sendSystemMail,
   formatFrom,
 } from "@/lib/system-mail/transport";
-import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
+import { resolveAllowedMailHost, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
 const config = {
   host: "smtp.example.com",
@@ -84,8 +87,24 @@ describe("verifySystemMail", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("checks the host against the SSRF guard before connecting", async () => {
-    vi.mocked(assertMailHostAllowed).mockRejectedValueOnce(new MailHostBlockedError("Blocked"));
+    vi.mocked(resolveAllowedMailHost).mockRejectedValueOnce(new MailHostBlockedError("Blocked"));
     await expect(verifySystemMail(config)).rejects.toThrow("Blocked");
+    expect(createTransport).not.toHaveBeenCalled();
+  });
+
+  it("connects to the checked address, keeping the name for the certificate", async () => {
+    verify.mockResolvedValueOnce(true);
+    await verifySystemMail(config);
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "93.184.216.34", servername: "smtp.example.com", port: 587 })
+    );
+  });
+
+  it("refuses a host name that does not resolve instead of letting the client look it up", async () => {
+    vi.mocked(resolveAllowedMailHost).mockRejectedValueOnce(
+      Object.assign(new Error("getaddrinfo ENOTFOUND smtp.example.com"), { code: "ENOTFOUND" })
+    );
+    await expect(verifySystemMail(config)).rejects.toThrow("ENOTFOUND");
     expect(createTransport).not.toHaveBeenCalled();
   });
 
@@ -114,7 +133,11 @@ describe("sendSystemMail", () => {
       text: "t",
       html: "<p>t</p>",
     });
-    expect(assertMailHostAllowed).toHaveBeenCalledWith("smtp.example.com");
+    expect(resolveAllowedMailHost).toHaveBeenCalledWith("smtp.example.com");
+    // Connects to the address the guard classified; the name stays for TLS.
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "93.184.216.34", servername: "smtp.example.com" })
+    );
     expect(sendMail).toHaveBeenCalledWith({
       from: { name: "Pinchy", address: "pinchy@example.com" },
       to: "anna@example.com",

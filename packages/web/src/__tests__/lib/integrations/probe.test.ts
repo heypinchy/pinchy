@@ -35,11 +35,12 @@ vi.mock("@/lib/integrations/imap-probe", async (importActual) => {
   };
 });
 
-// The guard's decisions are tested in stored-destination.test.ts; here it is a
-// seam (and keeps these cases off the real resolver).
-const mockCheckStoredDestination = vi.fn();
-vi.mock("@/lib/integrations/stored-destination", () => ({
-  checkStoredDestination: (...args: unknown[]) => mockCheckStoredDestination(...args),
+// The guard's decisions are tested in url-validation.test.ts; here it is a
+// seam (and keeps these cases off the real resolver). The connection itself is
+// pinned to the target it answers; odoo-admin-routes-pinning.test.ts covers that.
+const mockResolveExternalUrlTarget = vi.fn();
+vi.mock("@/lib/integrations/url-validation", () => ({
+  resolveExternalUrlTarget: (...args: unknown[]) => mockResolveExternalUrlTarget(...args),
 }));
 
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
@@ -51,7 +52,11 @@ import { odooRedirectRefusedMessage } from "@/lib/integrations/odoo-error";
 beforeEach(() => {
   vi.clearAllMocks();
   mockAuthenticate.mockResolvedValue(2);
-  mockCheckStoredDestination.mockResolvedValue({ allowed: true });
+  mockResolveExternalUrlTarget.mockImplementation(async (url: string) => ({
+    valid: true,
+    url: new URL(url).origin,
+    target: [{ address: "93.184.216.34", family: 4 }],
+  }));
 });
 
 describe("probeIntegrationCredentials", () => {
@@ -234,15 +239,14 @@ describe("probeIntegrationCredentials", () => {
     // come from the database rather than the request (PATCH with only a new
     // API key), so it was never re-validated against the current rules.
     it("refuses a URL the guard refuses, without authenticating against it", async () => {
-      mockCheckStoredDestination.mockResolvedValue({
-        allowed: false,
-        field: "url",
-        message: "Blocked: this URL targets a private network address.",
+      mockResolveExternalUrlTarget.mockResolvedValue({
+        valid: false,
+        error: "Blocked: this URL targets a private network address.",
       });
 
       const res = await probeIntegrationCredentials("odoo", validOdooCreds);
 
-      expect(mockCheckStoredDestination).toHaveBeenCalledWith("odoo", validOdooCreds);
+      expect(mockResolveExternalUrlTarget).toHaveBeenCalledWith(validOdooCreds.url);
       // `transient`: a refused address says nothing about the API key, so no
       // caller may read it as an auth failure and flag the connection.
       expect(res).toEqual({

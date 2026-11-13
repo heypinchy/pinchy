@@ -71,6 +71,16 @@ vi.mock("@/lib/integrations/stored-destination", () => ({
   checkStoredDestination: (...args: unknown[]) => mockCheckStoredDestination(...args),
 }));
 
+// The Odoo login is pinned to the address this resolves (see
+// odoo-admin-routes-pinning.test.ts); here it is a seam.
+vi.mock("@/lib/integrations/url-validation", () => ({
+  resolveExternalUrlTarget: async (url: string) => ({
+    valid: true,
+    url: new URL(url).origin,
+    target: [{ address: "93.184.216.34", family: 4 }],
+  }),
+}));
+
 vi.mock("@/lib/integrations/odoo-schema", () => ({
   odooCredentialsSchema: {
     safeParse: vi.fn().mockReturnValue({

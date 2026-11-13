@@ -1,5 +1,5 @@
 import type SMTPTransport from "nodemailer/lib/smtp-transport";
-import { assertMailHostAllowed } from "@/lib/integrations/mail-host-guard";
+import { pinnedMailTarget, resolveAllowedMailHost } from "@/lib/integrations/mail-host-guard";
 import type { SystemMailConfig } from "@/lib/schemas/system-mail";
 
 /**
@@ -8,7 +8,7 @@ import type { SystemMailConfig } from "@/lib/schemas/system-mail";
  * imports this module, and with the mailer off that route must behave exactly
  * as it did before #1309.
  *
- * Every connection goes through `assertMailHostAllowed` first: the host is
+ * Every connection goes through `resolveAllowedMailHost` first: the host is
  * admin-supplied, and "does something answer SMTP on 10.0.0.5:25?" is the same
  * port-scanner question the IMAP probe guards against (#823). An on-premise
  * relay is legitimate and opts in through `ALLOW_PRIVATE_MAIL_HOSTS=1`.
@@ -49,9 +49,15 @@ export function formatFrom(config: SystemMailConfig): { name: string; address: s
 }
 
 async function openTransport(config: SystemMailConfig) {
-  await assertMailHostAllowed(config.host);
+  // One lookup, and its answer is the destination: checking the host and then
+  // letting nodemailer resolve the name again left a window for a resolver
+  // that answers differently the second time (DNS rebinding).
+  const target = await resolveAllowedMailHost(config.host);
   const nodemailer = (await import("nodemailer")).default;
-  return nodemailer.createTransport(transportOptions(config));
+  return nodemailer.createTransport({
+    ...transportOptions(config),
+    ...pinnedMailTarget(config.host, target),
+  });
 }
 
 /** Connect, negotiate TLS and authenticate — without sending anything. */

@@ -25,6 +25,8 @@ import {
   type MicrosoftCredentials,
 } from "@/lib/integrations/microsoft-refresh";
 import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
+import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
+import { withPinnedOdooFetch } from "@/lib/integrations/odoo-pin";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -61,14 +63,22 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       const parsed = odooCredentialsSchema.safeParse(decrypted);
       if (parsed.success) {
         const creds = parsed.data;
+        // Connects to the address the guard classifies here, not to the name:
+        // the destination check above and this login are two lookups otherwise.
+        const target = await resolveExternalUrlTarget(creds.url);
+        if (!target.valid) {
+          return NextResponse.json({ success: false, error: target.error }, { status: 200 });
+        }
         let uid: number;
         try {
-          uid = await authenticateOdoo({
-            url: creds.url,
-            db: creds.db,
-            login: creds.login,
-            apiKey: creds.apiKey,
-          });
+          uid = await withPinnedOdooFetch(target.url, target.target, () =>
+            authenticateOdoo({
+              url: creds.url,
+              db: creds.db,
+              login: creds.login,
+              apiKey: creds.apiKey,
+            })
+          );
         } catch (err) {
           // Odoo refusing the login: re-thrown with a message fit for the
           // admin, which the catch below shows and records as the auth-failure

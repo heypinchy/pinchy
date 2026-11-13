@@ -10,7 +10,8 @@ import {
 } from "@/lib/integrations/imap-probe";
 import { imapTestSchema } from "@/lib/schemas/imap";
 import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
-import { checkStoredDestination } from "@/lib/integrations/stored-destination";
+import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
+import { withPinnedOdooFetch } from "@/lib/integrations/odoo-pin";
 import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
 
 /**
@@ -47,36 +48,13 @@ export async function probeIntegrationCredentials(
     // that only changes the API key merges it with the stored URL), so it is
     // checked here, before authenticate sends the key to it. The imap branch
     // gets the same from testImapLogin/testSmtpVerify, which run the guard.
-    const destination = await checkStoredDestination("odoo", credentials);
-    if (!destination.allowed) {
-      return { success: false, transient: true, reason: destination.message };
+    // Resolved once: the answer that is classified here is the address every
+    // call below connects to, instead of a second lookup by name.
+    const destination = await resolveExternalUrlTarget(parsed.data.url);
+    if (!destination.valid) {
+      return { success: false, transient: true, reason: destination.error };
     }
-
-    // Re-authenticate so we (a) verify the login/apiKey actually work and
-    // (b) refresh the stored uid in case the login changed. Without this
-    // step, a wrong login or apiKey would surface as the opaque "Could not
-    // access any Odoo models" error from the model probe below — because
-    // the probe runs with a stale uid against the new key.
-    let uid: number;
-    try {
-      uid = await authenticateOdoo({
-        url: parsed.data.url,
-        db: parsed.data.db,
-        login: parsed.data.login,
-        apiKey: parsed.data.apiKey,
-      });
-    } catch (err) {
-      return describeOdooAuthenticateFailure(err);
-    }
-
-    const result = await fetchOdooSchema({ ...parsed.data, uid });
-    // Only an access denial says something about these credentials; any other
-    // schema failure (every model refused alike by a proxy, Odoo unreachable)
-    // must not flag the connection auth_failed.
-    if (!result.success) {
-      return { success: false, reason: result.error, transient: !result.isAuthError };
-    }
-    return { success: true, freshCredentials: { uid } };
+    return withPinnedOdooFetch(destination.url, destination.target, () => probeOdoo(parsed.data));
   }
 
   if (type === "web-search") {
@@ -150,4 +128,35 @@ export async function probeIntegrationCredentials(
   }
 
   return { success: false, reason: `Cannot probe credentials for unknown type: ${type}` };
+}
+
+type OdooCredentials = NonNullable<ReturnType<typeof odooCredentialsSchema.safeParse>["data"]>;
+
+/** The Odoo probe proper. Runs inside `withPinnedOdooFetch`. */
+async function probeOdoo(parsedData: OdooCredentials): Promise<ProbeResult> {
+  // Re-authenticate so we (a) verify the login/apiKey actually work and
+  // (b) refresh the stored uid in case the login changed. Without this
+  // step, a wrong login or apiKey would surface as the opaque "Could not
+  // access any Odoo models" error from the model probe below — because
+  // the probe runs with a stale uid against the new key.
+  let uid: number;
+  try {
+    uid = await authenticateOdoo({
+      url: parsedData.url,
+      db: parsedData.db,
+      login: parsedData.login,
+      apiKey: parsedData.apiKey,
+    });
+  } catch (err) {
+    return describeOdooAuthenticateFailure(err);
+  }
+
+  const result = await fetchOdooSchema({ ...parsedData, uid });
+  // Only an access denial says something about these credentials; any other
+  // schema failure (every model refused alike by a proxy, Odoo unreachable)
+  // must not flag the connection auth_failed.
+  if (!result.success) {
+    return { success: false, reason: result.error, transient: !result.isAuthError };
+  }
+  return { success: true, freshCredentials: { uid } };
 }
