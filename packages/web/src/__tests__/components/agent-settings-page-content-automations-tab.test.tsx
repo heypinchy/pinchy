@@ -58,6 +58,7 @@ vi.mock("@/components/agent-settings-automations", () => ({
   AgentSettingsAutomations: () => <div data-testid="agent-settings-automations" />,
 }));
 
+import { jsonResponse } from "@/test-helpers/fetch";
 import { AgentSettingsPageContent } from "@/components/agent-settings-page-content";
 
 const baseAgent = {
@@ -76,9 +77,9 @@ const baseAgent = {
 function mockFetchReturning(agent: object) {
   global.fetch = vi.fn().mockImplementation((url: unknown) => {
     if (url === "/api/agents/agent-1") {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(agent) });
+      return Promise.resolve(jsonResponse(agent));
     }
-    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    return Promise.resolve(jsonResponse({}));
   }) as unknown as typeof fetch;
 }
 

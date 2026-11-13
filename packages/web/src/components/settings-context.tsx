@@ -38,25 +38,63 @@ function readErrorMessage(e: unknown): string {
 }
 
 interface SettingsContextProps {
-  userContext: string;
-  orgContext: string;
+  /** `null` until the context has loaded. */
+  userContext: string | null;
+  orgContext: string | null;
+  /** The load failed, so there is no stored context to edit. */
+  userContextFailed?: boolean;
+  orgContextFailed?: boolean;
   isAdmin: boolean;
   onDirtyChange?: (isDirty: boolean) => void;
 }
 
+interface ContextSectionProps {
+  title: string;
+  explanation: string;
+  apiUrl: string;
+  onDirtyChange?: (isDirty: boolean) => void;
+}
+
+/**
+ * The editor appears only once its context has loaded. An editor shown before
+ * that, or after a failed load, starts empty, and its Save replaces the stored
+ * context with that emptiness.
+ */
 function ContextSection({
+  initialContent,
+  loadFailed,
+  ...props
+}: ContextSectionProps & { initialContent: string | null; loadFailed?: boolean }) {
+  if (initialContent !== null && !loadFailed) {
+    return <ContextEditor {...props} initialContent={initialContent} />;
+  }
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{props.title}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">{props.explanation}</p>
+        {loadFailed ? (
+          <p role="alert" className="text-sm text-red-600">
+            We couldn&apos;t load this context, so we&apos;re not showing the editor: saving it
+            empty would replace what&apos;s stored. Reload the page to try again.
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ContextEditor({
   title,
   explanation,
   initialContent,
   apiUrl,
   onDirtyChange,
-}: {
-  title: string;
-  explanation: string;
-  initialContent: string;
-  apiUrl: string;
-  onDirtyChange?: (isDirty: boolean) => void;
-}) {
+}: ContextSectionProps & { initialContent: string }) {
   const [content, setContent] = useState(initialContent);
   const [savedContent, setSavedContent] = useState(initialContent);
   const [saving, setSaving] = useState(false);
@@ -148,6 +186,8 @@ function ContextSection({
 export function SettingsContext({
   userContext,
   orgContext,
+  userContextFailed,
+  orgContextFailed,
   isAdmin,
   onDirtyChange,
 }: SettingsContextProps) {
@@ -164,6 +204,7 @@ export function SettingsContext({
         title="Your Context"
         explanation="This is context about you — your role, preferences, and how you work. It's applied to your personal assistant."
         initialContent={userContext}
+        loadFailed={userContextFailed}
         apiUrl="/api/users/me/context"
         onDirtyChange={setUserSectionDirty}
       />
@@ -173,6 +214,7 @@ export function SettingsContext({
           title="Organization Context"
           explanation="This is context about your organization — team structure, conventions, and domain knowledge. It's applied to all shared agents."
           initialContent={orgContext}
+          loadFailed={orgContextFailed}
           apiUrl="/api/settings/context"
           onDirtyChange={setOrgSectionDirty}
         />

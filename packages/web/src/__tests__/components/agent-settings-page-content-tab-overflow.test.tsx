@@ -42,6 +42,7 @@ vi.mock("@/components/agent-settings-automations", () => ({
   AgentSettingsAutomations: () => <div />,
 }));
 
+import { jsonResponse } from "@/test-helpers/fetch";
 import { AgentSettingsPageContent } from "@/components/agent-settings-page-content";
 
 const agent = {
@@ -70,12 +71,11 @@ describe("AgentSettingsPageContent — tab bar overflow (#1400)", () => {
       data: { user: { id: "admin-1", role: "admin" } },
       isPending: false,
     });
-    global.fetch = vi.fn().mockImplementation((url: unknown) =>
-      Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve(url === "/api/agents/agent-1" ? agent : {}),
-      })
-    ) as unknown as typeof fetch;
+    global.fetch = vi
+      .fn()
+      .mockImplementation((url: unknown) =>
+        Promise.resolve(jsonResponse(url === "/api/agents/agent-1" ? agent : {}))
+      ) as unknown as typeof fetch;
   });
 
   afterEach(() => {

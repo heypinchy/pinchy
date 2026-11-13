@@ -43,6 +43,7 @@ vi.mock("@/components/agent-settings-automations", () => ({
   AgentSettingsAutomations: () => <div />,
 }));
 
+import { jsonResponse } from "@/test-helpers/fetch";
 import { AgentSettingsPageContent } from "@/components/agent-settings-page-content";
 import { stashInstructionDraft } from "@/lib/instruction-handoff";
 
@@ -51,28 +52,26 @@ const SAVED = "Answer in English.";
 function mockFetch() {
   global.fetch = vi.fn().mockImplementation((url: unknown) => {
     if (url === "/api/agents/agent-1") {
-      return Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            id: "agent-1",
-            name: "Smithers",
-            model: "anthropic/claude-haiku-4-5-20251001",
-            allowedTools: [],
-            pluginConfig: null,
-            tagline: null,
-            avatarSeed: null,
-            personalityPresetId: null,
-            visibility: "restricted",
-            groupIds: [],
-            isPersonal: true,
-          }),
-      });
+      return Promise.resolve(
+        jsonResponse({
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          pluginConfig: null,
+          tagline: null,
+          avatarSeed: null,
+          personalityPresetId: null,
+          visibility: "restricted",
+          groupIds: [],
+          isPersonal: true,
+        })
+      );
     }
     if (url === "/api/agents/agent-1/files/AGENTS.md") {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ content: SAVED }) });
+      return Promise.resolve(jsonResponse({ content: SAVED }));
     }
-    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    return Promise.resolve(jsonResponse({}));
   }) as unknown as typeof fetch;
 }
 

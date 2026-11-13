@@ -1324,4 +1324,129 @@ describe("SettingsUsers", () => {
       expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
     });
   });
+
+  // The list loads from an effect that awaits nothing. Before it caught, a
+  // network failure rendered an empty user table, and a 500 on the invites did
+  // the same to pending invites — both read as "nobody is here".
+  describe("load failure", () => {
+    function stubLoads(respond: (url: string, signal?: AbortSignal) => Promise<Response> | null) {
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const custom = respond(url, init?.signal ?? undefined);
+        if (custom) return custom;
+        if (url === "/api/users") return jsonResponse({ users: mockUsers });
+        if (url === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (url === "/api/groups") return jsonResponse([]);
+        return jsonResponse({ enterprise: false, maxUsers: 0, seatsUsed: 0 });
+      });
+    }
+
+    it.each([
+      [
+        "the users load rejects",
+        "/api/users",
+        () => Promise.reject(new TypeError("Failed to fetch")),
+      ],
+      ["the users load answers 500", "/api/users", async () => jsonResponse({}, { status: 500 })],
+      [
+        "the invites load answers 500",
+        "/api/users/invites",
+        async () => jsonResponse({}, { status: 500 }),
+      ],
+    ])("says the users could not be loaded when %s", async (_label, failing, response) => {
+      stubLoads((url) => (url === failing ? response() : null));
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      // The tab loads in the background, so a toast is gone before anyone
+      // opens it: the failure stands where the list would be.
+      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load the user list/i);
+      expect(screen.queryByRole("table")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Invite User" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/loading/i)).not.toBeInTheDocument();
+      expect(mockToast.error).not.toHaveBeenCalledWith("Failed to load users");
+    });
+
+    // Refreshing the groups when the sheet opens must not drop the ones the
+    // list already loaded: the sheet hides its groups section when it has none.
+    it("keeps the loaded groups when the sheet's refresh of them fails", async () => {
+      const user = userEvent.setup();
+      stubLoads((url) =>
+        url === "/api/groups"
+          ? Promise.resolve(jsonResponse([{ id: "g1", name: "Engineering" }]))
+          : url === "/api/enterprise/status"
+            ? Promise.resolve(jsonResponse({ enterprise: true }))
+            : null
+      );
+      render(<SettingsUsers currentUserId="user-1" />);
+      await waitFor(() => expect(screen.getAllByText("Bob User").length).toBeGreaterThan(0));
+
+      stubLoads((url) =>
+        url === "/api/groups"
+          ? Promise.resolve(jsonResponse({}, { status: 500 }))
+          : url === "/api/enterprise/status"
+            ? Promise.resolve(jsonResponse({ enterprise: true }))
+            : null
+      );
+      await user.click(within(screen.getByRole("table")).getByText("Bob User"));
+
+      expect(await screen.findByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+    });
+
+    // A refresh of the list (after a save in the open sheet, or a refreshKey
+    // bump) that loses the groups must not hide the sheet's group checkboxes.
+    it("keeps the loaded groups when a refresh of the list fails to load them", async () => {
+      const user = userEvent.setup();
+      stubLoads((url) =>
+        url === "/api/groups"
+          ? Promise.resolve(jsonResponse([{ id: "g1", name: "Engineering" }]))
+          : url === "/api/enterprise/status"
+            ? Promise.resolve(jsonResponse({ enterprise: true }))
+            : null
+      );
+      const { rerender } = render(<SettingsUsers currentUserId="user-1" refreshKey={0} />);
+      await waitFor(() => expect(screen.getAllByText("Bob User").length).toBeGreaterThan(0));
+      await user.click(within(screen.getByRole("table")).getByText("Bob User"));
+      expect(await screen.findByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+
+      // The refreshed list renames Bob, so the test can see the refresh land.
+      const renamed = mockUsers.map((u) =>
+        u.name === "Bob User" ? { ...u, name: "Bob Refreshed" } : u
+      );
+      stubLoads((url) => {
+        if (url === "/api/groups") return Promise.resolve(jsonResponse({}, { status: 500 }));
+        if (url === "/api/users") return Promise.resolve(jsonResponse({ users: renamed }));
+        return url === "/api/enterprise/status"
+          ? Promise.resolve(jsonResponse({ enterprise: true }))
+          : null;
+      });
+      rerender(<SettingsUsers currentUserId="user-1" refreshKey={1} />);
+
+      // The open sheet hides the table from role queries; text queries still see it.
+      await waitFor(() => expect(screen.getAllByText("Bob Refreshed").length).toBeGreaterThan(0));
+      expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+    });
+
+    it("cancels the load and says nothing when it unmounts mid-flight", async () => {
+      const signals: (AbortSignal | undefined)[] = [];
+      stubLoads((url, signal) => {
+        if (url !== "/api/users" && url !== "/api/users/invites") return null;
+        signals.push(signal);
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError"))
+          );
+        });
+      });
+      const { unmount } = render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => expect(signals).toHaveLength(2));
+      unmount();
+
+      expect(signals.every((signal) => signal?.aborted)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockToast.error).not.toHaveBeenCalledWith("Failed to load users");
+    });
+  });
 });

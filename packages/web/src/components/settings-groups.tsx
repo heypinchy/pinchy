@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +35,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import {
+  apiGet,
   apiPost,
   apiPatch,
   apiPut,
@@ -75,6 +76,9 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
   const [groups, setGroups] = useState<Group[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
+  // The first load failed, so the list on screen would be a false "no groups".
+  const [loadFailed, setLoadFailed] = useState(false);
+  const loaded = useRef(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [editGroup, setEditGroup] = useState<Group | null>(null);
   const [deleteGroupId, setDeleteGroupId] = useState<string | null>(null);
@@ -91,35 +95,46 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
   // before each save attempt so stale errors never linger.
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const fetchData = useCallback(async () => {
+  // `signal` is passed by the effect, which aborts it on cleanup. The refreshes
+  // after a mutation pass none: they run to completion like the mutation did.
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [groupsRes, usersRes] = await Promise.all([fetch("/api/groups"), fetch("/api/users")]);
-      if (groupsRes.ok) {
-        setGroups(await groupsRes.json());
-      }
-      if (usersRes.ok) {
-        const data = await usersRes.json();
-        setUsers(data.users);
-      }
+      const [groupsData, usersData] = await Promise.all([
+        apiGet<Group[]>("/api/groups", { signal }),
+        apiGet<{ users: User[] }>("/api/users", { signal }),
+      ]);
+      if (signal?.aborted) return;
+      setGroups(groupsData);
+      setUsers(usersData.users);
+      loaded.current = true;
+      setLoadFailed(false);
+    } catch (err) {
+      // Classify on the signal alone: an abort's error is not reliably an
+      // AbortError (see audit-log-table.tsx).
+      if (signal?.aborted) return;
+      // The tab is mounted in the background, so a toast about the first load
+      // is gone before anyone opens it: that one stands where the list would.
+      // A failed refresh leaves the loaded list up and says so in a toast.
+      if (loaded.current) toast.error(errorMessage(err, "Failed to load groups"));
+      else setLoadFailed(true);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     if (isEnterprise) {
       void Promise.resolve().then(() => {
-        if (!cancelled) void fetchData();
+        if (!signal.aborted) void fetchData(signal);
       });
     } else if (isEnterprise === false) {
       void Promise.resolve().then(() => {
-        if (!cancelled) setLoading(false);
+        if (!signal.aborted) setLoading(false);
       });
     }
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [isEnterprise, fetchData]);
 
   function openCreateDialog() {
@@ -134,17 +149,14 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
     setFormName(group.name);
     setFormDescription(group.description || "");
     setFieldErrors({});
-    // Fetch current members for this group
+    // A dialog opened with no members checked would save that and remove
+    // every member, so it opens only once the current members are known.
     try {
-      const res = await fetch(`/api/groups/${group.id}/members`);
-      if (res.ok) {
-        const members: GroupMember[] = await res.json();
-        setFormMemberIds(members.map((m) => m.userId));
-      } else {
-        setFormMemberIds([]);
-      }
-    } catch {
-      setFormMemberIds([]);
+      const members = await apiGet<GroupMember[]>(`/api/groups/${group.id}/members`);
+      setFormMemberIds(members.map((m) => m.userId));
+    } catch (err) {
+      toast.error(errorMessage(err, "Couldn't load this group's members. Please try again."));
+      return;
     }
     setEditGroup(group);
   }
@@ -322,10 +334,14 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Groups</CardTitle>
-          <Button onClick={openCreateDialog}>New Group</Button>
+          {!loadFailed && <Button onClick={openCreateDialog}>New Group</Button>}
         </CardHeader>
         <CardContent>
-          {groups.length === 0 ? (
+          {loadFailed ? (
+            <p role="alert" className="text-sm text-red-600">
+              We couldn&apos;t load your groups. Reload the page to try again.
+            </p>
+          ) : groups.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No groups yet. Create one to get started.
             </p>

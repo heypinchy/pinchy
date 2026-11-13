@@ -77,6 +77,7 @@ vi.mock("@/components/agent-settings-diagnostics", () => ({
 }));
 vi.mock("@/components/agent-telegram-settings", () => ({ AgentTelegramSettings: () => <div /> }));
 
+import { jsonResponse } from "@/test-helpers/fetch";
 import { AgentSettingsPageContent } from "@/components/agent-settings-page-content";
 
 const agent = {
@@ -99,19 +100,15 @@ function mockFetch({ integrationsStatus = 200 } = {}) {
   fetchMock.mockImplementation((url: unknown, init?: { method?: string }) => {
     const path = String(url);
     if (path.endsWith("/api/integrations") && integrationsStatus !== 200) {
-      return Promise.resolve({
-        ok: false,
-        status: integrationsStatus,
-        json: () => Promise.resolve({ error: "boom" }),
-      });
+      return Promise.resolve(jsonResponse({ error: "boom" }, { status: integrationsStatus }));
     }
     if (init?.method && init.method !== "GET") {
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+      return Promise.resolve(jsonResponse({}));
     }
     if (path.endsWith("/api/agents/agent-1")) {
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(agent) });
+      return Promise.resolve(jsonResponse(agent));
     }
-    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+    return Promise.resolve(jsonResponse([]));
   });
   global.fetch = fetchMock;
 }
@@ -183,6 +180,33 @@ describe("agent settings save — integration grants that were never loaded (#12
 
     await screen.findByRole("button", { name: "change permissions", hidden: true });
     expect(receivedConnections).toBeNull();
+  });
+
+  // The reload after a save is a refresh: a list that loaded once does not
+  // become "unknown" because the second GET failed.
+  it("keeps the loaded connection list when the reload after a save fails it", async () => {
+    const loaded = [{ id: "c1", type: "odoo", name: "Odoo" }];
+    let integrationGets = 0;
+    const inner = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: unknown, init?: { method?: string }) => {
+      if (String(url).endsWith("/api/integrations") && init?.method === "GET") {
+        integrationGets += 1;
+        return Promise.resolve(
+          integrationGets === 1
+            ? jsonResponse(loaded)
+            : jsonResponse({ error: "boom" }, { status: 500 })
+        );
+      }
+      return inner(url, init);
+    });
+    render(<AgentSettingsPageContent />);
+    await waitFor(() => expect(receivedConnections).toEqual(loaded));
+
+    await save();
+
+    await waitFor(() => expect(integrationGets).toBe(2));
+    await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
+    expect(receivedConnections).toEqual(loaded);
   });
 
   it("hands the permissions tab the loaded connection list", async () => {

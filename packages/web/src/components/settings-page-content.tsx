@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
 import { useTabParam, SETTINGS_TABS, type SettingsTab } from "@/hooks/use-tab-param";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -27,6 +28,7 @@ import { SecretsProvenanceCard } from "@/components/secrets-provenance-card";
 import { SettingsSupport } from "@/components/settings-support";
 import { useIntegrationHealth } from "@/hooks/use-integration-health";
 import type { LicenseInfo } from "@/lib/enterprise";
+import { apiGet } from "@/lib/api-client";
 
 interface ProviderStatus {
   defaultProvider: string | null;
@@ -116,8 +118,13 @@ export function SettingsPageContent({
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [userContext, setUserContext] = useState("");
-  const [orgContext, setOrgContext] = useState("");
+  const [statusFailed, setStatusFailed] = useState(false);
+  // `null` until loaded: the context editors wait for their content (see
+  // settings-context.tsx for why an early editor is a data-loss risk).
+  const [userContext, setUserContext] = useState<string | null>(null);
+  const [userContextFailed, setUserContextFailed] = useState(false);
+  const [orgContext, setOrgContext] = useState<string | null>(null);
+  const [orgContextFailed, setOrgContextFailed] = useState(false);
   // Bumped when the org timezone is saved, so the nightly-reindex card re-reads
   // the times it shows in that zone.
   const [timezoneVersion, setTimezoneVersion] = useState(0);
@@ -131,47 +138,62 @@ export function SettingsPageContent({
     setEnterpriseRefreshKey((k) => k + 1);
   }, []);
 
-  const fetchStatus = useCallback(async () => {
+  // Each first load reports a failure inline, where its card would be, instead
+  // of a toast: a failed one replaces the form it backs (agent-rules/ui.md, one
+  // channel per error). `signal` comes from the mount effect, which aborts it
+  // on cleanup; the refresh after a provider save passes none, and its failure
+  // is a toast over the form that is already there.
+  const fetchStatus = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/settings/providers");
-      if (res.ok) {
-        const data = await res.json();
-        setStatus(data);
-      }
+      const data = await apiGet<ProviderStatus>("/api/settings/providers", { signal });
+      if (signal?.aborted) return;
+      setStatus(data);
+      setStatusFailed(false);
+    } catch {
+      // Classify on the signal alone: an abort's error is not reliably an
+      // AbortError (see audit-log-table.tsx).
+      if (signal?.aborted) return;
+      // The refresh after a save keeps the form the admin just used.
+      if (signal) setStatusFailed(true);
+      else
+        toast.error(
+          "We couldn't refresh your provider settings. Reload the page to see the latest."
+        );
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
-  const fetchContext = useCallback(async () => {
-    const userRes = await fetch("/api/users/me/context");
-    if (userRes.ok) {
-      const data = await userRes.json();
-      setUserContext(data.content || "");
+  const fetchContext = useCallback(async (signal: AbortSignal) => {
+    try {
+      const data = await apiGet<{ content?: string }>("/api/users/me/context", { signal });
+      if (!signal.aborted) setUserContext(data.content || "");
+    } catch {
+      if (!signal.aborted) setUserContextFailed(true);
     }
   }, []);
 
-  const fetchOrgContext = useCallback(async () => {
-    const orgRes = await fetch("/api/settings/context");
-    if (orgRes.ok) {
-      const data = await orgRes.json();
-      setOrgContext(data.content || "");
+  const fetchOrgContext = useCallback(async (signal: AbortSignal) => {
+    try {
+      const data = await apiGet<{ content?: string }>("/api/settings/context", { signal });
+      if (!signal.aborted) setOrgContext(data.content || "");
+    } catch {
+      if (!signal.aborted) setOrgContextFailed(true);
     }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     void Promise.resolve().then(() => {
-      if (cancelled) return;
+      if (signal.aborted) return;
       if (isAdmin) {
-        void fetchStatus();
-        void fetchOrgContext();
+        void fetchStatus(signal);
+        void fetchOrgContext(signal);
       }
-      void fetchContext();
+      void fetchContext(signal);
     });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [isAdmin, fetchStatus, fetchContext, fetchOrgContext]);
 
   const handleProviderDirtyChange = useCallback((isDirty: boolean) => {
@@ -278,6 +300,8 @@ export function SettingsPageContent({
               <SettingsContext
                 userContext={userContext}
                 orgContext={orgContext}
+                userContextFailed={userContextFailed}
+                orgContextFailed={orgContextFailed}
                 isAdmin={isAdmin}
                 onDirtyChange={handleContextDirtyChange}
               />
@@ -308,9 +332,16 @@ export function SettingsPageContent({
                     <CardContent>
                       {loading ? (
                         <p>Loading...</p>
+                      ) : statusFailed ? (
+                        // Without the status the form cannot say which
+                        // providers are set up or which one is the default.
+                        <p role="alert" className="text-sm text-red-600">
+                          We couldn&apos;t load your provider settings. Reload the page to try
+                          again.
+                        </p>
                       ) : (
                         <ProviderKeyForm
-                          onSuccess={fetchStatus}
+                          onSuccess={() => void fetchStatus()}
                           submitLabel="Save"
                           configuredProviders={status?.providers}
                           defaultProvider={status?.defaultProvider}
