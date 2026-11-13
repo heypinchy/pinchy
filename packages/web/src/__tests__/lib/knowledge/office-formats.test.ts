@@ -11,13 +11,20 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  CONVERTED_EXTENSIONS,
+  convertedExtensionOf,
   convertedPdfName,
+  isLegacyWorkbook,
   isOfficeFile,
   isPresentationFile,
   isSpreadsheetFile,
+  isMsgFile,
   isScanFile,
+  isShownAsConvertedPdf,
   isTextFile,
   isWordFile,
+  MSG_EXTENSIONS,
+  needsConversion,
   OFFICE_EXTENSIONS,
   PRESENTATION_EXTENSIONS,
   SCAN_EXTENSIONS,
@@ -89,10 +96,16 @@ describe("isSpreadsheetFile", () => {
     expect(isSpreadsheetFile("/data/archive-2012/Liste.XlSm")).toBe(true);
   });
 
-  it("leaves out the formats the extractor cannot open", () => {
-    // `.xls` is BIFF, not OOXML: `workbook.xlsx.readFile` does not parse it,
-    // and a `.csv` has no sheet to anchor half the citation on.
-    expect(isSpreadsheetFile("/data/legacy/Preise.xls")).toBe(false);
+  it("counts a legacy BIFF workbook as a spreadsheet, whatever the case (#1373)", () => {
+    // `.xls` is read through its converted `.xlsx` (see `isLegacyWorkbook`),
+    // but what it IS does not change: cited by sheet and rows, shown in the
+    // sheet pane, admitted by discovery.
+    expect(isSpreadsheetFile("/data/legacy/Preise.xls")).toBe(true);
+    expect(isSpreadsheetFile("/data/legacy/PREISE.XLS")).toBe(true);
+  });
+
+  it("leaves out a format with no sheet to anchor on", () => {
+    // A `.csv` has no sheet to anchor half the citation on.
     expect(isSpreadsheetFile("/data/export.csv")).toBe(false);
   });
 
@@ -139,7 +152,74 @@ describe("the two halves of OFFICE_EXTENSIONS", () => {
   });
 });
 
-describe("isScanFile and isTextFile (#1409)", () => {
+describe("legacy workbooks (#1373)", () => {
+  it("are the one spreadsheet format that is converted before it is read", () => {
+    // exceljs parses OOXML only, so a BIFF `.xls` is turned into `.xlsx` by the
+    // same converter that turns a `.doc` into a PDF, and then read like any
+    // other workbook.
+    expect(isLegacyWorkbook("/data/legacy/Preise.xls")).toBe(true);
+    expect(isLegacyWorkbook("/data/legacy/PREISE.XLS")).toBe(true);
+    expect(isLegacyWorkbook("/data/Preise.xlsx")).toBe(false);
+    expect(isLegacyWorkbook("/data/Makros.xlsm")).toBe(false);
+    expect(isLegacyWorkbook("/data/.xls")).toBe(false);
+    expect(isLegacyWorkbook("/data/2019.xls/report.pdf")).toBe(false);
+  });
+
+  it("are not page-shaped Office documents", () => {
+    // OFFICE_EXTENSIONS is what gets a converted PDF, a second download and a
+    // page or heading anchor. A workbook gets none of those.
+    expect(isOfficeFile("/data/legacy/Preise.xls")).toBe(false);
+  });
+});
+
+describe("CONVERTED_EXTENSIONS", () => {
+  it("is every format the converter takes, and nothing it does not", () => {
+    // The converter's queue, the sidecar's input check and the artifact
+    // version a row records all read this one list: a format the converter
+    // takes but one of them leaves out is converted and then never asked for.
+    expect([...CONVERTED_EXTENSIONS].sort()).toEqual([...OFFICE_EXTENSIONS, ".xls"].sort());
+    for (const ext of CONVERTED_EXTENSIONS) {
+      expect(needsConversion(`/data/report${ext.toUpperCase()}`)).toBe(true);
+    }
+    for (const ext of SPREADSHEET_EXTENSIONS.filter((e) => e !== ".xls")) {
+      expect(needsConversion(`/data/report${ext}`)).toBe(false);
+    }
+    expect(needsConversion("/data/report.pdf")).toBe(false);
+  });
+
+  it("knows what each format is converted INTO", () => {
+    // A page-shaped document becomes a PDF; a legacy workbook becomes the OOXML
+    // workbook the spreadsheet reader opens — never a PDF, whose page breaks
+    // no citation could point at.
+    expect(convertedExtensionOf("/data/Angebot.DOC")).toBe(".pdf");
+    expect(convertedExtensionOf("/data/Schulung.pptx")).toBe(".pdf");
+    expect(convertedExtensionOf("/data/legacy/Preise.XLS")).toBe(".xlsx");
+  });
+
+  it("refuses to name a target for a format the converter does not take", () => {
+    expect(() => convertedExtensionOf("/data/Preise.xlsx")).toThrow();
+    expect(() => convertedExtensionOf("/data/report.pdf")).toThrow();
+  });
+});
+
+describe("isShownAsConvertedPdf", () => {
+  // One answer for the route that serves the PDF and the viewer that names
+  // its url after it. Two predicates would drift, and a drift is a viewer url
+  // the route refuses — which the citation dialog reads as "no preview".
+  it("is true for every Office format and every scan", () => {
+    for (const ext of [...OFFICE_EXTENSIONS, ...SCAN_EXTENSIONS]) {
+      expect(isShownAsConvertedPdf(`dir/file${ext}`)).toBe(true);
+    }
+  });
+
+  it("is false for a PDF, a spreadsheet and a legacy workbook", () => {
+    for (const path of ["a.pdf", "b.xlsx", "c.xlsm", "d.xls", "e.txt"]) {
+      expect(isShownAsConvertedPdf(path)).toBe(false);
+    }
+  });
+});
+
+describe("isScanFile, isTextFile and isMsgFile (#1409)", () => {
   it("recognises a scanned TIFF under either spelling, whatever the case", () => {
     expect(isScanFile("/data/plates/Typenschild.tif")).toBe(true);
     expect(isScanFile("/data/plates/Typenschild.TIFF")).toBe(true);
@@ -153,6 +233,12 @@ describe("isScanFile and isTextFile (#1409)", () => {
     expect(isTextFile("/data/.txt")).toBe(false);
   });
 
+  it("recognises a saved Outlook message", () => {
+    expect(isMsgFile("/data/mail/Angebot.MSG")).toBe(true);
+    expect(isMsgFile("/data/mail/Angebot.eml")).toBe(false);
+    expect(isMsgFile("/data/.msg")).toBe(false);
+  });
+
   it("gives every readable extension exactly one reader", () => {
     // `readDocument` dispatches on these lists in turn. An extension in two of
     // them would take whichever branch is tested first, silently.
@@ -161,6 +247,7 @@ describe("isScanFile and isTextFile (#1409)", () => {
       ...SPREADSHEET_EXTENSIONS,
       ...SCAN_EXTENSIONS,
       ...TEXT_EXTENSIONS,
+      ...MSG_EXTENSIONS,
       ".pdf",
     ];
     expect(new Set(all).size).toBe(all.length);

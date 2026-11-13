@@ -46,7 +46,7 @@
  * source path, because the artifact is not a file the reader has.
  */
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, extname, join, sep } from "node:path";
 
 import { and, count, eq, inArray, sql } from "drizzle-orm";
 
@@ -67,14 +67,19 @@ import { orderForIngest } from "./ingest-order";
 import type { QueuedFile } from "./folder-plan";
 import { buildPathFilter } from "./path-filter";
 import { recordUnsupportedFiles, unsupportedFileType } from "./unsupported-files";
+import { unsupportedFileKind } from "./unsupported-kind";
 import { chunkPages } from "./chunk";
 import { DEFAULT_BATCH_SIZE } from "./embeddings";
 import { detectLang } from "./lid";
 import { collectHeadingSections, headingLocatorAt } from "./heading-sections";
 import {
+  isLegacyWorkbook,
   isOfficeFile,
+  isOoxmlWordFile,
+  needsConversion,
   OfficeFileRejectedError,
   isPresentationFile,
+  isMsgFile,
   isScanFile,
   isSpreadsheetFile,
   isTextFile,
@@ -86,6 +91,7 @@ import { OFFICE_ARTIFACT_FORMAT_VERSION, SCAN_ARTIFACT_FORMAT_VERSION } from "./
 import type { ConversionOutcome, OfficeSource } from "./office-convert";
 import type { XlsxExtraction } from "./xlsx-extract";
 import { readTextFile } from "./text-extract";
+import { emailContextLine, formatEmailText, type ParsedEmail } from "./msg-extract";
 import { isContentRejection, toStorableLocator, toStorableText } from "./stored-text";
 import { databaseErrorBehind, systemicIngestError } from "./ingest-errors";
 import type { IngestPage, IngestResult } from "./types";
@@ -178,6 +184,34 @@ export interface IngestDeps {
    * one.
    */
   convertScan: (copyPath: string, contentHash: string) => Promise<ScanConversion>;
+  /**
+   * Reads a saved Outlook message into its headers and body (#1409). Prod:
+   * `readMsgIsolated`, the fenced reader child (kb-index-worker.ts) — the
+   * parser walks an untrusted Compound File.
+   *
+   * A refusal of the file (not a Compound File, too large, damaged) is an
+   * `OfficeFileRejectedError`; anything else is about the machine, and the
+   * file counts as failed. Required for the same reason `convertScan` is: once
+   * `DEFAULT_ALLOWED_EXTENSIONS` names `.msg`, every caller's ingest WILL meet
+   * one.
+   */
+  readEmail: (copyPath: string) => Promise<ParsedEmail>;
+  /**
+   * The text of a `.docx`, read straight from the source (#1406). Prod:
+   * `readDocxTextIsolated`, the fenced reader child — the same mammoth read,
+   * through the same guard, as the conversion's word-count oracle.
+   *
+   * Asked only when the converted PDF came out SHORT: the tripwire keeps that
+   * PDF out of the index and the viewer, and this text is what keeps the
+   * document searchable without it — no preview, so no locator either. A
+   * refusal of the file is an `OfficeFileRejectedError`; anything else is
+   * about the machine, and the file counts as failed.
+   *
+   * Required for the same reason `convertOffice` is: every deployment that
+   * holds Word files meets a short conversion sooner or later, and an optional
+   * reader would turn it back into a document nobody can find.
+   */
+  readDocxText: (copyPath: string) => Promise<string>;
   /**
    * The vision model `extractPdf` reads scanned pages with this run, or null
    * when it reads the text layer only (no vision model, or `PINCHY_KB_OCR=off`).
@@ -560,16 +594,17 @@ interface ExtractedDocument {
   /**
    * What read it, for the record of an empty read: OCR can change what a PDF
    * page yields, and nothing about a spreadsheet's hidden sheets, a document
-   * the converter could not convert, a scan whose bytes were refused, or a
-   * text file.
+   * the converter could not convert, a scan whose bytes were refused, a
+   * text file, or an Outlook message.
    */
-  reader: "pdf" | "sheets" | "converter" | "image" | "text";
+  reader: "pdf" | "sheets" | "converter" | "image" | "text" | "email";
 }
 
 /**
  * The artifact format version a document's chunks are read from: the current
- * one for an Office document the converter turns into a PDF, the scan store's
- * own for a TIFF, none for every other format.
+ * one for every format the converter turns into something else first (an
+ * Office document into a PDF, a legacy `.xls` into an `.xlsx`), the scan
+ * store's own for a TIFF, none for every other format.
  *
  * Recorded on the row (`kb_documents.artifact_format_version`) and compared on
  * every run, because the artifact store alone cannot carry a change of rules
@@ -579,9 +614,8 @@ interface ExtractedDocument {
  * from the current rules.
  */
 function artifactFormatVersionFor(absPath: string): number | null {
-  if (isOfficeFile(absPath)) return OFFICE_ARTIFACT_FORMAT_VERSION;
   if (isScanFile(absPath)) return SCAN_ARTIFACT_FORMAT_VERSION;
-  return null;
+  return needsConversion(absPath) ? OFFICE_ARTIFACT_FORMAT_VERSION : null;
 }
 
 /** The fields every page-shaped extraction derives from its pages alike. */
@@ -593,7 +627,8 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
 }
 
 /**
- * Hands out the converted PDF for an Office source, converting in batches as
+ * Hands out the converted artifact (a PDF, or an `.xlsx` for a legacy `.xls`)
+ * for a source the converter takes, converting in batches as
  * the queue reaches them.
  *
  * Lazy rather than a pre-pass over the whole corpus, and that is a progress
@@ -608,6 +643,12 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
  * is why the batch starts at the document that asked rather than at the head
  * of the queue — a skipped document never asks, so a batch cut from the front
  * would convert exactly what the run is about to leave alone.
+ *
+ * Nor does a document its own turn will skip join a later document's batch
+ * (`turnWillSkip`): an unchanged indexed document would cost a full verified
+ * copy, and a settled refusal — one the converter could not convert, read as
+ * often as it is owed — a LibreOffice run, on every run that converts anything,
+ * for an answer its turn never asks for.
  *
  * Every document in a batch is answered by that batch, including when the
  * converter rejects outright. One event, one answer: an unanswered document
@@ -632,9 +673,10 @@ function fromPages(pages: readonly IngestPage[]): Pick<ExtractedDocument, "text"
 function officeArtifacts(
   queue: readonly { absPath: string; realPath: string }[],
   deps: IngestDeps,
+  turnWillSkip: (file: { absPath: string; realPath: string }) => Promise<boolean>,
   batchSize = OFFICE_CONVERT_BATCH_SIZE
 ): ResolveArtifact {
-  const pending = queue.filter((file) => isOfficeFile(file.absPath));
+  const pending = queue.filter((file) => needsConversion(file.absPath));
   const positionOf = new Map(pending.map((file, i) => [file.absPath, i]));
   const done = new Map<string, { hash: string; outcome: ConversionOutcome }>();
 
@@ -660,15 +702,23 @@ function officeArtifacts(
     const copies: VerifiedCopy[] = [];
 
     try {
-      for (let i = start + 1; i < pending.length && batch.length < batchSize; i++) {
+      // The look-ahead is bounded by the window a full batch would span, not
+      // only by the batch: each mate looked at is read to learn whether its
+      // turn will skip it, and a scan that ran on until it found a batch's
+      // worth to read would hash the rest of an unchanged corpus here, inside
+      // this one document's turn.
+      let examined = 0;
+      for (let i = start + 1; i < pending.length && examined < batchSize - 1; i++) {
         const mate = pending[i];
         if (done.has(mate.absPath)) continue;
+        examined++;
         let copy;
         try {
+          if (await turnWillSkip(mate)) continue;
           copy = await copyVerifiedSource(mate.realPath, mate.absPath, deps.stagingDir);
         } catch {
-          // Refused, unreadable, or no room for the copy. Not answered: see
-          // the doc comment above.
+          // Refused, unreadable, no room for the copy, or its row could not
+          // be looked up. Not answered: see the doc comment above.
           continue;
         }
         copies.push(copy);
@@ -736,7 +786,8 @@ type ResolveArtifact = (
 
 /**
  * The server log's line for a file refused before anything was indexed from
- * it. The path is whatever name the file was given on the share, newlines
+ * it, or indexed without part of what it should have had (a .docx read from
+ * its own text, without a preview). The path is whatever name the file was given on the share, newlines
  * included, and a reason can quote the file or the file system — so neither is
  * printed as it stands: one refusal is one bounded line, and cannot pass for
  * another.
@@ -756,6 +807,8 @@ function logRefusal(absPath: string, verdict: string, reason: string): void {
  *   PDF           `chunkPages` on the page the text came from
  *   spreadsheet   `extractXlsx`, sheet + row range — `XlsxChunk` IS the
  *                 locator field-for-field, so that half is a spread
+ *   legacy `.xls` the `.xlsx` the converter made of it, read like any other
+ *                 workbook — exceljs cannot parse BIFF (#1373)
  *   presentation  the converted PDF, slide N = page N
  *   Word          the converted PDF's outline, heading path — never a page,
  *                 which the renderer decides and the reader's Word disagrees
@@ -763,6 +816,7 @@ function logRefusal(absPath: string, verdict: string, reason: string): void {
  *   TIFF scan     the PDF of its frames, through the PDF path: frame N =
  *                 page N
  *   plain text    no locator — it has no pages, so a citation opens the file
+ *   Outlook mail  no locator, like plain text; headers above the body
  *
  * `absPath` is the document's identity and decides the dispatch; `copyPath`
  * is what the readers open — a private copy of the verified bytes, so none of
@@ -802,32 +856,17 @@ async function readDocument(
     return extractOfficeDocument(absPath, copyPath, deps, resolveArtifact, contentHash);
   }
 
-  if (isSpreadsheetFile(absPath)) {
-    const extraction = await deps.extractXlsx(copyPath).catch((err: unknown) => {
-      if (!(err instanceof OfficeFileRejectedError)) throw err;
-      // Refused unread: too large to load (a compressed bomb is the case that
-      // matters), or not the workbook its name says (a broken archive, a
-      // number format exceljs would choke on). That is a verdict on THIS file,
-      // and a final one — retrying reads the same bytes — so it becomes a row
-      // with no chunks, which is exactly how the unreadable list
-      // (unsearchable.ts) finds it, with its reason in the server log.
-      logRefusal(absPath, "not read", err.message);
-      return null;
-    });
-    if (extraction === null) {
-      return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "sheets" };
+  if (isLegacyWorkbook(absPath)) {
+    const artifactPath = await convertedArtifact(absPath, copyPath, resolveArtifact, contentHash);
+    if (artifactPath === null) {
+      return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
     }
-    return {
-      chunks: extraction.chunks.map(({ text, sheet, startRow, endRow }) => ({
-        text,
-        locator: { kind: "sheet", sheet, startRow, endRow },
-      })),
-      pageCount: null,
-      text: extraction.chunks.map((chunk) => chunk.text).join("\n"),
-      incomplete: false,
-      reader: "sheets",
-    };
+    // The converted workbook is untrusted input like any other: the same
+    // reader, behind the same limits, refuses it the same way.
+    return readWorkbook(absPath, artifactPath, deps);
   }
+
+  if (isSpreadsheetFile(absPath)) return readWorkbook(absPath, copyPath, deps);
 
   if (isScanFile(absPath)) {
     return extractScan(absPath, copyPath, deps, contentHash);
@@ -835,6 +874,10 @@ async function readDocument(
 
   if (isTextFile(absPath)) {
     return extractTextFile(absPath, copyPath);
+  }
+
+  if (isMsgFile(absPath)) {
+    return extractEmail(absPath, copyPath, deps);
   }
 
   return readPdfPages(await deps.extractPdf(copyPath));
@@ -850,6 +893,43 @@ function readPdfPages(pages: IngestPage[]): ExtractedDocument {
     pageCount: pages.length,
     ...fromPages(pages),
     reader: "pdf",
+  };
+}
+
+/**
+ * Reads an OOXML workbook — the original, or the `.xlsx` the converter made of
+ * a legacy `.xls` — into chunks anchored on sheet and row range.
+ *
+ * `absPath` names the document in the log; `workbookPath` is what is opened.
+ */
+async function readWorkbook(
+  absPath: string,
+  workbookPath: string,
+  deps: IngestDeps
+): Promise<ExtractedDocument> {
+  const extraction = await deps.extractXlsx(workbookPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    // Refused unread: too large to load (a compressed bomb is the case that
+    // matters), or not the workbook its name says (a broken archive, a
+    // number format exceljs would choke on). That is a verdict on THIS file,
+    // and a final one — retrying reads the same bytes — so it becomes a row
+    // with no chunks, which is exactly how the unreadable list
+    // (unsearchable.ts) finds it, with its reason in the server log.
+    logRefusal(absPath, "not read", err.message);
+    return null;
+  });
+  if (extraction === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "sheets" };
+  }
+  return {
+    chunks: extraction.chunks.map(({ text, sheet, startRow, endRow }) => ({
+      text,
+      locator: { kind: "sheet", sheet, startRow, endRow },
+    })),
+    pageCount: null,
+    text: extraction.chunks.map((chunk) => chunk.text).join("\n"),
+    incomplete: false,
+    reader: "sheets",
   };
 }
 
@@ -912,6 +992,157 @@ async function extractTextFile(absPath: string, copyPath: string): Promise<Extra
 }
 
 /**
+ * The converter's artifact for a document, or `null` when the converter
+ * refused THIS document. Throws when the converter never got to judge it.
+ *
+ * - Unavailable (out of memory, timed out, binary missing): throwing keeps the
+ *   existing row and its chunks untouched and counts the file `failed`, so a
+ *   memory squeeze cannot brand a perfectly good document as permanently
+ *   unreadable (#936).
+ * - Refused: there is nothing to index. The caller returns an empty
+ *   extraction — rather than throwing — which gives it a row with no chunks,
+ *   exactly how the unreadable list finds it (unsearchable.ts). Incomplete
+ *   all the same: `failed` also covers causes that are not about the document
+ *   — a source briefly unreadable on a network share, LibreOffice exiting
+ *   without an artifact — so it is retried a few runs before it is taken as
+ *   final.
+ *
+ * The unreadable list never says why, and the admin-facing counts must not
+ * name paths, so the refusal log is the only place an operator learns which
+ * document was refused and for what — logged on every run that refuses it,
+ * not only the last. The reason holds no document text, but it can quote
+ * names read from the file and the file's own path, so `logRefusal` keeps it
+ * to one line.
+ */
+async function convertedArtifact(
+  absPath: string,
+  copyPath: string,
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
+): Promise<string | null> {
+  const outcome = await conversionOf(absPath, copyPath, resolveArtifact, contentHash);
+  if (outcome.status !== "converted" || !outcome.artifactPath) {
+    logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
+    return null;
+  }
+  return outcome.artifactPath;
+}
+
+/** The converter's answer for one document; throws when it never judged it (see above). */
+async function conversionOf(
+  absPath: string,
+  copyPath: string,
+  resolveArtifact: ResolveArtifact,
+  contentHash: string
+): Promise<ConversionOutcome> {
+  const outcome = await resolveArtifact(absPath, contentHash, copyPath);
+  if (outcome.status === "infrastructure") {
+    throw new Error(`office conversion unavailable: ${outcome.reason ?? "unknown"}`);
+  }
+  return outcome;
+}
+
+/**
+ * Whether a refused conversion leaves the source text to index (#1406): a
+ * `.docx` or `.docm` whose PDF came out SHORT against the word-count oracle.
+ *
+ * Short and nothing else, because only then has the reader child already read
+ * these bytes through its guard and found them whole — the oracle's count is
+ * that read, of the same private copy `readDocxText` gets here, not the
+ * sanitized one the converter got (`oracleInput`). A document refused before
+ * conversion (a bomb, HTML renamed `.docx`) or one LibreOffice could not load
+ * must not reach mammoth by a back door. `.doc` and `.ppt` have oracles too,
+ * but catdoc and catppt under-count and mangle the diacritics a search matches
+ * on: fit for a lower bound, not for the text a document is found by.
+ */
+function hasSourceTextFallback(absPath: string, outcome: ConversionOutcome): boolean {
+  return outcome.verification?.status === "short" && isOoxmlWordFile(absPath);
+}
+
+/**
+ * A `.docx` or `.docm` read straight from its source, after its PDF failed the tripwire
+ * (#1406). The tripwire is right to keep that PDF out of the index and the
+ * viewer — a third of the text may be missing from it — and wrong to leave the
+ * document with nothing. So it is indexed like a text file: no pages, no
+ * locator, and a citation names the file without a page-accurate preview.
+ *
+ * Final, like a converted document: the converter judged these bytes, and the
+ * next run would convert them to the same short PDF. A source the reader
+ * refuses as well is left as the refused conversion always was — no chunks,
+ * retried a few runs — with both causes in the log.
+ */
+async function extractDocxSourceText(
+  absPath: string,
+  copyPath: string,
+  deps: IngestDeps,
+  outcome: ConversionOutcome
+): Promise<ExtractedDocument> {
+  const reason = outcome.reason ?? "unknown";
+  const text = await deps.readDocxText(copyPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    logRefusal(absPath, "not converted", reason);
+    logRefusal(absPath, "not read from the .docx either", err.message);
+    return null;
+  });
+  if (text === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
+  }
+  logRefusal(
+    absPath,
+    `indexed from the ${extname(absPath).toLowerCase()} text, without a preview`,
+    reason
+  );
+  return {
+    chunks: chunkPages([{ page: 1, text }]).map((chunk) => ({ text: chunk.text, locator: null })),
+    pageCount: null,
+    text,
+    incomplete: false,
+    reader: "text",
+  };
+}
+
+/**
+ * Reads a saved Outlook message (#1409): a header block — subject, sender,
+ * recipients, date, attachment names — above the body (msg-extract.ts). Like
+ * a text file it has no pages, so its chunks carry no locator and the citation
+ * names the file. Every chunk after the first lost the header block, so it
+ * starts with one line naming the mail.
+ *
+ * Attachment contents are not read: a citation could not point inside the
+ * mail at them. Their names are in the header block, so a search for the file
+ * name still finds the mail.
+ */
+async function extractEmail(
+  absPath: string,
+  copyPath: string,
+  deps: IngestDeps
+): Promise<ExtractedDocument> {
+  const email = await deps.readEmail(copyPath).catch((err: unknown) => {
+    if (!(err instanceof OfficeFileRejectedError)) throw err;
+    logRefusal(absPath, "not read", err.message);
+    return null;
+  });
+  if (email === null) {
+    return { chunks: [], pageCount: null, text: "", incomplete: false, reader: "email" };
+  }
+  if (email.bodyTruncated) {
+    logRefusal(absPath, "body cut", "longer than an indexed mail body may be");
+  }
+  const text = formatEmailText(email);
+  const context = emailContextLine(email);
+  return {
+    chunks: chunkPages([{ page: 1, text }]).map((chunk, i) => ({
+      text: i === 0 ? chunk.text : `${context}\n${chunk.text}`,
+      locator: null,
+    })),
+    pageCount: null,
+    text,
+    incomplete: false,
+    reader: "email",
+  };
+}
+
+/**
  * Reads a page-shaped Office document through the PDF LibreOffice made of it.
  *
  * The identity stays the original: the chunks are written against the source
@@ -934,39 +1165,18 @@ async function extractOfficeDocument(
   resolveArtifact: ResolveArtifact,
   contentHash: string
 ): Promise<ExtractedDocument> {
-  const outcome = await resolveArtifact(absPath, contentHash, copyPath);
-
-  if (outcome.status === "infrastructure") {
-    // The converter never got to judge this document (out of memory, timed
-    // out, binary missing). Throwing keeps the existing row and its chunks
-    // untouched and counts the file `failed`, so a memory squeeze cannot brand
-    // a perfectly good document as permanently unreadable (#936).
-    throw new Error(`office conversion unavailable: ${outcome.reason ?? "unknown"}`);
-  }
-
+  const outcome = await conversionOf(absPath, copyPath, resolveArtifact, contentHash);
   if (outcome.status !== "converted" || !outcome.artifactPath) {
-    // A verdict about THIS document: it cannot be converted, so there is
-    // nothing to index. Returning an empty extraction — rather than throwing —
-    // is what gives it a row with no chunks, which is exactly how the
-    // unreadable list finds it (unsearchable.ts), with nothing to wire up.
-    //
-    // Incomplete all the same: `failed` also covers causes that are not about
-    // the document — a source briefly unreadable on a network share,
-    // LibreOffice exiting without a PDF — so it is retried a few runs before
-    // it is taken as final.
-    //
-    // The unreadable list never says why, and the admin-facing counts must not
-    // name paths, so this is the only place an operator learns which document
-    // was refused and for what — logged on every run that refuses it, not only
-    // the last. The reason holds no document text, but it can quote names read
-    // from the file and the file's own path, so `logRefusal` keeps it to one
-    // line.
+    if (hasSourceTextFallback(absPath, outcome)) {
+      return extractDocxSourceText(absPath, copyPath, deps, outcome);
+    }
     logRefusal(absPath, "not converted", outcome.reason ?? "unknown");
     return { chunks: [], pageCount: null, text: "", incomplete: true, reader: "converter" };
   }
+  const artifactPath = outcome.artifactPath;
 
   const word = isWordFile(absPath);
-  const pages = await deps.extractPdf(outcome.artifactPath, { outline: word });
+  const pages = await deps.extractPdf(artifactPath, { outline: word });
   const sections = word ? collectHeadingSections(pages) : [];
 
   return {
@@ -1196,6 +1406,79 @@ function couldReadDifferently(recorded: string, deps: IngestDeps): boolean {
 }
 
 /**
+ * Whether a document's row owes it another read even if the bytes on disk are
+ * the ones it records, or lets it be skipped. `ingestFile` asks once the hash
+ * has matched; `turnWillSkip` asks before hashing, since a row that owes a
+ * read owes it whatever the bytes are — so a batch of Office conversions never
+ * converts on the way a document its own turn will skip.
+ *
+ * `current` is whether the row's chunks came from the current artifact rules;
+ * `storedChunks` how many it has. Both are returned only when a read is owed.
+ */
+async function readOwed(
+  existing: typeof kbDocuments.$inferSelect,
+  absPath: string,
+  deps: IngestDeps
+): Promise<{ owed: false } | { owed: true; current: boolean; storedChunks: number }> {
+  // Chunks read from an artifact the current conversion rules did not make
+  // are owed a new read, whatever else is on record: the rules changed
+  // because of what such an artifact may hold.
+  const current = existing.artifactFormatVersion === artifactFormatVersionFor(absPath);
+
+  // A read that did not finish is owed another one, chunks or not: a scan
+  // with a typed cover sheet has chunks of its own even when every vision
+  // call behind it failed.
+  const retryOwed =
+    !current || (existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS);
+
+  // A file with no text at all: the last read found nothing. Reading it
+  // again with the same setup would find the same nothing — and under the
+  // nightly reindex, a blank scan would be rendered and sent to the vision
+  // model again every night. So it is skipped like any unchanged file unless
+  // this run could read it differently. Checked before the chunk count: on a
+  // corpus of thousands of blank scans that is a query per document per night.
+  if (
+    !retryOwed &&
+    existing.emptyExtractionBy !== null &&
+    !couldReadDifferently(existing.emptyExtractionBy, deps)
+  ) {
+    return { owed: false };
+  }
+
+  const [{ value: storedChunks }] = await db
+    .select({ value: count() })
+    .from(kbChunks)
+    .where(eq(kbChunks.documentId, existing.id));
+
+  if (!retryOwed && storedChunks > 0) return { owed: false };
+  return { owed: true, current, storedChunks };
+}
+
+/**
+ * Whether this file's own turn will skip it: its row records the bytes on
+ * disk now, and owes them no read (`readOwed`). A row that owes a read
+ * whatever the bytes are answers without them; otherwise the file is read once
+ * to hash it. That read comes on top of the one its own turn takes — worth it
+ * against the verified copy, and possibly the conversion, a batch would
+ * otherwise spend on a document nobody reads.
+ */
+async function turnWillSkip(
+  orgId: string,
+  file: { absPath: string; realPath: string },
+  deps: IngestDeps
+): Promise<boolean> {
+  const [existing] = await db
+    .select()
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.orgId, orgId), eq(kbDocuments.sourcePath, file.absPath)))
+    .limit(1);
+  if (!existing) return false;
+  if ((await readOwed(existing, file.absPath, deps)).owed) return false;
+  const { hash } = await hashVerifiedSource(file.realPath);
+  return existing.contentHash === hash;
+}
+
+/**
  * Ingests one file: hash it, decide skip/recover/replace/insert, and write its
  * chunks. Whatever it throws is this file's failure unless
  * `systemicIngestError` says otherwise — the per-file boundary in
@@ -1256,39 +1539,11 @@ async function ingestFile(
       await db.update(kbDocuments).set({ status }).where(eq(kbDocuments.id, existing.id));
     }
 
-    // Chunks read from an artifact the current conversion rules did not make
-    // are owed a new read, whatever else is on record: the rules changed
-    // because of what such an artifact may hold.
-    const current = existing.artifactFormatVersion === artifactFormatVersionFor(absPath);
+    const verdict = await readOwed(existing, absPath, deps);
+    if (!verdict.owed) return "skipped";
+    const { current, storedChunks } = verdict;
     // Retries already spent were spent under the earlier rules.
     const previousIncompleteReads = current ? existing.incompleteReads : 0;
-
-    // A read that did not finish is owed another one, chunks or not: a scan
-    // with a typed cover sheet has chunks of its own even when every vision
-    // call behind it failed.
-    const retryOwed =
-      !current || (existing.incompleteReads > 0 && existing.incompleteReads < MAX_INCOMPLETE_READS);
-
-    // A file with no text at all: the last read found nothing. Reading it
-    // again with the same setup would find the same nothing — and under the
-    // nightly reindex, a blank scan would be rendered and sent to the vision
-    // model again every night. So it is skipped like any unchanged file unless
-    // this run could read it differently. Checked before the chunk count: on a
-    // corpus of thousands of blank scans that is a query per document per night.
-    if (
-      !retryOwed &&
-      existing.emptyExtractionBy !== null &&
-      !couldReadDifferently(existing.emptyExtractionBy, deps)
-    ) {
-      return "skipped";
-    }
-
-    const [{ value: storedChunks }] = await db
-      .select({ value: count() })
-      .from(kbChunks)
-      .where(eq(kbChunks.documentId, existing.id));
-
-    if (!retryOwed && storedChunks > 0) return "skipped";
 
     // Robustness case: a document row survives with zero chunks and no
     // empty read on record (written by a version that inserted the document
@@ -1534,8 +1789,15 @@ export async function ingestPaths(
     perRoot.push({ rootDir, discovered, unsupported: listing.unsupported });
   }
 
-  // Counted once however many overlapping roots found a file, like `total`.
-  const unsupported = new Set(perRoot.flatMap((root) => [...root.unsupported.keys()])).size;
+  // Counted once however many overlapping roots found a file, like `total`,
+  // and split by whether the file is a document at all (#1410).
+  const unreadable = new Map(perRoot.flatMap((root) => [...root.unsupported]));
+  let unsupported = 0;
+  let ignored = 0;
+  for (const type of unreadable.values()) {
+    if (unsupportedFileKind(type) === "unsupported") unsupported++;
+    else ignored++;
+  }
 
   // Deduplicated across roots: a file granted under both /data and /data/hr is
   // one unit of work and must be weighed once, or the run would stop short of
@@ -1558,7 +1820,7 @@ export async function ingestPaths(
 
   // Converts in queue order, in batches, as the loop below reaches Office
   // documents — see officeArtifacts for why this is not a pre-pass.
-  const resolveArtifact = officeArtifacts(queue, deps);
+  const resolveArtifact = officeArtifacts(queue, deps, (file) => turnWillSkip(orgId, file, deps));
 
   const tally: Record<FileOutcome, number> = { indexed: 0, skipped: 0, unsearchable: 0 };
   let failed = 0;
@@ -1572,7 +1834,14 @@ export async function ingestPaths(
   let archived = 0;
   const total = queue.length;
   const totalBytes = queue.reduce((sum, file) => sum + file.bytes, 0);
-  const snapshot = (): IngestResult => ({ ...tally, removed, failed, archived, unsupported });
+  const snapshot = (): IngestResult => ({
+    ...tally,
+    removed,
+    failed,
+    archived,
+    unsupported,
+    ignored,
+  });
 
   /** `inFlightBytes` is the part of the CURRENT file already embedded — see the callback below. */
   const report = (inFlightBytes = 0) =>

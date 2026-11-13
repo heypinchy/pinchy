@@ -45,8 +45,9 @@
  * `maxQueued`, so reloads cannot stack reads in front of the indexer — which
  * passes neither, and is never cut short or turned away.
  *
- * The same child also counts a `.docx`'s words for the conversion's oracle
- * (`countDocxWordsIsolated`). mammoth builds a DOM at
+ * The same child also counts a `.docx` or `.docm`'s words for the conversion's
+ * oracle (`countDocxWordsIsolated`), and reads its text for a document whose PDF
+ * came out short (`readDocxTextIsolated`). mammoth builds a DOM at
  * up to ~300x the markup it parses, and the markup ceiling in front of it
  * (`MAX_DOCX_MARKUP_BYTES`) is a PREDICTION of which parts mammoth parses: a
  * part it misses is a 13 KB file worth ~900 MB (measured) in whatever
@@ -74,6 +75,7 @@ import { join } from "node:path";
 
 import { OfficeFileRejectedError, StagedCopyWriteError } from "./office-formats";
 import type { StagedSource } from "./office-preflight";
+import type { ParsedEmail } from "./msg-extract";
 import type { TiffConversion } from "./tiff-pdf";
 import {
   XlsxExtractionError,
@@ -107,20 +109,28 @@ export type SheetReaderRequest =
   | { op: "rows"; path: string; sheet: string | null; startRow: number; endRow: number }
   /** Words mammoth sees in the .docx at `path`, read through `readGuardedDocx`. */
   | { op: "docx-words"; path: string }
+  /** The text mammoth sees in the .docx at `path` — what `docx-words` counts (#1406). */
+  | { op: "docx-text"; path: string }
   /** The Office file at `path`, checked and written to `dest` (`stageOfficeSource`). */
   | { op: "stage-office"; path: string; dest: string }
   /** The TIFF at `path`, one PDF page per frame, written to `dest` (`tiffToPdf`). */
-  | { op: "tiff-pdf"; path: string; dest: string; maxFrames: number };
+  | { op: "tiff-pdf"; path: string; dest: string; maxFrames: number }
+  /** The Outlook message at `path`, parsed to headers and body (`parseMsg`). */
+  | { op: "msg"; path: string };
 
 /** What the reader is called in its errors and log lines: the job it was doing. */
 function readerName(request: SheetReaderRequest): string {
   switch (request.op) {
     case "docx-words":
       return "word-count reader";
+    case "docx-text":
+      return "Word text reader";
     case "stage-office":
       return "Office preflight";
     case "tiff-pdf":
       return "TIFF reader";
+    case "msg":
+      return "Outlook message reader";
     default:
       return "spreadsheet reader";
   }
@@ -480,6 +490,21 @@ export async function countDocxWordsIsolated(
 }
 
 /**
+ * The text mammoth sees in the .docx at `absPath` — the same read
+ * `countDocxWordsIsolated` counts — in a child process, through the same
+ * guard and behind the same fence. What a Word document is indexed from when
+ * its converted PDF came out short (#1406): the oracle has just read the same
+ * bytes this way, so it is the one reading of the source known to work. Same
+ * errors as the count.
+ */
+export async function readDocxTextIsolated(
+  absPath: string,
+  readerOptions: SheetReaderOptions = {}
+): Promise<string> {
+  return (await runSheetReader({ op: "docx-text", path: absPath }, readerOptions)) as string;
+}
+
+/**
  * `stageOfficeSource`, in a child process: the Office file at `absPath` is
  * read, checked and written to `dest` there, and only what was done comes
  * back. Refusals — the preflight's own, or a check that ran out of heap —
@@ -525,4 +550,17 @@ export async function tiffToPdfIsolated(
     { op: "tiff-pdf", path: absPath, dest, maxFrames: opts.maxFrames },
     { timeoutMs: TIFF_READER_TIMEOUT_MS, ...readerOptions }
   )) as TiffConversion;
+}
+
+/**
+ * `parseMsg`, in a child process (#1409). The parser walks an untrusted
+ * Compound File and inflates compressed RTF, so it runs behind the same fence
+ * as the other readers. A refusal is `OfficeFileRejectedError`; a child that
+ * stopped any other way is a `SheetReaderStoppedError`.
+ */
+export async function readMsgIsolated(
+  absPath: string,
+  readerOptions: SheetReaderOptions = {}
+): Promise<ParsedEmail> {
+  return (await runSheetReader({ op: "msg", path: absPath }, readerOptions)) as ParsedEmail;
 }

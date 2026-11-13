@@ -192,9 +192,12 @@ RUN corepack enable
 #
 # Measured on node:22-slim (247 MB): writer+impress+fonts-liberation = 669 MB
 # (+422 MB); the full `libreoffice` metapackage would be 772 MB. We install
-# only the two page-shaped filters:
-#   - libreoffice-calc is DELIBERATELY absent. A sheet is not a page, and
-#     spreadsheets take a different path entirely (#937/#940).
+# the two page-shaped filters plus Calc:
+#   - libreoffice-calc is here for ONE job: turning a legacy BIFF `.xls` into
+#     an `.xlsx` (#1373). A sheet is still never made into a PDF — a sheet is
+#     not a page, and the spreadsheet reader takes cells, not pages (#937/#940).
+#     It is needed because nothing on npm reads BIFF safely: exceljs cannot,
+#     and SheetJS publishes its security fixes off the npm registry.
 #   - fonts-liberation is not optional. Without a metric-compatible font set
 #     LibreOffice substitutes, re-flows, and can drop glyphs — and the corpus
 #     is full of Central/Eastern European diacritics (GODIČ TORKAR, Domžale).
@@ -212,7 +215,7 @@ RUN corepack enable
 # an air-gapped install; the binary on disk is inert in the web container.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       libreoffice-writer libreoffice-impress fonts-liberation catdoc \
+       libreoffice-writer libreoffice-impress libreoffice-calc fonts-liberation catdoc \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

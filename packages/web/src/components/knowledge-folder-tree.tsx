@@ -45,7 +45,7 @@ const FOLDER_STATE: Record<FolderState, { label: string; className: string }> = 
     className: "border-amber-500/40 text-amber-700 dark:text-amber-300",
   },
   not_indexed: { label: "Not indexed yet", className: "text-muted-foreground" },
-  empty: { label: "No files", className: "text-muted-foreground" },
+  empty: { label: "No documents", className: "text-muted-foreground" },
 };
 
 const FILE_STATE: Record<FileState, { label: string; attention: boolean }> = {
@@ -56,7 +56,9 @@ const FILE_STATE: Record<FileState, { label: string; attention: boolean }> = {
   pending: { label: "Queued", attention: false },
   failed: { label: "Not indexed", attention: true },
   new: { label: "Added since the last run", attention: false },
-  unsupported: { label: "File type not supported", attention: false },
+  unsupported: { label: "File type not supported yet", attention: false },
+  // Not a document (#1410): skipped on purpose, named so nothing is hidden.
+  ignored: { label: "Not a document — skipped", attention: false },
 };
 
 /**
@@ -290,21 +292,21 @@ export function countText(folder: FolderStatus): string {
     return "Waiting for the run to list its files";
   }
   // A run reads archived subfolders last (#1405). With only archive left, the
-  // state speaks for the current files; the archive is counted apart.
+  // state speaks for the current files: count them alone, and the archive
+  // apart — whatever of it the index already holds from an earlier run.
   const archive = folder.pendingArchived;
-  // A re-run re-reads an archive the index already holds, so what is
-  // searchable can reach past the current files, never past the folder.
+  const current = archive > 0;
   const of =
     folder.expected === null
       ? folder.indexed
-      : Math.max(folder.expected - archive, Math.min(folder.searchable, folder.expected));
+      : folder.expected - (current ? folder.expectedArchived : 0);
   if (of === 0) return folder.state === "empty" ? "Nothing to index here" : "No files indexed yet";
+  const searchableDocs = folder.searchable - (current ? folder.archivedSearchable : 0);
+  const failing = folder.notSearchable - (current ? folder.archivedNotSearchable : 0);
   // Documents of files deleted since the last run stay in the index until a
   // run succeeds, so the index can hold more than the folder does. Count down
-  // from the folder by what fails here instead: archived files the run will
-  // convert again are on their way, everything else not searchable is missing.
-  const failing = Math.max(0, folder.notSearchable - folder.archivedToReconvert);
-  const done = Math.max(0, Math.min(folder.searchable, of - failing));
+  // from the folder by what fails here instead.
+  const done = Math.max(0, Math.min(searchableDocs, of - failing));
   const searchable = `${done} of ${of} ${plural(of, "file")} searchable`;
   if (archive === 0) return searchable;
   if (folder.indexingArchive) return `${searchable} · indexing archived files, ${archive} left`;
@@ -434,8 +436,7 @@ function FolderFiles({
             {scope === "direct" && "Directly in this folder: "}
             {page.totals.searchable} of {page.totals.all} {plural(page.totals.all, "file")}{" "}
             searchable
-            {page.totals.unsupported > 0 &&
-              `, plus ${page.totals.unsupported} ${plural(page.totals.unsupported, "file")} the index can't read`}
+            {outsideIndexText(page.totals)}
             {page.truncated &&
               " — this folder is too large to list in full, so counts cover part of it"}
             .
@@ -496,6 +497,27 @@ function FolderFiles({
       ) : null}
     </div>
   );
+}
+
+/**
+ * The files a listing found but the index leaves out, documents it cannot read
+ * yet apart from files that are not documents at all (#1410).
+ */
+function outsideIndexText(totals: { unsupported: number; ignored: number }): string {
+  const parts: string[] = [];
+  if (totals.unsupported > 0) {
+    parts.push(
+      `${totals.unsupported} ${plural(totals.unsupported, "file")} the index can't read yet`
+    );
+  }
+  if (totals.ignored > 0) {
+    parts.push(
+      totals.ignored === 1
+        ? "1 file skipped because it isn't a document"
+        : `${totals.ignored} files skipped because they aren't documents`
+    );
+  }
+  return parts.length > 0 ? `, plus ${parts.join(" and ")}` : "";
 }
 
 function plural(n: number, word: string): string {

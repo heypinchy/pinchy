@@ -26,7 +26,7 @@ import {
   convertedPdfName,
   isOfficeFile,
   isPresentationFile,
-  isScanFile,
+  isShownAsConvertedPdf,
   isSpreadsheetFile,
   isWordFile,
 } from "./office-formats";
@@ -76,7 +76,7 @@ import {
  * "the citation starts at a word" is a rule a reader can predict.
  */
 const SOURCE_PATH_ENDING_HERE =
-  /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docm|docx?|pptx?|xlsx|xlsm|tiff?)$/i;
+  /[^\s/]+(?:\/[^/\n]+?)+?\.(?:pdf|docm|docx?|pptx?|xlsx?|xlsm|tiff?)$/i;
 
 /** What may follow a path so that "…/doc.pdf." links the file and not the full stop. */
 const PATH_BOUNDARY = /[\s,.;:)\]]/;
@@ -98,17 +98,7 @@ const PATH_BOUNDARY = /[\s,.;:)\]]/;
  * branch that matches, and `docx?` would end the hit at the `.doc` inside
  * `.docm`, where the boundary check then rejects it.
  */
-const EXTENSION = /\.(?:pdf|docm|docx?|pptx?|xlsx|xlsm|tiff?)/gi;
-
-/**
- * Whether the viewer is shown a PDF the knowledge base made of this file rather
- * than the file itself: an Office document (converted by LibreOffice) or a
- * scanned TIFF (one PDF page per frame, #1409). No browser renders either, so
- * the viewer url is named after that PDF and the downloads offer both.
- */
-function shownAsConvertedPdf(path: string): boolean {
-  return isOfficeFile(path) || isScanFile(path);
-}
+const EXTENSION = /\.(?:pdf|docm|docx?|pptx?|xlsx?|xlsm|tiff?)/gi;
 
 /**
  * How far back from an extension a path may reasonably start. The longest path
@@ -596,7 +586,7 @@ export function buildSourceViewerUrl(href: string): string | null {
   const [base, fragment] = splitFragment(href);
   const [routePath, query] = [base.slice(0, base.indexOf("?")), base.slice(base.indexOf("?"))];
   const name = leafName(source.path);
-  const shown = shownAsConvertedPdf(source.path) ? convertedPdfName(name) : name;
+  const shown = isShownAsConvertedPdf(source.path) ? convertedPdfName(name) : name;
   return `${routePath}/${encodeURIComponent(shown)}${query}${fragment}`;
 }
 
@@ -714,26 +704,39 @@ function leafName(path: string): string {
  * being explicit here is what stops a later widening of that default from
  * silently changing which bytes a download control hands over.
  *
+ * Each entry also says which representation it is, as data: the converted PDF
+ * is what the viewer shows, and it may not exist yet (not converted, or a
+ * conversion that was refused). The dialog then drops that entry and points at
+ * the original, and it recognises the entry by this field, never by its label.
+ *
  * The fragment goes: `#page=510` positions a viewer and means nothing to a
  * saved file.
  */
-export function buildSourceDownloads(
-  href: string
-): Array<{ label: string; filename: string; url: string }> | null {
+export function buildSourceDownloads(href: string): Array<{
+  label: string;
+  filename: string;
+  url: string;
+  variant: "original" | "converted";
+}> | null {
   const source = parseSourceHref(href);
   if (!source) return null;
 
   const [base] = splitFragment(href);
   const name = leafName(source.path);
   const originalUrl = `${base}&download=1&variant=original`;
-  if (!shownAsConvertedPdf(source.path)) {
-    return [{ label: name, filename: name, url: originalUrl }];
+  if (!isShownAsConvertedPdf(source.path)) {
+    return [{ label: name, filename: name, url: originalUrl, variant: "original" }];
   }
 
   const extension = name.slice(name.lastIndexOf("."));
   return [
-    { label: `Original (${extension})`, filename: name, url: originalUrl },
-    { label: "PDF", filename: convertedPdfName(name), url: `${base}&download=1&variant=converted` },
+    { label: `Original (${extension})`, filename: name, url: originalUrl, variant: "original" },
+    {
+      label: "PDF",
+      filename: convertedPdfName(name),
+      url: `${base}&download=1&variant=converted`,
+      variant: "converted",
+    },
   ];
 }
 

@@ -36,6 +36,8 @@ import { copyFile, mkdir, open, readdir, rename, rm, stat, utimes } from "node:f
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 
+import { CONVERTED_OUTPUT_EXTENSIONS, type ConvertedExtension } from "./office-formats";
+
 /**
  * sha256 of a file's bytes, streamed through `hashOpenFile` — the
  * artifact-store key.
@@ -213,10 +215,19 @@ export class OfficeArtifactStore {
    * something path-shaped can never escape the store; the first two characters
    * fan out into 256 subdirectories, because a single flat directory with tens
    * of thousands of entries is slow on every filesystem that matters.
+   *
+   * `ext` is what the converter wrote: a PDF for a page-shaped document, an
+   * `.xlsx` for a legacy workbook (#1373). It is part of the name, so a file
+   * renamed from `.doc` to `.xls` — same bytes, same hash — is never handed
+   * the other format's artifact. Checked against the two the converter
+   * produces, because it lands in a path.
    */
-  pathFor(contentHash: string): string {
+  pathFor(contentHash: string, ext: ConvertedExtension = ".pdf"): string {
+    if (!(CONVERTED_OUTPUT_EXTENSIONS as readonly string[]).includes(ext)) {
+      throw new Error(`not a converted artifact format: ${JSON.stringify(ext)}`);
+    }
     const key = createHash("sha256").update(contentHash).digest("hex");
-    return join(this.versionDir, key.slice(0, 2), `${key}.pdf`);
+    return join(this.versionDir, key.slice(0, 2), `${key}${ext}`);
   }
 
   /**
@@ -227,8 +238,8 @@ export class OfficeArtifactStore {
    * re-converted, so its artifact's mtime would keep aging while every reindex
    * keeps reading it.
    */
-  async get(contentHash: string): Promise<string | null> {
-    const path = this.pathFor(contentHash);
+  async get(contentHash: string, ext: ConvertedExtension = ".pdf"): Promise<string | null> {
+    const path = this.pathFor(contentHash, ext);
     try {
       const info = await stat(path);
       if (!info.isFile() || info.size === 0) return null;
@@ -241,7 +252,7 @@ export class OfficeArtifactStore {
   }
 
   /**
-   * Takes ownership of a freshly converted PDF, moving it into the store and
+   * Takes ownership of a freshly converted PDF (or `.xlsx`), moving it into the store and
    * returning its final path. The move is the commit point: an artifact only
    * becomes visible once conversion AND verification are behind it, so a
    * reader can never be handed a half-written file.
@@ -252,8 +263,12 @@ export class OfficeArtifactStore {
    * artifact and renamed from there, so the commit is still one atomic rename,
    * inside the store.
    */
-  async put(contentHash: string, stagedPdfPath: string): Promise<string> {
-    const path = this.pathFor(contentHash);
+  async put(
+    contentHash: string,
+    stagedPdfPath: string,
+    ext: ConvertedExtension = ".pdf"
+  ): Promise<string> {
+    const path = this.pathFor(contentHash, ext);
     await mkdir(join(path, ".."), { recursive: true });
     await rm(path, { force: true });
     try {

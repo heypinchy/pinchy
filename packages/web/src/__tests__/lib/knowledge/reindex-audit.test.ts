@@ -170,5 +170,17 @@ describe("the unsupported count (#1267)", () => {
     const entry = reindexAuditEntry({ ...base, counts });
 
     expect(entry.detail).not.toHaveProperty("unsupported");
+    expect(entry.detail).not.toHaveProperty("ignored");
+  });
+
+  // #1410: files that are not documents are counted apart, and the row says
+  // so — a count, like `unsupported`, never the list.
+  it("carries how many non-document files the run ignored, as a number", () => {
+    const entry = reindexAuditEntry({
+      ...base,
+      counts: { ...counts, unsupported: 2, ignored: 400 },
+    });
+
+    expect(entry.detail).toMatchObject({ unsupported: 2, ignored: 400 });
   });
 });

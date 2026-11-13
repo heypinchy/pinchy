@@ -574,6 +574,27 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
     expect(data).toEqual({ botUsername: "test_bot", botId: 123456 });
     expect(mockValidateTelegramBotToken).toHaveBeenCalled();
   });
+
+  it("writes a personal agent's bot with the full config, so linked users' own routes come along", async () => {
+    // The main bot hands each linked user their own Smithers through per-peer
+    // bindings, and the allow store lets a user in only once OpenClaw routes
+    // them there. The targeted write keeps just the account-wide binding —
+    // after a reconnect or a token change every linked member would stay
+    // locked out until some unrelated change regenerated the config.
+    mockGetAgentWithAccess.mockResolvedValueOnce({ ...mockAgent, isPersonal: true });
+
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalledTimes(1);
+    expect(mockUpdateTelegramChannelConfig).not.toHaveBeenCalled();
+    expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRecalculateTelegramAllowStores.mock.invocationCallOrder[0]
+    );
+  });
 });
 
 describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
@@ -609,6 +630,69 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
         }),
       })
     );
+  });
+
+  // Taking the bot out of openclaw.json is what stops it for good. A failing
+  // allow-list write must not leave the bot in the config and the removal
+  // unaudited; the next recalculation drops the account's list anyway.
+  it("removes the bot from the config and audits it when the allow-list write fails", async () => {
+    mockClearAllowStoreForAccount.mockRejectedValueOnce(
+      new Error("Request pinchy.pairing.setAllowFrom timed out")
+    );
+
+    const response = await DELETE(new NextRequest("http://localhost"), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockUpdateTelegramChannelConfig).toHaveBeenCalledWith("agent-1", null);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "channel.deleted", outcome: "success" })
+    );
+  });
+
+  // And the other way round: a config write that throws must not leave the
+  // bot's users on its allow list.
+  it("clears the bot's allow list even when the config write fails", async () => {
+    mockUpdateTelegramChannelConfig.mockImplementationOnce(() => {
+      throw new Error("EACCES openclaw.json");
+    });
+
+    await expect(
+      DELETE(new NextRequest("http://localhost"), { params: mockParams })
+    ).rejects.toThrow(/EACCES/);
+
+    expect(mockClearAllowStoreForAccount).toHaveBeenCalledWith("agent-1");
+  });
+
+  // The token is gone from the database by then, so the bot is disconnected as
+  // far as Pinchy is concerned. That state change belongs in the audit trail,
+  // marked failed, and the rest of the cleanup still runs.
+  it("audits the disconnect as failed when the config write fails", async () => {
+    mockUpdateTelegramChannelConfig.mockImplementationOnce(() => {
+      throw new Error("EACCES /root/.openclaw/openclaw.json");
+    });
+    vi.mocked(db.delete).mockReturnValueOnce({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "link-1" }]),
+      }),
+    } as any);
+
+    await expect(
+      DELETE(new NextRequest("http://localhost"), { params: mockParams })
+    ).rejects.toThrow(/EACCES/);
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(entry).toMatchObject({
+      eventType: "channel.deleted",
+      resource: "agent:agent-1",
+      outcome: "failure",
+      error: { message: expect.any(String) },
+      detail: expect.objectContaining({ channelLinksCleared: 1 }),
+    });
+    // No file system path in the immutable audit row.
+    expect(JSON.stringify(entry)).not.toContain("/root/.openclaw");
   });
 
   it("clears stale channel_links when the last Telegram bot is removed (#476 gap 3)", async () => {

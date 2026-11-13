@@ -49,6 +49,8 @@ export interface FakeGateway {
   url: string;
   /** Every request the client sent, in order (the handshake excluded). */
   calls: FakeGatewayCall[];
+  /** The params of every `connect` handshake, in order. */
+  handshakes: Array<Record<string, unknown>>;
   /** `chat.abort` calls with the answer each one got. */
   aborts: Array<{ sessionKey: string; runId?: string; aborted: boolean }>;
   runs: Map<string, FakeRun>;
@@ -78,7 +80,9 @@ export interface FakeGateway {
   /** The next `chat.abort` fails at the RPC level (the client's promise rejects). */
   failNextAbort(): void;
   /** A connected real client. */
-  connectClient(): Promise<OpenClawClient>;
+  connectClient(
+    options?: Partial<ConstructorParameters<typeof OpenClawClient>[0]>
+  ): Promise<OpenClawClient>;
   close(): Promise<void>;
 }
 
@@ -91,6 +95,7 @@ export async function startFakeGateway(): Promise<FakeGateway> {
   const sockets = new Set<WebSocket>();
   const clients: OpenClawClient[] = [];
   const calls: FakeGatewayCall[] = [];
+  const handshakes: Array<Record<string, unknown>> = [];
   const aborts: FakeGateway["aborts"] = [];
   const runs = new Map<string, FakeRun>();
   const runOrder: string[] = [];
@@ -128,6 +133,7 @@ export async function startFakeGateway(): Promise<FakeGateway> {
       };
       const params = msg.params ?? {};
       if (msg.method === "connect") {
+        handshakes.push(params);
         respond(ws, msg.id, {
           type: "hello-ok",
           features: { methods: ["agent", "chat.abort", "agent.wait", "artifacts.list"] },
@@ -223,6 +229,7 @@ export async function startFakeGateway(): Promise<FakeGateway> {
   return {
     url: `ws://127.0.0.1:${address.port}`,
     calls,
+    handshakes,
     aborts,
     runs,
     runAt: (index) => {
@@ -286,10 +293,11 @@ export async function startFakeGateway(): Promise<FakeGateway> {
     failNextAbort() {
       failNextAbort = true;
     },
-    async connectClient() {
+    async connectClient(options = {}) {
       const client = new OpenClawClient({
-        url: `ws://127.0.0.1:${address.port}`,
         deviceIdentityPath: join(mkdtempSync(join(tmpdir(), "fake-oc-")), "device.json"),
+        ...options,
+        url: `ws://127.0.0.1:${address.port}`,
         autoReconnect: false,
       });
       await client.connect();

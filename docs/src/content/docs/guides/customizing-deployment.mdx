@@ -112,16 +112,16 @@ Your `docker-compose.override.yml` survives upgrades unchanged. However, if a ne
 
 Pinchy's `docker-compose.yml` caps memory and CPU for all four containers, and gives each of them a health check so Docker can tell a wedged container from a healthy one. All eight limits are overridable via `.env` — you never need to touch `docker-compose.yml` itself. For every other variable `.env` accepts, see the [Environment Variables reference](/reference/environment-variables/).
 
-| Variable                     | Default | Caps                                                                     |
-| ---------------------------- | ------- | ------------------------------------------------------------------------ |
-| `PINCHY_MEM_LIMIT`           | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge)        |
-| `PINCHY_CPUS`                | `1.5`   | CPU cores for `pinchy`                                                   |
-| `OFFICE_CONVERTER_MEM_LIMIT` | `1g`    | Memory for the `office-converter` container (Word and PowerPoint to PDF) |
-| `OFFICE_CONVERTER_CPUS`      | `1`     | CPU cores for `office-converter`                                         |
-| `OPENCLAW_MEM_LIMIT`         | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)         |
-| `OPENCLAW_CPUS`              | `2`     | CPU cores for `openclaw`                                                 |
-| `DB_MEM_LIMIT`               | `1g`    | Memory for the `db` container (PostgreSQL 17)                            |
-| `DB_CPUS`                    | `1`     | CPU cores for `db`                                                       |
+| Variable                     | Default | Caps                                                                                        |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `PINCHY_MEM_LIMIT`           | `1g`    | Memory for the `pinchy` container (web UI, API, WebSocket bridge)                           |
+| `PINCHY_CPUS`                | `1.5`   | CPU cores for `pinchy`                                                                      |
+| `OFFICE_CONVERTER_MEM_LIMIT` | `1g`    | Memory for the `office-converter` container (Word and PowerPoint to PDF, `.xls` to `.xlsx`) |
+| `OFFICE_CONVERTER_CPUS`      | `1`     | CPU cores for `office-converter`                                                            |
+| `OPENCLAW_MEM_LIMIT`         | `2g`    | Memory for the `openclaw` container (agent runtime, model calls)                            |
+| `OPENCLAW_CPUS`              | `2`     | CPU cores for `openclaw`                                                                    |
+| `DB_MEM_LIMIT`               | `1g`    | Memory for the `db` container (PostgreSQL 17)                                               |
+| `DB_CPUS`                    | `1`     | CPU cores for `db`                                                                          |
 
 ### Why these exist
 
@@ -129,7 +129,7 @@ Without a limit, a single runaway container — a leaking process, a model call 
 
 ### Sizing your host
 
-The defaults add up to roughly 5 GB of memory ceiling across the four containers (1 + 1 + 2 + 1). The Office converter's share is only ever used while the knowledge base converts a Word or PowerPoint file. That's a ceiling, not a reservation — containers use less at idle — but your host needs headroom **above** that total for the OS, Docker itself, and any reverse proxy you run alongside Pinchy. We recommend a host with meaningfully more than 5 GB, e.g. **8 GB or more**, so the limits are a backstop rather than a wall you hit during normal operation.
+The defaults add up to roughly 5 GB of memory ceiling across the four containers (1 + 1 + 2 + 1). The Office converter's share is only ever used while the knowledge base converts a Word, PowerPoint or `.xls` file. That's a ceiling, not a reservation — containers use less at idle — but your host needs headroom **above** that total for the OS, Docker itself, and any reverse proxy you run alongside Pinchy. We recommend a host with meaningfully more than 5 GB, e.g. **8 GB or more**, so the limits are a backstop rather than a wall you hit during normal operation.
 
 If you're intentionally running on a constrained 4 GB VPS — a real scenario, not just a hypothetical — lower the limits in `.env` so the containers leave the OS enough room to breathe:
 
@@ -153,7 +153,7 @@ DB_CPUS=0.5
 
 ### Memory when the knowledge base indexes Office documents
 
-Word and PowerPoint files take a detour on their way into the knowledge base: Pinchy converts them to PDF first, with LibreOffice running in the `office-converter` container — one with no network and none of Pinchy's secrets, because it opens files that anyone with write access to a mounted folder can put there. That's what lets it read the legacy `.doc` and `.ppt` formats at all — no modern parsing library can — and it gives every citation one rendered document that the index and the preview agree on.
+Word and PowerPoint files take a detour on their way into the knowledge base: Pinchy converts them to PDF first, with LibreOffice running in the `office-converter` container — one with no network and none of Pinchy's secrets, because it opens files that anyone with write access to a mounted folder can put there. That's what lets it read the legacy `.doc` and `.ppt` formats at all — no modern parsing library can — and it gives every citation one rendered document that the index and the preview agree on. An old `.xls` workbook takes the same detour, but comes out as an `.xlsx` rather than a PDF, for the same reader every workbook goes through.
 
 Two things about that are worth knowing when you size the container.
 

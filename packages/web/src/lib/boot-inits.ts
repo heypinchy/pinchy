@@ -76,9 +76,12 @@ export async function bootInits(): Promise<boolean> {
   // Pre-seed Pinchy's restart-class overrides into openclaw.json BEFORE OC
   // starts. Without this seed, the very first WS-driven config.apply (e.g.
   // from POST /api/setup) produces a diff at `gateway.mode`/`bind`,
-  // `gateway.controlUi.enabled`, `update`, `discovery`, `canvasHost`, `media`
-  // (all restart-class in OC's reload planner — explicit rules or the no-rule
-  // default). The reload subsystem fires SIGUSR1 → in-process restart, which
+  // `gateway.controlUi.enabled`, `update`, `discovery`, the canvas plugin's
+  // host, `attachments`, `memory` (all restart-class in OC's reload planner —
+  // explicit rules or the no-rule default). It also moves the keys OpenClaw
+  // 2026.8/9 retired out of a file an earlier Pinchy wrote: OpenClaw refuses to
+  // start on them, and it starts before any regenerate can run. The reload
+  // subsystem fires SIGUSR1 → in-process restart, which
   // aborts any run in flight and can hit OC's stale-snapshot bug in
   // `ensureGatewayStartupAuth → replaceConfigFile` (`ConfigMutationConflictError:
   // config changed since last load`). Telegram E2E

@@ -128,19 +128,17 @@ export function questionText(prompt: string): string {
   return prompt
     .replace(/<pinchy:attachments>[\s\S]*?<\/pinchy:attachments>/g, " ")
     .replace(MEDIA_LINE, " ")
-    .replace(REPLY_MEDIA_HINT, " ")
     .trim();
 }
 
 /**
  * What OpenClaw puts before a channel message's caption when media is
- * attached (a Telegram photo, say): a "[media attached: …]" line per file and
- * an English hint about sending images back. Both are English and would
- * outvote a short caption in any other language.
+ * attached (a Telegram photo, say): a "[media attached: …]" line per file.
+ * Paths and MIME types are English and would outvote a short caption in any
+ * other language. (Up to OpenClaw 2026.7 an English hint about sending images
+ * back followed them; 2026.9 dropped it.)
  */
 const MEDIA_LINE = /\[media attached(?:\s+\d+\/\d+)?:[^\]]*\]/gi;
-export const REPLY_MEDIA_HINT =
-  "To send an image back, use the message tool with structured media fields such as media, mediaUrl, path, or filePath. Keep caption in the text body.";
 
 /** Quoted wording is the documents' language, not the asker's. */
 function stripQuoted(text: string): string {

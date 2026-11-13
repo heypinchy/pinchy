@@ -112,6 +112,7 @@ import {
 import {
   OfficeFileRejectedError,
   StagedCopyWriteError,
+  isLegacyWorkbook,
   isPresentationFile,
 } from "./office-formats";
 import {
@@ -471,7 +472,7 @@ function fromCodePoint(code: number): string {
 }
 
 /**
- * The `.docx` bytes for the word-count oracle, verified like the conversion
+ * The `.docx`/`.docm` bytes for the word-count oracle, verified like the conversion
  * input and held to mammoth's markup ceiling on top. A refusal here only
  * leaves the conversion unverified; it never fails it. Read in the reader
  * child, never in the server (`countDocxWordsIsolated`).
@@ -496,8 +497,14 @@ function sniffContainer(head: Buffer): Container | null {
   return null;
 }
 
-/** What each extension may actually contain. A deck is never RTF. */
+/**
+ * What each extension may actually contain. A deck is never RTF, and a legacy
+ * workbook is a BIFF file in an OLE2 container and nothing else (#1373): the
+ * package sanitizer below knows the links a Word or PowerPoint package can
+ * carry, not a workbook's, and an HTML "Excel export" is a web page.
+ */
 function allowedContainers(path: string): readonly Container[] {
+  if (isLegacyWorkbook(path)) return ["ole2"];
   return isPresentationFile(path) ? ["ole2", "zip"] : ["ole2", "zip", "rtf"];
 }
 
@@ -1943,7 +1950,9 @@ async function checkedChunks(
   if (container === null || !allowedContainers(absPath).includes(container)) {
     throw new OfficeFileRejectedError(
       "unexpected_content",
-      `the content of this ${ext} file is not a Word or PowerPoint document`
+      isLegacyWorkbook(absPath)
+        ? `the content of this ${ext} file is not a legacy Excel workbook`
+        : `the content of this ${ext} file is not a Word or PowerPoint document`
     );
   }
   const none = {

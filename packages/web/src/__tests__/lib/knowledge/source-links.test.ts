@@ -177,6 +177,24 @@ describe("buildSourceDownloads", () => {
     );
   });
 
+  it("marks which entry is the converted PDF, so a viewer can drop it when there is none", () => {
+    // The viewer shows the converted PDF of an Office source, and that PDF may
+    // not exist: not converted yet, or a conversion that was refused. Marked
+    // on the entry rather than recognised by label, so the dialog never has to
+    // parse "PDF" back out of copy.
+    expect(buildSourceDownloads(hrefFor("customer/Bericht.docx"))!.map((d) => d.variant)).toEqual([
+      "original",
+      "converted",
+    ]);
+    expect(buildSourceDownloads(hrefFor("archive/scan.TIFF"))!.map((d) => d.variant)).toEqual([
+      "original",
+      "converted",
+    ]);
+    expect(
+      buildSourceDownloads(hrefFor("customer/PPR/document.pdf"))!.map((d) => d.variant)
+    ).toEqual(["original"]);
+  });
+
   it("asks the server for a copy, so both are audited as downloads", () => {
     for (const download of buildSourceDownloads(hrefFor("customer/Angebot.docx"))!) {
       const parsed = new URL(download.url, "http://localhost");
@@ -583,6 +601,33 @@ describe("a spreadsheet citation", () => {
       startRow: 5,
       endRow: 5,
     });
+  });
+
+  it("links a legacy `.xls` workbook the same way, range and all (#1373)", () => {
+    // It is indexed through its converted `.xlsx`, but the reader is cited the
+    // file they own — and that file opens in the same rows pane.
+    const tree = run(paragraph("- [1] lieferanten/Preisliste.XLS (Preise, rows 2-3)"));
+
+    expect(links(tree).map((l) => l.text)).toEqual(["lieferanten/Preisliste.XLS"]);
+    expect(parseSourceHref(links(tree)[0].url)).toEqual({
+      path: "lieferanten/Preisliste.XLS",
+      locator: { kind: "sheet", sheet: "Preise", startRow: 2, endRow: 3 },
+    });
+  });
+
+  it("offers a legacy workbook as itself, with no converted second download", () => {
+    // The converted `.xlsx` is an indexing intermediate, not a rendering a
+    // reader asked for: nothing about it is easier to open than the original.
+    const href = buildSourceHref(AGENT, "lieferanten/Preisliste.xls", null);
+
+    expect(buildSourceDownloads(href)).toEqual([
+      {
+        label: "Preisliste.xls",
+        filename: "Preisliste.xls",
+        url: expect.stringContaining("variant=original"),
+        variant: "original",
+      },
+    ]);
   });
 
   it("leaves the range in the visible text, so the reader still sees it", () => {

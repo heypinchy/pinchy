@@ -29,6 +29,14 @@
 # prewarm boot below additionally proves the gateway starts inside this slim
 # stage before the image is ever published.
 
+# The llama-server build the image ships — see the llama-server stage. Global so
+# the builder stage can check it against the provider's own pin.
+ARG LLAMA_SERVER_RELEASE=b10534
+ARG LLAMA_SERVER_SHA256_AMD64=cc6a12b026edcf1b211be2bb7366c5dadcad778fd8f13019d0694038053d5e4a
+ARG LLAMA_SERVER_SHA256_ARM64=66535de5cb9293c075a1951c51a3b2ae6f1899623e21177845f6d2a73b78c94e
+# GitHub's source archive of the same tag (commit 2b5621094ef3), built on arm64.
+ARG LLAMA_SERVER_SOURCE_SHA256=3454315947eaab0b8f7f8155e52fa39168dca01c9d925e7e6f60e38d92183d4c
+
 # ---------------------------------------------------------------------------
 # Stage: embedding-model — the EmbeddingGemma GGUF the llama.cpp provider serves.
 # ---------------------------------------------------------------------------
@@ -82,6 +90,73 @@ RUN mkdir -p /opt/embedding-models \
        -o /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf \
        https://huggingface.co/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/66f974f8cd48cc3b9c41c516b95508e75b4bee64/embeddinggemma-300m-qat-Q8_0.gguf \
     && echo "6fa0c02a9c302be6f977521d399b4de3a46310a4f2621ee0063747881b673f67  /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf" | sha256sum -c -
+
+# ---------------------------------------------------------------------------
+# Stage: llama-server — the llama.cpp server the embedding provider runs.
+# ---------------------------------------------------------------------------
+# Since OpenClaw 2026.9 the llama.cpp provider no longer embeds in-process
+# (node-llama-cpp is retired: "The legacy in-process llama.cpp embedding
+# runtime is retired"). memory-core's `local` embeddings now go to a
+# `llama-server` child process OpenClaw starts on demand from
+# `models.providers.llama-cpp.localService` (see build.ts
+# buildManagedLlamaCppProvider). Its guided setup would download that binary on
+# first use — from GitHub, into the config volume — which an offline install
+# cannot do, so the image ships it at /opt/llama-server.
+#
+# The release and both digests are the ones the provider itself pins for its
+# own verified install (LLAMA_SERVER_RELEASE and LLAMA_SERVER_ASSETS in its
+# dist/index.js). The builder stage checks that against the installed provider,
+# so bumping the provider without bumping these fails the build instead of
+# shipping a server the provider was never tested against.
+#
+# amd64 (the released images) ships that verified release binary: it needs
+# glibc 2.34 and node:22-slim (bookworm) has 2.36. The arm64 release binary
+# needs glibc 2.38 and a newer libstdc++ than bookworm has, so it does not load
+# here; on arm64 — local dev stacks on Apple Silicon — the stage compiles
+# llama-server from the same release's source tarball (pinned by digest)
+# instead, so memory search keeps working there too. Only llama-server and its
+# shared libraries are kept. The runtime stage adds libgomp1, which both builds
+# link against.
+FROM mirror.gcr.io/library/node:22-slim AS llama-server
+ARG TARGETARCH
+ARG LLAMA_SERVER_RELEASE
+ARG LLAMA_SERVER_SHA256_AMD64
+ARG LLAMA_SERVER_SOURCE_SHA256
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && if [ "$TARGETARCH" = arm64 ]; then \
+         apt-get install -y --no-install-recommends cmake g++ make libgomp1; \
+       fi \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -e; mkdir -p /tmp/llama /opt/llama-server; \
+    case "$TARGETARCH" in \
+      amd64) \
+        curl -fsSL --retry 8 --retry-all-errors --retry-max-time 600 -o /tmp/llama.tar.gz \
+          "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_SERVER_RELEASE}/llama-${LLAMA_SERVER_RELEASE}-bin-ubuntu-x64.tar.gz"; \
+        echo "${LLAMA_SERVER_SHA256_AMD64}  /tmp/llama.tar.gz" | sha256sum -c -; \
+        tar -xzf /tmp/llama.tar.gz -C /tmp/llama; \
+        cp -a "/tmp/llama/llama-${LLAMA_SERVER_RELEASE}/llama-server" \
+          "/tmp/llama/llama-${LLAMA_SERVER_RELEASE}/"libggml*.so* \
+          "/tmp/llama/llama-${LLAMA_SERVER_RELEASE}/"libllama.so* \
+          "/tmp/llama/llama-${LLAMA_SERVER_RELEASE}/"libllama-common.so* \
+          "/tmp/llama/llama-${LLAMA_SERVER_RELEASE}/"libllama-server-impl.so \
+          "/tmp/llama/llama-${LLAMA_SERVER_RELEASE}/"libmtmd.so* \
+          /opt/llama-server/ ;; \
+      arm64) \
+        curl -fsSL --retry 8 --retry-all-errors --retry-max-time 600 -o /tmp/llama.tar.gz \
+          "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_SERVER_RELEASE}.tar.gz"; \
+        echo "${LLAMA_SERVER_SOURCE_SHA256}  /tmp/llama.tar.gz" | sha256sum -c -; \
+        tar -xzf /tmp/llama.tar.gz -C /tmp/llama; \
+        cmake -S "/tmp/llama/llama.cpp-${LLAMA_SERVER_RELEASE}" -B /tmp/llama/build \
+          -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF \
+          -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON \
+          -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON; \
+        cmake --build /tmp/llama/build --target llama-server -j"$(nproc)"; \
+        cp -a /tmp/llama/build/bin/llama-server /opt/llama-server/; \
+        find /tmp/llama/build -name '*.so*' -exec cp -a {} /opt/llama-server/ \; ;; \
+      *) echo "no llama-server build for $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    rm -rf /tmp/llama /tmp/llama.tar.gz; \
+    test -x /opt/llama-server/llama-server
 
 # ---------------------------------------------------------------------------
 # Stage: builder — toolchain + lockfile-resolved openclaw + compiled plugin deps.
@@ -170,6 +245,8 @@ RUN cd /tmp/pinchy-email && npm pkg delete devDependencies && npm install --omit
 # on either list into a failed build. So an OpenClaw bump that brings a new
 # install script (a native binary without a prebuild, say) stops here instead
 # of shipping without it. Reviewed so far: @google/genai (no-op preinstall),
+# koffi (native prebuilds ship in its @koromix/koffi-* optional packages, which
+# its loader checks first; the install script only compiles when none matches),
 # protobufjs (a version-scheme warning), tree-sitter-bash (prebuilds for
 # linux-x64/arm64) — and openclaw itself, below.
 #
@@ -198,18 +275,19 @@ WORKDIR /
 # Bundle the external llama.cpp embedding provider (manifest id `llama-cpp`) plus
 # the EmbeddingGemma GGUF it serves. Together they give memory-core a key-less,
 # OFFLINE `local` embedding provider — the backend Pinchy pins in
-# agents.defaults.memorySearch (see build.ts MEMORY_EMBEDDING_MODEL_PATH +
+# memory.search (see build.ts MEMORY_EMBEDDING_MODEL_PATH +
 # REQUIRED_BUNDLED_PLUGINS). Without a working embedding provider, memory_search
 # returns 0 chunks and every recall silently fails; memory-core's default
 # `openai` provider needs a key Pinchy never has, and ollama-cloud/Anthropic
 # expose no embeddings — so a bundled local model is the only option that works
 # on every install.
 #
-# `openclaw plugins install` writes the provider (with its node-llama-cpp native
-# runtime — prebuilt .node/.so for this arch, no compile) into
-# ~/.openclaw/npm/projects/. That dir lives under the `openclaw-config` volume in
-# production, which shadows any image-baked content on upgrade, so we stage the
-# whole npm tree to /opt (non-volume). start-openclaw.sh copies it into
+# `openclaw plugins install` writes the provider into ~/.openclaw/npm/projects/.
+# Since 2026.9 that is plain JS: the embeddings run in the llama-server child
+# process from the `llama-server` stage. The npm dir lives under the
+# `openclaw-config` volume in production, which shadows any image-baked content
+# on upgrade, so we stage the whole npm tree to /opt (non-volume).
+# stage-llama-cpp-provider.sh (run by start-openclaw.sh) copies it into
 # ~/.openclaw on boot and refreshes the plugin registry — same pattern as the
 # /opt/*-deps bundles. The EmbeddingGemma GGUF it serves comes from the
 # `embedding-model` stage above.
@@ -221,7 +299,17 @@ WORKDIR /
 # reproducible and is checked by openclaw-version-pin-drift.test.ts. An upgraded
 # config volume picks up a changed pin too: stage-llama-cpp-provider.sh
 # re-stages when the bundled release differs from the staged one.
-RUN openclaw plugins install @openclaw/llama-cpp-provider@2026.7.1 \
+#
+# The greps check the provider still pins the llama-server release and digests
+# the `llama-server` stage downloaded — see that stage.
+ARG LLAMA_SERVER_RELEASE
+ARG LLAMA_SERVER_SHA256_AMD64
+ARG LLAMA_SERVER_SHA256_ARM64
+RUN openclaw plugins install @openclaw/llama-cpp-provider@2026.9.2 \
+    && provider="$(ls -d /root/.openclaw/npm/projects/openclaw-llama-cpp-provider-*/node_modules/@openclaw/llama-cpp-provider)/dist/index.js" \
+    && grep -q "LLAMA_SERVER_RELEASE = \"${LLAMA_SERVER_RELEASE}\"" "$provider" \
+    && grep -q "sha256: \"${LLAMA_SERVER_SHA256_AMD64}\"" "$provider" \
+    && grep -q "sha256: \"${LLAMA_SERVER_SHA256_ARM64}\"" "$provider" \
     && mkdir -p /opt/llama-cpp-deps \
     && cp -r /root/.openclaw/npm /opt/llama-cpp-deps/npm
 
@@ -247,13 +335,15 @@ LABEL org.opencontainers.image.source="https://github.com/heypinchy/pinchy" \
       org.opencontainers.image.revision="$PINCHY_BUILD_SHA"
 
 # Runtime-only apt deps. start-openclaw.sh uses inotifywait (inotify-tools) on
-# the secrets dir, pkill/ps (procps) to manage the gateway process, and git is
-# used by OpenClaw for plugin/runtime operations. build-essential and python3
+# the secrets dir, pkill/ps (procps) to manage the gateway process, git is
+# used by OpenClaw for plugin/runtime operations, and llama-server (the
+# `llama-server` stage) links libgomp. build-essential and python3
 # are intentionally absent — the native modules were already compiled in the
 # builder stage and ship as prebuilt .node binaries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       inotify-tools \
+      libgomp1 \
       procps \
     && rm -rf /var/lib/apt/lists/*
 
@@ -289,24 +379,15 @@ COPY --from=builder /opt/pinchy-odoo-deps /opt/pinchy-odoo-deps
 COPY --from=builder /opt/pinchy-web-deps /opt/pinchy-web-deps
 COPY --from=builder /opt/pinchy-email-deps /opt/pinchy-email-deps
 
-# The bundled llama.cpp embedding provider (with its prebuilt node-llama-cpp
-# native binaries) and the EmbeddingGemma GGUF it serves. start-openclaw.sh
+# The bundled llama.cpp embedding provider, the llama-server it starts and the
+# EmbeddingGemma GGUF that server loads. start-openclaw.sh
 # stages the provider into ~/.openclaw/npm on boot (the config volume shadows an
 # image-baked ~/.openclaw across upgrades) and refreshes the plugin registry;
 # the model is read straight from /opt (never volume-mounted) via
 # MEMORY_EMBEDDING_MODEL_PATH. See the builder stage for why this is bundled.
 COPY --from=builder /opt/llama-cpp-deps /opt/llama-cpp-deps
 COPY --from=embedding-model /opt/embedding-models /opt/embedding-models
-
-# Pinchy-shipped OpenClaw internal-hook packages, loaded via the generated
-# config's hooks.internal.load.extraDirs = ["/opt/pinchy-hooks"] (see build.ts).
-# /opt (image, never volume-mounted) so it can't be shadowed by the persisted
-# ~/.openclaw config volume across upgrades — same reasoning as the bundles
-# above. Currently one hook: bootstrap-memory-group-filter, which keeps a shared
-# agent's MEMORY.md out of channel group sessions (heypinchy/pinchy#369; upstream
-# openclaw/openclaw#108881). Plain .mjs — internal hooks load via native
-# import(), not the jiti path plugins use, so no transpile/deps step is needed.
-COPY config/pinchy-hooks /opt/pinchy-hooks
+COPY --from=llama-server /opt/llama-server /opt/llama-server
 
 # Pre-warm the bundled-plugin runtime-deps cache. Rationale and full
 # behaviour live in config/prewarm-openclaw.sh; in short: boot the
@@ -338,9 +419,9 @@ COPY config/install-plugin-deps.sh /install-plugin-deps.sh
 COPY config/stage-llama-cpp-provider.sh /stage-llama-cpp-provider.sh
 # Cross-uid permission repair for the shared openclaw-config volume, sourced by
 # start-openclaw.sh and re-run on a 50 ms tick. Kept as a separate script (same
-# pattern as install-plugin-deps.sh) so the per-agent directory-ownership
-# invariant that keeps Pinchy able to write auth-profiles.json is unit-testable —
-# see packages/web/src/__tests__/lib/fix-config-permissions.test.ts.
+# pattern as install-plugin-deps.sh) so its cross-uid invariants, and the
+# start-time removal of the retired auth-profiles.json, are unit-testable — see
+# packages/web/src/__tests__/lib/fix-config-permissions.test.ts.
 COPY config/fix-config-permissions.sh /fix-config-permissions.sh
 # Device-pairing auto-approver invoked per tick by start-openclaw.sh. Kept as a
 # separate Node module so its requestId-churn convergence is unit-testable

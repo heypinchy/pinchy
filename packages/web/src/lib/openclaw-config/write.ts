@@ -1,5 +1,6 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { dirname } from "path";
+import { isDeepStrictEqual } from "node:util";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import {
@@ -10,6 +11,11 @@ import {
 import { CONFIG_PATH } from "./paths";
 import { parseSizeDropRejection, planShrinkPush, utf8Bytes } from "./size-drop";
 import { unresolvedSecretRefs } from "./keyless-bridge";
+import {
+  PLACEHOLDER_AGENT_ID,
+  parseRosterDropRejection,
+  retainRosterEntries,
+} from "./roster-removal";
 import { clearLastGoodBound, guardFileWrite, UnderReadSideLineError } from "./last-good-bound";
 import {
   trackConfigPushStarted,
@@ -61,6 +67,17 @@ export function writeConfigAtomic(content: string) {
   // because the volume itself is namespaced inside Docker; not exposed.)
   writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o666 });
   renameSync(tmpPath, CONFIG_PATH);
+}
+
+/** Whether two openclaw.json documents hold the same config once OpenClaw's `meta` is set aside. */
+function configsAreEquivalentApartFromMeta(a: string, b: string): boolean {
+  try {
+    const { meta: _a, ...configA } = JSON.parse(a) as Record<string, unknown>;
+    const { meta: _b, ...configB } = JSON.parse(b) as Record<string, unknown>;
+    return isDeepStrictEqual(configA, configB);
+  } catch {
+    return false;
+  }
 }
 
 /** openclaw.json as it is now, or undefined when it is missing or stays unreadable. */
@@ -268,8 +285,22 @@ function parseRetryAfterMs(message: string): number | null {
 // file-write fallback runs as before; by then any normal restart has completed
 // and the write is safe (OC is genuinely down, not racing its own startup).
 const WS_DISCONNECTED_ERROR_FRAGMENT = "Not connected to OpenClaw Gateway";
+
 const NOT_CONNECTED_MAX_WAIT_MS = 60_000;
 const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
+
+// An apply OpenClaw persisted to openclaw.json without answering it: 2026.9's
+// reload hangs on a config the runtime already holds, until the next write
+// supersedes it or openclaw-node's 30 s request timeout gives up. The file is
+// written either way, and the reload that runs on it is OpenClaw's own — so a
+// retry of the same content cannot deliver anything, and hangs again. Only
+// "(superseded)": the same text carries the reload's other outcomes, and
+// "(failed)" or "(stopped)" mean the runtime did not take the file — a retry
+// re-runs that reload.
+const UNANSWERED_APPLY_ERROR_FRAGMENTS = [
+  "Request config.apply timed out",
+  "config.apply persisted but was not applied to the active Gateway (superseded)",
+];
 
 // OpenClaw's config writer refuses any write under half of the current
 // openclaw.json (`size-drop:OLD->NEW`), and config.apply exposes no way to lift
@@ -322,6 +353,21 @@ const NOT_CONNECTED_RETRY_DELAY_MS = 2_000;
 // calibration that keeps missing (it should never need a second). The step
 // budget is checked before a step is applied, never after.
 const MAX_SHRINK_STEPS = 8;
+
+/**
+ * How often one push hands agents OpenClaw refused to drop to its
+ * agents.delete (see parseRosterDropRejection) before it stops trying.
+ * One round normally does it; the rest absorb an agents.delete that was
+ * rate-limited or raced another writer. Past the budget the refused apply
+ * takes the ordinary failure path.
+ */
+const MAX_ROSTER_REMOVAL_ROUNDS = 3;
+
+/**
+ * How OpenClaw 2026.9's agents.delete words its refusal of the agent the
+ * others inherit auth profiles from (agents.defaults.authInheritance).
+ */
+const INHERITED_AUTH_OWNER_REFUSAL = "owns inherited credentials";
 const MAX_SIZE_DROP_REFUSALS = 3;
 
 /**
@@ -329,17 +375,19 @@ const MAX_SIZE_DROP_REFUSALS = 3;
  *
  * `onChangeApplied` fires exactly once, on the terminal path where the new
  * config actually reached OpenClaw's runtime or the on-disk file — i.e. a
- * successful `config.apply`, or any `writeConfigAtomic` fallback (no client,
- * rate-limit budget exhausted, retries exhausted). It deliberately does NOT
- * fire when the push is a semantic no-op (skipped because the supplemented
- * payload already equals OC's runtime) or when a newer push superseded this
- * one. Callers use it to drive side effects that must only happen when a real
- * change lands — e.g. `restartState.notifyRestart()` for the Telegram channel
- * writer, which must not strand the UI overlay on a no-op (#476 Gap 1). The
- * previous file-content dedup in the caller could not see this: `config.apply`
- * persists an OC-enriched file that never byte-matches the caller's payload, so
- * a repeated identical call no longer deduped and fired notifyRestart on a
- * genuine no-op.
+ * successful `config.apply`, an apply OpenClaw persisted but left unanswered
+ * while openclaw.json holds its payload (UNANSWERED_APPLY_ERROR_FRAGMENTS — on
+ * 2026.9 that can be a config the runtime already held), or any
+ * `writeConfigAtomic` fallback (no client, rate-limit budget exhausted, retries
+ * exhausted). It deliberately does NOT fire when the push is a semantic no-op
+ * (skipped because the supplemented payload already equals OC's runtime) or
+ * when a newer push superseded this one. Callers use it to drive side effects
+ * that must only happen when a real change lands — e.g.
+ * `restartState.notifyRestart()` for the Telegram channel writer, which must
+ * not strand the UI overlay on a no-op (#476 Gap 1). The previous file-content
+ * dedup in the caller could not see this: `config.apply` persists an
+ * OC-enriched file that never byte-matches the caller's payload, so a repeated
+ * identical call no longer deduped and fired notifyRestart on a genuine no-op.
  */
 export interface PushConfigOptions {
   onChangeApplied?: () => void;
@@ -395,7 +443,10 @@ export interface PushConfigOptions {
  *   `gateway-mode-removed`), which also leaves an openclaw.json.rejected.<ts>
  *   file behind on every attempt;
  * - "is not valid as real data": `restoreRedactedValues` meeting a redaction
- *   sentinel with no original value.
+ *   sentinel with no original value;
+ * - "Config write would drop agent roster entries" (OpenClaw 2026.9): a
+ *   roster change agents.delete could not carry out (MAX_ROSTER_REMOVAL_ROUNDS)
+ *   — e.g. an agent other agents inherit credentials from.
  * The same payload would be refused again, so such a fallback queues no
  * follow-up. Anything else — a timeout, a stale hash past its retries, a
  * disconnect, a rate limit, a refusal not listed here — is retried by the
@@ -406,6 +457,7 @@ const CONFIG_REFUSED_ERROR_FRAGMENTS = [
   "invalid config",
   "Config write rejected",
   "is not valid as real data",
+  "Config write would drop agent roster entries",
 ];
 
 /**
@@ -460,7 +512,15 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     let sizeDropRefusals = 0;
     let lastOcConfig: Record<string, unknown> | undefined;
     let lastSent: string | undefined;
+    // What `lastSent` was: the roster-removal bridge, a provider-deletion step,
+    // or the push's target itself.
+    let lastSentKind: "bridge" | "step" | "target" | undefined;
     let lastSizeDrop = "";
+    // Agents OpenClaw refused to drop (parseRosterDropRejection), removed on
+    // the next attempt through agents.delete.
+    let rosterRemoval: string[] | undefined;
+    let rosterRemovalRounds = 0;
+    let placeholderRetired = false;
     const shrinkKnown = () => options.expectsProviderShrink === true || shrink !== undefined;
     // Hand a shrink that stopped short of its target to one follow-up full
     // regenerate (see MAX_SHRINK_STEPS) — and, should that one be stranded
@@ -643,7 +703,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
     // the file before config.apply triggers the chokidar watcher, which updates
     // currentCompareConfig to the raw Pinchy payload. config.apply then writes a
     // slightly different file (OC's merge transforms it), so the reload handler
-    // detects a diff including gateway/discovery/update/canvasHost and triggers a
+    // detects a diff including gateway/discovery/update and triggers a
     // gateway restart — causing ConfigMutationConflictError when ensureGatewayStartupAuth
     // tries to write with a stale initialSnapshotRead hash.
     // Without the prior file write, currentCompareConfig stays as startup_source;
@@ -754,14 +814,52 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // 41906476538's late apply: `hot reload applied (hooks, plugins,
         // models)`, no restart). The handler also responds before it queues
         // any follow-up, so a landed apply is seen and settles the delivery.
-        if (current.config && !fileOnlyDeliveryPending()) {
-          const supplementedConfig = JSON.parse(supplemented) as Record<string, unknown>;
-          if (
-            configsAreEquivalentUpToOpenClawMetadata(
-              JSON.stringify(current.config, null, 2),
-              JSON.stringify(supplementedConfig, null, 2)
-            )
-          ) {
+        //
+        // The file is the second witness, for OpenClaw 2026.9: its config.get
+        // `config` is the materialized runtime with every SecretRef id
+        // redacted, so once a provider is configured it never equals a payload
+        // and the comparison above stops firing. That would only waste a slot,
+        // were it not that 2026.9 never settles an apply whose effective config
+        // is unchanged while a SecretRef is configured — its unchanged-config
+        // reload path throws "superseded" and nothing reschedules it, so the
+        // call hangs until the next write and then fails "config.apply
+        // persisted but was not applied to the active Gateway (superseded)".
+        // Five attempts of that are two and a half minutes per push. That
+        // answer is no sign the file is ahead of the runtime: "superseded"
+        // means a newer reload took over, and that reload loads the file
+        // (CI run 43137181823 hot-reloaded a change at 01:59:45 and answered
+        // its apply "superseded" at 01:59:49). openclaw.json
+        // stands for the runtime exactly while no file-only delivery is pending
+        // — the same premise build.ts's early return rests on — and a payload
+        // it already holds (as Pinchy wrote it, or as supplemented) is that
+        // no-op. `meta` is left out of this comparison as a whole: it is
+        // OpenClaw's bookkeeping, not effective config, and 2026.9 stamps
+        // meta.migrations into the file on its first write — after a racing
+        // second push already built its payload from the file without it.
+        if (!fileOnlyDeliveryPending()) {
+          const supplementedJson = JSON.stringify(JSON.parse(supplemented), null, 2);
+          const onDisk = readCurrentContent();
+          const runtimeHoldsIt =
+            (current.config !== undefined &&
+              configsAreEquivalentUpToOpenClawMetadata(
+                JSON.stringify(current.config, null, 2),
+                supplementedJson
+              )) ||
+            (onDisk !== undefined &&
+              [supplementedJson, newContent].some((candidate) =>
+                configsAreEquivalentApartFromMeta(onDisk, candidate)
+              ));
+          if (runtimeHoldsIt) {
+            // After agents.delete removed what OpenClaw refused to drop, the
+            // target is already in place: that round delivered it.
+            if (rosterRemovalRounds > 0) {
+              console.log(
+                `[openclaw-config] push gen=${String(generation)}: delivered via roster removal (target ≡ OC runtime)`
+              );
+              runtimeReached();
+              onChangeApplied?.();
+              return;
+            }
             console.log(
               `[openclaw-config] push gen=${String(generation)}: no-op skip (supplemented payload ≡ OC runtime)`
             );
@@ -788,7 +886,95 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           payload = plan.payload;
           isShrinkStep = plan.isStep;
         }
+
+        // OpenClaw 2026.9 refused the previous attempt for dropping agents from
+        // its roster. Only agents.delete may remove one, and it refuses the sole
+        // agent and the one others inherit auth from — so first apply this
+        // attempt's payload with those agents kept (adding whatever the target
+        // adds, and handing the inherited-auth role to an agent that stays),
+        // then delete them, then deliver the target on the next attempt. OpenClaw's
+        // placeholder "main" is kept but not deleted: the catch below retires
+        // it once it is the only agent left to drop. Built on `payload`, not the target:
+        // during a provider deletion that is the step OpenClaw's size-drop
+        // guard accepts, and the agents ride along with it. `deleteFiles:
+        // true` although deleteAgent already removed the workspace (a missing
+        // path counts as removed): only then does OpenClaw unregister the
+        // agent's database. Without it, its deletion journal calls the agent
+        // deleted while the database stays registered, and the next gateway
+        // start fails ("agent database is unavailable while agent … is
+        // deleted").
+        if (rosterRemoval) {
+          const ids = rosterRemoval;
+          if (rosterRemovalRounds >= MAX_ROSTER_REMOVAL_ROUNDS) {
+            rosterRemoval = undefined;
+          } else {
+            rosterRemovalRounds++;
+            const bridge = JSON.stringify(
+              retainRosterEntries(
+                JSON.parse(payload) as Record<string, unknown>,
+                lastOcConfig ?? {},
+                ids
+              ),
+              null,
+              2
+            );
+            // Held already — by the runtime, or by openclaw.json once an
+            // earlier round's bridge persisted without an answer (see
+            // UNANSWERED_APPLY_ERROR_FRAGMENTS): applying it again is a no-op
+            // apply, which 2026.9 never answers.
+            const onDisk = readCurrentContent();
+            const bridgeHeld =
+              configsAreEquivalentUpToOpenClawMetadata(
+                JSON.stringify(current.config ?? {}, null, 2),
+                bridge
+              ) ||
+              (onDisk !== undefined && configsAreEquivalentApartFromMeta(onDisk, bridge));
+            if (!bridgeHeld) {
+              lastSent = bridge;
+              lastSentKind = "bridge";
+              await client.config.apply(bridge, current.hash, {
+                note: `pinchy: keep ${ids.join(", ")} until agents.delete removes it`,
+              });
+              if (isShrinkStep && shrink) {
+                shrinkSteps++;
+                shrink.ocBaselineBytes = utf8Bytes(bridge) + shrink.offset;
+              }
+            }
+            let roleRepinned = false;
+            for (const agentId of ids) {
+              if (agentId === PLACEHOLDER_AGENT_ID) continue;
+              try {
+                await client.request("agents.delete", { agentId, deleteFiles: true });
+              } catch (err) {
+                const m = err instanceof Error ? err.message : String(err);
+                // Already gone: the next apply tells whether OpenClaw agrees.
+                if (m.includes(`"${agentId}" not found`)) continue;
+                // A bridge that grew a sole-agent roster: OpenClaw handed the
+                // inherited-auth role back to that agent by name, over the
+                // bridge's own. The next round's bridge changes no roster, so
+                // OpenClaw takes its authInheritance.
+                if (!m.includes(INHERITED_AUTH_OWNER_REFUSAL)) throw err;
+                roleRepinned = true;
+              }
+            }
+            if (roleRepinned) {
+              console.log(
+                `[openclaw-config] push gen=${String(generation)}: OpenClaw kept the inherited-auth role on an agent being removed; re-pointing it`
+              );
+              i--;
+              continue;
+            }
+            rosterRemoval = undefined;
+            console.log(
+              `[openclaw-config] push gen=${String(generation)}: removed ${ids.join(", ")} from OpenClaw's roster via agents.delete`
+            );
+            i--;
+            continue;
+          }
+        }
+
         lastSent = payload;
+        lastSentKind = isShrinkStep ? "step" : "target";
         await client.config.apply(payload, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
@@ -839,6 +1025,67 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           );
           onSuperseded();
           return;
+        }
+
+        // OpenClaw persisted what this push sent and left it unanswered. A
+        // re-send would hang the same way — 2026.9 answers no apply whose
+        // config it already holds — so read the file instead: if it holds what
+        // was sent, the bridge is in place for agents.delete, or the target is
+        // delivered (its reload is OpenClaw's own, on that file). Not for a
+        // provider-deletion step: its budget accounting stays with the retry.
+        if (
+          lastSent !== undefined &&
+          (lastSentKind === "bridge" || lastSentKind === "target") &&
+          UNANSWERED_APPLY_ERROR_FRAGMENTS.some((f) => message.includes(f))
+        ) {
+          const onDisk = readCurrentContent();
+          if (onDisk !== undefined && configsAreEquivalentApartFromMeta(onDisk, lastSent)) {
+            if (lastSentKind === "bridge") {
+              console.log(
+                `[openclaw-config] push gen=${String(generation)}: roster bridge persisted without an answer (${message}); removing via agents.delete`
+              );
+              i--;
+              continue;
+            }
+            console.log(
+              `[openclaw-config] push gen=${String(generation)}: config.apply persisted without an answer (${message}); openclaw.json holds the target, OpenClaw's reload owns it`
+            );
+            runtimeReached();
+            onChangeApplied?.();
+            return;
+          }
+        }
+
+        const rosterDrop = parseRosterDropRejection(message);
+        // Only OpenClaw's placeholder "main" is left to drop: the implicit
+        // agent of a fresh install's seed, never one of Pinchy's (their ids
+        // are UUIDs). agents.delete refuses it on every Pinchy install — it
+        // owns OpenClaw's legacy shared auth store, which only `openclaw
+        // doctor --fix` migrates — so Pinchy writes the file the way OpenClaw's
+        // own onboarding replaces main, and OpenClaw's reloader hot-applies
+        // it. Once: the next attempt's config.apply confirms the runtime holds
+        // the target; until it does, the file-only delivery stays pending.
+        if (
+          rosterDrop?.length === 1 &&
+          rosterDrop[0] === PLACEHOLDER_AGENT_ID &&
+          !placeholderRetired &&
+          lastSent
+        ) {
+          placeholderRetired = true;
+          console.log(
+            `[openclaw-config] push gen=${String(generation)}: retiring OpenClaw's placeholder agent "${PLACEHOLDER_AGENT_ID}" by writing openclaw.json`
+          );
+          if (!writeFallback(lastSent, { transient: true })) return;
+          i--;
+          continue;
+        }
+        if (rosterDrop && rosterRemovalRounds < MAX_ROSTER_REMOVAL_ROUNDS) {
+          console.warn(
+            `[openclaw-config] push gen=${String(generation)}: OpenClaw refused to drop ${rosterDrop.join(", ")} from its agent roster; removing via agents.delete`
+          );
+          rosterRemoval = rosterDrop;
+          i--;
+          continue;
         }
 
         // Size-drop: OpenClaw refused the write as a >50% shrink of its current

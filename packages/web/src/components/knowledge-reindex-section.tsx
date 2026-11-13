@@ -484,15 +484,26 @@ function runNeedsAttention(job: ReindexJob): boolean {
   );
 }
 
-/** "13 documents checked, 2 new or changed" — a run in words, for the status line and the toast. */
+/**
+ * "13 files checked, 2 new or changed" — a run in words, for the status line
+ * and the toast. "Checked" is every file the run looked at, including the ones
+ * it can't read yet and the ones it ignored (#1410), so the numbers below add
+ * up to it.
+ */
 function summarizeRun(counts: IngestResult): string {
-  const checked = counts.indexed + counts.skipped + counts.unsearchable + counts.failed;
+  const checked =
+    counts.indexed +
+    counts.skipped +
+    counts.unsearchable +
+    counts.failed +
+    (counts.unsupported ?? 0) +
+    (counts.ignored ?? 0);
   const changes = [
     counts.indexed > 0 ? `${counts.indexed} new or changed` : null,
     counts.removed > 0 ? `${counts.removed} removed` : null,
   ].filter((part): part is string => part !== null);
   const what = changes.length > 0 ? changes.join(", ") : "nothing new";
-  return `${checked} ${checked === 1 ? "document" : "documents"} checked, ${what}`;
+  return `${checked} ${checked === 1 ? "file" : "files"} checked, ${what}`;
 }
 
 // Same palette as StatusBadge (status-badge.tsx), so "healthy" looks the same
@@ -727,8 +738,8 @@ function UnavailableFoldersNote({ count }: { count: number }) {
 }
 
 /**
- * Files on the share whose type Pinchy can't read (#1267) — an Outlook `.msg`,
- * an old `.xls`. Not documents in the index at all, so nothing else on this page
+ * Files on the share whose type Pinchy can't read (#1267) — an `.rtf`, a binary
+ * `.xlsb`. Not documents in the index at all, so nothing else on this page
  * mentions them, and without this line a gap in the agent's answers reads as
  * the model's fault.
  *
@@ -746,21 +757,65 @@ function UnavailableFoldersNote({ count }: { count: number }) {
  * agent's grants as they are now rather than as they were when the run was
  * queued.
  */
-function UnsupportedFilesNote({ agentId, count }: { agentId: string; count: number }) {
+function UnsupportedFilesNote({
+  agentId,
+  count,
+  ignored,
+}: {
+  agentId: string;
+  count: number;
+  ignored: number;
+}) {
   const files = count === 1 ? "1 file is" : `${count} files are`;
   return (
     <p className="text-sm text-muted-foreground">
-      {files} of a type Pinchy can&apos;t read, like Outlook .msg emails or old .xls spreadsheets.
-      Your agent can&apos;t answer from {count === 1 ? "it" : "them"}. Saved as PDF, Word,
-      PowerPoint or .xlsx, {count === 1 ? "it's" : "they're"} picked up by the next run.{" "}
-      <a
-        href={`/api/agents/${agentId}/knowledge/unsupported`}
-        download
-        className="font-medium text-foreground underline underline-offset-4"
-      >
-        Download the list
-      </a>
+      {files} of a type Pinchy can&apos;t read yet, like .rtf documents or .xlsb spreadsheets. Your
+      agent can&apos;t answer from {count === 1 ? "it" : "them"}. Saved as PDF, Word, PowerPoint or
+      .xlsx, or unpacked from an archive, {count === 1 ? "it's" : "they're"} picked up by the next
+      run.
+      {ignored > 0 && (
+        <>
+          {" "}
+          The list also names {countFiles(ignored)} we skipped because{" "}
+          {ignored === 1 ? "it isn't a document" : "they aren't documents"}.
+        </>
+      )}{" "}
+      <DownloadListLink agentId={agentId} />
     </p>
+  );
+}
+
+/**
+ * Files that are not documents at all — programs, drivers, data exports,
+ * firmware (#1410). Said once, plainly, so nobody wonders where they went; no
+ * call to act, because there is nothing to convert.
+ */
+function IgnoredFilesNote({ agentId, count }: { agentId: string; count: number }) {
+  return (
+    <p className="text-sm text-muted-foreground">
+      {countFiles(count)} {count === 1 ? "was" : "were"} skipped because{" "}
+      {count === 1
+        ? "it isn't a document."
+        : "they aren't documents, such as programs, data or media files."}{" "}
+      <DownloadListLink agentId={agentId} />
+    </p>
+  );
+}
+
+/** "1 file", "400 files". */
+function countFiles(n: number): string {
+  return `${n} ${n === 1 ? "file" : "files"}`;
+}
+
+function DownloadListLink({ agentId }: { agentId: string }) {
+  return (
+    <a
+      href={`/api/agents/${agentId}/knowledge/unsupported`}
+      download
+      className="font-medium text-foreground underline underline-offset-4"
+    >
+      Download the list
+    </a>
   );
 }
 
@@ -769,8 +824,16 @@ function SucceededState({ job, agentId }: { job: ReindexJob; agentId: string }) 
   return (
     <>
       {job.counts && <CountsSummary counts={job.counts} />}
-      {(job.counts?.unsupported ?? 0) > 0 && (
-        <UnsupportedFilesNote agentId={agentId} count={job.counts!.unsupported!} />
+      {(job.counts?.unsupported ?? 0) > 0 ? (
+        <UnsupportedFilesNote
+          agentId={agentId}
+          count={job.counts!.unsupported!}
+          ignored={job.counts!.ignored ?? 0}
+        />
+      ) : (
+        (job.counts?.ignored ?? 0) > 0 && (
+          <IgnoredFilesNote agentId={agentId} count={job.counts!.ignored!} />
+        )
       )}
       {(job.unavailableFolders ?? 0) > 0 && (
         <UnavailableFoldersNote count={job.unavailableFolders!} />
@@ -832,12 +895,16 @@ function CountsSummary({ counts }: { counts: IngestResult }) {
         >
           {counts.failed} failed
         </li>
-        {/* Files the index can't read at all (#1267). Absent on a run that
-            finished before these were counted: it never looked, and a zero
-            would say it found none. Muted, and no reason for "Needs
-            attention": it's a fact about the share, not a fault of the run. */}
+        {/* Documents the index can't read yet (#1267), and files that are not
+            documents at all (#1410). Absent on a run that finished before
+            these were counted: it never looked, and a zero would say it found
+            none. Muted, and no reason for "Needs attention": they're facts
+            about the share, not faults of the run. */}
         {counts.unsupported !== undefined && (
-          <li className="text-muted-foreground">{counts.unsupported} not supported</li>
+          <li className="text-muted-foreground">{counts.unsupported} not supported yet</li>
+        )}
+        {counts.ignored !== undefined && (
+          <li className="text-muted-foreground">{counts.ignored} ignored (not documents)</li>
         )}
         {/* Orthogonal to the others: an archived document is also new or
             unchanged. Shown only when there are some. */}

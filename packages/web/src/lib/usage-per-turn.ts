@@ -24,7 +24,7 @@ import { estimateTurnCostUsd, type ModelPricing } from "@/lib/usage-cost";
  * (cron/channel/main/hook) on a separate gauge-delta path under the belief
  * that they had "no per-user trajectory to scan" — verified false in
  * production (#767): cron/channel sessions DO have a per-session
- * `<sessionId>.trajectory.jsonl`, so system sessions now go through this same
+ * trajectory, so system sessions now go through this same
  * recorder too. That gap meant the autonomous/cron/Telegram runs — exactly
  * the shape of the 2026-07-15 Piper incident — never got a `context_tokens`
  * reading; they do now.
@@ -122,7 +122,7 @@ export interface RecordSessionTurnsParams {
   userId: string;
   agentName: string;
   sessionKey: string;
-  /** Optional: skip the sessions-index lookup if the caller already has it. */
+  /** Optional: skip the session-key lookup if the caller already has it. */
   sessionId?: string;
 }
 
@@ -148,10 +148,11 @@ export async function recordSessionTurnsUsage(
 ): Promise<number | null> {
   const { openclawClient, agentId, userId, agentName, sessionKey } = params;
   try {
-    const sessionId = params.sessionId ?? (await resolveSessionId(agentId, sessionKey));
+    const sessionId =
+      params.sessionId ?? (await resolveSessionId(agentId, sessionKey, openclawClient));
     if (!sessionId) return 0;
 
-    const jsonl = await readTrajectoryJsonl(agentId, sessionId);
+    const jsonl = await readTrajectoryJsonl(agentId, sessionId, openclawClient);
     const turns = extractPerTurnUsage(parseJsonlLines(jsonl));
     if (turns.length === 0) return 0;
 
@@ -186,14 +187,14 @@ export async function recordSessionTurnsUsage(
     );
     return await insertPerTurnUsage(priced);
   } catch (error) {
-    // A session with no trajectory file is an EXPECTED state, not a failure:
+    // A session with no recorded trajectory is an EXPECTED state, not a failure:
     // the run may have died before OpenClaw wrote one (e.g. its model was
     // retired), and there is simply nothing to record. Logging it would repeat
     // on every poll cycle forever (#885) — flooding the container logs and
     // evicting real signal from log-capture's bounded diagnostics ring. Stay
     // quiet; a trajectory that appears later is picked up by the next scan.
     if (error instanceof TrajectoryFileNotFoundError) return 0;
-    // Everything else (unreadable file, DB hiccup) is real breakage worth
+    // Everything else (a refused or failed gateway read, DB hiccup) is real breakage worth
     // surfacing — but still never thrown into the poller or chat path. `null`
     // (not 0) tells the poller the scan did not happen, so it retries on the
     // next tick instead of riding the idle backoff; dedup keeps that safe.

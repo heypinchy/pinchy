@@ -170,8 +170,11 @@ describe("BOOTSTRAP_FILENAMES ↔ OpenClaw loadWorkspaceBootstrapFiles", () => {
     const upstream = extractOpenClawBootstrapFilenames();
 
     // Corpus floor: a parse that silently degraded to one or two entries would
-    // otherwise "pass" against a list that happens to contain them.
-    expect(upstream.length).toBeGreaterThanOrEqual(7);
+    // otherwise "pass" against a list that happens to contain them. Six since
+    // OpenClaw 2026.9 dropped TOOLS.md and HEARTBEAT.md; the identity file is
+    // asserted by name because the mailbox context depends on it being loaded.
+    expect(upstream.length).toBeGreaterThanOrEqual(6);
+    expect(upstream).toContain("IDENTITY.md");
     expect(upstream).toContain("MEMORY.md");
 
     // Compared as sets: Pinchy sums and maxes the sizes, so upstream reordering is

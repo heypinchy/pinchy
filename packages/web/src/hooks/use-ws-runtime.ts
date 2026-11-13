@@ -18,7 +18,10 @@ import {
 } from "@/lib/account-deactivated";
 import { mergeOrAppendChunk } from "@/hooks/merge-chunk";
 import { attachDeliveredFile } from "@/hooks/attach-delivered-file";
-import { ensureTrailingAssistant } from "@/hooks/ensure-trailing-assistant";
+import {
+  ensureTrailingAssistant,
+  resumeInflightReplyInLocal,
+} from "@/hooks/ensure-trailing-assistant";
 import { uploadAttachment } from "@/lib/upload-attachment";
 import { oversizeAttachmentError } from "@/lib/attachment-size-check";
 import { useDraftId } from "@/hooks/use-draft-id";
@@ -637,6 +640,18 @@ export function useWsRuntime(
    */
   const pendingHistoryRef = useRef(false);
   const frameBufferRef = useRef<unknown[]>([]);
+  /**
+   * How much of the in-flight message's text the bubble already shows, as of
+   * the last history frame that seeded it with `activeRun.partialContent`.
+   * Every chunk frame carries `offset` (the text emitted for its message before
+   * it), so a delta that the seed already holds is dropped instead of appended
+   * a second time. That happens whenever the history request goes out on a
+   * socket that is already one of the run's listeners — a tab refocus, a
+   * lifecycle recovery, a catch-up — where every word between the request and
+   * the server's snapshot arrives both as a buffered delta and inside
+   * `partialContent`.
+   */
+  const resumeCursorRef = useRef<{ messageId: string; length: number } | null>(null);
   // Multi-device live-sync: the messageId of the poke we last acted on, so a
   // duplicate poke for the same finished message does not trigger a redundant
   // history re-pull. Dedup is keyed on the globally-unique messageId rather than
@@ -753,30 +768,20 @@ export function useWsRuntime(
     // Synchronous timer cleanup is the entire point of doing this in render
     // (see comment above). Deferring it to useEffect would defeat the
     // race-prevention this block exists for.
-    // eslint-disable-next-line react-hooks/refs
     if (reconcileApplyTimerRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(reconcileApplyTimerRef.current);
-      // eslint-disable-next-line react-hooks/refs
       reconcileApplyTimerRef.current = null;
     }
-    // eslint-disable-next-line react-hooks/refs
     if (reconcileFinishTimerRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(reconcileFinishTimerRef.current);
-      // eslint-disable-next-line react-hooks/refs
       reconcileFinishTimerRef.current = null;
     }
     // The previous session's history deadline must not fire into the new one —
     // it would drop a healthy socket the new session just opened (#956).
-    // eslint-disable-next-line react-hooks/refs
     if (historyWatchdogRef.current) {
-      // eslint-disable-next-line react-hooks/refs
       clearTimeout(historyWatchdogRef.current);
-      // eslint-disable-next-line react-hooks/refs
       historyWatchdogRef.current = null;
     }
-    // eslint-disable-next-line react-hooks/refs
     historySelfHealsRef.current = 0;
     // Revoke object URLs from previous agent's pending uploads and clear the list.
     setPendingUploads((prev) => {
@@ -1664,7 +1669,18 @@ export function useWsRuntime(
               };
             }
           ).activeRun;
-          if (activeRun) {
+          const resumeAnchor: WsMessage | null = activeRun
+            ? {
+                id: activeRun.messageId,
+                role: "assistant",
+                content: activeRun.partialContent ?? "",
+                timestamp: new Date().toISOString(),
+              }
+            : null;
+          resumeCursorRef.current = resumeAnchor
+            ? { messageId: resumeAnchor.id, length: resumeAnchor.content.length }
+            : null;
+          if (activeRun && resumeAnchor) {
             // Anchor the in-flight reply as the TRAILING assistant message, seeded
             // with the server's resume buffer (`partialContent`) — the text
             // already streamed before this reload, which the server won't replay
@@ -1677,12 +1693,7 @@ export function useWsRuntime(
             // ThreadPrimitive.Messages (tapClientLookup index out of bounds).
             // Future chunks merge into this id via mergeOrAppendChunk. See
             // ensure-trailing-assistant.ts (#470).
-            const anchored = ensureTrailingAssistant(historyMessages, {
-              id: activeRun.messageId,
-              role: "assistant",
-              content: activeRun.partialContent ?? "",
-              timestamp: new Date().toISOString(),
-            });
+            const anchored = ensureTrailingAssistant(historyMessages, resumeAnchor);
             historyMessages.length = 0;
             historyMessages.push(...anchored);
             isRunningRef.current = true;
@@ -1833,8 +1844,13 @@ export function useWsRuntime(
               // future chunks still merge into the trailing assistant by id. This
               // also guards the concurrent-render case where `prev` is longer than
               // the messagesRef snapshot the staging decision used.
+              //
+              // Keeping `prev` must still resume the in-flight reply: the words
+              // streamed while this tab was not listening exist only in the
+              // anchor's `partialContent`, and the deltas still to come start
+              // where it ends.
               if (next.length < prev.length) {
-                return prev;
+                return resumeAnchor ? resumeInflightReplyInLocal(prev, resumeAnchor) : prev;
               }
               return next;
             }
@@ -1955,6 +1971,16 @@ export function useWsRuntime(
           }
           setIsDelayed(false);
 
+          // Drop whatever the resume seed already shows (see resumeCursorRef). A
+          // frame without `offset` is applied whole, as before.
+          let content: string = data.content;
+          const cursor = resumeCursorRef.current;
+          if (cursor && cursor.messageId === data.messageId && typeof data.offset === "number") {
+            content = content.slice(Math.max(0, cursor.length - data.offset));
+            cursor.length = Math.max(cursor.length, data.offset + data.content.length);
+          }
+          if (content === "") return;
+
           setMessages((prev) => {
             // A successful chunk auto-dismisses any prior error bubble — the
             // retry succeeded, so the previous failure no longer reflects state.
@@ -1979,7 +2005,7 @@ export function useWsRuntime(
               mergeOrAppendChunk(filtered, {
                 id: data.messageId,
                 role: "assistant",
-                content: data.content,
+                content,
                 timestamp: new Date().toISOString(),
               })
             );

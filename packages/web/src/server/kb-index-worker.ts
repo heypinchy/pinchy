@@ -38,7 +38,12 @@ import { embedTexts, fitTextsForEmbedding } from "@/lib/knowledge/embeddings";
 import { kbEmbedderAvailable, kbEmbeddingConfig } from "@/lib/knowledge/kb-embedder";
 import { resolveKbOcr } from "@/lib/knowledge/kb-ocr";
 import { DEFAULT_MAX_OCR_PAGES, extractPdfPages } from "@/lib/knowledge/pdf-extract";
-import { extractXlsxIsolated, tiffToPdfIsolated } from "@/lib/knowledge/xlsx-isolated";
+import {
+  extractXlsxIsolated,
+  readDocxTextIsolated,
+  readMsgIsolated,
+  tiffToPdfIsolated,
+} from "@/lib/knowledge/xlsx-isolated";
 import { convertOfficeFiles } from "@/lib/knowledge/office-convert";
 import { clearSpoolBatches } from "@/lib/knowledge/office-converter-sidecar";
 import {
@@ -175,6 +180,9 @@ async function resolveIngestDeps(tally: { current: OcrTally | null }): Promise<I
       if (t) t.skippedPages += conversion.frames - conversion.converted;
       return conversion;
     },
+    // Behind the same fence: the parser walks an untrusted Compound File.
+    readEmail: (copyPath) => readMsgIsolated(copyPath),
+    readDocxText: (copyPath) => readDocxTextIsolated(copyPath),
     ocrModel: ocr?.model ?? null,
     // The artifact volume, not the container's /tmp: see IngestDeps.stagingDir.
     stagingDir: stagingDirOf(),

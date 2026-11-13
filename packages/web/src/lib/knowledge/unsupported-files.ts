@@ -1,6 +1,6 @@
 /**
  * The files under an agent's granted folders whose type the indexer cannot
- * read (#1267) — an Outlook `.msg`, a legacy `.xls`, a `.rtf`.
+ * read (#1267) — an `.rtf`, a binary `.xlsb`.
  *
  * Discovery already sees them: it walks every file and drops the ones outside
  * the extension allowlist (exclude-globs.ts). Until this module it dropped them
@@ -26,6 +26,7 @@ import { kbUnsupportedFiles } from "@/db/schema";
 import { inBatches, rowsPerInsert } from "@/db/insert-batches";
 
 import { buildPathFilter } from "./path-filter";
+import { unsupportedFileKind, type UnsupportedFileKind } from "./unsupported-kind";
 
 export interface UnsupportedFile {
   /** Absolute path of the file, as discovery found it. */
@@ -112,6 +113,27 @@ export async function countUnsupportedFiles(
     WHERE org_id = ${orgId} AND (${buildPathFilter(allowedPaths, sql`source_path`)})
   `);
   return Number(rows[0]?.total ?? 0);
+}
+
+/**
+ * The same count split the way an admin reads it (#1410): documents Pinchy
+ * cannot read yet, and files that are not documents at all. Grouped by type in
+ * SQL — a share holds a handful of types and 100k+ files — and classified here,
+ * so unsupported-kind.ts stays the one place that draws the line.
+ */
+export async function countUnsupportedFilesByKind(
+  orgId: string,
+  allowedPaths: readonly string[]
+): Promise<Record<UnsupportedFileKind, number>> {
+  const counts: Record<UnsupportedFileKind, number> = { unsupported: 0, ignored: 0 };
+  if (allowedPaths.length === 0) return counts;
+  const rows = await db.execute<{ file_type: string; total: string | number }>(sql`
+    SELECT file_type, COUNT(*) AS total FROM kb_unsupported_files
+    WHERE org_id = ${orgId} AND (${buildPathFilter(allowedPaths, sql`source_path`)})
+    GROUP BY file_type
+  `);
+  for (const row of rows) counts[unsupportedFileKind(row.file_type)] += Number(row.total);
+  return counts;
 }
 
 /**

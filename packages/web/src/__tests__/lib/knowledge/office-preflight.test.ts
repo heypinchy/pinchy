@@ -432,6 +432,39 @@ describe("prepareOfficeSource", () => {
     expect(err.code).toBe("unexpected_content");
   });
 
+  it("passes a legacy binary workbook through untouched (#1373)", async () => {
+    const prepared = await prepareOfficeSource(file("Preise.xls", OLE2));
+    expect(prepared.data.equals(OLE2)).toBe(true);
+  });
+
+  it.each([
+    // Systems that "export to Excel" often write HTML or XML under `.xls`.
+    // LibreOffice would open either — and fetch what an HTML page links to.
+    ["export.xls", "<html><body><table><tr><td>1</td></tr></table></body></html>"],
+    [
+      "spreadsheetml.xls",
+      `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"/>`,
+    ],
+    ["rtf.xls", "{\\rtf1 not a workbook}"],
+    ["text.xls", "Artikel;Preis\nA-100;0,12"],
+  ])(
+    "refuses %s: a legacy workbook is a BIFF file and nothing else (#1373)",
+    async (name, body) => {
+      const err = await rejection(prepareOfficeSource(file(name, body)));
+      expect(err.code).toBe("unexpected_content");
+      expect(err.message).toMatch(/Excel workbook/);
+    }
+  );
+
+  it("refuses an OOXML package named .xls rather than sanitizing it as a document (#1373)", async () => {
+    // The package sanitizer knows the links a Word or PowerPoint package can
+    // carry, not a workbook's: such a file is refused, never half-checked.
+    const pkg = docxWith({ documentRels: relationships() });
+    expect((await rejection(prepareOfficeSource(file("renamed.xls", pkg)))).code).toBe(
+      "unexpected_content"
+    );
+  });
+
   it("refuses a zip that is not an OOXML package (an ODF package renamed .docx)", async () => {
     const odt = zipOf({
       mimetype: "application/vnd.oasis.opendocument.text",

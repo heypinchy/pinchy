@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
 import { KnowledgeFolderTree, countText } from "@/components/knowledge-folder-tree";
+import { deriveFolderState } from "@/lib/knowledge/folder-plan";
 import { apiGet } from "@/lib/api-client";
 import type {
   FolderFilesResult,
@@ -30,7 +31,8 @@ function folder(overrides: Partial<FolderStatus> & { path: string }): FolderStat
     pending: 0,
     pendingArchived: 0,
     expectedArchived: 0,
-    archivedToReconvert: 0,
+    archivedSearchable: 0,
+    archivedNotSearchable: 0,
     indexingArchive: false,
     lastIndexedAt: null,
     ...overrides,
@@ -100,7 +102,7 @@ function files(overrides: Partial<FolderFilesResult> = {}): FolderFilesResult {
       },
     ],
     total: 2,
-    totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 0 },
+    totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 0, ignored: 0 },
     truncated: false,
     ...overrides,
   };
@@ -146,6 +148,21 @@ describe("KnowledgeFolderTree", () => {
 
     const row = nameBox.parentElement!;
     expect(row).toHaveClass("sm:flex-row", "sm:flex-wrap");
+  });
+
+  // A folder of driver files has files, just none to index (#1410). Its list
+  // shows each one as skipped, so a badge saying "No files" contradicts it.
+  it("calls a folder with nothing to index one with no documents, not no files", async () => {
+    mockGet.mockResolvedValue({
+      job: null,
+      folders: [
+        { ...folder({ path: "/data/drivers", state: "empty", expected: 0 }), children: [] },
+      ],
+    });
+    render(<KnowledgeFolderTree agentId="a1" />);
+
+    expect(await screen.findByText("No documents")).toBeInTheDocument();
+    expect(screen.queryByText("No files")).not.toBeInTheDocument();
   });
 
   it("asks the folders route of the agent it was given", async () => {
@@ -280,7 +297,7 @@ describe("KnowledgeFolderTree", () => {
         : files({
             files: [],
             total: 0,
-            totals: { all: 0, searchable: 0, notSearchable: 0, unsupported: 0 },
+            totals: { all: 0, searchable: 0, notSearchable: 0, unsupported: 0, ignored: 0 },
           })
     );
     render(<KnowledgeFolderTree agentId="a1" />);
@@ -297,15 +314,65 @@ describe("KnowledgeFolderTree", () => {
     mockGet.mockImplementation(async (url: string) =>
       url.includes("/folders")
         ? status
-        : files({ totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 3 } })
+        : files({
+            totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 3, ignored: 0 },
+          })
     );
     render(<KnowledgeFolderTree agentId="a1" />);
     await userEvent.click(await screen.findByRole("button", { name: /show subfolders/i }));
     await userEvent.click(screen.getByRole("button", { name: "Show files in /data/kb/hr" }));
 
     expect(
-      await screen.findByText(/1 of 2 files searchable, plus 3 files the index can't read/)
+      await screen.findByText(/1 of 2 files searchable, plus 3 files the index can't read yet\./)
     ).toBeInTheDocument();
+  });
+
+  // #1410: a driver or a data export is not a document anybody has to convert.
+  // It is still named — skipped, not hidden — but apart from the documents.
+  it("names files that are not documents apart from the ones the index can't read yet", async () => {
+    mockGet.mockImplementation(async (url: string) =>
+      url.includes("/folders")
+        ? status
+        : files({
+            totals: { all: 2, searchable: 1, notSearchable: 1, unsupported: 3, ignored: 4 },
+          })
+    );
+    render(<KnowledgeFolderTree agentId="a1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /show subfolders/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Show files in /data/kb/hr" }));
+
+    expect(
+      await screen.findByText(
+        /1 of 2 files searchable, plus 3 files the index can't read yet and 4 files skipped because they aren't documents\./
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("marks a file that is not a document as skipped, without asking for attention", async () => {
+    mockGet.mockImplementation(async (url: string) =>
+      url.includes("/folders")
+        ? status
+        : files({
+            files: [
+              {
+                path: "/data/kb/hr/driver.dll",
+                name: "driver.dll",
+                state: "ignored",
+                archived: false,
+                indexedAt: null,
+                modifiedAt: null,
+              },
+            ],
+            total: 1,
+            totals: { all: 0, searchable: 0, notSearchable: 0, unsupported: 0, ignored: 1 },
+          })
+    );
+    render(<KnowledgeFolderTree agentId="a1" />);
+    await userEvent.click(await screen.findByRole("button", { name: /show subfolders/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Show files in /data/kb/hr" }));
+
+    const label = await screen.findByText("Not a document — skipped");
+    expect(label.className).not.toMatch(/amber/);
   });
 
   it("says when a folder is too large to list in full", async () => {
@@ -378,6 +445,7 @@ describe("countText", () => {
           state: "searchable",
           indexed: 680,
           searchable: 680,
+          archivedSearchable: 3,
           expected: 1105,
           pending: 425,
           pendingArchived: 425,
@@ -385,11 +453,12 @@ describe("countText", () => {
           indexingArchive: true,
         })
       )
-    ).toBe("680 of 680 files searchable · indexing archived files, 425 left");
+    ).toBe("677 of 677 files searchable · indexing archived files, 425 left");
   });
 
-  // A later run re-reads an archive the index already holds: never "1105 of 677".
-  it("does not count more searchable files than the folder holds on a re-run", () => {
+  // A later run re-reads an archive the index already holds. Until it gets
+  // there, the archive is counted as queued, not among the current files too.
+  it("counts only the current files on a re-run that hasn't reached the archive", () => {
     expect(
       countText(
         folder({
@@ -397,13 +466,55 @@ describe("countText", () => {
           state: "searchable",
           indexed: 1105,
           searchable: 1105,
+          archivedSearchable: 428,
           expected: 1105,
           pending: 428,
           pendingArchived: 428,
           expectedArchived: 428,
         })
       )
-    ).toBe("1105 of 1105 files searchable · 428 archived files queued");
+    ).toBe("677 of 677 files searchable · 428 archived files queued");
+  });
+
+  // The count must not grow with the archive the index already holds: never
+  // "39 of 42" for a folder of 40 current files, 3 of them without text.
+  it("counts the current files that hold no text against the current files", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "has_errors",
+          indexed: 45,
+          searchable: 42,
+          notSearchable: 3,
+          archivedSearchable: 5,
+          expected: 45,
+          pending: 5,
+          pendingArchived: 5,
+          expectedArchived: 5,
+        })
+      )
+    ).toBe("37 of 40 files searchable · 5 archived files queued");
+  });
+
+  it("does not take archived files without text off the current files", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "has_errors",
+          indexed: 45,
+          searchable: 43,
+          notSearchable: 2,
+          archivedSearchable: 3,
+          archivedNotSearchable: 2,
+          expected: 45,
+          pending: 5,
+          pendingArchived: 5,
+          expectedArchived: 5,
+        })
+      )
+    ).toBe("40 of 40 files searchable · 5 archived files queued");
   });
 
   // Documents of files deleted since the last run stay in the index until the
@@ -416,13 +527,14 @@ describe("countText", () => {
           state: "searchable",
           indexed: 1105,
           searchable: 1105,
+          archivedSearchable: 427,
           expected: 1102,
           pending: 427,
           pendingArchived: 427,
           expectedArchived: 427,
         })
       )
-    ).toBe("1102 of 1102 files searchable · 427 archived files queued");
+    ).toBe("675 of 675 files searchable · 427 archived files queued");
     expect(
       countText(
         folder({ path: "/a", state: "searchable", indexed: 42, searchable: 42, expected: 40 })
@@ -447,7 +559,7 @@ describe("countText", () => {
     ).toBe("37 of 40 files searchable");
   });
 
-  it("counts archived files the run will convert again as on their way", () => {
+  it("leaves archived files waiting for conversion out while the archive is to come", () => {
     expect(
       countText(
         folder({
@@ -456,7 +568,7 @@ describe("countText", () => {
           indexed: 45,
           searchable: 40,
           notSearchable: 5,
-          archivedToReconvert: 5,
+          archivedNotSearchable: 5,
           expected: 45,
           pending: 5,
           pendingArchived: 5,
@@ -511,6 +623,42 @@ describe("countText", () => {
     ).toBe("0 of 5 archived files done");
   });
 
+  it("doesn't let the archive stand in for a missing current file", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "has_errors",
+          indexed: 44,
+          searchable: 44,
+          archivedSearchable: 5,
+          expected: 45,
+          pending: 5,
+          pendingArchived: 5,
+          expectedArchived: 5,
+        })
+      )
+    ).toBe("39 of 40 files searchable · 5 archived files queued");
+  });
+
+  it("counts the archive with the rest once the run is through it", () => {
+    expect(
+      countText(
+        folder({
+          path: "/a",
+          state: "has_errors",
+          indexed: 45,
+          searchable: 44,
+          notSearchable: 1,
+          archivedSearchable: 4,
+          archivedNotSearchable: 1,
+          expected: 45,
+          expectedArchived: 5,
+        })
+      )
+    ).toBe("44 of 45 files searchable");
+  });
+
   it("names the archive in the singular", () => {
     expect(
       countText(
@@ -519,6 +667,7 @@ describe("countText", () => {
           state: "has_errors",
           indexed: 3,
           searchable: 2,
+          notSearchable: 1,
           expected: 4,
           pending: 1,
           pendingArchived: 1,
@@ -532,5 +681,127 @@ describe("countText", () => {
     expect(countText(folder({ path: "/a", indexed: 1, searchable: 1, expected: 1 }))).toBe(
       "1 of 1 file searchable"
     );
+  });
+});
+
+// The state beside a folder and its count are worked out apart — the state on
+// the server, the count here. They drifted apart twice while archived files
+// were still to come; whatever one says, the other must not contradict it.
+describe("countText agrees with the folder's state", () => {
+  const cases: Array<[string, Partial<FolderStatus>]> = [
+    ["every file searchable", { indexed: 40, searchable: 40, expected: 40 }],
+    ["files without text", { indexed: 40, searchable: 37, notSearchable: 3, expected: 40 }],
+    ["files missing", { indexed: 38, searchable: 38, expected: 40 }],
+    [
+      "documents of deleted files beside files without text",
+      { indexed: 45, searchable: 42, notSearchable: 3, expected: 40 },
+    ],
+    [
+      "re-run, archive in the index and still to come",
+      {
+        indexed: 45,
+        searchable: 45,
+        archivedSearchable: 5,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 5,
+        pendingArchived: 5,
+      },
+    ],
+    [
+      "re-run, current files without text",
+      {
+        indexed: 45,
+        searchable: 42,
+        notSearchable: 3,
+        archivedSearchable: 5,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 5,
+        pendingArchived: 5,
+      },
+    ],
+    [
+      "re-run, an archived file without text",
+      {
+        indexed: 45,
+        searchable: 44,
+        notSearchable: 1,
+        archivedSearchable: 4,
+        archivedNotSearchable: 1,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 5,
+        pendingArchived: 5,
+      },
+    ],
+    [
+      "re-run, a current file missing",
+      {
+        indexed: 44,
+        searchable: 44,
+        archivedSearchable: 5,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 5,
+        pendingArchived: 5,
+      },
+    ],
+    [
+      "mid-archive",
+      {
+        indexed: 42,
+        searchable: 42,
+        archivedSearchable: 2,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 3,
+        pendingArchived: 3,
+        indexingArchive: true,
+      },
+    ],
+    [
+      "first run, archive not yet in the index",
+      {
+        indexed: 40,
+        searchable: 40,
+        expected: 45,
+        expectedArchived: 5,
+        pending: 5,
+        pendingArchived: 5,
+      },
+    ],
+    [
+      "archive read, an archived file without text",
+      {
+        indexed: 45,
+        searchable: 44,
+        notSearchable: 1,
+        archivedSearchable: 4,
+        archivedNotSearchable: 1,
+        expected: 45,
+        expectedArchived: 5,
+      },
+    ],
+  ];
+
+  it.each(cases)("%s", (_, overrides) => {
+    const f = folder({ path: "/a", ...overrides });
+    const state = deriveFolderState({
+      indexed: f.indexed,
+      notSearchable: f.notSearchable,
+      expected: f.expected,
+      pending: f.pending,
+      pendingArchived: f.pendingArchived,
+      expectedArchived: f.expectedArchived,
+      current: f.indexingArchive,
+      currentArchived: f.indexingArchive,
+      archived: f.archivedSearchable + f.archivedNotSearchable,
+      archivedNotSearchable: f.archivedNotSearchable,
+      awaitingDiscovery: false,
+    });
+    expect(["searchable", "has_errors"]).toContain(state);
+    const [, done, of] = countText({ ...f, state }).match(/^(\d+) of (\d+) /)!;
+    expect(state === "searchable").toBe(done === of);
   });
 });

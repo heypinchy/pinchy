@@ -121,6 +121,9 @@ export function reindexAuditEntry(args: ReindexAuditArgs): AuditLogEntry {
             ...(args.counts.unsupported !== undefined
               ? { unsupported: args.counts.unsupported }
               : {}),
+            // Not documents at all (#1410) — counted apart so the row says
+            // how many files an admin actually has to look at.
+            ...(args.counts.ignored !== undefined ? { ignored: args.counts.ignored } : {}),
           }
         : {}),
       // Field by field for the same reason as `counts` above: the worker's

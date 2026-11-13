@@ -132,15 +132,45 @@ describe("fix-volume-ownership.sh", () => {
     expect(chownedPaths()).not.toContain(join(configDir, "npm"));
   });
 
-  // The prune must not swallow the traversal: everything BESIDE npm/ still has
-  // to be repaired, or the entrypoint stops doing the job it was written for.
-  it("prunes only the plugin store, not its siblings", () => {
-    mkdirSync(join(configDir, "credentials"), { recursive: true });
-    writeFileSync(join(configDir, "credentials", "telegram-pairing.json"), "{}\n");
+  // OpenClaw 2026.9 keeps its gateway lock directory in the state dir
+  // (`tmp/openclaw-<uid>`, mode 0700) and refuses to start when that directory
+  // is not owned by its own uid: "device identity coordinator directory belongs
+  // to another user". Handing it to uid 999 with the rest of the volume took the
+  // gateway down on every restart after the first boot. Pinchy never reads or
+  // writes anything under tmp/.
+  it("never chowns OpenClaw's gateway lock directory", () => {
+    const lockDir = join(configDir, "tmp", "openclaw-0");
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, "device-identity.0123abcd.lock.sqlite"), "");
 
     run();
 
-    expect(chownedPaths()).toContain(join(configDir, "credentials", "telegram-pairing.json"));
+    expect(chownedPaths()).not.toContain(join(configDir, "tmp"));
+  });
+
+  // credentials/ is OpenClaw's: since 2026.9 Pinchy reads nothing there (pairing
+  // and allow lists moved into OpenClaw's state database), and OpenClaw's
+  // browser relay ignores its secret there unless the file belongs to its own
+  // uid. Handing the tree to uid 999 would cost a relay pairing on every pinchy
+  // restart.
+  it("never chowns OpenClaw's credentials directory", () => {
+    mkdirSync(join(configDir, "credentials"), { recursive: true });
+    writeFileSync(join(configDir, "credentials", "browser-extension-relay.secret"), "secret\n");
+
+    run();
+
+    expect(chownedPaths()).not.toContain(join(configDir, "credentials"));
+  });
+
+  // The prune must not swallow the traversal: everything BESIDE npm/ still has
+  // to be repaired, or the entrypoint stops doing the job it was written for.
+  it("prunes only OpenClaw's own directories, not their siblings", () => {
+    mkdirSync(join(configDir, "workspaces", "a1"), { recursive: true });
+    writeFileSync(join(configDir, "workspaces", "a1", "AGENTS.md"), "# a1\n");
+
+    run();
+
+    expect(chownedPaths()).toContain(join(configDir, "workspaces", "a1", "AGENTS.md"));
   });
 
   // `! -uid` gate: this volume carries agents/<id>/sessions and workspaces with

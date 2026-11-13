@@ -112,15 +112,15 @@ describe("a reclaim that cannot complete leaves the original alone (#1095)", () 
     // The caller renders this text — the route puts it in the 500 body. A
     // cleanup failure masking the real reason would restore #1095's core
     // problem: a failure that does not say why.
-    const filePath = join(TEST_ROOT, AGENT_ID, "TOOLS.md");
+    const filePath = join(TEST_ROOT, AGENT_ID, "IDENTITY.md");
     writeFileSync(filePath, "# placeholder\n", "utf-8");
 
     denyWrites = true;
     try {
-      workspace.writeToolsFile(AGENT_ID, [
+      workspace.writeMailboxContext(AGENT_ID, [
         { address: "a@example.com", label: "a@example.com", operations: ["read"] },
       ]);
-      expect.unreachable("writeToolsFile should have thrown");
+      expect.unreachable("writeMailboxContext should have thrown");
     } catch (err) {
       expect((err as NodeJS.ErrnoException).code).toBe("EACCES");
     } finally {

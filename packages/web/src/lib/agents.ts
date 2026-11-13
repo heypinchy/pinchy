@@ -18,10 +18,7 @@ import {
   writeWorkspaceFileInternal,
   writeIdentityFile,
 } from "@/lib/workspace";
-import {
-  recalculateTelegramAllowStores,
-  clearAllowStoreForAccount,
-} from "@/lib/telegram-allow-store";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { deleteSetting } from "@/lib/settings";
 import { getUsableDefaultProvider } from "@/lib/model-resolver/usable-default-provider";
 import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
@@ -152,9 +149,26 @@ export async function deleteAgent(id: string, onDeleted?: OnAgentDeleted) {
     // Clean up Telegram bot settings if this agent had a bot
     await deleteSetting(`telegram_bot_token:${id}`);
     await deleteSetting(`telegram_bot_username:${id}`);
-    clearAllowStoreForAccount(id);
-    await regenerateOpenClawConfig();
-    await recalculateTelegramAllowStores();
+    // Both run whichever fails. The recalculation rewrites every list from
+    // scratch, so the deleted bot's list goes first and the bot answers no one
+    // while it still runs; the regenerate then takes it out of the config.
+    // Should both fail, the regenerate's error reaches the caller and the
+    // recalculation's is logged rather than lost.
+    let recalcError: unknown = null;
+    try {
+      await recalculateTelegramAllowStores();
+    } catch (err) {
+      recalcError = err;
+    }
+    try {
+      await regenerateOpenClawConfig();
+    } catch (err) {
+      if (recalcError) {
+        console.error("[agents] could not rewrite the Telegram allow lists:", recalcError);
+      }
+      throw err;
+    }
+    if (recalcError) throw recalcError;
   }
 
   return updated;

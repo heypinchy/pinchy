@@ -81,6 +81,33 @@ describe("runSoffice", () => {
     expect(argv.slice(-2)).toEqual([join(tmpRoot, "0.doc"), join(tmpRoot, "1.pptx")]);
   });
 
+  it("asks for an OOXML workbook, not a PDF, for a batch of legacy workbooks (#1373)", async () => {
+    // A sheet has no pages: rendering one to PDF clips the columns the
+    // cell-based reader exists to keep. `.xls` becomes `.xlsx` instead, by
+    // Calc's own export filter, and the reader opens that.
+    const record = join(tmpRoot, "argv");
+    process.env.KB_SOFFICE_BIN = stub("soffice-argv", `printf '%s\\n' "$@" > ${record}\n`);
+
+    await run({ inputs: [join(tmpRoot, "0.xls"), join(tmpRoot, "1.XLS")] });
+
+    const argv = (await readFile(record, "utf8")).trim().split("\n");
+    expect(argv[argv.indexOf("--convert-to") + 1]).toBe("xlsx:Calc MS Excel 2007 XML");
+  });
+
+  it("refuses a batch that mixes workbooks with page-shaped documents", async () => {
+    // One `--convert-to` per process, so one target per batch. A mixed batch
+    // would turn the workbook into a PDF, or the document into a workbook —
+    // the converter's caller groups by target, and this is what holds it to
+    // that rather than a guess.
+    const record = join(tmpRoot, "argv");
+    process.env.KB_SOFFICE_BIN = stub("soffice-argv", `printf '%s\\n' "$@" > ${record}\n`);
+
+    await expect(run({ inputs: [join(tmpRoot, "0.doc"), join(tmpRoot, "1.xls")] })).rejects.toThrow(
+      /mix/
+    );
+    await expect(readFile(record, "utf8")).rejects.toThrow();
+  });
+
   it("hands the converter a minimal environment, not the server's secrets", async () => {
     // LibreOffice parses attacker-supplied legacy binary formats — a format
     // family with a long history of memory-safety bugs. It has no business
@@ -333,16 +360,18 @@ describe("runTextOracle", () => {
     expect(await runTextOracle(bin, "/data/a.doc")).toBe(3);
   });
 
-  it("answers null for a missing binary, rather than failing the document", async () => {
-    // Local dev has no catdoc. A missing oracle removes the tripwire for one
-    // file; it must never be mistaken for a conversion problem.
-    expect(await runTextOracle(join(tmpRoot, "not-installed"), "/data/a.doc")).toBeNull();
+  it("says the extractor is missing, so the caller can tell skipped from failed", async () => {
+    // A host without catdoc removes the tripwire for every .doc; the caller
+    // logs that as skipped — it must never be mistaken for a conversion problem.
+    await expect(
+      runTextOracle(join(tmpRoot, "not-installed"), "/data/a.doc")
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("answers null when the extractor exits non-zero", async () => {
+  it("says how the extractor exited when it exits non-zero", async () => {
     const bin = stub("oracle-angry", "printf 'partial\\n'\nexit 2\n");
 
-    expect(await runTextOracle(bin, "/data/a.doc")).toBeNull();
+    await expect(runTextOracle(bin, "/data/a.doc")).rejects.toThrow(/exited with code 2/);
   });
 
   it("stops reading a runaway extractor instead of buffering it all", async () => {
@@ -355,9 +384,7 @@ describe("runTextOracle", () => {
       "while true; do printf 'word word word word word word word word\\n'; done\n"
     );
 
-    const words = await runTextOracle(bin, "/data/a.doc");
-
-    expect(words).toBeNull();
+    await expect(runTextOracle(bin, "/data/a.doc")).rejects.toThrow(/more than 16 MB of text/);
   }, 20_000);
 });
 

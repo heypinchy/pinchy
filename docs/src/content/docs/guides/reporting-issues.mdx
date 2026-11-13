@@ -26,7 +26,7 @@ The filter reads ten levels into a structure. If you spot a `[TRUNCATED]` marker
 
 If you have more than one conversation with an agent, you can pick which one to export. The selector lists all of your own chats with that agent — including named chats and read-only Telegram conversations linked to your account. You can only export your own chats.
 
-When you start from a specific conversation, that chat is preselected; from Settings, the agent's default chat is preselected. If a chat's transcript is no longer on disk, we still produce a valid file from the audit-log entries alone and flag it (`scope.trajectoryMissing`), so support can tell an absent transcript apart from an empty one.
+When you start from a specific conversation, that chat is preselected; from Settings, the agent's default chat is preselected. If OpenClaw no longer has a chat's transcript, we still produce a valid file from the audit-log entries alone and flag it (`scope.trajectoryMissing`), so support can tell an absent transcript apart from an empty one.
 
 For Telegram chats the export includes the conversation transcript, but the audit-log section is currently limited — audit entries are attributed to your web account, so a Telegram chat's file may ship without them. The transcript is still the primary signal for debugging.
 

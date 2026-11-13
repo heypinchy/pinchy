@@ -1,7 +1,8 @@
 /**
  * Converts page-shaped Office documents (.doc/.docx/.ppt/.pptx) to PDF for the
- * knowledge base (#936). Standalone: wiring this into the ingest pipeline is
- * #938's job, and serving the artifact as a preview is #939's.
+ * knowledge base (#936), and legacy `.xls` workbooks to `.xlsx` (#1373).
+ * Standalone: wiring this into the ingest pipeline is #938's job, and serving
+ * the artifact as a preview is #939's.
  *
  * ## Why convert instead of parsing natively
  *
@@ -13,8 +14,13 @@
  *
  * Conversion also buys what the citation chain depends on: ONE renderable
  * artifact whose pages agree with what the reader is shown, so a citation can
- * never point at something the user cannot see. Spreadsheets take a different
- * path (#937/#940) — `libreoffice-calc` is deliberately not installed.
+ * never point at something the user cannot see. OOXML spreadsheets take a
+ * different path (#937/#940): they are read directly, never converted. A
+ * legacy BIFF `.xls` is the one exception, because exceljs cannot parse it and
+ * the only maintained JavaScript reader that can (SheetJS) ships its security
+ * fixes outside npm. LibreOffice Calc turns it into an `.xlsx` — never a PDF,
+ * whose page breaks no sheet citation could point at — and that workbook is
+ * then read by the same isolated reader, behind the same limits, as any other.
  *
  * ## Three things this module exists to get right
  *
@@ -81,12 +87,15 @@ import { LOG_PATH_MAX, LOG_REASON_MAX, oneLine } from "../log-line";
 
 import { getOfficeArtifactStore, hashFileContents, OfficeArtifactStore } from "./office-artifacts";
 import {
+  convertedExtensionOf,
   countWords,
   OFFICE_CONVERT_BATCH_SIZE,
   OFFICE_EXTENSIONS,
   OfficeFileRejectedError,
   StagedCopyWriteError,
   isOfficeFile,
+  isOoxmlWordFile,
+  type ConvertedExtension,
 } from "./office-formats";
 import type { StagedSource } from "./office-preflight";
 import { extractPdfPages } from "./pdf-extract";
@@ -223,6 +232,12 @@ export const MIN_FREE_OUTPUT_INODES = 1024;
 export type VolumeSpace = Pick<StatsFs, "bsize" | "bavail" | "files" | "ffree">;
 
 export interface OfficeSource {
+  /**
+   * A copy only the caller writes, held until the conversion returns — never
+   * a path on the share. The converter stages it, and the word-count oracle
+   * reads a `.docx` or `.docm` from it AFTER the conversion (`oracleInput`): a file that
+   * changed in between would be checked against the wrong text.
+   */
   absPath: string;
   /**
    * sha256 of the file's bytes — the artifact key. Optional because a
@@ -273,7 +288,10 @@ export interface ConversionOutcome {
   status: ConversionStatus;
   /** Set for `converted` only. */
   artifactPath?: string;
-  /** Set for `converted` only. */
+  /**
+   * Set for `converted`, and for a `failed` outcome the word-count check
+   * refused (`status: "short"`) — ingest's .docx fallback reads it (#1406).
+   */
   verification?: VerificationReport;
   /**
    * Diagnostic. Holds no document text, but it can quote names read from the
@@ -325,8 +343,9 @@ export interface ConvertOptions {
   countPdfWords?: (absPath: string) => Promise<number>;
   /**
    * Words the INDEPENDENT extractor sees in the original, or null when there is
-   * none for this format. `absPath` is the staged copy; `displayPath` is what a
-   * log line calls the document.
+   * none for this format. `absPath` is the private copy for a `.docx` and the
+   * staged copy otherwise (`oracleInput`); `displayPath` is what a log line
+   * calls the document.
    */
   countSourceWords?: (absPath: string, displayPath: string) => Promise<number | null>;
   batchSize?: number;
@@ -339,6 +358,8 @@ export interface ConvertOptions {
 /** One document's slot in the run, so results can be returned in input order. */
 interface WorkItem {
   absPath: string;
+  /** What the converter turns it into — a PDF, or for a legacy workbook an `.xlsx` (#1373). */
+  output: ConvertedExtension;
   /** See `OfficeSource.displayPath`. */
   displayPath: string;
   contentHash: string;
@@ -347,8 +368,8 @@ interface WorkItem {
 }
 
 /**
- * Converts `sources` to PDFs in the artifact store, returning one outcome per
- * source, in input order.
+ * Converts `sources` into the artifact store — a PDF each, or an `.xlsx` for a
+ * legacy workbook — returning one outcome per source, in input order.
  *
  * Documents already in the store are returned without running the converter,
  * and identical content at two paths converts once — the store is keyed on
@@ -397,7 +418,8 @@ export async function convertOfficeFiles(
       }
     }
 
-    const cached = await store.get(contentHash);
+    const output = convertedExtensionOf(source.absPath);
+    const cached = await store.get(contentHash, output);
     if (cached) {
       outcomes[position] = {
         sourcePath: source.absPath,
@@ -408,11 +430,15 @@ export async function convertOfficeFiles(
       continue;
     }
 
-    const existing = byHash.get(contentHash);
+    // Keyed on the target too: the same bytes under `.doc` and `.xls` are two
+    // conversions, and neither one's artifact answers for the other.
+    const key = `${output}:${contentHash}`;
+    const existing = byHash.get(key);
     if (existing) existing.positions.push(position);
     else {
-      byHash.set(contentHash, {
+      byHash.set(key, {
         absPath: source.absPath,
+        output,
         displayPath: source.displayPath ?? source.absPath,
         contentHash,
         positions: [position],
@@ -421,10 +447,18 @@ export async function convertOfficeFiles(
   }
 
   const work = [...byHash.values()];
+  // One converter process writes one target format (`convertTargetFor`), so a
+  // batch holds documents of one target only.
+  const batches: WorkItem[][] = [];
+  for (const output of new Set(work.map((item) => item.output))) {
+    const sameTarget = work.filter((item) => item.output === output);
+    for (let start = 0; start < sameTarget.length; start += batchSize) {
+      batches.push(sameTarget.slice(start, start + batchSize));
+    }
+  }
   let processed = 0;
 
-  for (let start = 0; start < work.length; start += batchSize) {
-    const batch = work.slice(start, start + batchSize);
+  for (const batch of batches) {
     const results = await convertBatch(batch, {
       store,
       runConverter,
@@ -545,6 +579,8 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
   const outDir = join(stagingDir, "out");
   const profileDir = join(stagingDir, "profile");
   const tmpDir = join(stagingDir, "tmp");
+  /** Every document in a batch shares its target (see `convertOfficeFiles`). */
+  const output = batch[0].output;
 
   try {
     await mkdir(inDir, { recursive: true });
@@ -609,7 +645,13 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
     if (inputs.size > 0) {
       let runs: Map<number, DocumentRun>;
       try {
-        runs = await runIsolatingKills(inputs, { outDir, profileDir, tmpDir }, deps, ownBatches);
+        runs = await runIsolatingKills(
+          inputs,
+          { outDir, profileDir, tmpDir },
+          output,
+          deps,
+          ownBatches
+        );
       } catch (err) {
         // The converter could not be started at all (a missing binary, a
         // permission problem). Nothing here says anything about the documents.
@@ -646,7 +688,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         if (outcomes[i]) continue;
         const stagedSource = join(inDir, `${i}${extname(item.absPath).toLowerCase()}`);
         const run = runs.get(i) as RunAnswer;
-        const producedPdf = join(run.outDir, `${i}.pdf`);
+        const producedPdf = join(run.outDir, `${i}${output}`);
         const outcome = await collectOne(
           { ...item, contentHash: keys[i] },
           stagedSource,
@@ -677,7 +719,7 @@ async function convertBatch(batch: WorkItem[], deps: BatchDeps): Promise<Convers
         outcomes[i] = volumeFault
           ? infrastructureFailure(
               item.absPath,
-              `could not write the converted PDF: ${volumeFault}${storeLine ? ` (converter: ${storeLine})` : ""}`
+              `could not write the converted ${output === ".xlsx" ? "workbook" : "PDF"}: ${volumeFault}${storeLine ? ` (converter: ${storeLine})` : ""}`
             )
           : outcome;
       }
@@ -740,6 +782,7 @@ type DocumentRun = RunAnswer | { error: string };
 async function runIsolatingKills(
   inputs: ReadonlyMap<number, string>,
   dirs: { outDir: string; profileDir: string; tmpDir: string },
+  output: ConvertedExtension,
   deps: BatchDeps,
   ownBatches: string[]
 ): Promise<Map<number, DocumentRun>> {
@@ -761,7 +804,7 @@ async function runIsolatingKills(
   // free-space check use; it goes first. Unlinked by name: nothing here
   // walks into a directory the converter made.
   for (const i of inputs.keys()) {
-    await unlink(join(dirs.outDir, `${i}.pdf`)).catch(() => {});
+    await unlink(join(dirs.outDir, `${i}${output}`)).catch(() => {});
   }
   await deps.discardScratch(dirs.tmpDir).catch(() => {});
 
@@ -842,7 +885,7 @@ async function collectOne(
   try {
     let taken: Awaited<ReturnType<typeof takeOutput>>;
     try {
-      taken = await takeOutput(producedPdf, join(privateDir, "converted.pdf"));
+      taken = await takeOutput(producedPdf, join(privateDir, `converted${item.output}`));
     } catch (err) {
       // About this output, not the document: retry it rather than brand it
       // unreadable, and keep the rest of the batch.
@@ -909,6 +952,8 @@ async function verifyAndCommit(
   producedPdf: string,
   deps: BatchDeps
 ): Promise<ConversionOutcome> {
+  if (item.output === ".xlsx") return commitWorkbook(item, producedPdf, deps);
+
   let pdfWords: number;
   try {
     pdfWords = await deps.countPdfWords(producedPdf);
@@ -917,10 +962,10 @@ async function verifyAndCommit(
   }
 
   // An oracle that breaks says nothing about the conversion, so it must never
-  // fail a document — it only removes the tripwire for this one file. It reads
-  // the STAGED copy: the bytes that were checked and converted, not whatever
-  // the share holds by now.
-  const sourceWords = await deps.countSourceWords(stagedSource, item.displayPath).catch(() => null);
+  // fail a document — it only removes the tripwire for this one file.
+  const sourceWords = await deps
+    .countSourceWords(oracleInput(item, stagedSource), item.displayPath)
+    .catch(() => null);
 
   const verification: VerificationReport = {
     status: sourceWords === null ? "unverified" : "ok",
@@ -950,6 +995,66 @@ async function verifyAndCommit(
   }
 
   return { sourcePath: item.absPath, status: "converted", artifactPath, verification };
+}
+
+/**
+ * Which file the word-count oracle reads.
+ *
+ * A `.docx` or `.docm` is counted from the caller's private copy (`OfficeSource.absPath`):
+ * the document as written, before the preflight cut its external links. The
+ * staged copy keeps the elements that pointed at them, and mammoth throws on
+ * some of what is left — a hyperlink that still has its `w:anchor` (a link to
+ * a section of a web page) and a picture linked to a file — which turned
+ * the tripwire off for exactly those documents. Reading the copy costs no
+ * safety: mammoth runs in the reader child, through `readGuardedDocx`'s
+ * limits, and extracting raw text reads no picture, linked or embedded (and
+ * mammoth's `externalFileAccess` defaults to off besides). It counts no text
+ * the cut removed, either: mammoth reads no altChunk.
+ *
+ * Every other format is counted from the STAGED copy, the bytes that were
+ * checked and converted: a legacy binary is staged as it is, and an RTF file
+ * under a Word name is staged with its field instructions cut — text catdoc
+ * would count and LibreOffice never draws.
+ */
+function oracleInput(item: WorkItem, stagedSource: string): string {
+  return isOoxmlWordFile(item.absPath) ? item.absPath : stagedSource;
+}
+
+/**
+ * Stores a legacy workbook's conversion (#1373), deliberately unverified.
+ *
+ * The word-count tripwire compares a converted PDF against an independent
+ * extractor; a workbook has no PDF, and the spreadsheet reader that would
+ * count it skips the hidden sheets, rows and columns the source still holds,
+ * so a count would fail on exactly the files it should pass. What reads the
+ * workbook next is the isolated spreadsheet reader, with the same limits as
+ * any `.xlsx`: an output it cannot open fails there, as that document's.
+ */
+async function commitWorkbook(
+  item: WorkItem,
+  producedWorkbook: string,
+  deps: BatchDeps
+): Promise<ConversionOutcome> {
+  let artifactPath: string;
+  try {
+    artifactPath = await deps.store.put(item.contentHash, producedWorkbook, ".xlsx");
+  } catch (err) {
+    return infrastructureFailure(
+      item.absPath,
+      `artifact store rejected the workbook: ${reasonOf(err)}`
+    );
+  }
+  return {
+    sourcePath: item.absPath,
+    status: "converted",
+    artifactPath,
+    verification: {
+      status: "unverified",
+      sourceWords: null,
+      pdfWords: null,
+      epsilon: deps.epsilon,
+    },
+  };
 }
 
 /**
@@ -1133,6 +1238,11 @@ export interface OracleDeps {
    * (`countDocxWordsIsolated`), so this process never holds the file.
    */
   countDocxWords?: (absPath: string) => Promise<number>;
+  /**
+   * Counts what a text-dumping CLI (`catdoc`, `catppt`) prints for a file, or
+   * rejects with why it could not. Production spawns it (`runTextOracle`).
+   */
+  countTextWords?: (bin: string, absPath: string) => Promise<number>;
 }
 
 /**
@@ -1142,7 +1252,7 @@ export interface OracleDeps {
  * Independence is the point: an oracle derived from LibreOffice would agree
  * with LibreOffice about text it dropped, and verify nothing.
  *
- *   - `.docx` — mammoth, already a web dependency, reading OOXML directly —
+ *   - `.docx`/`.docm` — mammoth, already a web dependency, reading OOXML directly —
  *     in the reader child (`xlsx-isolated.ts`), never in this process: its
  *     DOM costs up to ~300x the markup it parses.
  *   - `.doc`  — `catdoc`, and `.ppt` — `catppt` (Debian `catdoc`, ~1 MB next
@@ -1152,11 +1262,14 @@ export interface OracleDeps {
  *   - `.pptx` — no extractor available without adding a dependency, so it is
  *     honestly reported as unverified rather than silently passed.
  *
- * A missing binary is not an error: it yields null, the file is recorded
- * `unverified`, and conversion proceeds. Local dev has no catdoc.
+ * A count that cannot be had is not an error of the document: it yields null,
+ * the file is recorded `unverified`, conversion proceeds — and the server log
+ * says so, `skipped` (too big for mammoth, or no catdoc on this host) or
+ * `failed` (anything else), because a PDF that lost text is otherwise indexed
+ * with nothing anywhere to tell.
  *
- * `displayPath` is what its log line calls the document: the conversion hands
- * the oracle a staged copy (`in/0.docx`), a name that says nothing.
+ * `displayPath` is what that log line calls the document: the oracle reads a
+ * private copy (`oracleInput`), whose name says nothing.
  */
 export async function countSourceWordsWithOracle(
   absPath: string,
@@ -1165,7 +1278,7 @@ export async function countSourceWordsWithOracle(
 ): Promise<number | null> {
   const ext = extname(absPath).toLowerCase();
 
-  if (ext === ".docx") {
+  if (isOoxmlWordFile(absPath)) {
     try {
       // The child reads the file through the same limits the conversion
       // input passed — mammoth inflates the whole archive, so a bomb must not
@@ -1173,22 +1286,32 @@ export async function countSourceWordsWithOracle(
       // memory whatever those limits miss.
       return await (deps.countDocxWords ?? countDocxWordsIsolated)(absPath);
     } catch (err) {
-      if (err instanceof OfficeFileRejectedError && err.code === "too_large") {
-        // Too much markup for mammoth's DOM — refused by the scan, or by the
-        // reader child running out of heap — or a bomb the conversion's own
-        // preflight refuses as well. Not a failure: the conversion goes on,
-        // without its tripwire.
-        console.warn(
-          `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count skipped, unverified — ${oneLine(err.message, LOG_REASON_MAX)}`
-        );
-      }
+      // Not a failure of the document either way: the conversion goes on,
+      // without its tripwire — and the log says so, or a PDF that lost text
+      // is indexed with nothing anywhere to tell.
+      const skipped = err instanceof OfficeFileRejectedError && err.code === "too_large";
+      // Skipped: too much markup for mammoth's DOM — refused by the scan, or
+      // by the reader child running out of heap — or a bomb the conversion's
+      // own preflight refuses as well. Failed: anything else, mammoth's own
+      // errors included.
+      console.warn(
+        `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count ${skipped ? "skipped" : "failed"}, unverified — ${oneLine(reasonOf(err), LOG_REASON_MAX)}`
+      );
       return null;
     }
   }
 
-  if (ext === ".doc") return runTextOracle("catdoc", absPath);
-  if (ext === ".ppt") return runTextOracle("catppt", absPath);
-  return null;
+  const bin = ext === ".doc" ? "catdoc" : ext === ".ppt" ? "catppt" : null;
+  if (bin === null) return null;
+  try {
+    return await (deps.countTextWords ?? runTextOracle)(bin, absPath);
+  } catch (err) {
+    const skipped = (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
+    console.warn(
+      `[kb-convert] ${oneLine(displayPath, LOG_PATH_MAX)}: word count ${skipped ? "skipped" : "failed"}, unverified — ${oneLine(reasonOf(err), LOG_REASON_MAX)}`
+    );
+    return null;
+  }
 }
 
 /**
@@ -1200,14 +1323,15 @@ export async function countSourceWordsWithOracle(
 const MAX_ORACLE_BYTES = 16 * 1024 * 1024;
 
 /**
- * Runs a text-dumping CLI over `absPath` and counts its words; null if it is
- * absent, unhappy, too slow, or too talkative.
+ * Runs a text-dumping CLI over `absPath` and counts its words. Rejects when it
+ * is absent (the spawn error, `code: "ENOENT"`), exits non-zero, is too slow
+ * or too talkative, saying which — the caller logs it.
  *
  * Exported for the adapter test — the production callers pass a fixed binary
  * name, so this is the only seam a stub can reach.
  */
-export function runTextOracle(bin: string, absPath: string): Promise<number | null> {
-  return new Promise((resolve) => {
+export function runTextOracle(bin: string, absPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
     const child = spawn(bin, [absPath], {
       stdio: ["ignore", "pipe", "ignore"],
       env: childEnv(process.env.HOME ?? "/tmp"),
@@ -1215,26 +1339,33 @@ export function runTextOracle(bin: string, absPath: string): Promise<number | nu
     });
     let out = "";
     let settled = false;
-    const finish = (words: number | null) => {
+    const finish = (outcome: number | Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(words);
+      if (typeof outcome === "number") resolve(outcome);
+      else reject(outcome);
     };
 
     child.stdout.on("data", (chunk: Buffer) => {
       out += chunk.toString("utf8");
       if (out.length > MAX_ORACLE_BYTES) {
         killTree(child);
-        finish(null);
+        finish(new Error(`${bin} printed more than ${MAX_ORACLE_BYTES / 1024 / 1024} MB of text`));
       }
     });
     const timer = setTimeout(() => {
       killTree(child);
-      finish(null);
+      finish(new Error(`${bin} took longer than 30 s`));
     }, 30_000);
-    child.on("error", () => finish(null));
-    child.on("close", (code) => finish(code === 0 ? countWords(out) : null));
+    child.on("error", (err) => finish(err));
+    child.on("close", (code, signal) =>
+      finish(
+        code === 0
+          ? countWords(out)
+          : new Error(`${bin} exited with ${code === null ? `signal ${signal}` : `code ${code}`}`)
+      )
+    );
   });
 }
 

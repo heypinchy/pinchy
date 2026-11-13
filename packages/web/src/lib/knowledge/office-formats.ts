@@ -36,6 +36,17 @@ export const WORD_EXTENSIONS = [".doc", ".docx", ".docm"] as const;
 export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
 
 /**
+ * The Word formats that are Office Open XML packages — what mammoth reads, so
+ * what the conversion's word count counts with it (`countSourceWordsWithOracle`).
+ * A macro-enabled `.docm` is the same package with a macro part beside it.
+ */
+export const OOXML_WORD_EXTENSIONS = [".docx", ".docm"] as const;
+
+export function isOoxmlWordFile(path: string): boolean {
+  return (OOXML_WORD_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/**
  * Documents per converter process.
  *
  * Big enough that LibreOffice's startup is amortised (17 real corpus files cost
@@ -53,18 +64,42 @@ export const PRESENTATION_EXTENSIONS = [".ppt", ".pptx"] as const;
 export const OFFICE_CONVERT_BATCH_SIZE = 20;
 
 /**
- * The spreadsheet formats the knowledge base reads directly, cells and all,
- * instead of converting (see `xlsx-extract.ts` for the three reasons).
+ * The spreadsheet formats the knowledge base reads cell by cell, instead of
+ * rendering them to pages (see `xlsx-extract.ts` for the three reasons).
  *
- * OOXML only, and that is a capability statement rather than a preference:
- * `extractXlsx` reads through `workbook.xlsx.readFile`, which parses the
- * zipped XML formats and not legacy BIFF. Listing `.xls` here would index
- * every legacy workbook straight into the unreadable list (#935) — an
- * allowlist that names what we cannot read is a promise the extractor breaks
- * one file at a time. `.csv` is out for a different reason: it has no sheet,
- * so half of the `sheet + rows` anchor would have to be invented.
+ * `extractXlsx` reads through `workbook.xlsx.readFile`, which parses the zipped
+ * OOXML formats and not legacy BIFF. `.xls` is on this list anyway, because it
+ * never reaches that reader as itself: the office converter turns it into an
+ * `.xlsx` first (`LEGACY_WORKBOOK_EXTENSIONS`, #1373), and what the reader
+ * opens is that. What a legacy workbook IS does not change with the route —
+ * cited by sheet and rows, shown in the sheet pane, admitted by discovery.
+ *
+ * `.csv` is out for a different reason: it has no sheet, so half of the
+ * `sheet + rows` anchor would have to be invented.
  */
-export const SPREADSHEET_EXTENSIONS = [".xlsx", ".xlsm"] as const;
+export const SPREADSHEET_EXTENSIONS = [".xlsx", ".xlsm", ".xls"] as const;
+
+/**
+ * The spreadsheets the converter turns into `.xlsx` before they are read.
+ *
+ * Legacy BIFF8 workbooks: exceljs cannot parse them, and the JavaScript
+ * readers that can either carry open advisories on their npm release or ship
+ * fixes off-registry. LibreOffice Calc in the network-less converter sidecar
+ * reads them instead, and the spreadsheet reader then gets the same OOXML it
+ * gets from any other workbook — with the same limits.
+ */
+export const LEGACY_WORKBOOK_EXTENSIONS = [".xls"] as const;
+
+/**
+ * Every format the office converter takes: the page-shaped documents it turns
+ * into PDFs and the legacy workbooks it turns into `.xlsx`.
+ *
+ * One list, because the converter's queue, the sidecar's input check and the
+ * artifact version an indexed row records must all agree on it — a format the
+ * converter takes that one of them leaves out is converted and then never
+ * asked for, or asked for and refused.
+ */
+export const CONVERTED_EXTENSIONS = [...OFFICE_EXTENSIONS, ...LEGACY_WORKBOOK_EXTENSIONS] as const;
 
 /**
  * Scanned images the knowledge base reads through index-time OCR (#1409).
@@ -78,6 +113,13 @@ export const SCAN_EXTENSIONS = [".tif", ".tiff"] as const;
 
 /** Plain text, read as it is, in whatever encoding it was saved in (`text-extract.ts`). */
 export const TEXT_EXTENSIONS = [".txt"] as const;
+
+/**
+ * Mail saved from Outlook, read as headers plus body (`msg-extract.ts`).
+ * `.eml` is not here: nothing on a file share writes it in volume, and it is
+ * a different format with a different parser.
+ */
+export const MSG_EXTENSIONS = [".msg"] as const;
 
 /**
  * The lowercased extension of `path`, or "" — `node:path`'s `extname` written
@@ -100,14 +142,58 @@ export function isSpreadsheetFile(path: string): boolean {
   return (SPREADSHEET_EXTENSIONS as readonly string[]).includes(extensionOf(path));
 }
 
+/** Is this a legacy BIFF workbook, read through its converted `.xlsx`? */
+export function isLegacyWorkbook(path: string): boolean {
+  return (LEGACY_WORKBOOK_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Does the office converter have to run before this file can be read? */
+export function needsConversion(path: string): boolean {
+  return (CONVERTED_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** The two formats the converter writes. */
+export const CONVERTED_OUTPUT_EXTENSIONS = [".pdf", ".xlsx"] as const;
+export type ConvertedExtension = (typeof CONVERTED_OUTPUT_EXTENSIONS)[number];
+
+/**
+ * What the converter turns `path` into: `.pdf` for a page-shaped document,
+ * `.xlsx` for a legacy workbook. Throws for anything it does not convert,
+ * because a guessed target would be stored, and looked up, under a name
+ * nothing ever writes.
+ */
+export function convertedExtensionOf(path: string): ConvertedExtension {
+  if (isOfficeFile(path)) return ".pdf";
+  if (isLegacyWorkbook(path)) return ".xlsx";
+  throw new Error(`not a format the office converter takes: ${path}`);
+}
+
 /** Is this a scanned TIFF, read page by page through OCR? */
 export function isScanFile(path: string): boolean {
   return (SCAN_EXTENSIONS as readonly string[]).includes(extensionOf(path));
 }
 
+/**
+ * Whether a reader is shown a PDF the knowledge base made of this file rather
+ * than the file itself: an Office document (converted by LibreOffice) or a
+ * scanned TIFF (one PDF page per frame, #1409). No browser renders either.
+ *
+ * The route that serves that PDF and the citation links that name the viewer
+ * url after it both ask this. Two answers would drift, and a drift is a viewer
+ * url the route refuses, which the citation dialog reads as "no preview".
+ */
+export function isShownAsConvertedPdf(path: string): boolean {
+  return isOfficeFile(path) || isScanFile(path);
+}
+
 /** Is this a plain-text file? */
 export function isTextFile(path: string): boolean {
   return (TEXT_EXTENSIONS as readonly string[]).includes(extensionOf(path));
+}
+
+/** Is this an Outlook message saved to disk? */
+export function isMsgFile(path: string): boolean {
+  return (MSG_EXTENSIONS as readonly string[]).includes(extensionOf(path));
 }
 
 /** Is this a Word document — the format anchored on its heading outline? */

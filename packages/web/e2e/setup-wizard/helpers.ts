@@ -81,7 +81,7 @@ export async function resetStack(): Promise<void> {
   // when it finds openclaw.json missing on restart. If OpenClaw's OLD process
   // is still running when that 42-byte seed lands, its file-watcher sees a
   // size-drop (4.9 KB → 42 B) whose diff is missing every restart-class field
-  // (gateway.controlUi/auth, discovery, update, canvasHost) → OpenClaw fires a
+  // (gateway.controlUi/auth, discovery, update) → OpenClaw fires a
   // SIGUSR1 gateway restart, and the cascade (compounded by the first-time
   // secrets.json bootstrap pkill) keeps the freshly-created Smithers agent out
   // of OC's runtime `agents.list` for >90 s → the wizard's first chat times out

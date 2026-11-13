@@ -55,6 +55,17 @@ export class FixedWindowRateLimiter {
     return now - this.windowStart > this.windowMs;
   }
 
+  /**
+   * Gives back a slot taken by `tryAcquire` in the current window, for a
+   * request that turned out not to count. Does nothing once the window has
+   * expired: the reset already gave that slot back, and releasing it again
+   * would hand the new window an extra one.
+   */
+  release(now: number = Date.now()): void {
+    if (this.isExpired(now) || this.count === 0) return;
+    this.count--;
+  }
+
   /** Resets the window. Intended for tests. */
   reset(): void {
     this.windowStart = 0;

@@ -11,7 +11,7 @@ import {
  * The first connect pushes the full config via config.apply. This seeds OC's
  * currentCompareConfig with the complete Pinchy payload so subsequent
  * config.apply calls show only field-level diffs — not a massive diff against
- * the baked-in startup config that triggers gateway/discovery/update/canvasHost
+ * the baked-in startup config that triggers gateway/discovery/update
  * restart rules (openclaw#75534, PR #279).
  *
  * A reconnect regenerates only when a push gave up on a change while OpenClaw
