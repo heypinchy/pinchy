@@ -1495,7 +1495,9 @@ jobs:
 
   end-user-upgrade:
     name: End-user upgrade simulation
-    timeout-minutes: 15
+    # ~4 min before the OpenClaw state step; that step adds ~4-5 min (two
+    # gateway boots on the old image's state, one doctor import, one restart).
+    timeout-minutes: 25
     needs: [changes, build-image]
     # See docker-smoke: build-image is skipped both on fork PRs (fall back to a
     # local build) and on docs-only PRs (build nothing) — only the changes gate
@@ -1733,6 +1735,24 @@ jobs:
             echo "::error::Pinchy must bind to 127.0.0.1 after upgrade (got '$BINDING'). Docker bypasses UFW, so 0.0.0.0 exposes the port to the internet regardless of firewall rules."
             exit 1
           fi
+
+      # The steps above prove Pinchy comes up; they never had an agent or a
+      # chat, and Pinchy's /api/health stays green while the OpenClaw container
+      # crash-loops. That is how v0.11.0-rc shipped a gateway that refused to
+      # start on state written by OpenClaw 2026.7 until `doctor --fix` ran.
+      # This step writes real state with the previous release's OpenClaw image
+      # (two agents, one chat each), boots this build's image on it, and checks
+      # the gateway starts, both chats read back (one agent deleted from the
+      # config in between) and openclaw.json is untouched.
+      - name: OpenClaw state from the previous release starts and stays readable
+        if: steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
+        env:
+          PREV_TAG: ${{ steps.prev.outputs.tag }}
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
+          scripts/openclaw-state-upgrade/run.sh \
+            "ghcr.io/heypinchy/pinchy-openclaw:${PREV_TAG}" \
+            "ghcr.io/heypinchy/pinchy-openclaw:test-${SHORT_SHA}"
 
       - name: Tear down
         if: always() && steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
