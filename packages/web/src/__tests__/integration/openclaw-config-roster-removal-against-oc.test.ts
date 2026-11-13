@@ -24,6 +24,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   gatewayRequest,
+  importDefined,
   loadGatewayHandlers,
   releaseGatewayWrites,
 } from "@/test-helpers/openclaw-gateway-handlers";
@@ -50,12 +51,16 @@ describe("a roster change against OpenClaw's real config.apply and agents.delete
   let dir: string;
   let ocConfigPath: string;
   let pinchyConfigPath: string;
+  let originalHome: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "pinchy-roster-"));
     ocConfigPath = join(dir, "openclaw.json");
     pinchyConfigPath = join(dir, "pinchy-must-not-write.json");
     process.env.OPENCLAW_STATE_DIR = dir;
+    // agents.delete moves an agent's files to ~/.Trash: keep that in the test's directory.
+    originalHome = process.env.HOME;
+    process.env.HOME = dir;
     vi.resetModules();
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -65,6 +70,7 @@ describe("a roster change against OpenClaw's real config.apply and agents.delete
     releaseGatewayWrites();
     delete process.env.OPENCLAW_STATE_DIR;
     delete process.env.OPENCLAW_CONFIG_PATH;
+    process.env.HOME = originalHome;
     rmSync(dir, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -185,8 +191,46 @@ describe("a roster change against OpenClaw's real config.apply and agents.delete
     const { deletes } = await push(target);
 
     expect(roster(ocFile())).toEqual(["smithers"]);
-    expect(deletes).toEqual([{ agentId: "kb", deleteFiles: false }]);
+    expect(deletes).toEqual([{ agentId: "kb", deleteFiles: true }]);
     expect(ocFile().agents).toEqual(target.agents);
+  }, 60_000);
+
+  it("leaves no database registered for a deleted agent that had one", async () => {
+    // An agent that ever held a session has a database in OpenClaw's state
+    // registry. agents.delete marks the agent deleted in its deletion journal,
+    // but unregisters the database only when it deletes the agent's files too.
+    // A database still registered for an agent the journal calls deleted is
+    // fatal at the next gateway start: "OpenClaw agent database is
+    // unavailable while agent kb is deleted."
+    const before = {
+      ...IMAGE_SEED,
+      gateway,
+      agents: {
+        ownership: "explicit",
+        entries: { smithers: { name: "Smithers" }, kb: { name: "Handbook" } },
+      },
+    };
+    await ocWrites(before);
+    const openOpenClawAgentDatabase = await importDefined<(options: Json) => unknown>(
+      "openOpenClawAgentDatabase"
+    );
+    const closeOpenClawAgentDatabases = await importDefined<() => void>(
+      "closeOpenClawAgentDatabases"
+    );
+    const listRegistered = await importDefined<() => { agentId: string }[]>(
+      "listOpenClawRegisteredAgentDatabases"
+    );
+    openOpenClawAgentDatabase({ agentId: "kb" });
+    closeOpenClawAgentDatabases();
+    expect(listRegistered().map((db) => db.agentId)).toContain("kb");
+
+    await push({
+      ...before,
+      agents: { ownership: "explicit", entries: { smithers: { name: "Smithers" } } },
+    });
+
+    expect(roster(ocFile())).toEqual(["smithers"]);
+    expect(listRegistered().map((db) => db.agentId)).not.toContain("kb");
   }, 60_000);
 
   /** A fresh install's openclaw.json after Pinchy delivered its first agent. */
@@ -219,7 +263,7 @@ describe("a roster change against OpenClaw's real config.apply and agents.delete
     const { deletes } = await push(target);
 
     expect(roster(ocFile())).toEqual(["kb"]);
-    expect(deletes).toEqual([{ agentId: "smithers", deleteFiles: false }]);
+    expect(deletes).toEqual([{ agentId: "smithers", deleteFiles: true }]);
     expect(ocFile().agents).toEqual(target.agents);
   }, 60_000);
 
@@ -236,8 +280,8 @@ describe("a roster change against OpenClaw's real config.apply and agents.delete
     // the first agents.delete is refused. The next round's bridge changes no
     // roster, so OpenClaw takes its authInheritance and the delete goes through.
     expect(deletes).toEqual([
-      { agentId: "smithers", deleteFiles: false },
-      { agentId: "smithers", deleteFiles: false },
+      { agentId: "smithers", deleteFiles: true },
+      { agentId: "smithers", deleteFiles: true },
     ]);
     expect(ocFile().agents).toEqual(target.agents);
   }, 60_000);

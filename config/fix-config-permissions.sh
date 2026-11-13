@@ -33,21 +33,6 @@ fix_config_permissions() {
     # later config.apply failed "config changed since last load".
     find "$OPENCLAW_STATE_DIR/openclaw.json" -maxdepth 0 -type f -not -perm 0666 \
         -exec chmod 666 {} \; 2>/dev/null || true
-    # The whole credentials/ tree, so we also catch any sibling credential
-    # files OpenClaw writes alongside the pairing file (allowFrom stores etc.) —
-    # they too are written by root and consumed by Pinchy.
-    # a+rX: r for all files, x only for directories (capital X) so uid 999
-    # can both enter the credentials/ dir (exec bit) and read files inside it.
-    #
-    # Gated to what is not yet readable by all, like every repair on this tick:
-    # a chmod to the mode a file already has is still an inotify attribute
-    # event and a ctime bump on Linux, and openclaw.json above shows what that
-    # does to a watcher when it fires every 50 ms. Nothing in OpenClaw 2026.9
-    # watches credentials/ or the secrets file, so this is not a live bug —
-    # it keeps the tick from becoming one when a release starts watching them.
-    find "$OPENCLAW_STATE_DIR/credentials" \
-        \( -type d -not -perm -0555 -o -type f -not -perm -0444 \) \
-        -exec chmod a+rX {} \; 2>/dev/null || true
     # Re-take ownership of secrets.json. Pinchy writes it as uid 999 (the
     # pinchy user inside its container); OpenClaw's secret-resolver requires
     # owner == process uid (root) and refuses to reload otherwise. The 30 s
@@ -58,7 +43,12 @@ fix_config_permissions() {
     # as `unknown agent id` because the reload fails on secrets and the new
     # agents.list never enters runtime. See issue #200.
     #
-    # Gated on owner and mode, for the reason given at credentials/ above.
+    # Gated on owner and mode, like every repair on this tick: a chown or chmod
+    # to what a file already has is still an inotify attribute event and a
+    # ctime bump on Linux, and openclaw.json above shows what that does to a
+    # watcher when it fires every 50 ms. Nothing in OpenClaw 2026.9 watches the
+    # secrets file, so this is not a live bug — it keeps the tick from becoming
+    # one when a release starts watching it.
     find "$SECRETS_FILE" -maxdepth 0 -type f ! -uid "$OPENCLAW_UID" \
         -exec chown root:root {} \; 2>/dev/null || true
     find "$SECRETS_FILE" -maxdepth 0 -type f -not -perm 0600 \
@@ -94,7 +84,7 @@ fix_config_permissions() {
     # `! -uid` gates the chown so an already-correct directory is left alone:
     # chown rewrites ctime, and OpenClaw's session-takeover detector reads a
     # ctime change as external modification (same reason the `-not -perm` gates
-    # below exist). At a 50 ms tick an ungated chown would be ~20 ctime bumps a
+    # above exist). At a 50 ms tick an ungated chown would be ~20 ctime bumps a
     # second, per agent, forever.
     #
     # -maxdepth 1 covers the agents/ root (so new agent dirs can be created) and
@@ -150,24 +140,21 @@ fix_config_permissions() {
         ! -uid "$PINCHY_UID" \
         -exec chown "$PINCHY_UID:$PINCHY_GID" {} \; 2>/dev/null || true
 
-    # Cross-uid read access for Pinchy's self-service diagnostics export.
-    # OpenClaw writes per-agent sessions.json and *.trajectory.jsonl as root
-    # under agents/<agentId>/sessions/ — with default umask these emerge
-    # 0644/0755, but OpenClaw 2026.5.x ships with a tighter umask that
-    # produces 0600/0700, so Pinchy (uid 999) gets EACCES on the dir traversal.
-    # Diagnostics is read-only against these files; 0755/0644 is sufficient.
-    # The 50 ms tick catches runtime-created sessions (same pattern as the
-    # openclaw.json mode race).
-    #
-    # `-not -perm` gates: skip files that already have the right mode. chmod
-    # would otherwise rewrite the inode's ctime on every tick, and OpenClaw's
-    # embedded-prompt session-takeover detector treats any ctime change as
-    # "session file modified externally" and aborts the in-flight turn with
-    # EmbeddedAttemptSessionTakeoverError. Without the gate, every chat turn
-    # races our 50 ms loop against the assistant's response.
-    find "$OPENCLAW_STATE_DIR/agents" -mindepth 1 -maxdepth 1 -type d -not -perm 0755 -exec chmod 0755 {} \; 2>/dev/null || true
-    find "$OPENCLAW_STATE_DIR/agents" -type d -name sessions -not -perm 0755 -exec chmod 0755 {} \; 2>/dev/null || true
-    find "$OPENCLAW_STATE_DIR/agents" \( -name "sessions.json" -o -name "*.trajectory.jsonl" \) -type f -not -perm 0644 -exec chmod 0644 {} \; 2>/dev/null || true
+    # No mode repair under agents/ — on purpose. Up to OpenClaw 2026.8 this
+    # tick opened agents/<id> and agents/<id>/sessions to 0755 and
+    # sessions.json / *.trajectory.jsonl to 0644, so Pinchy's diagnostics export
+    # could read them from its own mount. OpenClaw 2026.9 keeps sessions and
+    # trajectories in a per-agent SQLite database (agents/<id>/agent/
+    # openclaw-agent.sqlite, mode 0600) that the gateway owns; Pinchy does not
+    # read it from its mount. The pinchy-audit plugin reads it inside the
+    # gateway and answers `pinchy.trajectory.read`
+    # (packages/web/src/lib/diagnostics/jsonl-reader.ts). So the widened modes
+    # had no reader, and every chmod on that tree was an inotify event and a
+    # ctime bump on files OpenClaw writes on every turn. The one remaining
+    # uid-999 read under agents/<id>/ is the legacy migrateSessionKeys boot
+    # sweep; it runs after Pinchy's entrypoint chowned the volume to 999 and
+    # never needed these modes. Ownership of agents/ and agents/<id>/agent
+    # (above) is a separate repair and stays.
 }
 
 # OpenClaw 2026.9 retired the per-agent auth-profiles.json: auth profiles live
@@ -183,6 +170,29 @@ fix_config_permissions() {
 remove_retired_auth_profiles() {
     find "$OPENCLAW_STATE_DIR/agents" -mindepth 3 -maxdepth 3 -type f -path "*/agent/auth-profiles.json" \
         -delete 2>/dev/null || true
+}
+
+# credentials/ belongs to OpenClaw. Up to OpenClaw 2026.8 Pinchy read Telegram
+# pairing codes and allow lists from JSON files there, so the 50 ms tick opened
+# the tree to everyone (a+rX) and config/fix-volume-ownership.sh handed it to
+# uid 999. OpenClaw 2026.9 keeps both in its state database, which Pinchy
+# reaches through the pinchy-audit plugin, and Pinchy reads nothing here any
+# more. What is left is OpenClaw's own: legacy OAuth files its doctor imports,
+# and its browser relay secret. The relay ignores that secret when the file
+# belongs to another uid, and chmods it back to 0600 (with a warning) whenever
+# someone else can read it — so the old tick and OpenClaw undid each other's
+# work every 50 ms.
+#
+# Neither script opens the tree any more; this takes back a volume an earlier
+# Pinchy already opened, with the modes OpenClaw's own `security audit --fix`
+# sets (directories 0700, files 0600). start-openclaw.sh runs it before each
+# gateway start. Gated on owner and mode like every other repair here.
+restore_credentials_privacy() {
+    local dir="$OPENCLAW_STATE_DIR/credentials"
+    [ -d "$dir" ] || return 0
+    find "$dir" ! -uid "$OPENCLAW_UID" -exec chown root:root {} \; 2>/dev/null || true
+    find "$dir" -type d -not -perm 0700 -exec chmod 0700 {} \; 2>/dev/null || true
+    find "$dir" -type f -not -perm 0600 -exec chmod 0600 {} \; 2>/dev/null || true
 }
 
 # OpenClaw 2026.9 keeps its gateway lock directory in the state dir

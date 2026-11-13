@@ -82,6 +82,9 @@ function fakeDeps(): IngestDeps {
     readEmail: vi.fn(async () => {
       throw new Error("readEmail must not be called for a PDF");
     }),
+    readDocxText: vi.fn(async () => {
+      throw new Error("readDocxText must not be called for a PDF");
+    }),
     convertScan: vi.fn(async () => {
       throw new Error("convertScan must not be called for a PDF");
     }),

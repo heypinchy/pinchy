@@ -386,6 +386,9 @@ describe("PdfDialog with a passage to highlight", () => {
     );
 
     expect(await screen.findByText("Page 7 of 20")).toBeInTheDocument();
+    // The label follows `page`, the draw follows the canvas mounting inside the
+    // dialog: the label can be on screen a tick before the first draw starts.
+    await waitFor(() => expect(renderPage).toHaveBeenCalled());
     expect(renderPage.mock.calls[0][0]).toBe(7);
     expect(document.querySelector("embed")).toBeNull();
     fetchSpy.mockRestore();
