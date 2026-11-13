@@ -583,6 +583,60 @@ describe("SettingsIntegrations — live-update polling for pending connections",
     fetchSpy.mockRestore();
   });
 
+  it("keeps the list and toasts once, under one id, when a poll fails", async () => {
+    vi.useFakeTimers();
+    const pendingConnection = {
+      id: "ms-pending-fail",
+      type: "microsoft",
+      name: "user@outlook.com",
+      description: "",
+      credentials: "{}",
+      status: "pending",
+      lastError: null,
+      lastErrorAt: null,
+      data: null,
+      createdAt: "2026-06-30T10:00:00Z",
+      updatedAt: "2026-06-30T10:00:00Z",
+      cannotDecrypt: false,
+    };
+    let connectionsFetches = 0;
+    const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((input) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.startsWith("/api/settings/oauth")) {
+        const state = { configured: true, clientId: "", connectionCount: 0 };
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(state),
+        } as unknown as Response);
+      }
+      connectionsFetches += 1;
+      if (connectionsFetches === 1) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify([pendingConnection]),
+        } as unknown as Response);
+      }
+      return Promise.resolve({ ok: false, status: 500, text: async () => "" } as Response);
+    });
+
+    render(<SettingsIntegrations />);
+    await vi.waitFor(() => expect(screen.getByText("Setup in progress")).toBeInTheDocument());
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "Failed to load integrations",
+        expect.objectContaining({ id: "integrations-load-failed" })
+      )
+    );
+    expect(screen.getByText("Setup in progress")).toBeInTheDocument();
+    expect(screen.queryByText(/couldn't load your integrations/i)).not.toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
   it("does not keep polling once no connection is pending", async () => {
     vi.useFakeTimers();
 
@@ -1012,12 +1066,13 @@ describe("SettingsIntegrations — load failure", () => {
     const fetchSpy = stubIntegrations(respond);
     render(<SettingsIntegrations />);
 
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
-        "Failed to load integrations",
-        expect.objectContaining({ id: expect.any(String) })
-      );
-    });
+    // The tab loads in the background, so a toast is gone before anyone opens
+    // it: the failure stands where the list would be, and nothing offers to
+    // add an integration that may already exist.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load your integrations/i);
+    expect(screen.queryByText(/No integrations configured yet/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Add Integration/ })).not.toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
 
