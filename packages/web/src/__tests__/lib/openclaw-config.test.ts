@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { dirname } from "path";
 import { isOpenClawLocalBaseUrl } from "@/lib/openclaw-local-url";
 import { computeAllowedTools } from "@/lib/tool-registry";
 import { loadOpenClawDistExport } from "../helpers/openclaw-dist";
@@ -31,6 +32,8 @@ vi.mock("fs", async (importOriginal) => {
   const mkdirSyncMock = vi.fn();
   const renameSyncMock = vi.fn();
   const chmodSyncMock = vi.fn();
+  // Wraps the real call: only here so a test can count who lists a directory.
+  const readdirSyncMock = vi.fn(actual.readdirSync);
   return {
     ...actual,
     default: {
@@ -41,6 +44,7 @@ vi.mock("fs", async (importOriginal) => {
       mkdirSync: mkdirSyncMock,
       renameSync: renameSyncMock,
       chmodSync: chmodSyncMock,
+      readdirSync: readdirSyncMock,
     },
     writeFileSync: writeFileSyncMock,
     readFileSync: readFileSyncMock,
@@ -48,6 +52,7 @@ vi.mock("fs", async (importOriginal) => {
     mkdirSync: mkdirSyncMock,
     renameSync: renameSyncMock,
     chmodSync: chmodSyncMock,
+    readdirSync: readdirSyncMock,
   };
 });
 
@@ -10098,6 +10103,22 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     expect(postmortemWrites).toHaveLength(0);
 
     errorSpy.mockRestore();
+  });
+
+  it("sweeps stale rejected dumps on the first regenerate after boot only", async () => {
+    const { _resetRejectedPayloadSweep } = await import("@/lib/openclaw-config/rejected-payload");
+    const { CONFIG_PATH } = await import("@/lib/openclaw-config/paths");
+    const { readdirSync } = await import("fs");
+    const listingsOfConfigDir = () =>
+      vi.mocked(readdirSync).mock.calls.filter((c) => c[0] === dirname(CONFIG_PATH)).length;
+    _resetRejectedPayloadSweep();
+    vi.mocked(readdirSync).mockClear();
+    mockedReadFileSync.mockReturnValue("{}");
+
+    await regenerateOpenClawConfig();
+    expect(listingsOfConfigDir()).toBe(1);
+    await regenerateOpenClawConfig();
+    expect(listingsOfConfigDir()).toBe(1);
   });
 
   it("delivers the config to OpenClaw after most agents were deleted — the #311 guard discounts deleted agents", async () => {

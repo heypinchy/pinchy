@@ -30,7 +30,11 @@
 // discounted (guard) or stepped (push); a kept provider's shrink is judged in
 // full, and a kept provider whose catalogue collapsed to nothing voids the
 // discount altogether — that payload is an empty read, whatever else it does.
-// A shrink outside `models.providers` is judged exactly as before.
+// Deleted AGENTS are discounted the same way (roster entry, per-agent plugin
+// config, Telegram account, bindings), only while a provider survives with its
+// catalogue intact and at least one agent remains. Any other shrink — outside
+// `models.providers`, or inside an agent the payload still lists — is judged
+// exactly as before.
 
 import { LLAMA_CPP_PROVIDER_ID } from "./paths";
 

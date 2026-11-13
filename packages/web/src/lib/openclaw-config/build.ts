@@ -2058,8 +2058,10 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // provider read, a kept provider whose discovered model list shrank (a
     // half-answered discovery), a kept provider whose catalogue collapsed to
     // `[]` (Ollama unreachable — this voids every deletion discount, agents'
-    // included), and any
-    // shrink outside `models.providers`. Delivering a deletion past OpenClaw's
+    // included), and any shrink beyond those two deletions: outside
+    // `models.providers`, or of an agent the payload still lists (a kept
+    // agent's lost Telegram account or bindings is the #311 race itself).
+    // Delivering a deletion past OpenClaw's
     // own check is pushConfigInBackground's job (stepwise config.apply).
     const sizeBaseline = sizeGuardBaseline(onDiskContent, config);
     refused = onDiskContent.length > 0 && newContent.length < sizeBaseline * 0.5;

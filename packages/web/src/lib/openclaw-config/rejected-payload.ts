@@ -8,7 +8,8 @@
 // readable by its owner only, and only the newest few survive — a guard that
 // trips on every regenerate must not fill the volume with copies of the token.
 
-import { chmodSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { lstatSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { randomBytes } from "crypto";
 import { basename, dirname, join } from "path";
 import { findPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 
@@ -22,7 +23,12 @@ function isRecord(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const SECRET_KEY = /token|secret|password|apikey|api_key|authorization/i;
+// A key NAMING a credential: it ENDS in token/secret/password/api-key/
+// authorization (so `maxTokens` / `contextTokens` counts are kept; `x-api-key`
+// and `api-key` are caught). The top-level `secrets` block holds SecretRef
+// pointers: not secret themselves, but redacted anyway: over-redacting a
+// postmortem costs nothing.
+const SECRET_KEY = /(token|secret|password|api[-_]?key|authorization)$|^secrets$/i;
 
 /** A URL value without userinfo or query string (both can carry credentials). */
 function stripUrlCredentials(value: string): string {
@@ -53,6 +59,11 @@ function redactTree(node: unknown): unknown {
   return node;
 }
 
+/** A placeholder that is itself valid JSON, so a sweep re-reads it unchanged. */
+function omitted(reason: string): string {
+  return JSON.stringify({ omitted: reason }, null, 2) + "\n";
+}
+
 /**
  * The payload with its credentials replaced by a marker: every value under a
  * credential-looking key (over-redacting is fine), URL userinfo and queries,
@@ -66,19 +77,50 @@ export function redactRejectedPayload(content: string): string {
   try {
     parsed = JSON.parse(content);
   } catch {
-    return "[unparseable payload omitted: it could not be checked for credentials]\n";
+    return omitted("unparseable payload: it could not be checked for credentials");
   }
   const redacted = redactTree(parsed);
   if (findPlaintextSecrets(redacted).length > 0) {
-    return "[payload omitted: a plaintext provider key survived redaction]\n";
+    return omitted("a plaintext provider key survived redaction");
   }
   return JSON.stringify(redacted, null, 2) + "\n";
+}
+
+/**
+ * Replace `path` with `content` (0600) without ever writing through what is
+ * currently there: a fresh exclusive temp file in the same directory, renamed
+ * over the name. Rename replaces a symlink itself, never its target. The
+ * directory is shared with the OpenClaw container, so a name in it is not
+ * trusted.
+ */
+function replaceFile(path: string, content: string): void {
+  const tmp = `${path}.tmp-${randomBytes(8).toString("hex")}`;
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- fresh name in the config's own directory
+    writeFileSync(tmp, content, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- fresh name in the config's own directory
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- fresh name in the config's own directory
+      unlinkSync(tmp);
+    } catch {
+      // never created, or already renamed
+    }
+    throw err;
+  }
 }
 
 /**
  * Keep only the newest MAX_REJECTED_PAYLOADS dumps, and make the survivors
  * safe: dumps written by older versions are 0644 and hold plaintext tokens, so
  * each is rewritten redacted at 0600 (idempotent for a dump already clean).
+ *
+ * The directory is shared with a root-run container, so entries are not
+ * trusted: anything that is not a regular file, or has more than one hard
+ * link, is unlinked (the name only, never its target) and not read; the
+ * rewrite goes through a temp file and a rename; a dump that cannot be
+ * rewritten is deleted rather than left as a 0644 plaintext file.
  * Best-effort; never throws.
  */
 export function sweepRejectedPayloads(configPath: string): void {
@@ -92,20 +134,23 @@ export function sweepRejectedPayloads(configPath: string): void {
     const cut = Math.max(0, names.length - MAX_REJECTED_PAYLOADS);
     names.forEach((name, i) => {
       const path = join(dir, name);
-      try {
-        if (i < cut) {
+      const remove = () => {
+        try {
           // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
           unlinkSync(path);
-        } else {
-          // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
-          const redacted = redactRejectedPayload(readFileSync(path, "utf-8"));
-          // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
-          writeFileSync(path, redacted, { encoding: "utf-8", mode: 0o600 });
-          // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
-          chmodSync(path, 0o600);
+        } catch {
+          // already gone
         }
+      };
+      try {
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
+        const info = lstatSync(path);
+        if (i < cut || !info.isFile() || info.nlink > 1) return remove();
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- name was listed from the config's own directory
+        replaceFile(path, redactRejectedPayload(readFileSync(path, "utf-8")));
       } catch {
-        // One unreadable dump must not stop the sweep of the others.
+        // Cannot be made safe: do not leave a plaintext dump behind.
+        remove();
       }
     });
   } catch {
@@ -121,8 +166,7 @@ export function sweepRejectedPayloads(configPath: string): void {
 export function writeRejectedPayload(configPath: string, content: string, stamp: string): string {
   const path = `${configPath}.regenerate-rejected.${stamp}`;
   try {
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is the config path + ISO timestamp, no user input
-    writeFileSync(path, redactRejectedPayload(content), { encoding: "utf-8", mode: 0o600 });
+    replaceFile(path, redactRejectedPayload(content));
   } catch {
     return path;
   }

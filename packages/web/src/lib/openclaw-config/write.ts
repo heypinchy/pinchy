@@ -540,7 +540,7 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       noteUndeliveredConfigChange(regenerateSeq);
       if (!resumeStrandedShrink) return;
       console.warn(
-        `[openclaw-config] push gen=${String(generation)}: provider deletion stopped after ${String(shrinkSteps)} step(s) (${why}); queueing a follow-up regenerate to finish it`
+        `[openclaw-config] push gen=${String(generation)}: shrink delivery (provider deletion in steps, or an agent deletion) stopped after ${String(shrinkSteps)} step(s) (${why}); queueing a follow-up regenerate to finish it`
       );
       scheduleShrinkResume(resumeStrandedShrink, regenerateSeq);
     };

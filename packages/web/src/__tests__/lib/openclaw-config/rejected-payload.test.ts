@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import {
+  linkSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -170,5 +179,70 @@ describe("sweepRejectedPayloadsOnce", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("rejected dumps: hostile directory entries, placeholders, key names", () => {
+  let dir: string;
+  let configPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "rejected-hostile-"));
+    configPath = join(dir, "openclaw.json");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("never writes through a symlinked dump: the target stays untouched, the link goes", () => {
+    const target = join(dir, "target.key");
+    writeFileSync(target, "ENCRYPTION-KEY-BYTES", { mode: 0o600 });
+    const link = `${configPath}.regenerate-rejected.zzzz`;
+    symlinkSync(target, link);
+    sweepRejectedPayloads(configPath);
+    expect(readFileSync(target, "utf-8")).toBe("ENCRYPTION-KEY-BYTES");
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+    expect(readdirSync(dir).filter((n) => n.includes("regenerate-rejected"))).toEqual([]);
+  });
+
+  it("drops a hardlinked dump without touching the other name", () => {
+    const other = join(dir, "other.key");
+    writeFileSync(other, "ENCRYPTION-KEY-BYTES", { mode: 0o644 });
+    linkSync(other, `${configPath}.regenerate-rejected.aaaa`);
+    sweepRejectedPayloads(configPath);
+    expect(readFileSync(other, "utf-8")).toBe("ENCRYPTION-KEY-BYTES");
+    expect(statSync(other).mode & 0o777).toBe(0o644);
+    expect(readdirSync(dir).filter((n) => n.includes("regenerate-rejected"))).toEqual([]);
+  });
+
+  it("writeRejectedPayload does not follow a symlink planted at its name", () => {
+    const target = join(dir, "target.key");
+    writeFileSync(target, "ENCRYPTION-KEY-BYTES");
+    symlinkSync(target, `${configPath}.regenerate-rejected.same`);
+    writeRejectedPayload(configPath, "{}", "same");
+    expect(readFileSync(target, "utf-8")).toBe("ENCRYPTION-KEY-BYTES");
+  });
+
+  it("keeps the omission reason across a sweep (placeholders are valid JSON)", () => {
+    const first = redactRejectedPayload(
+      JSON.stringify({ n: { v: "sk-ant-abcdefghijklmnopqrstuvwxyz" } })
+    );
+    expect(JSON.parse(first).omitted).toMatch(/plaintext provider key/);
+    const path = `${configPath}.regenerate-rejected.2026-01-01`;
+    writeFileSync(path, first);
+    sweepRejectedPayloads(configPath);
+    expect(JSON.parse(readFileSync(path, "utf-8")).omitted).toMatch(/plaintext provider key/);
+    expect(JSON.parse(redactRejectedPayload("{nope")).omitted).toMatch(/unparseable/);
+  });
+
+  it("redacts x-api-key / api-key and the secrets block, but keeps token counts", () => {
+    const out = JSON.parse(
+      redactRejectedPayload(
+        JSON.stringify({
+          h: { "x-api-key": "XK", "api-key": "AK" },
+          secrets: { p: "SP" },
+          m: { maxTokens: 8192, contextTokens: 5 },
+        })
+      )
+    );
+    expect(JSON.stringify(out)).not.toMatch(/XK|AK|SP/);
+    expect(out.m).toEqual({ maxTokens: 8192, contextTokens: 5 });
   });
 });
