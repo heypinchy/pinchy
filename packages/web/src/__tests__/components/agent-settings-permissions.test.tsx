@@ -9,16 +9,16 @@ import type { AgentPluginConfig } from "@/db/schema";
 // Capture onChange callbacks from child sections so tests can simulate
 // the post-save cascade where a sibling section's onChange fires and
 // causes AgentSettingsPermissions to re-evaluate its dirty state.
-let capturedOdooOnChange:
-  | ((
-      v: {
-        connectionId: string;
-        permissions: Array<{ model: string; operation: string }>;
-      } | null,
-      isDirty: boolean
-    ) => void)
-  | null = null;
+type SectionOnChange = (
+  v: {
+    connectionId: string;
+    permissions: Array<{ model: string; operation: string }>;
+  } | null,
+  isDirty: boolean
+) => void;
+let capturedOdooOnChange: SectionOnChange | null = null;
 let capturedWebSearchOnChange: ((v: AgentPluginConfig["pinchy-web"]) => void) | null = null;
+let capturedEmailOnChange = null as SectionOnChange | null;
 
 vi.mock("@/lib/model-vision", () => ({
   isModelVisionCapable: vi.fn((modelId: string) => modelId.startsWith("anthropic/")),
@@ -125,9 +125,9 @@ vi.mock("@/components/email-permission-section", () => ({
   }: {
     agentId: string;
     connections: unknown[];
-    onChange: (v: unknown, d: boolean) => void;
+    onChange: SectionOnChange;
   }) => {
-    void onChange;
+    capturedEmailOnChange = onChange;
     return <div data-testid="email-section">Email Section</div>;
   },
 }));
@@ -136,6 +136,7 @@ beforeEach(() => {
   mockUseGrantedFolders.mockReset();
   mockUseGrantedFolders.mockReturnValue(undefined);
   capturedOdooOnChange = null;
+  capturedEmailOnChange = null;
   capturedWebSearchOnChange = null;
   capturedReindexProps = null;
 });
@@ -1005,6 +1006,7 @@ describe("AgentSettingsPermissions", () => {
           allowedTools: [],
           allowedPaths: [],
           integrations: [],
+          integrationsLoaded: true,
           webSearchConfig: {},
           confirm: {},
         },
@@ -1288,6 +1290,94 @@ describe("AgentSettingsPermissions", () => {
           expect.objectContaining({ webSearchConfig: {} }),
           true
         );
+      });
+    });
+  });
+
+  // #1216: a section whose load failed stays silent, so the form never learns
+  // what the agent is granted there. The next save must not read that silence
+  // as "no access": dropping the saved tools, pruning their confirmations, or
+  // letting the page DELETE every integration grant.
+  describe("integration sections that have not loaded", () => {
+    const agentWithGrants = {
+      ...defaultAgent,
+      allowedTools: ["pinchy_web_search", "odoo_read", "email_read"],
+      pluginConfig: {
+        "pinchy-approvals": { confirm: { odoo_read: "confirm", email_read: "confirm" } },
+      } as AgentPluginConfig,
+    };
+
+    it("keeps the saved integration tools and their confirmations while neither section has loaded", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithGrants}
+          directories={defaultDirectories}
+          connections={[odooConnection, googleConnection]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Create files"));
+
+      await waitFor(() => {
+        const [values, dirty] = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(dirty).toBe(true);
+        expect(values.allowedTools).toEqual(
+          expect.arrayContaining(["pinchy_write", "odoo_read", "email_read"])
+        );
+        expect(values.confirm).toEqual({ odoo_read: "confirm", email_read: "confirm" });
+        expect(values.integrations).toEqual([]);
+        expect(values.integrationsLoaded).toBe(false);
+      });
+    });
+
+    it("keeps only the unloaded section's tools when the other one has loaded", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithGrants}
+          directories={defaultDirectories}
+          connections={[odooConnection, googleConnection]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      // Odoo loads and reports that the agent has no Odoo access; email fails.
+      await waitFor(() => expect(capturedOdooOnChange).not.toBeNull());
+      act(() => capturedOdooOnChange!(null, false));
+
+      await waitFor(() => {
+        const [values] = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(values.allowedTools).toContain("email_read");
+        expect(values.allowedTools).not.toContain("odoo_read");
+        expect(values.integrationsLoaded).toBe(false);
+      });
+    });
+
+    it("reports integrationsLoaded once every shown section has loaded", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithGrants}
+          directories={defaultDirectories}
+          connections={[odooConnection, googleConnection]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      await waitFor(() => expect(capturedEmailOnChange).not.toBeNull());
+      act(() => capturedOdooOnChange!(null, false));
+      act(() => capturedEmailOnChange!(null, false));
+
+      await waitFor(() => {
+        const [values] = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(values.integrationsLoaded).toBe(true);
+        expect(values.allowedTools).not.toContain("odoo_read");
+        expect(values.allowedTools).not.toContain("email_read");
       });
     });
   });

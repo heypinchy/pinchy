@@ -77,6 +77,8 @@ Nothing awaits the promise a `useEffect` starts, so a load there without a `catc
 
 Decide whether something is an abort from `signal.aborted` alone, never from `err.name`. When the failed load backs an editor, don't render the editor and don't report "no config" upward.
 
+Staying silent is only half of it: the form that holds the section must also tell "not reported yet" apart from "reported no access". `AgentSettingsPermissions` keeps an Odoo or email grant `undefined` until its section reports. Until then the agent's saved `odoo_*` / `email_*` tools stay in `allowedTools` (and so do their confirmations), and the draft carries `integrationsLoaded: false`, which stops the page from sending `DELETE /api/agents/:id/integrations`. Without that, a failed load plus any unrelated tick on the Permissions tab wiped every integration grant on save.
+
 - **The exemption is per statement, with a written reason**: `// unguarded-load-exempt: <reason>` directly above the awaited statement. It is the same contract as `raw-fetch-exempt`, and for the same reason: the marker asserts a fact rather than deferring work.
 - **It has three limits:**
   - It follows only functions _defined_ inside the effect. An async `useCallback` that the effect merely calls is not followed, because an event handler that awaits the same function may catch at the call site.
