@@ -1410,20 +1410,21 @@ describe("SettingsUsers", () => {
       await user.click(within(screen.getByRole("table")).getByText("Bob User"));
       expect(await screen.findByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
 
-      let groupLoads = 0;
+      // The refreshed list renames Bob, so the test can see the refresh land.
+      const renamed = mockUsers.map((u) =>
+        u.name === "Bob User" ? { ...u, name: "Bob Refreshed" } : u
+      );
       stubLoads((url) => {
-        if (url === "/api/groups") {
-          groupLoads += 1;
-          return Promise.resolve(jsonResponse({}, { status: 500 }));
-        }
+        if (url === "/api/groups") return Promise.resolve(jsonResponse({}, { status: 500 }));
+        if (url === "/api/users") return Promise.resolve(jsonResponse({ users: renamed }));
         return url === "/api/enterprise/status"
           ? Promise.resolve(jsonResponse({ enterprise: true }))
           : null;
       });
       rerender(<SettingsUsers currentUserId="user-1" refreshKey={1} />);
 
-      await waitFor(() => expect(groupLoads).toBeGreaterThan(0));
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      // The open sheet hides the table from role queries; text queries still see it.
+      await waitFor(() => expect(screen.getAllByText("Bob Refreshed").length).toBeGreaterThan(0));
       expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
     });
 

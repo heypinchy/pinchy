@@ -254,6 +254,15 @@ tester.run("no-unguarded-effect-fetch", rule, {
       }`,
       filename: CLIENT,
     },
+    // Only `Promise`'s combinators reject with their elements; another
+    // object's `all` is just a call that takes an array.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { void cache.all([load()]); }, [load]);
+      }`,
+      filename: CLIENT,
+    },
   ],
   invalid: [
     // Promise.all of loads is the codebase's multi-source shape; it rejects

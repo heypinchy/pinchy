@@ -149,13 +149,13 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
     oauthErrorBannerRef.current?.focus();
   }, [loading, oauthErrorState]);
 
-  // `signal` comes from the effects below, which abort it on cleanup. The
-  // refreshes after a mutation pass none and run to completion. The toast
-  // carries an id so the 10s poll replaces it rather than stacking a new one.
   // The first load failed, so an empty list would read as "none configured".
   const [loadFailed, setLoadFailed] = useState(false);
   const loaded = useRef(false);
 
+  // `signal` comes from the effects below, which abort it on cleanup. The
+  // refreshes after a mutation pass none and run to completion. The toast
+  // carries an id so the 10s poll replaces it rather than stacking a new one.
   const fetchConnections = useCallback(async (signal?: AbortSignal) => {
     try {
       const data = await apiGet<IntegrationConnection[]>("/api/integrations", { signal });

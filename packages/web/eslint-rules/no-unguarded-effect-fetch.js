@@ -137,10 +137,7 @@ function loadCalleeName(argument) {
     return loadCalleeName(callee.object);
   }
   if (
-    method &&
-    REJECTING_COMBINATORS.has(method) &&
-    unwrap(callee.object).type === "Identifier" &&
-    unwrap(callee.object).name === "Promise" &&
+    isPromiseCombinator(callee) &&
     call.arguments[0] &&
     unwrap(call.arguments[0]).type === "ArrayExpression"
   ) {

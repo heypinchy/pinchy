@@ -232,8 +232,8 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         const [usersData, invitesData, groupsData] = await Promise.all([
           apiGet<{ users: ApiUser[] }>("/api/users", { signal }),
           apiGet<{ invites: ApiInvite[] }>("/api/users/invites", { signal }),
-          // Groups only decorate the rows; a failure here leaves the badges
-          // off rather than the whole list. `null` is "not loaded this time".
+          // Groups only feed the user sheet's checkboxes; a failure here must
+          // not fail the list. `null` is "not loaded this time".
           apiGet<UserGroup[]>("/api/groups", { signal }).catch(() => null),
           refetchLicense(),
         ]);
@@ -242,7 +242,6 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         // A refresh that loses the groups keeps the ones already known: the
         // open sheet would otherwise hide its group checkboxes mid-retry.
         if (Array.isArray(groupsData)) setAllGroups(groupsData);
-        else if (!loaded.current) setAllGroups([]);
         loaded.current = true;
         setLoadFailed(false);
       } catch (err) {
