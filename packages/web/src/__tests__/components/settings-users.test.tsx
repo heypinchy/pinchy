@@ -1357,10 +1357,41 @@ describe("SettingsUsers", () => {
       stubLoads((url) => (url === failing ? response() : null));
       render(<SettingsUsers currentUserId="user-1" />);
 
-      await waitFor(() => {
-        expect(mockToast.error).toHaveBeenCalledWith("Failed to load users");
-      });
+      // The tab loads in the background, so a toast is gone before anyone
+      // opens it: the failure stands where the list would be.
+      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load the user list/i);
+      expect(screen.queryByRole("table")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Invite User" })).not.toBeInTheDocument();
       expect(screen.queryByText(/loading/i)).not.toBeInTheDocument();
+      expect(mockToast.error).not.toHaveBeenCalledWith("Failed to load users");
+    });
+
+    // Refreshing the groups when the sheet opens must not drop the ones the
+    // list already loaded: the sheet hides its groups section when it has none.
+    it("keeps the loaded groups when the sheet's refresh of them fails", async () => {
+      const user = userEvent.setup();
+      stubLoads((url) =>
+        url === "/api/groups"
+          ? Promise.resolve(jsonResponse([{ id: "g1", name: "Engineering" }]))
+          : url === "/api/enterprise/status"
+            ? Promise.resolve(jsonResponse({ enterprise: true }))
+            : null
+      );
+      render(<SettingsUsers currentUserId="user-1" />);
+      await waitFor(() => expect(screen.getAllByText("Bob User").length).toBeGreaterThan(0));
+
+      stubLoads((url) =>
+        url === "/api/groups"
+          ? Promise.resolve(jsonResponse({}, { status: 500 }))
+          : url === "/api/enterprise/status"
+            ? Promise.resolve(jsonResponse({ enterprise: true }))
+            : null
+      );
+      await user.click(within(screen.getByRole("table")).getByText("Bob User"));
+
+      expect(await screen.findByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeInTheDocument();
     });
 
     it("cancels the load and says nothing when it unmounts mid-flight", async () => {

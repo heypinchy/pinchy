@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useOptimistic, useTransition } from "react";
+import { useState, useEffect, useCallback, useOptimistic, useRef, useTransition } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -196,6 +196,9 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   } | null>(null);
   const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
   const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
+  // The first load failed, so an empty table would read as "no users".
+  const [loadFailed, setLoadFailed] = useState(false);
+  const loaded = useRef(false);
   // Refreshed with the list (fetchUsers), since seat usage moves with it.
   const { license, refetch: refetchLicense } = useLicenseStatus({
     enabled: false,
@@ -237,11 +240,17 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
         if (signal?.aborted) return;
         setItems(mergeUserList(usersData.users, invitesData.invites));
         setAllGroups(Array.isArray(groupsData) ? groupsData : []);
+        loaded.current = true;
+        setLoadFailed(false);
       } catch (err) {
         // Classify on the signal alone: an abort's error is not reliably an
         // AbortError (see audit-log-table.tsx).
         if (signal?.aborted) return;
-        toast.error(errorMessage(err, "Failed to load users"));
+        // The tab loads in the background, so a toast about the first load is
+        // gone before anyone opens it: that one stands where the list would.
+        // A failed refresh leaves the loaded list up and says so in a toast.
+        if (loaded.current) toast.error(errorMessage(err, "Failed to load users"));
+        else setLoadFailed(true);
       } finally {
         if (!signal?.aborted) setLoading(false);
       }
@@ -262,9 +271,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
 
   useEffect(() => {
     if (!selectedUser || !isEnterprise) return;
-    fetch("/api/groups")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data) => setAllGroups(Array.isArray(data) ? data : []))
+    // Picks up groups created since the list loaded. A failure keeps the ones
+    // already known: the sheet hides its groups section when it has none.
+    apiGet<UserGroup[]>("/api/groups")
+      .then((data) => {
+        if (Array.isArray(data)) setAllGroups(data);
+      })
       .catch(() => {});
   }, [selectedUser, isEnterprise]);
 
@@ -335,6 +347,21 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
 
   if (loading) {
     return <p>Loading...</p>;
+  }
+
+  if (loadFailed) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Users</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p role="alert" className="text-sm text-red-600">
+            We couldn&apos;t load the user list. Reload the page to try again.
+          </p>
+        </CardContent>
+      </Card>
+    );
   }
 
   return (
