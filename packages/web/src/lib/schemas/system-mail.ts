@@ -68,3 +68,35 @@ export const DEFAULT_SMTP_PORT = 587;
 export function securityForPort(port: number): SystemMailSecurity {
   return port === 465 ? "tls" : "starttls";
 }
+
+type PasswordRuleConfig = { host: string; port: number; security: SystemMailSecurity };
+
+/**
+ * Would keeping the stored password put it on a weaker connection of the same
+ * server? The rule lives here, not in `config.ts` (which imports the
+ * database), so the settings form and the route read the same one.
+ *
+ * Only `security: "none"` is weaker. STARTTLS sets `requireTLS` on every port,
+ * port 25 included, so the login never travels in the clear there — an admin
+ * moving 587/STARTTLS to 25/STARTTLS is not downgrading anything, and an admin
+ * moving 25/STARTTLS to no encryption (on 25 or elsewhere) is.
+ *
+ * An admin who only meant to change the sender must not, by a dropdown, send
+ * the saved password unencrypted without ever typing it: the downgrade asks
+ * for the password again.
+ */
+export function needsPasswordReentry<
+  U extends PasswordRuleConfig & { username?: string; password?: string },
+>(
+  update: U,
+  stored: (PasswordRuleConfig & { password?: string; hasPassword?: boolean }) | null
+): boolean {
+  if (!stored || !(stored.hasPassword ?? Boolean(stored.password))) return false;
+  return Boolean(
+    update.username &&
+    !update.password &&
+    stored.host.toLowerCase() === update.host.toLowerCase() &&
+    update.security === "none" &&
+    stored.security !== "none"
+  );
+}

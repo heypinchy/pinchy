@@ -28,6 +28,12 @@ function lastCall(url: string) {
     : null;
 }
 
+// Radix UI Select uses pointer capture and scrollIntoView, which jsdom lacks.
+if (!Element.prototype.hasPointerCapture) Element.prototype.hasPointerCapture = () => false;
+if (!Element.prototype.setPointerCapture) Element.prototype.setPointerCapture = () => {};
+if (!Element.prototype.releasePointerCapture) Element.prototype.releasePointerCapture = () => {};
+if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
+
 describe("EmailDeliverySettings", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
@@ -152,6 +158,21 @@ describe("EmailDeliverySettings", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(lastCall("/api/settings/mail")?.init.method).toBe("PUT"));
     expect(lastCall("/api/settings/mail")?.body).not.toHaveProperty("password");
+  });
+
+  it("stops promising to keep the saved password once encryption is switched off", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(configured));
+    const user = userEvent.setup();
+    render(<EmailDeliverySettings />);
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    await user.click(screen.getByRole("button", { name: "Change" }));
+    await user.click(screen.getByLabelText("Encryption"));
+    await user.click(await screen.findByRole("option", { name: "None" }));
+
+    expect(screen.getByLabelText(/Password/)).toHaveAttribute(
+      "placeholder",
+      "Enter the password again to use this connection"
+    );
   });
 
   it("sends a test email to the admin and says where it went", async () => {
