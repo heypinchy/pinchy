@@ -206,7 +206,9 @@ export function AgentSettingsPageContent() {
   const [soulContent, setSoulContent] = useState("");
   const [agentsContent, setAgentsContent] = useState("");
   const [directories, setDirectories] = useState<Directory[]>([]);
-  const [connections, setConnections] = useState<Connection[]>([]);
+  // `null` until the list loads, and for as long as it fails to: unknown is
+  // not "no integrations", and the permissions tab must not save it as such.
+  const [connections, setConnections] = useState<Connection[] | null>(null);
   const [loading, setLoading] = useState(true);
   // Why the page has nothing to show, when its first load failed.
   const [loadError, setLoadError] = useState<string | null>(null);
