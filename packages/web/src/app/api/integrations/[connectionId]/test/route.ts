@@ -25,7 +25,6 @@ import {
   type MicrosoftCredentials,
 } from "@/lib/integrations/microsoft-refresh";
 import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
-import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
 import { withPinnedOdooFetch } from "@/lib/integrations/odoo-pin";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
@@ -56,6 +55,16 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       return NextResponse.json({ success: false, error: destination.message }, { status: 200 });
     }
 
+    // `checkStoredDestination` hands an Odoo URL back with the addresses it
+    // classified; everything below that connects to it is pinned to them.
+    const pin = destination.pin;
+    if (connection.type === "odoo" && !pin) {
+      return NextResponse.json(
+        { success: false, error: "Could not verify the Odoo server's address." },
+        { status: 200 }
+      );
+    }
+
     // Odoo uid self-heal: if the authenticate call returns a different uid than
     // what is stored (e.g. first connection with a placeholder), update the stored
     // credentials. This must happen before the probe so the probe uses the correct uid.
@@ -63,15 +72,11 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       const parsed = odooCredentialsSchema.safeParse(decrypted);
       if (parsed.success) {
         const creds = parsed.data;
-        // Connects to the address the guard classifies here, not to the name:
-        // the destination check above and this login are two lookups otherwise.
-        const target = await resolveExternalUrlTarget(creds.url);
-        if (!target.valid) {
-          return NextResponse.json({ success: false, error: target.error }, { status: 200 });
-        }
         let uid: number;
         try {
-          uid = await withPinnedOdooFetch(target.url, target.target, () =>
+          // Connects to the address the destination check classified, not to
+          // the name — one lookup serves the check, this login and the probe.
+          uid = await withPinnedOdooFetch(pin!.origin, pin!.target, () =>
             authenticateOdoo({
               url: creds.url,
               db: creds.db,
@@ -131,7 +136,10 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       }
     }
 
-    const probe = await probeIntegrationCredentials(connection.type, decrypted);
+    const runProbe = () => probeIntegrationCredentials(connection.type, decrypted);
+    const probe = pin
+      ? await withPinnedOdooFetch(pin.origin, pin.target, runProbe)
+      : await runProbe();
 
     if (probe.success) {
       await clearIntegrationAuthError({ connectionId, actor });

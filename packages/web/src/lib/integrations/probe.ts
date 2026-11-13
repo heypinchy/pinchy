@@ -11,7 +11,7 @@ import {
 import { imapTestSchema } from "@/lib/schemas/imap";
 import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
 import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
-import { withPinnedOdooFetch } from "@/lib/integrations/odoo-pin";
+import { isPinnedTo, withPinnedOdooFetch } from "@/lib/integrations/odoo-pin";
 import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
 
 /**
@@ -50,6 +50,9 @@ export async function probeIntegrationCredentials(
     // gets the same from testImapLogin/testSmtpVerify, which run the guard.
     // Resolved once: the answer that is classified here is the address every
     // call below connects to, instead of a second lookup by name.
+    // A caller that already checked and pinned this very origin (the connection
+    // test route) is not looked up a second time.
+    if (isPinnedTo(new URL(parsed.data.url).origin)) return probeOdoo(parsed.data);
     const destination = await resolveExternalUrlTarget(parsed.data.url);
     if (!destination.valid) {
       return { success: false, transient: true, reason: destination.error };

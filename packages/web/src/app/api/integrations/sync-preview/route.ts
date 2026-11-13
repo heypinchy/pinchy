@@ -14,7 +14,7 @@ export const POST = withAdmin(async (request) => {
 
   const urlCheck = await resolveExternalUrlTarget(credentials.url);
   if (!urlCheck.valid) {
-    return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+    return NextResponse.json({ error: urlCheck.error }, { status: urlCheck.transient ? 503 : 400 });
   }
 
   const result = await withPinnedOdooFetch(urlCheck.url, urlCheck.target, () =>

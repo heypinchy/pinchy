@@ -119,22 +119,41 @@ export async function pinnedFetch(
   init: RequestInit,
   target: PinnedTarget
 ): Promise<Response> {
+  const agent = createPinnedAgent(target);
+  try {
+    return await fetchWithPinnedAgent(url, init, agent);
+  } finally {
+    // Graceful: an Agent's close waits for the request in flight — body
+    // included — and only then drops the socket, so the caller can still read
+    // the response it gets back.
+    agent.close().catch(() => {});
+  }
+}
+
+/**
+ * An undici Agent whose connections go to `target`'s checked addresses. For a
+ * caller that makes many requests to one checked host and wants the sockets
+ * kept alive between them: build one, pass it to {@link fetchWithPinnedAgent},
+ * close it when done.
+ */
+export function createPinnedAgent(target: PinnedTarget): Agent {
+  return new Agent({ connect: { lookup: pinnedLookup(target) } });
+}
+
+/** {@link pinnedFetch}'s request, on an agent from {@link createPinnedAgent}. */
+export async function fetchWithPinnedAgent(
+  url: string,
+  init: RequestInit,
+  agent: Agent
+): Promise<Response> {
   if (init.redirect === "follow") {
     throw new TypeError(
       'pinnedFetch never follows a redirect; pass redirect: "manual" and check the next hop.'
     );
   }
-  const dispatcher = new Agent({ connect: { lookup: pinnedLookup(target) } });
-  try {
-    return (await undiciFetch(url, {
-      ...(init as Record<string, unknown>),
-      redirect: init.redirect ?? "manual",
-      dispatcher,
-    })) as unknown as Response;
-  } finally {
-    // Graceful: an Agent's close waits for the request in flight — body
-    // included — and only then drops the socket, so the caller can still read
-    // the response it gets back.
-    dispatcher.close().catch(() => {});
-  }
+  return (await undiciFetch(url, {
+    ...(init as Record<string, unknown>),
+    redirect: init.redirect ?? "manual",
+    dispatcher: agent,
+  })) as unknown as Response;
 }

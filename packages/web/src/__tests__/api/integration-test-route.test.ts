@@ -71,16 +71,6 @@ vi.mock("@/lib/integrations/stored-destination", () => ({
   checkStoredDestination: (...args: unknown[]) => mockCheckStoredDestination(...args),
 }));
 
-// The Odoo login is pinned to the address this resolves (see
-// odoo-admin-routes-pinning.test.ts); here it is a seam.
-vi.mock("@/lib/integrations/url-validation", () => ({
-  resolveExternalUrlTarget: async (url: string) => ({
-    valid: true,
-    url: new URL(url).origin,
-    target: [{ address: "93.184.216.34", family: 4 }],
-  }),
-}));
-
 vi.mock("@/lib/integrations/odoo-schema", () => ({
   odooCredentialsSchema: {
     safeParse: vi.fn().mockReturnValue({
@@ -172,7 +162,15 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
     mockClearIntegrationAuthError.mockResolvedValue(undefined);
     mockSetIntegrationAuthFailed.mockResolvedValue(undefined);
     mockOdooAuthenticate.mockResolvedValue(2);
-    mockCheckStoredDestination.mockResolvedValue({ allowed: true });
+    // The Odoo login and the probe are pinned to the addresses the destination
+    // check hands back (odoo-admin-routes-pinning.test.ts covers the pinning).
+    mockCheckStoredDestination.mockResolvedValue({
+      allowed: true,
+      pin: {
+        origin: "https://odoo.example.com",
+        target: [{ address: "93.184.216.34", family: 4 }],
+      },
+    });
   });
 
   it("calls clearIntegrationAuthError with connectionId and actor when probe succeeds", async () => {

@@ -236,7 +236,9 @@ An agent allowed only to **Fetch web pages** could ask Pinchy for the instance's
 
 #### Pinchy's own requests after an address check pin the address
 
-The address checks for Odoo, mail servers and OpenAI-compatible providers resolve the hostname, and the client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool already pinned the address it checked. From this release, so do the requests Pinchy makes itself right after a check: the mail **Test connection**, listing Odoo databases, and an OpenAI-compatible provider's model discovery and key check. Those also no longer contact a name that doesn't resolve. Everything else still looks the name up again: the agent's Odoo and mail tools and the agent runtime's requests to a provider. Nothing to configure.
+The address checks for Odoo, mail servers and OpenAI-compatible providers resolve the hostname, and the client resolves it again a moment later to connect. A DNS server that answers differently the second time isn't caught. The **Fetch web pages** tool already pinned the address it checked. From this release, so do the requests Pinchy makes itself right after a check: the mail **Test connection**, listing Odoo databases, and an OpenAI-compatible provider's model discovery and key check. Those also no longer contact a name that doesn't resolve. Everything else still looks the name up again: the agent's Odoo and mail tools and the agent runtime's requests to a provider.
+
+One thing can need a change. An Odoo host that Pinchy cannot resolve is now refused, both when you connect or test it and at runtime when an agent's Odoo tools fetch the connection; before, it was let through. A lookup that only fails for the moment (a DNS timeout) is not refused: Pinchy says to try again. If your Odoo is reached by a name only another container or network can resolve, add it to the `pinchy` service as well (`extra_hosts`, or your DNS), not only to `openclaw`. Nothing to change if Pinchy itself can resolve your Odoo's name.
 
 #### A closed laptop no longer holds a chat connection for hours
 

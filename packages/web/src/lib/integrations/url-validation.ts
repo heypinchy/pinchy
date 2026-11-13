@@ -64,7 +64,14 @@ function classifyHostname(hostname: string): IpAddressClass | null {
   return classifyIpAddress(hostname);
 }
 
-type ValidationResult = { valid: true; url: string } | { valid: false; error: string };
+/**
+ * A refusal says why. `transient` marks the one kind that is not a verdict on
+ * the URL at all: the resolver itself failed (timeout, SERVFAIL, resolver
+ * unreachable), so the same URL may pass a moment later. Callers answer it as
+ * "try again", never as "blocked", and never as a security event.
+ */
+type Refusal = { valid: false; error: string; transient?: true };
+type ValidationResult = { valid: true; url: string } | Refusal;
 
 /** Resolves a hostname to all of its A/AAAA addresses. Injected in tests. */
 export type UrlHostResolver = (host: string) => Promise<string[]>;
@@ -86,7 +93,18 @@ const INTERNAL_NETWORK_ERROR =
   "Blocked: this URL targets a loopback, link-local, cloud-metadata or otherwise reserved " +
   "address, which is never a private Odoo server.";
 
-const UNRESOLVABLE_ERROR = "Could not resolve the server's host name. Check the URL for a typo.";
+const unresolvableError = (host: string) =>
+  `Could not resolve the host name "${host}". Check the URL for a typo.`;
+
+const transientError = (host: string) =>
+  `The DNS lookup for "${host}" failed temporarily. Try again in a moment.`;
+
+/**
+ * The resolver codes that mean "this name has no answer". Anything else — a
+ * timeout, SERVFAIL, a resolver that refuses the connection, a code we do not
+ * know — says nothing about the name and is reported as temporary.
+ */
+const NO_ANSWER_CODES = new Set(["ENOTFOUND", "ENODATA"]);
 
 const PRIVATE_NETWORK_ERROR =
   "Blocked: this URL targets a private network address. " +
@@ -161,7 +179,7 @@ export async function validateExternalUrl(
 export async function resolveExternalUrlTarget(
   urlString: string,
   resolver: UrlHostResolver = defaultUrlHostResolver
-): Promise<{ valid: true; url: string; target: PinnedTarget } | { valid: false; error: string }> {
+): Promise<{ valid: true; url: string; target: PinnedTarget } | Refusal> {
   const checked = await checkExternalUrl(urlString, resolver);
   if (!checked.valid) return checked;
   return { valid: true, url: checked.url, target: toPinnedTarget(checked.addresses) };
@@ -169,13 +187,13 @@ export async function resolveExternalUrlTarget(
 
 /**
  * The shared check: a refusal, or the origin plus every address it reaches —
- * the literal itself, the resolver's answers, or none when the name did not
- * resolve (which each caller treats its own way).
+ * the literal itself or the resolver's answers. A name with no answer, and a
+ * lookup that failed, are both refusals (the second marked `transient`).
  */
 async function checkExternalUrl(
   urlString: string,
   resolver: UrlHostResolver
-): Promise<{ valid: true; url: string; addresses: string[] } | { valid: false; error: string }> {
+): Promise<{ valid: true; url: string; addresses: string[] } | Refusal> {
   let url: URL;
   try {
     url = new URL(urlString);
@@ -217,14 +235,19 @@ async function checkExternalUrl(
     // past a check that only ever read the hostname string.
     try {
       addresses = await resolver(hostname);
-    } catch {
-      addresses = [];
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (typeof code === "string" && NO_ANSWER_CODES.has(code)) {
+        addresses = [];
+      } else {
+        return { valid: false, transient: true, error: transientError(hostname) };
+      }
     }
     // A name with no answer cannot be classified, so it is refused. Letting it
     // through trades a typo's clearer error for a hole: whoever connects next
     // does its own lookup, and a resolver that fails the check's and answers
     // the connect's gets an address nobody looked at.
-    if (addresses.length === 0) return { valid: false, error: UNRESOLVABLE_ERROR };
+    if (addresses.length === 0) return { valid: false, error: unresolvableError(hostname) };
     for (const address of addresses) {
       const refusal = refusalFor(classifyIpAddress(address));
       if (refusal !== null) return { valid: false, error: refusal };

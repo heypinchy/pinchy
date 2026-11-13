@@ -32,8 +32,16 @@ vi.mock("@/lib/pinned-connection", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/pinned-connection")>();
   return {
     ...actual,
-    pinnedFetch: async (url: string, init: RequestInit, target: Array<{ address: string }>) => {
-      pinnedCalls.push({ url, target });
+    createPinnedAgent: (target: Array<{ address: string }>) => ({
+      target,
+      close: async () => undefined,
+    }),
+    fetchWithPinnedAgent: async (
+      url: string,
+      init: RequestInit,
+      agent: { target: Array<{ address: string }> }
+    ) => {
+      pinnedCalls.push({ url, target: agent.target });
       const { id, params } = JSON.parse(String(init.body)) as {
         id: number;
         params: { service: string; method: string };
@@ -151,6 +159,22 @@ describe.each(routes)("POST /api/integrations/$name", ({ call }) => {
   });
 });
 
+describe.each(routes)("POST /api/integrations/$name during a DNS outage", ({ call }) => {
+  it("says the lookup failed temporarily instead of blocking the URL", async () => {
+    mockDnsLookup.mockRejectedValue(Object.assign(new Error("EAI_AGAIN"), { code: "EAI_AGAIN" }));
+
+    const response = await call();
+    const body = await response.json();
+
+    expect(body.success).not.toBe(true);
+    expect(body.error).toMatch(/temporar.*try again/i);
+    expect(body.error).not.toMatch(/blocked/i);
+    expect(response.status).not.toBe(400);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(pinnedCalls).toHaveLength(0);
+  });
+});
+
 describe("the other callers that check an Odoo URL and then log in to it", () => {
   it("probeIntegrationCredentials connects to the checked address", async () => {
     const { probeIntegrationCredentials } = await import("@/lib/integrations/probe");
@@ -163,7 +187,7 @@ describe("the other callers that check an Odoo URL and then log in to it", () =>
   });
 
   it("probeIntegrationCredentials rejects an unresolvable host without connecting", async () => {
-    mockDnsLookup.mockRejectedValue(new Error("ENOTFOUND"));
+    mockDnsLookup.mockRejectedValue(Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" }));
     const { probeIntegrationCredentials } = await import("@/lib/integrations/probe");
 
     const result = await probeIntegrationCredentials("odoo", { ...creds, uid: 2 });
@@ -185,7 +209,7 @@ describe("the other callers that check an Odoo URL and then log in to it", () =>
   });
 
   it("[connectionId]/test rejects an unresolvable host without connecting", async () => {
-    mockDnsLookup.mockRejectedValue(new Error("ENOTFOUND"));
+    mockDnsLookup.mockRejectedValue(Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" }));
     storedCredentials = { ...creds, uid: 2 };
     const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
 
