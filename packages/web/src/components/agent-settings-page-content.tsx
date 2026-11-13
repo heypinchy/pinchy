@@ -280,10 +280,11 @@ export function AgentSettingsPageContent() {
           setAgent(null);
         } else {
           // A refusal the route explains (a 4xx such as personal agents being
-          // switched off) is not fixed by reloading: show its own reason.
+          // switched off) is not fixed by reloading: show its own reason. A
+          // 401 is: reloading is what sends an expired session to login.
           const reload = "We couldn't load this agent's settings. Reload the page to try again.";
           setLoadError(
-            err instanceof ApiError && err.status >= 400 && err.status < 500
+            err instanceof ApiError && err.status > 401 && err.status < 500
               ? errorMessage(err, reload)
               : reload
           );

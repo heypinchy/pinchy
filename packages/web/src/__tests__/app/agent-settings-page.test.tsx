@@ -574,6 +574,16 @@ describe("AgentSettingsPage", () => {
       expect(alert).not.toHaveTextContent(/reload the page/i);
     });
 
+    // An expired session is fixed by reloading: that is what sends it to login.
+    it("still says to reload when the session has expired", async () => {
+      failLoad("/api/agents/agent-1", async () =>
+        jsonResponse({ error: "Unauthorized" }, { status: 401 })
+      );
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/reload the page/i);
+    });
+
     // The reload after a save passes no signal: its failure must leave the
     // saved page in place and say so in a toast, not replace it with an alert.
     it("keeps the page and toasts when the reload after a save fails", async () => {
