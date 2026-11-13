@@ -433,6 +433,26 @@ describe("imap-probe", () => {
   });
 
   describe("classifyProbeError", () => {
+    it.each([
+      [
+        "imapflow",
+        Object.assign(new Error("Server does not support STARTTLS"), { tlsFailed: true }),
+      ],
+      [
+        "nodemailer",
+        Object.assign(
+          new Error("Error upgrading connection with STARTTLS: 530 5.7.0 Authentication required"),
+          { code: "ETLS" }
+        ),
+      ],
+    ])(
+      "classifies a refused STARTTLS upgrade (%s) as a TLS failure, not auth or unknown",
+      (_n, failure) => {
+        expect(classifyProbeError(failure).code).toBe("tls");
+        expect(friendlyError(failure)).toMatch(/secure connection/);
+      }
+    );
+
     it("classifies a total failure over several addresses by the per-address errors", () => {
       // autoSelectFamily over >=2 addresses rejects with an AggregateError that
       // has an empty message; the codes live on `errors`.

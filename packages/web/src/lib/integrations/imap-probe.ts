@@ -36,6 +36,17 @@ function errorText(error: unknown): string {
   return parts.join(" ");
 }
 
+// A required STARTTLS upgrade the server did not deliver: imapflow's "Server
+// does not support STARTTLS" (tlsFailed, no code) and nodemailer's ETLS. Checked
+// before the auth wordlist, since nodemailer appends the server's response text.
+function isStartTlsFailure(error: unknown, lower: string): boolean {
+  return (
+    (error as { tlsFailed?: unknown } | null)?.tlsFailed === true ||
+    lower.includes("etls") ||
+    lower.includes("starttls")
+  );
+}
+
 // Maps low-level probe errors to short, friendly messages that never leak a
 // stack trace or the password. Order matters: unambiguous network-error CODES
 // are matched BEFORE the fuzzy "auth" wordlist, because that wordlist matches
@@ -60,6 +71,9 @@ export function friendlyError(error: unknown): string {
     lower.includes("could not connect")
   ) {
     return "Could not connect to the server — check the host and port";
+  }
+  if (isStartTlsFailure(error, lower)) {
+    return "Could not establish a secure connection — check the security setting";
   }
   if (
     lower.includes("auth") ||
@@ -118,6 +132,12 @@ export function classifyProbeError(error: unknown): { code: ProbeFailureCode; me
     return {
       code: "refused",
       message: "Could not connect to the server — check the host and port",
+    };
+  }
+  if (isStartTlsFailure(error, lower)) {
+    return {
+      code: "tls",
+      message: "Could not establish a secure connection — check the security setting",
     };
   }
   if (
