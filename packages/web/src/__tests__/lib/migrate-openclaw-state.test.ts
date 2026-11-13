@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdtempSync,
@@ -97,24 +97,28 @@ function calls(): Call[] {
 // Runs under `set -e`, as start-openclaw.sh does: a command failing inside the
 // helper must not abort the entrypoint, or "fails open" is a claim, not a fact.
 // The trailing marker proves the caller kept going.
-function run(fn: string): { status: number; output: string } {
-  try {
-    const script = `set -e; source '${SCRIPT}'; ${fn} 2>&1; echo CALLER-CONTINUED`;
-    const output = execFileSync("bash", ["-c", script], {
-      env: {
-        ...process.env,
-        PATH: `${binDir}${delimiter}${process.env.PATH}`,
-        OPENCLAW_STATE_DIR: stateDir,
-        OPENCLAW_MIGRATION_TIMEOUT: "30",
-      },
-      encoding: "utf8",
-    });
-    expect(output).toContain("CALLER-CONTINUED");
-    return { status: 0, output };
-  } catch (err) {
-    const e = err as { status: number; stdout: string };
-    return { status: e.status, output: e.stdout };
-  }
+function run(fn: string, env: Record<string, string> = {}): { status: number; output: string } {
+  const script = `set -e; source '${SCRIPT}'; ${fn} 2>&1; echo CALLER-CONTINUED`;
+  const result = spawnSync("bash", ["-c", script], {
+    env: {
+      ...process.env,
+      PATH: `${binDir}${delimiter}${process.env.PATH}`,
+      OPENCLAW_STATE_DIR: stateDir,
+      OPENCLAW_MIGRATION_TIMEOUT: "30",
+      ...env,
+    },
+    encoding: "utf8",
+  });
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("CALLER-CONTINUED");
+  return { status: result.status ?? -1, output: result.stdout };
+}
+
+// Replaces a coreutils command on PATH for one test.
+function stubCommand(name: string, body: string): void {
+  const bin = join(binDir, name);
+  writeFileSync(bin, `#!/bin/bash\n${body}\n`);
+  chmodSync(bin, 0o755);
 }
 
 function writeConfig(workspaces: Record<string, string>): string {
@@ -296,7 +300,7 @@ describe("migrate_legacy_openclaw_state", () => {
     expect(output).toMatch(/\[state-migration\].*complete.*exit 2/i);
   });
 
-  it("fails open when the config copy cannot be made", () => {
+  it("fails open when the temp dir for the config copy cannot be made", () => {
     const probe = ws("probe");
     writeConfig({ probe });
     writeFileSync(join(probe, "openclaw-workspace-state.json"), "{}");
@@ -335,6 +339,47 @@ describe("migrate_legacy_openclaw_state", () => {
     expect(output).toContain("openclaw-workspace-state.json");
   });
 
+  it("fails open when openclaw.json cannot be copied", () => {
+    const probe = ws("probe");
+    writeConfig({ probe });
+    writeFileSync(join(probe, "openclaw-workspace-state.json"), "{}");
+    stubCommand("cp", "exit 1");
+
+    const { output } = run("migrate_legacy_openclaw_state", { TMPDIR: root });
+
+    expect(output).toMatch(/\[state-migration\].*FAILED.*copy openclaw\.json/);
+    expect(calls()).toEqual([]);
+    expect(readdirSync(root).filter((f) => f.startsWith("pinchy-oc-state-migration"))).toEqual([]);
+  });
+
+  it("caps doctor with the configured timeout and says so when it is hit", () => {
+    const probe = ws("probe");
+    writeConfig({ probe });
+    writeFileSync(join(probe, "openclaw-workspace-state.json"), "{}");
+    const timeoutLog = join(root, "timeout.log");
+    // coreutils timeout exits 124 when it kills the command.
+    stubCommand("timeout", `echo "$1" > '${timeoutLog}'; shift; "$@"; exit 124`);
+
+    const { output } = run("migrate_legacy_openclaw_state", { TMPDIR: root });
+
+    expect(readFileSync(timeoutLog, "utf8").trim()).toBe("30");
+    expect(calls()).toHaveLength(1);
+    expect(output).toMatch(/\[state-migration\].*FAILED.*timed out after 30s/);
+    expect(output).toContain("openclaw-workspace-state.json");
+  });
+
+  it("does not mistake a warning on stderr for legacy state", () => {
+    // NODE_OPTIONS preloads, deprecation warnings and the like go to stderr;
+    // counting them as findings would run doctor on every boot.
+    writeConfig({ probe: ws("probe") });
+    const preload = join(root, "warn.cjs");
+    writeFileSync(preload, 'process.stderr.write("(node) Warning: something is deprecated\\n");');
+
+    run("migrate_legacy_openclaw_state", { NODE_OPTIONS: `--require ${preload}` });
+
+    expect(calls()).toEqual([]);
+  });
+
   it("does nothing without an openclaw.json", () => {
     // First boot of a fresh install: Pinchy has not written the config yet.
     const { status } = run("migrate_legacy_openclaw_state");
@@ -363,13 +408,29 @@ describe("migrate_legacy_openclaw_state — wiring", () => {
       const window = lines.slice(Math.max(0, start - 15), start);
       const migrate = window.findIndex((l) => /^\s*migrate_legacy_openclaw_state\s*$/.test(l));
       expect(migrate).toBeGreaterThanOrEqual(0);
-      expect(window.findIndex((l) => /^\s*ensure_secrets_root_owned\s*$/.test(l))).toBeLessThan(
-        migrate
-      );
-      expect(window.findIndex((l) => /^\s*restore_credentials_privacy\s*$/.test(l))).toBeLessThan(
-        migrate
-      );
+      for (const before of [
+        /^\s*ensure_secrets_root_owned\s*$/,
+        /^\s*restore_credentials_privacy\s*$/,
+      ]) {
+        const at = window.findIndex((l) => before.test(l));
+        expect(at).toBeGreaterThanOrEqual(0);
+        expect(at).toBeLessThan(migrate);
+      }
     }
+  });
+
+  it("starts the device auto-approver only after the migration", () => {
+    // auto_approve_devices gives up after a 5-minute cap counted from when it
+    // starts, and each tick runs an openclaw CLI that does its own migration
+    // preflight. Started before a long import, it would race doctor and could
+    // time out before the gateway ever came up.
+    const lines = startScript().split("\n");
+    const approver = lines.findIndex((l) => /^\s*auto_approve_devices &/.test(l));
+    const migrate = lines.findIndex((l) => /^\s*migrate_legacy_openclaw_state\s*$/.test(l));
+    const gateway = lines.findIndex((l) => /^\s*openclaw gateway\b/.test(l));
+    expect(migrate).toBeGreaterThanOrEqual(0);
+    expect(approver).toBeGreaterThan(migrate);
+    expect(approver).toBeLessThan(gateway);
   });
 
   it("is copied into the OpenClaw image", () => {

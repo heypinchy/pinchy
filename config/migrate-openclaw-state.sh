@@ -23,6 +23,11 @@
 #   - Heartbeats: Pinchy sets heartbeat.every "0m" on every agent, so the
 #     heartbeat rows doctor reconciles are created disabled — the same rows the
 #     gateway's own cron service reconciles on start.
+#   - Doctor's TOOLS.md step (maybeMigrateToolsMd) archives a stock TOOLS.md
+#     and merges it into AGENTS.md. That stays harmless only because Pinchy
+#     removes TOOLS.md from every agent workspace (writeMailboxContext,
+#     packages/web/src/lib/workspace.ts) before it reports healthy, and this
+#     container waits for that (depends_on: pinchy: service_healthy).
 #   - Doctor archives what it imports (agents/<id>/session-sqlite-import-archive,
 #     <workspace>/openclaw-workspace-state.json.migrated.*) rather than deleting.
 #
@@ -105,10 +110,16 @@ for (const p of [...new Set(found)]) console.log(p);
 '
 }
 
+# Stopping the container first keeps the gateway watchdog from restarting the
+# gateway, and this helper from running doctor, while the manual run is going.
+MANUAL_MIGRATION="docker compose stop openclaw && docker compose run --rm --no-deps --entrypoint openclaw openclaw doctor --fix --non-interactive"
+
 migrate_legacy_openclaw_state() {
     local legacy
-    legacy="$(list_legacy_openclaw_state 2>&1)" || {
-        echo "[state-migration] WARNING: could not check for pre-2026.9 OpenClaw state: $legacy"
+    # stdout only: whatever node prints on stderr (a NODE_OPTIONS preload, a
+    # deprecation warning) goes to the log as is and is never a finding.
+    legacy="$(list_legacy_openclaw_state)" || {
+        echo "[state-migration] WARNING: could not check for pre-2026.9 OpenClaw state (see the error above); starting the gateway anyway."
         return 0
     }
     [ -n "$legacy" ] || return 0
@@ -119,14 +130,14 @@ migrate_legacy_openclaw_state() {
 
     local workdir rc start
     workdir="$(mktemp -d "${TMPDIR:-/tmp}/pinchy-oc-state-migration.XXXXXX")" || {
-        echo "[state-migration] FAILED (exit 1): could not create a temp dir. Run manually: docker compose exec openclaw openclaw doctor --fix"
+        echo "[state-migration] FAILED: could not create a temp dir to copy openclaw.json into. To run it by hand: $MANUAL_MIGRATION"
         return 0
     }
     # Every command below is guarded: start-openclaw.sh runs under `set -e`,
     # and an unguarded failure here would kill the entrypoint, not fail open.
     cp "$OPENCLAW_STATE_DIR/openclaw.json" "$workdir/openclaw.json" || {
         rm -rf "$workdir"
-        echo "[state-migration] FAILED: could not copy openclaw.json. Run manually: docker compose exec openclaw openclaw doctor --fix"
+        echo "[state-migration] FAILED: could not copy openclaw.json. To run it by hand: $MANUAL_MIGRATION"
         return 0
     }
     local limit=()
@@ -148,8 +159,11 @@ migrate_legacy_openclaw_state() {
         echo "[state-migration] Migration complete in ${took}s (doctor exit $rc)."
         return 0
     fi
-    echo "[state-migration] FAILED (doctor exit $rc) after ${took}s. This is still on disk, and the gateway won't start until it is imported:"
+    local why="doctor exit $rc"
+    # coreutils timeout exits 124 when it had to stop the command.
+    [ "$rc" -eq 124 ] && [ "${#limit[@]}" -gt 0 ] && why="doctor timed out after ${OPENCLAW_MIGRATION_TIMEOUT}s"
+    echo "[state-migration] FAILED ($why) after ${took}s. This is still on disk, and the gateway won't start until it is imported:"
     echo "$remaining" | head -20 | sed 's/^/[state-migration]   /'
-    echo "[state-migration] It is retried on the next gateway start. To run it by hand: docker compose exec openclaw openclaw doctor --fix"
+    echo "[state-migration] It is retried on the next gateway start. To run it by hand: $MANUAL_MIGRATION"
     return 0
 }
