@@ -62,4 +62,19 @@ describe("removeTags drift guard", () => {
     expect(webRe).toContain("blockquote");
     expect(canonicalize(extractConst(plugin, "HTML_BLOCK_TAG_RE"))).toBe(webRe);
   });
+
+  it("web and plugin entity tables are identical", () => {
+    const webTable = canonicalize(extractConst(web, "HTML_ENTITIES"));
+    expect(webTable).toContain("nbsp");
+    expect(canonicalize(extractConst(plugin, "HTML_ENTITIES"))).toBe(webTable);
+  });
+
+  it("web and plugin stripHtml bodies are identical (modulo a wrapping return paren)", () => {
+    // The plugin copy wraps its chain in `return ( … );` so a leading comment
+    // can sit inside; the parens carry no meaning.
+    const unwrap = (body: string) => body.replace(/^return \( /, "return ").replace(/ \);$/, ";");
+    const webBody = unwrap(canonicalize(extractFunctionBody(web, "stripHtml")));
+    expect(webBody).toContain("removeTags(html)");
+    expect(unwrap(canonicalize(extractFunctionBody(plugin, "stripHtml")))).toBe(webBody);
+  });
 });
