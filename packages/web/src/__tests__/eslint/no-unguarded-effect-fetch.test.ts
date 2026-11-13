@@ -171,6 +171,28 @@ tester.run("no-unguarded-effect-fetch", rule, {
       }`,
       filename: CLIENT,
     },
+    // A fan-out whose Promise.all is awaited inside the outer try is handled
+    // there: the .map callback is not where the rejection ends up.
+    {
+      code: `function Page() {
+        const load = useCallback(async (ids) => {
+          try {
+            const rows = await Promise.all(ids.map(async (id) => { const r = await fetch("/x/" + id); return r.json(); }));
+            setRows(rows);
+          } catch (err) { report(err); }
+        }, []);
+        useEffect(() => { void load(ids); }, [load]);
+      }`,
+      filename: CLIENT,
+    },
+    // A timer that calls something else does not drop the load.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { const id = setTimeout(() => setReady(true), 10); return () => clearTimeout(id); }, [load]);
+      }`,
+      filename: CLIENT,
+    },
     // Module-level functions are a documented limit and are not followed.
     {
       code: `async function loadAll() { await apiGet("/api/x"); }
@@ -403,6 +425,51 @@ tester.run("no-unguarded-effect-fetch", rule, {
       }`,
       filename: CLIENT,
       errors: [{ messageId: "unguardedEffectFetch" }],
+    },
+    // A .then/.finally chain hands on nothing that catches: still dropped.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { setLoading(true); load().finally(() => setLoading(false)); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // A concise effect body drops its call the same way.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => void load(), [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // The codebase's polling idiom: a concise timer callback.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { const id = setInterval(() => void load(), 3000); return () => clearInterval(id); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // A function handed to a timer by name is called and dropped by it.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { const id = setInterval(load, 5000); return () => clearInterval(id); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
+    },
+    // Awaited, but with no catch between the await and the effect.
+    {
+      code: `function Page() {
+        const load = useCallback(async () => { await apiGet("/x"); }, []);
+        useEffect(() => { (async () => { await load(); })(); }, [load]);
+      }`,
+      filename: CLIENT,
+      errors: [{ messageId: "unguardedEffectFetch", data: { callee: "apiGet" } }],
     },
   ],
 });

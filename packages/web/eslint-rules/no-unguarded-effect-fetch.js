@@ -34,8 +34,11 @@
 // "Runs from a useEffect" covers two shapes:
 //
 //   - A function DEFINED inside the effect body, at any depth.
-//   - A function the effect CALLS and drops: a bare `fn();` or `void fn();`
-//     statement anywhere in the effect body, where `fn` resolves (by scope,
+//   - A function the effect CALLS and drops — `fn();`, `void fn();`,
+//     `fn().then(ok)` / `.finally(...)`, a concise `() => fn()` that is the
+//     effect, a scheduler callback or a `void`, `setInterval(fn, ...)` and the
+//     other SCHEDULERS, or `await fn()` with no catch between it and the
+//     effect — anywhere in the effect body, where `fn` resolves (by scope,
 //     not by name) to a `function fn() {}`, a `const fn = async () => {}` /
 //     `function () {}`, or a `const fn = useCallback(async () => {}, deps)`
 //     declared inside a function in this file — in practice, the component.
@@ -45,6 +48,10 @@
 //     awaits the same function inside a try. A call the effect hands somewhere
 //     — `fn().catch(...)`, `await fn()` inside a try, `const p = fn()` — is
 //     not dropped, and the function is not followed for it.
+//
+// A `.map` callback whose promises go straight into an awaited
+// `Promise.all/any/race` is part of the function around it: its rejection
+// lands on that await, so the try around the await guards it.
 //
 // Limits, stated so nobody reads the green check as more than it is:
 //
@@ -187,16 +194,74 @@ function isInsideEffect(node) {
 }
 
 /**
- * The call a statement starts and drops: `fn();` or `void fn();`. Nothing
- * awaits it and nothing catches it. `fn().catch(...)`, `await fn()` and
- * `const p = fn()` are not this shape: they hand the rejection somewhere.
+ * The local call an expression starts and drops: `fn()`, `void fn()`, or that
+ * call continued by `.then(onFulfilled)` / `.finally(...)`, neither of which
+ * catches. `fn().catch(...)`, `fn().then(ok, onError)` and `const p = fn()` are
+ * not this shape: they hand the rejection somewhere.
  */
-function droppedCall(statement) {
-  let expression = unwrap(statement.expression);
-  if (expression.type === "UnaryExpression" && expression.operator === "void") {
-    expression = unwrap(expression.argument);
+function droppedCall(expression) {
+  let current = unwrap(expression);
+  if (current.type === "UnaryExpression" && current.operator === "void") {
+    current = unwrap(current.argument);
   }
-  return expression.type === "CallExpression" ? expression : null;
+  while (current.type === "CallExpression") {
+    const callee = unwrap(current.callee);
+    const method = memberName(callee);
+    if ((method === "then" && current.arguments.length < 2) || method === "finally") {
+      current = unwrap(callee.object);
+      continue;
+    }
+    return callee.type === "Identifier" ? current : null;
+  }
+  return null;
+}
+
+// Callers that call a function they are handed and drop what it returns.
+const SCHEDULERS = new Set([
+  "setTimeout",
+  "setInterval",
+  "requestAnimationFrame",
+  "queueMicrotask",
+  "startTransition",
+]);
+
+function isScheduler(call) {
+  const callee = unwrap(call.callee);
+  if (callee.type === "Identifier") return SCHEDULERS.has(callee.name);
+  const method = memberName(callee);
+  return method === "addEventListener" || SCHEDULERS.has(method);
+}
+
+/**
+ * A `.map` callback whose promises go straight into an awaited
+ * `Promise.all/any/race(...)`: what it rejects with is rejected by that await,
+ * so a try around the await is the try that catches it.
+ */
+function isAwaitedFanOut(fn) {
+  const map = fn.parent;
+  if (!map || map.type !== "CallExpression" || map.arguments[0] !== fn) return false;
+  if (memberName(unwrap(map.callee)) !== "map") return false;
+  const combinator = outerOf(map);
+  if (
+    !combinator ||
+    combinator.type !== "CallExpression" ||
+    unwrap(combinator.arguments[0]) !== map
+  ) {
+    return false;
+  }
+  const callee = unwrap(combinator.callee);
+  const object = callee.type === "MemberExpression" ? unwrap(callee.object) : null;
+  if (!object || object.type !== "Identifier" || object.name !== "Promise") return false;
+  if (!REJECTING_COMBINATORS.has(memberName(callee))) return false;
+  const parent = outerOf(combinator);
+  return Boolean(parent && parent.type === "AwaitExpression");
+}
+
+/** The parent of `node`, past the wrappers `unwrap` looks through. */
+function outerOf(node) {
+  let parent = node.parent;
+  while (parent && unwrap(parent) !== parent) parent = parent.parent;
+  return parent;
 }
 
 function isUseCallback(call) {
@@ -274,6 +339,42 @@ module.exports = {
     const droppedFromEffect = new Set();
     const pending = [];
 
+    function markDropped(call) {
+      if (!call) return;
+      const fn = resolveLocalFunction(sourceCode.getScope(call), unwrap(call.callee).name);
+      if (fn) droppedFromEffect.add(fn);
+    }
+
+    /**
+     * Walks from an await to the function that runs it. `guarded`: a try with
+     * a catch in the same function encloses it (an awaited fan-out callback
+     * counts as the same function). `crossed`: the functions in between.
+     * `effect`: the walk reached an effect callback.
+     */
+    function walkToEffect(node) {
+      let guarded = false;
+      let crossedFunction = false;
+      const crossed = [];
+      let child = node;
+      for (let parent = node.parent; parent; child = parent, parent = parent.parent) {
+        if (
+          !crossedFunction &&
+          parent.type === "TryStatement" &&
+          parent.handler &&
+          parent.block === child
+        ) {
+          guarded = true;
+        }
+        if (isFunction(parent)) {
+          if (isEffectCallback(parent)) return { guarded, crossed, effect: true };
+          if (!guarded && isAwaitedFanOut(parent)) continue;
+          crossed.push(parent);
+          crossedFunction = true;
+        }
+      }
+      return { guarded, crossed, effect: false };
+    }
+
     function report(node, callee) {
       if (!hasExemption(node)) {
         context.report({ node, messageId: "unguardedEffectFetch", data: { callee } });
@@ -282,41 +383,50 @@ module.exports = {
 
     return {
       ExpressionStatement(statement) {
-        const call = droppedCall(statement);
-        if (!call) return;
-        const callee = unwrap(call.callee);
-        if (callee.type !== "Identifier" || !isInsideEffect(statement)) return;
-        const fn = resolveLocalFunction(sourceCode.getScope(call), callee.name);
-        if (fn) droppedFromEffect.add(fn);
+        if (isInsideEffect(statement)) markDropped(droppedCall(statement.expression));
+      },
+
+      // A concise body returns its call to whoever runs the arrow. The effect
+      // itself and a scheduler drop it; an explicit `void` drops it anywhere.
+      ArrowFunctionExpression(arrow) {
+        if (arrow.body.type === "BlockStatement") return;
+        const runner = arrow.parent;
+        const dropsResult =
+          isEffectCallback(arrow) ||
+          (unwrap(arrow.body).type === "UnaryExpression" &&
+            unwrap(arrow.body).operator === "void") ||
+          (runner &&
+            runner.type === "CallExpression" &&
+            runner.callee !== arrow &&
+            isScheduler(runner));
+        if (dropsResult && (isEffectCallback(arrow) || isInsideEffect(arrow))) {
+          markDropped(droppedCall(arrow.body));
+        }
+      },
+
+      // `setInterval(load, ...)`: the scheduler calls `load` and drops it.
+      CallExpression(call) {
+        if (!isScheduler(call) || !isInsideEffect(call)) return;
+        for (const argument of call.arguments) {
+          const node = unwrap(argument);
+          if (node.type !== "Identifier") continue;
+          const fn = resolveLocalFunction(sourceCode.getScope(call), node.name);
+          if (fn) droppedFromEffect.add(fn);
+        }
       },
 
       AwaitExpression(node) {
         const callee = loadCalleeName(node.argument);
-        if (!callee) return;
-
-        let guarded = false;
-        let crossedFunction = false;
-        const crossed = [];
-        let child = node;
-        for (let parent = node.parent; parent; child = parent, parent = parent.parent) {
-          if (
-            !crossedFunction &&
-            parent.type === "TryStatement" &&
-            parent.handler &&
-            parent.block === child
-          ) {
-            guarded = true;
-          }
-          if (isFunction(parent)) {
-            if (isEffectCallback(parent)) {
-              if (!guarded) report(node, callee);
-              return;
-            }
-            crossed.push(parent);
-            crossedFunction = true;
-          }
+        const { guarded, crossed, effect } = walkToEffect(node);
+        if (!callee) {
+          // `await fn()` with no catch between it and the effect: the effect
+          // drops what `fn` rejects with, just one function further out.
+          if (effect && !guarded) markDropped(droppedCall(node.argument));
+          return;
         }
-        if (!guarded) pending.push({ node, callee, crossed });
+        if (guarded) return;
+        if (effect) report(node, callee);
+        else pending.push({ node, callee, crossed });
       },
 
       "Program:exit"() {
