@@ -263,7 +263,11 @@ export function AgentSettingsPageContent() {
         setSoulContent(soulData.content || "");
         setAgentsContent(agentsData.content || "");
         setDirectories(dirData.directories || []);
-        setConnections(Array.isArray(connData) ? (connData as Connection[]) : null);
+        // A refresh that loses the list keeps the one already loaded: it has
+        // not become "unknown" because a second GET failed.
+        setConnections((previous) =>
+          Array.isArray(connData) ? (connData as Connection[]) : signal ? null : previous
+        );
         setLoadError(null);
       } catch (err) {
         // Classify on the signal alone: an abort's error is not reliably an
@@ -275,7 +279,14 @@ export function AgentSettingsPageContent() {
           // Rendered as "Agent not found." below.
           setAgent(null);
         } else {
-          setLoadError("We couldn't load this agent's settings. Reload the page to try again.");
+          // A refusal the route explains (a 4xx such as personal agents being
+          // switched off) is not fixed by reloading: show its own reason.
+          const reload = "We couldn't load this agent's settings. Reload the page to try again.";
+          setLoadError(
+            err instanceof ApiError && err.status >= 400 && err.status < 500
+              ? errorMessage(err, reload)
+              : reload
+          );
         }
       } finally {
         if (!signal?.aborted) setLoading(false);

@@ -561,6 +561,55 @@ describe("AgentSettingsPage", () => {
       expect(screen.queryByText(/couldn't load this agent's settings/i)).not.toBeInTheDocument();
     });
 
+    // A refusal the route explains (personal agents switched off: 403) is not
+    // fixed by reloading; the page says what the route said.
+    it("shows the route's own reason when it refuses the agent", async () => {
+      failLoad("/api/agents/agent-1", async () =>
+        jsonResponse({ error: "Personal agents are turned off on this instance." }, { status: 403 })
+      );
+      render(<AgentSettingsPage />);
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent("Personal agents are turned off on this instance.");
+      expect(alert).not.toHaveTextContent(/reload the page/i);
+    });
+
+    // The reload after a save passes no signal: its failure must leave the
+    // saved page in place and say so in a toast, not replace it with an alert.
+    it("keeps the page and toasts when the reload after a save fails", async () => {
+      const { toast } = await import("sonner");
+      render(<AgentSettingsPage />);
+      await screen.findByText("Agent Settings");
+
+      const inner = fetchSpy.getMockImplementation()!;
+      fetchSpy.mockImplementation(async (url, init) =>
+        String(url) === "/api/agents/agent-1" && init?.method === "GET"
+          ? Promise.reject(new TypeError("Failed to fetch"))
+          : inner(url, init)
+      );
+      act(() => {
+        capturedOnChangeGeneral?.(
+          {
+            name: "New Name",
+            tagline: "",
+            model: "anthropic/claude-sonnet-4-6",
+            starterPrompts: [],
+          },
+          true
+        );
+      });
+      await userEvent.click(await screen.findByRole("button", { name: /save & restart/i }));
+      await screen.findByText(/apply changes and restart/i);
+      const confirmButtons = screen.getAllByRole("button", { name: /save & restart/i });
+      await userEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith("Failed to reload agent settings")
+      );
+      expect(screen.getByText("Agent Settings")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
     it("cancels its loads when it unmounts mid-flight", async () => {
       const signals: (AbortSignal | undefined)[] = [];
       fetchSpy.mockImplementation(async (_url, init) => {

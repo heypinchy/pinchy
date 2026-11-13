@@ -182,6 +182,33 @@ describe("agent settings save — integration grants that were never loaded (#12
     expect(receivedConnections).toBeNull();
   });
 
+  // The reload after a save is a refresh: a list that loaded once does not
+  // become "unknown" because the second GET failed.
+  it("keeps the loaded connection list when the reload after a save fails it", async () => {
+    const loaded = [{ id: "c1", type: "odoo", name: "Odoo" }];
+    let integrationGets = 0;
+    const inner = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: unknown, init?: { method?: string }) => {
+      if (String(url).endsWith("/api/integrations") && init?.method === "GET") {
+        integrationGets += 1;
+        return Promise.resolve(
+          integrationGets === 1
+            ? jsonResponse(loaded)
+            : jsonResponse({ error: "boom" }, { status: 500 })
+        );
+      }
+      return inner(url, init);
+    });
+    render(<AgentSettingsPageContent />);
+    await waitFor(() => expect(receivedConnections).toEqual(loaded));
+
+    await save();
+
+    await waitFor(() => expect(integrationGets).toBe(2));
+    await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
+    expect(receivedConnections).toEqual(loaded);
+  });
+
   it("hands the permissions tab the loaded connection list", async () => {
     render(<AgentSettingsPageContent />);
 
