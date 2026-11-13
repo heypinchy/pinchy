@@ -35,6 +35,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import {
+  apiGet,
   apiPost,
   apiPatch,
   apiPut,
@@ -91,35 +92,40 @@ export function SettingsGroups({ refreshKey, isAdmin = true }: SettingsGroupsPro
   // before each save attempt so stale errors never linger.
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const fetchData = useCallback(async () => {
+  // `signal` is passed by the effect, which aborts it on cleanup. The refreshes
+  // after a mutation pass none: they run to completion like the mutation did.
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [groupsRes, usersRes] = await Promise.all([fetch("/api/groups"), fetch("/api/users")]);
-      if (groupsRes.ok) {
-        setGroups(await groupsRes.json());
-      }
-      if (usersRes.ok) {
-        const data = await usersRes.json();
-        setUsers(data.users);
-      }
+      const [groupsData, usersData] = await Promise.all([
+        apiGet<Group[]>("/api/groups", { signal }),
+        apiGet<{ users: User[] }>("/api/users", { signal }),
+      ]);
+      if (signal?.aborted) return;
+      setGroups(groupsData);
+      setUsers(usersData.users);
+    } catch (err) {
+      // Classify on the signal alone: an abort's error is not reliably an
+      // AbortError (see audit-log-table.tsx).
+      if (signal?.aborted) return;
+      toast.error(errorMessage(err, "Failed to load groups"));
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    const { signal } = controller;
     if (isEnterprise) {
       void Promise.resolve().then(() => {
-        if (!cancelled) void fetchData();
+        if (!signal.aborted) void fetchData(signal);
       });
     } else if (isEnterprise === false) {
       void Promise.resolve().then(() => {
-        if (!cancelled) setLoading(false);
+        if (!signal.aborted) setLoading(false);
       });
     }
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [isEnterprise, fetchData]);
 
   function openCreateDialog() {

@@ -1324,4 +1324,64 @@ describe("SettingsUsers", () => {
       expect(screen.queryByRole("region", { name: /nobody invited/i })).toBeNull();
     });
   });
+
+  // The list loads from an effect that awaits nothing. Before it caught, a
+  // network failure rendered an empty user table, and a 500 on the invites did
+  // the same to pending invites — both read as "nobody is here".
+  describe("load failure", () => {
+    function stubLoads(respond: (url: string, signal?: AbortSignal) => Promise<Response> | null) {
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const url = String(input);
+        const custom = respond(url, init?.signal ?? undefined);
+        if (custom) return custom;
+        if (url === "/api/users") return jsonResponse({ users: mockUsers });
+        if (url === "/api/users/invites") return jsonResponse({ invites: [] });
+        if (url === "/api/groups") return jsonResponse([]);
+        return jsonResponse({ enterprise: false, maxUsers: 0, seatsUsed: 0 });
+      });
+    }
+
+    it.each([
+      [
+        "the users load rejects",
+        "/api/users",
+        () => Promise.reject(new TypeError("Failed to fetch")),
+      ],
+      ["the users load answers 500", "/api/users", async () => jsonResponse({}, { status: 500 })],
+      [
+        "the invites load answers 500",
+        "/api/users/invites",
+        async () => jsonResponse({}, { status: 500 }),
+      ],
+    ])("says the users could not be loaded when %s", async (_label, failing, response) => {
+      stubLoads((url) => (url === failing ? response() : null));
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(mockToast.error).toHaveBeenCalledWith("Failed to load users");
+      });
+      expect(screen.queryByText(/loading/i)).not.toBeInTheDocument();
+    });
+
+    it("cancels the load and says nothing when it unmounts mid-flight", async () => {
+      const signals: (AbortSignal | undefined)[] = [];
+      stubLoads((url, signal) => {
+        if (url !== "/api/users" && url !== "/api/users/invites") return null;
+        signals.push(signal);
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError"))
+          );
+        });
+      });
+      const { unmount } = render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => expect(signals).toHaveLength(2));
+      unmount();
+
+      expect(signals.every((signal) => signal?.aborted)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockToast.error).not.toHaveBeenCalledWith("Failed to load users");
+    });
+  });
 });

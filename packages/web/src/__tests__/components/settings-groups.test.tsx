@@ -442,4 +442,45 @@ describe("SettingsGroups", () => {
     // Stronger check: an interactive form field is only accessible when the dialog is truly open
     expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
   });
+
+  // The load runs from an effect that awaits nothing. Before it caught, a
+  // network failure left the table empty — "no groups" — and a 500 did the
+  // same silently, so neither could be told apart from a fresh install.
+  it.each([
+    ["the groups load rejects", () => Promise.reject(new TypeError("Failed to fetch"))],
+    ["the groups load answers 500", async () => jsonResponse({}, { status: 500, ok: false })],
+  ])("says the groups could not be loaded when %s", async (_label, groupsResponse) => {
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: true });
+      if (String(url) === "/api/groups") return groupsResponse();
+      return jsonResponse({ users: mockUsers });
+    });
+    render(<SettingsGroups />);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Failed to load groups");
+    });
+    expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+  });
+
+  it("cancels the load and says nothing when it unmounts mid-flight", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+      if (String(url) === "/api/enterprise/status") return jsonResponse({ enterprise: true });
+      signals.push(init?.signal ?? undefined);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("The operation was aborted.", "AbortError"))
+        );
+      });
+    });
+    const { unmount } = render(<SettingsGroups />);
+
+    await waitFor(() => expect(signals).toHaveLength(2));
+    unmount();
+
+    expect(signals.every((signal) => signal?.aborted)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
 });

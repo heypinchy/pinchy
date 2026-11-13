@@ -495,4 +495,74 @@ describe("AgentSettingsPage", () => {
       expect(screen.getByText(/leave without saving/i)).toBeInTheDocument();
     });
   });
+
+  // The six loads run from an effect that awaits nothing. Before it caught, a
+  // network failure rendered "Agent not found." for an agent that exists, and
+  // a failed SOUL.md or AGENTS.md load opened its editor empty — whose Save
+  // replaced the real file.
+  describe("load failure", () => {
+    function failLoad(failing: string, response: () => Promise<Response>) {
+      const inner = fetchSpy.getMockImplementation()!;
+      fetchSpy.mockImplementation(async (url, init) =>
+        String(url) === failing ? response() : inner(url, init)
+      );
+    }
+
+    it.each([
+      ["the agent", "/api/agents/agent-1"],
+      ["SOUL.md", "/api/agents/agent-1/files/SOUL.md"],
+      ["AGENTS.md", "/api/agents/agent-1/files/AGENTS.md"],
+      ["the models", "/api/providers/models"],
+    ])("says the settings could not be loaded when %s fails to load", async (_label, failing) => {
+      failLoad(failing, () => Promise.reject(new TypeError("Failed to fetch")));
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load/i);
+      expect(screen.queryByText("Agent not found.")).not.toBeInTheDocument();
+      expect(screen.queryByText("Agent Settings")).not.toBeInTheDocument();
+    });
+
+    it("surfaces a 500 the same way", async () => {
+      failLoad("/api/agents/agent-1/files/SOUL.md", async () => jsonResponse({}, { status: 500 }));
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load/i);
+      expect(screen.queryByText("Agent Settings")).not.toBeInTheDocument();
+    });
+
+    it("still says the agent was not found for a 404", async () => {
+      failLoad("/api/agents/agent-1", async () =>
+        jsonResponse({ error: "Agent not found" }, { status: 404 })
+      );
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByText("Agent not found.")).toBeInTheDocument();
+    });
+
+    // The integrations list is admin-only: a member's own personal agent gets
+    // a 403 for it, which is "no integrations", not a failed page.
+    it("renders the settings when the integrations list answers 403", async () => {
+      failLoad("/api/integrations", async () =>
+        jsonResponse({ error: "Forbidden" }, { status: 403 })
+      );
+      render(<AgentSettingsPage />);
+
+      expect(await screen.findByText("Agent Settings")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("cancels its loads when it unmounts mid-flight", async () => {
+      const signals: (AbortSignal | undefined)[] = [];
+      fetchSpy.mockImplementation(async (_url, init) => {
+        signals.push(init?.signal ?? undefined);
+        return new Promise<Response>(() => {});
+      });
+      const { unmount } = render(<AgentSettingsPage />);
+
+      await waitFor(() => expect(signals).toHaveLength(6));
+      unmount();
+
+      expect(signals.every((signal) => signal?.aborted)).toBe(true);
+    });
+  });
 });

@@ -69,18 +69,20 @@ Two smaller rules the first review of this change turned up, both of which every
 
 Nothing awaits the promise a `useEffect` starts, so a load there without a `catch` fails in two bad ways at once. In the browser, the list stays empty and reads exactly like an empty result. On the audit table that was "nothing was logged". On the agent permission sections it was "this agent has no access", and a save from that state replaced the real grants. In a test run, the rejection surfaces as a suite-level unhandled error. It ends `pnpm test` with exit 1 while every test passes, and only when the effect outlives its test's fetch mock, so it shows up in a full run and not in isolation. #1212 fixed four of these by hand and left three. #1216 fixed those three and added the guard.
 
-`pinchy/no-unguarded-effect-fetch` reports an `await fetch(...)` / `await apiGet(...)` (or another api-client helper) in a function that runs from a `useEffect` body, unless a `try` **in that same function** has a `catch` around it. The shape to copy is in `audit-log-table.tsx`:
+`pinchy/no-unguarded-effect-fetch` reports an `await fetch(...)` / `await apiGet(...)` (or another api-client helper) in a function that runs from a `useEffect` body, unless a `try` **in that same function** has a `catch` around it. "Runs from" means defined inside the effect, or called and dropped by it: a bare `fetchData();` or `void fetchData();` in the effect body, where `fetchData` is a function, a `const` arrow or function expression, or a `useCallback(...)` declared in the component. A call the effect hands on — `fetchData().catch(...)`, `await fetchData()` inside a try — is not dropped. The shape to copy is in `audit-log-table.tsx`:
 
 - An `AbortController` that the cleanup aborts.
 - `apiGet(url, { signal })`.
 - A catch that stays silent when `signal.aborted` and otherwise calls `toast.error(errorMessage(err, …))`.
 
-Decide whether something is an abort from `signal.aborted` alone, never from `err.name`. When the failed load backs an editor, don't render the editor and don't report "no config" upward.
+Decide whether something is an abort from `signal.aborted` alone, never from `err.name`. When the failed load backs an editor, don't render the editor and don't report "no config" upward: an editor opened empty saves that emptiness over the real value. `settings-context.tsx` waits for its content and says why there is no editor when the load failed; `agent-settings-page-content.tsx` replaces the page, because every tab edits something its loads supply. Show that inline where the editor would be, not in a toast as well (`agent-rules/ui.md`, one channel per error).
+
+When the load is a `useCallback` shared by the effect and a refresh after a mutation, give it an optional `signal`: the effect passes its own and aborts it on cleanup, and the refresh passes none. Don't hand such a function straight to a prop that calls it with an argument — `ProviderKeyForm`'s `onSuccess(provider)` would arrive as the signal. Wrap it: `onSuccess={() => void fetchStatus()}`.
 
 Staying silent is only half of it: the form that holds the section must also tell "not reported yet" apart from "reported no access". `AgentSettingsPermissions` keeps an Odoo or email grant `undefined` until its section reports. Until then the agent's saved `odoo_*` / `email_*` tools stay in `allowedTools` (and so do their confirmations), and the draft carries `integrationsLoaded: false`, which stops the page from sending `DELETE /api/agents/:id/integrations`. Without that, a failed load plus any unrelated tick on the Permissions tab wiped every integration grant on save.
 
 - **The exemption is per statement, with a written reason**: `// unguarded-load-exempt: <reason>` directly above the awaited statement. It is the same contract as `raw-fetch-exempt`, and for the same reason: the marker asserts a fact rather than deferring work.
 - **It has three limits:**
-  - It follows only functions _defined_ inside the effect, plus `useEffect`/`useLayoutEffect` bodies. An async `useCallback` that the effect merely calls is not followed yet: the fire-and-forget call is visible, but resolving it to the function it names needs a scope lookup the rule does not do.
+  - It follows a called function one level deep and only within the file. A function declared at module level, imported from another file, or called only by another followed function is not followed.
   - It reads `await`. It sees through an awaited `.then`/`.finally` chain and `Promise.all`/`any`/`race([...])`, but a `.then()` chain that is never awaited and has no `.catch` slips through.
   - It checks that a catch exists, never what the catch does. An empty `catch {}` passes, and review owns that case.

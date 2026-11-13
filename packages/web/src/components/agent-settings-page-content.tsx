@@ -29,7 +29,7 @@ import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
 import { AgentSettingsAutomations } from "@/components/agent-settings-automations";
 import { useRestart } from "@/components/restart-provider";
 import { normalizeStarterPrompts } from "@/lib/schemas/starter-prompts";
-import { apiPatch, apiPut, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
+import { apiGet, apiPatch, apiPut, apiDelete, ApiError, errorMessage } from "@/lib/api-client";
 import type { UpdateAgentInput, WriteAgentFileInput } from "@/lib/schemas/agents";
 import type { SetAgentIntegrationsInput } from "@/lib/schemas/agent-integrations";
 import { takeInstructionDraft } from "@/lib/instruction-handoff";
@@ -208,6 +208,8 @@ export function AgentSettingsPageContent() {
   const [directories, setDirectories] = useState<Directory[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [loading, setLoading] = useState(true);
+  // Why the page has nothing to show, when its first load failed.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Accumulated draft values from each tab
   const generalDraft = useRef<GeneralValues | null>(null);
@@ -231,45 +233,63 @@ export function AgentSettingsPageContent() {
   const [showNavWarning, setShowNavWarning] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [agentRes, modelsRes, soulRes, agentsRes, dirRes, connRes] = await Promise.all([
-        fetch(`/api/agents/${agentId}`),
-        fetch("/api/providers/models"),
-        fetch(`/api/agents/${agentId}/files/SOUL.md`),
-        fetch(`/api/agents/${agentId}/files/AGENTS.md`),
-        fetch("/api/data-directories"),
-        fetch("/api/integrations"),
-      ]);
-
-      if (agentRes.ok) setAgent(await agentRes.json());
-      if (modelsRes.ok) {
-        const data = await modelsRes.json();
-        setProviders(data.providers || []);
+  // The mount effect passes its signal and aborts it on cleanup. A failure
+  // there replaces the page: every tab edits something these loads supply, and
+  // an editor opened empty for a SOUL.md that failed to load would save the
+  // emptiness over the real file. The refresh after a save passes no signal;
+  // its failure leaves the page as it was and says so in a toast.
+  const fetchData = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const [agentData, modelsData, soulData, agentsData, dirData, connData] = await Promise.all([
+          apiGet<Agent>(`/api/agents/${agentId}`, { signal }),
+          apiGet<{ providers?: Provider[] }>("/api/providers/models", { signal }),
+          apiGet<{ content?: string }>(`/api/agents/${agentId}/files/SOUL.md`, { signal }),
+          apiGet<{ content?: string }>(`/api/agents/${agentId}/files/AGENTS.md`, { signal }),
+          apiGet<{ directories?: Directory[] }>("/api/data-directories", { signal }),
+          // Admin-only: a member's own personal agent gets a 403 here, which
+          // means "no integrations to grant", not a failed page.
+          apiGet<unknown>("/api/integrations", { signal }).catch((err: unknown) => {
+            if (err instanceof ApiError && err.status === 403) return [];
+            throw err;
+          }),
+        ]);
+        if (signal?.aborted) return;
+        setAgent(agentData);
+        setProviders(modelsData.providers || []);
+        setSoulContent(soulData.content || "");
+        setAgentsContent(agentsData.content || "");
+        setDirectories(dirData.directories || []);
+        setConnections(Array.isArray(connData) ? (connData as Connection[]) : []);
+        setLoadError(null);
+      } catch (err) {
+        // Classify on the signal alone: an abort's error is not reliably an
+        // AbortError (see audit-log-table.tsx).
+        if (signal?.aborted) return;
+        if (!signal) {
+          toast.error(errorMessage(err, "Failed to reload agent settings"));
+        } else if (err instanceof ApiError && err.status === 404) {
+          // Rendered as "Agent not found." below.
+          setAgent(null);
+        } else {
+          setLoadError("We couldn't load this agent's settings. Reload the page to try again.");
+        }
+      } finally {
+        if (!signal?.aborted) setLoading(false);
       }
-      if (soulRes.ok) {
-        const data = await soulRes.json();
-        setSoulContent(data.content || "");
-      }
-      if (agentsRes.ok) {
-        const data = await agentsRes.json();
-        setAgentsContent(data.content || "");
-      }
-      if (dirRes.ok) {
-        const data = await dirRes.json();
-        setDirectories(data.directories || []);
-      }
-      if (connRes.ok) {
-        const data = await connRes.json();
-        setConnections(Array.isArray(data) ? data : []);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [agentId]);
+    },
+    [agentId]
+  );
 
   useEffect(() => {
-    fetchData();
+    // Deferred past the effect body (react-hooks/set-state-in-effect), same
+    // pattern as settings-groups.tsx.
+    const controller = new AbortController();
+    const { signal } = controller;
+    void Promise.resolve().then(() => {
+      if (!signal.aborted) void fetchData(signal);
+    });
+    return () => controller.abort();
   }, [fetchData]);
 
   // Non-admins cannot edit shared agents — redirect to chat
@@ -480,6 +500,14 @@ export function AgentSettingsPageContent() {
 
   if (loading) {
     return <div className="p-8 text-muted-foreground">Loading...</div>;
+  }
+
+  if (loadError) {
+    return (
+      <div role="alert" className="p-8 text-red-600">
+        {loadError}
+      </div>
+    );
   }
 
   if (!agent) {

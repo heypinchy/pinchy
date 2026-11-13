@@ -29,7 +29,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { ShieldAlert, X } from "lucide-react";
-import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
+import {
+  mergeUserList,
+  type ApiInvite,
+  type ApiUser,
+  type UserListItem,
+  type UserGroup,
+} from "@/lib/user-list";
 import { useLicenseStatus } from "@/hooks/use-license-status";
 import { CopyField } from "@/components/copy-field";
 import { buildInviteUrl } from "@/lib/invite-url";
@@ -215,29 +221,43 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const pressure = seatInfo ? evaluateSeatPressure(seatInfo.seatsUsed, seatInfo.maxUsers) : null;
   const showCounter = seatInfo !== null && seatInfo.maxUsers > 0;
 
-  const fetchUsers = useCallback(async () => {
-    try {
-      const [usersRes, invitesRes, groupsData] = await Promise.all([
-        fetch("/api/users"),
-        fetch("/api/users/invites"),
-        fetch("/api/groups")
-          .then((r) => (r.ok ? r.json() : []))
-          .catch(() => []),
-        refetchLicense(),
-      ]);
-      if (usersRes.ok) {
-        const usersData = await usersRes.json();
-        const invitesData = invitesRes.ok ? await invitesRes.json() : { invites: [] };
+  // `signal` comes from the mount effect, which aborts it on cleanup. The
+  // refreshes after a mutation pass none and run to completion.
+  const fetchUsers = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const [usersData, invitesData, groupsData] = await Promise.all([
+          apiGet<{ users: ApiUser[] }>("/api/users", { signal }),
+          apiGet<{ invites: ApiInvite[] }>("/api/users/invites", { signal }),
+          // Groups only decorate the rows; a failure here leaves the badges
+          // off rather than the whole list.
+          apiGet<UserGroup[]>("/api/groups", { signal }).catch(() => []),
+          refetchLicense(),
+        ]);
+        if (signal?.aborted) return;
         setItems(mergeUserList(usersData.users, invitesData.invites));
+        setAllGroups(Array.isArray(groupsData) ? groupsData : []);
+      } catch (err) {
+        // Classify on the signal alone: an abort's error is not reliably an
+        // AbortError (see audit-log-table.tsx).
+        if (signal?.aborted) return;
+        toast.error(errorMessage(err, "Failed to load users"));
+      } finally {
+        if (!signal?.aborted) setLoading(false);
       }
-      setAllGroups(Array.isArray(groupsData) ? groupsData : []);
-    } finally {
-      setLoading(false);
-    }
-  }, [refetchLicense]);
+    },
+    [refetchLicense]
+  );
 
   useEffect(() => {
-    fetchUsers();
+    // Deferred past the effect body (react-hooks/set-state-in-effect), same
+    // pattern as settings-groups.tsx.
+    const controller = new AbortController();
+    const { signal } = controller;
+    void Promise.resolve().then(() => {
+      if (!signal.aborted) void fetchUsers(signal);
+    });
+    return () => controller.abort();
   }, [fetchUsers, refreshKey]);
 
   useEffect(() => {

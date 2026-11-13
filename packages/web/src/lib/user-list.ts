@@ -31,7 +31,7 @@ export type UserListItem =
 // consts (db/enums.ts), and schema-hardening.integration.test.ts reads that
 // constraint back from Postgres — so narrowing the response type here is a
 // guarantee the server actually holds, not an assumption.
-interface ApiUser {
+export interface ApiUser {
   id: string;
   name: string;
   email: string;
@@ -41,7 +41,7 @@ interface ApiUser {
   unknownOrigin?: boolean;
 }
 
-interface ApiInvite {
+export interface ApiInvite {
   id: string;
   email: string | null;
   role: InviteRole;

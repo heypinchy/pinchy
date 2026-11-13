@@ -71,6 +71,7 @@ vi.mock("@/components/agent-settings-diagnostics", () => ({
 }));
 vi.mock("@/components/agent-telegram-settings", () => ({ AgentTelegramSettings: () => <div /> }));
 
+import { jsonResponse } from "@/test-helpers/fetch";
 import { AgentSettingsPageContent } from "@/components/agent-settings-page-content";
 
 const agent = {
@@ -93,12 +94,12 @@ function mockFetch() {
   fetchMock.mockImplementation((url: unknown, init?: { method?: string }) => {
     const path = String(url);
     if (init?.method && init.method !== "GET") {
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+      return Promise.resolve(jsonResponse({}));
     }
     if (path.endsWith("/api/agents/agent-1")) {
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(agent) });
+      return Promise.resolve(jsonResponse(agent));
     }
-    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+    return Promise.resolve(jsonResponse([]));
   });
   global.fetch = fetchMock;
 }

@@ -43,7 +43,8 @@ import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 import { getOAuthProvider, type OAuthProviderId } from "@/lib/integrations/oauth-providers";
 import { EMAIL_CONNECTION_TYPES } from "@/lib/integrations/oauth-providers";
-import { apiGet } from "@/lib/api-client";
+import { toast } from "sonner";
+import { apiGet, errorMessage } from "@/lib/api-client";
 
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
@@ -148,14 +149,22 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
     oauthErrorBannerRef.current?.focus();
   }, [loading, oauthErrorState]);
 
-  const fetchConnections = useCallback(async () => {
+  // `signal` comes from the effects below, which abort it on cleanup. The
+  // refreshes after a mutation pass none and run to completion. The toast
+  // carries an id so the 10s poll replaces it rather than stacking a new one.
+  const fetchConnections = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/integrations");
-      if (res.ok) {
-        setConnections(await res.json());
-      }
+      const data = await apiGet<IntegrationConnection[]>("/api/integrations", { signal });
+      if (!signal?.aborted) setConnections(data);
+    } catch (err) {
+      // Classify on the signal alone: an abort's error is not reliably an
+      // AbortError (see audit-log-table.tsx).
+      if (signal?.aborted) return;
+      toast.error(errorMessage(err, "Failed to load integrations"), {
+        id: "integrations-load-failed",
+      });
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
@@ -205,7 +214,14 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
     useIntegrationActions(fetchConnections);
 
   useEffect(() => {
-    fetchConnections();
+    // Deferred past the effect body (react-hooks/set-state-in-effect), same
+    // pattern as settings-groups.tsx.
+    const controller = new AbortController();
+    const { signal } = controller;
+    void Promise.resolve().then(() => {
+      if (!signal.aborted) void fetchConnections(signal);
+    });
+    return () => controller.abort();
   }, [fetchConnections]);
 
   useEffect(() => {
@@ -229,12 +245,12 @@ export function SettingsIntegrations({ oauthError }: { oauthError?: string } = {
   const hasPending = connections.some((conn) => conn.status === "pending");
   useEffect(() => {
     if (!hasPending) return;
-    let cancelled = false;
+    const controller = new AbortController();
     const id = setInterval(() => {
-      if (!cancelled) void fetchConnections();
+      if (!controller.signal.aborted) void fetchConnections(controller.signal);
     }, 10_000);
     return () => {
-      cancelled = true;
+      controller.abort();
       clearInterval(id);
     };
   }, [hasPending, fetchConnections]);
