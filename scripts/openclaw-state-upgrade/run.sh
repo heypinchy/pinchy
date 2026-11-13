@@ -18,8 +18,10 @@
 # the way deleting an agent in Pinchy does, and boots the new image through its
 # real entrypoint (start-openclaw.sh) on the same volumes. It asserts:
 #   - the gateway reaches `ready`;
-#   - both chats are readable via chat.history, the deleted agent's included;
-#   - across the SQLite cutover, the migration ran and completed;
+#   - both chats, the user's message and the reply, are readable via
+#     chat.history, the deleted agent's included, with the mock already gone;
+#   - across the SQLite cutover, the migration ran exactly once and completed,
+#     and no migration step logged a failure;
 #   - openclaw.json is byte-identical (the migration works on a copy);
 #   - a second boot does not migrate again.
 #
@@ -76,6 +78,8 @@ history_of() {
         --params "{\"sessionKey\":\"agent:$2:direct:user-1\"}" 2>/dev/null || true
 }
 history_has_reply() { history_of "$1" "$2" | grep -q "$REPLY"; }
+# The user's own message from before the upgrade, not just the model's reply.
+history_has_both() { history_of "$1" "$2" | grep "$REPLY" >/dev/null && history_of "$1" "$2" | grep "hello $2" >/dev/null; }
 
 oc_version() {
     docker run --rm "$PLATFORM" --entrypoint openclaw "$1" --version | grep -oE '[0-9]{4}\.[0-9]+' | head -1
@@ -150,6 +154,14 @@ OLD_VERSION="$(oc_version "$OLD_IMAGE")"
 NEW_VERSION="$(oc_version "$NEW_IMAGE")"
 echo "Upgrading OpenClaw state: $OLD_IMAGE ($OLD_VERSION) -> $NEW_IMAGE ($NEW_VERSION)"
 
+# A backport to an older release line can carry an older OpenClaw than the
+# latest release: that is a downgrade, which OpenClaw does not support and no
+# user does by upgrading Pinchy.
+if [ "$(printf '%s\n%s\n' "$OLD_VERSION" "$NEW_VERSION" | sort -V | head -1)" != "$OLD_VERSION" ]; then
+    echo "Skipping: $NEW_VERSION is older than $OLD_VERSION, so this is a downgrade, not an upgrade."
+    exit 0
+fi
+
 docker network create "$NET" >/dev/null
 docker volume create "$CFG" >/dev/null
 docker volume create "$WS" >/dev/null
@@ -175,6 +187,8 @@ for agent in keeper deleted; do
 done
 echo "Phase 1: both agents have a chat on $OLD_VERSION"
 docker stop "$P-old" >/dev/null
+# From here on nothing can answer: whatever phase 2 reads was written above.
+docker rm -f "$P-mock" >/dev/null
 
 # --- Phase 2: this build boots on that state ------------------------------
 # Deleting an agent in Pinchy drops it from openclaw.json but leaves its files.
@@ -189,7 +203,7 @@ wait_for 600 logs_have "$P-new" '\[gateway\] ready' \
     || fail "$NEW_VERSION gateway never became ready on state written by $OLD_VERSION"
 
 for agent in keeper deleted; do
-    wait_for 60 history_has_reply "$P-new" "$agent" \
+    wait_for 60 history_has_both "$P-new" "$agent" \
         || fail "the $agent chat written by $OLD_VERSION is not readable on $NEW_VERSION"
 done
 echo "Phase 2: gateway ready and both chats readable on $NEW_VERSION"
@@ -202,7 +216,10 @@ if [ "$old_major" = files ]; then
         || fail "no state migration ran, though $OLD_VERSION wrote pre-SQLite state"
     logs_have "$P-new" '\[state-migration\] Migration complete' \
         || fail "the state migration did not complete"
+    [ "$(count_in_logs "$P-new" '\[state-migration\] Found')" = 1 ] \
+        || fail "the state migration ran more than once before the gateway came up"
 fi
+! logs_have "$P-new" '\[state-migration\] FAILED' || fail "the state migration logged a failure"
 
 AFTER_SHA="$(docker exec "$P-new" sha256sum /root/.openclaw/openclaw.json | cut -d' ' -f1)"
 [ "$AFTER_SHA" = "$CONFIG_SHA" ] || fail "openclaw.json changed during the upgrade (the migration must work on a copy)"
@@ -214,6 +231,6 @@ ready_again() { [ "$(count_in_logs "$P-new" '\[gateway\] ready')" -gt "$READY" ]
 wait_for 300 ready_again || fail "$NEW_VERSION gateway did not come back after a restart"
 [ "$(count_in_logs "$P-new" '\[state-migration\] Found')" = "$MIGRATIONS" ] \
     || fail "the second boot migrated again — detection does not match what doctor leaves behind"
-wait_for 60 history_has_reply "$P-new" keeper || fail "the keeper chat is gone after a restart"
+wait_for 60 history_has_both "$P-new" keeper || fail "the keeper chat is gone after a restart"
 
 echo "OpenClaw state upgrade $OLD_VERSION -> $NEW_VERSION: OK"
