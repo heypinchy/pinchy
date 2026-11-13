@@ -170,7 +170,7 @@ describe("IMAP port — connection bookkeeping", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ctorOptions.length = 0;
-    mockResolve.mockResolvedValue({ address: "203.0.113.9", family: 4 });
+    mockResolve.mockResolvedValue([{ address: "203.0.113.9", family: 4 }]);
     mockConnect.mockResolvedValue(undefined);
     mockMailboxOpen.mockResolvedValue(undefined);
     mockSearch.mockResolvedValue([]);
@@ -193,11 +193,36 @@ describe("IMAP port — connection bookkeeping", () => {
     expect(mockLogout).not.toHaveBeenCalled();
   });
 
-  it("connects to the address the guard checked and keeps the hostname for TLS", async () => {
+  it("connects by name through a lookup that can only answer the checked addresses", async () => {
     const port = createImapPort(credentials);
     await port.search({ sinceDays: 14 });
     expect(mockResolve).toHaveBeenCalledWith("mail.example.com");
-    expect(ctorOptions[0]).toMatchObject({ host: "203.0.113.9", servername: "mail.example.com" });
+    const options = ctorOptions[0] as {
+      host: string;
+      tls: { lookup: (h: string, o: object, cb: (e: unknown, a: unknown) => void) => void };
+    };
+    expect(options.host).toBe("mail.example.com");
+    expect(options).not.toHaveProperty("servername");
+    const answered = await new Promise((resolve) =>
+      options.tls.lookup(options.host, { all: true }, (_e, a) => resolve(a))
+    );
+    expect(answered).toEqual([{ address: "203.0.113.9", family: 4 }]);
+  });
+
+  it("opens no connection when the guard refuses the stored host", async () => {
+    mockResolve.mockRejectedValue(new Error("Blocked: private network address"));
+    const port = createImapPort(credentials);
+    await expect(port.search({ sinceDays: 14 })).rejects.toThrow(/Blocked/);
+    expect(ctorOptions).toHaveLength(0);
+    expect(mockConnect).not.toHaveBeenCalled();
+  });
+
+  it("passes an IP-literal host through with no servername", async () => {
+    mockResolve.mockResolvedValue([{ address: "203.0.113.50", family: 4 }]);
+    const port = createImapPort({ ...credentials, imapHost: "203.0.113.50" });
+    await port.search({ sinceDays: 14 });
+    expect(ctorOptions[0].host).toBe("203.0.113.50");
+    expect(ctorOptions[0]).not.toHaveProperty("servername");
   });
 
   it("connects once and serves search + read over the same connection", async () => {

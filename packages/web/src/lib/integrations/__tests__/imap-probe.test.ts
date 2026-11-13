@@ -129,10 +129,11 @@ describe("imap-probe", () => {
 
       expect(ImapFlowMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          // The socket goes to the address the guard classified; the name
-          // still drives SNI and certificate verification.
-          host: "93.184.216.34",
-          servername: input.imapHost,
+          // The name stays `host` (SNI and certificate verification); the
+          // socket can only reach the addresses the guard classified, through
+          // the pinned lookup in `tls`.
+          host: input.imapHost,
+          tls: { lookup: expect.any(Function), autoSelectFamily: true },
           port: input.imapPort,
           secure: true,
           auth: { user: input.username, pass: input.password },
@@ -197,9 +198,16 @@ describe("imap-probe", () => {
 
       await testImapLogin(input);
 
-      expect(ImapFlowMock).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "93.184.216.34", servername: input.imapHost })
+      const options = ImapFlowMock.mock.calls[0][0] as {
+        host: string;
+        tls: { lookup: (h: string, o: object, cb: (e: unknown, a: unknown) => void) => void };
+      };
+      expect(options.host).toBe(input.imapHost);
+      // The connector's own lookup of the name can only answer the checked set.
+      const answered = await new Promise((resolve) =>
+        options.tls.lookup(options.host, { all: true }, (_e, a) => resolve(a))
       );
+      expect(answered).toEqual([{ address: "93.184.216.34", family: 4 }]);
       expect(mockDnsLookup).toHaveBeenCalledTimes(1);
     });
 
@@ -263,8 +271,8 @@ describe("imap-probe", () => {
 
       expect(createTransportMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          host: "93.184.216.34",
-          servername: input.smtpHost,
+          host: input.smtpHost,
+          getSocket: expect.any(Function),
           port: input.smtpPort,
           // SMTP submission port 587 is STARTTLS, not implicit TLS: TLS mode is
           // keyed off the port, so even with security "tls" this is
@@ -335,7 +343,7 @@ describe("imap-probe", () => {
       await testSmtpVerify(input);
 
       expect(createTransportMock).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "93.184.216.34", servername: input.smtpHost })
+        expect.objectContaining({ host: input.smtpHost, getSocket: expect.any(Function) })
       );
       expect(mockDnsLookup).toHaveBeenCalledTimes(1);
     });

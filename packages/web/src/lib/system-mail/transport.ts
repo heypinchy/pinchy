@@ -1,5 +1,5 @@
 import type SMTPTransport from "nodemailer/lib/smtp-transport";
-import { pinnedMailTarget, resolveAllowedMailHost } from "@/lib/integrations/mail-host-guard";
+import { pinnedSmtpOptions, resolveAllowedMailHost } from "@/lib/integrations/mail-host-guard";
 import type { SystemMailConfig } from "@/lib/schemas/system-mail";
 
 /**
@@ -51,13 +51,13 @@ export function formatFrom(config: SystemMailConfig): { name: string; address: s
 
 async function openTransport(config: SystemMailConfig) {
   const target = await resolveAllowedMailHost(config.host);
-  const pinned = pinnedMailTarget(config.host, target);
   const nodemailer = (await import("nodemailer")).default;
+  const options = transportOptions(config);
   return nodemailer.createTransport({
-    ...transportOptions(config),
-    host: pinned.host,
-    // The certificate is still checked against the name the admin typed.
-    ...("servername" in pinned ? { tls: { servername: pinned.servername } } : {}),
+    ...options,
+    // The hostname stays `host` (SNI, certificate); the socket is opened to
+    // the checked addresses only, with fallback across them.
+    ...pinnedSmtpOptions(config.host, config.port, target, options.connectionTimeout ?? 10_000),
   });
 }
 

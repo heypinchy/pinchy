@@ -11,7 +11,7 @@ vi.mock("@/lib/integrations/mail-host-guard", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/integrations/mail-host-guard")>();
   return {
     ...actual,
-    resolveAllowedMailHost: vi.fn().mockResolvedValue({ address: "203.0.113.7", family: 4 }),
+    resolveAllowedMailHost: vi.fn().mockResolvedValue([{ address: "203.0.113.7", family: 4 }]),
   };
 });
 
@@ -92,11 +92,14 @@ describe("verifySystemMail", () => {
     expect(createTransport).not.toHaveBeenCalled();
   });
 
-  it("connects to the checked IP and keeps the hostname for TLS (no second resolve)", async () => {
+  it("keeps the hostname for SNI and the certificate, and supplies a socket to the checked addresses", async () => {
     verify.mockResolvedValueOnce(true);
     await verifySystemMail(config);
     expect(createTransport).toHaveBeenCalledWith(
-      expect.objectContaining({ host: "203.0.113.7", tls: { servername: "smtp.example.com" } })
+      expect.objectContaining({ host: "smtp.example.com", getSocket: expect.any(Function) })
+    );
+    expect(vi.mocked(createTransport).mock.calls[0]).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ servername: expect.anything() })])
     );
   });
 

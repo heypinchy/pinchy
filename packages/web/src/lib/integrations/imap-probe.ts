@@ -2,13 +2,13 @@ import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
 import { connect as netConnect } from "node:net";
 import type { ImapTestInput } from "@/lib/schemas/imap";
-import { isIP } from "node:net";
 import {
   MailHostBlockedError,
-  pinnedMailTarget,
+  pinnedImapOptions,
+  pinnedSmtpOptions,
   resolveAllowedMailHost,
 } from "@/lib/integrations/mail-host-guard";
-import type { PinnedAddress } from "@/lib/pinned-connection";
+import type { PinnedTarget } from "@/lib/pinned-connection";
 
 // Shared IMAP/SMTP probe logic used by BOTH:
 //   - the pre-create "Test Connection" route (packages/web/src/app/api/integrations/imap/test/route.ts)
@@ -166,7 +166,7 @@ export async function probeSmtpPorts(
   host: string,
   ports: number[] = [465, 587, 25]
 ): Promise<SmtpPortProbe[]> {
-  let target: PinnedAddress;
+  let target: PinnedTarget;
   try {
     target = await resolveAllowedMailHost(host);
   } catch {
@@ -175,7 +175,7 @@ export async function probeSmtpPorts(
   return Promise.all(
     ports.map(async (port) => ({
       port,
-      reachable: await probeTcpPort(target.address, port, SMTP_PORT_PROBE_TIMEOUT_MS),
+      reachable: await probeTcpPort(target[0].address, port, SMTP_PORT_PROBE_TIMEOUT_MS),
     }))
   );
 }
@@ -200,7 +200,7 @@ export async function testImapLogin(input: ImapTestInput): Promise<void> {
   const target = await resolveAllowedMailHost(input.imapHost);
 
   const client = new ImapFlow({
-    ...pinnedMailTarget(input.imapHost, target),
+    ...pinnedImapOptions(input.imapHost, target),
     port: input.imapPort,
     secure: tlsModeForPort(input.imapPort, input.security).secure,
     auth: {
@@ -223,7 +223,7 @@ export async function testSmtpVerify(input: ImapTestInput): Promise<void> {
 
   const { secure, requireTLS } = tlsModeForPort(input.smtpPort, input.security);
   const transport = nodemailer.createTransport({
-    ...pinnedMailTarget(input.smtpHost, target),
+    ...pinnedSmtpOptions(input.smtpHost, input.smtpPort, target, 10_000),
     port: input.smtpPort,
     secure,
     requireTLS,
