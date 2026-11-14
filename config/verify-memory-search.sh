@@ -158,6 +158,21 @@ if echo "$STATUS" | grep -qiE 'paused|degraded|fts-only'; then
   exit 1
 fi
 
+# The boot-time heal (config/heal-memory-indexes.sh) reads this CLI's
+# `memory status --json`, and its unit test can only feed it a hand-written copy
+# of that shape. Ask the real function against the real output: an index just
+# built is valid, so the answer must be "nothing to rebuild". A shape it cannot
+# parse has to fail HERE — in production the heal fails open, and a format
+# change would quietly stop it from ever healing again.
+source /heal-memory-indexes.sh
+HEAL_RC=0
+HEAL_OUT="$(query_mismatched_memory_indexes)" || HEAL_RC=$?
+if [ "$HEAL_RC" -ne 0 ] || [ -n "$HEAL_OUT" ]; then
+  echo "::error::heal-memory-indexes.sh misreads 'openclaw memory status --json' (exit $HEAL_RC, would rebuild: '${HEAL_OUT}')"
+  openclaw memory status --json 2>/dev/null | head -c 2000 || true
+  exit 1
+fi
+
 RESULT="$(openclaw memory search --agent "$AGENT" --query 'Where do Helmcraft invoices post to?' 2>&1)"
 echo "$RESULT" | grep -q '3400' || {
   echo "::error::memory_search did not recall the stored fact (account 3400)"

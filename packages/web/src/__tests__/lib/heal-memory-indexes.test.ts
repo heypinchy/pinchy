@@ -547,6 +547,15 @@ describe("heal_memory_indexes — wiring", () => {
     expect(approver).toBeGreaterThan(heal);
   });
 
+  it("is checked against the real CLI's status JSON by the CI smoke test", () => {
+    // The stub above prints a hand-written copy of `memory status --json`. Only
+    // config/verify-memory-search.sh, run in the built image, feeds the parser
+    // what OpenClaw really prints — the only place a renamed field turns red.
+    const verify = readFileSync(resolve(REPO_ROOT, "config/verify-memory-search.sh"), "utf8");
+    expect(verify).toContain("source /heal-memory-indexes.sh");
+    expect(verify).toMatch(/HEAL_OUT="\$\(query_mismatched_memory_indexes\)"/);
+  });
+
   it("is copied into the OpenClaw image", () => {
     const dockerfile = readFileSync(resolve(REPO_ROOT, "Dockerfile.openclaw"), "utf8");
     expect(dockerfile).toContain("COPY config/heal-memory-indexes.sh /heal-memory-indexes.sh");
