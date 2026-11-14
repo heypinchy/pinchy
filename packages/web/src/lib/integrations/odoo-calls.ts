@@ -20,12 +20,11 @@ function notOdooAnswer(what: string): OdooError {
 }
 
 /**
- * odoo-node turning a non-object `result` into a TypeError — not the
- * JSON-RPC-envelope one (`… (reading 'message')`), which `describeOdooError`
- * already names. The calls wrapped here run nothing of ours in between.
+ * odoo-node turning a non-object `result` into a TypeError. The calls wrapped
+ * here run nothing of ours in between, so a TypeError from one is that.
  */
 function isNullResultTypeError(err: unknown): boolean {
-  return err instanceof TypeError && !/\(reading 'message'\)$/.test(err.message);
+  return err instanceof TypeError;
 }
 
 /**

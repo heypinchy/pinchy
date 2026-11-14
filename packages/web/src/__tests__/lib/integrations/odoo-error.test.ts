@@ -34,10 +34,16 @@ describe("describeOdooError", () => {
     );
   });
 
-  it("treats a JSON answer of the wrong shape like a non-JSON one", () => {
-    const shapeError = new TypeError("Cannot read properties of undefined (reading 'message')");
+  it("reports a TypeError reading 'message' as Pinchy's own, not as a non-JSON-RPC answer", () => {
+    // odoo-node reports a JSON-RPC error envelope without a message as
+    // "Response is not JSON-RPC" itself; it no longer escapes as a TypeError.
+    // One that does is a bug of ours, and must not read as the URL's fault.
+    const bug = new TypeError("Cannot read properties of undefined (reading 'message')");
 
-    expect(describeOdooError(shapeError)).toMatch(/not a JSON-RPC response/);
+    const message = describeOdooError(bug);
+
+    expect(message).not.toMatch(/JSON-RPC/);
+    expect(message).toMatch(/internal error.*TypeError reading 'message'/);
   });
 
   it("reports any other TypeError as an internal error, not as Odoo's answer", () => {

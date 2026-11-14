@@ -14,17 +14,6 @@ export function odooRedirectRefusedMessage(status: number | string): string {
 }
 
 /**
- * A `TypeError` that is not odoo-node reading `error.data.message` off a
- * JSON-RPC error without `data`: a bug on our side. The test is on V8's
- * message alone, so a bug of ours that reads `message` off undefined is taken
- * for the envelope case — the code paths that feed these functions call
- * odoo-node and little else, and nothing in them reads `.message` that way.
- */
-function isInternalTypeError(err: unknown): err is TypeError {
-  return err instanceof TypeError && !/\(reading 'message'\)$/.test(err.message);
-}
-
-/**
  * The message an admin is shown when an `odoo-node` call fails.
  *
  * `odoo-node` wraps network failures, HTTP errors (`HTTP 502: Bad Gateway`),
@@ -32,11 +21,10 @@ function isInternalTypeError(err: unknown): err is TypeError {
  * message is meant for people and never quotes a response body. An answer
  * that is not JSON-RPC at all comes back as `Response is not JSON-RPC (HTTP
  * 200, text/html)`; that is rephrased to say what it means for the admin —
- * the URL does not point at Odoo — keeping status and content type. A
- * JSON-RPC envelope of the wrong shape (`{"error": {}}`) still escapes as a
- * `TypeError` reading `error.data.message`, which says nothing useful, so it
- * gets the plain sentence alone; any other `TypeError` is a bug on our side
- * and says so. odoo-node's refused-redirect message names the library; the
+ * the URL does not point at Odoo — keeping status and content type.
+ * odoo-node reports a JSON-RPC error envelope that carries no message
+ * (`{"error": {}}`) the same way. A `TypeError` is a bug on our side and says
+ * so. odoo-node's refused-redirect message names the library; the
  * admin gets `odooRedirectRefusedMessage` instead, the same sentence listing
  * databases shows.
  *
@@ -47,9 +35,6 @@ function isInternalTypeError(err: unknown): err is TypeError {
 export function describeOdooError(err: unknown): string {
   const notOdoo = "Check that the URL points at the Odoo server itself.";
   if (err instanceof TypeError) {
-    if (!isInternalTypeError(err)) {
-      return `Odoo answered with something that is not a JSON-RPC response. ${notOdoo}`;
-    }
     // The name and, from V8's "(reading 'x')", the property — never the
     // free message, which may carry a value.
     const property = /\(reading '([A-Za-z_$][\w$]{0,40})'\)$/.exec(err.message)?.[1];
@@ -110,7 +95,7 @@ export function describeOdooAuthenticateFailure(err: unknown): {
 } {
   const detail = describeOdooError(err);
   // Our own bug: neither a refused login nor Odoo misbehaving.
-  if (isInternalTypeError(err)) return { success: false, transient: true, reason: detail };
+  if (err instanceof TypeError) return { success: false, transient: true, reason: detail };
   if (isOdooAuthFailure(err)) {
     return {
       success: false,
