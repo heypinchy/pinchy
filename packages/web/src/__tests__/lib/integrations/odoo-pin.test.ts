@@ -84,7 +84,10 @@ describe("withPinnedOdooFetch", () => {
       withPinnedOdooFetch("https://odoo.example.com", A, () =>
         fetch("https://other.example.com/jsonrpc")
       )
-    ).rejects.toThrow(/other\.example\.com/);
+    ).rejects.toThrow(
+      "Refused a request to https://other.example.com inside a scope pinned to " +
+        "https://odoo.example.com: it would be sent by host name, unchecked."
+    );
 
     expect(plainFetch).not.toHaveBeenCalled();
     expect(pinnedRequests).toHaveLength(0);
