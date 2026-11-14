@@ -110,6 +110,8 @@ type StubOptions = {
   statusPrefix?: string;
   /** Replaces the generated status document entirely. */
   rawStatus?: string;
+  /** Ignores SIGTERM (inherited through exec), as a stuck child can. */
+  ignoresTerm?: boolean;
 };
 
 // A stub `openclaw` that logs argv, answers `memory status [--agent <id>]
@@ -127,6 +129,7 @@ function stubOpenclaw(opts: StubOptions = {}) {
     statusExitAfterPrint = 0,
     statusPrefix = "",
     rawStatus,
+    ignoresTerm = false,
   } = opts;
   const healing = indexHeals === true ? "*" : indexHeals === false ? "" : indexHeals.join(" ");
   const bin = join(binDir, "openclaw");
@@ -134,6 +137,7 @@ function stubOpenclaw(opts: StubOptions = {}) {
     bin,
     `#!/bin/bash
 node -e 'require("fs").appendFileSync(process.argv[1], JSON.stringify(process.argv.slice(2))+"\\n")' '${callLog}' "$@"
+${ignoresTerm ? "trap '' TERM" : ""}
 if [ "$1 $2" = "memory status" ]; then
   agent=""
   [ "$3" = "--agent" ] && agent="$4"
@@ -538,6 +542,25 @@ describe.skipIf(!hasTimeout)("heal_memory_indexes — one time budget for everyt
     expect(output).toContain("could not read the memory index status");
     expect(indexCalls()).toEqual([]);
   });
+
+  // `timeout` only sends SIGTERM by default; a child that ignores it would
+  // hold the gateway start back for as long as it likes. -k 10 follows up
+  // with SIGKILL: budget 2 + 10 seconds, well short of the 30 the stub sleeps.
+  it.each([
+    ["rebuild", { indexSleeps: 30, ignoresTerm: true }],
+    ["status query", { statusSleeps: 30, ignoresTerm: true }],
+  ])(
+    "kills a %s that ignores SIGTERM",
+    (_label, stub) => {
+      setIdentities({ kb: "mismatched" });
+      stubOpenclaw(stub);
+
+      const { seconds } = timed({ OPENCLAW_MEMORY_HEAL_BUDGET: "2" });
+
+      expect(seconds).toBeLessThan(20);
+    },
+    40_000
+  );
 });
 
 describe("heal_memory_indexes — wiring", () => {

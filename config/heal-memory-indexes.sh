@@ -30,8 +30,9 @@
 #
 # Fails open: nothing here may stop the gateway start. One time budget covers
 # every status query and every rebuild together; whatever is still mismatched
-# when it runs out is retried on the next start. The only thing past it is the
-# few seconds it takes to stop a llama-server a killed rebuild left behind.
+# when it runs out is retried on the next start. The only things past it are
+# the 10 seconds a step that ignores SIGTERM gets before SIGKILL, and the few
+# seconds it takes to stop a llama-server a killed rebuild left behind.
 # `openclaw memory index` exits 0 even when it could not embed, so the outcome
 # is judged by re-reading the status, not by the exit code.
 #
@@ -104,7 +105,8 @@ query_mismatched_memory_indexes() {
         [ "$left" -gt 0 ] || return 124
         [ "$left" -ge "$seconds" ] || seconds="$left"
     fi
-    command -v timeout >/dev/null 2>&1 && limit=(timeout "$seconds")
+    # -k: a query that ignores SIGTERM is killed 10s later.
+    command -v timeout >/dev/null 2>&1 && limit=(timeout -k 10 "$seconds")
     # stderr carries OpenClaw's plugin and provider logs; only stdout is data.
     out="$("${limit[@]}" openclaw memory status "$@" --json 2>/dev/null)"
     rc=$?
@@ -201,7 +203,8 @@ heal_memory_indexes() {
             break
         fi
         limit=()
-        command -v timeout >/dev/null 2>&1 && limit=(timeout "$remaining")
+        # -k: a rebuild that ignores SIGTERM is killed 10s later.
+        command -v timeout >/dev/null 2>&1 && limit=(timeout -k 10 "$remaining")
         echo "[memory-heal] Rebuilding the memory index of agent $agent..."
         ran=1
         # Every command is guarded: start-openclaw.sh runs under `set -e`.
