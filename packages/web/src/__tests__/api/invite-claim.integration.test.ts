@@ -12,6 +12,8 @@
 //     (workspace dirs, SOUL.md). Has its own coverage; not in scope here.
 //   - @/lib/openclaw-config.regenerateOpenClawConfig — writes openclaw.json.
 //     Same reasoning.
+//   - @/server/openclaw-client.getOpenClawClient — there is no Gateway here. The
+//     mock client answers the runtime-readiness gate through the agents.list RPC.
 //
 // Everything else (Better Auth signup + setUserPassword, invite token
 // validation, claim transaction, group assignment) runs for real.
@@ -276,14 +278,14 @@ describe("POST /api/invite/claim (integration)", () => {
       createdBy: adminId,
     });
 
-    const started = Date.now();
     const response = await POST(
       makeRequest({ token, name: "Ready User", password: "Br1ghtNova!2" })
     );
 
     expect(response.status).toBe(201);
-    expect(openClawClient.agents.list).toHaveBeenCalled();
-    expect(Date.now() - started).toBeLessThan(2500);
+    // Confirmed on the first poll: no spinning until the cap.
+    expect(openClawClient.agents.list).toHaveBeenCalledTimes(1);
+    expect(openClawClient.config.get).not.toHaveBeenCalled();
   });
 
   it("promotes invite role=admin to a real admin row", async () => {
