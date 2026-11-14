@@ -8,7 +8,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "odoo-node": "0.4.0",
+    "odoo-node": "0.4.1",
     "undici": "^7.30.1"
   },
   "devDependencies": {
