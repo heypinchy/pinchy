@@ -814,6 +814,7 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
           // No sessionKey: it names the run's user by raw id (#824).
           detail: {
             agent: { id: "agent-1", name: "Smithers" },
+            chatId: null,
             runId: null,
             reason,
             followUp: "stopped_before_dispatch",
