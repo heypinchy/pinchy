@@ -525,10 +525,20 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     }
     (api as any).runtime = {
       ...api.runtime,
-      modelAuth: { resolveApiKeyForProvider: mockResolveApiKey },
+      // The real 2026.9 wrapper (createRuntimeModelAuth) forwards only these
+      // three fields; anything else a caller passes never reaches the lookup.
+      modelAuth: {
+        resolveApiKeyForProvider: (params: Record<string, unknown>) =>
+          mockResolveApiKey({
+            provider: params.provider,
+            cfg: params.cfg,
+            workspaceDir: params.workspaceDir,
+          }),
+      },
       config: {
+        // The 2026.9 shape: agents keyed by id under agents.entries.
         [opts.configAccessor ?? "current"]: () => ({
-          agents: { list: [{ id: "agent-1", model: opts.agentModel }] },
+          agents: { entries: { "agent-1": { name: "Agent One", model: opts.agentModel } } },
         }),
       },
     };
@@ -743,7 +753,7 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
       modelAuth: { resolveApiKeyForProvider: mockResolveApiKey },
       config: {
         current: () => ({
-          agents: { list: [{ id: "agent-1", model: "anthropic/claude-haiku-4-5-20251001" }] },
+          agents: { entries: { "agent-1": { model: "anthropic/claude-haiku-4-5-20251001" } } },
         }),
       },
     };
