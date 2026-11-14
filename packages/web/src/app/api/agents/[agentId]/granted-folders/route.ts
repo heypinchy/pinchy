@@ -18,9 +18,9 @@ type RouteContext = { params: Promise<{ agentId: string }> };
  * The route reads no path from the request, so it cannot be used to ask
  * whether an arbitrary folder exists.
  *
- * Admin-only, like browsing subfolders: a member may save grants on their own
- * agent, and saving a path and then asking about it would together probe any
- * folder under /data. Access-gated like every agent read — another user's
+ * Admin-only (`withAdmin`), like browsing subfolders: saving grants is itself
+ * an admin action, and opening this to members would let them probe which
+ * folders under /data exist. Access-gated like every agent read — another user's
  * personal agent answers 404.
  */
 // audit-exempt: read-only file-system check of already-saved grants, no state change.

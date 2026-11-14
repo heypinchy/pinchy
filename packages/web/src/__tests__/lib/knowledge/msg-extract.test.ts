@@ -18,6 +18,7 @@ import {
   formatEmailText,
   MSG_MAX_RECIPIENTS,
   parseMsg,
+  stripHtml,
 } from "@/lib/knowledge/msg-extract";
 import { OfficeFileRejectedError } from "@/lib/knowledge/office-formats";
 import { buildMsg } from "@/test-helpers/msg-fixture";
@@ -222,5 +223,70 @@ describe("emailContextLine", () => {
     expect(emailContextLine(email)).toBe(
       "Email: Angebot Prüfstand – Größe 3 — from Jörg Müller <j.mueller@lieferant.example>, 2026-11-03 09:15 UTC"
     );
+  });
+});
+
+describe("stripHtml on hostile mail bodies", () => {
+  // A mail body is untrusted. Many unclosed openers made lazy regexes rescan
+  // the rest of the input from every opener: quadratic. Wall-clock ratios
+  // cannot see this reliably (a linear run is below timer noise), so count the
+  // work instead: every character String.prototype.indexOf scans. A linear
+  // pass scans each character a small constant number of times; a rescan from
+  // every opener scans O(n) per opener.
+  const scannedChars = (input: string): number => {
+    const original = String.prototype.indexOf;
+    let total = 0;
+    String.prototype.indexOf = function (this: string, needle: string, from = 0) {
+      const r = original.call(this, needle, from);
+      total += (r === -1 ? this.length : r) - from;
+      return r;
+    };
+    try {
+      stripHtml(input);
+    } finally {
+      String.prototype.indexOf = original;
+    }
+    return total;
+  };
+
+  it.each(["<script ", "<SCRIPT ", "<style ", "<style>", "<script>", "<!-- ", "<a ", "<p "])(
+    "scans each character a bounded number of times for %j openers",
+    (opener) => {
+      const input = opener.repeat(4_000);
+      expect(scannedChars(input)).toBeLessThanOrEqual(4 * input.length);
+    }
+  );
+
+  it("finishes a quarter-megabyte of unclosed openers well inside a coarse ceiling", () => {
+    const input = "<script ".repeat(32_000);
+    const t = performance.now();
+    stripHtml(input);
+    expect(performance.now() - t).toBeLessThan(2_000);
+  });
+
+  it("still strips scripts, styles, comments and tags", () => {
+    expect(
+      stripHtml(
+        "<p>a</p><script>x<b></script><style>p{}</style><!-- c --><b>b&nbsp;&amp;</b><p>c</p>"
+      )
+    ).toBe("a\nb &\nc");
+  });
+
+  it("keeps text after an unclosed opener", () => {
+    expect(stripHtml("hello <script>never closed")).toBe("hello never closed");
+    expect(stripHtml("a <!-- open")).toBe("a <!-- open");
+    expect(stripHtml("1 < 2 and 3")).toBe("1 < 2 and 3");
+  });
+
+  it("recognises <style>/<script> after a character whose lowercase is longer (İ)", () => {
+    expect(stripHtml("İstanbul İzmir<style>.a{color:red}</style><p>Hallo</p>")).toBe(
+      "İstanbul İzmir\nHallo"
+    );
+    expect(stripHtml("İ<SCRIPT>alert(1)</SCRIPT>text")).toBe("İ text");
+  });
+
+  it("keeps a literal < in text instead of eating up to the next tag", () => {
+    expect(stripHtml("1 < 2 and 3<br>4")).toBe("1 < 2 and 3\n4");
+    expect(stripHtml("1 < 2 and 3<span>4</span>")).toBe("1 < 2 and 3 4");
   });
 });
