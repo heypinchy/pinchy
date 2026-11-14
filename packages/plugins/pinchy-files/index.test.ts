@@ -508,6 +508,8 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     agentModel: string;
     visionModelOverride?: string;
     configAccessor?: "current" | "loadConfig";
+    roster?: "entries" | "list";
+    resolveApiKeyImpl?: (params: Record<string, unknown>) => Promise<{ apiKey: string } | null>;
     fetchJson: () => Promise<unknown>;
   }): Promise<{ result: any; mockResolveApiKey: ReturnType<typeof vi.fn> }> {
     vi.resetModules();
@@ -524,10 +526,24 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     }
     (api as any).runtime = {
       ...api.runtime,
-      modelAuth: { resolveApiKeyForProvider: mockResolveApiKey },
+      // The real 2026.9 wrapper (createRuntimeModelAuth) forwards only these
+      // three fields; anything else a caller passes never reaches the lookup.
+      modelAuth: {
+        resolveApiKeyForProvider: (params: Record<string, unknown>) =>
+          mockResolveApiKey({
+            provider: params.provider,
+            cfg: params.cfg,
+            workspaceDir: params.workspaceDir,
+          }),
+      },
       config: {
+        // 2026.9 keys agents by id under agents.entries; earlier versions
+        // carried them as agents.list.
         [opts.configAccessor ?? "current"]: () => ({
-          agents: { list: [{ id: "agent-1", model: opts.agentModel }] },
+          agents:
+            opts.roster === "list"
+              ? { list: [{ id: "agent-1", name: "Agent One", model: opts.agentModel }] }
+              : { entries: { "agent-1": { name: "Agent One", model: opts.agentModel } } },
         }),
       },
     };
@@ -538,7 +554,11 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
       const { default: plugin } = await import("./index");
       vi.clearAllMocks(); // Clear import-related mocks but keep our fetch + auth mocks
       (globalThis.fetch as any).mockResolvedValue({ ok: true, json: opts.fetchJson });
-      mockResolveApiKey.mockResolvedValue({ apiKey: "test-key" });
+      if (opts.resolveApiKeyImpl) {
+        mockResolveApiKey.mockImplementation(opts.resolveApiKeyImpl);
+      } else {
+        mockResolveApiKey.mockResolvedValue({ apiKey: "test-key" });
+      }
 
       plugin.register!(api as any);
       const readFactory = mockRegisterTool.mock.calls.find(
@@ -587,10 +607,42 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     expect(result.content[0].text).toContain("HWB 234");
   });
 
+  it("resolves the vision API key as the reading agent, which OpenClaw 2026.9 requires", async () => {
+    // 2026.9 has no default agent. Its plugin runtime forwards only
+    // {provider, cfg, workspaceDir} to the key lookup, which then takes the
+    // owner from cfg.agents.defaults.systemAgent and throws
+    // AgentSelectionRequiredError without one. Every scanned page came back
+    // "Unable to extract text". The mock enforces exactly that contract.
+    const { result, mockResolveApiKey } = await runScannedPdfVision({
+      agentModel: "anthropic/claude-haiku-4-5-20251001",
+      resolveApiKeyImpl: async (params) => {
+        const cfg = params.cfg as {
+          agents?: { defaults?: { systemAgent?: { agentId?: string } } };
+        };
+        if (cfg?.agents?.defaults?.systemAgent?.agentId !== "agent-1") {
+          throw new Error(
+            "Multiple agents are configured, but this operation has no explicit owner."
+          );
+        }
+        return { apiKey: "test-key" };
+      },
+      fetchJson: async () => ({
+        content: [{ type: "text", text: "Vision extracted: HWB 234 kWh/m²a" }],
+      }),
+    });
+
+    expect(mockResolveApiKey).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "anthropic" })
+    );
+    expect(result.content[0].text).toContain("HWB 234");
+    expect(result.content[0].text).not.toContain("Unable to extract text");
+  });
+
   it("still reaches the vision path through the pre-2026.9 config.loadConfig", async () => {
     const { result } = await runScannedPdfVision({
       agentModel: "anthropic/claude-haiku-4-5-20251001",
       configAccessor: "loadConfig",
+      roster: "list",
       fetchJson: async () => ({
         content: [{ type: "text", text: "Vision extracted: HWB 234 kWh/m²a" }],
       }),
@@ -707,7 +759,7 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
       modelAuth: { resolveApiKeyForProvider: mockResolveApiKey },
       config: {
         current: () => ({
-          agents: { list: [{ id: "agent-1", model: "anthropic/claude-haiku-4-5-20251001" }] },
+          agents: { entries: { "agent-1": { model: "anthropic/claude-haiku-4-5-20251001" } } },
         }),
       },
     };

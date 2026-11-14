@@ -488,6 +488,10 @@ const plugin = {
                           modelAuth,
                           cfg,
                           model: visionModel,
+                          // OpenClaw 2026.9 has no default agent: a key
+                          // resolved without an owner throws on any
+                          // multi-agent install.
+                          ownerAgentId: agentId,
                         });
                       }
                     }
