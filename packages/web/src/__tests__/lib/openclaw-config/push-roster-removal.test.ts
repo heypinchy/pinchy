@@ -28,8 +28,13 @@ vi.mock("@/server/openclaw-client", () => ({
 
 /** Agents Pinchy's database holds as live (not soft-deleted). */
 const liveInDb = new Set<string>();
+/** Makes the database lookup fail, as an unreachable database does. */
+let liveLookupError: Error | undefined;
 vi.mock("@/lib/openclaw-config/live-agents", () => ({
-  liveAgentIds: async (ids: string[]) => new Set(ids.filter((id) => liveInDb.has(id))),
+  liveAgentIds: async (ids: string[]) => {
+    if (liveLookupError) throw liveLookupError;
+    return new Set(ids.filter((id) => liveInDb.has(id)));
+  },
 }));
 
 const mockWriteFileSync = vi.fn();
@@ -58,7 +63,11 @@ vi.mock("fs", () => ({
 }));
 
 import { pushConfigInBackground, _supersedePendingPushes } from "@/lib/openclaw-config/write";
-import { getPendingConfigPushCount, _resetConfigPushState } from "@/lib/openclaw-config/push-state";
+import {
+  getPendingConfigPushCount,
+  _resetConfigPushState,
+  undeliveredConfigChange,
+} from "@/lib/openclaw-config/push-state";
 
 type Json = Record<string, unknown>;
 const serialize = (c: Json) => JSON.stringify(c, null, 2).trimEnd() + "\n";
@@ -203,6 +212,7 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
     _supersedePendingPushes();
     _resetConfigPushState();
     liveInDb.clear();
+    liveLookupError = undefined;
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -272,6 +282,54 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
         entries: { a: { name: "A" }, b: { name: "B" }, c: { name: "C" } },
       },
     });
+    expect(configFileWrites()).toHaveLength(0);
+  });
+
+  it("deletes no agent while the database cannot say which are live", async () => {
+    // agents.delete removes an agent's workspace: on a lookup failure every
+    // dropped agent counts as live, and OpenClaw's next connect regenerates.
+    const oc = new FakeOpenClaw({
+      gateway,
+      agents: {
+        ownership: "explicit",
+        entries: { a: { name: "A" }, b: { name: "B" }, c: { name: "C" } },
+      },
+    });
+    mockGetClient.mockReturnValue(oc.client);
+    liveLookupError = new Error("connect ECONNREFUSED 127.0.0.1:5432");
+    const target = {
+      gateway,
+      agents: { ownership: "explicit", entries: { a: { name: "A" }, b: { name: "B" } } },
+    };
+
+    pushConfigInBackground(serialize(target));
+    await settle();
+
+    expect(oc.deletes).toEqual([]);
+    expect(Object.keys((oc.file.agents as Json).entries as Json)).toEqual(["a", "b", "c"]);
+    expect(undeliveredConfigChange()).toBe(true);
+  });
+
+  it("keeps the live agent and deletes the deleted one when OpenClaw refuses to drop both", async () => {
+    const oc = new FakeOpenClaw({
+      gateway,
+      agents: {
+        ownership: "explicit",
+        entries: { a: { name: "A" }, b: { name: "B" }, c: { name: "C" }, d: { name: "D" } },
+      },
+    });
+    mockGetClient.mockReturnValue(oc.client);
+    liveInDb.add("a").add("b").add("c");
+    const stale = {
+      gateway,
+      agents: { ownership: "explicit", entries: { a: { name: "A" }, b: { name: "B" } } },
+    };
+
+    pushConfigInBackground(serialize(stale));
+    await settle();
+
+    expect(oc.deletes).toEqual([{ agentId: "d", deleteFiles: true }]);
+    expect(Object.keys((oc.file.agents as Json).entries as Json).sort()).toEqual(["a", "b", "c"]);
     expect(configFileWrites()).toHaveLength(0);
   });
 
