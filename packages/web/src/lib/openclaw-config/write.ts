@@ -604,6 +604,17 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
       }
       return live;
     };
+    // `config` with the agents in rosterKeep in its roster, as OpenClaw holds them.
+    const withKept = (config: string): string =>
+      rosterKeep.size === 0
+        ? config
+        : JSON.stringify(
+            keepRosterEntries(JSON.parse(config) as Record<string, unknown>, lastOcConfig ?? {}, [
+              ...rosterKeep,
+            ]),
+            null,
+            2
+          );
     const shrinkKnown = () => options.expectsProviderShrink === true || shrink !== undefined;
     // Hand a shrink that stopped short of its target to one follow-up full
     // regenerate (see MAX_SHRINK_STEPS) — and, should that one be stranded
@@ -935,6 +946,11 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         // OpenClaw's bookkeeping, not effective config, and 2026.9 stamps
         // meta.migrations into the file on its first write — after a racing
         // second push already built its payload from the file without it.
+        // Live agents a stale payload drops (rosterKeep) stay — in every
+        // attempt, a shrink step's and a bridge's included, in the no-op check
+        // below, and in the file a fallback writes (lastSupplemented).
+        supplemented = withKept(supplemented);
+
         if (!fileOnlyDeliveryPending()) {
           const supplementedJson = JSON.stringify(JSON.parse(supplemented), null, 2);
           const onDisk = readCurrentContent();
@@ -967,20 +983,6 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           }
         }
 
-        // Live agents a stale payload drops (rosterKeep) stay — in every
-        // attempt, a shrink step's and a bridge's included, and in the file a
-        // fallback writes (lastSupplemented).
-        if (rosterKeep.size > 0) {
-          supplemented = JSON.stringify(
-            keepRosterEntries(
-              JSON.parse(supplemented) as Record<string, unknown>,
-              lastOcConfig ?? {},
-              [...rosterKeep]
-            ),
-            null,
-            2
-          );
-        }
         lastSupplemented = supplemented;
         let payload = supplemented;
         let isShrinkStep = false;
@@ -1209,6 +1211,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         }
         if (rosterDrop && rosterRemovalRounds < MAX_ROSTER_REMOVAL_ROUNDS) {
           for (const id of await liveAgentsAmong(rosterDrop)) rosterKeep.add(id);
+          // A fallback that comes before the next config.get answers must
+          // carry them too.
+          if (lastSupplemented !== undefined) lastSupplemented = withKept(lastSupplemented);
           const gone = rosterDrop.filter((id) => !rosterKeep.has(id));
           if (gone.length === 0) {
             // Only live agents were dropped: the next attempt keeps them.

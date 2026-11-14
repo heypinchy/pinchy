@@ -79,6 +79,9 @@ class FakeOpenClaw {
   applies: Json[] = [];
   deletes: Json[] = [];
   private writes = 0;
+  /** Makes config.get fail a call (1-based) with the returned message. */
+  getFailure?: (call: number) => string | undefined;
+  private gets = 0;
   /** Makes config.apply fail a call (1-based) with the returned message. */
   applyFailure?: (call: number) => string | undefined;
   /** Makes agents.delete refuse a call (1-based) with the returned message. */
@@ -114,12 +117,16 @@ class FakeOpenClaw {
   }
   client = {
     config: {
-      get: vi.fn(async () => ({
-        hash: `h${this.writes}`,
-        config: this.redactsSecrets
-          ? { ...structuredClone(this.file), secrets: "__OPENCLAW_REDACTED__" }
-          : structuredClone(this.file),
-      })),
+      get: vi.fn(async () => {
+        const failure = this.getFailure?.(++this.gets);
+        if (failure) throw new Error(failure);
+        return {
+          hash: `h${this.writes}`,
+          config: this.redactsSecrets
+            ? { ...structuredClone(this.file), secrets: "__OPENCLAW_REDACTED__" }
+            : structuredClone(this.file),
+        };
+      }),
       apply: vi.fn(async (raw: string) => {
         const next = JSON.parse(raw) as Json;
         this.applies.push(next);
@@ -323,6 +330,42 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
     expect(oc.deletes).toEqual([]);
     expect(Object.keys((oc.file.agents as Json).entries as Json).sort()).toEqual(["a", "b", "c"]);
     expect(oc.file.channels).toEqual(stale.channels);
+  });
+
+  it("keeps the live agent in the file it falls back to when OpenClaw stops answering config.get", async () => {
+    // The keep is decided in the refusal's catch; the next attempts never get
+    // past config.get, so the file the push falls back to must already carry
+    // the kept agent.
+    const oc = new FakeOpenClaw({
+      gateway,
+      agents: {
+        ownership: "explicit",
+        entries: { a: { name: "A" }, b: { name: "B" }, c: { name: "C" } },
+      },
+    });
+    mockGetClient.mockReturnValue(oc.client);
+    oc.getFailure = (call) => (call >= 2 ? "gateway internal error" : undefined);
+    liveInDb.add("a").add("b").add("c");
+    const stale = {
+      gateway,
+      channels: { telegram: { enabled: true } },
+      agents: { ownership: "explicit", entries: { a: { name: "A" }, b: { name: "B" } } },
+    };
+
+    vi.useFakeTimers();
+    try {
+      pushConfigInBackground(serialize(stale));
+      for (let t = 0; t < 1200 && getPendingConfigPushCount() > 0; t++) {
+        await vi.advanceTimersByTimeAsync(100);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+
+    expect(configFileWrites()).toHaveLength(1);
+    expect(oc.deletes).toEqual([]);
+    expect(Object.keys((oc.file.agents as Json).entries as Json).sort()).toEqual(["a", "b", "c"]);
   });
 
   it("deletes no agent while the database cannot say which are live", async () => {
