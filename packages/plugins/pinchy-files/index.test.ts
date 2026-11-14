@@ -617,6 +617,26 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     expect(result.content[0].text).toContain("<document>");
   });
 
+  it("reads a text PDF when reading the config snapshot throws", async () => {
+    // The runtime itself answers, but its config accessor breaks: that too
+    // must cost the vision step, never the read.
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    (api as any).runtime = {
+      ...api.runtime,
+      modelAuth: { resolveApiKeyForProvider: vi.fn() },
+      config: {
+        current: () => {
+          throw new Error("config snapshot unavailable");
+        },
+      },
+    };
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: join(FIXTURES, "text-only.pdf") });
+
+    expect(result.content[0].text).toContain("<document>");
+  });
+
   it("prefers the pluginConfig.visionModel over the agent's own chat model for vision", async () => {
     // The agent's chat model is anthropic, but Pinchy emitted a dedicated
     // visionModel pointing at google. Vision must dispatch to GOOGLE — proving

@@ -469,23 +469,30 @@ const plugin = {
                   // Resolve agent name + model from OpenClaw config in one walk.
                   // The model drives vision API calls; the name makes rows on
                   // the Usage Dashboard readable (agentId alone is opaque).
+                  // A throw anywhere in here leaves vision off (visionConfig
+                  // null): text pages still read, scanned ones get the fallback.
                   let visionConfig: VisionApiConfig | null = null;
                   let resolvedAgentName: string | undefined;
-                  const { modelAuth, loadConfig } = visionRuntime();
-                  if (modelAuth && loadConfig) {
-                    const cfg = loadConfig();
-                    const agentInfo = resolveAgentInfo(cfg, agentId);
-                    resolvedAgentName = agentInfo.name;
-                    // Prefer Pinchy's dedicated, live-resolved vision model; fall
-                    // back to the agent's own model only when none was emitted.
-                    const visionModel = visionModelOverride ?? agentInfo.model;
-                    if (visionModel) {
-                      visionConfig = createVisionConfig({
-                        modelAuth,
-                        cfg,
-                        model: visionModel,
-                      });
+                  try {
+                    const { modelAuth, loadConfig } = visionRuntime();
+                    if (modelAuth && loadConfig) {
+                      const cfg = loadConfig();
+                      const agentInfo = resolveAgentInfo(cfg, agentId);
+                      resolvedAgentName = agentInfo.name;
+                      // Prefer Pinchy's dedicated, live-resolved vision model;
+                      // fall back to the agent's own model only when none was
+                      // emitted.
+                      const visionModel = visionModelOverride ?? agentInfo.model;
+                      if (visionModel) {
+                        visionConfig = createVisionConfig({
+                          modelAuth,
+                          cfg,
+                          model: visionModel,
+                        });
+                      }
                     }
+                  } catch {
+                    visionConfig = null;
                   }
                   const pdfResult = await readPdf(realPath, stats, visionConfig, () =>
                     handle.readFile()
