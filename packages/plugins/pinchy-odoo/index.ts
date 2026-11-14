@@ -1503,8 +1503,8 @@ export function assertNoCrossCompanyRefs(values: Record<string, unknown>): void 
 
 // Depth cap for the cross-company guard's tuple recursion — a defensive
 // bound against a pathologically deep/self-referential nested structure,
-// mirroring the bound `normalizeMany2OneValues` already applies to its own
-// nested walk (one level today). Generous enough for any real Odoo o2m/m2m
+// mirroring the bound `normalizeMany2OneValues` applies to its own
+// nested walk (MAX_X2MANY_DEPTH, two levels). Generous enough for any real Odoo o2m/m2m
 // nesting while still stopping unbounded recursion.
 const MAX_CROSS_COMPANY_DEPTH = 8;
 
@@ -1862,6 +1862,44 @@ async function resolveRelationValue(
   return resolveReferenceFromRecords(field, lookup, getSearchReadRecords(result));
 }
 
+// How many command-tuple levels `normalizeMany2OneValues` descends: the
+// parent's x2many (level 1) and the x2many fields inside its line values
+// (level 2). Odoo realistically needs no more.
+const MAX_X2MANY_DEPTH = 2;
+
+/**
+ * An x2many value must be explicit command tuples (or empty). Odoo would
+ * silently rewrite shorthand — `false` into a clear (code 5), a bare id list
+ * into `[6, 0, list]`, a boolean code into 0/1 — and each rewrite can destroy
+ * data (a bare list of lines unlinks every other line) while skipping the
+ * per-code grant check. So nothing is rewritten here: anything that is not a
+ * well-formed command list is refused with a hint at the right tuple.
+ */
+function assertX2manyCommands(fieldName: string, value: unknown): unknown[] {
+  const invalid = (hint: string): never => {
+    throw new Error(`Invalid value for "${fieldName}": ${hint}`);
+  };
+  if (Array.isArray(value)) {
+    if (value.length === 0) return value;
+    if (value.every((c) => Array.isArray(c) && Number.isInteger(c[0]) && c[0] >= 0 && c[0] <= 6)) {
+      return value;
+    }
+    if (!Array.isArray(value[0])) {
+      if (value.some(isRecord)) {
+        return invalid(
+          "wrap each new line as [0, 0, {…}], or edit an existing one with [1, ref, {…}]."
+        );
+      }
+      return invalid(
+        "to replace the linked records, use [[6, 0, [ids]]]; to link one, use [[4, id]]."
+      );
+    }
+  } else if (value === false || value == null) {
+    return invalid("to clear it, use [[5]].");
+  }
+  return invalid("use command tuples such as [[6, 0, [ids]]] (or [[5]] to clear).");
+}
+
 export async function normalizeMany2OneValues(
   client: OdooClient,
   connectionId: string,
@@ -1873,7 +1911,36 @@ export async function normalizeMany2OneValues(
   fieldsCache: FieldsCache = new Map()
 ): Promise<{ values: Record<string, unknown>; fields: OdooField[] }> {
   const fields = await loadFields(client, model, fieldsCache);
-  if (fields.length === 0) return { values, fields };
+  if (fields.length === 0) {
+    // No schema means no relation fields to walk, so a command list in the
+    // values would reach Odoo with its per-code grant checks skipped. Refuse
+    // it; plain values (and raw-id-only shapes with no command lists) pass.
+    // Only nested levels: a top-level empty schema keeps its long-standing
+    // pass-through for well-formed raw-id command lists (arg-robustness tests).
+    if (depth >= 1 && Object.values(values).some((v) => Array.isArray(v) && v.length > 0)) {
+      throw new Error(
+        `Cannot check x2many commands for ${model}: the schema for ${model} came back ` +
+          `empty, so the per-command permission checks cannot run. ` +
+          `Re-check the connection to Odoo and try again.`
+      );
+    }
+    return { values, fields };
+  }
+
+  // Past the walk's depth nothing is checked, so nothing may pass: refuse any
+  // x2many that holds commands (or an invalid shape) BEFORE spending lookups.
+  if (depth >= MAX_X2MANY_DEPTH) {
+    for (const field of fields) {
+      if (field.type !== "one2many" && field.type !== "many2many") continue;
+      if (!(field.name in values)) continue;
+      if (assertX2manyCommands(field.name, values[field.name]).length === 0) continue;
+      throw new Error(
+        `x2many commands nested deeper than ${MAX_X2MANY_DEPTH} levels are not supported ` +
+          `(found commands for "${field.name}" on ${model}). Save this record first, then set ` +
+          `"${field.name}" with odoo_write on ${model} using the id it returns.`
+      );
+    }
+  }
 
   const normalized = { ...values };
 
@@ -1917,23 +1984,26 @@ export async function normalizeMany2OneValues(
     );
   }
 
-  // One nesting level down (#615; many2many follow-up): resolve m2o fields
-  // inside one2many AND many2many command tuples (e.g. account.move
+  // Nested x2many command tuples (#615; many2many follow-up): resolve m2o
+  // fields inside one2many AND many2many command tuples (e.g. account.move
   // `line_ids: [[0, 0, { account_id: "…" }]]`, or a many2many `tax_ids: [[4,
-  // "…"]]`). The nested m2o values get the same ref decoding + company
-  // scoping as top-level fields, inheriting the parent's `scopeCompanyId`
-  // (the lines belong to the same company). Bounded to depth 1 — Odoo's
-  // command tuples can nest arbitrarily, but one level covers the
-  // account.move line_ids case; deeper nesting is left to a future change to
-  // avoid unbounded recursion through self-referential models.
-  if (depth < 1) {
+  // "…"]]`) with the same ref decoding + company scoping as top-level fields,
+  // inheriting the parent's `scopeCompanyId`. The walk goes MAX_X2MANY_DEPTH
+  // (two) levels: a line's own x2many fields —
+  // `invoice_line_ids: [[0, 0, { tax_ids: [[6, 0, [ref]]] }]]` — are walked
+  // too, re-entering `normalizeCommandTuples`, so the per-code grant checks
+  // apply to THEIR relation model (account.tax here). Stopping at one level
+  // shipped the ref/name verbatim to Odoo ("invalid input syntax for type
+  // integer"). The cap bounds the walk by the input's depth, not the schema.
+  // Past it nothing passes verbatim (a command there would skip the grant
+  // check, e.g. a code-2 delete): that is rejected up front, see above.
+  if (depth < MAX_X2MANY_DEPTH) {
     for (const field of fields) {
       const kind =
         field.type === "one2many" ? "one2many" : field.type === "many2many" ? "many2many" : null;
       if (kind === null || !field.relation) continue;
       if (!(field.name in normalized)) continue;
-      const commands = normalized[field.name];
-      if (!Array.isArray(commands)) continue;
+      const commands = assertX2manyCommands(field.name, normalized[field.name]);
       normalized[field.name] = await normalizeCommandTuples(
         client,
         connectionId,
