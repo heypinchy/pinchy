@@ -108,6 +108,13 @@ export async function GET(
     // may have removed ALLOW_PRIVATE_URLS). Every plugin fetch passes through
     // this route, which makes it the choke point. See stored-destination.ts.
     const destination = await checkStoredDestination(resolved.type, resolved.credentials);
+    if (!destination.allowed && destination.transient) {
+      // The resolver failed, not the destination: nothing was refused, so no
+      // denial row (it would read as a security event) and no 403. A 503 is
+      // final for the plugin's call but caches nothing, so the next tool call
+      // asks again.
+      return NextResponse.json({ error: destination.message }, { status: 503 });
+    }
     if (!destination.allowed) {
       // Deferred for the same reason as the grant denial above: an audit write
       // that fails must not turn a correct refusal into a 500 the plugin

@@ -64,7 +64,14 @@ function classifyHostname(hostname: string): IpAddressClass | null {
   return classifyIpAddress(hostname);
 }
 
-type ValidationResult = { valid: true; url: string } | { valid: false; error: string };
+/**
+ * A refusal says why. `transient` marks the one kind that is not a verdict on
+ * the URL at all: the resolver itself failed (timeout, SERVFAIL, resolver
+ * unreachable), so the same URL may pass a moment later. Callers answer it as
+ * "try again", never as "blocked", and never as a security event.
+ */
+type Refusal = { valid: false; error: string; transient?: true };
+type ValidationResult = { valid: true; url: string } | Refusal;
 
 /** Resolves a hostname to all of its A/AAAA addresses. Injected in tests. */
 export type UrlHostResolver = (host: string) => Promise<string[]>;
@@ -85,6 +92,20 @@ const defaultUrlHostResolver: UrlHostResolver = async (host) => {
 const INTERNAL_NETWORK_ERROR =
   "Blocked: this URL targets a loopback, link-local, cloud-metadata or otherwise reserved " +
   "address, which is never a private Odoo server.";
+
+const unresolvableError = (host: string) =>
+  `Could not resolve the host name "${host}". Check the URL for a typo.`;
+
+const transientError = (host: string) =>
+  `The DNS lookup for "${host}" failed temporarily. Try again in a moment.`;
+
+/**
+ * The resolver codes that mean "this name has no answer": not found, no data,
+ * or EAI_FAIL (a non-recoverable failure — retrying will not help). Anything
+ * else `dns.lookup` yields (EAI_AGAIN, EAI_MEMORY, EAI_SYSTEM) or a code we do
+ * not know says nothing about the name and is reported as temporary.
+ */
+const NO_ANSWER_CODES = new Set(["ENOTFOUND", "ENODATA", "EAI_FAIL"]);
 
 const PRIVATE_NETWORK_ERROR =
   "Blocked: this URL targets a private network address. " +
@@ -129,16 +150,15 @@ function blockMessageFor(addressClass: IpAddressClass): string {
  * What this does NOT cover is rebinding between this lookup and the request
  * that follows: the address is classified here, and whoever connects next
  * resolves the name again. A caller that makes the request itself uses
- * {@link resolveExternalUrlTarget} and pins it. Callers that hand the URL to
- * odoo-node cannot: odoo-node calls the global `fetch` and takes no
- * dispatcher, so `test-credentials`, `sync-preview`, the schema sync and the
- * create/update checks keep the window. So does pinchy-odoo, which resolves
- * the stored URL inside the OpenClaw container for every tool call.
+ * {@link resolveExternalUrlTarget} and pins it (odoo-node included, through
+ * `withPinnedOdooFetch`). A caller that only stores the URL, or hands it to
+ * pinchy-odoo — which resolves the stored URL inside the OpenClaw container
+ * for every tool call — keeps the window.
  *
- * Fails open on DNS resolution failure: a name that doesn't resolve can't be
- * classified, and the far more likely cause is a typo — blocking it here
- * would misreport a config mistake as a security error, and the subsequent
- * fetch fails naturally anyway.
+ * Fails CLOSED on DNS resolution failure: a name that doesn't resolve can't be
+ * classified, and a lookup that fails here but answers for whoever connects
+ * next is a way past the check. The message names the host name, so a typo
+ * still reads as one.
  */
 export async function validateExternalUrl(
   urlString: string,
@@ -149,38 +169,32 @@ export async function validateExternalUrl(
   return { valid: true, url: checked.url };
 }
 
-const UNRESOLVABLE_ERROR = "Could not resolve the server's host name. Check the URL for a typo.";
-
 /**
  * {@link validateExternalUrl} for a caller that makes the request itself: the
  * verdict plus the addresses it classified, so the request can be pinned to
  * them (`pinnedFetch`) instead of resolving the name a second time.
  *
- * Does NOT fail open. With one lookup there is no later fetch to "fail
- * naturally" — a name with no answer is refused here, with a message that
- * says so rather than one about private networks. Every address is returned,
- * since every one was checked — the connector can still fall back between
- * them.
+ * Every address is returned, since every one was checked — the connector can
+ * still fall back between them.
  */
 export async function resolveExternalUrlTarget(
   urlString: string,
   resolver: UrlHostResolver = defaultUrlHostResolver
-): Promise<{ valid: true; url: string; target: PinnedTarget } | { valid: false; error: string }> {
+): Promise<{ valid: true; url: string; target: PinnedTarget } | Refusal> {
   const checked = await checkExternalUrl(urlString, resolver);
   if (!checked.valid) return checked;
-  if (checked.addresses.length === 0) return { valid: false, error: UNRESOLVABLE_ERROR };
   return { valid: true, url: checked.url, target: toPinnedTarget(checked.addresses) };
 }
 
 /**
  * The shared check: a refusal, or the origin plus every address it reaches —
- * the literal itself, the resolver's answers, or none when the name did not
- * resolve (which each caller treats its own way).
+ * the literal itself or the resolver's answers. A name with no answer, and a
+ * lookup that failed, are both refusals (the second marked `transient`).
  */
 async function checkExternalUrl(
   urlString: string,
   resolver: UrlHostResolver
-): Promise<{ valid: true; url: string; addresses: string[] } | { valid: false; error: string }> {
+): Promise<{ valid: true; url: string; addresses: string[] } | Refusal> {
   let url: URL;
   try {
     url = new URL(urlString);
@@ -222,9 +236,19 @@ async function checkExternalUrl(
     // past a check that only ever read the hostname string.
     try {
       addresses = await resolver(hostname);
-    } catch {
-      addresses = []; // unresolvable name — each caller decides, see above
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (typeof code === "string" && NO_ANSWER_CODES.has(code)) {
+        addresses = [];
+      } else {
+        return { valid: false, transient: true, error: transientError(hostname) };
+      }
     }
+    // A name with no answer cannot be classified, so it is refused. Letting it
+    // through trades a typo's clearer error for a hole: whoever connects next
+    // does its own lookup, and a resolver that fails the check's and answers
+    // the connect's gets an address nobody looked at.
+    if (addresses.length === 0) return { valid: false, error: unresolvableError(hostname) };
     for (const address of addresses) {
       const refusal = refusalFor(classifyIpAddress(address));
       if (refusal !== null) return { valid: false, error: refusal };

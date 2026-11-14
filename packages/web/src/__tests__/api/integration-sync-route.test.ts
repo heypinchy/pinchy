@@ -62,7 +62,11 @@ vi.mock("@/lib/integrations/odoo-schema", () => ({
 }));
 
 vi.mock("@/lib/integrations/url-validation", () => ({
-  validateExternalUrl: vi.fn().mockReturnValue({ valid: true }),
+  resolveExternalUrlTarget: vi.fn().mockReturnValue({
+    valid: true,
+    url: "https://odoo.example.com",
+    target: [{ address: "93.184.216.34", family: 4 }],
+  }),
 }));
 
 const mockClearIntegrationAuthError = vi.fn();

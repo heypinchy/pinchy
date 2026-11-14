@@ -392,6 +392,27 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
       );
     });
 
+    it("answers 503, not 403, and writes no denial row when the lookup failed temporarily", async () => {
+      // A DNS blip says nothing about the destination: it must neither read as
+      // a security refusal nor leave a misleading "destination-blocked" row.
+      vi.mocked(checkStoredDestination).mockResolvedValue({
+        allowed: false,
+        transient: true,
+        field: "url",
+        message: 'DNS lookup for "odoo.example.com" failed temporarily. Try again in a moment.',
+      });
+
+      const res = await GET(makeRequest("conn-1", CALLING_AGENT.id), makeParams("conn-1"));
+
+      expect(res.status).toBe(503);
+      const data = await res.json();
+      expect(data.credentials).toBeUndefined();
+      expect(JSON.stringify(data)).not.toContain("odoo-api-key-secret");
+      expect(data.error).toMatch(/temporar/i);
+      expect(data.error).not.toMatch(/blocked|refuses/i);
+      expect(deferAuditLog).not.toHaveBeenCalled();
+    });
+
     it("writes an integration.credentials_denied audit row naming agent, connection, field and reason", async () => {
       vi.mocked(checkStoredDestination).mockResolvedValue(refusal);
 

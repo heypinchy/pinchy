@@ -1,4 +1,5 @@
-import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
+import type { PinnedTarget } from "@/lib/pinned-connection";
 import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
 /**
@@ -23,17 +24,39 @@ import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/
  * Same opt-ins as at save time, deliberately: a connection that may be saved
  * may be used, and one that may not, may not.
  *
+ * A name that does not resolve is refused, like any other refused destination.
+ * A lookup that FAILED (timeout, SERVFAIL) is not: it comes back `transient`,
+ * and the caller answers "try again" instead of "blocked".
+ *
  * What this does NOT close is DNS rebinding between this check and the
- * consumer's own connect: the plugin (or imapflow) resolves the name again.
- * Pinning the connection to the checked address would have to happen inside
- * each client library — the same caveat both guards already document.
+ * plugin's own connect: the plugin resolves the name again. Pinchy's own
+ * connections (the "Test connection" button, the probe) pin to the `pin` an
+ * Odoo check hands back.
  */
 
 /** Which stored credential field held the refused destination. */
 export type StoredDestinationField = "url" | "imapHost" | "smtpHost";
 
 export type StoredDestinationCheck =
-  { allowed: true } | { allowed: false; field: StoredDestinationField; message: string };
+  | {
+      allowed: true;
+      /**
+       * For an Odoo URL: the origin and the addresses the guard classified,
+       * for a caller that is about to connect and pins to them rather than
+       * resolving the name again. Absent for the other connection types.
+       */
+      pin?: { origin: string; target: PinnedTarget };
+    }
+  | {
+      allowed: false;
+      field: StoredDestinationField;
+      message: string;
+      /**
+       * The resolver failed (not "the destination is refused"): the same
+       * connection may pass a moment later. Answer "try again", not "blocked".
+       */
+      transient?: true;
+    };
 
 /**
  * Thrown where a refusal has to travel as an exception (the inbox sweep).
@@ -71,10 +94,16 @@ export async function checkStoredDestination(
   if (type === "odoo") {
     const url = credentials.url;
     if (typeof url !== "string") return { allowed: true };
-    const result = await validateExternalUrl(url);
-    return result.valid
-      ? { allowed: true }
-      : { allowed: false, field: "url", message: result.error };
+    const result = await resolveExternalUrlTarget(url);
+    if (!result.valid) {
+      return {
+        allowed: false,
+        field: "url",
+        message: result.error,
+        ...(result.transient ? { transient: true as const } : {}),
+      };
+    }
+    return { allowed: true, pin: { origin: result.url, target: result.target } };
   }
 
   if (type === "imap") {

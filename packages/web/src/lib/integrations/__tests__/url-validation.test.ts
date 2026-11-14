@@ -14,8 +14,15 @@ function resolveTo(addresses: string[]): UrlHostResolver {
 
 /** Resolver stub that fails, as `dns.lookup` does for an unresolvable name. */
 const unresolvable: UrlHostResolver = async () => {
-  throw new Error("ENOTFOUND");
+  throw Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
 };
+
+/** Resolver stub for a lookup that failed for a reason that says nothing about the name. */
+const dnsDown =
+  (code: string): UrlHostResolver =>
+  async () => {
+    throw Object.assign(new Error(`getaddrinfo ${code}`), { code });
+  };
 
 /**
  * Runs `validateExternalUrl` and asserts the resolver was never reached.
@@ -509,9 +516,9 @@ describe("validateExternalUrl", () => {
       expect(result).toEqual({ valid: true, url: "https://real-odoo.example" });
     });
 
-    it("fails open when the hostname does not resolve at all (typo, not an attack)", async () => {
+    it("fails closed when the hostname does not resolve at all", async () => {
       const result = await validateExternalUrl("https://typo.example", unresolvable);
-      expect(result).toEqual({ valid: true, url: "https://typo.example" });
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("resolve") });
     });
   });
 
@@ -593,10 +600,10 @@ describe("validateExternalUrl", () => {
       expect(result).toEqual({ valid: false, error: expect.not.stringContaining("ALLOW_") });
     });
 
-    it("still fails open for an unresolvable name with ALLOW_PRIVATE_URLS=1", async () => {
+    it("still fails closed for an unresolvable name with ALLOW_PRIVATE_URLS=1", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
       const result = await validateExternalUrl("http://typo-odoo:8069", unresolvable);
-      expect(result).toEqual({ valid: true, url: "http://typo-odoo:8069" });
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("resolve") });
     });
 
     it("still rejects non-HTTP schemes even with ALLOW_PRIVATE_URLS=1", async () => {
@@ -665,6 +672,42 @@ describe("resolveExternalUrlTarget", () => {
       resolveExternalUrlTarget("https://typo-odoo.example.com", unresolvable)
     ).resolves.toEqual({ valid: false, error: expect.stringContaining("resolve") });
   });
+
+  it("names the host it could not resolve", async () => {
+    const result = await resolveExternalUrlTarget("https://typo-odoo.example.com", unresolvable);
+    expect(result).toEqual({
+      valid: false,
+      error: expect.stringContaining("typo-odoo.example.com"),
+    });
+    expect(result).not.toHaveProperty("transient");
+  });
+
+  // dns.lookup yields ENOTFOUND, EAI_AGAIN, EAI_FAIL, EAI_MEMORY and EAI_SYSTEM; the
+  // last entry stands for any code we do not know.
+  it.each(["EAI_AGAIN", "EAI_MEMORY", "EAI_SYSTEM", "SOME_FUTURE_CODE"])(
+    "reports a %s lookup failure as temporary, not as a refusal of the name",
+    async (code) => {
+      for (const check of [validateExternalUrl, resolveExternalUrlTarget]) {
+        const result = await check("https://odoo.example.com", dnsDown(code));
+        expect(result).toEqual({
+          valid: false,
+          transient: true,
+          error: expect.stringMatching(/temporar.*try again/i),
+        });
+        expect((result as { error: string }).error).toContain("odoo.example.com");
+      }
+    }
+  );
+
+  // EAI_FAIL is the resolver saying the failure is permanent: retrying will not help.
+  it.each(["ENOTFOUND", "ENODATA", "EAI_FAIL"])(
+    "treats %s as a name with no answer",
+    async (code) => {
+      const result = await validateExternalUrl("https://odoo.example.com", dnsDown(code));
+      expect(result).toEqual({ valid: false, error: expect.stringContaining("odoo.example.com") });
+      expect(result).not.toHaveProperty("transient");
+    }
+  );
 
   it("refuses a name that resolves to nothing", async () => {
     await expect(

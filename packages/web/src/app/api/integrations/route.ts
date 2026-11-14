@@ -71,7 +71,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   if (parsed.data.type === "odoo") {
     const urlCheck = await validateExternalUrl(parsed.data.credentials.url);
     if (!urlCheck.valid) {
-      return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+      return NextResponse.json(
+        { error: urlCheck.error },
+        { status: urlCheck.transient ? 503 : 400 }
+      );
     }
   }
 
