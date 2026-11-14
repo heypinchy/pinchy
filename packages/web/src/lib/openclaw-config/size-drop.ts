@@ -30,7 +30,11 @@
 // discounted (guard) or stepped (push); a kept provider's shrink is judged in
 // full, and a kept provider whose catalogue collapsed to nothing voids the
 // discount altogether — that payload is an empty read, whatever else it does.
-// A shrink outside `models.providers` is judged exactly as before.
+// Deleted AGENTS are discounted the same way (roster entry, per-agent plugin
+// config, Telegram account, bindings), only while a provider survives with its
+// catalogue intact and at least one agent remains. Any other shrink — outside
+// `models.providers`, or inside an agent the payload still lists — is judged
+// exactly as before.
 
 import { LLAMA_CPP_PROVIDER_ID } from "./paths";
 
@@ -86,12 +90,82 @@ export function deletesAProvider(existing: Json, next: Json): boolean {
 }
 
 /**
+ * The agent ids in a config's roster: `agents.entries` keyed by id (OpenClaw
+ * 2026.9), plus the retired `agents.list` array a file written before the
+ * upgrade may still carry. Undefined when the config has neither.
+ */
+function agentIdsOf(config: unknown): string[] | undefined {
+  if (!isRecord(config) || !isRecord(config.agents)) return undefined;
+  const { entries, list } = config.agents;
+  if (!isRecord(entries) && !Array.isArray(list)) return undefined;
+  return [
+    ...Object.keys(isRecord(entries) ? entries : {}),
+    ...(Array.isArray(list) ? list : [])
+      .filter(isRecord)
+      .flatMap((a) => (typeof a.id === "string" ? [a.id] : [])),
+  ];
+}
+
+/** Drop the entries of an id-keyed record whose key is in `ids`. */
+function withoutKeys(record: Json, ids: Set<string>): Json {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => !ids.has(key)));
+}
+
+/**
+ * `existing` with everything the DELETED agents own removed: roster entry,
+ * per-agent plugin config (`plugins.entries.*.config.agents.<id>`), Telegram
+ * account, and bindings. Only the ids the new payload no longer lists are
+ * touched, so a kept agent's lost account or bindings (the #311 race) is not
+ * discounted.
+ */
+function withoutDeletedAgents(existing: Json, deleted: Set<string>): Json {
+  const pruned: Json = { ...existing };
+  const agents = existing.agents as Json;
+  pruned.agents = {
+    ...agents,
+    ...(isRecord(agents.entries) ? { entries: withoutKeys(agents.entries, deleted) } : {}),
+    ...(Array.isArray(agents.list)
+      ? { list: agents.list.filter((a) => !(isRecord(a) && deleted.has(String(a.id)))) }
+      : {}),
+  };
+  if (Array.isArray(existing.bindings)) {
+    pruned.bindings = existing.bindings.filter(
+      (b) => !(isRecord(b) && deleted.has(String(b.agentId)))
+    );
+  }
+  if (isRecord(existing.channels) && isRecord(existing.channels.telegram)) {
+    const telegram = existing.channels.telegram;
+    if (isRecord(telegram.accounts)) {
+      pruned.channels = {
+        ...existing.channels,
+        telegram: { ...telegram, accounts: withoutKeys(telegram.accounts, deleted) },
+      };
+    }
+  }
+  if (isRecord(existing.plugins) && isRecord(existing.plugins.entries)) {
+    const entries = Object.fromEntries(
+      Object.entries(existing.plugins.entries).map(([id, entry]) => {
+        if (!isRecord(entry) || !isRecord(entry.config) || !isRecord(entry.config.agents)) {
+          return [id, entry];
+        }
+        const config = { ...entry.config, agents: withoutKeys(entry.config.agents, deleted) };
+        return [id, { ...entry, config }];
+      })
+    );
+    pruned.plugins = { ...existing.plugins, entries };
+  }
+  return pruned;
+}
+
+/**
  * The size the #311 guard should compare a new payload against: the existing
  * file, minus the bytes of every provider the new payload DELETED — provided at
  * least one provider survives and no surviving provider's catalogue collapsed
- * to empty. A kept provider that shrank is not discounted. Never larger than
- * the existing file, so the guard can only become more permissive, and only by
- * deleted providers' bytes.
+ * to empty — and minus everything each DELETED agent owned, provided at least
+ * one agent survives (a payload with none is an empty read, never a deletion).
+ * A kept provider that shrank, or a kept agent that lost its Telegram account
+ * or bindings, is not discounted. Never larger than the existing file, so the
+ * guard can only become more permissive, and only by deleted bytes.
  */
 export function sizeGuardBaseline(existing: string, next: Json): number {
   let parsed: unknown;
@@ -100,19 +174,35 @@ export function sizeGuardBaseline(existing: string, next: Json): number {
   } catch {
     return existing.length;
   }
+  if (!isRecord(parsed)) return existing.length;
   const existingProviders = providersOf(parsed);
   const nextProviders = providersOf(next);
-  if (!isRecord(parsed) || !existingProviders || !nextProviders) return existing.length;
-  if (!keepsAProvider(next)) return existing.length;
-  if (keptProviderCollapsed(existingProviders, nextProviders)) return existing.length;
-
+  // An empty provider read or a collapsed catalogue voids EVERY discount, the
+  // agent one included: that payload is a failed read, and a roster shrink
+  // riding along must not carry it past the guard.
+  if (
+    !existingProviders ||
+    !nextProviders ||
+    !keepsAProvider(next) ||
+    keptProviderCollapsed(existingProviders, nextProviders)
+  ) {
+    return existing.length;
+  }
   const models = parsed.models as Json;
   const kept = Object.fromEntries(
     Object.entries(existingProviders).filter(([key]) => key in nextProviders)
   );
-  const withoutDeleted = { ...parsed, models: { ...models, providers: kept } };
-  const deletedBytes = serialize(parsed).length - serialize(withoutDeleted).length;
-  return existing.length - Math.max(0, deletedBytes);
+  let pruned: Json = { ...parsed, models: { ...models, providers: kept } };
+
+  const existingAgents = agentIdsOf(parsed);
+  const nextAgents = agentIdsOf(next);
+  if (existingAgents && nextAgents && nextAgents.length > 0) {
+    const deleted = new Set(existingAgents.filter((id) => !nextAgents.includes(id)));
+    if (deleted.size > 0) pruned = withoutDeletedAgents(pruned, deleted);
+  }
+
+  const discounted = serialize(parsed).length - serialize(pruned).length;
+  return existing.length - Math.max(0, discounted);
 }
 
 /**
