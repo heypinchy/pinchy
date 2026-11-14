@@ -10,6 +10,7 @@ import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { parseRequestBody } from "@/lib/api-validation";
 import { getOpenClawClient } from "@/server/openclaw-client";
+import { directSessionKey } from "@/lib/session-key";
 import { compactSessionSchema } from "@/lib/schemas/sessions";
 import { allowCompaction } from "@/lib/compact-throttle";
 
@@ -37,8 +38,7 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
   // on /chat/<agentId>/<chatId>; omitting it compacts the default per-user
   // session. OpenClaw validates that the agentId in the key matches the agentId
   // argument — see MEMORY.md "OpenClaw Sessions API".
-  const base = `agent:${agentId}:direct:${session.user.id!}`;
-  const sessionKey = parsed.data.chatId ? `${base}:${parsed.data.chatId}` : base;
+  const sessionKey = directSessionKey(agentId, session.user.id!, parsed.data.chatId ?? undefined);
 
   // Throttle repeated compactions of the same session. The UI debounces via a
   // disabled button; this guards direct API spamming from fanning out

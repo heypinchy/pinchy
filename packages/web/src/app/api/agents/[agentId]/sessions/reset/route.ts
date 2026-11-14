@@ -3,6 +3,7 @@ import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { parseRequestBody } from "@/lib/api-validation";
 import { getOpenClawClient } from "@/server/openclaw-client";
+import { directSessionKey } from "@/lib/session-key";
 import { resetSessionSchema } from "@/lib/schemas/sessions";
 import { deferAuditLog } from "@/lib/audit-deferred";
 
@@ -34,9 +35,8 @@ export const POST = withAuth<RouteContext>(async (request, { params }, session) 
   // ClientRouter.computeSessionKey: agent:<agentId>:direct:<userId>[:<chatId>].
   // The optional chatId (#611) targets the chat the user is looking at on
   // /chat/<agentId>/<chatId>; omitting it resets the default per-user session.
-  const base = `agent:${agentId}:direct:${session.user.id!}`;
   const chatId = parsed.data.chatId ?? null;
-  const sessionKey = chatId ? `${base}:${chatId}` : base;
+  const sessionKey = directSessionKey(agentId, session.user.id!, chatId ?? undefined);
 
   try {
     const client = getOpenClawClient();

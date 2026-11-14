@@ -273,6 +273,29 @@ describe("ClientRouter user-triggered abort (#550)", () => {
     expect(mockChatAbort).toHaveBeenCalledWith("agent:agent-1:direct:user-1:abcd1234", undefined);
   });
 
+  it("names a named chat by its chatId in the audit row, never by the session key (#824)", async () => {
+    const ws = createMockWs();
+    activeRuns.register({
+      runId: "run-xyz",
+      sessionKey: "agent:agent-1:direct:user-1:c-1",
+      agentId: "agent-1",
+      userId: "user-1",
+      agentName: "Smithers",
+      startedAt: 1000,
+      currentMessageId: "msg-1",
+      ws,
+    });
+    const router = makeRouter();
+
+    await router.handleMessage(ws, { type: "abort", agentId: "agent-1", chatId: "c-1" });
+
+    expect(mockAppendAuditLog).toHaveBeenCalledTimes(1);
+    const { detail } = mockAppendAuditLog.mock.calls[0]![0];
+    expect(detail.chatId).toBe("c-1");
+    expect(detail).not.toHaveProperty("sessionKey");
+    expect(JSON.stringify(detail)).not.toContain("user-1");
+  });
+
   it("records outcome=failure when the OpenClaw abort throws, but still audits", async () => {
     const ws = createMockWs();
     registerActiveRun(activeRuns, ws, "run-xyz");
