@@ -15,7 +15,12 @@ const mockCallMethod = vi.fn();
 vi.mock("odoo-node", async (importOriginal) => {
   // The real OdooError, so error tests throw exactly what odoo-node throws.
   const { OdooError } = await importOriginal<typeof import("odoo-node")>();
-  const MockOdooClient = vi.fn(function (this: Record<string, unknown>) {
+  const MockOdooClient = vi.fn(function (
+    this: Record<string, unknown>,
+    config: { fetch?: unknown }
+  ) {
+    // Keeps the transport like odoo-node >= 0.4.0, which pinOdooClient checks.
+    this.transport = { fetch: config.fetch };
     this.searchRead = mockSearchRead;
     this.searchCount = mockSearchCount;
     this.readGroup = mockReadGroup;
@@ -4262,6 +4267,11 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // OdooClient constructor called exactly once (cached client reused)
     expect(OdooClient).toHaveBeenCalledTimes(1);
+    // ...with the pinned fetch: a client built without one would reach Odoo
+    // through the global fetch, unpinned.
+    const [config] = vi.mocked(OdooClient).mock.calls[0] as unknown as [{ fetch?: unknown }];
+    expect(config.fetch).toEqual(expect.any(Function));
+    expect(config.fetch).not.toBe(globalThis.fetch);
   });
 
   it("refuses to connect when Pinchy sent no checked address, and says why", async () => {

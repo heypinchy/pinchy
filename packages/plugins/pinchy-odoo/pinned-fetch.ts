@@ -78,5 +78,18 @@ export function pinnedOdooFetch(
 
 /** An OdooClient whose every request goes to `target`, the addresses Pinchy checked for `config.url`. */
 export function pinOdooClient(config: OdooClientConfig, target: PinnedTarget): OdooClient {
-  return new OdooClient({ ...config, fetch: pinnedOdooFetch(config.url, target) });
+  const fetch = pinnedOdooFetch(config.url, target);
+  const client = new OdooClient({ ...config, fetch });
+  // This source is synced by Pinchy, odoo-node comes from the openclaw image,
+  // so during an upgrade they can differ. Before 0.4.0 odoo-node drops `fetch`
+  // and calls the global one: no pin, no timeout, and nothing would notice.
+  // Fail closed instead. `transport` is private in odoo-node's types only; a
+  // rename there makes this throw, never connect unpinned.
+  const transport = (client as unknown as { transport?: { fetch?: unknown } }).transport;
+  if (transport?.fetch !== fetch) {
+    throw new Error(
+      "pinchy-odoo: the installed odoo-node does not take a pinned fetch (it needs odoo-node 0.4.0 or later), so the Odoo tools will not connect. Pinchy and its agent runtime (the openclaw container) are most likely on different versions — run both from the same Pinchy release."
+    );
+  }
+  return client;
 }

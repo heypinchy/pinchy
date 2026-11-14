@@ -1,7 +1,7 @@
 import { refusingUnknownParams } from "./unknown-params";
 import { readFile, stat } from "./io";
 import { basename, extname } from "path";
-import { OdooClient, type OdooDomain } from "odoo-node";
+import type { OdooClient, OdooDomain } from "odoo-node";
 import { checkPermission, type Permissions } from "./permissions";
 import {
   decodeRef,
