@@ -28,18 +28,21 @@
 # find that server healthy, reuse it, and lose it mid-embed when the CLI exits —
 # exactly the transient failure that produces a keyword-only index.
 #
-# Fails open: nothing here may stop the gateway start. The rebuild has a time
-# budget; whatever is still mismatched when it runs out is retried on the next
-# start. `openclaw memory index` exits 0 even when it could not embed, so the
-# outcome is judged by re-reading the status, not by the exit code.
+# Fails open: nothing here may stop the gateway start. One time budget covers
+# every status query and every rebuild together; whatever is still mismatched
+# when it runs out is retried on the next start. The only thing past it is the
+# few seconds it takes to stop a llama-server a killed rebuild left behind.
+# `openclaw memory index` exits 0 even when it could not embed, so the outcome
+# is judged by re-reading the status, not by the exit code.
 #
 # Paths, the binary and the budget are env-overridable so the unit test can
 # drive the real function; production uses the defaults.
 
 OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/root/.openclaw}"
-# Total seconds the rebuilds may take before the gateway starts anyway.
+# Total seconds the heal may hold the gateway start back: status queries and
+# rebuilds together.
 OPENCLAW_MEMORY_HEAL_BUDGET="${OPENCLAW_MEMORY_HEAL_BUDGET:-900}"
-# Upper bound for the status query itself.
+# Upper bound for a single status query, within the budget.
 OPENCLAW_MEMORY_STATUS_TIMEOUT="${OPENCLAW_MEMORY_STATUS_TIMEOUT:-120}"
 # How long a leftover llama-server gets to exit on SIGTERM before SIGKILL.
 OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT="${OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT:-15}"
@@ -90,9 +93,18 @@ process.stdin.on("end", () => {
 # agent's memory manager throws, the command still prints the array for every
 # other agent and then exits non-zero. Whatever parses is used; only output
 # that does not parse counts as a failure.
+#
+# Inside heal_memory_indexes the query also stops at the heal's deadline
+# (memory_heal_deadline, a local there and visible here through bash's dynamic
+# scoping), and returns 124 like a timed-out command once it has passed.
 query_mismatched_memory_indexes() {
-    local limit=() out rc
-    command -v timeout >/dev/null 2>&1 && limit=(timeout "$OPENCLAW_MEMORY_STATUS_TIMEOUT")
+    local limit=() out rc seconds="$OPENCLAW_MEMORY_STATUS_TIMEOUT" left
+    if [ -n "${memory_heal_deadline:-}" ]; then
+        left=$(( memory_heal_deadline - $(date +%s) ))
+        [ "$left" -gt 0 ] || return 124
+        [ "$left" -ge "$seconds" ] || seconds="$left"
+    fi
+    command -v timeout >/dev/null 2>&1 && limit=(timeout "$seconds")
     # stderr carries OpenClaw's plugin and provider logs; only stdout is data.
     out="$("${limit[@]}" openclaw memory status "$@" --json 2>/dev/null)"
     rc=$?
@@ -144,6 +156,18 @@ heal_memory_indexes() {
     require_memory_heal_seconds OPENCLAW_MEMORY_STATUS_TIMEOUT 120
     require_memory_heal_seconds OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT 15
 
+    # One clock for everything below: query_mismatched_memory_indexes reads
+    # this deadline too, so the status queries cannot add their own timeouts
+    # on top of the rebuilds'.
+    local start memory_heal_deadline
+    start=$(date +%s)
+    memory_heal_deadline=$(( start + OPENCLAW_MEMORY_HEAL_BUDGET ))
+    local used_up="[memory-heal] Time budget of ${OPENCLAW_MEMORY_HEAL_BUDGET}s used up"
+    if [ "$OPENCLAW_MEMORY_HEAL_BUDGET" -le 0 ]; then
+        echo "$used_up; not checking the memory indexes."
+        return 0
+    fi
+
     local mismatched
     mismatched="$(query_mismatched_memory_indexes)" || {
         echo "[memory-heal] WARNING: could not read the memory index status; starting the gateway without checking it."
@@ -154,17 +178,16 @@ heal_memory_indexes() {
     echo "[memory-heal] Memory indexes OpenClaw will not rebuild on its own (built for a different embedding model, usually after a failed embed):"
     echo "$mismatched" | sed 's/^/[memory-heal]   /'
 
-    local agents=() agent i start remaining limit rc still took broken="" ran=""
+    local agents=() agent i remaining limit rc still took broken="" ran=""
     while IFS= read -r agent; do
         [ -n "$agent" ] && agents+=("$agent")
     done <<<"$mismatched"
 
-    start=$(date +%s)
     for ((i = 0; i < ${#agents[@]}; i++)); do
         agent="${agents[i]}"
-        remaining=$(( OPENCLAW_MEMORY_HEAL_BUDGET - ($(date +%s) - start) ))
+        remaining=$(( memory_heal_deadline - $(date +%s) ))
         if [ "$remaining" -le 0 ]; then
-            echo "[memory-heal] Time budget of ${OPENCLAW_MEMORY_HEAL_BUDGET}s used up; the rest is rebuilt on the next start."
+            echo "$used_up; the rest is rebuilt on the next start."
             break
         fi
         limit=()
@@ -172,25 +195,26 @@ heal_memory_indexes() {
         echo "[memory-heal] Rebuilding the memory index of agent $agent..."
         ran=1
         # Every command is guarded: start-openclaw.sh runs under `set -e`.
-        # </dev/null: the loop's stdin would otherwise be the caller's.
+        # </dev/null: the rebuild must not read the caller's stdin.
         "${limit[@]}" openclaw memory index --agent "$agent" </dev/null 2>&1 | sed 's/^/[memory-heal] index: /'
         rc=${PIPESTATUS[0]}
         if [ "$rc" -ne 0 ]; then
             echo "[memory-heal] 'openclaw memory index --agent $agent' exited $rc."
-            broken=1
-            break
-        fi
         # The exit code says nothing about the embeds; the status does.
-        if ! still="$(query_mismatched_memory_indexes --agent "$agent")"; then
+        elif ! still="$(query_mismatched_memory_indexes --agent "$agent")"; then
             echo "[memory-heal] Could not re-read the memory index status of agent $agent."
-            broken=1
-            break
-        fi
-        if [ -n "$still" ]; then
+        elif [ -n "$still" ]; then
             echo "[memory-heal] The memory index of agent $agent is still mismatched after the rebuild."
-            broken=1
-            break
+        else
+            continue
         fi
+        # A step cut off by the deadline says nothing about the embeddings.
+        if [ "$(date +%s)" -ge "$memory_heal_deadline" ]; then
+            echo "$used_up; the rest is rebuilt on the next start."
+        else
+            broken=1
+        fi
+        break
     done
 
     [ -z "$ran" ] || stop_leftover_llama_server

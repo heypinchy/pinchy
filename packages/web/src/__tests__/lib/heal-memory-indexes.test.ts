@@ -103,6 +103,8 @@ type StubOptions = {
   indexReadsStdin?: boolean;
   /** `memory status` exits with this code before printing anything. */
   statusExit?: number;
+  /** `memory status` becomes a sleep of this many seconds (exec'd, so a kill lands on it). */
+  statusSleeps?: number;
   /** `memory status` prints its document, then exits with this code. */
   statusExitAfterPrint?: number;
   statusPrefix?: string;
@@ -121,6 +123,7 @@ function stubOpenclaw(opts: StubOptions = {}) {
     indexSleeps,
     indexReadsStdin = false,
     statusExit = 0,
+    statusSleeps,
     statusExitAfterPrint = 0,
     statusPrefix = "",
     rawStatus,
@@ -135,6 +138,7 @@ if [ "$1 $2" = "memory status" ]; then
   agent=""
   [ "$3" = "--agent" ] && agent="$4"
   [ ${statusExit} -eq 0 ] || exit ${statusExit}
+  ${statusSleeps === undefined ? "" : `exec sleep ${statusSleeps}`}
   echo "[plugins] pinchy-files failed during register" >&2
   printf '%b' '${statusPrefix}'
   ${rawStatus === undefined ? "" : `printf '%b' '${rawStatus}'; exit 0`}
@@ -432,14 +436,15 @@ describe("heal_memory_indexes", () => {
     expect(output).toContain("could not read the memory index status");
   });
 
-  it("stops rebuilding when the time budget is used up", () => {
+  it("does not even read the status with a time budget of 0", () => {
+    // The status queries count against the budget too, so 0 leaves room for
+    // nothing — not for a query that could itself take minutes.
     setIdentities({ kb: "mismatched", odoo: "mismatched" });
 
     const output = run({ OPENCLAW_MEMORY_HEAL_BUDGET: "0" });
 
-    expect(indexCalls()).toEqual([]);
+    expect(calls()).toEqual([]);
     expect(output).toContain("Time budget of 0s used up");
-    expect(output).toContain("FAILED");
   });
 
   it.each([
@@ -465,6 +470,48 @@ describe("heal_memory_indexes", () => {
     run();
 
     expect(calls()).toEqual([]);
+  });
+});
+
+// The budget is enforced by coreutils `timeout`, which the OpenClaw image has.
+// A host without it cannot bound a command at all, so there is nothing to
+// measure there.
+const hasTimeout = spawnSync("bash", ["-c", "command -v timeout"]).status === 0;
+
+describe.skipIf(!hasTimeout)("heal_memory_indexes — one time budget for everything", () => {
+  // The docs promise the gateway start waits "up to" the budget. That holds
+  // only if a hanging rebuild and a hanging status query both run out of the
+  // same clock, instead of each getting its own.
+  const timed = (env: Record<string, string>) => {
+    const started = Date.now();
+    const output = run(env);
+    return { output, seconds: (Date.now() - started) / 1000 };
+  };
+
+  it("cuts a hanging rebuild off when the budget runs out", () => {
+    setIdentities({ kb: "mismatched", odoo: "mismatched" });
+    stubOpenclaw({ indexSleeps: 30 });
+
+    const { output, seconds } = timed({ OPENCLAW_MEMORY_HEAL_BUDGET: "2" });
+
+    expect(seconds).toBeLessThan(8);
+    expect(output).toContain("'openclaw memory index --agent kb' exited 124.");
+    expect(output).toContain("Time budget of 2s used up");
+    expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
+  });
+
+  it("counts a hanging status query against the same budget", () => {
+    setIdentities({ kb: "mismatched" });
+    stubOpenclaw({ statusSleeps: 30 });
+
+    const { output, seconds } = timed({
+      OPENCLAW_MEMORY_HEAL_BUDGET: "2",
+      OPENCLAW_MEMORY_STATUS_TIMEOUT: "120",
+    });
+
+    expect(seconds).toBeLessThan(8);
+    expect(output).toContain("could not read the memory index status");
+    expect(indexCalls()).toEqual([]);
   });
 });
 
