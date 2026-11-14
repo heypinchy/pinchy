@@ -423,11 +423,16 @@ COPY config/stage-llama-cpp-provider.sh /stage-llama-cpp-provider.sh
 # start-time removal of the retired auth-profiles.json, are unit-testable — see
 # packages/web/src/__tests__/lib/fix-config-permissions.test.ts.
 COPY config/fix-config-permissions.sh /fix-config-permissions.sh
+# One-time import of pre-2026.9 OpenClaw state (doctor --fix against a copy of
+# openclaw.json), sourced by start-openclaw.sh before every gateway start. Kept
+# as a separate script so its detection and config isolation are unit-testable
+# — see packages/web/src/__tests__/lib/migrate-openclaw-state.test.ts.
+COPY config/migrate-openclaw-state.sh /migrate-openclaw-state.sh
 # Device-pairing auto-approver invoked per tick by start-openclaw.sh. Kept as a
 # separate Node module so its requestId-churn convergence is unit-testable
 # (config/__tests__/auto-approve-once.test.mjs) instead of embedded bash.
 COPY config/auto-approve-once.mjs /auto-approve-once.mjs
-RUN chmod +x /start-openclaw.sh /install-plugin-deps.sh /stage-llama-cpp-provider.sh /fix-config-permissions.sh
+RUN chmod +x /start-openclaw.sh /install-plugin-deps.sh /stage-llama-cpp-provider.sh /fix-config-permissions.sh /migrate-openclaw-state.sh
 
 # Bake Pinchy's user-facing docs into the image so Smithers' docs_list /
 # docs_read tools (pinchy-docs plugin) work in every deploy. Previously
