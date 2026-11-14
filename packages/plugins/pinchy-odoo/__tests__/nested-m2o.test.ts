@@ -1,8 +1,7 @@
 // @vitest-environment node
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { normalizeMany2OneValues } from "../index";
 import { encodeRef } from "../integration-ref";
-import { afterEach, beforeEach } from "vitest";
 
 // Mock odoo-node so importing the plugin doesn't pull the real client.
 vi.mock("odoo-node", () => ({ OdooClient: vi.fn() }));
@@ -137,9 +136,9 @@ describe("normalizeMany2OneValues — nested one2many command tuples (#615)", ()
     expect(result.line_ids).toEqual([[1, 77, { account_id: 5, credit: 50 }]]);
   });
 
-  it("does not recurse beyond two nesting levels", async () => {
-    // Odoo needs two levels (line -> its x2many). A third level is left
-    // verbatim, which bounds recursion through self-referential models.
+  it("rejects x2many commands nested deeper than two levels", async () => {
+    // Odoo needs two levels (line -> its x2many). A third level would skip the
+    // per-command grant check, so it is refused rather than passed verbatim.
     const { client, calls } = makeMockClient();
     FIELDS["account.move.line"].tax_ids = {
       type: "one2many",
@@ -164,24 +163,18 @@ describe("normalizeMany2OneValues — nested one2many command tuples (#615)", ()
       ],
     };
 
-    const result = (
-      await normalizeMany2OneValues(client, "conn-1", "account.move", values, {
-        ...FULL_LINE_PERMISSIONS,
-        "account.tax": ["create", "write", "delete"],
-      })
-    ).values as { line_ids: unknown[] };
-
-    // Top-level line's account_id resolved.
-    const line = result.line_ids[0] as [number, number, Record<string, unknown>];
-    expect(line[2].account_id).toBe(5);
-    // The third level (children of the tax) is left verbatim, no lookup.
-    expect(line[2].tax_ids).toEqual([
-      [0, 0, { name: "VAT", children: [[0, 0, { parent_id: "Deep" }]] }],
-    ]);
-    expect(calls.find((c) => c.relation === "account.tax")).toBeUndefined();
-
-    delete FIELDS["account.move.line"].tax_ids;
-    delete FIELDS["account.tax"];
+    try {
+      await expect(
+        normalizeMany2OneValues(client, "conn-1", "account.move", values, {
+          ...FULL_LINE_PERMISSIONS,
+          "account.tax": ["create", "write", "delete"],
+        })
+      ).rejects.toThrow(/nested deeper than 2 levels/);
+      expect(calls.find((c) => c.relation === "account.tax")).toBeUndefined();
+    } finally {
+      delete FIELDS["account.move.line"].tax_ids;
+      delete FIELDS["account.tax"];
+    }
   });
 
   it("fetches each model's field schema at most once per create, not once per line", async () => {
@@ -534,6 +527,70 @@ describe("normalizeMany2OneValues — x2many command tuples inside a line's valu
       "account.tax": ["write"],
     });
     expect(taxIdsOf(r)).toEqual([[1, 7, { name: "x" }]]);
+  });
+
+  it("rejects a gated third-level command instead of skipping the grant check (res.partner.bank delete)", async () => {
+    const schema = {
+      "res.partner": {
+        child_ids: { type: "one2many", relation: "res.partner" },
+        bank_ids: { type: "one2many", relation: "res.partner.bank" },
+      },
+      "res.partner.bank": {},
+    };
+    const { client } = makeClient(schema);
+    const values = {
+      name: "x",
+      child_ids: [[0, 0, { name: "y", child_ids: [[0, 0, { name: "z", bank_ids: [[2, 17]] }]] }]],
+    };
+    await expect(
+      normalizeMany2OneValues(client, "conn-1", "res.partner", values, {
+        "res.partner": ["create"],
+      })
+    ).rejects.toThrow(/nested deeper than 2 levels/);
+  });
+
+  it("fails loud when an intermediate line schema is empty and its values hold a gated command", async () => {
+    const { client } = makeClient({ ...SCHEMA, "account.move.line": {} });
+    await expect(run(client, [[2, 7]])).rejects.toThrow(/schema for account\.move\.line .* empty/);
+  });
+
+  it("applies delete-gated codes at level two (one2many [5] / [6] need delete on the nested model)", async () => {
+    const o2mSchema = {
+      ...SCHEMA,
+      "account.move.line": {
+        ...SCHEMA["account.move.line"],
+        tax_ids: { type: "one2many", relation: "account.tax" },
+      },
+    };
+    const { client } = makeClient(o2mSchema);
+    await expect(run(client, [[5]])).rejects.toThrow(
+      /missing delete grant on account\.tax \(nested via tax_ids command 5\)/
+    );
+    await expect(run(client, [[6, 0, []]])).rejects.toThrow(
+      /missing delete grant on account\.tax \(nested via tax_ids command 6\)/
+    );
+    const r = await run(client, [[5]], { ...PERMS, "account.tax": ["delete"] });
+    expect(taxIdsOf(r)).toEqual([[5]]);
+  });
+
+  it("resolves a many2one inside a level-two values dict", async () => {
+    const schema = {
+      ...SCHEMA,
+      "account.tax": {
+        name: { type: "char" },
+        tax_group_id: { type: "many2one", relation: "account.tax.group" },
+      },
+    };
+    const { client } = makeClient(schema);
+    const r = await run(
+      client,
+      [[0, 0, { name: "VAT", tax_group_id: ref("account.tax.group", 3) }]],
+      {
+        ...PERMS,
+        "account.tax": ["create"],
+      }
+    );
+    expect(taxIdsOf(r)).toEqual([[0, 0, { name: "VAT", tax_group_id: 3 }]]);
   });
 
   it("fails loud when the line schema is empty and a nested x2many carries a ref", async () => {

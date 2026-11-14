@@ -1488,8 +1488,8 @@ export function assertNoCrossCompanyRefs(values: Record<string, unknown>): void 
 
 // Depth cap for the cross-company guard's tuple recursion — a defensive
 // bound against a pathologically deep/self-referential nested structure,
-// mirroring the bound `normalizeMany2OneValues` already applies to its own
-// nested walk (one level today). Generous enough for any real Odoo o2m/m2m
+// mirroring the bound `normalizeMany2OneValues` applies to its own
+// nested walk (MAX_X2MANY_DEPTH, two levels). Generous enough for any real Odoo o2m/m2m
 // nesting while still stopping unbounded recursion.
 const MAX_CROSS_COMPANY_DEPTH = 8;
 
@@ -1852,6 +1852,19 @@ async function resolveRelationValue(
 // (level 2). Odoo realistically needs no more.
 const MAX_X2MANY_DEPTH = 2;
 
+/**
+ * A non-empty list whose items are all Odoo command tuples (`[code, ...]`).
+ * Used where no schema is available (or at the depth limit) to spot an x2many
+ * command list that the walker must not wave through unchecked.
+ */
+function looksLikeCommandList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((c) => Array.isArray(c) && typeof c[0] === "number")
+  );
+}
+
 export async function normalizeMany2OneValues(
   client: OdooClient,
   connectionId: string,
@@ -1863,7 +1876,21 @@ export async function normalizeMany2OneValues(
   fieldsCache: FieldsCache = new Map()
 ): Promise<{ values: Record<string, unknown>; fields: OdooField[] }> {
   const fields = await loadFields(client, model, fieldsCache);
-  if (fields.length === 0) return { values, fields };
+  if (fields.length === 0) {
+    // No schema means no relation fields to walk, so a command list in the
+    // values would reach Odoo with its per-code grant checks skipped. Refuse
+    // it; plain values (and raw-id-only shapes with no command lists) pass.
+    // Only nested levels: a top-level empty schema keeps its long-standing
+    // pass-through for well-formed raw-id command lists (arg-robustness tests).
+    if (depth >= 1 && Object.values(values).some(looksLikeCommandList)) {
+      throw new Error(
+        `Cannot check x2many commands for ${model}: the schema for ${model} came back ` +
+          `empty, so the per-command permission checks cannot run. ` +
+          `Re-check the connection to Odoo and try again.`
+      );
+    }
+    return { values, fields };
+  }
 
   const normalized = { ...values };
 
@@ -1907,22 +1934,19 @@ export async function normalizeMany2OneValues(
     );
   }
 
-  // One nesting level down (#615; many2many follow-up): resolve m2o fields
-  // inside one2many AND many2many command tuples (e.g. account.move
+  // Nested x2many command tuples (#615; many2many follow-up): resolve m2o
+  // fields inside one2many AND many2many command tuples (e.g. account.move
   // `line_ids: [[0, 0, { account_id: "…" }]]`, or a many2many `tax_ids: [[4,
-  // "…"]]`). The nested m2o values get the same ref decoding + company
-  // scoping as top-level fields, inheriting the parent's `scopeCompanyId`
-  // (the lines belong to the same company). Bounded to depth 1 — Odoo's
-  // command tuples can nest arbitrarily, but one level covers the
-  // account.move line_ids case; deeper nesting is left to a future change to
-  // avoid unbounded recursion through self-referential models.
-  //
-  // Two levels in total (MAX_X2MANY_DEPTH): a line's own x2many fields —
+  // "…"]]`) with the same ref decoding + company scoping as top-level fields,
+  // inheriting the parent's `scopeCompanyId`. The walk goes MAX_X2MANY_DEPTH
+  // (two) levels: a line's own x2many fields —
   // `invoice_line_ids: [[0, 0, { tax_ids: [[6, 0, [ref]]] }]]` — are walked
-  // too, with the same per-code grant checks against THEIR relation model
-  // (account.tax here), because the walk re-enters `normalizeCommandTuples`.
-  // Stopping at one level shipped the ref/name verbatim to Odoo ("invalid
-  // input syntax for type integer"). A third level stays verbatim.
+  // too, re-entering `normalizeCommandTuples`, so the per-code grant checks
+  // apply to THEIR relation model (account.tax here). Stopping at one level
+  // shipped the ref/name verbatim to Odoo ("invalid input syntax for type
+  // integer"). The cap bounds the walk by the input's depth, not the schema.
+  // Past it nothing passes verbatim: a command list there would skip the grant
+  // check (e.g. a code-2 delete), so it is rejected below.
   if (depth < MAX_X2MANY_DEPTH) {
     for (const field of fields) {
       const kind =
@@ -1941,6 +1965,16 @@ export async function normalizeMany2OneValues(
         depth,
         fieldsCache,
         kind
+      );
+    }
+  } else {
+    for (const field of fields) {
+      if (field.type !== "one2many" && field.type !== "many2many") continue;
+      if (!looksLikeCommandList(normalized[field.name])) continue;
+      throw new Error(
+        `x2many commands nested deeper than ${MAX_X2MANY_DEPTH} levels are not supported ` +
+          `(found commands for "${field.name}" on ${model}). Create the nested records ` +
+          `in a separate call.`
       );
     }
   }
@@ -2034,7 +2068,7 @@ function isRefShaped(value: unknown): boolean {
  * here — they carry nothing for the line schema to resolve against, so an
  * empty/unavailable line schema is harmless for them.
  */
-function commandTuplesNeedResolution(tuples: unknown[]): boolean {
+function commandTuplesNeedResolution(tuples: unknown[], depth = 0): boolean {
   const idNeedsResolution = (id: unknown): boolean =>
     typeof id !== "number" && id !== false && id != null;
   return tuples.some((tuple) => {
@@ -2044,13 +2078,11 @@ function commandTuplesNeedResolution(tuples: unknown[]): boolean {
       if (Object.values(tuple[2]).some(isRefShaped)) return true;
       // A nested x2many command list inside the values dict
       // (`tax_ids: [[6, 0, [ref]]]`) is not ref-shaped itself — look inside.
+      // Capped at the walker's depth: anything deeper is rejected there.
       if (
+        depth < MAX_X2MANY_DEPTH &&
         Object.values(tuple[2]).some(
-          (v) =>
-            Array.isArray(v) &&
-            v.length > 0 &&
-            v.every(Array.isArray) &&
-            commandTuplesNeedResolution(v)
+          (v) => looksLikeCommandList(v) && commandTuplesNeedResolution(v as unknown[], depth + 1)
         )
       ) {
         return true;
