@@ -468,6 +468,34 @@ describe("pinchy-odoo against a server that does not answer JSON-RPC", () => {
     expect(JSON.stringify(result.details)).not.toContain("my-ec2-role-name");
   });
 
+  // Odoo's data.message is str(exception): empty for a bare `assert` or an
+  // exception raised without arguments. The envelope's own message stands in.
+  it("reports an Odoo error with an empty message by the envelope's message", async () => {
+    answer = {
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        error: {
+          code: 200,
+          message: "Odoo Server Error",
+          data: { name: "builtins.AssertionError", message: "" },
+        },
+      }),
+    };
+    const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+    const result = await findTool(tools, "odoo_read", agentId).execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("Odoo Server Error");
+    expect(text).not.toContain("Unknown error");
+  });
+
   // The boundary is the envelope's message, not its `data`: a JSON-RPC error
   // that names itself is quoted, only the rest of the body is withheld.
   it("quotes the message of a JSON-RPC error that carries no data", async () => {
