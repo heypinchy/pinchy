@@ -549,6 +549,86 @@ describe("normalizeMany2OneValues — x2many command tuples inside a line's valu
     ).rejects.toThrow(/nested deeper than 2 levels/);
   });
 
+  describe("shapes Odoo rewrites into commands are gated like the commands they become", () => {
+    const writeMove = (c: OdooClient, value: unknown, perms: Record<string, string[]>) =>
+      normalizeMany2OneValues(c, "conn-1", "account.move", { invoice_line_ids: value }, perms);
+    const MOVE_ONLY = { "account.move": ["write"] };
+
+    it("treats a bare id list as code 6 (needs delete on the line model)", async () => {
+      const { client } = makeClient();
+      await expect(writeMove(client, [12, 13], MOVE_ONLY)).rejects.toThrow(
+        /missing delete grant on account\.move\.line \(nested via invoice_line_ids command 6\)/
+      );
+    });
+
+    it("treats false as code 5 (needs delete on the line model)", async () => {
+      const { client } = makeClient();
+      await expect(writeMove(client, false, MOVE_ONLY)).rejects.toThrow(
+        /missing delete grant on account\.move\.line \(nested via invoice_line_ids command 5\)/
+      );
+    });
+
+    it("rejects a tuple whose command code is not an integer 0..6 ([true, 7, {}])", async () => {
+      const { client } = makeClient();
+      await expect(writeMove(client, [[true, 7, {}]], PERMS)).rejects.toThrow(
+        /use command tuples such as \[\[6, 0, \[ids\]\]\]/
+      );
+    });
+
+    it("resolves a bare list of refs like a code-6 list when the grant exists", async () => {
+      const { client } = makeClient();
+      const r = await run(client, [ref("account.tax", 7), ref("account.tax", 8)]);
+      expect(taxIdsOf(r)).toEqual([[6, 0, [7, 8]]]);
+    });
+
+    it("rejects a bare id list and false at the depth limit", async () => {
+      const schema = {
+        "res.partner": {
+          child_ids: { type: "one2many", relation: "res.partner" },
+          bank_ids: { type: "one2many", relation: "res.partner.bank" },
+        },
+        "res.partner.bank": {},
+      };
+      const { client } = makeClient(schema);
+      for (const bank of [[17], false, [[true, 17]]]) {
+        const values = {
+          child_ids: [[0, 0, { child_ids: [[0, 0, { name: "z", bank_ids: bank }]] }]],
+        };
+        await expect(
+          normalizeMany2OneValues(client, "conn-1", "res.partner", values, {
+            "res.partner": ["create"],
+          })
+        ).rejects.toThrow(/nested deeper than 2 levels|use command tuples/);
+      }
+    });
+
+    it("rejects before any lookup round trip at the depth limit", async () => {
+      const schema = {
+        "res.partner": {
+          company_id: { type: "many2one", relation: "res.company" },
+          bank_ids: { type: "one2many", relation: "res.partner.bank" },
+        },
+      };
+      const { client, calls } = makeClient(schema);
+      await expect(
+        normalizeMany2OneValues(
+          client,
+          "conn-1",
+          "res.partner",
+          { company_id: "Acme", bank_ids: [[2, 17]] },
+          {},
+          2
+        )
+      ).rejects.toThrow(/nested deeper than 2 levels/);
+      expect(calls).toEqual([]);
+    });
+
+    it("fails loud on a bare list under an empty intermediate schema", async () => {
+      const { client } = makeClient({ ...SCHEMA, "account.move.line": {} });
+      await expect(run(client, [7])).rejects.toThrow(/schema for account\.move\.line .* empty/);
+    });
+  });
+
   it("fails loud when an intermediate line schema is empty and its values hold a gated command", async () => {
     const { client } = makeClient({ ...SCHEMA, "account.move.line": {} });
     await expect(run(client, [[2, 7]])).rejects.toThrow(/schema for account\.move\.line .* empty/);
@@ -596,7 +676,7 @@ describe("normalizeMany2OneValues — x2many command tuples inside a line's valu
   it("fails loud when the line schema is empty and a nested x2many carries a ref", async () => {
     const { client } = makeClient({ ...SCHEMA, "account.move.line": {} });
     await expect(run(client, [[6, 0, [ref("account.tax", 7)]]])).rejects.toThrow(
-      /Cannot resolve references/
+      /schema for account\.move\.line .* empty/
     );
   });
 });
