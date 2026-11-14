@@ -2372,15 +2372,15 @@ Returns the decrypted credentials for a connection, auto-refreshing an expired O
 | --------------- | -------- | ------------------------------------------ |
 | `agentId`       | yes      | The agent the calling plugin is acting for |
 
-| Status | Meaning                                                                                                                                        |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `200`  | Credentials returned                                                                                                                           |
-| `400`  | `agentId` missing, longer than 128 characters, or containing anything but letters, digits, `-` and `_` (no audit row: malformed, not denied)   |
-| `401`  | Gateway token missing or wrong; the plugins retry it for about 3.75 s before giving up                                                         |
-| `403`  | The agent is not granted this connection, the connection is still `pending`, or its stored Odoo URL / IMAP / SMTP host fails the address check |
-| `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                |
-| `500`  | The stored credentials could not be decrypted under the current encryption key                                                                 |
-| `503`  | An OAuth access token expired and the app's OAuth settings are gone, so it cannot be refreshed. Deliberately not a `200` carrying stale tokens |
+| Status | Meaning                                                                                                                                                                                                                                                                                      |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `200`  | Credentials returned                                                                                                                                                                                                                                                                         |
+| `400`  | `agentId` missing, longer than 128 characters, or containing anything but letters, digits, `-` and `_` (no audit row: malformed, not denied)                                                                                                                                                 |
+| `401`  | Gateway token missing or wrong; the plugins retry it for about 3.75 s before giving up                                                                                                                                                                                                       |
+| `403`  | The agent is not granted this connection, the connection is still `pending`, or its stored Odoo URL / IMAP / SMTP host fails the address check                                                                                                                                               |
+| `404`  | The connection no longer exists — the body says so in words an admin can act on, because plugins surface it into the tool error                                                                                                                                                              |
+| `500`  | The stored credentials could not be decrypted under the current encryption key                                                                                                                                                                                                               |
+| `503`  | An OAuth access token expired and the app's OAuth settings are gone, so it cannot be refreshed (deliberately not a `200` carrying stale tokens); or the DNS lookup for an Odoo connection's URL failed for the moment, with no audit row — never for a mail host, see `lookupFailures` below |
 
 **The stored destination is checked before credentials leave.** An Odoo connection's URL and an IMAP connection's IMAP and SMTP hosts are run through the same address check as when the connection was saved ([Odoo on your own network](/guides/connect-odoo/#odoo-on-your-own-network), [Mail servers on your own network](/guides/connect-email-imap/#mail-servers-on-your-own-network)), under the rules and switches as they are now. A refusal is a `403` whose `error` names the field and the fix — deliberately not a `401`, which the plugins would retry for several seconds before surfacing this final refusal.
 
