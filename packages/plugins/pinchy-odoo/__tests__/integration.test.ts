@@ -417,7 +417,7 @@ describe("pinchy-odoo against a server that does not answer JSON-RPC", () => {
     ],
     // A JSON-RPC envelope whose error carries no message: nothing Odoo said.
     [
-      "a JSON-RPC error without data",
+      "a JSON-RPC error without a message",
       {
         status: 200,
         contentType: "application/json",
@@ -438,6 +438,27 @@ describe("pinchy-odoo against a server that does not answer JSON-RPC", () => {
     expect(text).toContain("not a JSON-RPC response");
     expect(text).toContain("Settings → Integrations");
     expect(JSON.stringify(result.details)).not.toContain("my-ec2-role-name");
+  });
+
+  // The boundary is the envelope's message, not its `data`: a JSON-RPC error
+  // that names itself is quoted, only the rest of the body is withheld.
+  it("quotes the message of a JSON-RPC error that carries no data", async () => {
+    answer = {
+      status: 200,
+      contentType: "application/json",
+      body: '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found","my-ec2-role-name":1}}',
+    };
+    const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+    const result = await findTool(tools, "odoo_read", agentId).execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("Method not found");
+    expect(text).not.toContain("not a JSON-RPC response");
+    expect(text).not.toContain("my-ec2-role-name");
   });
 });
 
