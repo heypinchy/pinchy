@@ -262,6 +262,17 @@ describe("llama-server pin drift guard", () => {
     );
     expect(args).toEqual(LLAMA_SERVER_ARGS);
   });
+
+  it("the CI smoke test indexes memory big enough to need that batch", () => {
+    // The other half of the comment above: right args prove nothing if every
+    // chunk fits llama-server's default 512-token batch anyway. The script
+    // refuses to run with a dense ledger that cannot fill a full-size chunk:
+    // memory-core caps a local-provider input at 2048 bytes, so anything
+    // shorter could never produce one.
+    const minBytes = VERIFY_SCRIPT.match(/\[ "\$LEDGER_BYTES" -gt (\d+) \]/)?.[1];
+    expect(minBytes, "no LEDGER_BYTES size guard in verify-memory-search.sh").toBeDefined();
+    expect(Number(minBytes)).toBeGreaterThanOrEqual(2048);
+  });
 });
 
 /**
