@@ -60,7 +60,7 @@ export function describeOdooError(err: unknown): string {
  * never getting an Odoo answer to judge?
  *
  * Only the first is evidence about the credentials. A redirect (odoo-node
- * 0.3.1 refuses to follow one: an http:// URL behind a proxy's HTTP→HTTPS
+ * refuses to follow one: an http:// URL behind a proxy's HTTP→HTTPS
  * 307/308 — Caddy's default, common in Traefik setups — is the usual case),
  * an HTTP error from a proxy, a network failure or a non-JSON-RPC answer say
  * nothing about the login or API key — reporting them as an authentication

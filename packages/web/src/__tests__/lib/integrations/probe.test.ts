@@ -367,7 +367,7 @@ describe("probeIntegrationCredentials", () => {
     });
 
     // An http:// Odoo URL behind a proxy's HTTP→HTTPS redirect (Caddy's
-    // default, common in Traefik setups): odoo-node 0.3.1 refuses to follow it
+    // default, common in Traefik setups): odoo-node refuses to follow it
     // and says so. That is a URL problem; calling it a bad API key sends the
     // admin to fix the wrong thing, and a non-transient result flags the
     // connection auth_failed.

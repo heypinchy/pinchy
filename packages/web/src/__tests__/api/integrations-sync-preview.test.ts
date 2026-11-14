@@ -205,6 +205,7 @@ describe("POST /api/integrations/sync-preview", () => {
       ...validCredentials,
       fetch: expect.any(Function),
     });
+    expect(mockFetchOdooSchema.mock.calls[0][0].fetch).not.toBe(globalThis.fetch);
     expect(response.status).toBe(200);
     expect(body).toEqual(validSyncResult);
 

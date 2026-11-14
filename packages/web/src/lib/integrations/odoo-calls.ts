@@ -20,8 +20,11 @@ function notOdooAnswer(what: string): OdooError {
 }
 
 /**
- * odoo-node turning a non-object `result` into a TypeError. The calls wrapped
- * here run nothing of ours in between, so a TypeError from one is that.
+ * odoo-node turning a non-object `result` into a TypeError. The only code of
+ * ours in these calls is the pinned fetch, and odoo-node wraps every rejection
+ * of it — undici's "fetch failed" and the pin's own refusals are TypeErrors
+ * too — into an OdooError with code 0, so a TypeError that gets out is the
+ * missing result. `odoo-pin-connector.test.ts` holds odoo-node to that.
  */
 function isNullResultTypeError(err: unknown): boolean {
   return err instanceof TypeError;
