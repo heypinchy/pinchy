@@ -12,6 +12,12 @@
 //   - a route that declares its own policy must resolve to NO config value;
 //   - every other route must resolve to `no-store`.
 //
+// Limit: the exclusion is per ROUTE, so this guard cannot see a per-BRANCH gap.
+// An excluded route's non-byte responses (JSON, error text) are only no-store
+// if the handler says so itself; workspace-file does (agent-workspace-file-rows
+// .test.ts asserts it), but a new branch added to an excluded route is on its
+// author and its reviewer, not on this test.
+//
 // Like the X-Frame-Options guard, it asserts what a concrete URL resolves to,
 // not what a handler asked for.
 import { describe, it, expect } from "vitest";
@@ -77,6 +83,18 @@ describe("matchesSource custom-regex params", () => {
     expect(matchesSource(source, "/api/a/b/c")).toBe(true);
     expect(matchesSource(source, "/api/skip/x")).toBe(false);
   });
+
+  it("matches case-insensitively, as Next does (sensitive: false)", () => {
+    expect(matchesSource("/api/users", "/API/Users")).toBe(true);
+    expect(matchesSource("/api/:path((?!skip/).*)", "/api/SKIP/x")).toBe(false);
+  });
+
+  it.each(["/api/:path*", "/api/:path+", "/api/:path?", "/api/(foo|bar)", "/api/(.+)"])(
+    "throws on syntax it does not model: %s",
+    (source) => {
+      expect(() => matchesSource(source, "/api/x")).toThrow(/does not model/);
+    }
+  );
 });
 
 describe("API responses carry Cache-Control: no-store unless the route owns its policy", () => {

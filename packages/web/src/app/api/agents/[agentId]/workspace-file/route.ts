@@ -67,6 +67,23 @@ import {
 type Params = { params: Promise<{ agentId: string; name?: string }> };
 
 /**
+ * next.config.ts excludes this route from the blanket `/api` no-store rule,
+ * because its BYTE responses carry a revalidation policy of their own
+ * (`sessionScopedRevalidateHeaders`). Everything that is not those bytes — the
+ * spreadsheet rows (cell data) and every JSON/text error — has no policy of its
+ * own and must say no-store itself, or it goes out cacheable.
+ */
+const NO_STORE = { "cache-control": "no-store" };
+
+function noStoreJson(body: unknown, init: ResponseInit = {}): NextResponse {
+  return NextResponse.json(body, { ...init, headers: { ...init.headers, ...NO_STORE } });
+}
+
+function noStoreText(body: string, init: ResponseInit = {}): NextResponse {
+  return new NextResponse(body, { ...init, headers: { ...init.headers, ...NO_STORE } });
+}
+
+/**
  * The name a viewer url carries: its last path segment, decoded exactly once —
  * which is also how the browser's viewer reads it to title the document. Read
  * from the url rather than from `params.name`, so the check does not hinge on
@@ -308,7 +325,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
 
   const requestedPath = req.nextUrl.searchParams.get("path");
   if (!requestedPath) {
-    return NextResponse.json({ error: "Missing path query parameter" }, { status: 400 });
+    return noStoreJson({ error: "Missing path query parameter" }, { status: 400 });
   }
 
   // The reader asked to keep the file rather than look at it. Two consequences,
@@ -326,7 +343,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // document, so there is no access decision to record about one.
   const variant = parseVariant(req.nextUrl.searchParams.get("variant"));
   if (variant === undefined) {
-    return NextResponse.json(
+    return noStoreJson(
       { error: "variant must be 'original', 'converted' or 'rows'" },
       { status: 400 }
     );
@@ -352,7 +369,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
           reason: "outside_allowed_paths",
         })
       );
-      return new NextResponse("Forbidden", { status: 403 });
+      return noStoreText("Forbidden", { status: 403 });
     }
     deferAuditLog(
       sourceAccessAuditEntry({
@@ -365,7 +382,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
         reason: "not_found",
       })
     );
-    return new NextResponse("Not found", { status: 404 });
+    return noStoreText("Not found", { status: 404 });
   }
 
   const { realPath } = resolved;
@@ -414,7 +431,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   if (variant === "rows") {
     const range = parseSheetRange(req.nextUrl.searchParams);
     if (!range) {
-      return NextResponse.json(
+      return noStoreJson(
         {
           error:
             "rows takes sheet, from and to together (from >= 1, to >= from) — or none of them, for the top of the workbook",
@@ -424,7 +441,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     }
     if (!isSpreadsheetFile(realPath)) {
       // Asking for rows of a PDF is a client defect, not a missing document.
-      return NextResponse.json({ error: "not a spreadsheet" }, { status: 400 });
+      return noStoreJson({ error: "not a spreadsheet" }, { status: 400 });
     }
 
     // The reader takes a path, so it is handed a private copy of the
@@ -434,18 +451,18 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     // copy in its heap-capped child (xlsx-isolated.ts).
     const tooLarge = () => {
       auditFailure("document_too_large");
-      return NextResponse.json({ error: "The workbook is too large to read" }, { status: 413 });
+      return noStoreJson({ error: "The workbook is too large to read" }, { status: 413 });
     };
     const busy = () => {
       auditFailure("reader_busy");
-      return NextResponse.json(
+      return noStoreJson(
         { error: "Too many spreadsheet previews are being read right now. Try again shortly." },
         { status: 503, headers: { "retry-after": "10" } }
       );
     };
 
     const source = await openSource();
-    if (!source) return new NextResponse("Not found", { status: 404 });
+    if (!source) return noStoreText("Not found", { status: 404 });
     // What the reader opens: a private copy of the workbook — or, for a legacy
     // `.xls` exceljs cannot parse, the `.xlsx` the converter made of it (#1373).
     // That one is the store's own file, keyed on the source's content, so it
@@ -467,7 +484,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
           // with the document, so not a 422 — and the original download
           // keeps working.
           auditFailure("no_converted_artifact");
-          return NextResponse.json(
+          return noStoreJson(
             { error: "This workbook has not been converted for preview yet" },
             { status: 404 }
           );
@@ -502,7 +519,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
         errorLine(err)
       );
       auditFailure("reader_unavailable");
-      return NextResponse.json(
+      return noStoreJson(
         { error: "The spreadsheet reader is unavailable right now. Try again shortly." },
         { status: 503 }
       );
@@ -538,13 +555,13 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
         // The workbook is on disk and inside the grant but will not open. That
         // is a fact about the document, so it is audited like one.
         auditFailure("unreadable_document");
-        return NextResponse.json({ error: "The workbook could not be read" }, { status: 422 });
+        return noStoreJson({ error: "The workbook could not be read" }, { status: 422 });
       }
       if (err instanceof SheetReaderCancelledError) {
         // The reader went away first; nobody is waiting for this answer. Still
         // a row — the document was asked for — but not one that blames it.
         auditFailure("cancelled");
-        return NextResponse.json({ error: "The request was cancelled" }, { status: 499 });
+        return noStoreJson({ error: "The request was cancelled" }, { status: 499 });
       }
       // The queue filled between the check above and this read.
       if (err instanceof SheetReaderBusyError) return busy();
@@ -560,7 +577,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
         errorLine(err)
       );
       auditFailure("reader_unavailable");
-      return NextResponse.json(
+      return noStoreJson(
         { error: "The spreadsheet reader is unavailable right now. Try again shortly." },
         { status: 503 }
       );
@@ -584,7 +601,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     // A named sheet the workbook does not have answers 200 with an empty range
     // rather than 404: the DOCUMENT was found and shown, and the citation
     // pointing into a sheet that is not there is what the reader needs to see.
-    return NextResponse.json(sheetRange ?? { sheet: range.sheet ?? "", columns: [], rows: [] });
+    return noStoreJson(sheetRange ?? { sheet: range.sheet ?? "", columns: [], rows: [] });
   }
 
   // Which representation is actually served. `converted` is asked for
@@ -592,7 +609,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   // opening an Office source or a scanned TIFF — a `.doc` or a `.tif` renders
   // in no browser, so the document a reader was promised IS the converted PDF.
   const source = await openSource();
-  if (!source) return new NextResponse("Not found", { status: 404 });
+  if (!source) return noStoreText("Not found", { status: 404 });
 
   const showsConvertedPdf = isShownAsConvertedPdf(realPath);
   const wantsConverted = variant === "converted" || (variant === null && showsConvertedPdf);
@@ -606,7 +623,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
     // unconverted document into a surprise download rather than a preview.
     await source.handle.close();
     auditFailure("no_converted_artifact");
-    return new NextResponse("Not found", { status: 404 });
+    return noStoreText("Not found", { status: 404 });
   }
 
   const servedPath = artifactPath ?? realPath;
@@ -626,7 +643,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   ) {
     await source.handle.close();
     auditFailure("name_mismatch");
-    return new NextResponse("Not found", { status: 404 });
+    return noStoreText("Not found", { status: 404 });
   }
 
   // The original is served from the verified descriptor itself. The artifact
@@ -645,7 +662,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
       fh = await open(servedPath, "r");
     } catch {
       auditFailure("not_found");
-      return new NextResponse("Not found", { status: 404 });
+      return noStoreText("Not found", { status: 404 });
     }
   } else {
     fh = source.handle;
@@ -659,7 +676,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   } catch {
     await fh.close();
     auditFailure("not_found");
-    return new NextResponse("Not found", { status: 404 });
+    return noStoreText("Not found", { status: 404 });
   }
 
   // Only regular files. A directory (or anything else — socket, FIFO, ...)
@@ -669,7 +686,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   if (!info.isFile()) {
     await fh.close();
     auditFailure("not_a_file");
-    return new NextResponse("Not found", { status: 404 });
+    return noStoreText("Not found", { status: 404 });
   }
 
   // `attachment` is the stricter of the two, so forcing it can only narrow what
@@ -735,7 +752,7 @@ export const GET = withAuth<Params>(async (req, { params }, session) => {
   if (range.kind === "unsatisfiable") {
     await fh.close();
     auditFailure("range_not_satisfiable");
-    return new NextResponse("Range not satisfiable", {
+    return noStoreText("Range not satisfiable", {
       status: 416,
       // Tell the client the real length so it can retry correctly rather than
       // probe for it.

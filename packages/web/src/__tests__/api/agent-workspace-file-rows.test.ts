@@ -179,6 +179,33 @@ describe("serving the cited rows", () => {
   });
 });
 
+describe("non-byte responses are never stored", () => {
+  // This route is excluded from next.config.ts's /api no-store rule because its
+  // BYTE responses set their own revalidation policy. The JSON/text branches
+  // carry cell data and error bodies and have no policy of their own, so the
+  // handler must say no-store itself.
+  it("sends no-store with the rows JSON", async () => {
+    const path = await writeWorkbook();
+    const res = await callGET(path, ROWS);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("sends no-store with a 400 JSON error", async () => {
+    const path = await writeWorkbook();
+    const res = await callGET(path, { variant: "rows", sheet: "Suppliers" });
+    expect(res.status).toBe(400);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("sends no-store with a 403 text error", async () => {
+    const path = await writeWorkbook(outsideDir);
+    const res = await callGET(path, ROWS);
+    expect(res.status).toBe(403);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+});
+
 describe("what it refuses", () => {
   it("refuses a workbook outside the agent's granted folders", async () => {
     // The whole point of riding this route: the rows variant cannot become a

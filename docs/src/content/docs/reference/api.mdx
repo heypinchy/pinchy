@@ -7,7 +7,7 @@ All API endpoints require authentication unless noted otherwise. Unauthenticated
 
 Some endpoints are **admin only** — non-admin users receive a `403 Forbidden` response.
 
-Every `/api/*` response is sent with `Cache-Control: no-store`, so neither the browser nor a shared cache keeps user data. The exceptions are the routes that deliver documents and cache them deliberately: agent uploads, agent-delivered files, the knowledge-base citation viewer, and `GET /api/models/capabilities`. Each of those states its own policy where it is documented below.
+Responses from `/api/*` are sent with `Cache-Control: no-store`, so neither the browser nor a shared cache keeps user data. The exceptions are the routes that deliver documents and cache them deliberately: agent uploads, agent-delivered files, the knowledge-base citation viewer, and `GET /api/models/capabilities`. Those routes state their own policy where it is documented below, and every response from them that carries user data, such as spreadsheet rows or an error body, is `no-store`. Requests that the server refuses before they reach the application (a domain-lock or cross-site-request block) are answered by the server itself and do not carry this header.
 
 ## WebSocket (Chat)
 
@@ -1565,7 +1565,7 @@ List available models across all configured providers. Populates the model dropd
 }
 ```
 
-Each model carries an optional `compatible` boolean and an `incompatibleReason` string when the model cannot be used (for example, a missing capability). The response is cached for one hour for cloud providers. Local Ollama is always fetched live.
+Each model carries an optional `compatible` boolean and an `incompatibleReason` string when the model cannot be used (for example, a missing capability). The response is cached server-side for one hour for cloud providers. Local Ollama is always fetched live.
 
 ### `GET /api/models/capabilities`
 
