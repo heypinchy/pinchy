@@ -82,7 +82,7 @@ class FakeOpenClaw209 {
    * holds more than the payload that was sent.
    */
   normalize?: (config: Json) => Json;
-  /** How long an apply that changes the config takes to answer (its reload). */
+  /** How long a write that changes the config (an apply, agents.delete) takes to answer (its reload). */
   reloadMs = 0;
   /** Writes (config.apply, agents.delete) in flight now, and the most at once. */
   private writesInFlight = 0;
@@ -209,6 +209,7 @@ class FakeOpenClaw209 {
     delete entries[agentId];
     this.commit({ ...this.file, agents: { ...agents, entries } });
     this.runtime = this.file;
+    if (this.reloadMs > 0) await new Promise((r) => setTimeout(r, this.reloadMs));
     return { type: "res", id: "1", ok: true, payload: { ok: true, agentId } };
   }
 }
