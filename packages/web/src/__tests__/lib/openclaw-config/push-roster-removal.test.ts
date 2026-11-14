@@ -350,6 +350,40 @@ describe("pushConfigInBackground: a roster change OpenClaw refuses as dropping a
     expect(undeliveredConfigChange()).toBe(true);
   });
 
+  it("queues a regenerate's follow-up when the database could not say which agents are live", async () => {
+    // OpenClaw's next connect would regenerate too, but a gateway that stays
+    // connected has no reconnect coming, and the deleted agent stays in its
+    // runtime until then.
+    const oc = new FakeOpenClaw({
+      gateway,
+      agents: {
+        ownership: "explicit",
+        entries: { a: { name: "A" }, b: { name: "B" }, c: { name: "C" } },
+      },
+    });
+    mockGetClient.mockReturnValue(oc.client);
+    liveLookupError = new Error("connect ECONNREFUSED 127.0.0.1:5432");
+    const resumeStrandedShrink = vi.fn();
+    const target = {
+      gateway,
+      agents: { ownership: "explicit", entries: { a: { name: "A" }, b: { name: "B" } } },
+    };
+
+    vi.useFakeTimers();
+    try {
+      pushConfigInBackground(serialize(target), { fullRegenerate: true, resumeStrandedShrink });
+      for (let t = 0; t < 600 && resumeStrandedShrink.mock.calls.length === 0; t++) {
+        await vi.advanceTimersByTimeAsync(100);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+
+    expect(resumeStrandedShrink).toHaveBeenCalledTimes(1);
+    expect(oc.deletes).toEqual([]);
+  });
+
   it("keeps the live agent and deletes the deleted one when OpenClaw refuses to drop both", async () => {
     const oc = new FakeOpenClaw({
       gateway,

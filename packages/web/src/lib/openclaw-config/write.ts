@@ -592,6 +592,9 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
           `[openclaw-config] push gen=${String(generation)}: could not check ${candidates.join(", ")} against the database before removing them from OpenClaw's roster (${err instanceof Error ? err.message : String(err)}); keeping them`
         );
         noteUndeliveredConfigChange(regenerateSeq);
+        // A gateway that stays connected has no reconnect coming: a
+        // regenerate's follow-up asks the database again.
+        if (resumeStrandedShrink) scheduleShrinkResume(resumeStrandedShrink, regenerateSeq);
         return candidates;
       }
       if (live.length > 0) {
