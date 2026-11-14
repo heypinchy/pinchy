@@ -17,6 +17,14 @@ Turning memory off later revokes access but does not delete anything. The files 
 
 Recall runs entirely inside your deployment: agents search their memory with a local embedding model that ships in the image, so no memory content is sent to an external service and search keeps working offline and air-gapped. It's multilingual, so an agent recalls what it stored regardless of the language you wrote it in.
 
+## Memory works the same in every channel
+
+An agent uses its memory the same way wherever a conversation starts: in the web chat, over Telegram, in an email workflow run, or on a schedule. Its instructions for memory — what to store, where, and to check before it answers — come with every turn.
+
+One difference: a scheduled or background run doesn't load the agent's long-term memory file, `MEMORY.md`, on its own. The agent is told so and reads the file itself before it relies on anything it remembers.
+
+Group chats and channels are the exception. Memory holds what the agent learned in private conversations, so in a chat other people read, the agent is told not to search or read its memory and not to repeat anything from it.
+
 ## Personal vs. shared agent memory
 
 Pinchy has two types of agents, and they handle memory differently:

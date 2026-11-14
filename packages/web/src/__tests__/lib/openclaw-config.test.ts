@@ -2551,6 +2551,43 @@ describe("regenerateOpenClawConfig", () => {
     expect(agentConfig.write_paths).not.toContain("/root/.openclaw/workspaces/writer/USER.md");
   });
 
+  it("tells pinchy-files which agents hold memory, so its hook can give them the memory block", async () => {
+    // pinchy-files puts the `## Memory` block into every turn of a memory
+    // agent from a before_prompt_build hook (pinchy-files/memory-prompt.ts) — the one place
+    // that reaches web chat, Telegram, inbox runs and scheduled runs alike. The
+    // flag is how the hook knows; write_paths cannot stand in for it, because
+    // a file-writing agent has write_paths and no memory (#755).
+    const grants: Record<string, string[]> = {
+      none: [],
+      w: ["pinchy_write"],
+      m: ["pinchy_memory"],
+      b: ["pinchy_write", "pinchy_memory"],
+    };
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(
+        Object.entries(grants).map(([id, allowedTools]) => ({
+          id,
+          name: `Agent ${id}`,
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools,
+          pluginConfig: null,
+        }))
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const agents = config.plugins.entries["pinchy-files"].config.agents;
+    expect(agents.m.memory).toBe(true);
+    expect(agents.b.memory).toBe(true);
+    // Absent, not false: the manifest schema is additionalProperties:false and
+    // an agent without memory has nothing to say about it.
+    expect(agents.none).not.toHaveProperty("memory");
+    expect(agents.w).not.toHaveProperty("memory");
+  });
+
   it("gives a memory-only agent a write path to its memory and nothing else", async () => {
     // This is what makes memory a permission rather than a second write tool:
     // pinchy-files registers pinchy_write off the PRESENCE of write_paths, so a

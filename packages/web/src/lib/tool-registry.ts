@@ -272,7 +272,7 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
 // allowlist is denied — so this list is the complete set of non-Pinchy tools an
 // agent may use:
 //   - memory_search / memory_get: the bundled `memory-core` plugin powers
-//     Pinchy's agent-memory feature (see memory-prompt.ts). They are
+//     Pinchy's agent-memory feature (see pinchy-files/memory-prompt.ts). They are
 //     plugin-owned, so they must be allowed by NAME — `group:memory` does NOT
 //     match them (verified against OpenClaw 2026.6.8).
 //   - session_status: read-only self-status (the baseline `minimal` profile).

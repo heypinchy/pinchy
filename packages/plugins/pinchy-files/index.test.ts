@@ -50,7 +50,10 @@ vi.mock("fs/promises", async (importOriginal) => {
 const mockRegisterTool = vi.fn();
 
 function createMockApi(
-  agentConfigs: Record<string, { allowed_paths: string[]; write_paths?: string[] }>
+  agentConfigs: Record<
+    string,
+    { allowed_paths: string[]; write_paths?: string[]; memory?: boolean }
+  >
 ) {
   return {
     id: "pinchy-files",
@@ -2384,5 +2387,65 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     const result = await tool.execute("call-1", { path: target, content: "x" });
     expect(result.isError).toBeFalsy();
     expect(existsSync(target)).toBe(true);
+  });
+});
+
+describe("memory prompt hook", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function registeredHook(
+    agents: Record<string, { allowed_paths: string[]; write_paths?: string[]; memory?: boolean }>
+  ) {
+    const api = createMockApi(agents);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    const hooks = api.on.mock.calls.filter((c: any[]) => c[0] === "before_prompt_build");
+    expect(hooks).toHaveLength(1);
+    return hooks[0][1] as (
+      event: unknown,
+      ctx: unknown
+    ) => { appendSystemContext?: string } | undefined;
+  }
+
+  const memoryAgent = {
+    allowed_paths: ["/root/.openclaw/workspaces/a1/MEMORY.md"],
+    write_paths: ["/root/.openclaw/workspaces/a1/MEMORY.md"],
+    memory: true,
+  };
+
+  it("puts the memory block into the system prompt of a memory-granted agent", async () => {
+    const hook = await registeredHook({ a1: memoryAgent });
+    const result = hook(
+      { prompt: "hi", messages: [] },
+      { agentId: "a1", sessionKey: "agent:a1:direct:u1" }
+    );
+    expect(result?.appendSystemContext).toContain("## Memory");
+    expect(result?.appendSystemContext).toContain("pinchy_write");
+  });
+
+  it("adds nothing for an agent without the memory grant", async () => {
+    // No memory path → telling the agent it can persist memory would be a lie
+    // and reproduce the hallucination from the other direction (#368).
+    const hook = await registeredHook({ a2: { allowed_paths: ["/data/docs/"] } });
+    expect(hook({ prompt: "hi", messages: [] }, { agentId: "a2" })).toBeUndefined();
+  });
+
+  it("adds nothing for a file-writing agent that was never granted memory", async () => {
+    // pinchy_write reaches workbench/ and nothing else. Before memory became
+    // its own grant this was the one thing that DID produce the block, which is
+    // how the two got conflated in the first place (#755).
+    const hook = await registeredHook({
+      a3: { allowed_paths: ["/ws/a3/workbench"], write_paths: ["/ws/a3/workbench"] },
+    });
+    expect(hook({ prompt: "hi", messages: [] }, { agentId: "a3" })).toBeUndefined();
+  });
+
+  it("adds nothing for an agent this plugin has no config for, or a run with no agent", async () => {
+    const hook = await registeredHook({ a1: memoryAgent });
+    expect(hook({ prompt: "hi", messages: [] }, { agentId: "unknown" })).toBeUndefined();
+    expect(hook({ prompt: "hi", messages: [] }, {})).toBeUndefined();
+    expect(hook({ prompt: "hi", messages: [] }, undefined)).toBeUndefined();
   });
 });

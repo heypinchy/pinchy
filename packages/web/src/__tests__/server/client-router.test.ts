@@ -4033,7 +4033,10 @@ describe("ClientRouter", () => {
       );
     });
 
-    it("injects the ## Memory capability block when the agent has pinchy_memory", async () => {
+    it("leaves the ## Memory block to pinchy-files, so a memory agent's turn carries it once", async () => {
+      // pinchy-files' before_prompt_build hook adds the block to every turn of a
+      // memory agent, this one included (memory-prompt-entry-points.test.ts). A
+      // second copy here would put it into the web chat's prompt twice.
       mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Alice", context: null });
       mockFindFirst.mockResolvedValue({ ...defaultAgent, allowedTools: ["pinchy_memory"] });
       async function* fakeStream() {
@@ -4049,8 +4052,8 @@ describe("ClientRouter", () => {
       });
 
       const callArgs = mockChat.mock.calls[0][1];
-      expect(callArgs.extraSystemPrompt).toContain("## Memory");
-      expect(callArgs.extraSystemPrompt).toContain("pinchy_write");
+      expect(callArgs.extraSystemPrompt).toContain("Alice");
+      expect(callArgs.extraSystemPrompt).not.toContain("## Memory");
     });
 
     it("does NOT inject the memory block when the agent cannot write (no pinchy_write)", async () => {

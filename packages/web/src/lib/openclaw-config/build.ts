@@ -524,7 +524,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // returns NO_REPLY, and consumes the user's inbound turn — on production it
     // silently dropped a Telegram receipt image. Pinchy already owns memory
     // persistence through the audited, path-scoped `pinchy_write` (the agent
-    // journals to memory/ on its own; see memory-prompt.ts), so the native flush
+    // journals to memory/ on its own; see pinchy-files/memory-prompt.ts), so the native flush
     // is a redundant, ungoverned duplicate.
     //
     // OpenClaw reads this flag ONLY from agents.defaults.compaction.memoryFlush —
@@ -718,6 +718,11 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       // (validate-built-config.ts) and runtime (pinchy-files validate.ts).
       agentFilesConfig.allowed_paths = [...allowedPaths, workspaceMemoryFile, workspaceMemoryDir];
       writePaths.push(workspaceMemoryFile, workspaceMemoryDir);
+      // The grant itself, for pinchy-files' before_prompt_build hook: it puts
+      // the `## Memory` block into every turn of this agent, whichever channel
+      // started it (pinchy-files/memory-prompt.ts). write_paths cannot stand in
+      // for it — a file-writing agent has them and no memory.
+      agentFilesConfig.memory = true;
     }
 
     // Emit the KEY only when there is something in it. pinchy-files registers

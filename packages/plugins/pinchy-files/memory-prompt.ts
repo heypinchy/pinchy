@@ -1,15 +1,33 @@
 /**
- * Builds the `## Memory` capability block injected into an agent's
- * `extraSystemPrompt`.
+ * The `## Memory` capability block, and the `before_prompt_build` hook that puts
+ * it into every turn of a memory-granted agent.
+ *
+ * Why a hook, and why here: a turn starts in more places than Pinchy's web
+ * chat. Email workflow runs go through `run-adapter.ts`; Telegram turns and
+ * scheduled (cron) runs are started by OpenClaw itself, where Pinchy has no
+ * `extraSystemPrompt` to pass. The block used to ride in the web chat's
+ * `extraSystemPrompt` alone, so an agent reached any other way had memory tools
+ * and no instructions for them. OpenClaw runs `before_prompt_build` for every
+ * attempt of every run, whatever started it, so this is the one place that
+ * reaches them all. It lives in pinchy-files because the tools it names are
+ * pinchy-files' tools and the grant it keys on is pinchy-files' config.
+ * `memory-prompt-entry-points.test.ts` in packages/web pins that every entry
+ * point gets it and that nothing in the web app builds a second copy.
+ *
+ * This module has no imports: packages/web's tests import it across the
+ * package boundary.
  *
  * Why this lives in the system prompt and NOT in AGENTS.md / SOUL.md:
  * persisting memory is a PLATFORM capability every write-capable agent has,
  * not agent-specific behavior a user authored. AGENTS.md is user-editable;
  * baking a core capability there would let a user silently delete it and
- * would drift per-agent. extraSystemPrompt is rebuilt by OpenClaw every turn,
- * so the hint is always present and always current.
+ * would drift per-agent. Hook system context is rebuilt by OpenClaw every
+ * turn, so the hint is always present and always current, and returned as
+ * system context rather than per-turn context it stays byte-stable for prompt
+ * caching.
  *
- * Gated on `pinchy_memory`: an agent without that grant has no memory paths at
+ * Gated on `pinchy_memory`, which build.ts hands this plugin as `memory: true`
+ * in the agent's config: an agent without that grant has no memory paths at
  * all (build.ts emits them from this grant alone), so it literally cannot
  * persist memory — group:fs is denied and pinchy-files is the only writer.
  * Telling such an agent it has memory would reproduce the hallucination this
@@ -61,15 +79,30 @@
  *      able to; drafting the wording and handing it over is the whole of what it
  *      can do, so the block tells it to do exactly that.
  */
-export function buildMemoryPromptBlock(allowedTools: string[]): string | null {
-  if (!allowedTools.includes("pinchy_memory")) return null;
-
+export function buildMemoryPromptBlock(sessionKey?: string): string {
+  if (isSharedChat(sessionKey)) {
+    return [
+      "## Memory",
+      "This is a group chat or channel: other people read what you write here. " +
+        "Your memory (`MEMORY.md` and `memory/`) holds what you learned in " +
+        "private conversations, so it was not loaded into this chat. Don't " +
+        "search or read your memory here, and don't repeat anything from it.",
+    ].join("\n");
+  }
   return [
     "## Memory",
     "You have persistent memory that survives across conversations:",
     "- **Long-term** — `MEMORY.md` holds your durable knowledge. It is the only " +
       "memory file loaded automatically at the start of a conversation, so put " +
       "the knowledge itself here, not just pointers to it.",
+    ...(loadsWithoutMemory(sessionKey)
+      ? [
+          "",
+          "This is a scheduled or background run, and `MEMORY.md` was not loaded " +
+            "into it. Read it with `pinchy_read` before you rely on anything you " +
+            "remember.",
+        ]
+      : []),
     "- **Topic notes** — `memory/<topic>.md` for anything too long for " +
       "`MEMORY.md`, and `memory/YYYY-MM-DD.md` for raw daily observations. These " +
       "are NOT loaded automatically; keep a one-line pointer in `MEMORY.md` for " +
@@ -107,4 +140,64 @@ export function buildMemoryPromptBlock(allowedTools: string[]): string | null {
       "Say so, offer to draft the exact wording, and let the user paste it into " +
       "Settings → Instructions. Keep it in memory as well until they have.",
   ].join("\n");
+}
+
+/** The part of an `agent:<id>:<rest>` key after the agent id, else the key. */
+function sessionRest(sessionKey: string | undefined): string {
+  const key = sessionKey?.trim().toLowerCase() ?? "";
+  const parts = key.split(":");
+  return parts[0] === "agent" && parts.length >= 3 ? parts.slice(2).join(":") : key;
+}
+
+/**
+ * Does OpenClaw start this session without `MEMORY.md`? Cron and subagent
+ * sessions run in "minimal" prompt mode (`resolvePromptModeForSession`), whose
+ * bootstrap set (`MINIMAL_BOOTSTRAP_ALLOWLIST`) leaves `MEMORY.md` out. The
+ * block's "loaded automatically" is false there, so such a run is told to read
+ * it. Mirrors OpenClaw's `isCronSessionKey` / `isSubagentSessionKey`.
+ */
+function loadsWithoutMemory(sessionKey: string | undefined): boolean {
+  const rest = sessionRest(sessionKey);
+  return rest.startsWith("cron:") || rest.startsWith("subagent:");
+}
+
+/**
+ * Is this a group or channel session? OpenClaw keeps `MEMORY.md` out of those
+ * (`filterBootstrapFilesForSession`) so a shared agent does not tell a group
+ * what it learned one-to-one; the normal block, which says to read memory
+ * before answering, would undo that. Mirrors the canonical shapes of
+ * `deriveSessionChatTypeFromKey`: `<kind>:<peer>`, `<channel>:<kind>:<peer>`
+ * and `<channel>:<account>:<kind>:<peer>`.
+ */
+function isSharedChat(sessionKey: string | undefined): boolean {
+  const parts = sessionRest(sessionKey).split(":");
+  return [0, 1, 2].some((i) => (parts[i] === "group" || parts[i] === "channel") && !!parts[i + 1]);
+}
+
+/** The slice of a pinchy-files agent config this hook reads. */
+export interface MemoryPromptAgentConfig {
+  memory?: boolean;
+}
+
+/** What OpenClaw passes a `before_prompt_build` handler as its context. */
+export interface MemoryPromptHookContext {
+  agentId?: string;
+  sessionKey?: string;
+}
+
+/**
+ * The `before_prompt_build` handler. It looks at the agent and nothing else —
+ * not the channel, not the trigger — so no way of starting a turn can miss it.
+ */
+export function memoryPromptHook(
+  agentConfigs: Record<string, MemoryPromptAgentConfig>
+): (
+  event: unknown,
+  ctx: MemoryPromptHookContext | undefined
+) => { appendSystemContext: string } | undefined {
+  return (_event, ctx) => {
+    const agentId = ctx?.agentId;
+    if (!agentId || agentConfigs[agentId]?.memory !== true) return undefined;
+    return { appendSystemContext: buildMemoryPromptBlock(ctx?.sessionKey) };
+  };
 }

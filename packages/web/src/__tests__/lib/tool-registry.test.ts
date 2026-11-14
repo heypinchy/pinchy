@@ -178,7 +178,7 @@ describe("computeAllowedTools", () => {
   });
 
   it("keeps `pinchy_read` AND `pinchy_ls` available — the memory-prompt recall fallback promises both", () => {
-    // buildMemoryPromptBlock (memory-prompt.ts) unconditionally steers every
+    // buildMemoryPromptBlock (pinchy-files/memory-prompt.ts) unconditionally steers every
     // write-capable agent to recall its memory by reading files with pinchy_read
     // and discovering topic notes with pinchy_ls. That promise is only safe
     // because computeAllowedTools() — the OUTER OpenClaw allowlist emitted for
