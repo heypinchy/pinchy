@@ -277,6 +277,7 @@ import {
   DOCS_PUBLIC_BASE_URL_SETTING_KEY,
   MEMORY_EMBEDDING_MODEL_PATH,
 } from "@/lib/openclaw-config";
+import { CONVERSATION_HOOK_PLUGINS } from "@/lib/openclaw-config/build";
 import {
   LLAMA_SERVER_COMMAND,
   LLAMA_SERVER_PRESET_PATH,
@@ -1894,6 +1895,10 @@ describe("regenerateOpenClawConfig", () => {
           LLAMA_SERVER_PRESET_PATH,
           "--models-max",
           "2",
+          "--batch-size",
+          "2048",
+          "--ubatch-size",
+          "2048",
           "--metrics",
           "--no-ui",
         ],
@@ -1903,6 +1908,36 @@ describe("regenerateOpenClawConfig", () => {
       },
     });
     expect(LLAMA_SERVER_COMMAND).toBe("/opt/llama-server/llama-server");
+  });
+
+  it("sizes llama-server's physical batch for a whole memory chunk", async () => {
+    // An embedding input must fit into ONE physical batch (ubatch): llama-server
+    // rejects anything larger with HTTP 500 "input (N tokens) is too large to
+    // process. increase the physical batch size (current batch size: 512)".
+    // The provider raises ubatch to 2048 only in the preset section it writes
+    // for its own default model (the `hf:` EmbeddingGemma); for Pinchy's baked
+    // modelPath it writes none, so llama-server falls back to 512. memory-core
+    // cuts ~1600-char chunks and caps a local-provider input at 2048 UTF-8
+    // bytes, which tokenizes to well over 512 tokens for numbers, IBANs and
+    // non-Latin text. So indexing failed, the provider was marked degraded, and
+    // memory_search fell back to keyword-only (v0.11.0 RC).
+    //
+    // The router's global args are inherited by the per-model child, so setting
+    // them here covers the embedding model whatever the preset says. 2048
+    // tokens covers the 2048-byte input cap (a token is at least one byte) and
+    // equals the model's context.
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const args: string[] = config.models.providers["llama-cpp"].localService.args;
+    const valueOf = (flag: string) => Number(args[args.indexOf(flag) + 1]);
+    expect(args).toContain("--ubatch-size");
+    expect(args).toContain("--batch-size");
+    expect(valueOf("--ubatch-size")).toBeGreaterThanOrEqual(2048);
+    // n_batch below n_ubatch makes llama-server clamp ubatch down to it.
+    expect(valueOf("--batch-size")).toBeGreaterThanOrEqual(valueOf("--ubatch-size"));
   });
 
   it("keeps the llama-server provider next to the chat providers", async () => {
@@ -2551,6 +2586,42 @@ describe("regenerateOpenClawConfig", () => {
     expect(agentConfig.write_paths).not.toContain("/root/.openclaw/workspaces/writer/USER.md");
   });
 
+  it("tells pinchy-files which agents hold memory, so its hook can give them the memory block", async () => {
+    // pinchy-files puts the `## Memory` block into every turn of a memory
+    // agent from a before_prompt_build hook (pinchy-files/memory-prompt.ts) — the one place
+    // that reaches web chat, Telegram, inbox runs and scheduled runs alike. The
+    // flag is how the hook knows; write_paths cannot stand in for it, because
+    // a file-writing agent has write_paths and no memory (#755).
+    const grants: Record<string, string[]> = {
+      none: [],
+      w: ["pinchy_write"],
+      m: ["pinchy_memory"],
+      b: ["pinchy_write", "pinchy_memory"],
+    };
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(
+        Object.entries(grants).map(([id, allowedTools]) => ({
+          id,
+          name: `Agent ${id}`,
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools,
+          pluginConfig: null,
+        }))
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const agents = config.plugins.entries["pinchy-files"].config.agents;
+    expect(agents.m.memory).toBe(true);
+    expect(agents.b.memory).toBe(true);
+    // Absent, not false: an agent without memory has nothing to say about it.
+    expect(agents.none).not.toHaveProperty("memory");
+    expect(agents.w).not.toHaveProperty("memory");
+  });
+
   it("gives a memory-only agent a write path to its memory and nothing else", async () => {
     // This is what makes memory a permission rather than a second write tool:
     // pinchy-files registers pinchy_write off the PRESENCE of write_paths, so a
@@ -2768,22 +2839,41 @@ describe("regenerateOpenClawConfig", () => {
     expect(typeof config.plugins.entries["pinchy-audit"].config.gatewayToken).toBe("string");
   });
 
-  it("grants pinchy-audit conversation access, without which OpenClaw drops its budget gate", async () => {
-    // before_agent_run is a conversation hook: OpenClaw silently skips it for a
-    // non-bundled plugin (one warn diagnostic, no error) unless the entry opts
-    // in. Without this the blocking budgets stop nothing outside the browser.
+  it("grants conversation access to the plugins whose hooks need it, without which OpenClaw drops them", async () => {
+    // before_agent_run (pinchy-audit's budget gate) and before_prompt_build
+    // (pinchy-files' memory block) are conversation hooks: OpenClaw silently
+    // skips them for a non-bundled plugin (one warn diagnostic, no error)
+    // unless the entry opts in. Without it the blocking budgets stop nothing
+    // outside the browser and no memory agent gets its memory instructions.
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({ gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } } })
     );
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "m",
+          name: "Memory agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: ["pinchy_memory"],
+          pluginConfig: null,
+        },
+      ]),
+    } as never);
 
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.plugins.entries["pinchy-audit"].hooks).toEqual({ allowConversationAccess: true });
-    // Only the plugin that needs it: the grant hands over prompts and history.
+    expect(config.plugins.entries["pinchy-files"].hooks).toEqual({ allowConversationAccess: true });
+    // Only the plugins that need it: the grant hands over prompts and history.
     for (const [id, entry] of Object.entries(config.plugins.entries)) {
-      if (id === "pinchy-audit") continue;
-      expect((entry as { hooks?: unknown }).hooks, id).toBeUndefined();
+      const hooks = (entry as { hooks?: unknown }).hooks;
+      if (CONVERSATION_HOOK_PLUGINS.includes(id)) {
+        expect(hooks, id).toEqual({ allowConversationAccess: true });
+      } else {
+        expect(hooks, id).toBeUndefined();
+      }
     }
   });
 

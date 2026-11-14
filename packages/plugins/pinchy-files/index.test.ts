@@ -50,7 +50,10 @@ vi.mock("fs/promises", async (importOriginal) => {
 const mockRegisterTool = vi.fn();
 
 function createMockApi(
-  agentConfigs: Record<string, { allowed_paths: string[]; write_paths?: string[] }>
+  agentConfigs: Record<
+    string,
+    { allowed_paths: string[]; write_paths?: string[]; memory?: boolean }
+  >
 ) {
   return {
     id: "pinchy-files",
@@ -119,6 +122,27 @@ describe("pinchy-files plugin", () => {
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
+    const registered = mockRegisterTool.mock.calls.map((call: any[]) => call[1]?.name).sort();
+    expect(registered).toEqual([...manifest.contracts.tools].sort());
+  });
+
+  it("registers without touching the runtime, which a CLI metadata pass does not provide", async () => {
+    // Every `openclaw` CLI command loads plugins in "cli-metadata" mode, where
+    // `api.runtime` is a Proxy that throws on any property read
+    // (createUnavailableRuntime, OpenClaw 2026.9). Reading runtime.modelAuth
+    // in register() made every CLI run log "pinchy-files failed during
+    // register … runtime is intentionally unavailable". The runtime is only
+    // needed when a scanned PDF is read, so it is read then.
+    const api = createMockApi({ "test-agent": { allowed_paths: ["/data/test-docs/"] } });
+    (api as any).runtime = new Proxy(Object.create(null), {
+      get(_target, property) {
+        if (typeof property === "symbol") return undefined;
+        throw new Error(`runtime is intentionally unavailable during "cli-metadata" registration`);
+      },
+    });
+    const { default: plugin } = await import("./index");
+
+    expect(() => plugin.register!(api as any)).not.toThrow();
     const registered = mockRegisterTool.mock.calls.map((call: any[]) => call[1]?.name).sort();
     expect(registered).toEqual([...manifest.contracts.tools].sort());
   });
@@ -477,12 +501,18 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
   });
 
   // Shared harness for the scanned-page vision path: fresh module/cache, a
-  // mocked modelAuth + loadConfig runtime, and a globally-mocked fetch returning
+  // mocked modelAuth + config runtime, and a globally-mocked fetch returning
   // `fetchJson`. Returns the tool result and the modelAuth spy so each test can
   // assert on the dispatched provider and/or extracted text. Restores fetch.
+  //
+  // The config accessor is OpenClaw 2026.9's `config.current()` unless a test
+  // asks for the pre-2026.9 `config.loadConfig()`.
   async function runScannedPdfVision(opts: {
     agentModel: string;
     visionModelOverride?: string;
+    configAccessor?: "current" | "loadConfig";
+    roster?: "entries" | "list";
+    resolveApiKeyImpl?: (params: Record<string, unknown>) => Promise<{ apiKey: string } | null>;
     fetchJson: () => Promise<unknown>;
   }): Promise<{ result: any; mockResolveApiKey: ReturnType<typeof vi.fn> }> {
     vi.resetModules();
@@ -499,9 +529,25 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     }
     (api as any).runtime = {
       ...api.runtime,
-      modelAuth: { resolveApiKeyForProvider: mockResolveApiKey },
+      // The real 2026.9 wrapper (createRuntimeModelAuth) forwards only these
+      // three fields; anything else a caller passes never reaches the lookup.
+      modelAuth: {
+        resolveApiKeyForProvider: (params: Record<string, unknown>) =>
+          mockResolveApiKey({
+            provider: params.provider,
+            cfg: params.cfg,
+            workspaceDir: params.workspaceDir,
+          }),
+      },
       config: {
-        loadConfig: () => ({ agents: { list: [{ id: "agent-1", model: opts.agentModel }] } }),
+        // 2026.9 keys agents by id under agents.entries; earlier versions
+        // carried them as agents.list.
+        [opts.configAccessor ?? "current"]: () => ({
+          agents:
+            opts.roster === "list"
+              ? { list: [{ id: "agent-1", name: "Agent One", model: opts.agentModel }] }
+              : { entries: { "agent-1": { name: "Agent One", model: opts.agentModel } } },
+        }),
       },
     };
 
@@ -511,7 +557,11 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
       const { default: plugin } = await import("./index");
       vi.clearAllMocks(); // Clear import-related mocks but keep our fetch + auth mocks
       (globalThis.fetch as any).mockResolvedValue({ ok: true, json: opts.fetchJson });
-      mockResolveApiKey.mockResolvedValue({ apiKey: "test-key" });
+      if (opts.resolveApiKeyImpl) {
+        mockResolveApiKey.mockImplementation(opts.resolveApiKeyImpl);
+      } else {
+        mockResolveApiKey.mockResolvedValue({ apiKey: "test-key" });
+      }
 
       plugin.register!(api as any);
       const readFactory = mockRegisterTool.mock.calls.find(
@@ -540,6 +590,106 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
     // The result should contain the vision-extracted text, NOT the fallback
     expect(result.content[0].text).toContain("HWB 234");
     expect(result.content[0].text).not.toContain("Unable to extract text");
+  });
+
+  it("reaches the vision path through OpenClaw 2026.9's config.current", async () => {
+    // 2026.9 removed runtime.config.loadConfig; its config snapshot accessor
+    // is config.current. Reading only the old name left every scanned page
+    // unread ("Unable to extract text") with nothing in the logs.
+    const { result, mockResolveApiKey } = await runScannedPdfVision({
+      agentModel: "anthropic/claude-haiku-4-5-20251001",
+      configAccessor: "current",
+      fetchJson: async () => ({
+        content: [{ type: "text", text: "Vision extracted: HWB 234 kWh/m²a" }],
+      }),
+    });
+
+    expect(mockResolveApiKey).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "anthropic" })
+    );
+    expect(result.content[0].text).toContain("HWB 234");
+  });
+
+  it("resolves the vision API key as the reading agent, which OpenClaw 2026.9 requires", async () => {
+    // 2026.9 has no default agent. Its plugin runtime forwards only
+    // {provider, cfg, workspaceDir} to the key lookup, which then takes the
+    // owner from cfg.agents.defaults.systemAgent and throws
+    // AgentSelectionRequiredError without one. Every scanned page came back
+    // "Unable to extract text". The mock enforces exactly that contract.
+    const { result, mockResolveApiKey } = await runScannedPdfVision({
+      agentModel: "anthropic/claude-haiku-4-5-20251001",
+      resolveApiKeyImpl: async (params) => {
+        const cfg = params.cfg as {
+          agents?: { defaults?: { systemAgent?: { agentId?: string } } };
+        };
+        if (cfg?.agents?.defaults?.systemAgent?.agentId !== "agent-1") {
+          throw new Error(
+            "Multiple agents are configured, but this operation has no explicit owner."
+          );
+        }
+        return { apiKey: "test-key" };
+      },
+      fetchJson: async () => ({
+        content: [{ type: "text", text: "Vision extracted: HWB 234 kWh/m²a" }],
+      }),
+    });
+
+    expect(mockResolveApiKey).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "anthropic" })
+    );
+    expect(result.content[0].text).toContain("HWB 234");
+    expect(result.content[0].text).not.toContain("Unable to extract text");
+  });
+
+  it("still reaches the vision path through the pre-2026.9 config.loadConfig", async () => {
+    const { result } = await runScannedPdfVision({
+      agentModel: "anthropic/claude-haiku-4-5-20251001",
+      configAccessor: "loadConfig",
+      roster: "list",
+      fetchJson: async () => ({
+        content: [{ type: "text", text: "Vision extracted: HWB 234 kWh/m²a" }],
+      }),
+    });
+
+    expect(result.content[0].text).toContain("HWB 234");
+  });
+
+  it("reads a text PDF when the runtime throws on access", async () => {
+    // The runtime is only needed for scanned pages. A runtime that throws —
+    // the CLI's unavailable-runtime Proxy, or a getter that breaks in a later
+    // OpenClaw — must cost the vision step, never the whole read.
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    (api as any).runtime = new Proxy(Object.create(null), {
+      get(_target, property) {
+        if (typeof property === "symbol") return undefined;
+        throw new Error("runtime unavailable");
+      },
+    });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: join(FIXTURES, "text-only.pdf") });
+
+    expect(result.content[0].text).toContain("<document>");
+  });
+
+  it("reads a text PDF when reading the config snapshot throws", async () => {
+    // The runtime itself answers, but its config accessor breaks: that too
+    // must cost the vision step, never the read.
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    (api as any).runtime = {
+      ...api.runtime,
+      modelAuth: { resolveApiKeyForProvider: vi.fn() },
+      config: {
+        current: () => {
+          throw new Error("config snapshot unavailable");
+        },
+      },
+    };
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: join(FIXTURES, "text-only.pdf") });
+
+    expect(result.content[0].text).toContain("<document>");
   });
 
   it("prefers the pluginConfig.visionModel over the agent's own chat model for vision", async () => {
@@ -611,8 +761,8 @@ describe("pinchy_read PDF integration", { timeout: PDF_INTEGRATION_SUITE_TIMEOUT
       ...api2.runtime,
       modelAuth: { resolveApiKeyForProvider: mockResolveApiKey },
       config: {
-        loadConfig: () => ({
-          agents: { list: [{ id: "agent-1", model: "anthropic/claude-haiku-4-5-20251001" }] },
+        current: () => ({
+          agents: { entries: { "agent-1": { model: "anthropic/claude-haiku-4-5-20251001" } } },
         }),
       },
     };
@@ -2384,5 +2534,65 @@ describe("write tools refuse a path that does not read as what it resolves to", 
     const result = await tool.execute("call-1", { path: target, content: "x" });
     expect(result.isError).toBeFalsy();
     expect(existsSync(target)).toBe(true);
+  });
+});
+
+describe("memory prompt hook", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function registeredHook(
+    agents: Record<string, { allowed_paths: string[]; write_paths?: string[]; memory?: boolean }>
+  ) {
+    const api = createMockApi(agents);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    const hooks = api.on.mock.calls.filter((c: any[]) => c[0] === "before_prompt_build");
+    expect(hooks).toHaveLength(1);
+    return hooks[0][1] as (
+      event: unknown,
+      ctx: unknown
+    ) => { appendSystemContext?: string } | undefined;
+  }
+
+  const memoryAgent = {
+    allowed_paths: ["/root/.openclaw/workspaces/a1/MEMORY.md"],
+    write_paths: ["/root/.openclaw/workspaces/a1/MEMORY.md"],
+    memory: true,
+  };
+
+  it("puts the memory block into the system prompt of a memory-granted agent", async () => {
+    const hook = await registeredHook({ a1: memoryAgent });
+    const result = hook(
+      { prompt: "hi", messages: [] },
+      { agentId: "a1", sessionKey: "agent:a1:direct:u1" }
+    );
+    expect(result?.appendSystemContext).toContain("## Memory");
+    expect(result?.appendSystemContext).toContain("pinchy_write");
+  });
+
+  it("adds nothing for an agent without the memory grant", async () => {
+    // No memory path → telling the agent it can persist memory would be a lie
+    // and reproduce the hallucination from the other direction (#368).
+    const hook = await registeredHook({ a2: { allowed_paths: ["/data/docs/"] } });
+    expect(hook({ prompt: "hi", messages: [] }, { agentId: "a2" })).toBeUndefined();
+  });
+
+  it("adds nothing for a file-writing agent that was never granted memory", async () => {
+    // pinchy_write reaches workbench/ and nothing else. Before memory became
+    // its own grant this was the one thing that DID produce the block, which is
+    // how the two got conflated in the first place (#755).
+    const hook = await registeredHook({
+      a3: { allowed_paths: ["/ws/a3/workbench"], write_paths: ["/ws/a3/workbench"] },
+    });
+    expect(hook({ prompt: "hi", messages: [] }, { agentId: "a3" })).toBeUndefined();
+  });
+
+  it("adds nothing for an agent this plugin has no config for, or a run with no agent", async () => {
+    const hook = await registeredHook({ a1: memoryAgent });
+    expect(hook({ prompt: "hi", messages: [] }, { agentId: "unknown" })).toBeUndefined();
+    expect(hook({ prompt: "hi", messages: [] }, {})).toBeUndefined();
+    expect(hook({ prompt: "hi", messages: [] }, undefined)).toBeUndefined();
   });
 });

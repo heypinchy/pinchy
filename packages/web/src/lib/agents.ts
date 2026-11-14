@@ -27,7 +27,7 @@ import { generateAvatarSeed } from "@/lib/avatar";
 import { validateAllowedPaths } from "@/lib/path-validation";
 import { validatePinchyWebConfig } from "@/lib/domain-validation";
 import { getContextForAgent } from "@/lib/context-sync";
-import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
+import { waitForAgentInRuntimeOnClient } from "@/server/agent-readiness";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { type ProviderName } from "@/lib/providers";
 import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
@@ -722,7 +722,7 @@ export async function createAgent(
     } catch {
       // OC client not initialised (rare in tests / pre-setup). Skip the wait.
     }
-    await waitForAgentInRuntime(client, agent.id);
+    await waitForAgentInRuntimeOnClient(client, agent.id);
   } catch (err) {
     console.error("Failed to apply new agent config to the OpenClaw runtime:", err);
     runtimeWarning =

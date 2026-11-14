@@ -7,7 +7,7 @@ import { eq, and } from "drizzle-orm";
 import { resolveInviteFlow, claimInvite, getInviteGroupIds } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { waitForAgentInRuntime } from "@/lib/wait-for-agent-in-runtime";
+import { waitForAgentInRuntimeOnClient } from "@/server/agent-readiness";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { validatePassword } from "@/lib/validate-password";
 import { parseRequestBody } from "@/lib/api-validation";
@@ -178,7 +178,7 @@ export async function POST(request: NextRequest) {
     // OC client not initialised — skip the wait.
   }
   if (personalAgent?.id) {
-    await waitForAgentInRuntime(client, personalAgent.id);
+    await waitForAgentInRuntimeOnClient(client, personalAgent.id);
   }
 
   return NextResponse.json({ success: true }, { status: 201 });

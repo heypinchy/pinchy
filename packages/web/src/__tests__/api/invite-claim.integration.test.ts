@@ -12,6 +12,8 @@
 //     (workspace dirs, SOUL.md). Has its own coverage; not in scope here.
 //   - @/lib/openclaw-config.regenerateOpenClawConfig — writes openclaw.json.
 //     Same reasoning.
+//   - @/server/openclaw-client.getOpenClawClient — there is no Gateway here. The
+//     mock client answers the runtime-readiness gate through the agents.list RPC.
 //
 // Everything else (Better Auth signup + setUserPassword, invite token
 // validation, claim transaction, group assignment) runs for real.
@@ -47,6 +49,20 @@ vi.mock("@/lib/personal-agent", () => ({
 
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
+}));
+
+// The OpenClaw client the route consults for its runtime-readiness gate. On
+// OpenClaw 2026.9 `config.get` answers from the config FILE and carries agents
+// under `agents.entries`; the `agents.list` array is a non-enumerable runtime
+// projection that never crosses the WebSocket. Only the `agents.list` RPC
+// reports the runtime roster, so that is what the mock exposes it through.
+const openClawClient = vi.hoisted(() => ({
+  config: { get: vi.fn() },
+  agents: { list: vi.fn() },
+  hasMethod: vi.fn(),
+}));
+vi.mock("@/server/openclaw-client", () => ({
+  getOpenClawClient: vi.fn(() => openClawClient),
 }));
 
 // Partial-mock invites so individual tests can force `claimInvite` to
@@ -98,6 +114,14 @@ async function seedAdmin() {
 describe("POST /api/invite/claim (integration)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    openClawClient.hasMethod.mockReturnValue(true);
+    openClawClient.config.get.mockResolvedValue({
+      config: { agents: { entries: { "fake-agent-id": { name: "Smithers" } } } },
+    });
+    openClawClient.agents.list.mockResolvedValue({
+      defaultId: "fake-agent-id",
+      agents: [{ id: "fake-agent-id", name: "Smithers" }],
+    });
   });
 
   // ── Validation ──────────────────────────────────────────────────────
@@ -240,6 +264,28 @@ describe("POST /api/invite/claim (integration)", () => {
     });
     expect(seedPersonalAgent).toHaveBeenCalledWith(user!.id, false);
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("confirms the new personal agent through the agents.list RPC, not config.get", async () => {
+    // Regression: the route polled `config.get` for `agents.list`, a field
+    // OpenClaw 2026.9 never serialises. Every claim then waited out the whole
+    // 5 s cap and the guard confirmed nothing.
+    const adminId = await seedAdmin();
+    const { token } = await createInvite({
+      email: "ready-user@test.local",
+      role: "member",
+      type: "invite",
+      createdBy: adminId,
+    });
+
+    const response = await POST(
+      makeRequest({ token, name: "Ready User", password: "Br1ghtNova!2" })
+    );
+
+    expect(response.status).toBe(201);
+    // Confirmed on the first poll: no spinning until the cap.
+    expect(openClawClient.agents.list).toHaveBeenCalledTimes(1);
+    expect(openClawClient.config.get).not.toHaveBeenCalled();
   });
 
   it("promotes invite role=admin to a real admin row", async () => {
