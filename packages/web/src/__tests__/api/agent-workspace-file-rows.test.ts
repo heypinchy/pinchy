@@ -408,6 +408,7 @@ describe("when the reader is the problem, not the workbook", () => {
 
     expect(res.status).toBe(503);
     expect(res.headers.get("retry-after")).toBe("10");
+    expect(res.headers.get("cache-control")).toBe("no-store");
     expect(mockDeferAuditLog.mock.calls[0][0].detail.reason).toBe("reader_busy");
   });
 

@@ -73,14 +73,18 @@ type Params = { params: Promise<{ agentId: string; name?: string }> };
  * spreadsheet rows (cell data) and every JSON/text error — has no policy of its
  * own and must say no-store itself, or it goes out cacheable.
  */
-const NO_STORE = { "cache-control": "no-store" };
-
-function noStoreJson(body: unknown, init: ResponseInit = {}): NextResponse {
-  return NextResponse.json(body, { ...init, headers: { ...init.headers, ...NO_STORE } });
+function withNoStore(init?: ResponseInit): ResponseInit {
+  const headers = new Headers(init?.headers);
+  headers.set("cache-control", "no-store");
+  return { ...init, headers };
 }
 
-function noStoreText(body: string, init: ResponseInit = {}): NextResponse {
-  return new NextResponse(body, { ...init, headers: { ...init.headers, ...NO_STORE } });
+function noStoreJson(body: unknown, init?: ResponseInit): NextResponse {
+  return NextResponse.json(body, withNoStore(init));
+}
+
+function noStoreText(body: string, init?: ResponseInit): NextResponse {
+  return new NextResponse(body, withNoStore(init));
 }
 
 /**

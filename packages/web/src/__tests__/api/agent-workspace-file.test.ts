@@ -465,6 +465,7 @@ describe("GET /api/agents/[agentId]/workspace-file — large files and byte rang
     expect(res.status).toBe(416);
     // Tells the client the real length so it can retry correctly instead of guessing.
     expect(res.headers.get("content-range")).toBe(`bytes */${PDF_BYTES.length}`);
+    expect(res.headers.get("cache-control")).toBe("no-store");
   });
 
   it("serves the whole file when the range header is one it does not implement", async () => {
