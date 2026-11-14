@@ -345,21 +345,61 @@ describe("heal_memory_indexes", () => {
   it.each([
     ["is still mismatched afterwards", { indexHeals: false }],
     ["exits non-zero", { indexExit: 1 }],
-  ])("stops after the first rebuild that %s", (_label, stub) => {
-    // A rebuild fails because embeddings fail, and those fail for every agent
-    // alike. Trying the rest would spend the whole budget on each start for
-    // nothing while the gateway waits.
+  ])("stops after two rebuilds in a row that %s", (_label, stub) => {
+    // Failing embeddings fail for every agent alike. Trying the rest would
+    // spend the whole budget on each start for nothing while the gateway waits.
     setIdentities({ kb: "mismatched", odoo: "mismatched", hr: "mismatched" });
     stubOpenclaw(stub);
 
     const output = run();
 
-    expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
+    expect(indexCalls()).toEqual([
+      ["memory", "index", "--agent", "kb"],
+      ["memory", "index", "--agent", "odoo"],
+    ]);
     expect(output.match(/not trying the remaining agents/gi)).toHaveLength(1);
     expect(output).toContain("FAILED");
     for (const agent of ["kb", "odoo", "hr"]) {
       expect(output).toContain(`[memory-heal]   ${agent}\n`);
     }
+  });
+
+  it("heals the next agent after one whose own index fails", () => {
+    // A corrupt or locked index fails for that agent alone. Agent order is
+    // stable, so stopping at the first failure would block every agent after
+    // it on every start, for good.
+    setIdentities({ kb: "mismatched", odoo: "mismatched" });
+    stubOpenclaw({ indexHeals: ["odoo"] });
+
+    const output = run();
+
+    expect(indexCalls()).toEqual([
+      ["memory", "index", "--agent", "kb"],
+      ["memory", "index", "--agent", "odoo"],
+    ]);
+    expect(output).not.toMatch(/not trying the remaining agents/i);
+    const failedList = output.split("FAILED")[1];
+    expect(failedList).toContain("[memory-heal]   kb\n");
+    expect(failedList).not.toContain("[memory-heal]   odoo\n");
+  });
+
+  it("counts only failures in a row: a success in between resets the count", () => {
+    setIdentities({
+      kb: "mismatched",
+      odoo: "mismatched",
+      hr: "mismatched",
+      fin: "mismatched",
+    });
+    stubOpenclaw({ indexHeals: ["odoo", "fin"] });
+
+    const output = run();
+
+    expect(indexCalls().map((c) => c[3])).toEqual(["kb", "odoo", "hr", "fin"]);
+    expect(output).not.toMatch(/not trying the remaining agents/i);
+    const failedList = output.split("FAILED")[1];
+    expect(failedList).toContain("[memory-heal]   kb\n");
+    expect(failedList).toContain("[memory-heal]   hr\n");
+    expect(failedList).not.toContain("[memory-heal]   fin\n");
   });
 
   it.each([

@@ -197,7 +197,8 @@ heal_memory_indexes() {
     echo "[memory-heal] Memory indexes OpenClaw will not rebuild on its own (built for a different embedding model, usually after a failed embed):"
     echo "$mismatched" | sed 's/^/[memory-heal]   /'
 
-    local agents=() agent i remaining limit rc still took broken="" ran=""
+    local agents=() failed=() agent i remaining limit rc still took broken="" ran=""
+    local in_a_row=0
     while IFS= read -r agent; do
         [ -n "$agent" ] && agents+=("$agent")
     done <<<"$mismatched"
@@ -226,28 +227,38 @@ heal_memory_indexes() {
         elif [ -n "$still" ]; then
             echo "[memory-heal] The memory index of agent $agent is still mismatched after the rebuild."
         else
+            in_a_row=0
             continue
         fi
+        failed+=("$agent")
         # A step cut off by the deadline says nothing about the embeddings.
         if [ "$(date +%s)" -ge "$memory_heal_deadline" ]; then
             echo "$used_up; the rest is rebuilt on the next start."
-        else
-            broken=1
+            i=$((i + 1))
+            break
         fi
-        break
+        # One failure can be that agent's own (a corrupt or locked index), and
+        # agent order is stable: stopping there would block every agent after
+        # it on every start. Two in a row is what failing embeddings look like,
+        # and those fail for every agent alike — trying the rest would spend
+        # the whole budget on every start while the gateway waits.
+        in_a_row=$((in_a_row + 1))
+        if [ "$in_a_row" -ge 2 ]; then
+            broken=1
+            i=$((i + 1))
+            break
+        fi
     done
 
     [ -z "$ran" ] || stop_leftover_llama_server
 
     took=$(( $(date +%s) - start ))
-    if [ "$i" -eq "${#agents[@]}" ]; then
+    if [ "$i" -eq "${#agents[@]}" ] && [ "${#failed[@]}" -eq 0 ]; then
         echo "[memory-heal] Memory indexes rebuilt in ${took}s."
         return 0
     fi
-    # Embeddings that fail for one agent fail for all of them: trying the rest
-    # would spend the whole budget on every start while the gateway waits.
-    [ -z "$broken" ] || echo "[memory-heal] Not trying the remaining agents: whatever broke this rebuild breaks theirs too."
+    [ -z "$broken" ] || echo "[memory-heal] Not trying the remaining agents: two rebuilds in a row failed, and whatever broke them breaks theirs too."
     echo "[memory-heal] FAILED after ${took}s: still not rebuilt, retried on the next start:"
-    printf '%s\n' "${agents[@]:i}" | sed 's/^/[memory-heal]   /'
+    printf '%s\n' "${failed[@]}" "${agents[@]:i}" | sed 's/^/[memory-heal]   /'
     return 0
 }
