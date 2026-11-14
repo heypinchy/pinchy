@@ -50,6 +50,7 @@ const PINCHY_GATEWAY_TOKEN = "test-gateway-token-integration";
 // Per-connection credentials served by the mock-pinchy. Tests can mutate
 // this to simulate broken/missing/rotated credentials.
 const credentialsByConnectionId = new Map<string, unknown>();
+const checkedAddressesByHost = new Map<string, string[]>();
 
 // Every agentId the mock-pinchy saw on a credentials request, in order — the
 // evidence that the plugin identifies itself (#987) on the real wire rather
@@ -119,13 +120,15 @@ beforeAll(async () => {
     }
     res.writeHead(200, { "Content-Type": "application/json" });
     // Like the real route, answer the addresses the URL's host was checked
-    // against. Every URL here is an address literal, which is its own answer.
+    // against. An address literal is its own answer; a host name gets the
+    // addresses a test registered for it.
     const host = new URL(String((credentials as { url?: unknown }).url ?? "http://x")).hostname;
+    const checked = isIP(host) ? [host] : checkedAddressesByHost.get(host);
     res.end(
       JSON.stringify({
         type: "odoo",
         credentials,
-        checkedAddresses: isIP(host) ? { url: [host] } : {},
+        checkedAddresses: checked ? { url: checked } : {},
       })
     );
   });
@@ -205,6 +208,31 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     expect(data.name).toBe("Sales Order");
     expect(data._meta.returned).toBeGreaterThan(0);
     expect(Object.keys(data.fields)).toContain("name");
+  });
+
+  it("connects to the address Pinchy checked for a host name, not to what the name resolves to", async () => {
+    // `.test` never resolves: the call only reaches mock-odoo if the plugin
+    // hands the checked address to the client it builds.
+    const connectionId = "conn-pinned-host";
+    checkedAddressesByHost.set("odoo.pin.test", ["127.0.0.1"]);
+    credentialsByConnectionId.set(connectionId, {
+      url: `http://odoo.pin.test:${mockOdoo.jsonRpcPort}`,
+      db: "testdb",
+      uid: 2,
+      apiKey: "test-api-key",
+    });
+    try {
+      const tools = createApi({ [agentId]: { ...agentConfig, connectionId } });
+      const result = await findTool(tools, "odoo_describe_model", agentId).execute("call-1", {
+        model: "sale.order",
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(result.content[0].text).name).toBe("Sales Order");
+    } finally {
+      credentialsByConnectionId.delete(connectionId);
+      checkedAddressesByHost.delete("odoo.pin.test");
+    }
   });
 
   it("identifies its agent to the credentials endpoint (#987)", async () => {

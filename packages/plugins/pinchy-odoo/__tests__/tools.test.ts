@@ -4271,9 +4271,13 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(OdooClient).toHaveBeenCalledTimes(1);
     // ...with the pinned fetch: a client built without one would reach Odoo
     // through the global fetch, unpinned.
+    // Only a fetch pinned to the connection's URL refuses another origin
+    // before anything goes out.
     const [config] = vi.mocked(OdooClient).mock.calls[0] as unknown as [{ fetch?: unknown }];
     expect(config.fetch).toEqual(expect.any(Function));
-    expect(config.fetch).not.toBe(globalThis.fetch);
+    await expect(
+      (config.fetch as typeof fetch)("https://elsewhere.example/jsonrpc")
+    ).rejects.toThrow(/checked for https:\/\/odoo\.example\.com/);
   });
 
   it("refuses to connect when Pinchy sent no checked address, and says why", async () => {

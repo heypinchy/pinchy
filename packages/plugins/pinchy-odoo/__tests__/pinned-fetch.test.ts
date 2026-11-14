@@ -16,6 +16,9 @@ import { pinnedOdooFetch, pinOdooClient } from "../pinned-fetch";
 import type { PinnedTarget } from "../pinned-target";
 
 const dns = createRequire(import.meta.url)("node:dns") as typeof import("node:dns");
+// Before any test builds a client: a wrapper installed on first use would
+// already be in place by the time a later test looked.
+const fetchAtLoad = globalThis.fetch;
 
 let server: Server;
 let port: number;
@@ -145,10 +148,9 @@ describe("pinOdooClient", () => {
   it("leaves the process-wide fetch alone", async () => {
     // OpenClaw runs every plugin in one process. The pin travels with the
     // client, so no other plugin's fetch passes through pinchy-odoo's code.
-    const before = globalThis.fetch;
     const url = `http://odoo.rebind.test:${port}`;
     await pinOdooClient({ url, db: "odoo", uid: 2, apiKey: "k" }, checked).version();
-    expect(globalThis.fetch).toBe(before);
+    expect(globalThis.fetch).toBe(fetchAtLoad);
   });
 });
 
@@ -167,11 +169,17 @@ describe("pinnedOdooFetch", () => {
     // holds a socket to an address checked minutes ago.
     const url = `http://odoo.rebind.test:${port}`;
     const pinned = pinnedOdooFetch(url, checked);
-    const res = await pinned(`${url}/jsonrpc`, { method: "POST", body: "{}" });
-    await res.text();
+    for (let i = 0; i < 2; i++) {
+      const res = await pinned(`${url}/jsonrpc`, { method: "POST", body: "{}" });
+      await res.text();
+    }
 
-    expect(seen).toHaveLength(1);
-    await vi.waitFor(() => expect(closedPorts).toContain(seen[0].remotePort));
+    // A connector shared across calls would reuse its keep-alive socket.
+    expect(seen).toHaveLength(2);
+    expect(seen[1].remotePort).not.toBe(seen[0].remotePort);
+    await vi.waitFor(() =>
+      expect(closedPorts).toEqual(expect.arrayContaining(seen.map((s) => s.remotePort)))
+    );
   });
 
   it("refuses a Request object rather than drop its method and body", async () => {
@@ -226,9 +234,11 @@ describe("pinnedOdooFetch", () => {
   });
 
   it("refuses to follow a redirect off the checked address", async () => {
+    // The target is the local fake Odoo, standing in for an address nobody
+    // checked: a followed hop would show up in `seen` at once.
     const redirecting = createServer((_req, res) => {
       res.statusCode = 307;
-      res.setHeader("location", "http://169.254.169.254/latest/meta-data/");
+      res.setHeader("location", `http://127.0.0.1:${port}/jsonrpc`);
       res.end();
     });
     await new Promise<void>((resolve) => redirecting.listen(0, "127.0.0.1", resolve));
@@ -240,6 +250,7 @@ describe("pinnedOdooFetch", () => {
         redirect: "follow",
       });
       expect(res.status).toBe(307);
+      expect(seen).toHaveLength(0);
     } finally {
       await new Promise<void>((resolve) => redirecting.close(() => resolve()));
     }
