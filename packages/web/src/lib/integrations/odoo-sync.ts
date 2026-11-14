@@ -1,4 +1,5 @@
 import { OdooClient } from "odoo-node";
+import type { PinnedOdooFetch } from "./odoo-pin";
 import { runWithConcurrency } from "@/lib/concurrency";
 import { describeOdooError } from "@/lib/integrations/odoo-error";
 import { readOdooFields } from "@/lib/integrations/odoo-calls";
@@ -145,12 +146,15 @@ export async function fetchOdooSchema(credentials: {
   db: string;
   uid: number;
   apiKey: string;
+  /** The fetch from `withPinnedOdoo` for this URL: every probe goes through it. */
+  fetch: PinnedOdooFetch;
 }): Promise<OdooSyncResult | OdooSyncError> {
   const client = new OdooClient({
     url: credentials.url,
     db: credentials.db,
     uid: credentials.uid,
     apiKey: credentials.apiKey,
+    fetch: credentials.fetch,
   });
 
   type AccessRights = {

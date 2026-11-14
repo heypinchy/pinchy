@@ -1,4 +1,5 @@
 import { OdooClient, OdooError } from "odoo-node";
+import type { PinnedOdooFetch } from "./odoo-pin";
 
 /**
  * odoo-node calls the web app makes, refusing an answer that is not what Odoo
@@ -27,9 +28,13 @@ function isNullResultTypeError(err: unknown): boolean {
   return err instanceof TypeError && !/\(reading 'message'\)$/.test(err.message);
 }
 
-/** `OdooClient.authenticate`, refusing an answer that carries no user id. */
+/**
+ * `OdooClient.authenticate`, refusing an answer that carries no user id. The
+ * `fetch` is required: it is the one from `withPinnedOdoo` for this URL, and a
+ * login without it would send the key to whatever the name resolves to now.
+ */
 export async function authenticateOdoo(
-  auth: Parameters<typeof OdooClient.authenticate>[0]
+  auth: Parameters<typeof OdooClient.authenticate>[0] & { fetch: PinnedOdooFetch }
 ): Promise<number> {
   const uid: unknown = await OdooClient.authenticate(auth);
   if (typeof uid === "number" && Number.isInteger(uid) && uid > 0) return uid;

@@ -1098,6 +1098,7 @@ describe("POST /api/integrations/[connectionId]/test", () => {
       db: "prod",
       login: "admin",
       apiKey: "secret-key",
+      fetch: expect.any(Function),
     });
     // Probe is delegated — version/uid are no longer in the response
     expect(body.version).toBeUndefined();
@@ -1347,6 +1348,7 @@ describe("POST /api/integrations/test-credentials", () => {
       db: "prod",
       login: "admin",
       apiKey: "key",
+      fetch: expect.any(Function),
     });
     expect(mockVersion).toHaveBeenCalled();
   });

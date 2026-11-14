@@ -201,7 +201,10 @@ describe("POST /api/integrations/sync-preview", () => {
     const body = await response.json();
 
     expect(mockValidateExternalUrl).toHaveBeenCalledWith(validCredentials.url);
-    expect(mockFetchOdooSchema).toHaveBeenCalledWith(validCredentials);
+    expect(mockFetchOdooSchema).toHaveBeenCalledWith({
+      ...validCredentials,
+      fetch: expect.any(Function),
+    });
     expect(response.status).toBe(200);
     expect(body).toEqual(validSyncResult);
 

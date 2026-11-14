@@ -151,7 +151,7 @@ function blockMessageFor(addressClass: IpAddressClass): string {
  * that follows: the address is classified here, and whoever connects next
  * resolves the name again. A caller that makes the request itself uses
  * {@link resolveExternalUrlTarget} and pins it (odoo-node included, through
- * `withPinnedOdooFetch`). A caller that only stores the URL, or hands it to
+ * `withPinnedOdoo`). A caller that only stores the URL, or hands it to
  * pinchy-odoo — which resolves the stored URL inside the OpenClaw container
  * for every tool call — keeps the window.
  *
