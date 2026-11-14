@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  closeSync,
+  fstatSync,
   linkSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -19,6 +22,16 @@ import {
   _resetRejectedPayloadSweep,
   writeRejectedPayload,
 } from "@/lib/openclaw-config/rejected-payload";
+
+/** Mode and content from one open file, so both describe the same inode. */
+function readModeAndContent(path: string): { mode: number; content: string } {
+  const fd = openSync(path, "r");
+  try {
+    return { mode: fstatSync(fd).mode & 0o777, content: readFileSync(fd, "utf-8") };
+  } finally {
+    closeSync(fd);
+  }
+}
 
 const payload = {
   gateway: { mode: "local", auth: { mode: "token", token: "GATEWAY-SECRET-TOKEN" } },
@@ -97,8 +110,9 @@ describe("writeRejectedPayload", () => {
   it("writes the file at 0600 with the tokens redacted", () => {
     const path = writeRejectedPayload(configPath, JSON.stringify(payload), "2026-11-13T10-00-00Z");
     expect(path).toBe(`${configPath}.regenerate-rejected.2026-11-13T10-00-00Z`);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-    expect(readFileSync(path, "utf-8")).not.toMatch(/SECRET/);
+    const written = readModeAndContent(path);
+    expect(written.mode).toBe(0o600);
+    expect(written.content).not.toMatch(/SECRET/);
   });
 
   it("keeps only the newest MAX_REJECTED_PAYLOADS dumps", () => {
@@ -154,8 +168,9 @@ describe("sweepRejectedPayloads (dumps left by older versions)", () => {
   it("redacts and chmods the dumps it keeps", () => {
     const path = legacy("2026-01-01");
     sweepRejectedPayloads(configPath);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-    expect(readFileSync(path, "utf-8")).not.toMatch(/SECRET/);
+    const swept = readModeAndContent(path);
+    expect(swept.mode).toBe(0o600);
+    expect(swept.content).not.toMatch(/SECRET/);
   });
 
   it("does nothing, quietly, when the directory does not exist", () => {
