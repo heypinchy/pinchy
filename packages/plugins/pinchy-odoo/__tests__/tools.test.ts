@@ -15,7 +15,12 @@ const mockCallMethod = vi.fn();
 vi.mock("odoo-node", async (importOriginal) => {
   // The real OdooError, so error tests throw exactly what odoo-node throws.
   const { OdooError } = await importOriginal<typeof import("odoo-node")>();
-  const MockOdooClient = vi.fn(function (this: Record<string, unknown>) {
+  const MockOdooClient = vi.fn(function (
+    this: Record<string, unknown>,
+    config: { fetch?: unknown }
+  ) {
+    // Keeps the transport like odoo-node >= 0.4.0, which pinOdooClient checks.
+    this.transport = { fetch: config.fetch };
     this.searchRead = mockSearchRead;
     this.searchCount = mockSearchCount;
     this.readGroup = mockReadGroup;
@@ -4108,8 +4113,10 @@ describe("error handling", () => {
     expect(text).not.toMatch(/denied permission|re-sync/i);
   });
 
-  it("does not quote a JSON answer of the wrong shape either (TypeError)", async () => {
-    // `{"error": {}}` makes odoo-node read `json.error.data.message` off undefined.
+  it("does not take a TypeError reading `message` for an answer that is not JSON-RPC", async () => {
+    // odoo-node from 0.4.0 reports an error envelope without a message
+    // (`{"error": {}}`) as not JSON-RPC itself. A TypeError reading `message`
+    // is now a bug of ours, and the model is told so.
     let thrown: unknown;
     try {
       const json = JSON.parse('{"error":{}}') as { error: { data: { message: string } } };
@@ -4128,7 +4135,7 @@ describe("error handling", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).not.toContain("Cannot read properties");
-    expect(result.content[0].text).toContain("not a JSON-RPC response");
+    expect(result.content[0].text).toContain("failed unexpectedly (TypeError reading 'message')");
   });
 
   it("hands Odoo's own error to the model on one line, capped", async () => {
@@ -4262,6 +4269,15 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // OdooClient constructor called exactly once (cached client reused)
     expect(OdooClient).toHaveBeenCalledTimes(1);
+    // ...with the pinned fetch: a client built without one would reach Odoo
+    // through the global fetch, unpinned.
+    // Only a fetch pinned to the connection's URL refuses another origin
+    // before anything goes out.
+    const [config] = vi.mocked(OdooClient).mock.calls[0] as unknown as [{ fetch?: unknown }];
+    expect(config.fetch).toEqual(expect.any(Function));
+    await expect(
+      (config.fetch as typeof fetch)("https://elsewhere.example/jsonrpc")
+    ).rejects.toThrow(/checked for https:\/\/odoo\.example\.com/);
   });
 
   it("refuses to connect when Pinchy sent no checked address, and says why", async () => {

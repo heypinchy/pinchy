@@ -31,11 +31,11 @@ function redirectMessage(status: string): string {
  *   or a metadata service's plain text — anything but Odoo. odoo-node names
  *   status and content type, never the body.
  *
- * The model gets a sentence it can relay instead. A JSON-RPC envelope of the
- * wrong shape (`{"error": {}}`) still escapes odoo-node as a `TypeError`
- * reading `error.data.message`, which tells the model nothing either. Any
- * other `TypeError` is either a bug in the tool or odoo-node choking on a
- * non-Odoo answer (`result: null` from another JSON-RPC server), and says so.
+ * The model gets a sentence it can relay instead. odoo-node reports a
+ * JSON-RPC error envelope that carries no message (`{"error": {}}`) the same
+ * way, as not JSON-RPC. A `TypeError` is either a bug in the tool or odoo-node
+ * choking on a non-Odoo answer (`result: null` from another JSON-RPC server),
+ * and says so.
  *
  * Everything else is Odoo talking — a validation error, an access error — and
  * the model needs its words, so it passes through, collapsed to one line and
@@ -54,11 +54,6 @@ function redirectMessage(status: string): string {
  */
 export function describeOdooError(err: unknown): string {
   if (err instanceof TypeError) {
-    // odoo-node reads `json.error.data.message` off a JSON-RPC error without
-    // `data`. The test is on V8's message alone, so a bug of ours that reads
-    // `message` off undefined is taken for that case too; tool code reaches
-    // odoo-node through this path and reads `.message` only off caught errors.
-    if (/\(reading 'message'\)$/.test(err.message)) return NOT_JSON_RPC_MESSAGE;
     // The name and, from V8's "(reading 'x')", the property — never the
     // free message, which may carry a value.
     const property = /\(reading '([A-Za-z_$][\w$]{0,40})'\)$/.exec(err.message)?.[1];

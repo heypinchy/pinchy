@@ -33,6 +33,8 @@ process.stdout.write(globalThis[slot] === sentinel ? "unchanged" : "replaced:" +
 `;
 
 describe("loading pinchy-web's undici", () => {
+  // A cold Node child that loads undici took over 6 s under a loaded
+  // parallel suite; the default 5 s timeout failed it with nothing wrong.
   it("leaves Node's global fetch dispatcher alone", () => {
     const out = execFileSync(process.execPath, ["-e", probe, undiciEntry], {
       encoding: "utf8",
@@ -40,5 +42,5 @@ describe("loading pinchy-web's undici", () => {
     });
 
     expect(out).toBe("unchanged");
-  });
+  }, 30_000);
 });

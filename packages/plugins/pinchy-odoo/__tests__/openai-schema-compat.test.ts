@@ -1,8 +1,8 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from "vitest";
 
-// odoo-node is mocked the same way as in tools.test.ts so the plugin can
-// register without contacting a real Odoo instance.
+// odoo-node is mocked so the plugin can register without contacting a real
+// Odoo instance. No tool runs here, so the client needs no methods.
 vi.mock("odoo-node", () => {
   const MockOdooClient = vi.fn(function (this: Record<string, unknown>) {});
   return { OdooClient: MockOdooClient };
