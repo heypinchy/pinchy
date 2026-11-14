@@ -10,9 +10,18 @@ import { join, relative } from "node:path";
  * is exactly that leak (v0.11 staging: `chat.run_aborted`). Use
  * `auditChatId(sessionKey)` from `@/lib/session-key` for a chat identifier.
  *
- * Source-level and cheap on purpose: it finds each `detail: { ... }` literal and
- * flags a `sessionKey` key inside it. (A `user: { id }` naming the *target* of an
- * admin action is fine; the acting user is covered per event in unit tests.)
+ * Source-level and cheap on purpose: it finds each `detail: { ... }` literal,
+ * strips the `auditChatId(...)` calls (the one sanctioned use of a session key),
+ * and flags any `sessionKey` or `directSessionKey(` left in the body. That also
+ * catches the value under a renamed key (`session: run.sessionKey`). (A
+ * `user: { id }` naming the *target* of an admin action is fine; the acting user
+ * is covered per event in unit tests.)
+ *
+ * What this does not catch: a detail object built in a variable and passed in
+ * (the `Record` in `app/api/internal/audit/tool-use/route.ts`), a spread
+ * (`auditPolicyRefusal(...extra)`), a template string that interpolates a key
+ * into a value, and any file outside `packages/web/src` such as `server.ts`.
+ * Those are covered, where at all, by per-event unit tests; review owns the rest.
  */
 
 const SRC = join(__dirname, "..", "..");
@@ -53,20 +62,42 @@ function stripComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
+/** Removes each `auditChatId(...)` call, parentheses matched, so its argument is not read as a leak. */
+function stripAuditChatId(text: string): string {
+  let out = "";
+  let i = 0;
+  const re = /\bauditChatId\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    out += text.slice(i, m.index);
+    let depth = 1;
+    let j = re.lastIndex;
+    while (j < text.length && depth > 0) {
+      if (text[j] === "(") depth++;
+      else if (text[j] === ")") depth--;
+      j++;
+    }
+    i = j;
+    re.lastIndex = j;
+  }
+  return out + text.slice(i);
+}
+
 export function leaksUserId(detailBody: string): string | null {
-  const body = stripComments(detailBody);
-  if (/(^|[\s,{])sessionKey\s*[:,}]|(^|[\s,{])sessionKey\s*$/m.test(body)) return "sessionKey";
+  const body = stripAuditChatId(stripComments(detailBody));
+  if (/\bdirectSessionKey\s*\(/.test(body)) return "directSessionKey";
+  if (/session_?key/i.test(body)) return "sessionKey";
   return null;
 }
 
-describe("audit detail carries no raw user id (#824)", () => {
+describe("audit detail names no session key (#824)", () => {
   it("scans a real corpus", () => {
     const files = walk(SRC);
     const withDetail = files.filter((f) => detailLiterals(readFileSync(f, "utf8")).length > 0);
     expect(withDetail.length).toBeGreaterThan(40);
   });
 
-  it("no detail literal in src/ names a sessionKey", () => {
+  it("no detail literal in src/ names a session key", () => {
     const offenders: string[] = [];
     for (const file of walk(SRC)) {
       for (const body of detailLiterals(readFileSync(file, "utf8"))) {
@@ -81,6 +112,10 @@ describe("audit detail carries no raw user id (#824)", () => {
     expect(leaksUserId("agent: { id }, sessionKey, runId")).toBe("sessionKey");
     expect(leaksUserId("agent,\n sessionKey: run.sessionKey,\n runId")).toBe("sessionKey");
     expect(leaksUserId("agent: { id }, chatId: auditChatId(sessionKey)")).toBeNull();
+    expect(leaksUserId("agent,\n session: run.sessionKey,\n runId")).toBe("sessionKey");
+    expect(leaksUserId("agent,\n key: directSessionKey(agentId, userId)")).toBe("directSessionKey");
+    expect(leaksUserId("agent, chatId: auditChatId(run.sessionKey)")).toBeNull();
+    expect(leaksUserId("agent, chatId: auditChatId(fn(sessionKey)), runId")).toBeNull();
     expect(leaksUserId("// never mirror sessionKey here\n runId")).toBeNull();
   });
 });
