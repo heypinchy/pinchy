@@ -123,6 +123,26 @@ describe("pinchy-files plugin", () => {
     expect(registered).toEqual([...manifest.contracts.tools].sort());
   });
 
+  it("registers without touching the runtime, which a CLI metadata pass does not provide", async () => {
+    // Every `openclaw` CLI command loads plugins in "cli-metadata" mode, where
+    // `api.runtime` is a Proxy that throws on any property read
+    // (createUnavailableRuntime, OpenClaw 2026.9). Reading runtime.modelAuth
+    // in register() made every CLI run log "pinchy-files failed during
+    // register … runtime is intentionally unavailable". The runtime is only
+    // needed when a scanned PDF is read, so it is read then.
+    const api = createMockApi({ "test-agent": { allowed_paths: ["/data/test-docs/"] } });
+    (api as any).runtime = new Proxy(Object.create(null), {
+      get(_target, property) {
+        if (typeof property === "symbol") return undefined;
+        throw new Error(`runtime is intentionally unavailable during "cli-metadata" registration`);
+      },
+    });
+    const { default: plugin } = await import("./index");
+
+    expect(() => plugin.register!(api as any)).not.toThrow();
+    expect(mockRegisterTool).toHaveBeenCalled();
+  });
+
   it("registers tool factories (functions), not static tools", async () => {
     const api = createMockApi({ "test-agent": { allowed_paths: ["/data/test-docs/"] } });
     const { default: plugin } = await import("./index");

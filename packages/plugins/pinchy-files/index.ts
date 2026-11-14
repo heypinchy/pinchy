@@ -322,17 +322,24 @@ const plugin = {
     // the dispatch E2E), not mid-process.
     const visionModelOverride = api.pluginConfig?.visionModel;
 
-    // Capture runtime APIs for vision (direct LLM API calls for scanned pages)
-    const modelAuth = (api as any).runtime?.modelAuth as
-      | {
-          resolveApiKeyForProvider: (params: {
-            provider: string;
-            cfg: unknown;
-          }) => Promise<{ apiKey: string } | null>;
-        }
-      | undefined;
-    const loadConfig = (api as any).runtime?.config?.loadConfig as
-      (() => Record<string, unknown>) | undefined;
+    // Runtime APIs for vision (direct LLM API calls for scanned pages). Read
+    // at the moment of use, never here: every `openclaw` CLI command loads
+    // plugins in "cli-metadata" mode, where `api.runtime` throws on any
+    // property read, and an eager read failed the whole registration.
+    const visionRuntime = () => {
+      const runtime = (api as any).runtime;
+      return {
+        modelAuth: runtime?.modelAuth as
+          | {
+              resolveApiKeyForProvider: (params: {
+                provider: string;
+                cfg: unknown;
+              }) => Promise<{ apiKey: string } | null>;
+            }
+          | undefined,
+        loadConfig: runtime?.config?.loadConfig as (() => Record<string, unknown>) | undefined,
+      };
+    };
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -452,6 +459,7 @@ const plugin = {
                   // the Usage Dashboard readable (agentId alone is opaque).
                   let visionConfig: VisionApiConfig | null = null;
                   let resolvedAgentName: string | undefined;
+                  const { modelAuth, loadConfig } = visionRuntime();
                   if (modelAuth && loadConfig) {
                     const cfg = loadConfig();
                     const agentInfo = resolveAgentInfo(cfg, agentId);
