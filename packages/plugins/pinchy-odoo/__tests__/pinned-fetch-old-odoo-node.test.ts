@@ -17,7 +17,7 @@ describe("pinOdooClient against an odoo-node that ignores `fetch`", () => {
   it("refuses to build the client rather than connect unpinned", async () => {
     vi.resetModules();
     vi.doMock("odoo-node", () => ({
-      // odoo-node 0.3.x: keeps url, db, uid and apiKey, nothing else.
+      // odoo-node 0.3.x: keeps no transport and sends through the global fetch.
       OdooClient: class {
         constructor(public config: { url: string }) {}
       },
