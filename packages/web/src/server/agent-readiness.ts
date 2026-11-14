@@ -65,7 +65,7 @@
 // error. On the inbox sweep a false answer defers the email to the next sweep
 // (`RunDeferredError` in lib/email-workflows/run-adapter.ts).
 
-import type { AgentsListResult } from "openclaw-node";
+import type { AgentsListResult, OpenClawClient } from "openclaw-node";
 
 /**
  * OC's `DEFAULT_AGENT_ID`: the default agent when no agent is configured, and
@@ -170,4 +170,35 @@ export async function waitForAgentInRuntime(
     }
     await delay(Math.min(intervalMs, remaining));
   }
+}
+
+/** Budget for the create/claim paths: they answer 201 either way, so it is a cap, not a promise. */
+const CREATE_PATH_DEADLINE_MS = 5000;
+const CREATE_PATH_INTERVAL_MS = 200;
+
+/**
+ * `waitForAgentInRuntime` wired to a live OpenClaw client, for the call sites
+ * that create an agent and then answer the HTTP request (agent create, invite
+ * claim). Pinchy's `regenerateOpenClawConfig()` is fire-and-forget, so without
+ * this the first dispatch after the 201 can race OC's hot reload.
+ *
+ * Reads the runtime roster through the `agents.list` RPC. Never `config.get`:
+ * on OpenClaw 2026.9 that answers from the config file, where agents live under
+ * `agents.entries`, and the `agents.list` projection is non-enumerable, so it
+ * never reaches the wire. Best-effort: a null client or a Gateway without the
+ * RPC returns false at once, and the caller carries on.
+ */
+export function waitForAgentInRuntimeOnClient(
+  client: OpenClawClient | null,
+  agentId: string
+): Promise<boolean> {
+  if (!client) return Promise.resolve(false);
+  return waitForAgentInRuntime(
+    agentId,
+    {
+      hasAgentsListRpc: () => client.hasMethod("agents.list"),
+      listRuntimeAgentIds: async () => dispatchableAgentIds(await client.agents.list()),
+    },
+    { deadlineMs: CREATE_PATH_DEADLINE_MS, intervalMs: CREATE_PATH_INTERVAL_MS }
+  );
 }
