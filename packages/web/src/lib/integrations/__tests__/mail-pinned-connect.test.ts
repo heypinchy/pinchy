@@ -20,7 +20,13 @@ afterEach(() => {
 });
 
 async function listenOnIPv4(): Promise<number> {
-  server = createServer((socket) => socket.end("220 hello\r\n"));
+  server = createServer((socket) => {
+    // The client destroys its end while the greeting may still be unread,
+    // which resets this side; without a listener that reset is an uncaught
+    // ECONNRESET that fails the whole run, not this file.
+    socket.on("error", () => {});
+    socket.end("220 hello\r\n");
+  });
   await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
   return (server.address() as AddressInfo).port;
 }
