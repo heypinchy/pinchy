@@ -26,22 +26,61 @@ function escapeRegex(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function unsupported(source: string, token: string): never {
+  throw new Error(
+    `next.config source ${source} uses "${token}", which matchesSource does not model. ` +
+      `Teach it the syntax before relying on a resolveHeader answer for this source.`
+  );
+}
+
 /**
  * Converts a next.config `source` pattern to a matcher.
  *
- * Supported syntax: `:param` (exactly one path segment) and the `(.*)`
- * catch-all. Everything else is a LITERAL — which is why the escape runs
- * first: without it the dot in `/sw.js` would act as a wildcard and match
- * `/swXjs`, silently applying a rule to a path it never covered.
+ * Supported syntax: `:param` (exactly one path segment), `:param(<regex>)` (a
+ * custom regex, e.g. a negative lookahead — used as written) and the `(.*)`
+ * catch-all. Everything else is a LITERAL and is escaped: without that the dot
+ * in `/sw.js` would act as a wildcard and match `/swXjs`, silently applying a
+ * rule to a path it never covered.
  */
 export function matchesSource(source: string, path: string): boolean {
-  const pattern = escapeRegex(source)
-    // `(.*)` survives the escape as `\(\.\*\)` — restore it as a wildcard.
-    .replace(/\\\(\\\.\\\*\\\)/g, ".*")
-    // `:param` has no metacharacters, so it reaches here untouched.
-    .replace(/:[A-Za-z0-9_]+/g, "[^/]+");
-  // eslint-disable-next-line security/detect-non-literal-regexp -- pattern is built from a fully-escaped literal plus two fixed expansions
-  return new RegExp(`^${pattern}$`).test(path);
+  let pattern = "";
+  let i = 0;
+  while (i < source.length) {
+    const named = /^:[A-Za-z0-9_]+/.exec(source.slice(i));
+    if (source.startsWith("(.*)", i)) {
+      pattern += ".*";
+      i += 4;
+    } else if (named) {
+      i += named[0].length;
+      if (source[i] === "(") {
+        // Custom regex: take the balanced group verbatim.
+        let depth = 0;
+        let j = i;
+        for (; j < source.length; j++) {
+          if (source[j] === "\\") j++;
+          else if (source[j] === "(") depth++;
+          else if (source[j] === ")" && --depth === 0) break;
+        }
+        if (j >= source.length) throw new Error(`Unbalanced group in next.config source ${source}`);
+        pattern += `(?:${source.slice(i + 1, j)})`;
+        i = j + 1;
+      } else {
+        pattern += "[^/]+";
+      }
+      // `:path*` / `:path+` / `:path?` change what a param spans.
+      if (/[?*+]/.test(source[i] ?? "")) unsupported(source, source[i]);
+    } else {
+      // Anything with meaning in Next's path syntax but not modelled here would
+      // be read as a literal and make a rule look narrower than it is — and an
+      // own-policy `toBeUndefined` assertion pass for the wrong reason.
+      if (/[(){}?*+]/.test(source[i])) unsupported(source, source[i]);
+      pattern += escapeRegex(source[i]);
+      i++;
+    }
+  }
+  // Next compiles sources with `sensitive: false`, so `/API/users` matches too.
+  // eslint-disable-next-line security/detect-non-literal-regexp -- pattern is built from escaped literals plus the config's own regex groups
+  return new RegExp(`^${pattern}$`, "i").test(path);
 }
 
 /**

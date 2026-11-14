@@ -38,11 +38,24 @@ test.describe("Insecure-mode banner", () => {
     // render is one state update away and the default timeout is ample.
     // No own timeout: the test's budget bounds the wait, so a slow compile
     // still fails, and fails naming this response rather than a missing text.
-    const domainStatus = page.waitForResponse(
-      (r) => new URL(r.url()).pathname === "/api/settings/domain" && r.request().method() === "GET"
+    //
+    // Wait for `requestfinished`, not `response`. The dev server runs React
+    // StrictMode, which mounts the Security tab's effect twice: the first run's
+    // fetch is cancelled and its body is never read. Under `Cache-Control:
+    // no-store` (every /api response) Chromium has no cache writer draining an
+    // unread body, so that request gets response headers but never finishes —
+    // and `response.text()` on it waits forever. `waitForResponse` picks
+    // whichever GET answers first, which was the abandoned one. A finished
+    // request is one whose body fully arrived, i.e. the fetch the component
+    // actually read; it still fires for a 4xx/5xx, so the 200 below is a real
+    // assertion, not a filter.
+    const domainRequest = page.waitForEvent(
+      "requestfinished",
+      (req) => new URL(req.url()).pathname === "/api/settings/domain" && req.method() === "GET"
     );
     await page.goto("/settings?tab=security");
-    const domainResponse = await domainStatus;
+    const domainResponse = await (await domainRequest).response();
+    if (!domainResponse) throw new Error("GET /api/settings/domain finished without a response");
     expect(domainResponse.status(), await domainResponse.text()).toBe(200);
 
     // Precondition, asserted rather than assumed: this instance has no domain
