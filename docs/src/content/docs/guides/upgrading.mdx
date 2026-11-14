@@ -28,6 +28,25 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
    docker compose exec -T db pg_dump -U pinchy pinchy > backups/pinchy-$(date +%Y%m%d-%H%M%S).sql
    ```
 
+   The dump holds Pinchy's own data, not the agents' chats and workspaces: those live on the `openclaw-config` and `pinchy-workspaces` volumes. To be able to roll those back too, stop the `openclaw` container and archive both, together:
+
+   ```bash
+   docker compose stop openclaw
+   docker compose run --rm --no-deps -T --entrypoint tar openclaw \
+     -C /root/.openclaw --exclude=./extensions -czf - . \
+     > backups/openclaw-state-$(date +%Y%m%d-%H%M%S).tgz
+   ```
+
+   Agents don't answer until step 3 starts the container again. `extensions` is left out because it comes with the image.
+
+   The PDFs Pinchy converted Word and PowerPoint files to for knowledge-base previews live on a third volume, `pinchy-kb-artifacts`. Archive it too, so those previews survive a rollback (see [below](#if-you-roll-back-after-a-conversion-change)):
+
+   ```bash
+   docker compose run --rm --no-deps -T --entrypoint tar pinchy \
+     -C /var/cache/pinchy-kb-artifacts -czf - . \
+     > backups/kb-artifacts-$(date +%Y%m%d-%H%M%S).tgz
+   ```
+
    Keeping backups under `backups/` instead of loose in `/opt/pinchy/` means they don't sit next to your `docker-compose.yml` / `.env`, and the directory is easy to target with your off-host backup rotation.
 
    <Aside type="tip">
@@ -163,7 +182,29 @@ If you need to roll back after an upgrade:
    docker compose exec -T db psql -U pinchy pinchy < backups/pinchy-YYYYMMDD-HHMMSS.sql
    ```
 
-3. **Re-pin the previous version**
+3. **Restore the chats and workspaces**
+
+   If you archived the `openclaw-config` and `pinchy-workspaces` volumes in step 1, restore that archive from the same moment as the database dump. This empties both volumes first, so nothing the newer version wrote stays behind:
+
+   ```bash
+   ls -lt backups/openclaw-state-*.tgz
+   docker compose run --rm --no-deps -T --entrypoint sh openclaw -c \
+     'cd /root/.openclaw && find . -mindepth 1 ! -path "./extensions*" ! -path ./workspaces -delete && tar -xzpf -' \
+     < backups/openclaw-state-YYYYMMDD-HHMMSS.tgz
+   ```
+
+   Without that archive, skip this. The agents keep the chats and files the newer version left them, which an older version may not be able to read.
+
+   If you archived `pinchy-kb-artifacts` too, restore it the same way:
+
+   ```bash
+   ls -lt backups/kb-artifacts-*.tgz
+   docker compose run --rm --no-deps -T --entrypoint sh pinchy -c \
+     'cd /var/cache/pinchy-kb-artifacts && find . -mindepth 1 -delete && tar -xzpf -' \
+     < backups/kb-artifacts-YYYYMMDD-HHMMSS.tgz
+   ```
+
+4. **Re-pin the previous version**
 
    Replace `vX.Y.Z` with the version you want to roll back to (check the [Releases page](https://github.com/heypinchy/pinchy/releases)). Update `PINCHY_VERSION` in `.env` to match — `docker compose` refuses to start without it set — and re-fetch `docker-compose.yml` for that tag if the release notes said it changed:
 
@@ -173,7 +214,7 @@ If you need to roll back after an upgrade:
    docker compose pull
    ```
 
-4. **Restart**
+5. **Restart**
 
    ```bash
    docker compose up -d
@@ -187,7 +228,9 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint files to; those live on the `pinchy-kb-artifacts` volume. When the version you upgraded to converts those files differently, it keeps the older PDFs until it has converted again every file a knowledge-base agent can search, and only then deletes them. Roll back before that and nothing is lost. Roll back after it, and the older version still finds every such file in the search, but a citation of one that hasn't changed since won't open its preview, because the PDF it looks for is gone; the original file downloads as usual. If you want previews to survive a rollback, back up that volume alongside the database, the way [Backup & recovery](/guides/hardening/#backup--recovery) describes for the other volumes, and restore it with the database.
+### If you roll back after a conversion change
+
+The database backup doesn't hold the PDFs Pinchy converted Word and PowerPoint files to; those live on the `pinchy-kb-artifacts` volume. When the version you upgraded to converts those files differently, it keeps the older PDFs until it has converted again every file a knowledge-base agent can search, and only then deletes them. Roll back before that and nothing is lost. Roll back after it, and the older version still finds every such file in the search, but a citation of one that hasn't changed since won't open its preview, because the PDF it looks for is gone; the original file downloads as usual. The older version doesn't convert it again either, until the file itself changes. If you want previews to survive a rollback, archive that volume in [step 1](#standard-upgrade) and restore it with the database.
 
 ## Upgrading from v0.10.3 to %%PINCHY_VERSION%%
 
@@ -213,6 +256,26 @@ docker compose pull && docker compose up -d && docker image prune -f
 ```
 
 If you keep local changes in a `docker-compose.override.yml`, they carry over as usual.
+
+#### The first start moves chat history into OpenClaw's new storage
+
+This release updates OpenClaw, the runtime your agents run on, to 2026.9. It keeps chat histories and each agent's workspace state in a database instead of loose files, and it won't start until the old files are moved over. The `openclaw` container does that once, on its first start after the upgrade, before the agents come up. Every chat comes along, including the chats of agents you deleted earlier. The old files aren't deleted: they stay on the volume as archived copies (`agents/<agent-id>/session-sqlite-import-archive/` and `openclaw-workspace-state.json.migrated.*`). Pinchy's `openclaw.json` isn't touched.
+
+With a handful of agents this takes seconds. With long histories it can take a few minutes, and agents don't answer until it's done. To follow along:
+
+```bash
+docker compose logs -f openclaw | grep state-migration
+```
+
+It ends with `Migration complete in …s`. If it ends with `[state-migration] FAILED` instead, the agents stay offline. The lines below it list the files that weren't moved, and the `doctor:` lines above it say why. The `openclaw` container tries again each time it restarts the runtime, about every 40 seconds, and gives each attempt up to 30 minutes. If it keeps failing, stop the container so the retries don't run alongside you, run the migration by hand, then restart Pinchy so it writes its own `openclaw.json` again:
+
+```bash
+docker compose stop openclaw
+docker compose run --rm --no-deps --entrypoint openclaw openclaw doctor --fix --non-interactive
+docker compose restart pinchy && docker compose up -d
+```
+
+If you might roll back, archive the chats and workspaces before upgrading, as [step 1](#standard-upgrade) shows. The previous version can't read the new storage, so after a rollback without that archive, chats from before the upgrade don't show up.
 
 #### Files that aren't documents no longer count as "not supported"
 

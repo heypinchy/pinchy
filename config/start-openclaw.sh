@@ -102,6 +102,18 @@ fi
 source /fix-config-permissions.sh
 fix_config_permissions
 
+# One-time import of pre-2026.9 OpenClaw state (session stores, workspace setup
+# state) into SQLite. OpenClaw 2026.9 refuses to start while that state is on
+# disk and only `openclaw doctor --fix` imports it, so an install upgraded from
+# Pinchy v0.10.x would crash-loop without this. Detection mirrors the gateway's
+# guards and costs one `node -e` on a migrated install; doctor runs against a
+# throwaway copy of openclaw.json. Called after restore_credentials_privacy
+# (doctor resolves secrets, which must be root-owned by then) and before every
+# gateway start. See config/migrate-openclaw-state.sh. Defines
+# migrate_legacy_openclaw_state() into this shell.
+# shellcheck source=migrate-openclaw-state.sh
+source /migrate-openclaw-state.sh
+
 # Auto-approve pending device pairing requests (needed for Docker networking
 # where connections come from container IPs, not localhost).
 # Stops as soon as Pinchy signals successful connection (writes signal file).
@@ -270,10 +282,6 @@ stage_llama_cpp_provider
     sleep 1
 done) &
 
-# Start auto-approver in background — stops when Pinchy signals connection
-# (writes pinchy-device-approved). Safety timeout: 5 minutes.
-auto_approve_devices &
-
 # Start gateway in the background so the health-check loop below can run.
 # OpenClaw 2026.4.26 keeps `openclaw gateway` in the foreground (it does NOT
 # daemonize), so without `&` the script would block here and the loop below
@@ -282,6 +290,13 @@ ensure_secrets_root_owned
 remove_retired_auth_profiles
 restore_gateway_lock_ownership
 restore_credentials_privacy
+migrate_legacy_openclaw_state
+# Start auto-approver in background — stops when Pinchy signals connection
+# (writes pinchy-device-approved). Safety timeout: 5 minutes, counted from
+# here, so it starts after the migration: a long import would use up the cap,
+# and each tick's openclaw CLI would run its own migration preflight beside
+# doctor.
+auto_approve_devices &
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 &
 mark_bootstrap_when_ready
@@ -313,6 +328,7 @@ while true; do
             remove_retired_auth_profiles
             restore_gateway_lock_ownership
             restore_credentials_privacy
+            migrate_legacy_openclaw_state
             openclaw gateway --port 18789 &
             mark_bootstrap_when_ready
         fi
