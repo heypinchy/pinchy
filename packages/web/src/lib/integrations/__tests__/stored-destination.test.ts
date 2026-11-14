@@ -25,7 +25,7 @@ describe("checkStoredDestination", () => {
     it("allows the same stored private URL once ALLOW_PRIVATE_URLS=1 is set", async () => {
       vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
       const result = await checkStoredDestination("odoo", odoo("http://100.64.0.7:8069"));
-      expect(result).toEqual({ allowed: true });
+      expect(result).toMatchObject({ allowed: true });
     });
 
     it.each([
@@ -39,9 +39,12 @@ describe("checkStoredDestination", () => {
       expect(result).toMatchObject({ allowed: false, field: "url" });
     });
 
-    it("allows a public stored URL", async () => {
+    it("allows a public stored URL and hands back the addresses it checked", async () => {
       const result = await checkStoredDestination("odoo", odoo("https://93.184.216.34"));
-      expect(result).toEqual({ allowed: true });
+      expect(result).toEqual({
+        allowed: true,
+        pin: { origin: "https://93.184.216.34", target: [{ address: "93.184.216.34", family: 4 }] },
+      });
     });
   });
 

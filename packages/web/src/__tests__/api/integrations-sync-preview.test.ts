@@ -12,7 +12,7 @@ vi.mock("@/lib/auth", () => ({
 
 const mockValidateExternalUrl = vi.fn();
 vi.mock("@/lib/integrations/url-validation", () => ({
-  validateExternalUrl: (...args: unknown[]) => mockValidateExternalUrl(...args),
+  resolveExternalUrlTarget: (...args: unknown[]) => mockValidateExternalUrl(...args),
 }));
 
 const mockFetchOdooSchema = vi.fn();
@@ -34,7 +34,7 @@ const memberSession = mockSession({
   user: { id: "user-2", email: "member@test.com", name: "Test Member", role: "member" },
 });
 
-// The url deliberately carries a path. `validateExternalUrl` answers with a
+// The url deliberately carries a path. `resolveExternalUrlTarget` answers with a
 // NORMALIZED origin (scheme + host + port, no path), so a fixture whose input
 // already IS its own origin makes "the route fetched what it validated"
 // indistinguishable from "the route fetched something else" — both assertions
@@ -71,7 +71,11 @@ describe("POST /api/integrations/sync-preview", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
-    mockValidateExternalUrl.mockReturnValue({ valid: true, url: validatedOrigin });
+    mockValidateExternalUrl.mockReturnValue({
+      valid: true,
+      url: validatedOrigin,
+      target: [{ address: "93.184.216.34", family: 4 }],
+    });
     mockFetchOdooSchema.mockResolvedValue(validSyncResult);
   });
 
@@ -163,7 +167,7 @@ describe("POST /api/integrations/sync-preview", () => {
     expect(mockFetchOdooSchema).not.toHaveBeenCalled();
   });
 
-  it("rejects the request when validateExternalUrl refuses the target and never calls fetchOdooSchema", async () => {
+  it("rejects the request when resolveExternalUrlTarget refuses the target and never calls fetchOdooSchema", async () => {
     // Pins the SSRF ordering: validation must run BEFORE the outbound fetch,
     // and a rejection must short-circuit the route entirely.
     mockValidateExternalUrl.mockReturnValue({

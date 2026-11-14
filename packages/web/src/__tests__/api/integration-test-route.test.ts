@@ -162,7 +162,15 @@ describe("POST /api/integrations/[connectionId]/test — auth state flipping", (
     mockClearIntegrationAuthError.mockResolvedValue(undefined);
     mockSetIntegrationAuthFailed.mockResolvedValue(undefined);
     mockOdooAuthenticate.mockResolvedValue(2);
-    mockCheckStoredDestination.mockResolvedValue({ allowed: true });
+    // The Odoo login and the probe are pinned to the addresses the destination
+    // check hands back (odoo-admin-routes-pinning.test.ts covers the pinning).
+    mockCheckStoredDestination.mockResolvedValue({
+      allowed: true,
+      pin: {
+        origin: "https://odoo.example.com",
+        target: [{ address: "93.184.216.34", family: 4 }],
+      },
+    });
   });
 
   it("calls clearIntegrationAuthError with connectionId and actor when probe succeeds", async () => {
