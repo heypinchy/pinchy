@@ -20,7 +20,8 @@
           "properties": {
             "allowed_paths": { "type": "array", "items": { "type": "string" } },
             "write_paths": { "type": "array", "items": { "type": "string" } },
-            "allowed_extensions": { "type": "array", "items": { "type": "string" } }
+            "allowed_extensions": { "type": "array", "items": { "type": "string" } },
+            "memory": { "type": "boolean" }
           },
           "required": ["allowed_paths"]
         }

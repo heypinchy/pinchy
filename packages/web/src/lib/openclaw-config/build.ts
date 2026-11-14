@@ -115,6 +115,27 @@ import { aggregateEmailPermissionsByAgent, buildEmailAgentConfigs } from "./emai
 import { personalAgentsByOwner, telegramDirectTarget } from "@/lib/telegram-routing";
 
 /**
+ * Plugins that register a conversation hook, and so get
+ * `hooks.allowConversationAccess` on their entry. Pinchy's plugins load from
+ * ~/.openclaw/extensions, which OpenClaw treats as non-bundled: it drops a
+ * conversation hook from such a plugin at registration unless the entry opts
+ * in, with nothing but a warn diagnostic — the plugin's tools keep working, the
+ * hook never runs. The opt-in hands the hook prompts and history, so it is
+ * given to these and no others; conversation-hook-access.test.ts keeps the
+ * list equal to what the plugins actually register.
+ *
+ * - pinchy-audit: before_agent_run, the cost-budget gate. Reads only the agent
+ *   and channel and sends Pinchy nothing of the conversation.
+ * - pinchy-files: before_prompt_build, the `## Memory` block.
+ * - pinchy-knowledge: before_prompt_build, the question-language note (#1299).
+ */
+export const CONVERSATION_HOOK_PLUGINS: readonly string[] = [
+  "pinchy-audit",
+  "pinchy-files",
+  "pinchy-knowledge",
+];
+
+/**
  * Public docs URL configuration for the bundled `pinchy-docs` plugin.
  *
  * `DOCS_PUBLIC_BASE_URL_SETTING_KEY` is the operator-facing settings row that
@@ -127,6 +148,7 @@ import { personalAgentsByOwner, telegramDirectTarget } from "@/lib/telegram-rout
  * Keep this as the single source of truth — tests import these constants
  * rather than the literal so a domain move only touches one line.
  */
+
 export const DOCS_PUBLIC_BASE_URL_SETTING_KEY = "docs_public_base_url";
 export const DEFAULT_DOCS_PUBLIC_BASE_URL = "https://docs.heypinchy.com";
 
@@ -512,7 +534,7 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
     // returns NO_REPLY, and consumes the user's inbound turn — on production it
     // silently dropped a Telegram receipt image. Pinchy already owns memory
     // persistence through the audited, path-scoped `pinchy_write` (the agent
-    // journals to memory/ on its own; see memory-prompt.ts), so the native flush
+    // journals to memory/ on its own; see pinchy-files/memory-prompt.ts), so the native flush
     // is a redundant, ungoverned duplicate.
     //
     // OpenClaw reads this flag ONLY from agents.defaults.compaction.memoryFlush —
@@ -706,6 +728,11 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
       // (validate-built-config.ts) and runtime (pinchy-files validate.ts).
       agentFilesConfig.allowed_paths = [...allowedPaths, workspaceMemoryFile, workspaceMemoryDir];
       writePaths.push(workspaceMemoryFile, workspaceMemoryDir);
+      // The grant itself, for pinchy-files' before_prompt_build hook: it puts
+      // the `## Memory` block into every turn of this agent, whichever channel
+      // started it (pinchy-files/memory-prompt.ts). write_paths cannot stand in
+      // for it — a file-writing agent has them and no memory.
+      agentFilesConfig.memory = true;
     }
 
     // Emit the KEY only when there is something in it. pinchy-files registers
@@ -1092,10 +1119,6 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   // before_agent_run gate enforces blocking cost budgets on every channel.
   entries["pinchy-audit"] = {
     enabled: true,
-    // before_agent_run is a conversation hook: OpenClaw silently skips it for
-    // a non-bundled plugin unless the entry opts in. The gate reads only the
-    // agent and channel from it and sends Pinchy nothing of the conversation.
-    hooks: { allowConversationAccess: true },
     config: {
       apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
       gatewayToken: gatewayTokenString,
@@ -1126,6 +1149,10 @@ async function regenerateOpenClawConfigOnce(options: RegenerateOptions): Promise
   };
 
   // Note: pinchy-files is always included (workspace uploads) — per-agent paths are built above.
+
+  for (const id of CONVERSATION_HOOK_PLUGINS) {
+    if (entries[id]) entries[id] = { ...entries[id], hooks: { allowConversationAccess: true } };
+  }
 
   // Collect Odoo integration configs for agents with integration permissions.
   // Uses `allPermissions` queried above (before the agents-list map — see the

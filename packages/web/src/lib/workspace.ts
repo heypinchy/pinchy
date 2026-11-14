@@ -182,7 +182,7 @@ export function ensureWorkspace(agentId: string): void {
   mkdirSync(join(workspacePath, "uploads"), { recursive: true });
   mkdirSync(join(workspacePath, "workbench"), { recursive: true });
   // memory/ holds OpenClaw's daily memory logs. build.ts grants it to every
-  // write-capable agent and memory-prompt.ts promises it by name, so it exists
+  // write-capable agent and pinchy-files/memory-prompt.ts promises it by name, so it exists
   // on spawn for the same reason workbench/ does (#418), and so the
   // memory-audit watcher has it in its tree from the start rather than having
   // to discover it later.

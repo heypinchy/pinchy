@@ -20,6 +20,7 @@ import { reportUsage } from "./usage-reporter";
 import { resolveAgentInfo } from "./resolve-agent-info";
 import { generateFile, type GenerateFileFormat } from "./generate-file";
 import { normalizeDeliverableBasename } from "./deliverable-filename";
+import { memoryPromptHook } from "./memory-prompt";
 import { assertPlainPath } from "./plain-path";
 import { refusingUnknownParams } from "./unknown-params";
 import { openVerified } from "./verified-open";
@@ -197,6 +198,7 @@ interface PluginApi {
     factory: (ctx: PluginToolContext) => AgentTool | null,
     opts?: { name?: string }
   ) => void;
+  on?: (hookName: "before_prompt_build", handler: ReturnType<typeof memoryPromptHook>) => void;
 }
 
 interface AgentTool {
@@ -1126,6 +1128,11 @@ const plugin = {
       },
       { name: "pinchy_generate_file" }
     );
+
+    // The `## Memory` block for every turn of a memory-granted agent — web
+    // chat, Telegram, email workflow runs and scheduled runs alike. See
+    // memory-prompt.ts for why it is a hook and not a per-entry-point prompt.
+    api.on?.("before_prompt_build", memoryPromptHook(agentConfigs));
   },
 };
 
