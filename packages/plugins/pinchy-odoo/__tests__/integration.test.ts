@@ -415,8 +415,7 @@ describe("pinchy-odoo against a server that does not answer JSON-RPC", () => {
       "a JSON body that is not JSON-RPC",
       { status: 200, contentType: "application/json", body: '{"my-ec2-role-name":1}' },
     ],
-    // A JSON-RPC envelope whose error has no `data`: odoo-node reads
-    // `error.data.message` off undefined and throws a TypeError.
+    // A JSON-RPC envelope whose error carries no message: nothing Odoo said.
     [
       "a JSON-RPC error without data",
       {

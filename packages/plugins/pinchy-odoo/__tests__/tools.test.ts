@@ -4113,8 +4113,10 @@ describe("error handling", () => {
     expect(text).not.toMatch(/denied permission|re-sync/i);
   });
 
-  it("does not quote a JSON answer of the wrong shape either (TypeError)", async () => {
-    // `{"error": {}}` makes odoo-node read `json.error.data.message` off undefined.
+  it("does not take a TypeError reading `message` for an answer that is not JSON-RPC", async () => {
+    // odoo-node from 0.4.0 reports an error envelope without a message
+    // (`{"error": {}}`) as not JSON-RPC itself. A TypeError reading `message`
+    // is now a bug of ours, and the model is told so.
     let thrown: unknown;
     try {
       const json = JSON.parse('{"error":{}}') as { error: { data: { message: string } } };
@@ -4133,7 +4135,7 @@ describe("error handling", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).not.toContain("Cannot read properties");
-    expect(result.content[0].text).toContain("not a JSON-RPC response");
+    expect(result.content[0].text).toContain("failed unexpectedly (TypeError reading 'message')");
   });
 
   it("hands Odoo's own error to the model on one line, capped", async () => {
