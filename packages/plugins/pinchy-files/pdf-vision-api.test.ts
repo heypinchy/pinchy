@@ -662,6 +662,33 @@ describe("createVisionConfig", () => {
     expect(config.ollamaBaseUrl).toBe("http://host.docker.internal:11434");
   });
 
+  it("resolves provider keys for the given agentDir", async () => {
+    const resolveApiKeyForProvider = vi.fn().mockResolvedValue({ apiKey: "k" });
+    const config = createVisionConfig({
+      modelAuth: { resolveApiKeyForProvider },
+      cfg: {},
+      model: "anthropic/claude-haiku-4-5-20251001",
+      agentDir: "/state/agents/agent-1/agent",
+    });
+    await expect(config.resolveApiKey("anthropic")).resolves.toBe("k");
+    expect(resolveApiKeyForProvider).toHaveBeenCalledWith({
+      provider: "anthropic",
+      cfg: {},
+      agentDir: "/state/agents/agent-1/agent",
+    });
+  });
+
+  it("omits agentDir when none is known", async () => {
+    const resolveApiKeyForProvider = vi.fn().mockResolvedValue({ apiKey: "k" });
+    const config = createVisionConfig({
+      modelAuth: { resolveApiKeyForProvider },
+      cfg: {},
+      model: "anthropic/claude-haiku-4-5-20251001",
+    });
+    await config.resolveApiKey("anthropic");
+    expect(resolveApiKeyForProvider).toHaveBeenCalledWith({ provider: "anthropic", cfg: {} });
+  });
+
   it("sets ollamaBaseUrl to undefined when no ollama provider configured", () => {
     const config = createVisionConfig({
       modelAuth: { resolveApiKeyForProvider: async () => null },

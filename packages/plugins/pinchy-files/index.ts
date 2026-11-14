@@ -338,15 +338,18 @@ const plugin = {
         resolveApiKeyForProvider: (params: {
           provider: string;
           cfg: unknown;
+          agentDir?: string;
         }) => Promise<{ apiKey: string } | null>;
       };
       loadConfig?: () => Record<string, unknown>;
+      resolveAgentDir?: (cfg: unknown, agentId: string) => string;
     } => {
       try {
         const runtime = (api as any).runtime;
         return {
           modelAuth: runtime?.modelAuth,
           loadConfig: runtime?.config?.current ?? runtime?.config?.loadConfig,
+          resolveAgentDir: runtime?.agent?.resolveAgentDir,
         };
       } catch {
         return {};
@@ -474,7 +477,7 @@ const plugin = {
                   let visionConfig: VisionApiConfig | null = null;
                   let resolvedAgentName: string | undefined;
                   try {
-                    const { modelAuth, loadConfig } = visionRuntime();
+                    const { modelAuth, loadConfig, resolveAgentDir } = visionRuntime();
                     if (modelAuth && loadConfig) {
                       const cfg = loadConfig();
                       const agentInfo = resolveAgentInfo(cfg, agentId);
@@ -488,6 +491,10 @@ const plugin = {
                           modelAuth,
                           cfg,
                           model: visionModel,
+                          // OpenClaw 2026.9 has no default agent: a key
+                          // resolved without an owner throws on any
+                          // multi-agent install.
+                          agentDir: resolveAgentDir?.(cfg, agentId),
                         });
                       }
                     }

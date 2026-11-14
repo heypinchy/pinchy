@@ -87,10 +87,16 @@ export interface VisionApiInternalConfig {
     resolveApiKeyForProvider: (params: {
       provider: string;
       cfg: unknown;
+      agentDir?: string;
     }) => Promise<{ apiKey: string } | null>;
   };
   cfg: unknown;
   model: string;
+  /**
+   * The reading agent's state dir. OpenClaw 2026.9 has no default agent, so
+   * a provider key resolved without one throws on any multi-agent install.
+   */
+  agentDir?: string;
 }
 
 /** Token usage returned from a vision API call. */
@@ -158,6 +164,7 @@ export function createVisionConfig(internal: VisionApiInternalConfig): VisionApi
         const result = await internal.modelAuth.resolveApiKeyForProvider({
           provider,
           cfg: internal.cfg,
+          ...(internal.agentDir && { agentDir: internal.agentDir }),
         });
         return result?.apiKey ?? null;
       } catch (err) {
