@@ -34,6 +34,7 @@ import {
   fileOnlyDeliveryPending,
   settleFileOnlyDelivery,
   trackConfigWrite,
+  nextGenerationClaimed,
   configWriteInFlight,
 } from "./push-state";
 
@@ -546,15 +547,20 @@ export function pushConfigInBackground(newContent: string, options: PushConfigOp
         write !== undefined && write !== outwaited;
         write = configWriteInFlight()
       ) {
+        // A newer push supersedes this one: stop waiting now, not when the
+        // write is answered. The caller's generation check returns.
+        if (generation !== getCurrentConfigPushGeneration()) return;
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const timedOut = await Promise.race([
-          write.then(() => false),
-          new Promise<boolean>((resolve) => {
-            timer = setTimeout(() => resolve(true), CONFIG_WRITE_MAX_WAIT_MS);
+        const outcome = await Promise.race([
+          write.then(() => "answered" as const),
+          nextGenerationClaimed().then(() => "superseded" as const),
+          new Promise<"timedOut">((resolve) => {
+            timer = setTimeout(() => resolve("timedOut"), CONFIG_WRITE_MAX_WAIT_MS);
           }),
         ]);
         clearTimeout(timer);
-        if (timedOut) {
+        if (outcome === "superseded") return;
+        if (outcome === "timedOut") {
           outwaited = write;
           console.warn(
             `[openclaw-config] push gen=${String(generation)}: another push's config write is still unanswered after ${String(CONFIG_WRITE_MAX_WAIT_MS)}ms; sending anyway`

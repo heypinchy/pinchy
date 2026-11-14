@@ -452,6 +452,33 @@ describe("pushConfigInBackground: OpenClaw 2026.9's hanging config.apply", () =>
     await settle();
   });
 
+  it("lets a push queued behind another write go as soon as a newer push supersedes it", async () => {
+    // Waiting on would only hold the superseded push for the write's answer —
+    // up to CONFIG_WRITE_MAX_WAIT_MS behind an apply OpenClaw never answers —
+    // to find out what is already known.
+    const config = (ids: string[]) => ({
+      gateway,
+      models: { providers },
+      agents: { ownership: "explicit", entries: Object.fromEntries(ids.map((id) => [id, {}])) },
+    });
+    const oc = new FakeOpenClaw209(config(["a"]));
+    mockGetClient.mockReturnValue(oc.client);
+    noteFileOnlyDelivery();
+
+    pushConfigInBackground(serialize(config(["a"])));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(oc.applies).toHaveLength(1);
+    pushConfigInBackground(serialize(config(["a", "b"])));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(getPendingConfigPushCount()).toBe(2);
+    pushConfigInBackground(serialize(config(["a", "c"])));
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(getPendingConfigPushCount()).toBe(2);
+    await settle();
+    expect(oc.file).toEqual(config(["a", "c"]));
+  });
+
   it("still delivers a full regenerate's agent when a partial writer supersedes it while it waits for another write", async () => {
     // A regenerate that adds agent "b" queues behind an apply OpenClaw does not
     // answer. A partial writer (the Telegram channel) supersedes it meanwhile

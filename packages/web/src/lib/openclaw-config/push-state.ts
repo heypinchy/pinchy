@@ -76,6 +76,8 @@ interface ConfigPushState {
   fileOnlyFollowUps: number;
   /** The config write a push has in flight, settled either way (see trackConfigWrite). */
   configWrite: Promise<void> | undefined;
+  /** Settles when the next generation is claimed (see nextGenerationClaimed). */
+  generationClaimed: { promise: Promise<void>; resolve: () => void } | undefined;
 }
 
 /**
@@ -124,6 +126,7 @@ function state(): ConfigPushState {
       fileOnlyFollowUp: undefined,
       fileOnlyFollowUps: 0,
       configWrite: undefined,
+      generationClaimed: undefined,
     };
     return globalThis.__pinchyConfigPushState;
   }
@@ -188,7 +191,29 @@ export function getPendingConfigPushCount(): number {
  * reach `config.apply`, which is the restart storm the counter exists to stop.
  */
 export function nextConfigPushGeneration(): number {
-  return ++state().generation;
+  const s = state();
+  const claimed = s.generationClaimed;
+  s.generationClaimed = undefined;
+  s.generation++;
+  claimed?.resolve();
+  return s.generation;
+}
+
+/**
+ * Settles as soon as a newer push generation is claimed — the moment every
+ * older push is superseded. Lets a push waiting for another one's config write
+ * (write.ts) give up that wait at once instead of when the write is answered.
+ */
+export function nextGenerationClaimed(): Promise<void> {
+  const s = state();
+  if (!s.generationClaimed) {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    s.generationClaimed = { promise, resolve };
+  }
+  return s.generationClaimed.promise;
 }
 
 /** The newest generation any module instance in this process has claimed. */
