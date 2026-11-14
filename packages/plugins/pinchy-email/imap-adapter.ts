@@ -279,11 +279,14 @@ interface ResolvedConnection {
   host: string;
   port: number;
   secure: boolean;
+  // Require the STARTTLS upgrade instead of continuing in plaintext when the
+  // server does not offer it (imapflow's default is opportunistic).
+  doSTARTTLS: boolean | undefined;
 }
 
 // SMTP-specific resolved connection: adds requireTLS (STARTTLS), which has
 // no IMAP equivalent.
-interface ResolvedSmtpConnection extends ResolvedConnection {
+interface ResolvedSmtpConnection extends Omit<ResolvedConnection, "doSTARTTLS"> {
   requireTLS: boolean;
 }
 
@@ -316,12 +319,16 @@ export class ImapAdapter implements EmailAdapter {
         host: mockHost,
         port: Number(process.env.IMAP_MOCK_PORT ?? DEFAULT_IMAP_MOCK_PORT),
         secure: false,
+        doSTARTTLS: false,
       };
     }
+    const mode = tlsModeForPort(this.opts.imapPort, this.opts.security);
     return {
       host: this.opts.imapHost,
       port: this.opts.imapPort,
-      secure: tlsModeForPort(this.opts.imapPort, this.opts.security).secure,
+      secure: mode.secure,
+      // undefined (not false) keeps STARTTLS opportunistic where it is not required.
+      doSTARTTLS: mode.requireTLS ? true : undefined,
     };
   }
 
@@ -356,6 +363,7 @@ export class ImapAdapter implements EmailAdapter {
       host: conn.host,
       port: conn.port,
       secure: conn.secure,
+      doSTARTTLS: conn.doSTARTTLS,
       auth: {
         user: this.opts.username,
         pass: this.opts.password,

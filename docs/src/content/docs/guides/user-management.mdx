@@ -121,7 +121,7 @@ If a user forgets their password, an admin can generate a reset link:
 3. A reset link appears. Click **Copy link** and send it to the user.
 4. The user opens the link, enters a new password, and is signed in with it. If the account is deactivated, the password is still reset, but the page says the account can't sign in and to contact an administrator.
 
-With [email delivery](/guides/email-delivery/) set up, the button reads **Email reset link** instead: Pinchy sends the link to the user's address and says so, and still shows the link for copying. If the send fails, you get the link with the reason, as with invitations.
+With [email delivery](/guides/email-delivery/) set up, the button reads **Email reset link** instead: Pinchy sends the link to the user's address and says so, and still shows the link for copying. If the send fails, you get the link with the reason, as with invitations. Either way, creating the link is recorded as `user.password_reset_requested`, with you as the actor and the user's name.
 
 The reset page is dedicated to recovery: it reads **"Reset your Pinchy password"**, shows the email address the account signs in with, and asks only for a new password. Unlike the invite page, it does **not** ask for a display name, so a reset can never change the user's existing name.
 
@@ -266,6 +266,7 @@ All user management actions are logged in the audit trail:
 | Group memberships changed    | `user.groups_updated`           |
 | User reactivated             | `user.updated`                  |
 | User deactivated             | `user.deleted`                  |
+| Password reset link created  | `user.password_reset_requested` |
 | Password reset completed     | `auth.password_reset_completed` |
 | Invitation or reset emailed  | `mail.sent`                     |
 

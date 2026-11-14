@@ -1682,10 +1682,28 @@ The host goes through the same check as a mailbox connection: a host on a privat
 **Errors:**
 
 - `400` — invalid body, or the connection check failed. `error` says what to fix, e.g. `"Authentication failed — check the username and password"`. Nothing is saved.
+- `400` — the update would keep the stored password but switch the same server to `security: "none"`, and the body carries no `password`. Pinchy won't send a saved password unencrypted without it being typed again, so the request is refused before any connection is made:
+
+  ```json
+  {
+    "error": "Validation failed",
+    "details": {
+      "formErrors": [],
+      "fieldErrors": {
+        "password": [
+          "Enter the password again to switch to a less secure connection — Pinchy won't reuse the saved one."
+        ]
+      }
+    }
+  }
+  ```
+
+  Send the `password` again and the request goes through. Moving a server from STARTTLS to another port keeps the stored password: STARTTLS refuses to continue without encryption on every port, port 25 included.
+
 - `401` — not authenticated
 - `403` — not an admin
 
-Writes `settings.updated` with resource `settings:mail` — on failure too.
+Writes `settings.updated` with resource `settings:mail` — on failure too, including the refused downgrade above. The row records the changed fields and whether the password changed, never the password; a username that isn't an email address appears only as `(set)`.
 
 ### `DELETE /api/settings/mail`
 
@@ -1877,7 +1895,7 @@ Generate a password reset token for a user. The admin constructs the reset URL f
 }
 ```
 
-`emailDelivery` is present only when `sendEmail` was `true` and the user has an email address. It is `{ "sent": true }` or `{ "sent": false, "error": "<what went wrong>" }` — including `"Email delivery isn't set up."` when no mailer is configured. A failed send never fails the request: the token is created first and always returned, so the link can still be copied. Every attempt writes a `mail.sent` audit row.
+`emailDelivery` is present only when `sendEmail` was `true` and the user has an email address. It is `{ "sent": true }` or `{ "sent": false, "error": "<what went wrong>" }` — including `"Email delivery isn't set up."` when no mailer is configured. A failed send never fails the request: the token is created first and always returned, so the link can still be copied. Creating the token writes a `user.password_reset_requested` audit row (actor: the admin; `resource`: `user:<id>`; detail: the target `user.{id,name}`, `via` as `email` or `link`, and the `invite.{id}`), and every email attempt writes a `mail.sent` row.
 
 **Errors:**
 

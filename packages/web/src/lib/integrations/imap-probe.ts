@@ -1,10 +1,14 @@
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
-import { connect as netConnect } from "node:net";
 import type { ImapTestInput } from "@/lib/schemas/imap";
-import { isIP } from "node:net";
-import { MailHostBlockedError, resolveAllowedMailHost } from "@/lib/integrations/mail-host-guard";
-import type { PinnedAddress } from "@/lib/pinned-connection";
+import {
+  connectPinned,
+  MailHostBlockedError,
+  pinnedImapOptions,
+  pinnedSmtpOptions,
+  resolveAllowedMailHost,
+} from "@/lib/integrations/mail-host-guard";
+import type { PinnedTarget } from "@/lib/pinned-connection";
 
 // Shared IMAP/SMTP probe logic used by BOTH:
 //   - the pre-create "Test Connection" route (packages/web/src/app/api/integrations/imap/test/route.ts)
@@ -14,6 +18,34 @@ import type { PinnedAddress } from "@/lib/pinned-connection";
 // guard never drift between the two callers — the guard lives at the two entry
 // points below (testImapLogin/testSmtpVerify) precisely so neither caller can
 // forget it.
+
+// Everything an error says, for classification. A connect over several
+// addresses that all fail rejects with an AggregateError: empty message, and
+// the codes live on `errors`. Matching only `message` would read that as an
+// unknown failure.
+function errorText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const { code, errors } = error as Error & { code?: unknown; errors?: unknown };
+  const parts: string[] = [typeof code === "string" ? code : "", error.message];
+  if (Array.isArray(errors)) {
+    for (const inner of errors) {
+      const e = inner as { code?: unknown; message?: unknown } | null;
+      parts.push(`${typeof e?.code === "string" ? e.code : ""} ${String(e?.message ?? inner)}`);
+    }
+  }
+  return parts.join(" ");
+}
+
+// A required STARTTLS upgrade the server did not deliver: imapflow's "Server
+// does not support STARTTLS" (tlsFailed, no code) and nodemailer's ETLS. Checked
+// before the auth wordlist, since nodemailer appends the server's response text.
+function isStartTlsFailure(error: unknown, lower: string): boolean {
+  return (
+    (error as { tlsFailed?: unknown } | null)?.tlsFailed === true ||
+    lower.includes("etls") ||
+    lower.includes("starttls")
+  );
+}
 
 // Maps low-level probe errors to short, friendly messages that never leak a
 // stack trace or the password. Order matters: unambiguous network-error CODES
@@ -26,8 +58,7 @@ export function friendlyError(error: unknown): string {
   // fuzzy mapping below would only bury it under "check your settings".
   if (error instanceof MailHostBlockedError) return error.message;
 
-  const message = error instanceof Error ? error.message : String(error);
-  const lower = message.toLowerCase();
+  const lower = errorText(error).toLowerCase();
 
   if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("etimedout")) {
     return "Connection timed out — check the host and port";
@@ -40,6 +71,9 @@ export function friendlyError(error: unknown): string {
     lower.includes("could not connect")
   ) {
     return "Could not connect to the server — check the host and port";
+  }
+  if (isStartTlsFailure(error, lower)) {
+    return "Could not establish a secure connection — check the security setting";
   }
   if (
     lower.includes("auth") ||
@@ -73,8 +107,7 @@ export function classifyProbeError(error: unknown): { code: ProbeFailureCode; me
   // guard just refused must not be scanned on three more ports.
   if (error instanceof MailHostBlockedError) return { code: "blocked", message: error.message };
 
-  const message = error instanceof Error ? error.message : String(error);
-  const lower = message.toLowerCase();
+  const lower = errorText(error).toLowerCase();
 
   // Unambiguous network-error CODES first. The "auth" branch below matches a
   // fuzzy wordlist against the whole message — which includes the
@@ -99,6 +132,12 @@ export function classifyProbeError(error: unknown): { code: ProbeFailureCode; me
     return {
       code: "refused",
       message: "Could not connect to the server — check the host and port",
+    };
+  }
+  if (isStartTlsFailure(error, lower)) {
+    return {
+      code: "tls",
+      message: "Could not establish a secure connection — check the security setting",
     };
   }
   if (
@@ -126,25 +165,24 @@ export type SmtpPortProbe = { port: number; reachable: boolean };
 // connection succeeds within a reasonable time.
 const SMTP_PORT_PROBE_TIMEOUT_MS = 2500;
 
-function probeTcpPort(host: string, port: number, timeoutMs: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = netConnect({ host, port, timeout: timeoutMs });
-    let settled = false;
-    const finish = (reachable: boolean) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(reachable);
-    };
-    // Keep the error listener attached for the socket's whole lifetime rather
-    // than removing all listeners on the first settle: destroy() on a
-    // still-connecting socket can emit a late 'error', and an 'error' event
-    // with no listener crashes the process. The `settled` guard makes any such
-    // late event a no-op instead of a second resolve.
-    socket.once("connect", () => finish(true));
-    socket.once("timeout", () => finish(false));
-    socket.once("error", () => finish(false));
-  });
+// Connects through the pinned lookup, so a first address that refuses falls
+// through to the next checked one instead of reading as "unreachable".
+async function probeTcpPort(
+  host: string,
+  port: number,
+  target: PinnedTarget,
+  timeoutMs: number
+): Promise<boolean> {
+  try {
+    const socket = await connectPinned(host, port, target, timeoutMs);
+    // destroy() can still emit a late 'error'; with no listener that would
+    // crash the process.
+    socket.on("error", () => {});
+    socket.destroy();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // SECURITY: this connects ONLY to the caller-supplied smtpHost on a fixed,
@@ -162,7 +200,7 @@ export async function probeSmtpPorts(
   host: string,
   ports: number[] = [465, 587, 25]
 ): Promise<SmtpPortProbe[]> {
-  let target: PinnedAddress;
+  let target: PinnedTarget;
   try {
     target = await resolveAllowedMailHost(host);
   } catch {
@@ -171,21 +209,9 @@ export async function probeSmtpPorts(
   return Promise.all(
     ports.map(async (port) => ({
       port,
-      reachable: await probeTcpPort(target.address, port, SMTP_PORT_PROBE_TIMEOUT_MS),
+      reachable: await probeTcpPort(host, port, target, SMTP_PORT_PROBE_TIMEOUT_MS),
     }))
   );
-}
-
-/**
- * Where a mail client must connect: the address the guard classified, with
- * the name kept for TLS. imapflow and nodemailer both resolve `host` only
- * when it is a name — given an IP they connect to it as-is — and use
- * `servername` for SNI and certificate verification. So the certificate is
- * still checked against the name the admin typed, and nothing is resolved a
- * second time. An IP literal has no name to send (SNI forbids one).
- */
-function pinnedMailTarget(host: string, target: PinnedAddress) {
-  return isIP(host) === 0 ? { host: target.address, servername: host } : { host: target.address };
 }
 
 // A single `security` field can't be simultaneously correct for IMAP
@@ -208,9 +234,15 @@ export async function testImapLogin(input: ImapTestInput): Promise<void> {
   const target = await resolveAllowedMailHost(input.imapHost);
 
   const client = new ImapFlow({
-    ...pinnedMailTarget(input.imapHost, target),
+    ...pinnedImapOptions(input.imapHost, target),
     port: input.imapPort,
     secure: tlsModeForPort(input.imapPort, input.security).secure,
+    // imapflow upgrades only opportunistically by default: a server that stops
+    // advertising STARTTLS would get the login in the clear. Demand the upgrade
+    // exactly where requireTLS demands it for SMTP. Never `false`: in imapflow
+    // that means "never upgrade", whereas undefined upgrades when offered —
+    // the same opportunistic behaviour nodemailer has for security "none".
+    doSTARTTLS: tlsModeForPort(input.imapPort, input.security).requireTLS ? true : undefined,
     auth: {
       user: input.username,
       pass: input.password,
@@ -231,7 +263,7 @@ export async function testSmtpVerify(input: ImapTestInput): Promise<void> {
 
   const { secure, requireTLS } = tlsModeForPort(input.smtpPort, input.security);
   const transport = nodemailer.createTransport({
-    ...pinnedMailTarget(input.smtpHost, target),
+    ...pinnedSmtpOptions(input.smtpHost, input.smtpPort, target, 10_000),
     port: input.smtpPort,
     secure,
     requireTLS,

@@ -291,13 +291,26 @@ describe("resolveAllowedMailHost", () => {
   it("returns the address it classified", async () => {
     await expect(
       resolveAllowedMailHost("imap.example.com", resolvesTo("93.184.216.34"))
-    ).resolves.toEqual({ address: "93.184.216.34", family: 4 });
+    ).resolves.toEqual([{ address: "93.184.216.34", family: 4 }]);
+  });
+
+  it("returns every address it classified, in the resolver's order, so the connector keeps its fallback", async () => {
+    await expect(
+      resolveAllowedMailHost(
+        "imap.example.com",
+        resolvesTo("2606:2800:220:1::1", "93.184.216.34", "93.184.216.35")
+      )
+    ).resolves.toEqual([
+      { address: "2606:2800:220:1::1", family: 6 },
+      { address: "93.184.216.34", family: 4 },
+      { address: "93.184.216.35", family: 4 },
+    ]);
   });
 
   it("returns an IPv6 answer with its family", async () => {
     await expect(
       resolveAllowedMailHost("imap.example.com", resolvesTo("2606:2800:220:1::1"))
-    ).resolves.toEqual({ address: "2606:2800:220:1::1", family: 6 });
+    ).resolves.toEqual([{ address: "2606:2800:220:1::1", family: 6 }]);
   });
 
   it("still refuses what the assertion refuses", async () => {
@@ -317,7 +330,7 @@ describe("resolveAllowedMailHost", () => {
 
     await expect(
       resolveAllowedMailHost("mail.corp.internal", resolvesTo("10.0.0.5"))
-    ).resolves.toEqual({ address: "10.0.0.5", family: 4 });
+    ).resolves.toEqual([{ address: "10.0.0.5", family: 4 }]);
   });
 
   it("passes a lookup failure through as the probe's own failure", async () => {

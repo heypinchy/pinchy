@@ -80,10 +80,10 @@ export async function POST(request: NextRequest) {
         actorType: "user",
         actorId: existingUser.id,
         eventType: "auth.password_reset_completed",
-        resource: existingUser.id,
+        resource: `user:${existingUser.id}`,
         outcome: "failure",
         error: { message },
-        detail: { inviteId: invite.id, type: "reset" },
+        detail: { invite: { id: invite.id }, type: "reset" },
       });
       return NextResponse.json({ error: "Password reset failed" }, { status: 500 });
     }
@@ -92,12 +92,13 @@ export async function POST(request: NextRequest) {
       actorType: "user",
       actorId: existingUser.id,
       eventType: "auth.password_reset_completed",
-      resource: existingUser.id,
+      resource: `user:${existingUser.id}`,
       outcome: "success",
       detail: {
-        inviteId: invite.id,
+        invite: { id: invite.id },
         type: "reset",
-        target: { id: existingUser.id, name: existingUser.name },
+        // The actor is the target: its raw id stays in `resource`, never in detail (#824).
+        target: { name: existingUser.name },
       },
     });
 

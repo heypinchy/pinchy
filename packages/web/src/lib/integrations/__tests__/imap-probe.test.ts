@@ -52,6 +52,16 @@ const { mockNetConnect, fakeSockets } = vi.hoisted(() => {
         listeners.set(event, existing);
         return socket;
       }),
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        const existing = listeners.get(event) ?? [];
+        existing.push(listener);
+        listeners.set(event, existing);
+        return socket;
+      }),
+      removeListener: vi.fn((event: string) => {
+        listeners.delete(event);
+        return socket;
+      }),
       removeAllListeners: vi.fn(() => {
         listeners.clear();
         return socket;
@@ -129,10 +139,11 @@ describe("imap-probe", () => {
 
       expect(ImapFlowMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          // The socket goes to the address the guard classified; the name
-          // still drives SNI and certificate verification.
-          host: "93.184.216.34",
-          servername: input.imapHost,
+          // The name stays `host` (SNI and certificate verification); the
+          // socket can only reach the addresses the guard classified, through
+          // the pinned lookup in `tls`.
+          host: input.imapHost,
+          tls: { lookup: expect.any(Function), autoSelectFamily: true },
           port: input.imapPort,
           secure: true,
           auth: { user: input.username, pass: input.password },
@@ -160,6 +171,21 @@ describe("imap-probe", () => {
         expect.objectContaining({ port: 143, secure: false })
       );
     });
+
+    it.each([
+      ["starttls", 143, true],
+      ["none", 143, undefined],
+      ["tls", 993, undefined],
+    ] as const)(
+      "security=%s on port %i sets doSTARTTLS=%s (true = demanded, undefined = imapflow upgrades only if offered)",
+      async (security, imapPort, expected) => {
+        await testImapLogin({ ...input, security, imapPort });
+
+        expect(ImapFlowMock).toHaveBeenLastCalledWith(
+          expect.objectContaining({ port: imapPort, doSTARTTLS: expected })
+        );
+      }
+    );
 
     it("disables encryption for security 'none'", async () => {
       await testImapLogin({ ...input, security: "none", imapPort: 143 });
@@ -197,9 +223,16 @@ describe("imap-probe", () => {
 
       await testImapLogin(input);
 
-      expect(ImapFlowMock).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "93.184.216.34", servername: input.imapHost })
+      const options = ImapFlowMock.mock.calls[0][0] as {
+        host: string;
+        tls: { lookup: (h: string, o: object, cb: (e: unknown, a: unknown) => void) => void };
+      };
+      expect(options.host).toBe(input.imapHost);
+      // The connector's own lookup of the name can only answer the checked set.
+      const answered = await new Promise((resolve) =>
+        options.tls.lookup(options.host, { all: true }, (_e, a) => resolve(a))
       );
+      expect(answered).toEqual([{ address: "93.184.216.34", family: 4 }]);
       expect(mockDnsLookup).toHaveBeenCalledTimes(1);
     });
 
@@ -263,8 +296,8 @@ describe("imap-probe", () => {
 
       expect(createTransportMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          host: "93.184.216.34",
-          servername: input.smtpHost,
+          host: input.smtpHost,
+          getSocket: expect.any(Function),
           port: input.smtpPort,
           // SMTP submission port 587 is STARTTLS, not implicit TLS: TLS mode is
           // keyed off the port, so even with security "tls" this is
@@ -335,7 +368,7 @@ describe("imap-probe", () => {
       await testSmtpVerify(input);
 
       expect(createTransportMock).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "93.184.216.34", servername: input.smtpHost })
+        expect.objectContaining({ host: input.smtpHost, getSocket: expect.any(Function) })
       );
       expect(mockDnsLookup).toHaveBeenCalledTimes(1);
     });
@@ -401,6 +434,39 @@ describe("imap-probe", () => {
 
   describe("classifyProbeError", () => {
     it.each([
+      [
+        "imapflow",
+        Object.assign(new Error("Server does not support STARTTLS"), { tlsFailed: true }),
+      ],
+      [
+        "nodemailer",
+        Object.assign(
+          new Error("Error upgrading connection with STARTTLS: 530 5.7.0 Authentication required"),
+          { code: "ETLS" }
+        ),
+      ],
+    ])(
+      "classifies a refused STARTTLS upgrade (%s) as a TLS failure, not auth or unknown",
+      (_n, failure) => {
+        expect(classifyProbeError(failure).code).toBe("tls");
+        expect(friendlyError(failure)).toMatch(/secure connection/);
+      }
+    );
+
+    it("classifies a total failure over several addresses by the per-address errors", () => {
+      // autoSelectFamily over >=2 addresses rejects with an AggregateError that
+      // has an empty message; the codes live on `errors`.
+      const failure = new AggregateError(
+        [
+          Object.assign(new Error("connect ECONNREFUSED ::1:993"), { code: "ECONNREFUSED" }),
+          Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:993"), { code: "ECONNREFUSED" }),
+        ],
+        ""
+      );
+      expect(classifyProbeError(failure).code).toBe("refused");
+    });
+
+    it.each([
       ["ETIMEDOUT", new Error("connect ETIMEDOUT 1.2.3.4:465"), "timeout"],
       ["'timed out' wording", new Error("Connection timed out"), "timeout"],
       ["socket timeout", new Error("Socket timeout"), "timeout"],
@@ -459,7 +525,8 @@ describe("imap-probe", () => {
     /** Lets the probe's one host resolution settle before sockets are opened. */
     const settled = () => new Promise((resolve) => setImmediate(resolve));
 
-    it("connects to the default ports (465, 587, 25) in parallel with a 2500ms timeout each", async () => {
+    it("connects to the default ports (465, 587, 25) in parallel, by name through the pinned lookup", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const resultPromise = probeSmtpPorts("smtp.example.com");
       await settled();
 
@@ -467,20 +534,34 @@ describe("imap-probe", () => {
       // parallel), before any of them settle — each to the checked address.
       expect(mockNetConnect).toHaveBeenCalledTimes(3);
       expect(mockNetConnect).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "93.184.216.34", port: 465, timeout: 2500 })
+        expect.objectContaining({
+          host: "smtp.example.com",
+          port: 465,
+          lookup: expect.any(Function),
+        })
       );
       expect(mockNetConnect).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "93.184.216.34", port: 587, timeout: 2500 })
+        expect.objectContaining({
+          host: "smtp.example.com",
+          port: 587,
+          lookup: expect.any(Function),
+        })
       );
       expect(mockNetConnect).toHaveBeenCalledWith(
-        expect.objectContaining({ host: "93.184.216.34", port: 25, timeout: 2500 })
+        expect.objectContaining({
+          host: "smtp.example.com",
+          port: 25,
+          lookup: expect.any(Function),
+        })
       );
 
       fakeSockets[0].emit("error", new Error("ECONNREFUSED")); // 465
       fakeSockets[1].emit("connect"); // 587
-      fakeSockets[2].emit("timeout"); // 25
+      // 25 never answers: the 2500ms bound ends it.
+      await vi.advanceTimersByTimeAsync(2500);
 
       const results = await resultPromise;
+      vi.useRealTimers();
 
       expect(results).toEqual(
         expect.arrayContaining([
@@ -489,9 +570,10 @@ describe("imap-probe", () => {
           { port: 25, reachable: false },
         ])
       );
-      for (const socket of fakeSockets) {
-        expect(socket.destroy).toHaveBeenCalled();
-      }
+      // The one that connected and the one that timed out are closed; the
+      // refused one is already dead.
+      expect(fakeSockets[1].destroy).toHaveBeenCalled();
+      expect(fakeSockets[2].destroy).toHaveBeenCalled();
     });
 
     it("accepts a custom port list", async () => {

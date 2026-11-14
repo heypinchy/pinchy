@@ -23,6 +23,7 @@ import {
   deleteSystemMailConfig,
   toPublicConfig,
   mergeWithStoredPassword,
+  needsPasswordReentry,
 } from "@/lib/system-mail/config";
 
 const config = {
@@ -131,5 +132,44 @@ describe("mergeWithStoredPassword", () => {
     expect(mergeWithStoredPassword({ ...config, password: undefined }, null).password).toBe(
       undefined
     );
+  });
+});
+
+describe("needsPasswordReentry", () => {
+  const keep = { ...config, password: undefined };
+
+  it("is true when the same host is downgraded to no encryption without a new password", () => {
+    expect(needsPasswordReentry({ ...keep, security: "none" }, config)).toBe(true);
+  });
+
+  it("is true from 25/STARTTLS to no encryption, on port 25 or any other", () => {
+    const relay = { ...config, port: 25 };
+    expect(needsPasswordReentry({ ...keep, port: 25, security: "none" }, relay)).toBe(true);
+    expect(needsPasswordReentry({ ...keep, port: 587, security: "none" }, relay)).toBe(true);
+  });
+
+  it("is false for STARTTLS on port 25: the port does not weaken the connection, requireTLS does the work", () => {
+    expect(needsPasswordReentry({ ...keep, port: 25 }, config)).toBe(false);
+  });
+
+  it("is false when the password is typed again", () => {
+    expect(needsPasswordReentry({ ...keep, security: "none", password: "x" }, config)).toBe(false);
+  });
+
+  it("is false when the transport was already unencrypted — nothing got weaker", () => {
+    expect(
+      needsPasswordReentry({ ...keep, security: "none" }, { ...config, security: "none" })
+    ).toBe(false);
+  });
+
+  it("is false without a username, because no password is used", () => {
+    expect(needsPasswordReentry({ ...keep, username: undefined, security: "none" }, config)).toBe(
+      false
+    );
+  });
+
+  it("is false for an unrelated edit or with nothing stored", () => {
+    expect(needsPasswordReentry({ ...keep, fromName: "Acme" }, config)).toBe(false);
+    expect(needsPasswordReentry({ ...keep, security: "none" }, null)).toBe(false);
   });
 });

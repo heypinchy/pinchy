@@ -6,11 +6,13 @@ vi.mock("next/headers", () => ({ headers: vi.fn().mockResolvedValue(new Headers(
 vi.mock("@/lib/api-auth", () => ({ requireAdmin: vi.fn() }));
 vi.mock("@/lib/invites", () => ({ createInvite: vi.fn() }));
 vi.mock("@/lib/system-mail/deliver", () => ({ deliverLinkEmail: vi.fn() }));
+vi.mock("@/lib/audit-deferred", () => ({ deferAuditLog: vi.fn() }));
 vi.mock("@/db", () => ({ db: { query: { users: { findFirst: vi.fn() } } } }));
 
 import { requireAdmin } from "@/lib/api-auth";
 import { createInvite } from "@/lib/invites";
 import { deliverLinkEmail } from "@/lib/system-mail/deliver";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { db } from "@/db";
 import { POST } from "@/app/api/users/[userId]/reset/route";
 
@@ -31,6 +33,7 @@ describe("POST /api/users/[userId]/reset — sendEmail (#1309)", () => {
     );
     vi.mocked(db.query.users.findFirst).mockResolvedValue({
       id: "user-2",
+      name: "Anna",
       email: "anna@example.com",
       role: "member",
     } as never);
@@ -78,5 +81,53 @@ describe("POST /api/users/[userId]/reset — sendEmail (#1309)", () => {
     const res = await POST(makeRequest(JSON.stringify({ to: "someone@else.com" })), params);
     expect(res.status).toBe(400);
     expect(createInvite).not.toHaveBeenCalled();
+  });
+
+  it("audits a link-only reset with the target snapshot and no email address", async () => {
+    await POST(makeRequest(), params);
+    expect(deferAuditLog).toHaveBeenCalledTimes(1);
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
+    expect(entry).toMatchObject({
+      actorType: "user",
+      actorId: "admin-1",
+      eventType: "user.password_reset_requested",
+      resource: "user:user-2",
+      outcome: "success",
+      detail: { user: { id: "user-2", name: "Anna" }, via: "link", invite: { id: "inv-9" } },
+    });
+    expect(JSON.stringify(entry)).not.toContain("anna@example.com");
+  });
+
+  it("audits an emailed reset as sent by email, even when the send then fails", async () => {
+    vi.mocked(deliverLinkEmail).mockResolvedValue({ sent: false, error: "Connection refused" });
+    await POST(makeRequest(JSON.stringify({ sendEmail: true })), params);
+    expect(vi.mocked(deferAuditLog).mock.calls[0][0]).toMatchObject({
+      eventType: "user.password_reset_requested",
+      outcome: "success",
+      detail: { via: "email" },
+    });
+  });
+
+  it("keeps the acting admin's raw id out of detail when an admin resets their own password", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue({
+      id: "admin-1",
+      name: "Clemens",
+      email: "c@x.io",
+      role: "admin",
+    } as never);
+    await POST(makeRequest(), { params: Promise.resolve({ userId: "admin-1" }) });
+    const entry = vi.mocked(deferAuditLog).mock.calls[0][0];
+    expect(entry.detail).toEqual({
+      user: { name: "Clemens" },
+      via: "link",
+      invite: { id: "inv-9" },
+    });
+    expect(entry).toMatchObject({ resource: "user:admin-1" });
+  });
+
+  it("writes no audit row when the user does not exist", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+    await POST(makeRequest(), params);
+    expect(deferAuditLog).not.toHaveBeenCalled();
   });
 });

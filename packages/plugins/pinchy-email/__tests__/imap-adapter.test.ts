@@ -519,6 +519,24 @@ describe("ImapAdapter mock env overrides", () => {
     );
   });
 
+  it.each([
+    ["starttls", 143, true],
+    ["tls", 143, true],
+    ["none", 143, undefined],
+    ["tls", 993, undefined],
+  ] as const)(
+    "security=%s on IMAP port %i sets doSTARTTLS=%s (true = demanded, undefined = imapflow upgrades only if offered)",
+    async (security, imapPort, expected) => {
+      const adapter = new ImapAdapter({ ...opts, security, imapPort });
+      await adapter.list({});
+
+      const { ImapFlow } = await import("imapflow");
+      expect(ImapFlow).toHaveBeenLastCalledWith(
+        expect.objectContaining({ port: imapPort, doSTARTTLS: expected })
+      );
+    }
+  );
+
   it("overrides IMAP host/port and forces secure:false when IMAP_MOCK_HOST/PORT and the insecure flag are set", async () => {
     vi.stubEnv("IMAP_MOCK_HOST", "greenmail");
     vi.stubEnv("IMAP_MOCK_PORT", "3143");
