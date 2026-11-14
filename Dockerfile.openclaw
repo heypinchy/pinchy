@@ -428,11 +428,15 @@ COPY config/fix-config-permissions.sh /fix-config-permissions.sh
 # as a separate script so its detection and config isolation are unit-testable
 # — see packages/web/src/__tests__/lib/migrate-openclaw-state.test.ts.
 COPY config/migrate-openclaw-state.sh /migrate-openclaw-state.sh
+# Rebuild of memory indexes OpenClaw leaves "mismatched" (stamped fts-only after
+# a failed embed), sourced by start-openclaw.sh before the first gateway start —
+# see packages/web/src/__tests__/lib/heal-memory-indexes.test.ts.
+COPY config/heal-memory-indexes.sh /heal-memory-indexes.sh
 # Device-pairing auto-approver invoked per tick by start-openclaw.sh. Kept as a
 # separate Node module so its requestId-churn convergence is unit-testable
 # (config/__tests__/auto-approve-once.test.mjs) instead of embedded bash.
 COPY config/auto-approve-once.mjs /auto-approve-once.mjs
-RUN chmod +x /start-openclaw.sh /install-plugin-deps.sh /stage-llama-cpp-provider.sh /fix-config-permissions.sh /migrate-openclaw-state.sh
+RUN chmod +x /start-openclaw.sh /install-plugin-deps.sh /stage-llama-cpp-provider.sh /fix-config-permissions.sh /migrate-openclaw-state.sh /heal-memory-indexes.sh
 
 # Bake Pinchy's user-facing docs into the image so Smithers' docs_list /
 # docs_read tools (pinchy-docs plugin) work in every deploy. Previously

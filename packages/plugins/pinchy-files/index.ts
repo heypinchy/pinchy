@@ -324,17 +324,36 @@ const plugin = {
     // the dispatch E2E), not mid-process.
     const visionModelOverride = api.pluginConfig?.visionModel;
 
-    // Capture runtime APIs for vision (direct LLM API calls for scanned pages)
-    const modelAuth = (api as any).runtime?.modelAuth as
-      | {
-          resolveApiKeyForProvider: (params: {
-            provider: string;
-            cfg: unknown;
-          }) => Promise<{ apiKey: string } | null>;
-        }
-      | undefined;
-    const loadConfig = (api as any).runtime?.config?.loadConfig as
-      (() => Record<string, unknown>) | undefined;
+    // Runtime APIs for vision (direct LLM API calls for scanned pages). Read
+    // at the moment of use, never here: every `openclaw` CLI command loads
+    // plugins in "cli-metadata" mode, where `api.runtime` throws on any
+    // property read, and an eager read failed the whole registration.
+    //
+    // A runtime that throws costs the vision step, never the read: every PDF
+    // passes through here, text PDFs included.
+    //
+    // The config snapshot accessor is `config.current` since OpenClaw 2026.9,
+    // which dropped `config.loadConfig`; reading only the old name silently
+    // turned off vision for every scanned page.
+    const visionRuntime = (): {
+      modelAuth?: {
+        resolveApiKeyForProvider: (params: {
+          provider: string;
+          cfg: unknown;
+        }) => Promise<{ apiKey: string } | null>;
+      };
+      loadConfig?: () => Record<string, unknown>;
+    } => {
+      try {
+        const runtime = (api as any).runtime;
+        return {
+          modelAuth: runtime?.modelAuth,
+          loadConfig: runtime?.config?.current ?? runtime?.config?.loadConfig,
+        };
+      } catch {
+        return {};
+      }
+    };
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -452,22 +471,34 @@ const plugin = {
                   // Resolve agent name + model from OpenClaw config in one walk.
                   // The model drives vision API calls; the name makes rows on
                   // the Usage Dashboard readable (agentId alone is opaque).
+                  // A throw anywhere in here leaves vision off (visionConfig
+                  // null): text pages still read, scanned ones get the fallback.
                   let visionConfig: VisionApiConfig | null = null;
                   let resolvedAgentName: string | undefined;
-                  if (modelAuth && loadConfig) {
-                    const cfg = loadConfig();
-                    const agentInfo = resolveAgentInfo(cfg, agentId);
-                    resolvedAgentName = agentInfo.name;
-                    // Prefer Pinchy's dedicated, live-resolved vision model; fall
-                    // back to the agent's own model only when none was emitted.
-                    const visionModel = visionModelOverride ?? agentInfo.model;
-                    if (visionModel) {
-                      visionConfig = createVisionConfig({
-                        modelAuth,
-                        cfg,
-                        model: visionModel,
-                      });
+                  try {
+                    const { modelAuth, loadConfig } = visionRuntime();
+                    if (modelAuth && loadConfig) {
+                      const cfg = loadConfig();
+                      const agentInfo = resolveAgentInfo(cfg, agentId);
+                      resolvedAgentName = agentInfo.name;
+                      // Prefer Pinchy's dedicated, live-resolved vision model;
+                      // fall back to the agent's own model only when none was
+                      // emitted.
+                      const visionModel = visionModelOverride ?? agentInfo.model;
+                      if (visionModel) {
+                        visionConfig = createVisionConfig({
+                          modelAuth,
+                          cfg,
+                          model: visionModel,
+                          // OpenClaw 2026.9 has no default agent: a key
+                          // resolved without an owner throws on any
+                          // multi-agent install.
+                          ownerAgentId: agentId,
+                        });
+                      }
                     }
+                  } catch {
+                    visionConfig = null;
                   }
                   const pdfResult = await readPdf(realPath, stats, visionConfig, () =>
                     handle.readFile()

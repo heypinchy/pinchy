@@ -1,6 +1,13 @@
+type AgentModel = string | { primary?: string } | undefined;
+type AgentRecord = { id?: string; name?: string; model?: AgentModel };
+
 /**
- * Looks up an agent's `name` and `model` from the OpenClaw runtime config
- * (`cfg.agents.list`).
+ * Looks up an agent's `name` and `model` from the OpenClaw runtime config.
+ *
+ * OpenClaw 2026.9 keeps agents under `cfg.agents.entries`, keyed by id, and
+ * migrates any `cfg.agents.list` into it on load; earlier versions only had
+ * the list. Both are read, entries first. A model may carry fallbacks
+ * (`{ primary, fallbacks }`); only the primary is returned.
  *
  * Used by the plugin at two different call sites — the vision API needs the
  * model, the usage reporter needs a human-readable name for the Usage
@@ -12,11 +19,15 @@
  */
 export function resolveAgentInfo(cfg: unknown, agentId: string): { name?: string; model?: string } {
   const agents = (
-    cfg as { agents?: { list?: Array<{ id?: string; name?: string; model?: string }> } } | null
-  )?.agents?.list;
-  const agent = agents?.find((a) => a.id === agentId);
+    cfg as { agents?: { entries?: Record<string, AgentRecord>; list?: AgentRecord[] } } | null
+  )?.agents;
+  const entries = agents?.entries;
+  const agent =
+    (entries && Object.hasOwn(entries, agentId) ? entries[agentId] : undefined) ??
+    agents?.list?.find((a) => a.id === agentId);
+  const model = agent?.model;
   return {
     name: agent?.name,
-    model: agent?.model,
+    model: typeof model === "string" ? model : model?.primary,
   };
 }

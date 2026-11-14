@@ -170,4 +170,21 @@ describe("buildMemoryPromptBlock", () => {
       expect(block, String(key)).not.toMatch(/was not loaded/i);
     }
   });
+
+  it("tells the agent not to pass on the maintenance lines a failed search carries", () => {
+    // memory-core's failure result addresses the agent directly: "Tell the
+    // user to run: openclaw memory index --agent <id>", or "Tell the user:
+    // memory search is paused because …" (OpenClaw 2026.9.2). On the v0.11.0
+    // RC an agent did exactly that to an end user, who has no shell in the
+    // OpenClaw container and nothing to run it with. Pinchy rebuilds a stale
+    // index itself (config/heal-memory-indexes.sh); the user's part is nothing.
+    // So the prompt names that wording — an agent told to "tell the user"
+    // needs to recognise the line it must not obey.
+    const block = buildMemoryPromptBlock(["pinchy_memory"])!;
+    expect(block).toMatch(/"tell the user"/i);
+    expect(block).toMatch(/`openclaw`/);
+    expect(block).toMatch(/don't pass them on/i);
+    expect(block).toMatch(/for the platform, which rebuilds the index itself/i);
+    expect(block).toMatch(/fall back to reading the files/i);
+  });
 });
