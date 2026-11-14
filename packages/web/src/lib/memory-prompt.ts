@@ -93,7 +93,10 @@ export function buildMemoryPromptBlock(allowedTools: string[]): string | null {
       "search returns nothing or reports it is unavailable, fall back to reading " +
       "the files. If you still can't find it, say you checked — never invent a " +
       'reason like "the index changed" and never ask the user to repeat ' +
-      "something you already saved.",
+      "something you already saved. A failed search may come with a fix to run " +
+      "(an `openclaw` command); that is a note for the platform, which repairs " +
+      "the index itself. Never pass such a command on to the user — they have " +
+      "no way to run it.",
     "",
     "Your identity and instructions (`SOUL.md`, `AGENTS.md`) are " +
       "platform-managed and not writable — don't try to change who you are by " +

@@ -47,6 +47,23 @@ mkdir -p "$WS/memory"
 printf '# Accounting rules\n' >"$WS/MEMORY.md"
 printf 'Invoices from supplier Helmcraft always post to collective account 3400.\n' \
   >"$WS/memory/accounts.md"
+# Real memory is not one short line. memory-core cuts ~1600-character chunks,
+# and dense text (amounts, IBANs, VAT ids) tokenizes to well over llama-server's
+# default 512-token physical batch — which is how every real chunk failed to
+# embed on the v0.11.0 RC while the short note above still indexed fine. This
+# file makes every chunk that dense; the 0-chunk and recall checks below fail
+# unless the server is started with a batch big enough for it.
+LEDGER="$WS/memory/ledger.md"
+printf '# Booking ledger\n\nReverse-charge invoices are always booked to account 3507.\n' >"$LEDGER"
+for i in $(seq 1 60); do
+  printf 'Re-Nr. 2026-%04d/AT, EUR 1.234,56 brutto, USt 20%%, IBAN AT61 1904 3002 3457 %04d, UID ATU%08d; ' \
+    "$i" "$i" "$((12345678 + i))" >>"$LEDGER"
+done
+LEDGER_BYTES="$(wc -c <"$LEDGER")"
+[ "$LEDGER_BYTES" -gt 4096 ] || {
+  echo "::error::dense ledger is only $LEDGER_BYTES bytes — too short to exercise a full-size chunk"
+  exit 1
+}
 
 # Minimal Pinchy-shaped config: llama-cpp enabled via plugins.allow ONLY (no
 # per-plugin entry — mirrors regenerateOpenClawConfig), memory-search pinned to
@@ -58,7 +75,7 @@ cat >/root/.openclaw/openclaw.json <<JSON
  "plugins":{"allow":["memory-core","llama-cpp"],"entries":{}},
  "models":{"providers":{"llama-cpp":{
    "baseUrl":"http://127.0.0.1:$LLAMA_PORT/v1","api":"openai-completions","models":[],
-   "localService":{"command":"$LLAMA_SERVER","args":["--host","127.0.0.1","--port","$LLAMA_PORT","--models-preset","$LLAMA_PRESET","--models-max","2","--metrics","--no-ui"],
+   "localService":{"command":"$LLAMA_SERVER","args":["--host","127.0.0.1","--port","$LLAMA_PORT","--models-preset","$LLAMA_PRESET","--models-max","2","--batch-size","2048","--ubatch-size","2048","--metrics","--no-ui"],
      "healthUrl":"http://127.0.0.1:$LLAMA_PORT/health","readyTimeoutMs":30000,"idleStopMs":600000}}}},
  "memory":{"search":{"provider":"local","local":{"modelPath":"$MODEL_PATH"}}},
  "agents":{"entries":{"$AGENT":{"name":"Smoke","workspace":"$WS"}}}}
@@ -130,6 +147,17 @@ echo "$STATUS" | grep -qiE 'Indexed:[^0-9]*[1-9]' || {
   exit 1
 }
 
+echo "$STATUS" | grep -qiE 'Indexed: 3/3 files' || {
+  echo "::error::not every memory file was embedded (a chunk too large for llama-server's batch?)"
+  echo "$STATUS"
+  exit 1
+}
+if echo "$STATUS" | grep -qiE 'paused|degraded|fts-only'; then
+  echo "::error::vector search is not active — memory_search would answer keyword-only"
+  echo "$STATUS"
+  exit 1
+fi
+
 RESULT="$(openclaw memory search --agent "$AGENT" --query 'Where do Helmcraft invoices post to?' 2>&1)"
 echo "$RESULT" | grep -q '3400' || {
   echo "::error::memory_search did not recall the stored fact (account 3400)"
@@ -137,4 +165,16 @@ echo "$RESULT" | grep -q '3400' || {
   exit 1
 }
 
-echo "OK: memory-search wiring verified offline — provider=local, index built, semantic recall returned account 3400"
+RESULT="$(openclaw memory search --agent "$AGENT" --json --query 'Which account do reverse-charge invoices go to?' 2>&1)"
+echo "$RESULT" | grep -q '3507' || {
+  echo "::error::memory_search did not recall the fact from the dense ledger (account 3507)"
+  echo "$RESULT"
+  exit 1
+}
+echo "$RESULT" | grep -q '"vectorScore"' || {
+  echo "::error::memory_search answered without vector scores — keyword-only fallback"
+  echo "$RESULT"
+  exit 1
+}
+
+echo "OK: memory-search wiring verified offline — provider=local, index built, semantic recall returned account 3400, and a whole dense chunk embedded (account 3507)"

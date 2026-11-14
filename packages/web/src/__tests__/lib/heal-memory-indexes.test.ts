@@ -1,0 +1,320 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { spawnSync } from "node:child_process";
+import {
+  mkdtempSync,
+  mkdirSync,
+  existsSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  chmodSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, delimiter } from "node:path";
+
+// config/heal-memory-indexes.sh rebuilds the agent memory indexes OpenClaw
+// will not rebuild on its own, before the gateway starts.
+//
+// When an embed fails while an index is built, memory-core falls back to
+// keyword-only and stamps the index "fts-only". Once embeddings work again the
+// index is "mismatched", and memory-core rebuilds that only on an explicit
+// `openclaw memory index` — so memory_search stays empty and tells the user to
+// run a CLI command. The v0.11.0 RC left every index it touched like that.
+//
+// Contract pinned here:
+//   1. Only "mismatched" indexes are rebuilt. "valid" ones are left alone, and
+//      so are "missing" ones: the gateway's own sync builds those, and building
+//      them here would hold an upgraded install's gateway back for the whole
+//      first index.
+//   2. One `openclaw memory index --agent <id>` per mismatched agent.
+//   3. The outcome is judged by re-reading the status, not by exit codes:
+//      `openclaw memory index` exits 0 even when it could not embed.
+//   4. Fail open under `set -e`: an unreadable status, a failing rebuild or an
+//      exhausted time budget never stops the gateway start.
+//
+// The `openclaw` binary is stubbed on PATH. The real rebuild against the real
+// image is exercised by hand (see the PR) — the RC's fts-only state, healed by
+// exactly this command.
+
+const REPO_ROOT = resolve(__dirname, "../../../../..");
+const SCRIPT = resolve(REPO_ROOT, "config/heal-memory-indexes.sh");
+
+let root: string;
+let stateDir: string;
+let binDir: string;
+let callLog: string;
+let identities: string;
+let templates: string;
+
+type Identity = "valid" | "missing" | "mismatched";
+
+// The shape `openclaw memory status --json` prints (OpenClaw 2026.9.2), cut
+// down to what the helper reads plus enough siblings to look real.
+function statusEntry(agentId: string, identity: Identity) {
+  return {
+    agentId,
+    status: {
+      backend: "builtin",
+      files: 1,
+      chunks: identity === "missing" ? 0 : 3,
+      dirty: identity !== "valid",
+      provider: "local",
+      custom: {
+        searchMode: "hybrid",
+        indexIdentity:
+          identity === "valid"
+            ? { status: "valid" }
+            : identity === "missing"
+              ? {
+                  status: "missing",
+                  reason: "index metadata is missing",
+                  code: "metadata_missing",
+                  owner: "openclaw",
+                }
+              : {
+                  status: "mismatched",
+                  reason:
+                    "index was built for model fts-only, expected /opt/embedding-models/embeddinggemma-300m-qat-Q8_0.gguf",
+                  code: "model",
+                  owner: "configuration",
+                },
+      },
+    },
+    scan: { totalFiles: 1, issues: [] },
+  };
+}
+
+// A stub `openclaw` that logs argv, answers `memory status --json` from the
+// identities file, and — unless told otherwise — marks an agent valid when
+// `memory index --agent <id>` runs for it, as the real rebuild does.
+// `rawStatus` replaces the generated status document entirely.
+function stubOpenclaw(
+  opts: {
+    indexHeals?: boolean;
+    statusExit?: number;
+    statusPrefix?: string;
+    rawStatus?: string;
+  } = {}
+) {
+  const { indexHeals = true, statusExit = 0, statusPrefix = "", rawStatus } = opts;
+  const bin = join(binDir, "openclaw");
+  writeFileSync(
+    bin,
+    `#!/bin/bash
+node -e 'require("fs").appendFileSync(process.argv[1], JSON.stringify(process.argv.slice(2))+"\\n")' '${callLog}' "$@"
+if [ "$1 $2 $3" = "memory status --json" ]; then
+  [ ${statusExit} -eq 0 ] || exit ${statusExit}
+  echo "[plugins] pinchy-files failed during register" >&2
+  printf '%b' '${statusPrefix}'
+  ${rawStatus === undefined ? "" : `printf '%b' '${rawStatus}'; exit 0`}
+  node -e '
+const fs = require("fs");
+const ids = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const templates = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(JSON.stringify(Object.entries(ids).map(([id, s]) => ({ ...templates[s], agentId: id })), null, 2));
+' '${identities}' '${templates}'
+  exit 0
+fi
+if [ "$1 $2 $3" = "memory index --agent" ]; then
+  echo "Memory index updated ($4)."
+  if [ "${indexHeals}" = "true" ]; then
+    node -e '
+const fs = require("fs");
+const ids = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+ids[process.argv[2]] = "valid";
+fs.writeFileSync(process.argv[1], JSON.stringify(ids));
+' '${identities}' "$4"
+  fi
+  exit 0
+fi
+exit 0
+`
+  );
+  chmodSync(bin, 0o755);
+}
+
+function setIdentities(ids: Record<string, Identity>): void {
+  writeFileSync(identities, JSON.stringify(ids));
+}
+
+function calls(): string[][] {
+  if (!existsSync(callLog)) return [];
+  return readFileSync(callLog, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as string[]);
+}
+
+const indexCalls = () => calls().filter((argv) => argv[1] === "index");
+
+// Runs under `set -e`, as start-openclaw.sh does; the trailing marker proves
+// the caller kept going, so "fails open" is a fact and not a claim.
+function run(env: Record<string, string> = {}): string {
+  const script = `set -e; source '${SCRIPT}'; heal_memory_indexes 2>&1; echo CALLER-CONTINUED`;
+  const result = spawnSync("bash", ["-c", script], {
+    env: {
+      ...process.env,
+      PATH: `${binDir}${delimiter}${process.env.PATH}`,
+      OPENCLAW_STATE_DIR: stateDir,
+      ...env,
+    },
+    encoding: "utf8",
+  });
+  expect(result.stderr).toBe("");
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain("CALLER-CONTINUED");
+  return result.stdout;
+}
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "heal-memory-"));
+  stateDir = join(root, "state");
+  binDir = join(root, "bin");
+  callLog = join(root, "calls.jsonl");
+  identities = join(root, "identities.json");
+  mkdirSync(stateDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  templates = join(root, "status-templates.json");
+  writeFileSync(
+    templates,
+    JSON.stringify({
+      valid: statusEntry("template", "valid"),
+      missing: statusEntry("template", "missing"),
+      mismatched: statusEntry("template", "mismatched"),
+    })
+  );
+  writeFileSync(join(stateDir, "openclaw.json"), "{}");
+  stubOpenclaw();
+});
+
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
+
+describe("heal_memory_indexes", () => {
+  it("does nothing more than one status query when every index is valid or missing", () => {
+    setIdentities({ smithers: "valid", fresh: "missing" });
+
+    const output = run();
+
+    expect(calls()).toEqual([["memory", "status", "--json"]]);
+    expect(output).not.toContain("[memory-heal]");
+  });
+
+  it("rebuilds exactly the mismatched indexes, one agent at a time", () => {
+    setIdentities({ smithers: "valid", kb: "mismatched", fresh: "missing", odoo: "mismatched" });
+
+    const output = run();
+
+    expect(indexCalls()).toEqual([
+      ["memory", "index", "--agent", "kb"],
+      ["memory", "index", "--agent", "odoo"],
+    ]);
+    expect(output).toMatch(/Memory indexes rebuilt in \d+s/);
+  });
+
+  it("judges the outcome by the status afterwards, not by the exit code", () => {
+    // `openclaw memory index` exits 0 when every embed failed and the index was
+    // left dirty — measured on the RC image. A success line then would be a lie.
+    setIdentities({ kb: "mismatched" });
+    stubOpenclaw({ indexHeals: false });
+
+    const output = run();
+
+    expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
+    expect(output).toContain("FAILED");
+    expect(output).toContain("[memory-heal]   kb");
+    expect(output).not.toContain("rebuilt in");
+  });
+
+  it("reads the status past log lines printed before the JSON", () => {
+    setIdentities({ kb: "mismatched" });
+    stubOpenclaw({ statusPrefix: "[plugins] registered pinchy-files\\n" });
+
+    run();
+
+    expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
+  });
+
+  it("starts the gateway anyway when the status cannot be read", () => {
+    setIdentities({ kb: "mismatched" });
+    stubOpenclaw({ statusExit: 1 });
+
+    const output = run();
+
+    expect(indexCalls()).toEqual([]);
+    expect(output).toContain("could not read the memory index status");
+  });
+
+  it.each([
+    ["an entry without an index identity", '[{"agentId":"kb","status":{}}]\\n'],
+    ["no JSON at all", "Memory search disabled.\\n"],
+    ["a JSON object instead of the array", '{"agents":[]}\\n'],
+  ])("treats %s as unreadable, not as healthy", (_label, rawStatus) => {
+    // A renamed field must not read as "nothing is mismatched": that is the
+    // quiet green that would leave every broken index broken.
+    stubOpenclaw({ rawStatus });
+
+    const output = run();
+
+    expect(indexCalls()).toEqual([]);
+    expect(output).toContain("could not read the memory index status");
+  });
+
+  it("stops rebuilding when the time budget is used up", () => {
+    setIdentities({ kb: "mismatched", odoo: "mismatched" });
+
+    const output = run({ OPENCLAW_MEMORY_HEAL_BUDGET: "0" });
+
+    expect(indexCalls()).toEqual([]);
+    expect(output).toContain("Time budget of 0s used up");
+    expect(output).toContain("FAILED");
+  });
+
+  it("does nothing before Pinchy has written a config", () => {
+    rmSync(join(stateDir, "openclaw.json"));
+    setIdentities({ kb: "mismatched" });
+
+    run();
+
+    expect(calls()).toEqual([]);
+  });
+});
+
+describe("heal_memory_indexes — wiring", () => {
+  // An extracted script that never reaches the container heals nothing, and
+  // the tests above would stay green the whole time.
+  const startScript = () => readFileSync(resolve(REPO_ROOT, "config/start-openclaw.sh"), "utf8");
+  const lineOf = (lines: string[], re: RegExp) => lines.findIndex((l) => re.test(l));
+
+  it("is sourced by start-openclaw.sh", () => {
+    expect(startScript()).toContain("source /heal-memory-indexes.sh");
+  });
+
+  it("runs before the first gateway start, after the state migration", () => {
+    // Before the gateway: the CLI's llama-server would otherwise share the
+    // provider's port with the gateway's and vanish under it mid-embed. After
+    // the migration: on an upgraded install the CLI reads migrated state.
+    const lines = startScript().split("\n");
+    const heal = lineOf(lines, /^\s*heal_memory_indexes\s*$/);
+    const migrate = lineOf(lines, /^\s*migrate_legacy_openclaw_state\s*$/);
+    const gateway = lineOf(lines, /^\s*openclaw gateway\b/);
+    expect(heal).toBeGreaterThan(migrate);
+    expect(heal).toBeLessThan(gateway);
+  });
+
+  it("runs before the device auto-approver starts its clock", () => {
+    // auto_approve_devices gives up 5 minutes after it starts; a long rebuild
+    // in front of the gateway must not use that up.
+    const lines = startScript().split("\n");
+    const heal = lineOf(lines, /^\s*heal_memory_indexes\s*$/);
+    const approver = lineOf(lines, /^\s*auto_approve_devices &/);
+    expect(heal).toBeGreaterThanOrEqual(0);
+    expect(approver).toBeGreaterThan(heal);
+  });
+
+  it("is copied into the OpenClaw image", () => {
+    const dockerfile = readFileSync(resolve(REPO_ROOT, "Dockerfile.openclaw"), "utf8");
+    expect(dockerfile).toContain("COPY config/heal-memory-indexes.sh /heal-memory-indexes.sh");
+  });
+});

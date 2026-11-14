@@ -24,7 +24,11 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { MEMORY_EMBEDDING_MODEL_PATH } from "@/lib/openclaw-config";
-import { LLAMA_SERVER_COMMAND, LLAMA_SERVER_PRESET_PATH } from "@/lib/openclaw-config/paths";
+import {
+  LLAMA_SERVER_ARGS,
+  LLAMA_SERVER_COMMAND,
+  LLAMA_SERVER_PRESET_PATH,
+} from "@/lib/openclaw-config/paths";
 import { EMBEDDING_MODEL_PATH } from "@/lib/knowledge/constants";
 
 const REPO_ROOT = resolve(__dirname, "../../../../..");
@@ -240,6 +244,23 @@ describe("llama-server pin drift guard", () => {
   it("the CI smoke test runs the same llama-server and preset", () => {
     expect(VERIFY_SCRIPT.match(/LLAMA_SERVER="([^"]+)"/)?.[1]).toBe(LLAMA_SERVER_COMMAND);
     expect(VERIFY_SCRIPT.match(/LLAMA_PRESET="([^"]+)"/)?.[1]).toBe(LLAMA_SERVER_PRESET_PATH);
+  });
+
+  it("the CI smoke test starts llama-server with exactly the args build.ts emits", () => {
+    // The smoke test hand-writes its openclaw.json. It used to copy the args
+    // without the batch sizing, and its memory files were short enough to fit
+    // llama-server's default 512-token batch — so it stayed green while every
+    // real memory chunk failed to embed (v0.11.0 RC). The args must be the
+    // emitted ones, and the memory it indexes must be big enough to need them.
+    const port = VERIFY_SCRIPT.match(/LLAMA_PORT=(\d+)/)?.[1];
+    const rawArgs = VERIFY_SCRIPT.match(/"localService":\{[^}]*?"args":(\[[^\]]*\])/)?.[1];
+    expect(rawArgs, "no localService args in verify-memory-search.sh").toBeDefined();
+    const args = JSON.parse(
+      rawArgs!
+        .replaceAll("$LLAMA_PORT", port!)
+        .replaceAll("$LLAMA_PRESET", LLAMA_SERVER_PRESET_PATH)
+    );
+    expect(args).toEqual(LLAMA_SERVER_ARGS);
   });
 });
 

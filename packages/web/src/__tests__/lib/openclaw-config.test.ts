@@ -1894,6 +1894,10 @@ describe("regenerateOpenClawConfig", () => {
           LLAMA_SERVER_PRESET_PATH,
           "--models-max",
           "2",
+          "--batch-size",
+          "2048",
+          "--ubatch-size",
+          "2048",
           "--metrics",
           "--no-ui",
         ],
@@ -1903,6 +1907,36 @@ describe("regenerateOpenClawConfig", () => {
       },
     });
     expect(LLAMA_SERVER_COMMAND).toBe("/opt/llama-server/llama-server");
+  });
+
+  it("sizes llama-server's physical batch for a whole memory chunk", async () => {
+    // An embedding input must fit into ONE physical batch (ubatch): llama-server
+    // rejects anything larger with HTTP 500 "input (N tokens) is too large to
+    // process. increase the physical batch size (current batch size: 512)".
+    // The provider raises ubatch to 2048 only in the preset section it writes
+    // for its own default model (the `hf:` EmbeddingGemma); for Pinchy's baked
+    // modelPath it writes none, so llama-server falls back to 512. memory-core
+    // cuts ~1600-char chunks and caps a local-provider input at 2048 UTF-8
+    // bytes, which tokenizes to well over 512 tokens for numbers, IBANs and
+    // non-Latin text. So indexing failed, the provider was marked degraded, and
+    // memory_search fell back to keyword-only (v0.11.0 RC).
+    //
+    // The router's global args are inherited by the per-model child, so setting
+    // them here covers the embedding model whatever the preset says. 2048
+    // tokens covers the 2048-byte input cap (a token is at least one byte) and
+    // equals the model's context.
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
+    const args: string[] = config.models.providers["llama-cpp"].localService.args;
+    const valueOf = (flag: string) => Number(args[args.indexOf(flag) + 1]);
+    expect(args).toContain("--ubatch-size");
+    expect(args).toContain("--batch-size");
+    expect(valueOf("--ubatch-size")).toBeGreaterThanOrEqual(2048);
+    // n_batch below n_ubatch makes llama-server clamp ubatch down to it.
+    expect(valueOf("--batch-size")).toBeGreaterThanOrEqual(valueOf("--ubatch-size"));
   });
 
   it("keeps the llama-server provider next to the chat providers", async () => {

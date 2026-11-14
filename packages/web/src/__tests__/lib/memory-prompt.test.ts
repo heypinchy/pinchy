@@ -129,4 +129,15 @@ describe("buildMemoryPromptBlock", () => {
     const block = buildMemoryPromptBlock(["pinchy_memory"]);
     expect(block!.toLowerCase()).toContain("unavailable");
   });
+
+  it("tells the agent not to pass on the maintenance commands a failed search carries", () => {
+    // memory-core's failure result ends in an operator action — "Fix: …",
+    // "Run: openclaw memory status --index --agent <id>". On the v0.11.0 RC an
+    // agent relayed that to an end user, who has no shell in the OpenClaw
+    // container and nothing to run it with. Pinchy rebuilds a stale index
+    // itself (config/heal-memory-indexes.sh); the user's part is nothing.
+    const block = buildMemoryPromptBlock(["pinchy_memory"])!;
+    expect(block).toMatch(/`openclaw`/);
+    expect(block).toMatch(/never (pass|relay)[^.]*command/i);
+  });
 });
