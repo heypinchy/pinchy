@@ -427,9 +427,9 @@ OpenClaw 2026.9 keeps pending pairing codes and the list of who may message each
 
 The v0.9.0 notes say a shared agent's `MEMORY.md` stays out of Telegram group chats. It didn't: the filter we shipped for that was never loaded by OpenClaw, so a group chat could still receive what the agent had learned in one-to-one conversations. OpenClaw 2026.9 filters it out itself — for group chats, channels, and background runs alike — and we removed our filter. Shared agents may now appear to "know less" in groups; that is the privacy fix working.
 
-#### Agents use their memory the same way in every channel
+#### Agents use their memory the same way over Telegram and in email workflows
 
-An agent with memory got its instructions for it — what to store, where, and to check before answering — only in the web chat. Over Telegram, in email workflow runs and on scheduled runs it had the memory tools without the instructions. Now every turn carries them, whatever channel started it. In a scheduled or background run, where `MEMORY.md` isn't loaded on its own, the agent is told to read it first. In a group chat or channel, the agent is told to leave its memory alone, matching the group-chat fix above. See [Understanding Agent Memory](/explanation/agent-memory/#memory-works-the-same-in-every-channel). Nothing to do on upgrade.
+An agent with memory got its instructions for it — what to store, where, and to check before answering — only in the web chat. Over Telegram and in email workflow runs it had the memory tools without the instructions. Now every turn carries them, wherever the conversation started. In a group chat, the agent is told to leave its memory alone, matching the group-chat fix above. See [Understanding Agent Memory](/explanation/agent-memory/#memory-works-the-same-wherever-a-conversation-starts). Nothing to do on upgrade.
 
 ### Database migrations
 

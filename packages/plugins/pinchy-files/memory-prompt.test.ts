@@ -78,7 +78,7 @@ describe("buildMemoryPromptBlock", () => {
     // rule, not a recollection. It belongs in AGENTS.md: reviewable, versioned, and
     // — decisively — present in scheduled and background runs, which OpenClaw
     // serves from a bootstrap set that excludes MEMORY.md
-    // (filterBootstrapFilesForSession → MINIMAL_BOOTSTRAP_ALLOWLIST). The agent
+    // (filterBootstrapFilesForSession → CRON_/SUBAGENT_BOOTSTRAP_ALLOWLIST). The agent
     // cannot write Instructions itself, so the only path it has is to say so and
     // draft the wording for the user.
     const block = buildMemoryPromptBlock();
@@ -116,8 +116,8 @@ describe("buildMemoryPromptBlock", () => {
   });
 
   it("tells a scheduled run that MEMORY.md was not loaded into it", () => {
-    // OpenClaw serves cron and subagent sessions in "minimal" prompt mode, whose
-    // bootstrap set (MINIMAL_BOOTSTRAP_ALLOWLIST) has no MEMORY.md. The normal
+    // OpenClaw serves cron and subagent sessions a narrowed bootstrap set
+    // (CRON_/SUBAGENT_BOOTSTRAP_ALLOWLIST) with no MEMORY.md. The normal
     // block says MEMORY.md is loaded automatically at the start of a
     // conversation; an agent left to assume that holds for this run too answers
     // from a memory it never read.

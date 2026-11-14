@@ -277,6 +277,7 @@ import {
   DOCS_PUBLIC_BASE_URL_SETTING_KEY,
   MEMORY_EMBEDDING_MODEL_PATH,
 } from "@/lib/openclaw-config";
+import { CONVERSATION_HOOK_PLUGINS } from "@/lib/openclaw-config/build";
 import {
   LLAMA_SERVER_COMMAND,
   LLAMA_SERVER_PRESET_PATH,
@@ -2616,8 +2617,7 @@ describe("regenerateOpenClawConfig", () => {
     const agents = config.plugins.entries["pinchy-files"].config.agents;
     expect(agents.m.memory).toBe(true);
     expect(agents.b.memory).toBe(true);
-    // Absent, not false: the manifest schema is additionalProperties:false and
-    // an agent without memory has nothing to say about it.
+    // Absent, not false: an agent without memory has nothing to say about it.
     expect(agents.none).not.toHaveProperty("memory");
     expect(agents.w).not.toHaveProperty("memory");
   });
@@ -2839,22 +2839,41 @@ describe("regenerateOpenClawConfig", () => {
     expect(typeof config.plugins.entries["pinchy-audit"].config.gatewayToken).toBe("string");
   });
 
-  it("grants pinchy-audit conversation access, without which OpenClaw drops its budget gate", async () => {
-    // before_agent_run is a conversation hook: OpenClaw silently skips it for a
-    // non-bundled plugin (one warn diagnostic, no error) unless the entry opts
-    // in. Without this the blocking budgets stop nothing outside the browser.
+  it("grants conversation access to the plugins whose hooks need it, without which OpenClaw drops them", async () => {
+    // before_agent_run (pinchy-audit's budget gate) and before_prompt_build
+    // (pinchy-files' memory block) are conversation hooks: OpenClaw silently
+    // skips them for a non-bundled plugin (one warn diagnostic, no error)
+    // unless the entry opts in. Without it the blocking budgets stop nothing
+    // outside the browser and no memory agent gets its memory instructions.
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({ gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } } })
     );
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "m",
+          name: "Memory agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: ["pinchy_memory"],
+          pluginConfig: null,
+        },
+      ]),
+    } as never);
 
     await regenerateOpenClawConfig();
 
     const config = JSON.parse(writtenOpenClawConfig(mockedWriteFileSync));
     expect(config.plugins.entries["pinchy-audit"].hooks).toEqual({ allowConversationAccess: true });
-    // Only the plugin that needs it: the grant hands over prompts and history.
+    expect(config.plugins.entries["pinchy-files"].hooks).toEqual({ allowConversationAccess: true });
+    // Only the plugins that need it: the grant hands over prompts and history.
     for (const [id, entry] of Object.entries(config.plugins.entries)) {
-      if (id === "pinchy-audit") continue;
-      expect((entry as { hooks?: unknown }).hooks, id).toBeUndefined();
+      const hooks = (entry as { hooks?: unknown }).hooks;
+      if (CONVERSATION_HOOK_PLUGINS.includes(id)) {
+        expect(hooks, id).toEqual({ allowConversationAccess: true });
+      } else {
+        expect(hooks, id).toBeUndefined();
+      }
     }
   });
 
