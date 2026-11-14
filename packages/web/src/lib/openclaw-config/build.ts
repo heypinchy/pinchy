@@ -115,19 +115,6 @@ import { aggregateEmailPermissionsByAgent, buildEmailAgentConfigs } from "./emai
 import { personalAgentsByOwner, telegramDirectTarget } from "@/lib/telegram-routing";
 
 /**
- * Public docs URL configuration for the bundled `pinchy-docs` plugin.
- *
- * `DOCS_PUBLIC_BASE_URL_SETTING_KEY` is the operator-facing settings row that
- * overrides the default. Three-state semantics:
- *   - `null` (unset)       → fall back to {@link DEFAULT_DOCS_PUBLIC_BASE_URL}
- *   - `""` (empty string)  → opt-out, plugin emits path-only output for
- *                            air-gapped forks without published docs
- *   - any other string     → use as the public base URL
- *
- * Keep this as the single source of truth — tests import these constants
- * rather than the literal so a domain move only touches one line.
- */
-/**
  * Plugins that register a conversation hook, and so get
  * `hooks.allowConversationAccess` on their entry. Pinchy's plugins load from
  * ~/.openclaw/extensions, which OpenClaw treats as non-bundled: it drops a
@@ -147,6 +134,20 @@ export const CONVERSATION_HOOK_PLUGINS: readonly string[] = [
   "pinchy-files",
   "pinchy-knowledge",
 ];
+
+/**
+ * Public docs URL configuration for the bundled `pinchy-docs` plugin.
+ *
+ * `DOCS_PUBLIC_BASE_URL_SETTING_KEY` is the operator-facing settings row that
+ * overrides the default. Three-state semantics:
+ *   - `null` (unset)       → fall back to {@link DEFAULT_DOCS_PUBLIC_BASE_URL}
+ *   - `""` (empty string)  → opt-out, plugin emits path-only output for
+ *                            air-gapped forks without published docs
+ *   - any other string     → use as the public base URL
+ *
+ * Keep this as the single source of truth — tests import these constants
+ * rather than the literal so a domain move only touches one line.
+ */
 
 export const DOCS_PUBLIC_BASE_URL_SETTING_KEY = "docs_public_base_url";
 export const DEFAULT_DOCS_PUBLIC_BASE_URL = "https://docs.heypinchy.com";

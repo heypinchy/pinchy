@@ -75,9 +75,10 @@
  *      and `filterBootstrapFilesForSession` narrows cron sessions to
  *      CRON_BOOTSTRAP_ALLOWLIST (AGENTS/SOUL/IDENTITY/USER) and subagents to
  *      SUBAGENT_BOOTSTRAP_ALLOWLIST (AGENTS) — no MEMORY.md in either — so it
- *      silently stops applying as soon as the same work runs on a schedule. The agent cannot write Instructions itself and should not be
- *      able to; drafting the wording and handing it over is the whole of what it
- *      can do, so the block tells it to do exactly that.
+ *      silently stops applying as soon as the same work runs on a schedule. The
+ *      agent cannot write Instructions itself and should not be able to;
+ *      drafting the wording and handing it over is the whole of what it can do,
+ *      so the block tells it to do exactly that.
  */
 export function buildMemoryPromptBlock(sessionKey?: string): string {
   if (isSharedChat(sessionKey)) {
@@ -154,10 +155,11 @@ function sessionRest(sessionKey: string | undefined): string {
 
 /**
  * Does OpenClaw start this session without `MEMORY.md`? Cron and subagent
- * sessions get a narrowed bootstrap set (`filterBootstrapFilesForSession`:
- * `CRON_BOOTSTRAP_ALLOWLIST`, `SUBAGENT_BOOTSTRAP_ALLOWLIST`) without `MEMORY.md`. The
- * block's "loaded automatically" is false there, so such a run is told to read
- * it. Mirrors OpenClaw's `isCronSessionKey` / `isSubagentSessionKey`.
+ * sessions get a narrowed bootstrap set without `MEMORY.md`
+ * (`filterBootstrapFilesForSession`: `CRON_BOOTSTRAP_ALLOWLIST`,
+ * `SUBAGENT_BOOTSTRAP_ALLOWLIST`). The block's "loaded automatically" is false
+ * there, so such a run is told to read it. Mirrors OpenClaw's
+ * `isCronSessionKey` / `isSubagentSessionKey`.
  */
 function loadsWithoutMemory(sessionKey: string | undefined): boolean {
   const rest = sessionRest(sessionKey);
