@@ -169,14 +169,16 @@ exit 0
 }
 
 // pkill is always stubbed: the real one would reach the developer's own
-// processes.
-function stubPkill() {
+// processes. `aliveFor` is how many calls find a llama-server to signal
+// (exit 0) before none is left (exit 1, as pkill reports "no match"); the
+// default is none at all.
+function stubPkill(aliveFor = 0) {
   const bin = join(binDir, "pkill");
   writeFileSync(
     bin,
     `#!/bin/bash
 node -e 'require("fs").appendFileSync(process.argv[1], JSON.stringify(process.argv.slice(2))+"\\n")' '${pkillLog}' "$@"
-exit 1
+[ "$(wc -l < '${pkillLog}')" -le ${aliveFor} ]
 `
   );
   chmodSync(bin, 0o755);
@@ -329,6 +331,57 @@ describe("heal_memory_indexes", () => {
     }
   });
 
+  it.each([
+    ["a rebuild that worked", {}],
+    ["a rebuild that failed", { indexHeals: false }],
+  ])("stops any llama-server the CLI left behind after %s", (_label, stub) => {
+    // A rebuild the budget kills gets SIGTERM, so the CLI's exit hook never
+    // stops the llama-server it spawned in its own process group. The gateway
+    // would find it healthy on the provider port and reuse a server it does
+    // not own and never idle-stops.
+    setIdentities({ kb: "mismatched" });
+    stubOpenclaw(stub);
+
+    run();
+
+    expect(pkillCalls()).toEqual([["-x", "llama-server"]]);
+  });
+
+  it("waits for the llama-server to exit before the gateway starts", () => {
+    // SIGTERM is not instant: the router stops its model children first,
+    // measured at several seconds on the RC image. A gateway started in
+    // between still finds it healthy and reuses it.
+    setIdentities({ kb: "mismatched" });
+    stubPkill(3);
+
+    run();
+
+    expect(pkillCalls()).toEqual([
+      ["-x", "llama-server"],
+      ["-0", "-x", "llama-server"],
+      ["-0", "-x", "llama-server"],
+      ["-0", "-x", "llama-server"],
+    ]);
+  });
+
+  it("kills a llama-server that outlives the grace period", () => {
+    setIdentities({ kb: "mismatched" });
+    stubPkill(1000);
+
+    const output = run({ OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT: "1" });
+
+    expect(pkillCalls().at(-1)).toEqual(["-KILL", "-x", "llama-server"]);
+    expect(output).toContain("llama-server did not stop within 1s");
+  });
+
+  it("leaves llama-server alone when nothing was rebuilt", () => {
+    setIdentities({ smithers: "valid" });
+
+    run();
+
+    expect(pkillCalls()).toEqual([]);
+  });
+
   it("reads the status past log lines printed before the JSON", () => {
     setIdentities({ kb: "mismatched" });
     stubOpenclaw({ statusPrefix: "[plugins] registered pinchy-files\\n" });
@@ -389,20 +442,21 @@ describe("heal_memory_indexes", () => {
     expect(output).toContain("FAILED");
   });
 
-  it.each([["OPENCLAW_MEMORY_HEAL_BUDGET"], ["OPENCLAW_MEMORY_STATUS_TIMEOUT"]])(
-    "falls back to the default when %s is not a whole number of seconds",
-    (name) => {
-      // "15m" in $(( )) is a syntax error, and start-openclaw.sh runs under
-      // `set -e`: the container would restart-loop over a typo in an env var.
-      setIdentities({ kb: "mismatched" });
+  it.each([
+    ["OPENCLAW_MEMORY_HEAL_BUDGET"],
+    ["OPENCLAW_MEMORY_STATUS_TIMEOUT"],
+    ["OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT"],
+  ])("falls back to the default when %s is not a whole number of seconds", (name) => {
+    // "15m" in $(( )) is a syntax error, and start-openclaw.sh runs under
+    // `set -e`: the container would restart-loop over a typo in an env var.
+    setIdentities({ kb: "mismatched" });
 
-      const output = run({ [name]: "15m" });
+    const output = run({ [name]: "15m" });
 
-      expect(output).toContain(`${name}="15m" is not a whole number of seconds`);
-      expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
-      expect(output).toMatch(/Memory indexes rebuilt in \d+s/);
-    }
-  );
+    expect(output).toContain(`${name}="15m" is not a whole number of seconds`);
+    expect(indexCalls()).toEqual([["memory", "index", "--agent", "kb"]]);
+    expect(output).toMatch(/Memory indexes rebuilt in \d+s/);
+  });
 
   it("does nothing before Pinchy has written a config", () => {
     rmSync(join(stateDir, "openclaw.json"));

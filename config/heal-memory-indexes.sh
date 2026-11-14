@@ -41,6 +41,8 @@ OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/root/.openclaw}"
 OPENCLAW_MEMORY_HEAL_BUDGET="${OPENCLAW_MEMORY_HEAL_BUDGET:-900}"
 # Upper bound for the status query itself.
 OPENCLAW_MEMORY_STATUS_TIMEOUT="${OPENCLAW_MEMORY_STATUS_TIMEOUT:-120}"
+# How long a leftover llama-server gets to exit on SIGTERM before SIGKILL.
+OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT="${OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT:-15}"
 
 # Reads `openclaw memory status --json` on stdin and prints the id of every
 # agent whose index is mismatched by configuration, one per line. Exits
@@ -112,10 +114,35 @@ require_memory_heal_seconds() {
     printf -v "$name" '%s' "$default"
 }
 
+# Stops any llama-server a rebuild left behind and waits until it is gone.
+#
+# A rebuild the budget kills gets SIGTERM, so the CLI's exit hook never stops
+# the llama-server it spawned detached, in its own process group. Left on the
+# provider port, the gateway would find it healthy and reuse a server it does
+# not own and never idle-stops. SIGTERM itself takes seconds (the router stops
+# its model children first), and a gateway started in between finds the same
+# healthy server — hence the wait. No pkill means no cleanup; the gateway
+# starts either way.
+stop_leftover_llama_server() {
+    command -v pkill >/dev/null 2>&1 || return 0
+    pkill -x llama-server >/dev/null 2>&1 || return 0
+    local waited=0
+    while pkill -0 -x llama-server >/dev/null 2>&1; do
+        if [ "$waited" -ge "$OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT" ]; then
+            echo "[memory-heal] llama-server did not stop within ${OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT}s; killing it."
+            pkill -KILL -x llama-server >/dev/null 2>&1 || true
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
 heal_memory_indexes() {
     [ -f "$OPENCLAW_STATE_DIR/openclaw.json" ] || return 0
     require_memory_heal_seconds OPENCLAW_MEMORY_HEAL_BUDGET 900
     require_memory_heal_seconds OPENCLAW_MEMORY_STATUS_TIMEOUT 120
+    require_memory_heal_seconds OPENCLAW_LLAMA_SERVER_STOP_TIMEOUT 15
 
     local mismatched
     mismatched="$(query_mismatched_memory_indexes)" || {
@@ -127,7 +154,7 @@ heal_memory_indexes() {
     echo "[memory-heal] Memory indexes OpenClaw will not rebuild on its own (built for a different embedding model, usually after a failed embed):"
     echo "$mismatched" | sed 's/^/[memory-heal]   /'
 
-    local agents=() agent i start remaining limit rc still took broken=""
+    local agents=() agent i start remaining limit rc still took broken="" ran=""
     while IFS= read -r agent; do
         [ -n "$agent" ] && agents+=("$agent")
     done <<<"$mismatched"
@@ -143,6 +170,7 @@ heal_memory_indexes() {
         limit=()
         command -v timeout >/dev/null 2>&1 && limit=(timeout "$remaining")
         echo "[memory-heal] Rebuilding the memory index of agent $agent..."
+        ran=1
         # Every command is guarded: start-openclaw.sh runs under `set -e`.
         # </dev/null: the loop's stdin would otherwise be the caller's.
         "${limit[@]}" openclaw memory index --agent "$agent" </dev/null 2>&1 | sed 's/^/[memory-heal] index: /'
@@ -164,6 +192,8 @@ heal_memory_indexes() {
             break
         fi
     done
+
+    [ -z "$ran" ] || stop_leftover_llama_server
 
     took=$(( $(date +%s) - start ))
     if [ "$i" -eq "${#agents[@]}" ]; then
