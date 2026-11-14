@@ -230,10 +230,12 @@ async function fetchCredentials(
   // Pinchy answers the addresses it checked the URL's host against. Without
   // them there is nothing to pin to, and resolving the name here would be
   // exactly the second lookup a rebinding resolver waits for — so refuse.
+  // The route answers an Odoo URL it cannot check with a 403 or 503, never a
+  // 200, so a 200 without them comes from a Pinchy older than this plugin.
   const target = checkedTarget(data, "url");
   if (!target) {
     throw new Error(
-      "pinchy-odoo: Pinchy could not check where this connection's Odoo URL points, so the Odoo tools will not connect to it. Check that the host name still resolves."
+      "pinchy-odoo: Pinchy did not send the addresses it checked for this connection's Odoo URL, so the Odoo tools will not connect to it. Pinchy and its agent runtime (the openclaw container) are most likely on different versions — run both from the same Pinchy release."
     );
   }
   return { creds: data.credentials, target };

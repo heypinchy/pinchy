@@ -189,7 +189,7 @@ describe("IMAP connection pinning", () => {
   it("refuses to connect when Pinchy checked no address for the host", async () => {
     await listen("imap");
     await expect(adapter({ imapTarget: undefined }).list({ folder: "INBOX" })).rejects.toThrow(
-      /could not check where/
+      /will not connect/
     );
     expect(fake.seen).toHaveLength(0);
   });
@@ -215,6 +215,16 @@ describe("why Pinchy checked no address", () => {
         folder: "INBOX",
       })
     ).rejects.toThrow(/does not resolve.*connection's settings/i);
+    expect(fake.seen).toHaveLength(0);
+  });
+});
+
+describe("a Pinchy that sent no checked address and no reason", () => {
+  it("names the version mismatch instead of blaming the host name", async () => {
+    await listen("imap");
+    await expect(adapter({ imapTarget: undefined }).list({ folder: "INBOX" })).rejects.toThrow(
+      /same Pinchy release/
+    );
     expect(fake.seen).toHaveLength(0);
   });
 });
@@ -255,7 +265,7 @@ describe("SMTP connection pinning", () => {
         subject: "s",
         body: "b",
       })
-    ).rejects.toThrow(/could not check where/);
+    ).rejects.toThrow(/will not connect/);
     expect(fake.seen).toHaveLength(0);
   });
 });

@@ -327,9 +327,12 @@ function requireTarget(
         "Check the host name in the connection's settings."
     );
   }
+  // Neither addresses nor a reason: a Pinchy older than this plugin, which
+  // sends neither.
   throw new Error(
-    `pinchy-email: Pinchy could not check where ${field} "${host}" points, ${refusal} ` +
-      "Check that the host name still resolves."
+    `pinchy-email: Pinchy did not send the addresses it checked for ${field} "${host}", ` +
+      `${refusal} Pinchy and its agent runtime (the openclaw container) are most likely on ` +
+      "different versions — run both from the same Pinchy release."
   );
 }
 
