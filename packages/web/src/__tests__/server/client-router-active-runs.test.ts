@@ -469,15 +469,15 @@ describe("ClientRouter ↔ ActiveRuns wiring (#310 Tier 2a)", () => {
     );
     expect(completedAfterDisconnect).toBeDefined();
     const detail = (completedAfterDisconnect![0] as { detail: Record<string, unknown> }).detail;
-    expect(detail.sessionKey).toBe(sessionKey);
+    expect(detail.chatId).toBeNull();
     expect(detail.runId).toBe("run-disc");
     expect(detail.agent).toEqual({ id: "agent-1", name: "Smithers" });
     // #824: the acting user is the row's actor, pseudonymized on write; a raw
     // id mirrored into the verbatim `detail` would survive crypto-erasure.
-    // (The sessionKey is OpenClaw's address for the conversation, kept as is.)
+    // The sessionKey embeds the raw user id, so it stays out too.
     expect(detail).not.toHaveProperty("user");
-    const { sessionKey: _address, ...rest } = detail;
-    expect(JSON.stringify(rest)).not.toContain("user-1");
+    expect(detail).not.toHaveProperty("sessionKey");
+    expect(JSON.stringify(detail)).not.toContain("user-1");
   });
 
   it("does NOT emit chat.run_completed_after_disconnect when listeners remain at `done`", async () => {

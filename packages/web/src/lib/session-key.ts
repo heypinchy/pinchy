@@ -40,6 +40,17 @@ export function directSessionUserId(sessionKey: string | undefined): string | un
 }
 
 /**
+ * The chat identifier to put in an audit row's `detail` in place of the session
+ * key: the `:{chatId}` of a per-chat session, null for the default chat or any
+ * key that is not a direct session. A web-chat session key embeds the raw
+ * `users.id`, and `detail` is verbatim, immutable and out of crypto-erasure's
+ * reach (#824) — the user is the row's `actorId`, which is pseudonymized.
+ */
+export function auditChatId(sessionKey: string | undefined): string | null {
+  return directSessionChatId(sessionKey) ?? null;
+}
+
+/**
  * The chat a direct session key names: the `:{chatId}` suffix of a per-chat
  * session (#508), null for the default chat, undefined for a key that is not a
  * direct session at all. Chat ids are lowercase by `chatIdSchema`, so the id

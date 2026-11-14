@@ -14,7 +14,7 @@ import {
   isPersonalAgentPausedFor,
   PERSONAL_AGENT_DISABLED,
 } from "@/lib/agent-access";
-import { directSessionKey } from "@/lib/session-key";
+import { auditChatId, directSessionKey } from "@/lib/session-key";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { getLicenseState } from "@/lib/enterprise";
 import { budgetExhaustedMessage, getExhaustedBlockingBudget } from "@/lib/budgets";
@@ -269,7 +269,9 @@ export class ClientRouter {
       resource: `agent:${agent.id}`,
       detail: {
         agent: { id: agent.id, name: agent.name },
-        sessionKey,
+        // Not the session key: it embeds the acting user's raw id, and `detail`
+        // is out of crypto-erasure's reach (#824). The user is the actor.
+        chatId: auditChatId(sessionKey),
         // Null while pending: the trail must not point at a runId the gateway
         // never issued.
         runId: runId ?? null,
@@ -626,7 +628,7 @@ export class ClientRouter {
           resource: `agent:${message.agentId}`,
           detail: {
             agent: { id: agent.id, name: agent.name },
-            sessionKey,
+            chatId: auditChatId(sessionKey),
             agentModel: agent.model,
             fallbackModel: turnModel.model,
             reason: "text_only_model_received_image",
@@ -709,7 +711,7 @@ export class ClientRouter {
           resource: `agent:${message.agentId}`,
           detail: {
             agent: { id: agent.id, name: agent.name },
-            sessionKey,
+            chatId: auditChatId(sessionKey),
             reason,
           },
           outcome: "success" as const,

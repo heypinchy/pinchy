@@ -186,10 +186,14 @@ describe("ClientRouter user-triggered abort (#550)", () => {
       outcome: "success",
       detail: {
         agent: { id: "agent-1", name: "Smithers" },
-        sessionKey: SESSION_KEY,
+        chatId: null,
         runId: "run-xyz",
       },
     });
+    // #824: the session key embeds the acting user's raw users.id; `detail` is
+    // stored verbatim and out of crypto-erasure's reach.
+    expect(entry.detail).not.toHaveProperty("sessionKey");
+    expect(JSON.stringify(entry.detail)).not.toContain("user-1");
   });
 
   it("still signals chatAbort when no run is registered, but writes no audit row", async () => {

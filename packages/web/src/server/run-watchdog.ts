@@ -1,3 +1,4 @@
+import { auditChatId } from "@/lib/session-key";
 import type { ActiveRun, ActiveRuns } from "@/server/active-runs";
 
 /** Watchdog scan cadence — every 30 seconds. */
@@ -30,7 +31,9 @@ export const DEFAULT_FIRST_CHUNK_TIMEOUT_MS = 180_000;
  * (120s idle, ~5min stuck), so a Pinchy-side absolute cap was both redundant
  * AND harmful (it killed slow-but-alive runs). The authoritative liveness
  * signal (`agentWait`) is now the source of truth for run liveness. Same PII
- * rules: only `user.id` in detail.
+ * rules: no user id in detail — not as `user.id`, not inside a session key
+ * (#824). The actor is the watchdog, so the run is named by agent, runId and
+ * chatId; the affected user is not recorded on this row.
  */
 export interface NoFirstChunkAuditPayload {
   actorType: "system";
@@ -40,8 +43,8 @@ export interface NoFirstChunkAuditPayload {
   outcome: "failure";
   detail: {
     agent: { id: string; name: string };
-    user: { id: string };
-    sessionKey: string;
+    /** The chat within the agent (null: the default chat). Never the session key. */
+    chatId: string | null;
     runId: string;
     /** Wall-clock the run waited for its first chunk before being torn down. */
     waitedMs: number;
@@ -123,8 +126,7 @@ export async function runWatchdogTick(deps: WatchdogDeps): Promise<void> {
       outcome: "failure",
       detail: {
         agent: { id: run.agentId, name: run.agentName },
-        user: { id: run.userId },
-        sessionKey: run.sessionKey,
+        chatId: auditChatId(run.sessionKey),
         runId: run.runId,
         waitedMs,
         firstChunkTimeoutMs: deps.firstChunkTimeoutMs,
