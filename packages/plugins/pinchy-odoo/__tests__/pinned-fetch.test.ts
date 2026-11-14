@@ -12,7 +12,7 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { OdooClient } from "odoo-node";
-import { pinOdooClient, withPinnedFetch } from "../pinned-fetch";
+import { pinnedOdooFetch, pinOdooClient } from "../pinned-fetch";
 import type { PinnedTarget } from "../pinned-target";
 
 const dns = createRequire(import.meta.url)("node:dns") as typeof import("node:dns");
@@ -88,11 +88,7 @@ describe("pinOdooClient", () => {
   it("sends every Odoo call to the address Pinchy checked, even after the name rebinds", async () => {
     const rebound = rebindResolverToPrivate();
     const url = `http://odoo.rebind.test:${port}`;
-    const client = pinOdooClient(
-      new OdooClient({ url, db: "odoo", uid: 2, apiKey: "k" }),
-      url,
-      checked
-    );
+    const client = pinOdooClient({ url, db: "odoo", uid: 2, apiKey: "k" }, checked);
 
     const version = await client.version();
 
@@ -111,7 +107,7 @@ describe("pinOdooClient", () => {
     // The fake Odoo listens on 127.0.0.1 only, so ::1 refuses (or, on a host
     // without IPv6, is unreachable) — the connector must move on to the next
     // checked address rather than fail the call.
-    const client = pinOdooClient(new OdooClient({ url, db: "odoo", uid: 2, apiKey: "k" }), url, [
+    const client = pinOdooClient({ url, db: "odoo", uid: 2, apiKey: "k" }, [
       { address: "::1", family: 6 },
       { address: "127.0.0.1", family: 4 },
     ]);
@@ -122,142 +118,87 @@ describe("pinOdooClient", () => {
     expect(seen[0].remoteAddress).toBe("127.0.0.1");
   });
 
-  it("keeps returning the client's own values for non-function properties", () => {
+  it("refuses a redirect through the client and never contacts its target", async () => {
+    const redirecting = createServer((_req, res) => {
+      res.statusCode = 307;
+      res.setHeader("location", `http://127.0.0.1:${port}/jsonrpc`);
+      res.end();
+    });
+    await new Promise<void>((resolve) => redirecting.listen(0, "127.0.0.1", resolve));
+    const rport = (redirecting.address() as AddressInfo).port;
+    try {
+      const url = `http://odoo.rebind.test:${rport}`;
+      const client = pinOdooClient({ url, db: "odoo", uid: 2, apiKey: "k" }, checked);
+      await expect(client.version()).rejects.toThrow(/redirect \(HTTP 307\)/);
+      expect(seen).toHaveLength(0);
+    } finally {
+      await new Promise<void>((resolve) => redirecting.close(() => resolve()));
+    }
+  });
+
+  it("is a plain OdooClient", () => {
     const url = `http://odoo.rebind.test:${port}`;
-    const raw = new OdooClient({ url, db: "odoo", uid: 2, apiKey: "k" });
-    const client = pinOdooClient(raw, url, checked);
+    const client = pinOdooClient({ url, db: "odoo", uid: 2, apiKey: "k" }, checked);
     expect(client).toBeInstanceOf(OdooClient);
+  });
+
+  it("leaves the process-wide fetch alone", async () => {
+    // OpenClaw runs every plugin in one process. The pin travels with the
+    // client, so no other plugin's fetch passes through pinchy-odoo's code.
+    const before = globalThis.fetch;
+    const url = `http://odoo.rebind.test:${port}`;
+    await pinOdooClient({ url, db: "odoo", uid: 2, apiKey: "k" }, checked).version();
+    expect(globalThis.fetch).toBe(before);
   });
 });
 
-describe("withPinnedFetch", () => {
-  it("leaves a request to another origin to the ordinary fetch", async () => {
-    const plain = vi.fn(async () => new Response("plain"));
-    const original = globalThis.fetch;
-    globalThis.fetch = plain as unknown as typeof fetch;
-    try {
-      const body = await withPinnedFetch(`http://odoo.rebind.test:${port}`, checked, async () =>
-        (await fetch("http://pinchy.internal:7777/api/x")).text()
-      );
-      expect(body).toBe("plain");
-      expect(plain).toHaveBeenCalledOnce();
-      expect(seen).toHaveLength(0);
-    } finally {
-      globalThis.fetch = original;
-    }
+describe("pinnedOdooFetch", () => {
+  it("refuses a request to any origin but the checked one", async () => {
+    // odoo-node only ever posts to `${url}/jsonrpc`. Anything else would go
+    // out by host name, unchecked — so it does not go out at all.
+    const pinned = pinnedOdooFetch(`http://odoo.rebind.test:${port}`, checked);
+    await expect(pinned("http://pinchy.internal:7777/api/x")).rejects.toThrow(/checked/);
+    expect(seen).toHaveLength(0);
   });
 
-  it("pins nothing outside the scope", async () => {
-    const plain = vi.fn(async () => new Response("plain"));
-    const original = globalThis.fetch;
-    // Install the wrapper, then replace what it wraps — the replacement is
-    // wrapped again on the next entry, never silently undone.
-    await withPinnedFetch(`http://odoo.rebind.test:${port}`, checked, async () => undefined);
-    globalThis.fetch = plain as unknown as typeof fetch;
-    try {
-      await fetch(`http://odoo.rebind.test:${port}/jsonrpc`);
-      expect(plain).toHaveBeenCalledOnce();
-      expect(seen).toHaveLength(0);
-    } finally {
-      globalThis.fetch = original;
-    }
-  });
-
-  it("re-wraps a fetch that was replaced after the wrapper went in", async () => {
-    rebindResolverToPrivate();
-    const original = globalThis.fetch;
-    await withPinnedFetch(`http://odoo.rebind.test:${port}`, checked, async () => undefined);
-    globalThis.fetch = vi.fn(async () => new Response("bypassed")) as unknown as typeof fetch;
-    try {
-      const url = `http://odoo.rebind.test:${port}`;
-      const client = pinOdooClient(
-        new OdooClient({ url, db: "o", uid: 2, apiKey: "k" }),
-        url,
-        checked
-      );
-      const version = await client.version();
-      expect(version.serverVersion).toBe("19.0");
-      expect(seen[0].remoteAddress).toBe("127.0.0.1");
-    } finally {
-      globalThis.fetch = original;
-    }
-  });
-
-  it("pins through a fresh copy of the module, as after an in-process gateway restart", async () => {
-    // OpenClaw restarts its gateway inside the same process and re-evaluates
-    // plugin modules, while the wrapper on the shared global fetch stays. The
-    // new copy must not pin into a store the installed wrapper never reads.
-    const original = globalThis.fetch;
-    const unpinned = vi.fn(async () => new Response("unpinned"));
-    globalThis.fetch = unpinned as unknown as typeof fetch;
-    try {
-      const url = `http://odoo.rebind.test:${port}`;
-      vi.resetModules();
-      const first = await import("../pinned-fetch");
-      await first.withPinnedFetch(url, checked, async () => undefined);
-      vi.resetModules();
-      const second = await import("../pinned-fetch");
-
-      const status = await second.withPinnedFetch(url, checked, async () => {
-        const res = await fetch(`${url}/jsonrpc`, { method: "POST", body: "{}" });
-        await res.text();
-        return res.status;
-      });
-
-      expect(unpinned).not.toHaveBeenCalled();
-      expect(status).toBe(200);
-      expect(seen).toHaveLength(1);
-      expect(seen[0].remoteAddress).toBe("127.0.0.1");
-    } finally {
-      globalThis.fetch = original;
-    }
-  });
-
-  it("shares one connector across the requests of a scope, and closes it when the scope ends", async () => {
-    // The connector belongs to the scope: created when it opens, closed when
-    // it settles. Requests inside it reuse its connection.
+  it("opens a connector per request and closes it once the response is read", async () => {
+    // Each request gets its own connector, closed as soon as its response
+    // settles: nothing stays open between calls, and a cached client never
+    // holds a socket to an address checked minutes ago.
     const url = `http://odoo.rebind.test:${port}`;
-    await withPinnedFetch(url, checked, async () => {
-      for (let i = 0; i < 3; i++) {
-        const res = await fetch(`${url}/jsonrpc`, { method: "POST", body: "{}" });
-        await res.text();
-        // Let the client hand the idle socket back to its pool.
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-    });
+    const pinned = pinnedOdooFetch(url, checked);
+    const res = await pinned(`${url}/jsonrpc`, { method: "POST", body: "{}" });
+    await res.text();
 
-    expect(seen).toHaveLength(3);
-    expect(new Set(seen.map((s) => s.remotePort)).size).toBe(1);
+    expect(seen).toHaveLength(1);
     await vi.waitFor(() => expect(closedPorts).toContain(seen[0].remotePort));
   });
 
-  it("refuses a Request object to the pinned origin rather than drop its method and body", async () => {
+  it("refuses a Request object rather than drop its method and body", async () => {
     // odoo-node calls fetch by URL. A Request would carry its method, headers
     // and body inside it, which the pinned path does not forward — sending it
     // as a bare GET would be a different request from the one asked for.
     const url = `http://odoo.rebind.test:${port}`;
+    const pinned = pinnedOdooFetch(url, checked);
     await expect(
-      withPinnedFetch(url, checked, async () =>
-        fetch(new Request(`${url}/jsonrpc`, { method: "POST", body: "{}" }))
-      )
+      pinned(new Request(`${url}/jsonrpc`, { method: "POST", body: "{}" }))
     ).rejects.toThrow(/by URL/);
     expect(seen).toHaveLength(0);
   });
 
   it("gives up on an Odoo that accepts the connection and never answers", async () => {
-    // odoo-node passes no signal, so without a bound here a blackholed Odoo
-    // would hold the agent's tool call open forever.
+    // Without a bound here a blackholed Odoo would hold the agent's tool call
+    // open forever.
     const hanging = createServer(() => {});
     await new Promise<void>((resolve) => hanging.listen(0, "127.0.0.1", resolve));
     const hport = (hanging.address() as AddressInfo).port;
     try {
       const url = `http://odoo.rebind.test:${hport}`;
+      const pinned = pinnedOdooFetch(url, checked, { timeoutMs: 200 });
       const started = Date.now();
-      await expect(
-        withPinnedFetch(url, checked, async () => fetch(`${url}/jsonrpc`, { method: "POST" }), {
-          timeoutMs: 200,
-        })
-      ).rejects.toThrow(/timeout|aborted/i);
+      await expect(pinned(`${url}/jsonrpc`, { method: "POST" })).rejects.toThrow(
+        /timeout|aborted/i
+      );
       expect(Date.now() - started).toBeLessThan(5_000);
     } finally {
       hanging.closeAllConnections();
@@ -272,9 +213,10 @@ describe("withPinnedFetch", () => {
     try {
       const url = `http://odoo.rebind.test:${hport}`;
       const controller = new AbortController();
-      const pending = withPinnedFetch(url, checked, async () =>
-        fetch(`${url}/jsonrpc`, { method: "POST", signal: controller.signal })
-      );
+      const pending = pinnedOdooFetch(url, checked)(`${url}/jsonrpc`, {
+        method: "POST",
+        signal: controller.signal,
+      });
       setTimeout(() => controller.abort(), 50);
       await expect(pending).rejects.toThrow(/abort/i);
     } finally {
@@ -293,11 +235,11 @@ describe("withPinnedFetch", () => {
     const rport = (redirecting.address() as AddressInfo).port;
     try {
       const url = `http://odoo.rebind.test:${rport}`;
-      const status = await withPinnedFetch(url, checked, async () => {
-        const res = await fetch(`${url}/jsonrpc`, { method: "POST", redirect: "follow" });
-        return res.status;
+      const res = await pinnedOdooFetch(url, checked)(`${url}/jsonrpc`, {
+        method: "POST",
+        redirect: "follow",
       });
-      expect(status).toBe(307);
+      expect(res.status).toBe(307);
     } finally {
       await new Promise<void>((resolve) => redirecting.close(() => resolve()));
     }

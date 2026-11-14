@@ -242,13 +242,10 @@ async function fetchCredentials(
 }
 
 function createClient(creds: OdooCredentials, target: PinnedTarget): OdooClient {
-  const client = new OdooClient({
-    url: creds.url,
-    db: creds.db,
-    uid: creds.uid,
-    apiKey: creds.apiKey,
-  });
-  return pinOdooClient(client, creds.url, target);
+  return pinOdooClient(
+    { url: creds.url, db: creds.db, uid: creds.uid, apiKey: creds.apiKey },
+    target
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
