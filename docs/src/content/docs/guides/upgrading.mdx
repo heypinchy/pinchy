@@ -413,6 +413,8 @@ The tools OpenClaw 2026.9 adds to every agent by default — ask-the-user questi
 
 OpenClaw 2026.9 no longer computes memory embeddings inside its own process. The `openclaw` image now ships a llama.cpp server for that: OpenClaw starts it on the first memory search and stops it after ten minutes without one. It still runs offline, with the same bundled model and no API key. After the upgrade, each agent's memory index is rebuilt once in the background, so expect some extra CPU on the `openclaw` container in the first minutes. The log line `llama-cpp local service ready` shows the server came up.
 
+If an agent's memory index was ever built without embeddings — that happens when the embedding step fails — OpenClaw keeps it that way and only offers a fix to run by hand. Pinchy now runs that fix itself: on every start of the `openclaw` container it checks the memory indexes and rebuilds any that are in that state, before the agents come up. Nothing to do on your side. Most installs have no such index and see no difference; if yours has, that start takes longer, by about 15 minutes at most, and the `openclaw` log shows `[memory-heal]` lines naming the agents and ending with `Memory indexes rebuilt`. If a rebuild doesn't finish, the agents start anyway. Until a later start rebuilds the index, memory search finds nothing for them and they read their memory files directly; the next start tries again.
+
 #### An agent's mailbox context moved into `IDENTITY.md`
 
 OpenClaw 2026.9 no longer loads an agent's `TOOLS.md`, where Pinchy wrote which mailboxes an agent works with. That section is now part of the agent's `IDENTITY.md`, and Pinchy removes the old `TOOLS.md` the next time it writes the agent's configuration. Nothing to do.

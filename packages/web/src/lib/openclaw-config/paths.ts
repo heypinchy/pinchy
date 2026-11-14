@@ -64,6 +64,56 @@ export const LLAMA_SERVER_COMMAND = "/opt/llama-server/llama-server";
  */
 export const LLAMA_SERVER_PRESET_PATH = "/root/.openclaw/tools/llama.cpp/models.ini";
 
+/** Loopback port of the managed llama-server — the provider's own default. */
+export const LLAMA_SERVER_PORT = 19432;
+
+/**
+ * llama-server's logical and physical batch size, in tokens.
+ *
+ * An embedding input has to fit into ONE physical batch (ubatch); a longer one
+ * fails with HTTP 500 "input (N tokens) is too large to process. increase the
+ * physical batch size". The provider sets `ubatch-size = 2048` only in the
+ * preset section of its own default model (the `hf:` EmbeddingGemma download);
+ * for the baked model at `MEMORY_EMBEDDING_MODEL_PATH` it sets none, and
+ * llama-server's default is 512. memory-core cuts ~1600-character chunks and
+ * caps a local-provider input at 2048 UTF-8 bytes — up to 2048 tokens, and far
+ * more than 512 for numbers, IBANs or non-Latin text. At 512 those chunks never
+ * embedded, the provider was marked degraded, and memory_search fell back to
+ * keyword-only.
+ *
+ * 2048 is as far as raising it helps: it equals the model's context, so a
+ * larger batch would only move the failure from the batch to the context. A
+ * token is at least one byte, so a capped input is at most 2048 tokens of text
+ * — but the tokenizer adds BOS/EOS on top, so an input that spends a whole
+ * token on nearly every byte can still end up a token or two over. Real memory
+ * text is far from that ratio. Router-mode global args are inherited by the
+ * model child.
+ */
+export const LLAMA_SERVER_EMBEDDING_BATCH_TOKENS = 2048;
+
+/**
+ * Command-line args of the managed llama-server. Shared by build.ts and the
+ * offline CI smoke test (config/verify-memory-search.sh, pinned by
+ * memory-embedding-pin-drift.test.ts), so the smoke test starts the server
+ * exactly as production does.
+ */
+export const LLAMA_SERVER_ARGS: readonly string[] = [
+  "--host",
+  "127.0.0.1",
+  "--port",
+  String(LLAMA_SERVER_PORT),
+  "--models-preset",
+  LLAMA_SERVER_PRESET_PATH,
+  "--models-max",
+  "2",
+  "--batch-size",
+  String(LLAMA_SERVER_EMBEDDING_BATCH_TOKENS),
+  "--ubatch-size",
+  String(LLAMA_SERVER_EMBEDDING_BATCH_TOKENS),
+  "--metrics",
+  "--no-ui",
+];
+
 /**
  * Bundled OpenClaw plugins Pinchy needs in `plugins.allow` on every install
  * (why each one: build.ts, where the full allow-list is assembled). The boot
