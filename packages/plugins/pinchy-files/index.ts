@@ -326,19 +326,31 @@ const plugin = {
     // at the moment of use, never here: every `openclaw` CLI command loads
     // plugins in "cli-metadata" mode, where `api.runtime` throws on any
     // property read, and an eager read failed the whole registration.
-    const visionRuntime = () => {
-      const runtime = (api as any).runtime;
-      return {
-        modelAuth: runtime?.modelAuth as
-          | {
-              resolveApiKeyForProvider: (params: {
-                provider: string;
-                cfg: unknown;
-              }) => Promise<{ apiKey: string } | null>;
-            }
-          | undefined,
-        loadConfig: runtime?.config?.loadConfig as (() => Record<string, unknown>) | undefined,
+    //
+    // A runtime that throws costs the vision step, never the read: every PDF
+    // passes through here, text PDFs included.
+    //
+    // The config snapshot accessor is `config.current` since OpenClaw 2026.9,
+    // which dropped `config.loadConfig`; reading only the old name silently
+    // turned off vision for every scanned page.
+    const visionRuntime = (): {
+      modelAuth?: {
+        resolveApiKeyForProvider: (params: {
+          provider: string;
+          cfg: unknown;
+        }) => Promise<{ apiKey: string } | null>;
       };
+      loadConfig?: () => Record<string, unknown>;
+    } => {
+      try {
+        const runtime = (api as any).runtime;
+        return {
+          modelAuth: runtime?.modelAuth,
+          loadConfig: runtime?.config?.current ?? runtime?.config?.loadConfig,
+        };
+      } catch {
+        return {};
+      }
     };
 
     api.registerTool(
