@@ -11,7 +11,7 @@ import {
 import { imapTestSchema } from "@/lib/schemas/imap";
 import { resolveInsecureMockBaseUrl } from "@/lib/integrations/insecure-mock-base-url";
 import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
-import { isPinnedTo, withPinnedOdooFetch } from "@/lib/integrations/odoo-pin";
+import { withPinnedOdoo, type PinnedOdooFetch } from "@/lib/integrations/odoo-pin";
 import { authenticateOdoo } from "@/lib/integrations/odoo-calls";
 
 /**
@@ -38,7 +38,15 @@ export type ProbeResult =
 
 export async function probeIntegrationCredentials(
   type: string,
-  credentials: Record<string, unknown>
+  credentials: Record<string, unknown>,
+  options: {
+    /**
+     * A fetch the caller already pinned to this Odoo URL's checked addresses
+     * (`withPinnedOdoo`). The probe then neither looks the host up again nor
+     * opens a scope of its own; a request to any other origin is refused.
+     */
+    odooFetch?: PinnedOdooFetch;
+  } = {}
 ): Promise<ProbeResult> {
   if (type === "odoo") {
     const parsed = odooCredentialsSchema.safeParse(credentials);
@@ -50,14 +58,16 @@ export async function probeIntegrationCredentials(
     // gets the same from testImapLogin/testSmtpVerify, which run the guard.
     // Resolved once: the answer that is classified here is the address every
     // call below connects to, instead of a second lookup by name.
-    // A caller that already checked and pinned this very origin (the connection
-    // test route) is not looked up a second time.
-    if (isPinnedTo(new URL(parsed.data.url).origin)) return probeOdoo(parsed.data);
+    // A caller that already checked and pinned it (the connection test route)
+    // hands its fetch in, and the host is not looked up a second time.
+    if (options.odooFetch) return probeOdoo(parsed.data, options.odooFetch);
     const destination = await resolveExternalUrlTarget(parsed.data.url);
     if (!destination.valid) {
       return { success: false, transient: true, reason: destination.error };
     }
-    return withPinnedOdooFetch(destination.url, destination.target, () => probeOdoo(parsed.data));
+    return withPinnedOdoo(destination.url, destination.target, (pinned) =>
+      probeOdoo(parsed.data, pinned)
+    );
   }
 
   if (type === "web-search") {
@@ -135,8 +145,11 @@ export async function probeIntegrationCredentials(
 
 type OdooCredentials = NonNullable<ReturnType<typeof odooCredentialsSchema.safeParse>["data"]>;
 
-/** The Odoo probe proper. Runs inside `withPinnedOdooFetch`. */
-async function probeOdoo(parsedData: OdooCredentials): Promise<ProbeResult> {
+/** The Odoo probe proper. Every request goes through `pinned`. */
+async function probeOdoo(
+  parsedData: OdooCredentials,
+  pinned: PinnedOdooFetch
+): Promise<ProbeResult> {
   // Re-authenticate so we (a) verify the login/apiKey actually work and
   // (b) refresh the stored uid in case the login changed. Without this
   // step, a wrong login or apiKey would surface as the opaque "Could not
@@ -149,12 +162,13 @@ async function probeOdoo(parsedData: OdooCredentials): Promise<ProbeResult> {
       db: parsedData.db,
       login: parsedData.login,
       apiKey: parsedData.apiKey,
+      fetch: pinned,
     });
   } catch (err) {
     return describeOdooAuthenticateFailure(err);
   }
 
-  const result = await fetchOdooSchema({ ...parsedData, uid });
+  const result = await fetchOdooSchema({ ...parsedData, uid, fetch: pinned });
   // Only an access denial says something about these credentials; any other
   // schema failure (every model refused alike by a proxy, Odoo unreachable)
   // must not flag the connection auth_failed.

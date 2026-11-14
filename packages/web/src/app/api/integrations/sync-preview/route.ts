@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { withAdmin } from "@/lib/api-auth";
 import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
-import { withPinnedOdooFetch } from "@/lib/integrations/odoo-pin";
+import { withPinnedOdoo } from "@/lib/integrations/odoo-pin";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { parseRequestBody } from "@/lib/api-validation";
 import { syncPreviewSchema } from "@/lib/schemas/integrations";
@@ -17,8 +17,8 @@ export const POST = withAdmin(async (request) => {
     return NextResponse.json({ error: urlCheck.error }, { status: urlCheck.transient ? 503 : 400 });
   }
 
-  const result = await withPinnedOdooFetch(urlCheck.url, urlCheck.target, () =>
-    fetchOdooSchema(credentials)
+  const result = await withPinnedOdoo(urlCheck.url, urlCheck.target, (pinned) =>
+    fetchOdooSchema({ ...credentials, fetch: pinned })
   );
   return NextResponse.json(result);
 });

@@ -1,4 +1,5 @@
 import { OdooClient, OdooError } from "odoo-node";
+import type { PinnedOdooFetch } from "./odoo-pin";
 
 /**
  * odoo-node calls the web app makes, refusing an answer that is not what Odoo
@@ -19,17 +20,23 @@ function notOdooAnswer(what: string): OdooError {
 }
 
 /**
- * odoo-node turning a non-object `result` into a TypeError — not the
- * JSON-RPC-envelope one (`… (reading 'message')`), which `describeOdooError`
- * already names. The calls wrapped here run nothing of ours in between.
+ * odoo-node turning a non-object `result` into a TypeError. The only code of
+ * ours in these calls is the pinned fetch, and odoo-node wraps every rejection
+ * of it — undici's "fetch failed" and the pin's own refusals are TypeErrors
+ * too — into an OdooError with code 0, so a TypeError that gets out is the
+ * missing result. `odoo-pin-connector.test.ts` holds odoo-node to that.
  */
 function isNullResultTypeError(err: unknown): boolean {
-  return err instanceof TypeError && !/\(reading 'message'\)$/.test(err.message);
+  return err instanceof TypeError;
 }
 
-/** `OdooClient.authenticate`, refusing an answer that carries no user id. */
+/**
+ * `OdooClient.authenticate`, refusing an answer that carries no user id. The
+ * `fetch` is required: it is the one from `withPinnedOdoo` for this URL, and a
+ * login without it would send the key to whatever the name resolves to now.
+ */
 export async function authenticateOdoo(
-  auth: Parameters<typeof OdooClient.authenticate>[0]
+  auth: Parameters<typeof OdooClient.authenticate>[0] & { fetch: PinnedOdooFetch }
 ): Promise<number> {
   const uid: unknown = await OdooClient.authenticate(auth);
   if (typeof uid === "number" && Number.isInteger(uid) && uid > 0) return uid;

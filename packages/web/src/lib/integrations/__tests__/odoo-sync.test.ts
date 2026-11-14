@@ -2,12 +2,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockFields = vi.fn();
 const mockCheckAccessRights = vi.fn();
+const clientConfigs: unknown[] = [];
 
 vi.mock("odoo-node", () => {
   return {
     OdooClient: class {
       fields = mockFields;
       checkAccessRights = mockCheckAccessRights;
+      constructor(config: unknown) {
+        clientConfigs.push(config);
+      }
     },
   };
 });
@@ -15,7 +19,15 @@ vi.mock("odoo-node", () => {
 import { ODOO_TEMPLATES } from "@/lib/agent-templates/data/odoo-agents";
 import { fetchOdooSchema, getAccessibleCategoryLabels, MODEL_CATEGORIES } from "../odoo-sync";
 
-const creds = { url: "https://odoo.example.com", db: "test", uid: 2, apiKey: "key" };
+// Stands in for the pinned fetch a route gets from `withPinnedOdoo`.
+const pinnedFetch = vi.fn() as unknown as typeof fetch;
+const creds = {
+  url: "https://odoo.example.com",
+  db: "test",
+  uid: 2,
+  apiKey: "key",
+  fetch: pinnedFetch,
+};
 
 function syncedModelNames(): Set<string> {
   return new Set(MODEL_CATEGORIES.flatMap((category) => category.models.map((m) => m.model)));
@@ -53,7 +65,18 @@ describe("MODEL_CATEGORIES", () => {
 describe("fetchOdooSchema", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clientConfigs.length = 0;
     mockCheckAccessRights.mockResolvedValue(true);
+  });
+
+  it("sends every call through the fetch it is given", async () => {
+    // The caller checked the URL and pinned this fetch to the answer; a client
+    // without it would fetch by host name and resolve it a second time.
+    mockFields.mockResolvedValue([]);
+
+    await fetchOdooSchema(creds);
+
+    expect(clientConfigs).toEqual([expect.objectContaining({ fetch: pinnedFetch })]);
   });
 
   it("probes curated models via fields_get instead of ir.model", async () => {

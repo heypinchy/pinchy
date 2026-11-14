@@ -277,6 +277,13 @@ describe("Pre-existing IMAP connection — cross-route invariant (listed ⟹ rea
       vi.doMock("@/lib/integrations/oauth-settings", () => ({
         getOAuthSettings: vi.fn().mockResolvedValue(null),
       }));
+      // The route checks the stored mail hosts before handing them out, which
+      // resolves them. Answered here: a real lookup of the fixture hosts made
+      // this section wait on the network, and under a loaded parallel suite it
+      // ran into the 20 s test timeout.
+      vi.doMock("node:dns/promises", () => ({
+        lookup: vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]),
+      }));
     });
 
     function makeRequest(connectionId: string) {

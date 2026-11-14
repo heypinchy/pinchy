@@ -289,8 +289,37 @@ describe("probeIntegrationCredentials", () => {
         db: validOdooCreds.db,
         login: validOdooCreds.login,
         apiKey: validOdooCreds.apiKey,
+        fetch: expect.any(Function),
       });
       expect(fetchOdooSchema).toHaveBeenCalledWith(expect.objectContaining({ uid: 42 }));
+    });
+
+    it("logs in and syncs through one fetch pinned to the checked address", async () => {
+      vi.mocked(fetchOdooSchema).mockResolvedValue({ success: true } as never);
+
+      await probeIntegrationCredentials("odoo", validOdooCreds);
+
+      const pinned = mockAuthenticate.mock.calls[0][0].fetch;
+      expect(pinned).toEqual(expect.any(Function));
+      expect(pinned).not.toBe(globalThis.fetch);
+      expect(fetchOdooSchema).toHaveBeenCalledWith(expect.objectContaining({ fetch: pinned }));
+    });
+
+    it("uses the fetch a caller already pinned, without looking the host up again", async () => {
+      // [connectionId]/test checked the stored URL and pinned its own scope;
+      // a second lookup could answer differently (DNS rebinding).
+      vi.mocked(fetchOdooSchema).mockResolvedValue({ success: true } as never);
+      const callersFetch = vi.fn() as unknown as typeof fetch;
+
+      await probeIntegrationCredentials("odoo", validOdooCreds, { odooFetch: callersFetch });
+
+      expect(mockResolveExternalUrlTarget).not.toHaveBeenCalled();
+      expect(mockAuthenticate).toHaveBeenCalledWith(
+        expect.objectContaining({ fetch: callersFetch })
+      );
+      expect(fetchOdooSchema).toHaveBeenCalledWith(
+        expect.objectContaining({ fetch: callersFetch })
+      );
     });
 
     it("returns the fresh uid on success so caller can persist it (login change)", async () => {
@@ -338,7 +367,7 @@ describe("probeIntegrationCredentials", () => {
     });
 
     // An http:// Odoo URL behind a proxy's HTTP→HTTPS redirect (Caddy's
-    // default, common in Traefik setups): odoo-node 0.3.1 refuses to follow it
+    // default, common in Traefik setups): odoo-node refuses to follow it
     // and says so. That is a URL problem; calling it a bad API key sends the
     // admin to fix the wrong thing, and a non-transient result flags the
     // connection auth_failed.
