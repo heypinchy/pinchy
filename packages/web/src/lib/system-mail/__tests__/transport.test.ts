@@ -9,7 +9,10 @@ vi.mock("nodemailer", () => ({ default: { createTransport } }));
 
 vi.mock("@/lib/integrations/mail-host-guard", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/integrations/mail-host-guard")>();
-  return { ...actual, assertMailHostAllowed: vi.fn().mockResolvedValue(undefined) };
+  return {
+    ...actual,
+    resolveAllowedMailHost: vi.fn().mockResolvedValue([{ address: "203.0.113.7", family: 4 }]),
+  };
 });
 
 import {
@@ -18,7 +21,7 @@ import {
   sendSystemMail,
   formatFrom,
 } from "@/lib/system-mail/transport";
-import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
+import { resolveAllowedMailHost, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
 const config = {
   host: "smtp.example.com",
@@ -84,8 +87,27 @@ describe("verifySystemMail", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("checks the host against the SSRF guard before connecting", async () => {
-    vi.mocked(assertMailHostAllowed).mockRejectedValueOnce(new MailHostBlockedError("Blocked"));
+    vi.mocked(resolveAllowedMailHost).mockRejectedValueOnce(new MailHostBlockedError("Blocked"));
     await expect(verifySystemMail(config)).rejects.toThrow("Blocked");
+    expect(createTransport).not.toHaveBeenCalled();
+  });
+
+  it("keeps the hostname for SNI and the certificate, and supplies a socket to the checked addresses", async () => {
+    verify.mockResolvedValueOnce(true);
+    await verifySystemMail(config);
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ host: "smtp.example.com", getSocket: expect.any(Function) })
+    );
+    expect(vi.mocked(createTransport).mock.calls[0]).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ servername: expect.anything() })])
+    );
+  });
+
+  it("does not connect when the host does not resolve", async () => {
+    vi.mocked(resolveAllowedMailHost).mockRejectedValueOnce(
+      Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" })
+    );
+    await expect(verifySystemMail(config)).rejects.toThrow("ENOTFOUND");
     expect(createTransport).not.toHaveBeenCalled();
   });
 
@@ -114,7 +136,7 @@ describe("sendSystemMail", () => {
       text: "t",
       html: "<p>t</p>",
     });
-    expect(assertMailHostAllowed).toHaveBeenCalledWith("smtp.example.com");
+    expect(resolveAllowedMailHost).toHaveBeenCalledWith("smtp.example.com");
     expect(sendMail).toHaveBeenCalledWith({
       from: { name: "Pinchy", address: "pinchy@example.com" },
       to: "anna@example.com",

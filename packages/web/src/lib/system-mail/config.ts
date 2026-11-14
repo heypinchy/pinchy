@@ -1,5 +1,6 @@
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import {
+  needsPasswordReentry,
   systemMailConfigSchema,
   type SystemMailConfig,
   type SystemMailStatus,
@@ -51,6 +52,8 @@ export async function deleteSystemMailConfig(): Promise<void> {
 export async function isSystemMailConfigured(): Promise<boolean> {
   return (await getSystemMailConfig()) !== null;
 }
+
+export { needsPasswordReentry };
 
 export function toPublicConfig(
   config: SystemMailConfig

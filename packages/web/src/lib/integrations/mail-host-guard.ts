@@ -1,7 +1,13 @@
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import {
+  connect as netConnect,
+  isIP,
+  type LookupFunction,
+  type NetConnectOpts,
+  type Socket,
+} from "node:net";
 import { classifyIpAddress, type IpAddressClass } from "@/lib/integrations/url-validation";
-import { toPinnedAddress, type PinnedAddress } from "@/lib/pinned-connection";
+import { pinnedLookup, toPinnedTarget, type PinnedTarget } from "@/lib/pinned-connection";
 
 /**
  * SSRF guard for the IMAP/SMTP probes.
@@ -29,12 +35,12 @@ import { toPinnedAddress, type PinnedAddress } from "@/lib/pinned-connection";
  *     opt-in is the operator's explicit statement that reaching their own
  *     network is intended.
  *
- * The probes connect to the address this guard classified
- * (`resolveAllowedMailHost`): imapflow and nodemailer are handed the IP as
- * `host` and the name as `servername`, which both use for SNI and certificate
- * verification. Neither resolves an IP, so there is one lookup and a DNS
- * answer that changes between check and connect (rebinding) has nothing to
- * change. `assertMailHostAllowed` stays for callers that only check a value
+ * The probes connect to the addresses this guard classified
+ * (`resolveAllowedMailHost`): the socket is opened with a lookup that answers
+ * only that checked set, while `host` stays the name, so SNI and certificate
+ * verification still use it and the connector keeps its fallback across the
+ * set (Happy Eyeballs). There is one lookup, and a DNS answer that changes
+ * between check and connect (rebinding) has nothing to change. `assertMailHostAllowed` stays for callers that only check a value
  * and connect to nothing.
  *
  * Not covered: pinchy-email, in the OpenClaw container, resolves the stored
@@ -135,26 +141,26 @@ export async function assertMailHostAllowed(
 }
 
 /**
- * The address a probe of `host` must open its socket to — the one this guard
- * just classified — or a throw.
+ * The addresses a connection to `host` may use — every one this guard just
+ * classified — or a throw.
  *
  * For the callers that CONNECT. {@link assertMailHostAllowed} followed by a
  * connect by name resolves twice, and a resolver can answer the two lookups
  * differently (DNS rebinding): public for the check, 127.0.0.1 for the
- * socket. Here there is one lookup and its answer is the destination.
+ * socket. Here there is one lookup and its answers are the destination.
  *
  * A lookup that fails is rethrown unchanged instead of passing: with one
  * resolution there is no later connect to "fail naturally", and the original
  * `ENOTFOUND` keeps the probe's "could not resolve the host" message for the
- * typo case. When the name has several addresses every one was checked and
- * the first is used: imapflow and nodemailer take a single `host`, so unlike
- * `pinnedFetch` there is no lookup hook to hand the rest to. A mail host whose
- * first address is down fails the test instead of falling back.
+ * typo case. Every address was checked, so all of them are returned and the
+ * connector (see {@link connectPinned}, {@link pinnedImapOptions}) may fall
+ * back from a dead first record or a broken IPv6 path to the next one, as it
+ * does for an unpinned host.
  */
 export async function resolveAllowedMailHost(
   host: string,
   resolver: MailHostResolver = resolveViaDns
-): Promise<PinnedAddress> {
+): Promise<PinnedTarget> {
   assertPlainHost(host);
 
   // An address literal is its own answer; a resolver has nothing to add.
@@ -164,7 +170,7 @@ export async function resolveAllowedMailHost(
   }
 
   assertAddressesAllowed(addresses);
-  return toPinnedAddress(normalizeAddress(addresses[0]));
+  return toPinnedTarget(addresses.map(normalizeAddress));
 }
 
 function assertPlainHost(host: string): void {
@@ -190,4 +196,83 @@ function assertAddressesAllowed(addresses: string[]): void {
       throw new MailHostBlockedError(PRIVATE_MESSAGE);
     }
   }
+}
+
+/**
+ * Where imapflow must connect: the hostname stays `host` (SNI and the
+ * certificate check use it; an IP literal gets no `servername`), and `tls`
+ * carries a lookup that answers only the checked addresses. imapflow builds
+ * its connect options as `Object.assign({ host, servername, port }, tls)`, so
+ * `lookup` and `autoSelectFamily` reach `net.connect`/`tls.connect` and keep
+ * Node's fallback across the set.
+ */
+export function pinnedImapOptions(host: string, target: PinnedTarget) {
+  return {
+    host,
+    tls: {
+      lookup: pinnedLookup(target) as unknown as LookupFunction,
+      autoSelectFamily: true,
+    },
+  };
+}
+
+/**
+ * A TCP connection to `host:port` that can reach only the checked addresses,
+ * trying them in turn (`autoSelectFamily`). Resolves once connected.
+ */
+export function connectPinned(
+  host: string,
+  port: number,
+  target: PinnedTarget,
+  timeoutMs: number
+): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect({
+      host,
+      port,
+      lookup: pinnedLookup(target),
+      autoSelectFamily: true,
+    } as unknown as NetConnectOpts);
+    const onError = (error: Error) => {
+      clearTimeout(timer);
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }));
+    }, timeoutMs);
+    socket.once("error", onError);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.removeListener("error", onError);
+      resolve(socket);
+    });
+  });
+}
+
+/**
+ * Where nodemailer must connect. nodemailer resolves a hostname itself (its
+ * own resolver, not `tls.lookup`), so the pinned socket is opened here and
+ * handed over through `getSocket`; nodemailer then runs TLS or STARTTLS over
+ * it with `host` — the name — for SNI and the certificate check. An IP
+ * literal gets no servername from nodemailer.
+ */
+export function pinnedSmtpOptions(
+  host: string,
+  port: number,
+  target: PinnedTarget,
+  timeoutMs: number
+) {
+  return {
+    host,
+    getSocket(
+      _options: unknown,
+      callback: (error: Error | null, socketOptions?: { connection: Socket }) => void
+    ) {
+      connectPinned(host, port, target, timeoutMs).then(
+        (connection) => callback(null, { connection }),
+        (error: Error) => callback(error)
+      );
+    },
+  };
 }
