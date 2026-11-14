@@ -231,6 +231,19 @@ describe("withPinnedFetch", () => {
     await vi.waitFor(() => expect(closedPorts).toContain(seen[0].remotePort));
   });
 
+  it("refuses a Request object to the pinned origin rather than drop its method and body", async () => {
+    // odoo-node calls fetch by URL. A Request would carry its method, headers
+    // and body inside it, which the pinned path does not forward — sending it
+    // as a bare GET would be a different request from the one asked for.
+    const url = `http://odoo.rebind.test:${port}`;
+    await expect(
+      withPinnedFetch(url, checked, async () =>
+        fetch(new Request(`${url}/jsonrpc`, { method: "POST", body: "{}" }))
+      )
+    ).rejects.toThrow(/by URL/);
+    expect(seen).toHaveLength(0);
+  });
+
   it("gives up on an Odoo that accepts the connection and never answers", async () => {
     // odoo-node passes no signal, so without a bound here a blackholed Odoo
     // would hold the agent's tool call open forever.

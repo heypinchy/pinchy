@@ -87,7 +87,19 @@ function ensureInstalled(): void {
     const pin = store().getStore();
     if (pin) {
       const url = requestUrl(input);
-      if (new URL(url).origin === pin.origin) return pinnedFetch(url, init, pin);
+      if (new URL(url).origin === pin.origin) {
+        // A Request carries its method, headers and body inside it, and the
+        // pinned path forwards only `init`. odoo-node calls by URL; anything
+        // else is refused rather than sent as a different request.
+        if (typeof input !== "string" && !(input instanceof URL)) {
+          return Promise.reject(
+            new TypeError(
+              "pinchy-odoo: a pinned Odoo request must be made by URL, not as a Request"
+            )
+          );
+        }
+        return pinnedFetch(url, init, pin);
+      }
     }
     return current(input, init);
   }) as Fetch & { [WRAPPER]?: true };
