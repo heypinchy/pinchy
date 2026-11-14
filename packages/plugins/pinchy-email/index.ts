@@ -29,6 +29,7 @@ import {
   requestCredentials,
   trackMutations,
 } from "./credential-client.js";
+import { checkedTarget, type PinnedTarget } from "./pinned-target.js";
 
 // Filesystem convention shared with pinchy-odoo's odoo_attach_file: every
 // agent's uploads land in the same per-agent directory so a downloaded email
@@ -680,7 +681,11 @@ async function fetchCredentials(
   gatewayToken: string,
   connectionId: string,
   agentId: string
-): Promise<{ type: string; credentials: EmailCredentials }> {
+): Promise<{
+  type: string;
+  credentials: EmailCredentials;
+  targets: { imapTarget?: PinnedTarget; smtpTarget?: PinnedTarget };
+}> {
   const data = await requestCredentials({
     apiBaseUrl,
     gatewayToken,
@@ -700,10 +705,20 @@ async function fetchCredentials(
   // own field-naming validation instead of failing on a missing accessToken.
   if (data.type === "imap") {
     assertImapCredentialsShape(data.credentials);
-  } else {
-    assertOAuthCredentialsShape(data.credentials);
+    // The addresses Pinchy checked for the stored hosts (pinned-target.ts).
+    // A missing one is not an error here: the mail-mock seam never connects
+    // to the stored host, so the adapter decides at connect time.
+    return {
+      type: data.type,
+      credentials: data.credentials,
+      targets: {
+        imapTarget: checkedTarget(data, "imapHost"),
+        smtpTarget: checkedTarget(data, "smtpHost"),
+      },
+    };
   }
-  return { type: data.type, credentials: data.credentials };
+  assertOAuthCredentialsShape(data.credentials);
+  return { type: data.type, credentials: data.credentials, targets: {} };
 }
 
 const plugin = {
@@ -781,12 +796,11 @@ const plugin = {
       // config update that arrived after the initial register() call.
       const apiBaseUrl = api.pluginConfig?.apiBaseUrl ?? "";
       const gatewayToken = api.pluginConfig?.gatewayToken ?? "";
-      const { type, credentials: creds } = await fetchCredentials(
-        apiBaseUrl,
-        gatewayToken,
-        config.connectionId,
-        agentId
-      );
+      const {
+        type,
+        credentials: creds,
+        targets,
+      } = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId, agentId);
       // google/microsoft are oauth-shaped; imap carries its own
       // host/port/username/password shape (ImapEmailCredentials).
       // fetchCredentials already ran the matching assertion
@@ -817,7 +831,7 @@ const plugin = {
           });
         } else if (type === "imap") {
           const { ImapAdapter } = await import("./imap-adapter.js");
-          adapter = new ImapAdapter(creds as ImapEmailCredentials);
+          adapter = new ImapAdapter({ ...(creds as ImapEmailCredentials), ...targets });
         } else {
           throw new Error(`unsupported email provider: ${type}`);
         }

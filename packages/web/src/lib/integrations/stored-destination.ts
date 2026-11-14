@@ -1,6 +1,6 @@
 import { resolveExternalUrlTarget } from "@/lib/integrations/url-validation";
 import type { PinnedTarget } from "@/lib/pinned-connection";
-import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
+import { resolveAllowedMailHost, MailHostBlockedError } from "@/lib/integrations/mail-host-guard";
 
 /**
  * Re-checks the destination a STORED connection points at, at the moment
@@ -28,10 +28,13 @@ import { assertMailHostAllowed, MailHostBlockedError } from "@/lib/integrations/
  * A lookup that FAILED (timeout, SERVFAIL) is not: it comes back `transient`,
  * and the caller answers "try again" instead of "blocked".
  *
- * What this does NOT close is DNS rebinding between this check and the
- * plugin's own connect: the plugin resolves the name again. Pinchy's own
- * connections (the "Test connection" button, the probe) pin to the `pin` an
- * Odoo check hands back.
+ * The check hands back the addresses it classified (`checked`, per field),
+ * and every consumer connects to those instead of resolving the name again —
+ * otherwise a resolver the name points at could answer this check with a
+ * public address and the connect with 127.0.0.1 (DNS rebinding). Pinchy's own
+ * connections (the "Test connection" button, the probe) pin to them directly;
+ * the credentials route hands them to the plugin as `checkedAddresses`, and
+ * pinchy-odoo and pinchy-email pin to those (their `pinned-target.ts`).
  */
 
 /** Which stored credential field held the refused destination. */
@@ -46,6 +49,12 @@ export type StoredDestinationCheck =
        * resolving the name again. Absent for the other connection types.
        */
       pin?: { origin: string; target: PinnedTarget };
+      /**
+       * Per destination field, every address the guard classified. A field is
+       * absent when there is nothing to check or the name did not resolve; a
+       * consumer that connects must then refuse rather than resolve it itself.
+       */
+      checked?: Partial<Record<StoredDestinationField, PinnedTarget>>;
     }
   | {
       allowed: false;
@@ -103,23 +112,34 @@ export async function checkStoredDestination(
         ...(result.transient ? { transient: true as const } : {}),
       };
     }
-    return { allowed: true, pin: { origin: result.url, target: result.target } };
+    return {
+      allowed: true,
+      pin: { origin: result.url, target: result.target },
+      checked: { url: result.target },
+    };
   }
 
   if (type === "imap") {
     // Both: the inbox sweep reads over IMAP, and the agent's send tool connects
     // to SMTP with the very same credentials.
+    const checked: Partial<Record<StoredDestinationField, PinnedTarget>> = {};
     for (const field of ["imapHost", "smtpHost"] as const) {
       const host = credentials[field];
       if (typeof host !== "string") continue;
       try {
-        await assertMailHostAllowed(host);
+        checked[field] = await resolveAllowedMailHost(host);
       } catch (err) {
-        if (!(err instanceof MailHostBlockedError)) throw err;
-        return { allowed: false, field, message: err.message };
+        if (err instanceof MailHostBlockedError) {
+          return { allowed: false, field, message: err.message };
+        }
+        // The name did not resolve. Not a refusal — no address means no
+        // connection, and the commonest cause is a typo the mail client's own
+        // error names (as `assertMailHostAllowed` has always let it pass). The
+        // field simply gets no checked addresses, and a consumer that would
+        // connect to it refuses instead of resolving it on its own.
       }
     }
-    return { allowed: true };
+    return { allowed: true, checked };
   }
 
   return { allowed: true };

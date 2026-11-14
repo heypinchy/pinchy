@@ -44,6 +44,7 @@ describe("checkStoredDestination", () => {
       expect(result).toEqual({
         allowed: true,
         pin: { origin: "https://93.184.216.34", target: [{ address: "93.184.216.34", family: 4 }] },
+        checked: { url: [{ address: "93.184.216.34", family: 4 }] },
       });
     });
   });
@@ -76,7 +77,42 @@ describe("checkStoredDestination", () => {
     it("allows private hosts once ALLOW_PRIVATE_MAIL_HOSTS=1 is set", async () => {
       vi.stubEnv("ALLOW_PRIVATE_MAIL_HOSTS", "1");
       const result = await checkStoredDestination("imap", imap("100.64.0.9", "192.168.1.20"));
-      expect(result).toEqual({ allowed: true });
+      expect(result).toEqual({
+        allowed: true,
+        checked: {
+          imapHost: [{ address: "100.64.0.9", family: 4 }],
+          smtpHost: [{ address: "192.168.1.20", family: 4 }],
+        },
+      });
+    });
+
+    it("hands back the addresses it checked for each host, for the plugin to pin to", async () => {
+      const result = await checkStoredDestination(
+        "imap",
+        imap("93.184.216.34", "2606:4700:4700::1111")
+      );
+      expect(result).toEqual({
+        allowed: true,
+        checked: {
+          imapHost: [{ address: "93.184.216.34", family: 4 }],
+          smtpHost: [{ address: "2606:4700:4700::1111", family: 6 }],
+        },
+      });
+    });
+
+    // Not a refusal: no address means no connection, and the commonest cause
+    // is a typo the plugin's own error names. The E2E mail mock relies on it
+    // too — it stores names that never resolve and redirects the connection.
+    // The plugin refuses to connect to a host without checked addresses.
+    it("allows a host that does not resolve, with no checked addresses for it", async () => {
+      const result = await checkStoredDestination(
+        "imap",
+        imap("93.184.216.34", "smtp.does-not-exist.invalid")
+      );
+      expect(result).toEqual({
+        allowed: true,
+        checked: { imapHost: [{ address: "93.184.216.34", family: 4 }] },
+      });
     });
 
     it("still refuses a metadata host with ALLOW_PRIVATE_MAIL_HOSTS=1", async () => {

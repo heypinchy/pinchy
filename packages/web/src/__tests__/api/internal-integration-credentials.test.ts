@@ -462,6 +462,37 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
       });
     });
 
+    it("hands the plugin the addresses the guard checked, per field, so it connects to those", async () => {
+      // The plugin pins its connection to these instead of resolving the
+      // stored name again (DNS rebinding) — pinned-target.ts in the plugins.
+      vi.mocked(checkStoredDestination).mockResolvedValue({
+        allowed: true,
+        checked: {
+          imapHost: [
+            { address: "203.0.113.10", family: 4 },
+            { address: "2001:db8::10", family: 6 },
+          ],
+          smtpHost: [{ address: "203.0.113.11", family: 4 }],
+        },
+      });
+
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.checkedAddresses).toEqual({
+        imapHost: ["203.0.113.10", "2001:db8::10"],
+        smtpHost: ["203.0.113.11"],
+      });
+    });
+
+    it("answers an empty checkedAddresses when the guard checked nothing", async () => {
+      const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+
+      const data = await res.json();
+      expect(data.checkedAddresses).toEqual({});
+    });
+
     it("does not audit an allowed fetch", async () => {
       const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
 

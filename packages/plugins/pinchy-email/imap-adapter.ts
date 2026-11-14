@@ -2,6 +2,7 @@ import { ImapFlow } from "imapflow";
 import type { FetchMessageObject, ListResponse } from "imapflow";
 import { simpleParser } from "mailparser";
 import type { AddressObject, ParsedMail } from "mailparser";
+import { connect as netConnect, type Socket } from "node:net";
 import nodemailer from "nodemailer";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { MAX_ATTACHMENT_BYTES, stripHtml } from "./email-adapter.js";
@@ -16,6 +17,7 @@ import type {
   Folder,
 } from "./email-adapter.js";
 import { splitMailbox } from "./recipient.js";
+import { pinnedLookup, type PinnedTarget } from "./pinned-target.js";
 
 export interface ImapAdapterOptions {
   imapHost: string;
@@ -31,6 +33,14 @@ export interface ImapAdapterOptions {
   // string-concatenated, so RFC-2047 encoding/quoting of the display name
   // (umlauts, commas, etc.) is handled correctly by the library.
   senderName?: string;
+  // The addresses Pinchy checked for imapHost / smtpHost when it handed out
+  // these credentials (pinned-target.ts). The adapter connects to these and
+  // never resolves the stored name itself — otherwise a resolver the name
+  // points at could answer Pinchy's check with a public address and the
+  // connect with an internal one (DNS rebinding). Missing means Pinchy checked
+  // nothing, and the adapter refuses to connect (outside the mail-mock seam).
+  imapTarget?: PinnedTarget;
+  smtpTarget?: PinnedTarget;
 }
 
 export interface ImapMailbox {
@@ -282,6 +292,60 @@ interface ResolvedConnection {
   // Require the STARTTLS upgrade instead of continuing in plaintext when the
   // server does not offer it (imapflow's default is opportunistic).
   doSTARTTLS: boolean | undefined;
+  // Where the socket goes; the name above stays the TLS SNI and certificate
+  // name. Undefined only on the mail-mock seam, which never connects to the
+  // stored host.
+  target?: PinnedTarget;
+}
+
+const CONNECTION_TIMEOUT_MS = 10_000;
+
+function requireTarget(target: PinnedTarget | undefined, field: string, host: string) {
+  if (target) return target;
+  throw new Error(
+    `pinchy-email: Pinchy could not check where ${field} "${host}" points, so the email ` +
+      "tools will not connect to it. Check that the host name still resolves."
+  );
+}
+
+// nodemailer resolves the host itself (resolve4/resolve6, then lookup) and
+// has no lookup hook, so the plugin opens the socket for it: to the checked
+// addresses, with Node's per-address fallback across the set. The socket is
+// handed over plain — nodemailer runs implicit TLS or STARTTLS on top of it
+// itself, with the host name as SNI, exactly as for a socket it opened.
+function pinnedSmtpSocket(target: PinnedTarget) {
+  return (
+    options: { host?: string; port?: number | string },
+    callback: (err: Error | null, socketOptions?: { connection: Socket }) => void
+  ): void => {
+    const socket = netConnect({
+      host: options.host,
+      // nodemailer always fills the port in (its default for the mode) before
+      // it asks for a socket.
+      port: Number(options.port),
+      lookup: pinnedLookup(target) as never,
+      autoSelectFamily: true,
+    });
+    let settled = false;
+    const settle = (err: Error | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.removeListener("error", settle);
+      if (err) {
+        socket.destroy();
+        callback(err);
+      } else {
+        callback(null, { connection: socket });
+      }
+    };
+    const timer = setTimeout(
+      () => settle(new Error(`Connection timeout to ${options.host}:${options.port}`)),
+      CONNECTION_TIMEOUT_MS
+    );
+    socket.once("connect", () => settle(null));
+    socket.on("error", settle);
+  };
 }
 
 // SMTP-specific resolved connection: adds requireTLS (STARTTLS), which has
@@ -329,6 +393,7 @@ export class ImapAdapter implements EmailAdapter {
       secure: mode.secure,
       // undefined (not false) keeps STARTTLS opportunistic where it is not required.
       doSTARTTLS: mode.requireTLS ? true : undefined,
+      target: requireTarget(this.opts.imapTarget, "the IMAP host", this.opts.imapHost),
     };
   }
 
@@ -354,6 +419,7 @@ export class ImapAdapter implements EmailAdapter {
       host: this.opts.smtpHost,
       port: this.opts.smtpPort,
       ...tlsModeForPort(this.opts.smtpPort, this.opts.security),
+      target: requireTarget(this.opts.smtpTarget, "the SMTP host", this.opts.smtpHost),
     };
   }
 
@@ -375,6 +441,12 @@ export class ImapAdapter implements EmailAdapter {
       connectionTimeout: 10_000,
       greetingTimeout: 10_000,
       socketTimeout: 20_000,
+      // imapflow does no DNS of its own: it passes these to net/tls.connect,
+      // whose lookup then answers the checked addresses. The host name stays
+      // the servername (SNI and certificate check).
+      ...(conn.target
+        ? { tls: { lookup: pinnedLookup(conn.target), autoSelectFamily: true } as never }
+        : {}),
     });
     await client.connect();
     try {
@@ -562,6 +634,7 @@ export class ImapAdapter implements EmailAdapter {
       connectionTimeout: 10_000,
       greetingTimeout: 10_000,
       socketTimeout: 20_000,
+      ...(conn.target ? { getSocket: pinnedSmtpSocket(conn.target) } : {}),
     });
     let messageId: string | null;
     try {

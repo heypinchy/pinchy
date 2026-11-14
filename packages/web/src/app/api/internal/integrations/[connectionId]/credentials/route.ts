@@ -148,7 +148,18 @@ export async function GET(
       );
     }
 
-    return NextResponse.json(resolved);
+    // The addresses the guard just classified, per field. The plugin connects
+    // to these rather than resolving the stored name again: a resolver that
+    // answered this check with a public address could answer the plugin's own
+    // lookup with 127.0.0.1 (DNS rebinding). A field it could not check is
+    // absent, and the plugin refuses to connect to it.
+    const checkedAddresses = Object.fromEntries(
+      Object.entries(destination.checked ?? {}).map(([field, target]) => [
+        field,
+        target.map(({ address }) => address),
+      ])
+    );
+    return NextResponse.json({ ...resolved, checkedAddresses });
   } catch (err) {
     if (err instanceof ConnectionNotFoundError) {
       // The plugins surface this body.error into the agent's tool error, so a bare

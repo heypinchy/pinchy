@@ -164,7 +164,11 @@ const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) => ({
   ok: true,
   status: 200,
   statusText: "OK",
-  json: async () => ({ type: "odoo", credentials: testCredentials }),
+  json: async () => ({
+    type: "odoo",
+    credentials: testCredentials,
+    checkedAddresses: { url: ["203.0.113.10"] },
+  }),
 }));
 // Vitest typing dance: cast through unknown for mock fetch
 globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -4229,7 +4233,11 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     } as unknown as Response);
   });
 
@@ -4312,6 +4320,7 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       statusText: "OK",
       json: async () => ({
         type: "odoo",
+        checkedAddresses: { url: ["203.0.113.10"] },
         // Exactly the broken shape from staging: an unresolved SecretRef.
         credentials: {
           source: "file",
@@ -4440,7 +4449,11 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     } as unknown as Response);
 
     mockSearchRead
@@ -4541,7 +4554,11 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     } as unknown as Response);
 
     mockSearchRead.mockRejectedValueOnce(new Error("HTTP 503 Service Unavailable"));
@@ -4609,7 +4626,11 @@ describe("odoo_attach_file", () => {
       ok: true,
       status: 200,
       statusText: "OK",
-      json: async () => ({ type: "odoo", credentials: testCredentials }),
+      json: async () => ({
+        type: "odoo",
+        credentials: testCredentials,
+        checkedAddresses: { url: ["203.0.113.10"] },
+      }),
     });
   });
 
