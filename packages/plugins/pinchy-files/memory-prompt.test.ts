@@ -180,7 +180,7 @@ describe("buildMemoryPromptBlock", () => {
     // index itself (config/heal-memory-indexes.sh); the user's part is nothing.
     // So the prompt names that wording — an agent told to "tell the user"
     // needs to recognise the line it must not obey.
-    const block = buildMemoryPromptBlock(["pinchy_memory"])!;
+    const block = buildMemoryPromptBlock();
     expect(block).toMatch(/"tell the user"/i);
     expect(block).toMatch(/`openclaw`/);
     expect(block).toMatch(/don't pass them on/i);
